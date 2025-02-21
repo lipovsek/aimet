@@ -2,7 +2,7 @@
 //
 //  @@-COPYRIGHT-START-@@
 //
-//  Copyright (c) 2020 - 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+//  Copyright (c) 2020 - 2024, Qualcomm Innovation Center, Inc. All rights reserved.
 //
 //  Redistribution and use in source and binary forms, with or without
 //  modification, are permitted provided that the following conditions are met:
@@ -36,6 +36,7 @@
 //
 //==============================================================================
 
+#include "pybind11/complex.h"
 #include <DlEqualization/CrossLayerScalingForPython.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -49,11 +50,12 @@
 #include "DlQuantization/EncodingAnalyzerForPython.h"
 #include "DlQuantization/IQuantizationEncodingAnalyzer.hpp"
 #include "DlQuantization/IQuantizer.hpp"
-#include "PyTensorQuantizer.hpp"
 #include "DlQuantization/Quantization.hpp"
 #include "DlQuantization/QuantizerFactory.hpp"
 #include "DlQuantization/TensorQuantizationSimForPython.h"
 #include "DlQuantization/TensorQuantizerOpFacade.h"
+#include "DlQuantization/EncodingRescale.hpp"
+#include "PyTensorQuantizer.hpp"
 
 namespace py = pybind11;
 
@@ -61,8 +63,12 @@ using namespace DlQuantization;
 using namespace DlCompression;
 using namespace AimetEqualization;
 
-PYBIND11_MODULE(libpymo, m)
+PYBIND11_MODULE(_libpymo, m)
 {
+    py::options options;
+    options.show_function_signatures();
+    options.show_user_defined_docstrings();
+
     // Quantization python bindings
     py::enum_<ComputationMode>(m, "ComputationMode")
         .value("COMP_MODE_CPU", ComputationMode::COMP_MODE_CPU)
@@ -140,12 +146,14 @@ PYBIND11_MODULE(libpymo, m)
 
     py::class_<DlQuantization::TensorQuantizationSimForPython>(m, "TensorQuantizationSimForPython")
         .def(py::init<>())
-        .def("quantizeDequantize", (py::array_t<float>(TensorQuantizationSimForPython::*)(py::array_t<float>,
-                DlQuantization::TfEncoding&, DlQuantization::RoundingMode, unsigned int, bool))
-                &DlQuantization::TensorQuantizationSimForPython::quantizeDequantize)
-        .def("quantizeDequantize", (py::array_t<float>(TensorQuantizationSimForPython::*)(py::array_t<float>,
-                DlQuantization::TfEncoding&, DlQuantization::RoundingMode, bool))
-                &DlQuantization::TensorQuantizationSimForPython::quantizeDequantize);
+        .def("quantizeDequantize",
+             (py::array_t<float>(TensorQuantizationSimForPython::*)(py::array_t<float>, DlQuantization::TfEncoding&,
+                                                                    DlQuantization::RoundingMode, unsigned int, bool)) &
+                 DlQuantization::TensorQuantizationSimForPython::quantizeDequantize)
+        .def("quantizeDequantize",
+             (py::array_t<float>(TensorQuantizationSimForPython::*)(py::array_t<float>, DlQuantization::TfEncoding&,
+                                                                    DlQuantization::RoundingMode, bool)) &
+                 DlQuantization::TensorQuantizationSimForPython::quantizeDequantize);
 
     py::enum_<DlQuantization::TensorQuantizerOpMode>(m, "TensorQuantizerOpMode")
         .value("updateStats", DlQuantization::TensorQuantizerOpMode::updateStats)
@@ -156,10 +164,11 @@ PYBIND11_MODULE(libpymo, m)
     py::class_<DlQuantization::PyTensorQuantizer>(m, "TensorQuantizer")
         .def(py::init<DlQuantization::QuantizationMode, DlQuantization::RoundingMode>())
         .def("updateStats",
-             (void (PyTensorQuantizer::*)(py::array_t<float>, bool)) & DlQuantization::PyTensorQuantizer::updateStats)
-        .def("computeEncoding",  &DlQuantization::PyTensorQuantizer::computeEncoding)
-        .def("quantizeDequantize", (void (PyTensorQuantizer::*)(py::array_t<float>, py::array_t<float>, double, double,
-                                                              unsigned int, bool)) &DlQuantization::PyTensorQuantizer::quantizeDequantize)
+             (void(PyTensorQuantizer::*)(py::array_t<float>, bool)) & DlQuantization::PyTensorQuantizer::updateStats)
+        .def("computeEncoding", &DlQuantization::PyTensorQuantizer::computeEncoding)
+        .def("quantizeDequantize",
+             (void(PyTensorQuantizer::*)(py::array_t<float>, py::array_t<float>, double, double, unsigned int, bool)) &
+                 DlQuantization::PyTensorQuantizer::quantizeDequantize)
         .def("resetEncodingStats", &DlQuantization::PyTensorQuantizer::resetEncodingStats)
         .def("setQuantScheme", &DlQuantization::PyTensorQuantizer::setQuantScheme)
         .def("getQuantScheme", &DlQuantization::PyTensorQuantizer::getQuantScheme)
@@ -168,6 +177,8 @@ PYBIND11_MODULE(libpymo, m)
         .def("setUnsignedSymmetric", &DlQuantization::PyTensorQuantizer::setUnsignedSymmetric)
         .def("getUnsignedSymmetric", &DlQuantization::PyTensorQuantizer::getUnsignedSymmetric)
         .def("getStatsHistogram", &DlQuantization::PyTensorQuantizer::getStatsHistogram)
+        .def("setPercentileValue", &DlQuantization::PyTensorQuantizer::setPercentileValue)
+        .def("getPercentileValue", &DlQuantization::PyTensorQuantizer::getPercentileValue)
         .def("computePartialEncoding", &DlQuantization::PyTensorQuantizer::computePartialEncoding)
         .def_readwrite("roundingMode", &DlQuantization::PyTensorQuantizer::roundingMode)
         .def_readwrite("isEncodingValid", &DlQuantization::PyTensorQuantizer::isEncodingValid);
@@ -200,8 +211,8 @@ PYBIND11_MODULE(libpymo, m)
               (ISVD<float>::*) (const std::string&, std::vector<std::vector<float>>& splitBiases,
                                 const std::vector<unsigned int>&, const std::vector<unsigned int>&) ) &
                  ISVD<float>::SplitLayerBiases)
-        .def("StoreBestRanks", (void (ISVD<float>::*)(const int)) & ISVD<float>::StoreBestRanks)
-        .def("StoreBestRanks", (void (ISVD<float>::*)(const std::string&, const std::vector<unsigned int>&)) &
+        .def("StoreBestRanks", (void(ISVD<float>::*)(const int)) & ISVD<float>::StoreBestRanks)
+        .def("StoreBestRanks", (void(ISVD<float>::*)(const std::string&, const std::vector<unsigned int>&)) &
                                    ISVD<float>::StoreBestRanks);
 
     // Factory func
@@ -280,4 +291,7 @@ PYBIND11_MODULE(libpymo, m)
         .value("relu", AimetEqualization::ActivationType::relu)
         .value("relu6", AimetEqualization::ActivationType::relu6)
         .value("noActivation", AimetEqualization::ActivationType::noActivation);
+
+    m.def("getScaleFactor", &getScaleFactor);
+    m.def("getRescaledOutputAndBias", &getRescaledOutputAndBias<float>);
 }

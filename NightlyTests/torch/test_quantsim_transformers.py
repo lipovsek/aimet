@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.5
+#!/usr/bin/env python3
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -40,7 +40,7 @@
 import unittest
 import torch
 
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch.v1.quantsim import QuantizationSimModel
 from aimet_torch.transformers.utils import get_quantizable_pt_transformer_model
 
 
@@ -71,9 +71,4 @@ class TestQuantizationSimTransformers(unittest.TestCase):
             self.assertTrue(sim.model.transformer_encoder.layers[i].self_attn.matmul_1.output_quantizers[0].encoding)
             self.assertTrue(sim.model.transformer_encoder.layers[i].self_attn.matmul_2.output_quantizers[0].encoding)
             self.assertTrue(sim.model.transformer_encoder.layers[i].self_attn.softmax.output_quantizers[0].encoding)
-
-            # validate mask encoding
-            mask_add_quantizer = sim.model.transformer_encoder.layers[i].self_attn.mask_add.output_quantizers[0]
-            self.assertAlmostEqual(mask_add_quantizer.encoding.min, -6, 1)
-
         del sim

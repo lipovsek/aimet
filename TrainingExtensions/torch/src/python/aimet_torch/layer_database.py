@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2018, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2018-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -38,12 +37,13 @@
 
 """Stores and updates Layer Attributes"""
 import copy
-from typing import Tuple, Union
+from typing import Tuple, Union, List
 import torch
 
-from aimet_torch import utils
 from aimet_common.utils import AimetLogger
 import aimet_common.layer_database
+from aimet_torch import utils
+import aimet_torch._base.nn.modules.custom as aimet_modules
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Svd)
 
@@ -57,28 +57,34 @@ class Layer(aimet_common.layer_database.Layer):
             params = aimet_common.layer_database.Conv2dTypeSpecificParams(module.stride, module.padding, module.groups)
             self.type_specific_params = params
 
-    def __init__(self, module: torch.nn.Module, name, output_shape):
+    def __init__(self, module: torch.nn.Module, name, output_shape: Union[List, Tuple],
+                 input_shape: Union[List, Tuple] = None):
         """
         Constructor
         :param module: Reference to the layer
         :param name: Unique name of the layer
         :param output_shape: Shape of the output activations
+        :param input_shape: Shape of the input activations
         """
         if isinstance(module, torch.nn.Conv2d):
             if module.groups > 1:
-                assert module.groups == module.in_channels
-                assert module.in_channels == module.out_channels
-
-                weight_shape = (module.out_channels, 1, module.kernel_size[0], module.kernel_size[1])
+                if module.in_channels == module.groups: # Depthwise convolution
+                    assert module.in_channels == module.out_channels
+                    weight_shape = (module.out_channels, 1, module.kernel_size[0], module.kernel_size[1])
+                elif module.in_channels % module.groups == 0: # Grouped convolution
+                    weight_shape = (module.out_channels, module.in_channels // module.groups, module.kernel_size[0], module.kernel_size[1])
+                else:
+                    raise AssertionError("Conv2d with invalid in_channels and groups values")
             else:
                 weight_shape = (module.out_channels, module.in_channels, module.kernel_size[0], module.kernel_size[1])
 
         elif isinstance(module, torch.nn.Linear):
             weight_shape = (module.out_features, module.in_features, 1, 1)
         else:
-            raise AssertionError("Layer currently supports only Conv2D and Linear")
+            logger.info("Module:%s does not have any weight associated. Using default weight dim", name)
+            weight_shape = (1,)
 
-        aimet_common.layer_database.Layer.__init__(self, module, name, weight_shape, output_shape)
+        aimet_common.layer_database.Layer.__init__(self, module, name, weight_shape, output_shape, input_shape)
 
         self.var_name_of_module_in_parent = None
         self.parent_module = None
@@ -89,6 +95,14 @@ class LayerDatabase(aimet_common.layer_database.LayerDatabase):
     Stores, creates and updates the Layer database
     Also stores compressible layers to model optimization
     """
+    _SUPPORTED_MODULE_TYPES = (
+        torch.nn.Conv2d,
+        torch.nn.Linear,
+        torch.nn.Sigmoid,
+        torch.nn.AvgPool2d,
+        aimet_modules.Multiply,
+    )
+
 
     def __init__(self, model: torch.nn.Module, dummy_input: Union[torch.Tensor, Tuple]):
         """
@@ -205,23 +219,34 @@ class LayerDatabase(aimet_common.layer_database.LayerDatabase):
         # Add the updated layer to the database
         self._compressible_layers[id(new_layer.module)] = new_layer
 
-    def _custom_hook_to_collect_layer_attributes(self, module, _, output):
+    def _custom_hook_to_collect_layer_attributes(self, module, input_tensor, output_tensor):
         """
         Custom hook function which will be applied to all the layers in the model and store following
         information :
         model name (which will be removed), model reference, input shape and output shape
         """
-        output_activation_shape = list(output.size())
+        def _shape(x):
+            if isinstance(x, torch.Tensor):
+                return list(x.size())
+            return []
+
+        input_activation_shape = [_shape(i_input) for i_input in input_tensor]
+        output_activation_shape = _shape(output_tensor)
         # activation dimension for FC layer is (1,1)
         if isinstance(module, torch.nn.Linear):
-            output_activation_shape.extend([1, 1])
+            # In cases where batch dimension is 1
+            if len(output_activation_shape) == 1:
+                output_activation_shape = [1, *output_activation_shape, 1, 1]
+            else:
+                output_activation_shape.extend([1, 1])
 
         module_name = None
         for name, module_ref in self._model.named_modules():
             if module is module_ref:
                 module_name = name
 
-        self._compressible_layers[id(module)] = Layer(module, module_name, output_activation_shape)
+        self._compressible_layers[id(module)] = Layer(module, module_name, output_activation_shape,
+                                                      input_activation_shape)
 
     @classmethod
     def set_reference_to_parent_module(cls, module, layers):
@@ -232,7 +257,7 @@ class LayerDatabase(aimet_common.layer_database.LayerDatabase):
         """
         for module_name, module_ref in module.named_children():
             # first check if the module is leaf module or not
-            if utils.is_leaf_module(module_ref):
+            if isinstance(module_ref, cls._SUPPORTED_MODULE_TYPES):
                 # iterate over all the layer attributes and if the match is found
                 # then set the parent class and module name for that module
                 if id(module_ref) in layers:
@@ -253,9 +278,11 @@ class LayerDatabase(aimet_common.layer_database.LayerDatabase):
         :param dummy_input: Dummy input to the model. If the model has more than one input,
                             pass a tuple.
         """
+
         utils.run_hook_for_layers_with_given_input(model, dummy_input,
                                                    hook=self._custom_hook_to_collect_layer_attributes,
-                                                   module_type_for_attaching_hook=(torch.nn.Conv2d, torch.nn.Linear))
+                                                   module_type_for_attaching_hook=self._SUPPORTED_MODULE_TYPES,
+                                                   leaf_node_only=False)
 
         # set the parent_class reference
         self.set_reference_to_parent_module(self._model, self._compressible_layers)

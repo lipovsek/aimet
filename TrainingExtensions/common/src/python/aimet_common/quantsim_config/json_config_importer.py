@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2020, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2020-2023, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -43,7 +42,7 @@ from typing import Dict, List, Union
 from jsonschema import validate
 
 from aimet_common.quantsim_config.quantsim_config_schema import QUANTSIM_CONFIG_SCHEMA
-from aimet_common.utils import AimetLogger
+from aimet_common.utils import AimetLogger, convert_configs_values_to_bool
 from aimet_common.defs import QuantizationDataType
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
@@ -79,6 +78,9 @@ class ConfigDictKeys:
     PARAM = "param"
     BITWIDTH = "bitwidth"
     HW_VERSION = "hw_version"
+    ENCODING_CONSTRAINTS = "encoding_constraints"
+    MIN = "min"
+    MAX = "max"
 
 
 class JsonConfigImporter:
@@ -92,7 +94,7 @@ class JsonConfigImporter:
         :return: Quantsim configs dictionary
         """
         if not config_file:
-            config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'default_config.json')
+            config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'default_config_per_channel.json')
             logger.info('No config file provided, defaulting to config file at %s', config_file)
 
         with open(config_file) as configs:
@@ -103,7 +105,7 @@ class JsonConfigImporter:
                 raise RuntimeError('Error parsing json config file') from e
 
         _validate_syntax(quantsim_configs)
-        _convert_configs_values_to_bool(quantsim_configs)
+        convert_configs_values_to_bool(quantsim_configs)
         _convert_dtype_to_quantization_data_type(quantsim_configs)
         _validate_semantics(quantsim_configs)
         return quantsim_configs
@@ -125,14 +127,15 @@ def _validate_supported_kernels(supported_kernels: List):
     if supported_kernels:
         for supported_kernel in supported_kernels:
             if supported_kernel["activation"]["dtype"] == QuantizationDataType.float and \
-                    supported_kernel["activation"]["bitwidth"] != 16:
+                    supported_kernel["activation"]["bitwidth"] not in [16, 32]:
                 logger.error('Activation dtype:float is only supported with bitwidth:16')
                 raise NotImplementedError('Activation dtype:float is only supported with bitwidth:16')
 
-            if supported_kernel["param"]["dtype"] == QuantizationDataType.float and \
-                    supported_kernel["param"]["bitwidth"] != 16:
-                logger.error('Param dtype:float is only supported with bitwidth:16')
-                raise NotImplementedError('Param dtype:float is only supported with bitwidth:16')
+            if "param" in supported_kernel:
+                if supported_kernel["param"]["dtype"] == QuantizationDataType.float and \
+                        supported_kernel["param"]["bitwidth"] not in [16, 32]:
+                    logger.error('Param dtype:float is only supported with bitwidth:16')
+                    raise NotImplementedError('Param dtype:float is only supported with bitwidth:16')
 
 def _validate_semantics(quantsim_config: ConfigDictType):
     """
@@ -182,25 +185,6 @@ def _validate_semantics(quantsim_config: ConfigDictType):
             logger.error('IS_OUTPUT_QUANTIZED for model output can only be set to True')
             raise NotImplementedError('IS_OUTPUT_QUANTIZED for model output can only be set to True')
 
-def _convert_configs_values_to_bool(dictionary: Dict):
-    """
-    Recursively traverse all key value pairs in dictionary and set any string values representing booleans to
-    booleans.
-    :param dictionary: Dictionary to set values to True or False if applicable
-    """
-    for key, value in dictionary.items():
-        if value == 'True':
-            dictionary[key] = True
-        elif value == 'False':
-            dictionary[key] = False
-        elif isinstance(value, List):
-            for item in value:
-                if isinstance(item, Dict):
-                    _convert_configs_values_to_bool(item)
-        elif isinstance(value, Dict):
-            _convert_configs_values_to_bool(value)
-        else:
-            pass
 
 def _convert_str_to_quantization_data_type_helper(supported_kernels: List):
     """
@@ -214,10 +198,11 @@ def _convert_str_to_quantization_data_type_helper(supported_kernels: List):
             else:
                 supported_kernel["activation"]["dtype"] = QuantizationDataType.int
 
-            if supported_kernel["param"]["dtype"] == "float":
-                supported_kernel["param"]["dtype"] = QuantizationDataType.float
-            else:
-                supported_kernel["param"]["dtype"] = QuantizationDataType.int
+            if "param" in supported_kernel:
+                if supported_kernel["param"]["dtype"] == "float":
+                    supported_kernel["param"]["dtype"] = QuantizationDataType.float
+                else:
+                    supported_kernel["param"]["dtype"] = QuantizationDataType.int
 
 
 def _convert_dtype_to_quantization_data_type(quantsim_config: ConfigDictType):

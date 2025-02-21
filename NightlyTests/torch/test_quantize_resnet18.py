@@ -1,4 +1,3 @@
-# /usr/bin/env python3.6
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -36,8 +35,10 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 
+import itertools
 import json
-import os
+import tempfile
+from pathlib import Path
 
 import pytest
 import torch
@@ -49,21 +50,19 @@ from torchvision import models
 from torch.optim import lr_scheduler
 
 from aimet_common.defs import QuantScheme
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch.v1.quantsim import QuantizationSimModel
 
-from aimet_torch.examples.imagenet_dataloader import ImageNetDataLoader
-from aimet_torch.utils import IterFirstX
-from aimet_torch.examples.supervised_classification_pipeline import create_stand_alone_supervised_classification_evaluator,\
+from models.imagenet_dataloader import ImageNetDataLoader
+from models.supervised_classification_pipeline import create_stand_alone_supervised_classification_evaluator,\
     create_supervised_classification_trainer
 from aimet_torch.bn_reestimation import reestimate_bn_stats
-from aimet_torch.batch_norm_fold import fold_all_batch_norms_to_scale
-from torch.nn.modules.batchnorm import _BatchNorm
-
+from aimet_torch.v1.batch_norm_fold import fold_all_batch_norms_to_scale
+from aimet_torch.model_preparer import prepare_model
 
 two_class_image_dir = './data/tiny-imagenet-2'
 image_size = 224
 batch_size = 50
-num_workers = 1
+num_workers = 0
 
 
 def _get_data_loader():
@@ -108,7 +107,7 @@ def model_eval(model, early_stopping_iterations):
     data_loader = _get_data_loader()
     if early_stopping_iterations is not None:
         # wrapper around validation data loader to run only 'X' iterations to save time
-        val_loader = IterFirstX(data_loader.val_loader, early_stopping_iterations)
+        val_loader = itertools.islice(data_loader.val_loader, early_stopping_iterations)
     else:
         # iterate over entire validation data set
         val_loader = data_loader.val_loader
@@ -139,7 +138,7 @@ def check_if_layer_weights_are_updating(trainer, model):
         f.conv1_w_value_old = conv1_w_value.cpu().detach().clone()
 
 
-def save_config_file_for_per_channel_quantization():
+def save_config_file_for_per_channel_quantization(target_dir: Path) -> Path:
     quantsim_config = {
         "defaults": {
             "ops": {
@@ -171,8 +170,10 @@ def save_config_file_for_per_channel_quantization():
         "model_output": {}
     }
 
-    with open('./quantsim_config.json', 'w') as f:
+    target_file = Path(target_dir, 'quantsim_config.json')
+    with open(target_file, 'w') as f:
         json.dump(quantsim_config, f)
+    return target_file
 
 
 class QuantizeAcceptanceTests(unittest.TestCase):
@@ -183,9 +184,9 @@ class QuantizeAcceptanceTests(unittest.TestCase):
         torch.cuda.empty_cache()
 
         # Train the model using tiny imagenet data
-        model = models.resnet18(pretrained=False)
+        model = models.resnet18(pretrained=False).eval().cuda()
+        model = prepare_model(model)
         _ = model_train(model, epochs=2)
-        model = model.to(torch.device('cuda'))
 
         # layers_to_ignore = [model.conv1]
         sim = QuantizationSimModel(model, quant_scheme=QuantScheme.post_training_tf, default_param_bw=8,
@@ -198,7 +199,7 @@ class QuantizeAcceptanceTests(unittest.TestCase):
         quantized_model_accuracy = model_eval(model=sim.model, early_stopping_iterations=None)
 
         print("Quantized model accuracy=", quantized_model_accuracy)
-        self.assertGreaterEqual(quantized_model_accuracy, 0.5)
+        assert quantized_model_accuracy >= 0.5
 
     #TODO @pytest.mark.cuda
     @pytest.mark.skip(reason="test fails with new versions of pytorch-ignite (0.4.4)")
@@ -206,7 +207,7 @@ class QuantizeAcceptanceTests(unittest.TestCase):
 
         # First get baseline numbers
         base_pre_model_load_mark = torch.cuda.memory_allocated()
-        model = models.vgg16(pretrained=True)
+        model = models.vgg16()
         model = model.to(torch.device('cuda'))
         base_model_loaded_mark = torch.cuda.memory_allocated()
 
@@ -223,7 +224,7 @@ class QuantizeAcceptanceTests(unittest.TestCase):
         baseline_leaked_mem = torch.cuda.memory_allocated() - base_pre_model_load_mark
         print("Leaked during train = {}".format(baseline_leaked_mem))
 
-        model = models.vgg16(pretrained=True)
+        model = models.vgg16()
         model = model.to(torch.device('cuda'))
         base_model_loaded_mark = torch.cuda.memory_allocated()
         #
@@ -263,7 +264,7 @@ class QuantizeAcceptanceTests(unittest.TestCase):
 
         # First get baseline numbers
         base_pre_model_load_mark = torch.cuda.memory_allocated()
-        model = models.vgg16(pretrained=True)
+        model = models.vgg16()
         model = model.to(torch.device('cuda'))
         base_model_loaded_mark = torch.cuda.memory_allocated()
 
@@ -279,7 +280,7 @@ class QuantizeAcceptanceTests(unittest.TestCase):
         del model
         print("Leaked during eval = {}".format(torch.cuda.memory_allocated() - base_pre_model_load_mark))
 
-        model = models.vgg16(pretrained=True)
+        model = models.vgg16()
         model = model.to(torch.device('cuda'))
         base_model_loaded_mark = torch.cuda.memory_allocated()
 
@@ -316,65 +317,64 @@ class QuantizeAcceptanceTests(unittest.TestCase):
 
     def _test_per_channel_quantization_for_resnet18_range_learning(self, apply_bn_reestimation: bool):
         torch.manual_seed(10)
-        save_config_file_for_per_channel_quantization()
-        # Set up trained model
-        base_pre_model_load_mark = torch.cuda.memory_allocated()
-        resnet = models.resnet18()
-        resnet = resnet.to(torch.device('cuda'))
-        resnet.eval()
-        base_model_loaded_mark = torch.cuda.memory_allocated()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_file = save_config_file_for_per_channel_quantization(Path(tmp_dir))
 
-        dummy_input = torch.rand(1, 3, 224, 224).cuda()
-        sim = QuantizationSimModel(resnet, quant_scheme=QuantScheme.training_range_learning_with_tf_init,
-                                   default_param_bw=8,
-                                   default_output_bw=8, config_file='./quantsim_config.json',
-                                   dummy_input=dummy_input)
+            # Set up trained model
+            base_pre_model_load_mark = torch.cuda.memory_allocated()
+            resnet = models.resnet18().eval().cuda()
+            resnet = prepare_model(resnet)
+            base_model_loaded_mark = torch.cuda.memory_allocated()
 
-        # Quantize
-        sim.compute_encodings(model_eval, 1)
+            dummy_input = torch.rand(1, 3, 224, 224).cuda()
+            sim = QuantizationSimModel(resnet, quant_scheme=QuantScheme.training_range_learning_with_tf_init,
+                                    default_param_bw=8,
+                                    default_output_bw=8, config_file=config_file,
+                                    dummy_input=dummy_input)
 
-        aimet_model_quantize_mark = torch.cuda.memory_allocated()
-        aimet_model_quantize_delta = aimet_model_quantize_mark - base_model_loaded_mark
+            # Quantize
+            sim.compute_encodings(model_eval, 1)
 
-        assert len(sim.model.conv1.param_quantizers['weight'].encoding) == 64
-        assert len(sim.model.fc.param_quantizers['weight'].encoding) == 1000
+            aimet_model_quantize_mark = torch.cuda.memory_allocated()
+            aimet_model_quantize_delta = aimet_model_quantize_mark - base_model_loaded_mark
 
-        # Check that different encodings are computed for different channels
-        assert sim.model.conv1.param_quantizers['weight'].encoding[0] != \
-               sim.model.conv1.param_quantizers['weight'].encoding[1]
-        assert sim.model.fc.param_quantizers['weight'].encoding[0] != \
-               sim.model.fc.param_quantizers['weight'].encoding[1]
+            assert len(sim.model.conv1.param_quantizers['weight'].encoding) == 64
+            assert len(sim.model.fc.param_quantizers['weight'].encoding) == 1000
 
-        # Train resnet model
-        _ = model_train(sim.model, epochs=1)
+            # Check that different encodings are computed for different channels
+            assert sim.model.conv1.param_quantizers['weight'].encoding[0] != \
+                sim.model.conv1.param_quantizers['weight'].encoding[1]
+            assert sim.model.fc.param_quantizers['weight'].encoding[0] != \
+                sim.model.fc.param_quantizers['weight'].encoding[1]
 
-        aimet_model_train_mark = torch.cuda.memory_allocated()
-        aimet_model_train_delta = aimet_model_train_mark - aimet_model_quantize_mark
-        assert aimet_model_train_delta < (200 * (10 ** 6))
+            # Train resnet model
+            _ = model_train(sim.model, epochs=1)
 
-        if apply_bn_reestimation:
-            def forward_fn(model, data):
-                img, _ = data
-                return model(img.cuda())
+            aimet_model_train_mark = torch.cuda.memory_allocated()
+            aimet_model_train_delta = aimet_model_train_mark - aimet_model_quantize_mark
+            assert aimet_model_train_delta < (200 * (10 ** 6))
 
-            reestimate_bn_stats(sim.model,
-                                _get_data_loader().train_loader,
-                                num_batches=100,
-                                forward_fn=forward_fn)
+            if apply_bn_reestimation:
+                def forward_fn(model, data):
+                    img, _ = data
+                    return model(img.cuda())
 
-        fold_all_batch_norms_to_scale(sim, dummy_input.shape)
+                reestimate_bn_stats(sim.model,
+                                    _get_data_loader().train_loader,
+                                    num_batches=100,
+                                    forward_fn=forward_fn)
 
-        sim.export('./data/', 'resnet18_per_channel_quant', dummy_input.cpu())
-        with open("./data/resnet18_per_channel_quant.encodings", "r") as encodings_file:
-            encodings = json.load(encodings_file)
+            fold_all_batch_norms_to_scale(sim)
 
-        assert len(encodings['param_encodings']) == 21
-        assert encodings['param_encodings']['conv1.weight'][1]['bitwidth'] == 8
-        assert encodings['param_encodings']['conv1.weight'][1]['is_symmetric'] == 'True'
+            sim.export(tmp_dir, 'resnet18_per_channel_quant', dummy_input.cpu())
+            with open(Path(tmp_dir, "resnet18_per_channel_quant.encodings"), "r") as encodings_file:
+                encodings = json.load(encodings_file)
 
-        # Remove config files
-        os.remove('./quantsim_config.json')
-        os.remove("./data/resnet18_per_channel_quant.encodings")
+            param_encodings = {encoding['name']: encoding for encoding in encodings['param_encodings']}
+            assert len(param_encodings) == 21
+
+            assert param_encodings['conv1.weight']['bw'] == 8
+            assert param_encodings['conv1.weight']['is_sym'] is True
 
     def test_dummy(self):
         # pytest has a 'feature' that returns an error code when all tests for a given suite are not selected

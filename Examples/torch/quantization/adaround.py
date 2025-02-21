@@ -46,7 +46,6 @@ import logging
 import os
 from datetime import datetime
 from functools import partial
-from typing import Tuple
 from torchvision import models
 import torch
 import torch.utils.data as torch_data
@@ -54,9 +53,9 @@ import torch.utils.data as torch_data
 # imports for AIMET
 import aimet_common
 from aimet_common.defs import QuantScheme
-from aimet_torch.adaround.adaround_weight import Adaround, AdaroundParameters
-from aimet_torch.batch_norm_fold import fold_all_batch_norms
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch.v1.adaround.adaround_weight import Adaround, AdaroundParameters
+from aimet_torch.v1.batch_norm_fold import fold_all_batch_norms
+from aimet_torch.v1.quantsim import QuantizationSimModel
 
 # imports for data pipelines
 from Examples.common import image_net_config
@@ -78,7 +77,7 @@ logging.basicConfig(format=formatter)
 #       - Quant Scheme: 'tf_enhanced'
 #       - rounding_mode: 'nearest'
 #       - default_output_bw: 8, default_param_bw: 8
-#       - Encoding compution with or without encodings file
+#       - Encoding computation with or without encodings file
 #       - Encoding computation using 5 batches of data
 #    - AIMET Adaround
 #       - num of batches for adarounding: 5
@@ -120,19 +119,16 @@ class ImageNetDataPipeline:
 
 def apply_adaround_and_find_quantized_accuracy(model: torch.nn.Module, evaluator: aimet_common.defs.EvalFunction,
                                                data_loader: torch_data.DataLoader, use_cuda: bool = False,
-                                               logdir: str = '') -> Tuple[torch.nn.Module, float]:
+                                               logdir: str = '') -> float:
     """
     Quantizes the model using AIMET's adaround feature, and saves the model.
 
     :param model: The loaded model
     :param evaluator: The Eval function to use for evaluation
-    :param dataloader: The dataloader to be passed into the AdaroundParameters api
-    :param num_val_samples_per_class: No of samples to use from every class in
-                                      computing encodings. Not used in pascal voc
-                                      dataset
+    :param data_loader: The dataloader to be passed into the AdaroundParameters api
     :param use_cuda: The cuda device.
     :param logdir: Path to a directory for logging.
-    :return: A tuple of quantized model and accuracy of model on this quantsim
+    :return: Accuracy of model on this quantsim
     """
 
     bn_folded_model = copy.deepcopy(model)
@@ -181,9 +177,10 @@ def adaround_example(config: argparse.Namespace):
     3. Calculates Model accuracy
         3.1. Calculates floating point accuracy
         3.2. Calculates Quant Simulator accuracy
-    4. Applies AIMET CLE and BC
-        4.1. Applies AIMET CLE and calculates QuantSim accuracy
-        4.2. Applies AIMET BC and calculates QuantSim accuracy
+    4. Applies AIMET Adaround and calculates QuantSim accuracy
+        4.1. Applies AIMET Adaround
+        4.2. Calculates Adaround applied model Quant Simulator accuracy
+        4.3. Exports Adaround applied model so it is ready to be run on-target
 
     :param config: This argparse.Namespace config expects following parameters:
                    tfrecord_dir: Path to a directory containing ImageNet TFRecords.
@@ -220,7 +217,7 @@ def adaround_example(config: argparse.Namespace):
 
 
 if __name__ == '__main__':
-    default_logdir = os.path.join("benchmark_output", "adaround" + datetime.now().strftime("%Y-%m-%d-%H-%M-%S"))
+    default_logdir = os.path.join("benchmark_output", "adaround_" + datetime.now().strftime("%Y-%m-%d-%H-%M-%S"))
 
     parser = argparse.ArgumentParser(
         description='Apply Adaround on pretrained ResNet18 model and evaluate on ImageNet dataset')

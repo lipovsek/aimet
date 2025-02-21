@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -40,14 +39,15 @@ Connected graph class and utilities
 """
 import typing
 import tensorflow as tf
+from keras.layers.core.tf_op_layer import TFOpLambda
 
 from aimet_common.connected_graph.connectedgraph import (
-    ConnectedGraph as AimetCommonConnectedGraph,
-)
+        ConnectedGraph as AimetCommonConnectedGraph,
+        )
 from aimet_common.connected_graph.operation import (
-    Op,
-    determine_preceding_op_input_product_index_in_multi_input_op,
-)
+        Op,
+        determine_preceding_op_input_product_index_in_multi_input_op,
+        )
 from aimet_common.connected_graph.product import Product
 from aimet_common.model_module import KerasModelModule
 from aimet_common.utils import AimetLogger
@@ -56,35 +56,61 @@ from aimet_tensorflow.keras.utils import common
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.ConnectedGraph)
 
 map_keras_types_to_onnx = {
+    tf.keras.layers.Add: ["Add"],
+    tf.keras.layers.AveragePooling2D: ["AveragePool"],
+    tf.keras.layers.BatchNormalization: ["BatchNormalization"],
+    tf.keras.layers.Concatenate: ["Concat"],
     tf.keras.layers.Conv1D: ["Conv"],
     tf.keras.layers.Conv2D: ["Conv"],
-    tf.keras.layers.DepthwiseConv2D: ["Conv"],
-    tf.keras.layers.ZeroPadding1D: ["Pad"],
-    tf.keras.layers.ZeroPadding2D: ["Pad"],
-    tf.keras.layers.Dropout: ["Dropout"],
-    tf.keras.layers.BatchNormalization: ["BatchNormalization"],
-    tf.keras.layers.ReLU: ["Relu"],
-    tf.keras.layers.MaxPool2D: ["MaxPool"],
-    tf.keras.layers.GlobalAveragePooling1D: ["GlobalAveragePool"],
-    tf.keras.layers.GlobalAveragePooling2D: ["GlobalAveragePool"],
-    tf.keras.layers.Reshape: ["Reshape"],
-    tf.keras.layers.Dense: ["Gemm", "MatMul"],
-    tf.keras.layers.AveragePooling2D: ["AveragePool"],
-    tf.keras.layers.RNN: ["RNN"],
-    tf.keras.layers.LSTM: ["LSTM"],
-    tf.keras.layers.GRU: ["GRU"],
     tf.keras.layers.Conv2DTranspose: ["ConvTranspose"],
-    tf.keras.layers.PReLU: ["PRelu"],
-    tf.keras.layers.LeakyReLU: ["LeakyRelu"],
+    tf.keras.layers.Dense: ["Gemm", "MatMul"],
+    tf.keras.layers.DepthwiseConv2D: ["Conv"],
+    tf.keras.layers.Dropout: ["Dropout"],
     tf.keras.layers.ELU: ["Elu"],
     tf.keras.layers.Flatten: ["Flatten"],
-    tf.keras.layers.Add: ["Add"],
-    tf.keras.layers.Subtract: ["Sub"],
+    tf.keras.layers.GRU: ["GRU"],
+    tf.keras.layers.GlobalAveragePooling1D: ["GlobalAveragePool"],
+    tf.keras.layers.GlobalAveragePooling2D: ["GlobalAveragePool"],
+    tf.keras.layers.LSTM: ["LSTM"],
+    tf.keras.layers.LayerNormalization: ["LayerNormalization"],
+    tf.keras.layers.LeakyReLU: ["LeakyRelu"],
+    tf.keras.layers.MaxPool2D: ["MaxPool"],
     tf.keras.layers.Multiply: ["Mul"],
-    tf.keras.layers.Concatenate: ["Concat"],
-    tf.keras.layers.LayerNormalization: ["LayerNormalization"]
+    tf.keras.layers.PReLU: ["PRelu"],
+    tf.keras.layers.RNN: ["RNN"],
+    tf.keras.layers.ReLU: ["Relu"],
+    tf.keras.layers.Reshape: ["Reshape"],
+    tf.keras.layers.Subtract: ["Sub"],
+    tf.keras.layers.UpSampling1D: ["Upsample"],
+    tf.keras.layers.UpSampling2D: ["Upsample"],
+    tf.keras.layers.ZeroPadding1D: ["Pad"],
+    tf.keras.layers.ZeroPadding2D: ["Pad"],
 }
 
+# TFOpLambda layers are abstracted. Meaning we have to look at the "symbol" property
+# to see what the underlying call is.
+
+map_tf_op_lambda_symbol_to_onnx = {
+    "__operators__.add": ["Add"],
+    "__operators__.getitem": ["OptionalGetItem"],
+    "cast": ["Cast"],
+    "compat.v1.gather_nd": ["GatherND"],
+    "compat.v1.shape": ["Shape"],
+    "compat.v1.transpose": ["Transpose"],
+    "concat": ["Concat"],
+    "expand_dims": ["Expand"],
+    "math.add": ["Add"],
+    "math.cumsum": ["CumSum"],
+    "math.multiply": ["Mul"],
+    "math.subtract": ["Sub"],
+    "math.truediv": ["Div"],
+    "pad": ["Pad"],
+    "range": ["Range"],
+    "reshape": ["Reshape"],
+    "scatter_nd": ["ScatterND"],
+    "tile": ["Tile"],
+    "where": ["Where"],
+}
 
 class ConnectedGraph(AimetCommonConnectedGraph):
     """
@@ -94,14 +120,14 @@ class ConnectedGraph(AimetCommonConnectedGraph):
     def __init__(
             self,
             model: tf.keras.Model,
-    ):
+            ):
         """
         If the model object is implemented in a subclassing manner, resulting object is different from
         the original object because this method is converting to Functional manner
 
         :param model: Keras Model that is built (Sequential, Functional)
         """
-        super(ConnectedGraph, self).__init__()
+        super().__init__()
 
         self._name_to_layer = {}
         self._op_name_to_layer = {}
@@ -147,6 +173,14 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         else:
             if isinstance(layer, tf.keras.layers.Activation):
                 op_type = common.parse_activation_layer(layer)
+            elif isinstance(layer, TFOpLambda):
+                # We can't use 'type' because the type is just TFOpLambda. To be
+                # more granular, we look at the symbol.
+                op_type = map_tf_op_lambda_symbol_to_onnx.get(layer.symbol)
+                if not op_type:
+                    logger.warning(
+                        "No matching mapping for TFOpLambda symbol '%s'", layer.symbol
+                    )
             else:
                 op_type = map_keras_types_to_onnx.get(type(layer))
 
@@ -157,7 +191,12 @@ class ConnectedGraph(AimetCommonConnectedGraph):
 
             op = self._generate_op(op_type, layer)
 
-            self._name_to_layer[layer.output.name] = layer
+            if isinstance(layer.output, typing.List):
+                for output in layer.output:
+                    self._name_to_layer[output.name] = layer
+            else:
+                self._name_to_layer[layer.output.name] = layer
+
             self._op_name_to_layer[op.name] = layer
             self._layer_to_op[layer] = op
             self._ops[op.name] = op
@@ -238,7 +277,9 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         :param inbound_layer: tf.keras.layer related to producer Op
         """
         consumer_op = self._layer_to_op.get(target_layer)
-        producer_op = self.get_op_from_module_name(inbound_layer.output.name)
+        inbound_layer_output_name = \
+            inbound_layer.output[0].name if isinstance(inbound_layer.output, typing.List) else inbound_layer.output.name
+        producer_op = self.get_op_from_module_name(inbound_layer_output_name)
 
         if producer_op is None:
             raise RuntimeError("Producer Op must exist")
@@ -253,7 +294,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
 
         product.add_consumer(consumer_op)
         consumer_op.add_input(product)
-        producer_op.output = product
+        producer_op.outputs = [product]
 
     def _fill_op_params(self):
         """
@@ -299,7 +340,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         :param product_name: Name of the product to create.
         :param shape: Shape of the product to create.
         """
-        if product_name not in self._products.keys():
+        if product_name not in self._products:
             product = Product(product_name, shape)
             product.is_parm = True
             product.add_consumer(op)
@@ -390,7 +431,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
 
         # 1. Create a new Product for Split Op's output.
         split_op_product = self._create_split_op_output_product(preceding_op, split_op)
-        split_op.output = split_op_product
+        split_op.outputs = [split_op_product]
 
         # 2.This product has multiple consumers. Add the consumers to the Product.
         # Get the consumers from the op's multiple products.
@@ -401,7 +442,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         self._create_product_linking_preceding_op_to_split_op(preceding_op, split_op)
 
         # 4. Set the Split Op's input to point to current Op's output.
-        split_op.inputs.append(preceding_op.output)
+        split_op.inputs.append(preceding_op.outputs[0])
 
     def _create_split_op_output_product(self, preceding_op: Op, split_op: Op) -> Product:
         """
@@ -411,7 +452,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         :return: Output product of the split op
         """
         split_op_product_name = f"{split_op.name}__to__multiple_ops"
-        split_op_product_shape = preceding_op.output.shape
+        split_op_product_shape = preceding_op.outputs[0].shape
         split_op_product = self._add_product(
             split_op_product_name, split_op_product_shape
         )
@@ -497,11 +538,11 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 logger.debug("Insert Split Op: Step 3. Deleted product: %s", deleted_product)
 
         new_product = self._add_product(
-            f"{preceding_op.name}__to__{split_op.name}", preceding_op.output.shape
+            f"{preceding_op.name}__to__{split_op.name}", preceding_op.outputs[0].shape
         )
         new_product.producer = preceding_op
-        preceding_op.output = new_product
-        preceding_op.output.consumers.append(split_op)
+        preceding_op.outputs = [new_product]
+        preceding_op.outputs[0].consumers.append(split_op)
 
     def get_op_from_module_name(self, name: str) -> typing.Union[Op, None]:
         """

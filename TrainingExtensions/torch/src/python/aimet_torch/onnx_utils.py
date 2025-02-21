@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2017-2020, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2017-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -39,75 +38,114 @@
 # pylint: disable=too-many-lines
 
 """ Utilities to load and save onnx models """
-
 from dataclasses import dataclass
-from typing import Union, List, Tuple, Dict, Set, Optional
+from typing import Union, List, Tuple, Dict, Set, Optional, Any
 import os
 import copy
 from collections import defaultdict, deque
 from enum import IntEnum
 import torch
-import torch.nn as nn
+from torch import nn
 import torch.onnx.symbolic_caffe2
+import torchvision
 import onnx
-import onnxsim
 import yaml
+from onnx import GraphProto
 from packaging import version
 
 from aimet_common.utils import AimetLogger
 import aimet_torch.utils
-import aimet_torch.elementwise_ops as elementwise_ops
+import aimet_torch._base.nn.modules.custom as aimet_modules
 from aimet_torch.defs import OpToIOTensors
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
 
+# Controls whether quantsim export uses OnnxSaver to set exported ONNX graph node names or not.
+# From torch 1.13 onwards, ONNX export automatically names graph nodes using PyTorch's naming scheme, so no renaming is
+# required.
+# TODO: Corner cases exist when ONNX names model nodes with reused modules, or models with recurrent nodes. Do not use
+# this flag in such circumstances.
+EXPORT_TO_ONNX_DIRECT = False
 
 # runs the second pass of markers for non-leaf torch module and updates names of onnx ops belonging to
 # non-leaf pytorch module
 update_all_onnx_nodes_name = True
 
-# executes onnx simplify on the onnx model with marker attached.
-simplify_onnx_model = False
+# Flag to adjust ONNX node output to have unique name
+MAKE_NODE_OUTPUT_NAME_UNIQUE = True
+
 
 recurrent_onnx_optypes = ['LSTM', 'GRU', 'RNN']
 
 # This is a dict that maps a PyTorch module type to the corresponding ONNX op type (as a string)
 map_torch_types_to_onnx = {
-    nn.Conv1d: ['Conv'],
-    nn.Conv2d: ['Conv'],
-    nn.Dropout: ['Dropout'],
-    nn.Dropout2d: ['Dropout'],
-    nn.BatchNorm1d: ['BatchNormalization'],
-    nn.BatchNorm2d: ['BatchNormalization'],
-    # Note - Currently, both LayerNorm and GELU are not in the supported ops list in ONNX
-    # Adding this entry here for usage by Connected graph
-    nn.LayerNorm: ['LayerNorm'],
-    nn.GELU: ['GELU'],
-    nn.ReLU: ['Relu'],
-    nn.ReLU6: ['Clip'],
-    nn.MaxPool2d: ['MaxPool'],
-    nn.Linear: ['Gemm', 'MatMul'],
     nn.AdaptiveAvgPool2d: ['GlobalAveragePool', 'AveragePool'],
     nn.AvgPool2d: ['AveragePool'],
-    nn.LogSoftmax: ['LogSoftmax'],
-    nn.RNN:  ['RNN'],
-    nn.LSTM: ['LSTM'],
-    nn.GRU: ['GRU'],
+    nn.BatchNorm1d: ['BatchNormalization'],
+    nn.BatchNorm2d: ['BatchNormalization'],
+    nn.ChannelShuffle: ['ChannelShuffle'],
+    nn.Conv1d: ['Conv'],
+    nn.Conv2d: ['Conv'],
     nn.ConvTranspose2d: ['ConvTranspose'],
-    nn.Sigmoid: ['Sigmoid'],
-    nn.Upsample: ['Upsample'],
-    nn.PReLU: ['PRelu'],
-    nn.LeakyReLU: ['LeakyRelu'],
+    nn.Dropout: ['Dropout'],
+    nn.Dropout2d: ['Dropout'],
+    nn.Embedding: ['Gather'],
     nn.Flatten: ['Flatten'],
-    nn.Softmax: ['Softmax'],
-    nn.Tanh: ['Tanh'],
-    nn.Softplus: ['Softplus'],
+    nn.GELU: ['GELU'],                  # Not a supported op in ONNX, adding this entry for usage by Connected Graph
+    nn.GroupNorm: ['GroupNorm'],
+    nn.GRU: ['GRU'],
     nn.Hardswish: ['HardSwish'],
-    elementwise_ops.Add: ['Add'],
-    elementwise_ops.Subtract: ['Sub'],
-    elementwise_ops.Multiply: ['Mul'],
-    elementwise_ops.Divide: ['Div'],
-    elementwise_ops.Concat: ['Concat']
+    nn.MaxPool2d: ['MaxPool'],
+    nn.MaxPool3d: ['MaxPool'],
+    nn.LayerNorm: ['LayerNorm'],        # Not a supported op in ONNX, adding this entry for usage by Connected Graph
+    nn.InstanceNorm2d: ['InstanceNormalization'],
+    nn.InstanceNorm1d: ['InstanceNormalization'],
+    nn.LeakyReLU: ['LeakyRelu'],
+    nn.Linear: ['Gemm', 'MatMul'],
+    nn.LogSoftmax: ['LogSoftmax'],
+    nn.LSTM: ['LSTM'],
+    nn.PixelShuffle: ['DepthToSpace'],
+    nn.PixelUnshuffle: ['SpaceToDepth'],
+    nn.PReLU: ['PRelu'],
+    nn.ReLU: ['Relu'],
+    nn.ReLU6: ['Clip'],
+    nn.RNN:  ['RNN'],
+    nn.Sigmoid: ['Sigmoid'],
+    nn.Softmax: ['Softmax'],
+    nn.Softplus: ['Softplus'],
+    nn.Tanh: ['Tanh'],
+    nn.Upsample: ['Upsample'],
+    nn.UpsamplingNearest2d: ['Upsample'],
+    aimet_modules.Add: ['Add'],
+    aimet_modules.Cast: ['Cast'],
+    aimet_modules.ChannelShuffle: ['ChannelShuffle'],
+    aimet_modules.Concat: ['Concat'],
+    aimet_modules.CustomGather: ['Gather'],
+    aimet_modules.DepthToSpaceDCRMode: ['DepthToSpace'],
+    aimet_modules.Divide: ['Div'],
+    aimet_modules.Expand: ['Expand'],
+    aimet_modules.Gather: ['Gather'],
+    aimet_modules.GatherNd: ['GatherND'],
+    aimet_modules.IndexSelect: ['Gather'],
+    aimet_modules.Max: ['ReduceMax'],
+    aimet_modules.MaxPool2d: ['MaxPool'],
+    aimet_modules.Min: ['ReduceMin'],
+    aimet_modules.Multiply: ['Mul'],
+    aimet_modules.NonZero: ['NonZero'],
+    aimet_modules.Pad: ['Pad'],
+    aimet_modules.Permute: ['Transpose'],
+    aimet_modules.Reshape: ['Reshape'],
+    aimet_modules.RoiAlign: ['RoiAlign'],
+    aimet_modules.ScatterElements: ['ScatterElements'],
+    aimet_modules.Select: ['Gather'],
+    aimet_modules.Split: ['Split'],
+    aimet_modules.StridedSlice: ['Slice'],
+    aimet_modules.Subtract: ['Sub'],
+    aimet_modules.Tile: ['Tile'],
+    aimet_modules.TopK: ['TopK'],
+    torchvision.ops.RoIPool: ['MaxRoiPool'],
+    aimet_modules.Mean: ['ReduceMean'],
+    aimet_modules.NonMaxSuppression: ['NonMaxSuppression'],
 }
 
 # Maps pytorch functional op string names to corresponding onnx types.
@@ -155,6 +193,53 @@ else:
             }
     }
 
+onnx_subgraph_op_to_pytorch_module_param_name_index_based = {
+    torch.nn.GroupNorm:
+        {
+            (7, 'Mul'): {1: 'weight'},
+            (8, 'Add'): {1: 'bias'}
+        },
+    torch.nn.Linear:
+        {
+            (0, 'MatMul'): {1: 'weight'},
+            (1, 'Add'): {0: 'bias'}
+        },
+    torch.nn.PReLU:
+        {
+            (0, 'PRelu'): {1: 'weight'}
+        }
+}
+
+
+def get_pytorch_name_from_onnx_name(onnx_name: str) -> str:
+    """
+    Extract the PyTorch name from ONNX name, for ONNX names obtained from torch 1.13 ONNX export.
+
+    NOTE: submodule layer2.0.downsample.0 has a following node name in exported
+     ONNX graph: /layer2/layer2.0/downsample/downsample.0/Conv
+    This utility tries to remove redundant information from the node name
+     and returns pytorch name. => layer2.0.downsample.0
+
+    :param onnx_name: ONNX name to parse
+    :return: PyTorch name as a string preserving scope information.
+    """
+    tokens = onnx_name.split('/')[1:-1]
+    updated_tokens = []
+
+    # 1) If the next token has "." and if the next token contains current token then don't add current token
+    # to the updated_tokens list.
+    # 2) If the next token don't have "." then simply add current token to the updated_tokens list.
+    for i in range(len(tokens) - 1):
+        if "." in tokens[i + 1]:
+            if not tokens[i] in tokens[i + 1]:
+                updated_tokens.append(tokens[i])
+        else:
+            updated_tokens.append(tokens[i])
+    # Add the last token to the updated_token list.
+    updated_tokens.extend(tokens[-1:])
+    pytorch_name = '.'.join([token for token in updated_tokens if token])
+    return pytorch_name
+
 
 @dataclass(frozen=True)
 class OnnxExportApiArgs:
@@ -180,6 +265,16 @@ class OnnxExportApiArgs:
                 'input_names': self.input_names,
                 'output_names': self.output_names}
 
+
+@dataclass(frozen=True)
+class PrunedInitializerInfo:
+    """
+    Data carrier containing initializer to be added and identity node to be removed in ONNX graph
+    """
+    initializer: onnx.TensorProto
+    identity_node: onnx.NodeProto
+
+
 class MarkerAttr(IntEnum):
     """ Enumeration for the custom marker attribute to index into the onnx node """
     NAME = 0
@@ -199,14 +294,15 @@ class CustomMarkerFunc(torch.autograd.Function):
         Magic method that helps with exporting a custom ONNX node
         """
         # Note: the attribute are listed alphabetically in onnx.NodeProto
-        return g.op('aimet_torch::CustomMarker', inp, id_s=identifier, leaf_s=is_leaf, start_s=start)
+        return g.op('aimet_torch::CustomMarker', inp, id_s=identifier, leaf_s=is_leaf, start_s=start)\
+                .setType(inp.type())
 
     @staticmethod
-    def forward(ctx, inp, _identifier, _start, _is_leaf):     # pylint: disable=arguments-differ
+    def forward(ctx, inp, _identifier, _start, _is_leaf): # pylint: disable=arguments-differ, unused-argument
         return inp.clone().detach() # clone prevents export tracing to avoid optimizing out the operation.
 
     @staticmethod
-    def backward(ctx, _grad):                       # pylint: disable=arguments-differ
+    def backward(ctx, _grad): # pylint: disable=arguments-differ
         raise NotImplementedError()
 
 
@@ -217,7 +313,7 @@ class CustomMarker(torch.nn.Module):
     """
 
     def __init__(self, module, identifier, is_leaf):
-        super(CustomMarker, self).__init__()
+        super().__init__()
         self.marked_module = module
         self.identifier = identifier
         self.is_leaf = is_leaf
@@ -226,7 +322,7 @@ class CustomMarker(torch.nn.Module):
         """
         Forward method for this CustomMarker layer
         """
-        marked_tensor_map = dict()
+        marked_tensor_map = {}
         marked_inputs = self._apply_markers_to_tuple(inputs, 'True', marked_tensor_map)
 
         if kwargs:
@@ -284,7 +380,7 @@ class CustomMarker(torch.nn.Module):
         :param is_start_marker: set to 'True' or 'False' based on if called for input or output dict of tensors
         :param marked_tensor_map: contains a map of id(tensor) to updated tensor i.e. after applying marker function.
         """
-        marked_dict_inputs = dict()
+        marked_dict_inputs = {}
         for k, t in tensors_dict.items():
             if id(t) in marked_tensor_map: # if tensor is already seen before map to the previous tensor
                 t = marked_tensor_map[id(t)]
@@ -296,6 +392,11 @@ class CustomMarker(torch.nn.Module):
             marked_dict_inputs[k] = t
         return marked_dict_inputs
 
+    def __getitem__(self, item):
+        """
+        method to allow forwarding request to the marked module
+        """
+        return self.marked_module[item]
 
     def __getattr__(self, name):
         """
@@ -317,9 +418,44 @@ class OnnxSaver:
     """
 
     @classmethod
+    def create_onnx_model_with_pytorch_layer_names(cls, onnx_model_path: str, pytorch_model: torch.nn.Module,
+                                                   dummy_input: Union[torch.Tensor, Tuple, List], is_conditional=False,
+                                                   module_marker_map=None, onnx_export_args: Optional[Union[OnnxExportApiArgs, dict]] = None):
+        """
+        This utility does some pre-processing on the pytorch model and then uses it to obtain an equivalent onnx model
+        with node names same as that in pytorch model. Whatever pre-processing/post-processing steps to be done on
+        the resultant onnx model must be done here.
+
+        :param onnx_model_path: Path to the ONNX model file
+        :param pytorch_model: Equivalent PyTorch model instance
+        :param dummy_input: Dummy input to the model. Used to parse model graph.
+        :param is_conditional: True if model is a conditional model, False otherwise
+        :param module_marker_map: Maps module names to traced custom markers (only used for conditional models)
+        :param onnx_export_args:  override options for torch.onnx.export call
+        :return:
+        """
+        # Pre-processing pytorch model
+        for dropout_type in aimet_torch.utils.DROPOUT_TYPES:
+            aimet_torch.utils.replace_modules(pytorch_model,
+                                              lambda module: isinstance(module, dropout_type), # pylint: disable=cell-var-from-loop
+                                              lambda _: torch.nn.Identity())
+
+        if EXPORT_TO_ONNX_DIRECT:
+            cls._export_model_to_onnx(pytorch_model, dummy_input, onnx_model_path, is_conditional, onnx_export_args)
+            onnx_model = cls.load_simply_onnx_model(onnx_model_path)
+
+            cls._fix_initializer_names_for_export_to_onnx_direct(onnx_model, pytorch_model)
+            save_as_external_data = onnx_model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF
+            onnx.save(onnx_model, onnx_model_path, save_as_external_data=save_as_external_data)
+        else:
+            # Obtaining equivalent onnx model
+            cls.set_node_names(onnx_model_path, pytorch_model, dummy_input, is_conditional, module_marker_map,
+                               onnx_export_args)
+
+    @classmethod
     def set_node_names(cls, onnx_model_path: str, pytorch_model: torch.nn.Module,
                        dummy_input: Union[torch.Tensor, Tuple], is_conditional=False, module_marker_map=None,
-                       onnx_export_args: OnnxExportApiArgs = None):
+                       onnx_export_args: Optional[Union[OnnxExportApiArgs, dict]] = None):
         """
         This utility loads a given onnx model file and set the names of all the nodes (ops) to equivalent
         pytorch module names given the corresponding pytorch model.
@@ -342,7 +478,9 @@ class OnnxSaver:
 
         cls.check_onnx_node_names(onnx_model, pytorch_model)
 
-        onnx.save(onnx_model, onnx_model_path)
+        save_as_external_data = onnx_model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF
+
+        onnx.save(onnx_model, onnx_model_path, save_as_external_data=save_as_external_data)
 
     @classmethod
     def check_onnx_node_names(cls, onnx_model: onnx.ModelProto, pytorch_model: torch.nn.Module):
@@ -351,7 +489,7 @@ class OnnxSaver:
         :param onnx_model: ONNX model object
         :param pytorch_model: Equivalent PyTorch model instance
         """
-        root_module_names = tuple([local_module_name for local_module_name, _ in pytorch_model.named_children()])
+        root_module_names = tuple(local_module_name for local_module_name, _ in pytorch_model.named_children())
         node_names = [node.name  for node in onnx_model.graph.node if not node.name.startswith('Constant')]
         num_nodes = len(node_names)
         node_names = set(node_names)
@@ -402,7 +540,7 @@ class OnnxSaver:
             map_output_tensor_to_node[output] = node
 
         for attribute in node.attribute:
-            if getattr(attribute, 'g', None) is not None:
+            if getattr(attribute, 'g').name != '':
                 for subnode in getattr(attribute, 'g').node:
                     OnnxSaver._populate_input_output_tensor_maps(map_input_tensor_to_node, map_output_tensor_to_node,
                                                                  subnode)
@@ -495,12 +633,11 @@ class OnnxSaver:
         cls._fix_param_names(onnx_model)
         cls._fix_initializer_names(onnx_model, pt_model)
 
-
         return onnx_model
 
     @classmethod
     def _create_onnx_model(cls, dummy_input, is_conditional: bool, module_marker_map,
-                           onnx_export_args: OnnxExportApiArgs, pt_model: torch.nn.Module,
+                           onnx_export_args: Union[OnnxExportApiArgs, dict], pt_model: torch.nn.Module,
                            working_dir: str, add_all_markers: bool) -> Tuple[onnx.NodeProto, Optional[onnx.NodeProto]]:
         """
         creates an onnx model with markers at all module-levels if not successful falls back to marker at leaf only.
@@ -527,7 +664,7 @@ class OnnxSaver:
     def _update_non_leaf_pytorch_modules_onnx_nodes_names(cls, pt_model: torch.nn.Module,
                                                           dummy_input,
                                                           working_dir: str,
-                                                          onnx_export_args: OnnxExportApiArgs,
+                                                          onnx_export_args: Union[OnnxExportApiArgs, dict],
                                                           is_conditional: bool,
                                                           module_marker_map,
                                                           onnx_model_all_marker: Optional[onnx.ModelProto],
@@ -580,7 +717,10 @@ class OnnxSaver:
                 break
 
             if pt_module_name is not None and '#' not in leaf_only_node.name and leaf_only_node.name != pt_module_name:
-                leaf_only_node.name = f'{pt_module_name}.{leaf_only_node.name}'
+                if 'marked_module' in leaf_only_node.name:
+                    leaf_only_node.name = cls._get_updated_name(leaf_only_node.name)
+                else:
+                    leaf_only_node.name = f'{pt_module_name}.{leaf_only_node.name}'
 
             i += 1
 
@@ -657,7 +797,7 @@ class OnnxSaver:
 
                 visited.add(id(node))
                 for attribute in node.attribute:
-                    if getattr(attribute, 'g', None) is not None:
+                    if getattr(attribute, 'g').name != '':
                         # traversing the list in reverse, see 'NOTE1'
                         for subnode in reversed(getattr(attribute, 'g').node):
                             pending_nodes_list.appendleft((subnode, parent_module_name))
@@ -741,7 +881,7 @@ class OnnxSaver:
 
         for node in onnx_graph.node:
             for attribute in node.attribute:
-                if getattr(attribute, 'g', None) is not None:
+                if getattr(attribute, 'g').name != '':
                     OnnxSaver._populate_graph_and_output_names_lists(attribute.g, graphs_list, output_names_list)
 
     @staticmethod
@@ -760,7 +900,7 @@ class OnnxSaver:
 
         for node in onnx_graph.node:
             for attribute in node.attribute:
-                if getattr(attribute, 'g', None) is not None:
+                if getattr(attribute, 'g').name != '':
                     OnnxSaver._get_onnx_node_map(attribute.g, onnx_node_map)
         return onnx_node_map
 
@@ -775,7 +915,7 @@ class OnnxSaver:
         """
 
         initializers = OnnxSaver._get_all_initializers(onnx_model.graph)
-        initializer_names = [ini.name for ini in initializers]
+        initializer_name_to_index = {initializer.name: idx for idx, initializer in enumerate(initializers)}
         onnx_node_map = OnnxSaver._get_onnx_node_map(onnx_model.graph)
 
         for module_name, module_ref in pt_model.named_modules():
@@ -789,14 +929,55 @@ class OnnxSaver:
                     if (module_name + node_suffix, op_type) in onnx_node_map:
                         node = onnx_node_map[module_name + node_suffix, op_type]
 
-                        cls._replace_param_name(initializers, initializer_names, module_name, node, replace_pairs)
+                        cls._replace_param_name(initializers, initializer_name_to_index, module_name, node,
+                                                replace_pairs)
 
     @classmethod
-    def _replace_param_name(cls, initializers: List[onnx.TensorProto], initializer_names: List[str], module_name: str,
-                            node: onnx.NodeProto, replace_pairs: Dict[int, str]):
+    def _fix_initializer_names_for_export_to_onnx_direct(cls, onnx_model: onnx.NodeProto, pt_model: torch.nn.Module):
+        """
+        Parameter names in some case do not reflect the torch param names. This method updates the onnx model
+        with param names using a custom mapping.
+        When exporting a scripted model, all modules with params will need to update their initializer names.
+
+        :param onnx_model: Onnx Model
+        :param pt_model: PyTorch Model
+        """
+        initializers = OnnxSaver._get_all_initializers(onnx_model.graph)
+        initializer_name_to_index = {initializer.name: idx for idx, initializer in enumerate(initializers)}
+
+        # Create a dictionary mapping a pytorch module name to one or more ONNX nodes which are associated with that
+        # pytorch module.
+        # The assumption is that all ONNX nodes which are associated with a single pytorch module will share
+        # commonalities in node naming, leading to the same pytorch name extracted by get_pytorch_name_from_onnx_name().
+        pt_name_to_onnx_nodes = {}
+        for node in onnx_model.graph.node:
+            pt_name = get_pytorch_name_from_onnx_name(node.name)
+            if pt_name not in pt_name_to_onnx_nodes:
+                pt_name_to_onnx_nodes[pt_name] = [node]
+            else:
+                pt_name_to_onnx_nodes[pt_name].append(node)
+
+        for module_name, module_ref in pt_model.named_modules():
+            if type(module_ref) in onnx_subgraph_op_to_pytorch_module_param_name:
+                if module_name not in pt_name_to_onnx_nodes:
+                    error_str = f'{module_name} of type {module_ref} not found in pt_name_to_onnx_nodes dictionary.' \
+                                f'Unable to rename parameters of {module_name}'
+                    _logger.error(error_str)
+                else:
+                    onnx_nodes = pt_name_to_onnx_nodes[module_name]
+                    for (idx, op_type), replace_pairs in \
+                            onnx_subgraph_op_to_pytorch_module_param_name_index_based[type(module_ref)].items():
+                        if len(onnx_nodes) > idx and onnx_nodes[idx].op_type == op_type:
+                            cls._replace_param_name(initializers, initializer_name_to_index, module_name,
+                                                    onnx_nodes[idx], replace_pairs)
+
+    @classmethod
+    def _replace_param_name(cls, initializers: List[onnx.TensorProto], initializer_name_to_index: Dict[str, int],
+                            module_name: str, node: onnx.NodeProto, replace_pairs: Dict[int, str]):
         """
         helper method to replace parameter names at the corresponding input tensor index
-        :param initializer_names: List of model initializer names
+        :param initializers: List of initializers in the onnx model
+        :param initializer_name_to_index: Dictionary mapping initializer names to indices in initializers list
         :param module_name: PyTorch module name
         :param node: Onnx node part of sub-graph that maps to the torch module
         :param replace_pairs: dictionary of input tensor indices and param names
@@ -805,19 +986,19 @@ class OnnxSaver:
             # If bias is not present for example, skip processing for the index
             if len(node.input) > input_index:
                 new_param_name = module_name + '.' + param_name
-                inp_tensor = node.input[input_index]
+                old_param_name = node.input[input_index]
                 # Check if inp_tensor name is already named as a parameter (name.param_name, instead of a number). If so,
                 # sanity check that the name we want to replace it with is the same as the existing name, then continue.
-                if '.' in inp_tensor:
-                    if inp_tensor != new_param_name:
-                        print(f'{inp_tensor} != {new_param_name} expected param name set')
+                if '.' in old_param_name:
+                    if old_param_name != new_param_name:
+                        print(f'{old_param_name} != {new_param_name} expected param name set')
                     continue
-                node.input.remove(inp_tensor)
+                node.input.remove(old_param_name)
                 node.input.insert(input_index, new_param_name)
 
                 # Find the index of the old initializer name and use it to update the corresponding initializer's name
                 # in the actual initializers array
-                initializer_index = initializer_names.index(inp_tensor)
+                initializer_index = initializer_name_to_index[old_param_name]
                 initializers[initializer_index].name = new_param_name
 
     @classmethod
@@ -833,26 +1014,100 @@ class OnnxSaver:
                 ini.name = name
 
     @classmethod
-    def _remove_marked_module_string_from_node_input_names(cls, onnx_graph):
+    def _remove_marked_module_string_from_node_inp_out_names(
+        cls,
+        onnx_graph: GraphProto,
+        node_output_name_counter: Optional[Dict[str, int]] = None,
+        param_name_to_updated_name: Optional[Dict[str, str]] = None,
+    ):
         """
-        Remove 'marked_module' from all node input names. Also recursively updates subgraph node input names.
-        :param onnx_graph: Onnx graph containing nodes and subgraphs to modify
+        Remove 'marked_module' from all node's input and output names. Also, recursively updates subgraph node's
+        input and output names.
+
+        Examples:
+        PyTorch version 1.9:
+        1) 'layer1.marked_module.0.marked_module.conv2.marked_module.weight' --> 'layer1.0.conv2.weight'
+
+        PyTorch version 1.9 onwards:
+        1) '/layer1/marked_module/0/marked_module/conv2/marked_module/Conv_output_0' --> /layer1/0/conv2/Conv_output_0
+        2) '/layer1/0/relu/marked_module_1/Relu_output_0' --> '/layer1/0/relu_1/Relu_output_0'
+
+        :param onnx_graph: Onnx graph containing nodes and subgraph to modify
+        :param node_output_name_counter: Dictionary holding base node name to its frequency
+        :param param_name_to_updated_name: Dictionary holding param_name to updated_name
         """
+        if node_output_name_counter is None:
+            node_output_name_counter = {}
+        if param_name_to_updated_name is None:
+            param_name_to_updated_name = {}
+
+        # Remove 'marked_module' string from input and output field of onnx.GraphProto
+        for inp in onnx_graph.input:
+            updated_name = cls._get_updated_name(inp.name)
+            inp.name = updated_name
+        for out in onnx_graph.output:
+            updated_name = cls._get_updated_name(out.name)
+            out.name = updated_name
+
+        # Remove 'marked_module' string from all node's input and output names.
         for node in onnx_graph.node:
-            indices_to_replace = []
-            for index, inp_tensor in enumerate(node.input):
-                if 'marked_module' in inp_tensor:
-                    indices_to_replace.append(index)
+            for index, param_name in enumerate(node.output):
+                updated_name = cls._get_updated_name(param_name)
 
-            for index in indices_to_replace:
-                param_name = node.input[index]
-                node.input.remove(param_name)
-                node.input.insert(index, param_name.replace('marked_module.', ''))
+                if MAKE_NODE_OUTPUT_NAME_UNIQUE:
+                    updated_name = cls._get_unique_node_output_name(
+                        updated_name,
+                        param_name,
+                        node_output_name_counter,
+                        param_name_to_updated_name,
+                    )
+                node.output[index] = updated_name
 
+            for index, param_name in enumerate(node.input):
+                updated_name = cls._get_updated_name(param_name)
+                if MAKE_NODE_OUTPUT_NAME_UNIQUE:
+                    updated_name = param_name_to_updated_name.get(param_name, updated_name)
+                node.input[index] = updated_name
+
+        # Recursively updates subgraph node's input and output names.
         for node in onnx_graph.node:
             for attribute in node.attribute:
-                if getattr(attribute, 'g', None) is not None:
-                    cls._remove_marked_module_string_from_node_input_names(attribute.g)
+                if getattr(attribute, 'g').name != '':
+                    cls._remove_marked_module_string_from_node_inp_out_names(
+                        attribute.g, node_output_name_counter, param_name_to_updated_name
+                    )
+
+    @staticmethod
+    def _get_unique_node_output_name(
+        updated_name: str,
+        param_name: str,
+        node_output_name_counter: Dict[str, int],
+        param_name_to_updated_name: Dict[str, str],
+    ) -> str:
+        """
+        Modify updated_name to make sure it will be unique node output name in ONNX graph
+
+        :param updated_name: Updated name from cls._get_updated_name
+        :param param_name: Original param_name to be key of param_name_to_updated_name
+        :param node_output_name_counter: Dictionary holding node output name to its frequency
+        :param param_name_to_updated_name: Dictionary holding param_name to updated_name
+        :return: Unique node output name
+        """
+        if updated_name in node_output_name_counter:
+            node_output_name_counter[updated_name] += 1
+            name_count = node_output_name_counter[updated_name]
+            deduplicated_name = f'{updated_name}_dup{name_count}'
+            _logger.info(
+                '%s has been updated to %s for name deduplication',
+                updated_name,
+                deduplicated_name,
+            )
+            updated_name = deduplicated_name
+        else:
+            node_output_name_counter[updated_name] = 0
+
+        param_name_to_updated_name[param_name] = updated_name
+        return updated_name
 
     @classmethod
     def _fix_param_names(cls, onnx_model):
@@ -864,7 +1119,7 @@ class OnnxSaver:
         cls._remove_marked_module_string_from_initializer_names(onnx_model)
 
         # Change the references to initializers in each node
-        cls._remove_marked_module_string_from_node_input_names(onnx_model.graph)
+        cls._remove_marked_module_string_from_node_inp_out_names(onnx_model.graph)
 
     @classmethod
     def _remove_detached_nodes_from_onnx_graph(cls, onnx_graph: onnx.GraphProto):
@@ -878,7 +1133,7 @@ class OnnxSaver:
 
         for node in onnx_graph.node:
             for attribute in node.attribute:
-                if getattr(attribute, 'g', None) is not None:
+                if getattr(attribute, 'g').name != '':
                     OnnxSaver._remove_detached_nodes_from_onnx_graph(attribute.g)
 
     @classmethod
@@ -889,7 +1144,7 @@ class OnnxSaver:
         :param start_marker_map: Map of start marker nodes in the ONNX graph
         :return:
         """
-        node_name_count_map = dict()
+        node_name_count_map = {}
         visited = set()
         leaf_only_start_marker = {n:m for n, m in start_marker_map.items()
                                   if m[0].attribute[MarkerAttr.IS_LEAF].s.decode() == 'True'}
@@ -964,11 +1219,12 @@ class OnnxSaver:
                 end_marker_map[identifier].append(node)
 
         for attribute in node.attribute:
-            if getattr(attribute, 'g', None) is not None:
+            if getattr(attribute, 'g').name != '':
                 for subnode in getattr(attribute, 'g').node:
                     OnnxSaver._populate_start_and_end_marker_maps(start_marker_map, end_marker_map, subnode)
 
     @classmethod
+    # pylint: disable=too-many-locals
     def _create_onnx_model_with_markers(cls, dummy_input, pt_model, working_dir, onnx_export_args, is_conditional,
                                         module_marker_map, add_all_markers) -> \
             onnx.ModelProto:
@@ -991,15 +1247,8 @@ class OnnxSaver:
         temp_file = os.path.join(working_dir,
                                  'temp_onnx_model_with_markers.onnx' if not add_all_markers else
                                  'temp_onnx_model_with_all_markers.onnx')
-        if is_conditional:
-            with aimet_torch.utils.in_eval_mode(model), torch.no_grad():
-                dummy_output = model(*dummy_input)
-            scripted_model = torch.jit.script(model)
-            torch.onnx.export(scripted_model, dummy_input, temp_file, example_outputs=dummy_output,
-                              enable_onnx_checker=False, **onnx_export_args.kwargs)
-        else:
-            torch.onnx.export(model, dummy_input, temp_file, enable_onnx_checker=False, **onnx_export_args.kwargs)
 
+        cls._export_model_to_onnx(model, dummy_input, temp_file, is_conditional, onnx_export_args)
         return cls.load_simply_onnx_model(temp_file)
 
     @classmethod
@@ -1010,10 +1259,7 @@ class OnnxSaver:
         :return: Onnx model with optional simply pass
         """
         onnx_model = onnx.load(filepath)
-        if simplify_onnx_model:
-            onnx_model_simplified, check = onnxsim.simplify(onnx_model)
-            if check:
-                return onnx_model_simplified
+        onnx_model = restore_onnx_graph_initializers(onnx_model, inplace=True)
         return onnx_model
 
     @classmethod
@@ -1136,7 +1382,7 @@ class OnnxSaver:
 
         for node in onnx_model.graph.node:
             for attribute in node.attribute:
-                if getattr(attribute, 'g', None) is not None:
+                if getattr(attribute, 'g').name != '':
                     OnnxSaver._set_output_names_for_graph(attribute.g, graphs_list, output_names_for_all_graphs,
                                                           map_output_tensor_to_node, map_input_tensor_to_node)
 
@@ -1207,7 +1453,7 @@ class OnnxSaver:
         for node in onnx_graph.node:
             all_nodes.append(node)
             for attribute in node.attribute:
-                if getattr(attribute, 'g', None) is not None:
+                if getattr(attribute, 'g').name != '':
                     OnnxSaver._get_all_nodes(attribute.g, all_nodes)
         return all_nodes
 
@@ -1224,7 +1470,7 @@ class OnnxSaver:
                 recurrent_nodes.append(node.name)
 
         # Collection of recurrent nodes that includes only the first layer nodes
-        root_nodes = dict()
+        root_nodes = {}
         # onnx graph is maintained in topological order, the first occurrence of the onnx node with the module name will
         # be the root node of the recurrent module
         for node_name in recurrent_nodes:
@@ -1274,7 +1520,7 @@ class OnnxSaver:
             initializers.append(initializer)
         for node in onnx_graph.node:
             for attribute in node.attribute:
-                if getattr(attribute, 'g', None) is not None:
+                if getattr(attribute, 'g').name != '':
                     OnnxSaver._get_all_initializers(attribute.g, initializers)
         return initializers
 
@@ -1302,7 +1548,7 @@ class OnnxSaver:
                     valid_param_set.add(input_tensor)
 
             for attribute in node.attribute:
-                if getattr(attribute, 'g', None) is not None:
+                if getattr(attribute, 'g').name != '':
                     OnnxSaver._populate_node_to_io_tensor_map_and_valid_param_set(attribute.g, initializer_names,
                                                                                   node_to_io_tensor_name_map,
                                                                                   valid_param_set)
@@ -1324,6 +1570,226 @@ class OnnxSaver:
         initializer_names = [ini.name for ini in OnnxSaver._get_all_initializers(onnx_model.graph)]
         OnnxSaver._populate_node_to_io_tensor_map_and_valid_param_set(onnx_model.graph, initializer_names,
                                                                       node_to_io_tensor_name_map, valid_param_set)
-        cls._collate_io_tensors_for_multi_layer_recurrent_nodes(onnx_model, node_to_io_tensor_name_map)
+
+        if version.parse(torch.__version__) < version.parse("1.13.0") or not EXPORT_TO_ONNX_DIRECT:
+            cls._collate_io_tensors_for_multi_layer_recurrent_nodes(onnx_model, node_to_io_tensor_name_map)
 
         return node_to_io_tensor_name_map, valid_param_set
+
+    @staticmethod
+    def _get_updated_name(name: str) -> str:
+        """
+        Remove 'marked_module' from given name.
+        :param name: Name.
+        :return: Updated name.
+        """
+        if 'marked_module.' in name:
+            name = name.replace('marked_module.', '')
+        if 'marked_module/' in name:
+            name = name.replace('marked_module/', '')
+        if '/marked_module' in name:
+            name = name.replace('/marked_module', '')
+        return name
+
+    @staticmethod
+    def _export_model_to_onnx(model: Union[torch.nn.Module, torch.jit.ScriptModule, torch.jit.ScriptFunction],
+                              dummy_input: Union[Tuple[Any, ...], torch.Tensor], temp_file: str, is_conditional: bool,
+                              onnx_export_args: Union[OnnxExportApiArgs, dict]):
+        """
+        Export model to ONNX format.
+
+        NOTE:
+        1) the ONNX checker is enabled by default in torch version 1.11 onwards and
+        'enabled_onnx_checker' argument is removed. thus, added try - except block to avoid onnx checker related
+         errors if any.
+
+        2) when torch.onnx.export() is called with ScriptModule/ScriptFunction, 'example_outputs' arg is required
+        to set so that the type and shape of the outputs can be captured without executing the model.
+        In torch version 1.11 onwards, 'example_outputs' is also removed and determined internally inside the export
+        function.
+
+        :param model: model to be exported.
+        :param dummy_input: dummy inputs to model.
+        :param temp_file: A string containing file name.
+        :param is_conditional: True if model is a conditional model, False otherwise
+        :param onnx_export_args: Additional kwargs.
+        """
+        # TODO: remove logic to support for older versions once we upgrade.
+        # pylint: disable=no-member
+        if isinstance(onnx_export_args, OnnxExportApiArgs):
+            kwargs = onnx_export_args.kwargs
+        else:
+            kwargs = onnx_export_args
+
+        if is_conditional:
+            with aimet_torch.utils.in_eval_mode(model), torch.no_grad():
+                dummy_output = model(*dummy_input)
+            model = torch.jit.script(model)
+            kwargs.update({'example_outputs': dummy_output})
+
+        if version.parse(torch.__version__) < version.parse('1.11.0'):
+            kwargs.update({'enable_onnx_checker': False})
+            torch.onnx.export(model, dummy_input, temp_file, **kwargs)
+        else:
+            try:
+                remove_kwargs = ['enable_onnx_checker', 'example_outputs', 'use_external_data_format']
+                for key in remove_kwargs:
+                    kwargs.pop(key, None)
+                torch.onnx.export(model, dummy_input, temp_file, **kwargs)
+            except torch.onnx.CheckerError:
+                _logger.warning("ONNX Checker has failed but ONNX graph is still generated.")
+
+def save_initializer_restored_onnx_graph(original_model_path: str,
+                                         restored_model_path: str):
+    """
+    Load original ONNX model path and save restored ONNX model to specific path
+
+    :param original_model_path: Path where the original ONNX artifact was stored
+    :param restored_model_path: Path to store restored ONNX artifact
+    """
+    model = onnx.load(original_model_path)
+    restored_model = restore_onnx_graph_initializers(model, inplace=True)
+    save_as_external_data = model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF
+    onnx.save(restored_model, restored_model_path, save_as_external_data=save_as_external_data)
+
+
+def restore_onnx_graph_initializers(model: onnx.ModelProto,
+                                    inplace: bool = False) -> onnx.ModelProto:
+    """
+    Copy original model and restore its pruned initializers
+
+    :param model: Original ONNX ModelProto
+    :param inplace: Whether to modify ModelProto by inplace manner or not
+    :return: Initializer restored ONNX ModelProto
+    """
+    # pylint: disable=protected-access, no-member
+    if not inplace:
+        model = copy.deepcopy(model)
+
+    onnx_graph = model.graph
+
+    initializers = OnnxSaver._get_all_initializers(onnx_graph)
+    initializer_names = [initializer.name for initializer in initializers]
+    pruned_initializer_map = _get_pruned_initializer_map(
+        onnx_graph, initializers, initializer_names
+    )
+
+    for node in onnx_graph.node:
+        for input_tensor in node.input:
+            _restore_pruned_initializer(
+                onnx_graph, input_tensor, pruned_initializer_map
+            )
+
+    # Remove all the detached "Identity" type nodes
+    for pruned_initializer_info in pruned_initializer_map.values():
+        onnx_graph.node.remove(pruned_initializer_info.identity_node)
+        _logger.debug(
+            "Added new Initializer `%s` and removing existing Identity node `%s`",
+            pruned_initializer_info.initializer.name,
+            pruned_initializer_info.identity_node.name,
+        )
+    return model
+
+
+def _get_pruned_initializer_map(onnx_graph: onnx.GraphProto,
+                                initializers: List[onnx.TensorProto],
+                                initializer_names: List[str]) -> Dict[str, PrunedInitializerInfo]:
+    """
+    Find pruned ONNX initializers by iterating Identity nodes
+
+    :param onnx_graph: ONNX graph
+    :param initializers: List of ONNX initializers
+    :param initializer_names: List of model initializer names
+    :return: Dictionary with output of identity node as key and PrunedInitializerInfo as value
+    """
+    pruned_initializer_map = {}
+    for node in onnx_graph.node:
+        if node.op_type == "Identity" and node.input[0] in initializer_names:
+            index = initializer_names.index(node.input[0])
+            initializer = copy.deepcopy(initializers[index])
+            pruned_initializer_map[node.output[0]] = PrunedInitializerInfo(
+                initializer, node
+            )
+
+    return pruned_initializer_map
+
+
+def _restore_pruned_initializer(onnx_graph: onnx.GraphProto,
+                                input_tensor: str,
+                                pruned_initializer_map: Dict[str, PrunedInitializerInfo],
+                                new_initializer_name: Optional[str] = None):
+    """
+    Create new Initializer to restore pruned Initializer
+
+    :param onnx_graph: ONNX graph
+    :param input_tensor: Input tensor name
+    :param pruned_initializer_map: Dictionary with output of identity node as key and PrunedInitializerInfo as value
+    :param new_initializer_name: Name for new initializer
+    """
+    if result := pruned_initializer_map.get(input_tensor):
+        new_initializer = result.initializer
+        new_initializer.name = new_initializer_name or input_tensor
+        onnx_graph.initializer.append(new_initializer)
+
+
+def get_tensor_to_consumer_map(op_to_io_tensor_map: Dict[str, Dict]) -> Dict[str, str]:
+    """
+    Get a dictionary mapping tensor names to names of ops consuming that tensor.
+
+    :param op_to_io_tensor_map: Dictionary mapping op names to IO Tensors
+    :return: Dictionary mapping tensor names to names of ops consuming that tensor
+    """
+    tensor_to_consumer_map = {}
+    if version.parse(torch.__version__) >= version.parse("1.13.0") and EXPORT_TO_ONNX_DIRECT:
+        for op_name, io_tensors in op_to_io_tensor_map.items():
+            for inp in io_tensors.inputs:
+                if inp not in tensor_to_consumer_map:
+                    tensor_to_consumer_map[inp] = [op_name]
+                else:
+                    tensor_to_consumer_map[inp].append(op_name)
+            for output in io_tensors.outputs:
+                if output not in tensor_to_consumer_map:
+                    tensor_to_consumer_map[output] = []
+    return tensor_to_consumer_map
+
+
+def get_layers_in_io_tensor_map(op_to_io_tensor_map: Dict) -> Dict[str, str]:
+    """
+    extract root(layer) names of onnx op names in tensor map
+    :param op_to_io_tensor_map: ONNX or Torch Script map of layer name to it's input/output tensors
+    :return: a set containing layer names present in io tensor map.
+    """
+    layers_to_onnx_op_names = {}
+    if version.parse(torch.__version__) < version.parse("1.13.0") or not EXPORT_TO_ONNX_DIRECT:
+        for name in op_to_io_tensor_map:
+            modified_name = name
+            if modified_name.endswith('.end'):
+                modified_name = modified_name[:-4]
+            if name in layers_to_onnx_op_names:
+                layers_to_onnx_op_names[modified_name.split('#')[0]].append(name)
+            else:
+                layers_to_onnx_op_names[modified_name.split('#')[0]] = [name]
+    else:
+        for name in op_to_io_tensor_map:
+            pytorch_name = get_pytorch_name_from_onnx_name(name)
+            if pytorch_name in layers_to_onnx_op_names:
+                layers_to_onnx_op_names[pytorch_name].append(name)
+            else:
+                layers_to_onnx_op_names[pytorch_name] = [name]
+    return layers_to_onnx_op_names
+
+
+__deleted_atttributes__ = {
+    'simplify_onnx_model': 'aimet_torch==2.0'
+}
+
+def __getattr__(name: str):
+    try:
+        return globals()[name]
+    except KeyError as e:
+        if name in __deleted_atttributes__:
+            since = __deleted_atttributes__[name]
+            msg = f"Attribute '{name}' was deleted from aimet_torch.onnx_utils since {since}"
+        else:
+            msg = f"module '{__name__}' has no attribute '{name}'"
+        raise AttributeError(msg) from e

@@ -2,7 +2,7 @@
 //
 //  @@-COPYRIGHT-START-@@
 //
-//  Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+//  Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 //
 //  Redistribution and use in source and binary forms, with or without
 //  modification, are permitted provided that the following conditions are met:
@@ -67,6 +67,13 @@ TfEncoding getComputedEncodings(uint8_t bw, double min, double max, bool useSymm
     }
     encoding.bw = bw;
 
+    // To handle the cases where the min/max can be infinite values
+    if (isinf(min) != 0)
+        min = std::numeric_limits<float>::lowest();
+
+    if (isinf(max) != 0)
+        max = std::numeric_limits<float>::max();
+
     // Special case for symmetric encodings. If all values are positive or 0, we can treat the
     // symmetric encodings as unsigned, which essentially translates to asymmetric
 
@@ -81,8 +88,8 @@ TfEncoding getComputedEncodings(uint8_t bw, double min, double max, bool useSymm
         unsigned int numPositiveSteps = std::floor(numSteps / 2);
         encoding.delta                = max / numPositiveSteps;
         encoding.offset               = -std::ceil(numSteps / 2);
-        encoding.min                  = encoding.offset * encoding.delta;
-        encoding.max                  = encoding.delta * numPositiveSteps;
+        encoding.min                  = std::max(encoding.offset * encoding.delta, (double) std::numeric_limits<float>::lowest());
+        encoding.max                  = std::min(encoding.delta * numPositiveSteps, (double) std::numeric_limits<float>::max());
     }
     else
     {
@@ -106,15 +113,31 @@ TfEncoding getComputedEncodings(uint8_t bw, double min, double max, bool useSymm
         {
             // One of min or max is guaranteed to be zero, so 0 is exactly quantizable already
             encoding.offset = round(min / encoding.delta);
+            encoding.min = min;
+            encoding.max = max;
+            return encoding;
         }
 
-        // Calculate 'min' and 'max' based on 'delta' and 'offset'.
-        // Note this min and max can vary from the one in 'stats'. This min and max
-        // can really be represented with the integer offset.
-        encoding.min = encoding.delta * encoding.offset;
+        // Check that the recalculated min/max should be in range of float
+        if (encoding.delta * encoding.offset >= std::numeric_limits<float>::lowest() &&
+            encoding.delta * encoding.offset <= std::numeric_limits<float>::max())
+        {
+            // Calculate 'min' and 'max' based on 'delta' and 'offset'.
+            // Note this min and max can vary from the one in 'stats'. This min and max
+            // can really be represented with the integer offset.
+            encoding.min = encoding.delta * encoding.offset;
+        }
+        else
+        {
+            // As min value is out of range set it to float min
+            encoding.min = std::numeric_limits<float>::lowest();
+        }
+
         // We want to calculate: max = delta * numSteps + min.
         // To avoid numerical accuracy issues on Linaro, we simplify the math.
         encoding.max = max - min + encoding.min;
+        if (encoding.max > std::numeric_limits<float>::max())
+            encoding.max = std::numeric_limits<float>::max();
     }
     return encoding;
 }
@@ -338,6 +361,22 @@ void concat(const std::vector<std::vector<DTYPE>>& inputs, const std::vector<uin
     }
 }
 
+
+template <typename DTYPE>
+std::tuple<DTYPE, std::vector<int>> quantizeSingleChannelPerBlockScale(std::vector<DTYPE>& scale, int compressed_bw,
+                                                                       int decompressed_bw)
+{
+    typename std::vector<DTYPE>::iterator maxScale;
+    maxScale = std::max_element(scale.begin(), scale.end());
+    DTYPE perChannelScale = *maxScale / pow(2, decompressed_bw - compressed_bw);
+    std::vector<int> perBlockIntScale;
+    for (int i=0; i<scale.size(); i++)
+    {
+        perBlockIntScale.push_back(std::max(1, static_cast<int>(std::round(scale[i] / perChannelScale))));
+    }
+    return std::tuple<DTYPE, std::vector<int>>(perChannelScale, perBlockIntScale);
+}
+
 template void slice(const float* input, const std::vector<uint32_t>& inputDim, int32_t axis,
                     std::vector<std::vector<float>>& outputs, std::vector<uint32_t>& outputDim);
 template void slice(const double* input, const std::vector<uint32_t>& inputDim, int32_t axis,
@@ -351,5 +390,12 @@ template void concat(const std::vector<std::vector<double>>& inputs, const std::
                      int32_t axis, double* output, std::vector<uint32_t>& outputDim);
 template void concat(const std::vector<std::vector<unsigned char>>& inputs, const std::vector<uint32_t>& inputDim,
                      int32_t axis, unsigned char* output, std::vector<uint32_t>& outputDim);
+
+template std::tuple<float, std::vector<int>> quantizeSingleChannelPerBlockScale(std::vector<float>& scale,
+                                                                                int compressed_bw,
+                                                                                int decompressed_bw);
+template std::tuple<double, std::vector<int>> quantizeSingleChannelPerBlockScale(std::vector<double>& scale,
+                                                                                 int compressed_bw,
+                                                                                 int decompressed_bw);
 
 }   // End of namespace DlQuantization

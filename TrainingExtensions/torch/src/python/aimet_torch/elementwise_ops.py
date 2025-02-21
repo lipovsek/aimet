@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2021, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2021-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -36,129 +35,19 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 
-""" Modules for functional elementwise ops """
+""" This module is deprecated. Use aimet_torch._base.nn.modules.custom instead. """
 
-import torch
-import torch.nn
-
-
-class Add(torch.nn.Module):
-    """ Add module for a functional add"""
-    # pylint:disable=arguments-differ
-    @staticmethod
-    def forward(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """
-        Forward-pass routine for add op
-        """
-        return x + y
+from aimet_torch._base.nn.modules.custom import * # pylint: disable=wildcard-import, unused-wildcard-import
 
 
-class Subtract(torch.nn.Module):
-    """ Subtract module for a functional subtract"""
-    # pylint:disable=arguments-differ
-    @staticmethod
-    def forward(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """
-        Forward-pass routine for subtract op
-        """
-        return x - y
-
-
-class Multiply(torch.nn.Module):
-    """ Multiply module for a functional multiply"""
-    # pylint:disable=arguments-differ
-    @staticmethod
-    def forward(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """
-        Forward-pass routine for multiply op
-        """
-        return x * y
-
-
-class Divide(torch.nn.Module):
-    """ Divide module for a functional divide"""
-    # pylint:disable=arguments-differ
-    @staticmethod
-    def forward(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """
-        Forward-pass routine for divide op
-        """
-        return torch.div(x, y)
-
-
-class Concat(torch.nn.Module):
-    """ Concat module for a functional concat"""
-    def __init__(self, axis: int = 0):
-        super(Concat, self).__init__()
-        self._axis = axis
-
-    # pylint:disable=arguments-differ
-    def forward(self, *x) -> torch.Tensor:
-        """
-        Forward-pass routine for cat op
-        """
-        return torch.cat(x, dim=self._axis)
-
-
-class MatMul(torch.nn.Module):
-    """ MatMul module for a functional matmul"""
-    # pylint:disable=arguments-differ
-    @staticmethod
-    def forward(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """
-        Forward-pass routine for matmul op
-        """
-        return torch.matmul(x, y)
-
-
-class Interpolate(torch.nn.Module):
-    """ Interpolate module for a functional interpolate"""
-    @staticmethod
-    def forward(*args, **kwargs) -> torch.Tensor:
-        """
-        Forward-pass routine for interpolate op
-        """
-        return torch.nn.functional.interpolate(*args, **kwargs)
-
-
-class DynamicConv2d(torch.nn.Module):
-    """ Conv2d module for a functional conv2d"""
-    def __init__(self, stride=1, padding=0, dilation=1, groups=1):
-        super().__init__()
-        self.stride, self.padding, self.dilation, self.groups = stride, padding, dilation, groups
-
-    def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor = None) -> torch.Tensor:
-        """
-        Forward-pass routine for conv2d op
-        """
-        return torch.nn.functional.conv2d(x, weight, bias, self.stride, self.padding, self.dilation, self.groups)
-
-
-class Exponential(torch.nn.Module):
-    """ Exponential module for a functional exponential"""
-    @staticmethod
-    def forward(x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward-pass routine for exponential op
-        """
-        return torch.exp(x)
-
-
-class MaxPool2d(torch.nn.Module):
-    """ MaxPool2d module for a functional MaxPool2d"""
-    @staticmethod
-    def forward(*args, **kwargs) -> torch.Tensor:
-        """
-        Forward-pass routine for MaxPool2d op
-        """
-        return torch.nn.functional.max_pool2d(*args, **kwargs)
-
-
-class AdaptiveAvgPool2d(torch.nn.Module):
-    """ AdaptiveAvgPool2d module for a functional adaptive_avg_pool2d"""
-    @staticmethod
-    def forward(*args, **kwargs) -> torch.Tensor:
-        """
-        Forward-pass routine for adaptive_avg_pool2d op
-        """
-        return torch.nn.functional.adaptive_avg_pool2d(*args, **kwargs)
+if __name__ != "__main__":
+    import aimet_torch._base.nn.modules.custom as modules
+    from aimet_torch.utils import _red
+    import warnings
+    warnings.warn(
+        _red(f'"{__name__}" is renamed to "{modules.__name__}" and will be deprecated soon in the later versions.'),
+        stacklevel=2
+    )
+    del warnings
+    del _red
+    del modules

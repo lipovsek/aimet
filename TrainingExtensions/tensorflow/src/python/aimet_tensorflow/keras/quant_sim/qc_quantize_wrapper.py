@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -36,23 +35,22 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 """ Qc Quantize wrapper for tf 2 keras """
+import contextlib
 from typing import Union, List, Dict
-from itertools import chain
 import tensorflow as tf
-from tensorflow.python.keras.layers.core import TFOpLambda
+import numpy as np
 
-import aimet_common.libpymo as libpymo
+from aimet_common import libpymo
 from aimet_common.utils import AimetLogger
 from aimet_common.defs import QuantScheme, QuantizationDataType
-import aimet_tensorflow.utils.quantsim as quantsim_utils
 import aimet_tensorflow.keras.utils.common as keras_common_utils
+from aimet_tensorflow.keras.model_preparer import _KerasModelPreparer
 from aimet_tensorflow.keras.quant_sim.tensor_quantizer import ActivationTensorQuantizer, \
     ParamPerTensorQuantizer, ParamPerChannelQuantizer, StaticGridPerChannelQuantizer
-from aimet_tensorflow.keras.utils.common import is_lambda_operator
-from aimet_tensorflow.utils.constants import QUANT_ALLOWED_DTYPES
+from aimet_tensorflow.keras.utils.constants import QUANT_ALLOWED_DTYPES
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
-
+is_tf_or_keras_tensor_input = _KerasModelPreparer._is_tf_or_keras_tensor_input # pylint: disable=protected-access
 
 class QuantizerSettings:
     """ Class holding quantizer settings """
@@ -70,6 +68,8 @@ class QuantizerSettings:
                 quant_scheme = QuantScheme.post_training_tf
             elif quant_scheme == 'tf_enhanced':
                 quant_scheme = QuantScheme.post_training_tf_enhanced
+            elif quant_scheme == "percentile":
+                quant_scheme = QuantScheme.post_training_percentile
             else:
                 error_msg = f'Unsupported quant scheme: {quant_scheme}'
                 _logger.error(error_msg)
@@ -150,22 +150,10 @@ class QuantizerSettings:
         """ Enabled setter """
         self._enabled = enabled
 
-    def __eq__(self, __o: object) -> bool:
-        """
-        Equality operator. Specifically used for get_config()/from_config()
-        :param __o: Object to compare with
-        :return: True if equal, False otherwise
-        """
-        if isinstance(__o, QuantizerSettings):
-            return self._bitwidth == __o.bitwidth and self._round_mode == __o.round_mode and \
-                   self._quant_scheme == __o.quant_scheme and self._is_symmetric == __o.is_symmetric and \
-                   self._use_unsigned_symmetric == __o.use_unsigned_symmetric and \
-                   self._use_strict_symmetric == __o.use_strict_symmetric and self._enabled == __o.enabled
-        return False
-
 
 class QcQuantizeWrapper(tf.keras.layers.Layer):
     """ Wrapper for simulating quantization noise """
+
     # pylint: disable=too-many-arguments
     def __init__(self,
                  layer_to_wrap: tf.keras.layers.Layer,
@@ -178,7 +166,13 @@ class QcQuantizeWrapper(tf.keras.layers.Layer):
                  per_channel_quantization_enabled: bool = False,
                  shadow_params: Dict[str, tf.Variable] = None,
                  **kwargs):
-        super(QcQuantizeWrapper, self).__init__(**kwargs)
+
+        if 'in_quant_enabled' in kwargs:
+            new_kwargs = dict(kwargs)
+            new_kwargs.pop('in_quant_enabled')
+            super().__init__(**new_kwargs)
+        else:
+            super().__init__(**kwargs)
         self._layer_to_wrap = layer_to_wrap
         self._activation_quant_settings = activation_quant_settings
         self._param_quant_settings = param_quant_settings
@@ -188,8 +182,12 @@ class QcQuantizeWrapper(tf.keras.layers.Layer):
         self.output_quantizers = output_quantizers
         self.param_quantizers = param_quantizers
         self._shadow_params = shadow_params
-        self._is_lambda_operator_layer = is_lambda_operator(layer_to_wrap)
-        self._set_quantizers(per_channel_quantization_enabled)
+        self._is_lambda_operator_layer = keras_common_utils.is_lambda_operator(layer_to_wrap)
+        self._is_a_tf_op_lambda_layer = keras_common_utils.is_a_tf_op_lambda_layer(layer_to_wrap)
+        if 'in_quant_enabled' in kwargs:
+            self._set_quantizers(per_channel_quantization_enabled, in_quant_enabled=kwargs['in_quant_enabled'])
+        else:
+            self._set_quantizers(per_channel_quantization_enabled)
 
         # This is needed since Model Transformer reconstructs the layer, with the layer to wrap weights being empty
         # during the time of this init call.
@@ -199,7 +197,7 @@ class QcQuantizeWrapper(tf.keras.layers.Layer):
         if self._shadow_params is None:
             self._shadow_params = dict(zip([param.name for param in self._layer_to_wrap.weights], [tf.Variable(param, trainable=False) for param in self._layer_to_wrap.weights]))
 
-    def _set_quantizers(self, per_channel_quantization_enabled):
+    def _set_quantizers(self, per_channel_quantization_enabled, **kwargs):
         """
         Set the input, output, and param quantizers
         :param per_channel_quantization_enabled: A flag for the param quantizers to be ParamPerChannelQuantizers
@@ -219,7 +217,7 @@ class QcQuantizeWrapper(tf.keras.layers.Layer):
                                               self._activation_quant_settings.is_symmetric,
                                               self._activation_quant_settings.use_strict_symmetric,
                                               self._activation_quant_settings.use_unsigned_symmetric,
-                                              enabled=True))
+                                              enabled=kwargs.get('in_quant_enabled', True)))
 
         # Create quantizer variables and quantizers for outputs if not yet existing
         if self.output_quantizers is None:
@@ -291,82 +289,15 @@ class QcQuantizeWrapper(tf.keras.layers.Layer):
 
     def get_config(self):
         """ Override get_config """
-        # NOTE: `layer_to_wrap` is not included in the config. This because during the from_config() it will name the
-        # layer_to_wrap with the incorrect name. Instead, the layer_to_wrap is set in the from_config() method with the
-        # layer coming for the tensor quantizer.
-
-
-        # This function is used to get the input of layers. For all layers we use layer_to_wrap.input, execpt, for TFOpLambda layers
-        # like math operations (+, -, ÷, *), which will have two inputs. These are grabed using the call args and call_kwargs.
-        # This translates as so: result = x + y -> where x is node.call_args and y is node.call_kwargs['y'].
-        def get_layers_input_tensors():
-            if isinstance(self._layer_to_wrap, TFOpLambda):
-                return list(chain.from_iterable((*node.call_args, node.call_kwargs['y']) for node in self._layer_to_wrap.inbound_nodes))
-            return self._layer_to_wrap.input
-
-        return {
-            "activation_quant_settings": self._activation_quant_settings,
-            "param_quant_settings": self._param_quant_settings,
-            "num_inputs": self._num_inputs,
-            "name": self.name,
-            "input_quantizers": [input_quantizer.get_config() for input_quantizer in self.input_quantizers],
-            "output_quantizers": [output_quantizer.get_config() for output_quantizer in self.output_quantizers],
-            "param_quantizers": [param_quantizer.get_config() for param_quantizer in self.param_quantizers],
-            "shadow_params": self._shadow_params,
-            "layer_to_wrap": {
-                'original_keras_layer_class': self._layer_to_wrap.__class__,
-                'config': self._layer_to_wrap.get_config(),
-                'inbound_nodes': self._layer_to_wrap.inbound_nodes,
-                'outbound_nodes': self._layer_to_wrap.outbound_nodes,
-                'input': get_layers_input_tensors()
-            },
-        }
-
-    @classmethod
-    def from_config(cls, config):
-        """ Override from_config """
-        # Wrapped layer is noted here and built backwards starting from the quantizers. This is to ensure that the wrapped
-        # layer is made only once and used by all the quantizers.
-        layer_to_wraps_inbound_nodes, layer_to_wraps_outbound_nodes = config['layer_to_wrap'].pop('inbound_nodes'), \
-            config['layer_to_wrap'].pop('outbound_nodes')
-        layer_to_wraps_input = config['layer_to_wrap'].pop('input')
-
-        # Rebuilding the layer to wrap. However, we cannot just build the layer by itself because it will not have the
-        # correct weight names. Therefore, we build the layer and then pass the original layers input(s) to the layer.
-        # NOTE: For TFOpLambda layers like math operations (+, -, ÷, *), we have a special case where the inputs
-        # are unwrapped.
-        config['layer_to_wrap'] = config['layer_to_wrap']['original_keras_layer_class'].from_config(config['layer_to_wrap']['config'])
-        if isinstance(config['layer_to_wrap'], TFOpLambda):
-            config['layer_to_wrap'](*layer_to_wraps_input)
-        else:
-            config['layer_to_wrap'](layer_to_wraps_input)
-
-        # The layer_to_wrap is built, but it does not have the correct inbound and outbound nodes. Therefore, we set them
-        # to the correct values. This is necessary for exporting of encodings.
-        config['layer_to_wrap']._inbound_nodes = layer_to_wraps_inbound_nodes # pylint: disable=protected-access
-        config['layer_to_wrap']._outbound_nodes = layer_to_wraps_outbound_nodes # pylint: disable=protected-access
-
-        # Go through the configs for each quantizer and create the quantizer objects through their from_config methods
-        # First, the quantizer configs are updated with the layer_to_wrap which was built in the line above.
-        for input_quantizer_config in config['input_quantizers']:
-            input_quantizer_config['layer_to_wrap'] = config['layer_to_wrap']
-        config['input_quantizers'] = [ActivationTensorQuantizer.from_config(input_quantizer_config)
-                                      for input_quantizer_config in config['input_quantizers']]
-
-        for output_quantizer_config in config['output_quantizers']:
-            output_quantizer_config['layer_to_wrap'] = config['layer_to_wrap']
-        config['output_quantizers'] = [ActivationTensorQuantizer.from_config(output_quantizer_config)
-                                       for output_quantizer_config in config['output_quantizers']]
-
-        for param_quantizer_config in config['param_quantizers']:
-            param_quantizer_config['layer_to_wrap'] = config['layer_to_wrap']
-        config['param_quantizers'] = [
-            (lambda quantizer_type, pqc=param_quantizer_config: quantizer_type.from_config(pqc)) # pylint: disable=undefined-loop-variable
-            (ParamPerChannelQuantizer if isinstance(param_quantizer_config['tensor_quantizer'], List) else ParamPerTensorQuantizer)
-            for param_quantizer_config in config['param_quantizers']
-        ]
-
-        return cls(**config)
+        return {"layer_to_wrap": self._layer_to_wrap,
+                "activation_quant_settings": self._activation_quant_settings,
+                "param_quant_settings": self._param_quant_settings,
+                "num_inputs": self._num_inputs,
+                "name": self.name,
+                "input_quantizers": self.input_quantizers,
+                "output_quantizers": self.output_quantizers,
+                "param_quantizers": self.param_quantizers,
+                "shadow_params": self._shadow_params}
 
     # pylint: disable=arguments-differ
     def call(self, inputs, *args, **kwargs):
@@ -378,45 +309,82 @@ class QcQuantizeWrapper(tf.keras.layers.Layer):
         """
 
         # TODO kwargs = {} in same instalnce which needs to be investigation
-        if "training" in kwargs.keys():
-            is_call_training_mode = kwargs["training"]
-        else:
-            is_call_training_mode = False
+        is_call_training_mode = kwargs.get("training", False)
 
         for param in self._layer_to_wrap.weights:
-            if param.name in self._shadow_params.keys():
+            if param.name in self._shadow_params:
                 self._shadow_params[param.name].assign(param)
         # for BN with training = True ,only write to shadow params for beta and gamma
         if isinstance(self._layer_to_wrap, tf.keras.layers.BatchNormalization):
             if is_call_training_mode:
                 self._shadow_params = {k:v for k, v in self._shadow_params.items()  if "gamma:0" in k  or "beta:0" in k}
 
-        self._quantize_params()
+        with self._quantize_params():
+            # Special logic for +, -, *, / operators which become lambda layers with kwarg inputs
+            # Or for TFOpLambda layers that take the `input` itself plus `n` number of additional
+            # input tensors specified in the kwargs.
+            if (self._is_lambda_operator_layer or self._is_a_tf_op_lambda_layer) and len(self.input_quantizers) >= 2:
+                kwargs_keys_for_keras_tensors = [
+                    name for name, tensor in kwargs.items()
+                    if is_tf_or_keras_tensor_input(tensor) or isinstance(tensor, np.ndarray)
+                ]
 
-        # Special logic for +, -, *, / operators which become lambda layers with kwarg inputs
-        if self._is_lambda_operator_layer and 'y' in kwargs and len(self.input_quantizers) == 2:
-            inputs = self._quantize_activation(inputs, [self.input_quantizers[0]], True)
-            kwargs['y'] = self._quantize_activation(kwargs['y'], [self.input_quantizers[1]], True)
-        else:
-            inputs = self._quantize_activation(inputs, self.input_quantizers, True)
-        outputs = self._layer_to_wrap(inputs, *args, **kwargs)
-        outputs = self._quantize_activation(outputs, self.output_quantizers, False)
+                # TF functions like tf.concat could have two inputs in List form. But other layers could match
+                # the TFOpLambda where one input is in `inputs` and the other(s) are in the kwargs dict
+                input_quantizer_index = len(inputs) if isinstance(inputs, List) else 1
 
-        self._restore_shadow_params()
+                # Quantize the input directly first
+                inputs = self._quantize_activation(
+                    inputs,
+                    quantizers=self.input_quantizers[:input_quantizer_index],
+                    is_input_quantization=True
+                )
+
+                # Quantize any subsequent arguments. We have to flatten the inputs here.
+                # Subsequent arguments could be a signular tensor or a list of tensors (e.g. tf.image.resize's `size`)
+                def kwarg_tensor_quantize(input_tensor):
+                    nonlocal input_quantizer_index
+                    if isinstance(input_tensor, List):
+                        output = []
+                        for inner_input in input_tensor:
+                            output.append(kwarg_tensor_quantize(inner_input))
+                    else:
+                        output = self._quantize_activation(
+                            input_tensor,
+                            [self.input_quantizers[input_quantizer_index]],
+                            True
+                        )
+                        input_quantizer_index += 1
+                    return output
+
+                for key in kwargs_keys_for_keras_tensors:
+                    kwargs[key] = kwarg_tensor_quantize(kwargs[key])
+
+            else:
+                inputs = self._quantize_activation(inputs, self.input_quantizers, True)
+            outputs = self._layer_to_wrap(inputs, *args, **kwargs)
+            outputs = self._quantize_activation(outputs, self.output_quantizers, False)
+
         return outputs
 
+    @contextlib.contextmanager
     def _quantize_params(self):
         """ Quantize parameters """
+        try:
+            idx_param_quantizer = 0
+            for idx, param in enumerate(self._layer_to_wrap.weights):
+                # check and break  if idx_param_quantizer is out of range (Batchnorm fold will update bias tensor,
+                # even in case there was no existing bias add op in given conv2D op, use_bias=False)
+                if idx_param_quantizer == len(self.param_quantizers):
+                    break
+                if self._layer_to_wrap.weights[idx].dtype in QUANT_ALLOWED_DTYPES:
+                    quantized_param = self.param_quantizers[idx_param_quantizer](param)
+                    self._layer_to_wrap.weights[idx].assign(quantized_param)
+                    idx_param_quantizer += 1
+            yield
 
-        idx_param_quantizer = 0
-        for idx, param in enumerate(self._layer_to_wrap.weights):
-            # check and break  if idx_param_quantizer is out of range (Batchnorm fold will update bias tensor, even in case there was no existing bias add op in given conv2D op, use_bias=False)
-            if idx_param_quantizer == len(self.param_quantizers):
-                break
-            if self._layer_to_wrap.weights[idx].dtype in QUANT_ALLOWED_DTYPES:
-                quantized_param = self.param_quantizers[idx_param_quantizer](param)
-                self._layer_to_wrap.weights[idx].assign(quantized_param)
-                idx_param_quantizer = idx_param_quantizer + 1
+        finally:
+            self._restore_shadow_params()
 
     def _quantize_activation(self, activation: Union[tf.Tensor, List],
                              quantizers: List[ActivationTensorQuantizer],
@@ -470,12 +438,12 @@ class QcQuantizeWrapper(tf.keras.layers.Layer):
             param_name = self._layer_to_wrap.weights[idx].name
             if param_name in param_encodings:
                 if isinstance(param_quantizer, StaticGridPerChannelQuantizer):
-                    encoding, is_symmetric = quantsim_utils.create_encoding_from_dict(param_encodings[param_name])
+                    encoding, is_symmetric = keras_common_utils.create_encoding_from_dict(param_encodings[param_name])
                     for tensor_quantizer in param_quantizer.tensor_quantizer:
                         tensor_quantizer.isEncodingValid = True
                     param_quantizer.bitwidth = encoding[0].bw
                 else:
-                    encoding, is_symmetric = quantsim_utils.create_encoding_from_dict(param_encodings[param_name][0])
+                    encoding, is_symmetric = keras_common_utils.create_encoding_from_dict(param_encodings[param_name][0])
                     param_quantizer.tensor_quantizer.isEncodingValid = True
                     param_quantizer.bitwidth = encoding.bw
                 param_quantizer.use_symmetric_encodings = is_symmetric
@@ -488,5 +456,9 @@ class QcQuantizeWrapper(tf.keras.layers.Layer):
         """
         Restore saved parameters
         """
+        # For the case where we have replace a Batch Norm with an Identity
+        if not self._layer_to_wrap.weights:
+            return
+
         for idx, param in enumerate(self._shadow_params.values()):
             self._layer_to_wrap.weights[idx].assign(param)

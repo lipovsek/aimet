@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2020-2022, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2020-2023, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -35,15 +34,14 @@
 #
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
-
 """ Common utility for Quantization """
 
-from typing import Union, Tuple, List, Dict
+from typing import Union, Tuple, Dict
 import numpy as np
 
 from aimet_common.defs import QuantScheme, QuantizationDataType
 from aimet_common.quantsim_config.quantsim_config import QuantSimConfigurator
-import aimet_common.libpymo as libpymo
+from aimet_common import libpymo
 
 # Defined below is a quantization encoding format version, which will follow XX.YY.ZZ versioning as described below,
 #
@@ -54,8 +52,9 @@ import aimet_common.libpymo as libpymo
 # Change in major revision should indicate substantial change to the format, updates to minor version indicates
 # additional information element being added to encoding format and might require update to fully consume the encodings.
 # The patching version shall be updated to indicate minor updates to quantization simulation e.g. bug fix etc.
-encoding_version = '0.6.1'
+encoding_version = '1.0.0'
 ALLOW_EXPERIMENTAL = False
+VALID_ENCODING_VERSIONS = {'0.6.1', '1.0.0'}
 
 
 def gate_min_max(min_val: float, max_val: float) -> Tuple[float, float]:
@@ -97,11 +96,35 @@ def is_non_strict_symmetric(use_symmetric_encodings: bool,
            not is_unsigned_symmetric
 
 
-def calculate_delta_offset(min_val: Union[float, np.ndarray], max_val: Union[float, np.ndarray], bitwidth: int,
-                           use_symmetric_encodings: bool, use_strict_symmetric: bool) \
-        -> Union[Tuple[float, float], Tuple[List, List]]:
+def create_encoding_from_min_max(min_val: float, max_val: float, bitwidth: int, use_symmetric_encodings: bool,
+                                 use_strict_symmetric: bool) -> libpymo.TfEncoding:
     """
-    calculates delta and offset given min and max.
+    Returns a TfEncoding object with the provided min/max/bitwidth/symmetry
+
+    :param min_val: Min value of the encoding
+    :param max_val: Max value of the encoding
+    :param bitwidth: Encoding bitwidth
+    :param use_symmetric_encodings: If True, results in encoding with min = -max - delta
+    :param use_strict_symmetric: If True, results in encoding with min = -max
+    :return: libpymo.TfEncoding object
+    """
+    delta, offset = calculate_delta_offset(min_val, max_val, bitwidth, use_symmetric_encodings, use_strict_symmetric)
+
+    encoding = libpymo.TfEncoding()
+    encoding.bw = bitwidth
+    encoding.min = min_val
+    encoding.max = max_val
+    encoding.delta = delta
+    encoding.offset = offset
+    # Note: need to recompute grid to account for offset rounding
+    return recompute_grid_params(encoding, bitwidth, use_symmetric_encodings, use_strict_symmetric)
+
+
+def calculate_delta_offset(min_val: float, max_val: float, bitwidth: int, use_symmetric_encodings: bool,
+                           use_strict_symmetric: bool) -> Tuple[float, int]:
+    """
+    Calculates delta and offset given min and max.
+
     :param min_val: min encoding value
     :param max_val: max encoding value
     :param bitwidth: bitwidth used for quantization
@@ -114,25 +137,49 @@ def calculate_delta_offset(min_val: Union[float, np.ndarray], max_val: Union[flo
         num_steps -= 1
 
     min_val, max_val = gate_min_max(min_val, max_val)
-    delta = (max_val - min_val) / num_steps
 
-    if isinstance(delta, np.ndarray):
-        offset = np.around(min_val / delta)
-        delta = delta.tolist()
-        offset = offset.tolist()
+    # Use only max val to compute delta in the case of signed symmetric
+    if use_symmetric_encodings and min_val < 0:
+        num_positive_steps = np.floor(num_steps / 2)
+        delta = max_val / num_positive_steps
+        offset = -num_positive_steps
+        if not use_strict_symmetric:
+            offset -= 1
     else:
+        delta = (max_val - min_val) / num_steps
         offset = round(min_val / delta)
 
     return delta, offset
 
+def compute_min_max_given_delta_offset(delta: float, offset: int, bitwidth: int, use_symmetric_encodings: bool,
+                                       use_strict_symmetric: bool) -> Tuple[float, float]:
+    """
+    Compute min and max given delta and offset.
+
+    :param delta: Delta to compute with
+    :param offset: Offset to compute with
+    :param bitwidth: Bitwidth for finding number of steps
+    :param use_symmetric_encodings: True if symmetric, False otherwise
+    :param use_strict_symmetric: True if using strict symmetric, False otherwise
+    :return: Tuple of computed min and max values
+    """
+    num_steps = 2 ** bitwidth - 1
+    if use_symmetric_encodings and use_strict_symmetric:
+        num_steps -= 1
+
+    min_val = delta * offset
+    max_val = (num_steps + offset) * delta
+    return min_val, max_val
 
 def recompute_grid_params(current_encoding: libpymo.TfEncoding, bitwidth: int,
-                          use_symmetric_encoding: bool) -> libpymo.TfEncoding:
+                          use_symmetric_encoding: bool, use_strict_symmetric: bool = False) -> libpymo.TfEncoding:
     """
-    Recomputed the encoding grid params - min/max/offset and delta.
+    Recomputes the encoding grid params - min/max/offset and delta.
+
     :param current_encoding: Encoding associated with the quantizer as TfEncoding
     :param bitwidth: bit width configured for the quantizer
     :param use_symmetric_encoding: symmetric or asymmetric mode
+    :param use_strict_symmetric: True if using strict symmetric, False otherwise
     :return: updated encoding params as libpymo.TfEncoding type.
     """
 
@@ -146,7 +193,7 @@ def recompute_grid_params(current_encoding: libpymo.TfEncoding, bitwidth: int,
         num_positive_steps = (2 ** (bitwidth - 1)) - 1
         abs_max_val = max(abs(max_val), abs(min_val))
         delta = abs_max_val / num_positive_steps
-        offset = -(num_positive_steps + 1)
+        offset = -(num_positive_steps + int(not use_strict_symmetric))
         # recompute min/max values
         min_val = delta * offset
         max_val = delta * num_positive_steps
@@ -188,7 +235,7 @@ def validate_quantsim_inputs(
     """
     _validate_quant_scheme(quant_scheme)
     _validate_rounding_mode(rounding_mode)
-    _validate_bitwidth(default_param_bw, default_output_bw, data_type)
+    _validate_bitwidth(default_output_bw, default_param_bw, data_type)
 
 
 def _validate_quant_scheme(quant_scheme: Union[str, QuantScheme]):
@@ -212,22 +259,22 @@ def _validate_bitwidth(default_output_bw: int,
         raise ValueError('Activation bitwidth must be between 4 and 32, not ' + str(default_output_bw))
 
     if ALLOW_EXPERIMENTAL:
-        if data_type == QuantizationDataType.float and default_output_bw not in [8, 16]:
+        if data_type == QuantizationDataType.float and default_output_bw not in [8, 16, 32]:
             raise ValueError(
-                'float data_type can only be used when default_output_bw set to 8 or 16, not ' + str(default_output_bw))
+                'float data_type can only be used when default_output_bw set to 8, 16 or 32, not ' + str(default_output_bw))
 
-        if data_type == QuantizationDataType.float and default_param_bw not in [8, 16]:
+        if data_type == QuantizationDataType.float and default_param_bw not in [8, 16, 32]:
             raise ValueError(
-                'float data_type can only be used when default_param_bw set to 8 or 16, not ' + str(default_param_bw))
+                'float data_type can only be used when default_param_bw set to 8, 16 or 32, not ' + str(default_param_bw))
 
     else:
-        if data_type == QuantizationDataType.float and default_output_bw != 16:
+        if data_type == QuantizationDataType.float and default_output_bw not in [16, 32]:
             raise ValueError(
-                'float data_type can only be used when default_output_bw set to 16, not ' + str(default_output_bw))
+                'float data_type can only be used when default_output_bw set to 16 or 32, not ' + str(default_output_bw))
 
-        if data_type == QuantizationDataType.float and default_param_bw != 16:
+        if data_type == QuantizationDataType.float and default_param_bw not in [16, 32]:
             raise ValueError(
-                'float data_type can only be used when default_param_bw set to 16, not ' + str(default_param_bw))
+                'float data_type can only be used when default_param_bw set to 16 or 32, not ' + str(default_param_bw))
 
 
 def extract_global_quantizer_args(quant_scheme: Union[str, QuantScheme],

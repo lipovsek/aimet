@@ -39,6 +39,8 @@ add_library(MoDlQuantization STATIC
       src/IQuantizationAlgorithm.hpp
       src/MainQuantizationClass.cpp
       src/MainQuantizationClass.hpp
+      src/spec_functions.hpp
+      src/spec_functions.cpp
       src/math_functions.cpp
       src/math_functions.hpp
       src/quantization_utils.cpp
@@ -50,6 +52,8 @@ add_library(MoDlQuantization STATIC
       src/TfQuantizer.hpp
       src/trim_functions.cpp
       src/trim_functions.hpp
+      src/tensor_utils.cpp
+      src/tensor_utils.hpp
 
       src/EntropyEncodingAnalyzer.cpp
       src/EntropyEncodingAnalyzer.h
@@ -61,12 +65,15 @@ add_library(MoDlQuantization STATIC
       src/TfEnhancedEncodingAnalyzer.h
       src/TfEncodingAnalyzer.h
       src/TfEncodingAnalyzer.cpp
+      src/EncodingAnalyzerWrapper.h
+      src/EncodingAnalyzerWrapper.cpp
       src/TensorQuantizationSim.h
       src/TensorQuantizationSim.cpp
       src/EncodingAnalyzerForPython.cpp
       src/TensorQuantizationSimForPython.cpp
       src/TensorQuantizer.cpp
       src/GraphQuantizer.cpp
+      src/Fp16Quantization.cpp
 
       include/DlQuantization/IQuantizer.hpp
       include/DlQuantization/Quantization.hpp
@@ -76,7 +83,11 @@ add_library(MoDlQuantization STATIC
       include/DlQuantization/EncodingAnalyzerForPython.h
       include/DlQuantization/TensorQuantizationSimForPython.h
       include/DlQuantization/TensorQuantizer.h
-      include/DlQuantization/GraphQuantizer.h )
+      include/DlQuantization/GraphQuantizer.h
+      include/DlQuantization/Fp16Quantization.hpp
+      include/DlQuantization/EncodingRescale.hpp
+      )
+
 
 if (ENABLE_CUDA)
 target_compile_options(MoDlQuantization
@@ -90,19 +101,23 @@ target_include_directories(MoDlQuantization
         ${CMAKE_CURRENT_SOURCE_DIR}/include
       )
 
-target_link_libraries(MoDlQuantization
-      PUBLIC PYBIND11
-      )
+target_link_libraries(MoDlQuantization PUBLIC
+    pybind11
+    )
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 if (ENABLE_CUDA)
 
     add_library(MoDlQuantizationCuda
-      src/math_functions.cu
+      src/spec_functions.cuh
+      src/spec_functions.cu
+
       src/cuda_util.cu
       src/trim_functions.cu
       src/cuda_util.hpp
       src/trim_functions.cuh
+      src/math_functions.cu
+      src/tensor_utils.cu
       )
 
     target_compile_options(MoDlQuantizationCuda
@@ -110,12 +125,21 @@ if (ENABLE_CUDA)
             --generate-line-info
             --use_fast_math>
             -Xcompiler -fPIC
+            -DGPU_QUANTIZATION_ENABLED=1
             )
 
 endif (ENABLE_CUDA)
 
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/DlQuantization
-        DESTINATION ${AIMET_INSTALL_DIR}/lib/x86_64-linux-gnu/include)
+if (ENABLE_TESTS)
+    add_subdirectory(test)
+endif()
 
-whl_add_whl_prep_common_target(DlQuantization)
-add_subdirectory(test)
+if (SKBUILD)
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/DlQuantization
+            DESTINATION aimet_common/x86_64-linux-gnu/include)
+else (SKBUILD)
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/DlQuantization
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/x86_64-linux-gnu/include)
+
+    whl_add_whl_prep_common_target(DlQuantization)
+endif (SKBUILD)

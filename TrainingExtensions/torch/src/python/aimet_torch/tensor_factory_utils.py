@@ -1,9 +1,8 @@
-# /usr/bin/env python3.6
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -35,27 +34,13 @@
 #
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
-"""
-Tensor factory utility method
-"""
-from typing import Union, Dict, Tuple
+""" Alias to legacy tensor_factory_utils """
+from .utils import _get_default_api, _warn_deprecated_in_v2, _deleted_module_import_error
 
-import torch
-
-
-_cache: Dict[Tuple[float, torch.device], torch.Tensor] = {}
-def constant_tensor_factory(val: float,
-                            device: Union[str, torch.device]) -> torch.Tensor:
-    """
-    Factory function to generate constant tensor or return cached object
-    :param val: value to obtain corresponding torch.Tensor
-    :param device: device str ('cpu', 'cuda', ...) or torch.device
-    :return: Constant tensor
-    """
-    if isinstance(device, str):
-        device = torch.device(device)
-    if (val, device) in _cache:
-        return _cache[(val, device)]
-    tensor = torch.tensor([val], device=device)
-    _cache[(val, device)] = tensor
-    return tensor
+if _get_default_api() == "v1":
+    from .v1.tensor_factory_utils import * # pylint: disable=wildcard-import, unused-wildcard-import
+    from .v1 import tensor_factory_utils as _v1_api
+    _warn_deprecated_in_v2(__name__,
+                           v1_legacy_api=_v1_api.__name__)
+else:
+    raise _deleted_module_import_error(name=__name__, since="2.0.0")

@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -37,11 +36,10 @@
 # =============================================================================
 
 import os
-import signal
 import unittest
 import numpy as np
 import torch
-import torch.nn as nn
+import tempfile
 from bokeh.models import Range1d
 from bokeh.plotting import figure
 from aimet_common.utils import AimetLogger, kill_process_with_name_and_port_number, start_bokeh_server_session
@@ -89,21 +87,26 @@ class VisualizeNetwork(unittest.TestCase):
         self.assertEqual(total_weights_expected, total_weights_actual)
 
     def test_progress_bar(self):
-        visualization_url, process = start_bokeh_server_session(8002)
-        bokeh_session = BokehServerSession(url=visualization_url, session_id="test")
-        progress_bar = ProgressBar(total=10, bokeh_document=bokeh_session, title="testing", color="green")
-        for i in range(10):
+        process = None
+        try:
+            visualization_url, process = start_bokeh_server_session()
+            bokeh_session = BokehServerSession(url=visualization_url, session_id="test")
+            progress_bar = ProgressBar(total=10, bokeh_document=bokeh_session, title="testing", color="green")
+            for i in range(10):
+                progress_bar.update()
             progress_bar.update()
-        progress_bar.update()
-        self.assertEqual(progress_bar.calculate_percentage_complete(), 100.0)
-        bokeh_session.server_session.close("test complete")
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            self.assertEqual(progress_bar.calculate_percentage_complete(), 100.0)
+            bokeh_session.server_session.close("test complete")
+        finally:
+            if process:
+                process.terminate()
+                process.join()
 
     def test_show_zoomed_in_plot_from_start(self):
         layout = bokeh_plots.PlotsLayout()
 
         # create a new plot with a range set with a tuple
-        p = figure(plot_width=400, plot_height=400, x_range=(0, 20))
+        p = figure(width=400, height=400, x_range=(0, 20))
 
         # set a range using a Range1d
         p.y_range = Range1d(0, 15)
@@ -115,15 +118,20 @@ class VisualizeNetwork(unittest.TestCase):
         layout.complete_layout()
 
     def test_invoke_progress_bar(self):
-        visualization_url, process = start_bokeh_server_session(8002)
-        bokeh_session = BokehServerSession(url=visualization_url, session_id="test")
-        progress_bar = ProgressBar(80, title="Some Title Goes Here", color="green", bokeh_document=bokeh_session)
+        process = None
+        try:
+            visualization_url, process = start_bokeh_server_session()
+            bokeh_session = BokehServerSession(url=visualization_url, session_id="test")
+            progress_bar = ProgressBar(80, title="Some Title Goes Here", color="green", bokeh_document=bokeh_session)
 
-        for i in range(80):
+            for i in range(80):
+                progress_bar.update()
             progress_bar.update()
-        progress_bar.update()
-        bokeh_session.server_session.close("test complete")
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            bokeh_session.server_session.close("test complete")
+        finally:
+            if process:
+                process.terminate()
+                process.join()
 
     def test_module_data_frame_mapping(self):
         layer_weights_map = plotting_utils.map_all_module_weights_to_data_frame(model)
@@ -137,7 +145,5 @@ class VisualizeNetwork(unittest.TestCase):
         self.assertEqual(num_conv_and_linear_layers, len(layer_weights_map))
 
     def test_line_plot_visualizations_per_layer(self):
-        results_dir = 'artifacts'
-        if not os.path.exists('artifacts'):
-            os.makedirs('artifacts')
-        plot = visualize_model.visualize_relative_weight_ranges_to_identify_problematic_layers(model, results_dir)
+        with tempfile.TemporaryDirectory() as tempdir:
+            plot = visualize_model.visualize_relative_weight_ranges_to_identify_problematic_layers(model, tempdir)

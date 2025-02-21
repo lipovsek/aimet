@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -212,19 +211,19 @@ class DataSubSampler:
         :return: input_data, output_data
         """
 
-        def _hook_to_collect_input_data(module, inp_data, _):
+        def _hook_to_collect_input_data(module, inp_data, _):  # pylint: disable=unused-argument
             """
             hook to collect input data
             """
-            inp_data = utils.to_numpy(inp_data[0])
+            inp_data = inp_data[0].detach().cpu().numpy()
             pruned_layer_inp_data.append(inp_data)
             raise StopForwardException
 
-        def _hook_to_collect_output_data(module, _, out_data):
+        def _hook_to_collect_output_data(module, _, out_data):  # pylint: disable=unused-argument
             """
             hook to collect output data
             """
-            out_data = utils.to_numpy(out_data)
+            out_data = out_data.detach().cpu().numpy()
             orig_layer_out_data.append(out_data)
             raise StopForwardException
 
@@ -252,13 +251,13 @@ class DataSubSampler:
             raise ValueError("There are insufficient batches of data in the provided data loader for the "
                              "purpose of weight reconstruction or number of reconstruction samples!")
 
-        hook_handles = list()
+        hook_handles = []
 
-        orig_layer_out_data = list()
-        pruned_layer_inp_data = list()
+        orig_layer_out_data = []
+        pruned_layer_inp_data = []
 
-        all_sub_sampled_inp_data = list()
-        all_sub_sampled_out_data = list()
+        all_sub_sampled_inp_data = []
+        all_sub_sampled_out_data = []
 
         # register forward hooks
         hook_handles.append(cls._register_fwd_hook_for_layer(orig_layer, _hook_to_collect_output_data))

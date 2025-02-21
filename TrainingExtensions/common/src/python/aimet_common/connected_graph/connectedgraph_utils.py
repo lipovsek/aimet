@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -38,20 +37,48 @@
 """ Utilities for ConnectedGraph """
 import json
 import os
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Set
 from aimet_common.connected_graph.connectedgraph import ConnectedGraph, get_ordered_ops
 from aimet_common.connected_graph.operation import Op
+
+# Op type of ConnectedGraph Split to distinguish from native split operation
+CG_SPLIT = "CG_Split"
 
 
 def get_all_input_ops(conn_graph: ConnectedGraph) -> List[Op]:
     """
-    Return a list of all operations with no inputs
+    Return a list of all operations with model inputs as inputs.
+
     :param conn_graph: Connected graph to search for input ops in
     :return: List of all operations with no inputs
     """
+
     all_ops = conn_graph.get_all_ops().values()
-    input_ops = [op for op in all_ops if not op.input_ops]
+    input_ops = []
+    for op in all_ops:
+        for item in op.inputs:
+            if not item.producer and item.is_model_input:
+                if op not in input_ops:
+                    input_ops.append(op)
+
     return input_ops
+
+
+def get_all_ops_with_constant_inputs(conn_graph: ConnectedGraph) -> Set[Op]:
+    """
+    Return a set of all operations with constant inputs.
+
+    :param conn_graph: Connected graph to search for constant input ops in
+    :return: Set of all operations with constant inputs
+    """
+
+    constant_input_ops = set()
+    for op in conn_graph.get_all_ops().values():
+        for product in op.inputs:
+            if product.is_const:
+                constant_input_ops.add(op)
+
+    return constant_input_ops
 
 
 def get_all_output_ops(conn_graph: ConnectedGraph) -> List[Op]:

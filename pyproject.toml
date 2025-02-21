@@ -1,0 +1,50 @@
+[build-system]
+requires = [
+  "scikit-build-core[wheels]>=0.10",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+#name = "aimet"
+requires-python = ">=3.8"
+dynamic = ["name", "dependencies", "version", "optional-dependencies"]
+
+[project.optional-dependencies]
+# Expected types of extras:
+# dev = [
+#   ...
+# ]
+# test = [
+#   ...
+# ]
+# docs = [
+#   ...
+# ]
+# "v1-deps" = [
+#   "torch==x.y.z" # This will be used only for ``pip install aimet-torch[v1-deps]``
+# ]
+
+[tool.scikit-build]
+experimental = true
+metadata.name = { provider = "aimet", provider-path = "packaging/plugins/local" }
+metadata.dependencies = { provider = "aimet", provider-path = "packaging/plugins/local" }
+metadata.version = { provider="aimet", provider-path = "packaging/plugins/local" }
+metadata.optional-dependencies = { provider="aimet", provider-path = "packaging/plugins/local" }
+build-dir = "build"
+sdist.cmake = false
+logging.level = "DEBUG"
+strict-config = false
+wheel.license-files=[]
+wheel.packages=[]
+
+[tool.scikit-build.cmake.define]
+CMAKE_BUILD_TYPE="RelWithDebInfo"
+CMAKE_CUDA_ARCHITECTURES="70;75;80"
+CMAKE_CUDA_FLAGS="--threads=8"
+
+[tool.pytest.ini_options]
+xfail_strict = true
+addopts = ["-ra", "--showlocals", "--strict-markers", "--strict-config", "-m", "not cuda"]
+markers = [
+    "cuda: test that require CUDA to be installed",
+]

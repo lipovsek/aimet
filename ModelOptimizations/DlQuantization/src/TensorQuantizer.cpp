@@ -2,7 +2,7 @@
 //
 //  @@-COPYRIGHT-START-@@
 //
-//  Copyright (c) 2020 - 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+//  Copyright (c) 2020 - 2023, Qualcomm Innovation Center, Inc. All rights reserved.
 //
 //  Redistribution and use in source and binary forms, with or without
 //  modification, are permitted provided that the following conditions are met:
@@ -165,9 +165,15 @@ void TensorQuantizer::computeEncodingFromData(uint8_t bw, const float* data, siz
 void TensorQuantizer::quantizeDequantize(const float* input, std::size_t tensorSize, float* output, double encodingMin,
                                          double encodingMax, unsigned int bitwidth, bool useCuda)
 {
+    quantizeDequantize(input, tensorSize, output, encodingMin, encodingMax, bitwidth, useCuda, nullptr);
+}
+
+void TensorQuantizer::quantizeDequantize(const float* input, std::size_t tensorSize, float* output, double encodingMin,
+                                         double encodingMax, unsigned int bitwidth, bool useCuda, void* stream)
+{
     assert(isEncodingValid);
     _tensorQuantizationSim->quantizeDequantizeTensor(input, tensorSize, output, encodingMin, encodingMax, bitwidth,
-                                                     roundingMode, useCuda);
+                                                     roundingMode, useCuda, stream);
 }
 
 void TensorQuantizer::quantizeTensorPacked(const float* input, std::size_t tensorSize, std::vector<uint8_t>& output,
@@ -229,6 +235,26 @@ std::vector<std::tuple<double, double>> TensorQuantizer::getStatsHistogram()
     auto histogram = _encodingAnalyzer->getStatsHistogram();
     return histogram;
 }
+
+void TensorQuantizer::setPercentileValue(float percentile)
+{
+    // Set percentile value only when quant scheme is percentile.
+    if (_quantScheme == DlQuantization::QuantizationMode::QUANTIZATION_PERCENTILE)
+    {
+        _encodingAnalyzer->setPercentileValue(percentile);
+    }
+}
+
+float TensorQuantizer::getPercentileValue()
+{
+    if (_quantScheme == DlQuantization::QuantizationMode::QUANTIZATION_PERCENTILE)
+    {
+        return _encodingAnalyzer->getPercentileValue();
+    }
+    else
+        throw std::runtime_error("Percentile Value only exists in case of percentile quant scheme.");
+}
+
 void TensorQuantizer::generatePerChannelEncodings(const float* input, const std::vector<uint32_t>& inputShape,
                                                   uint32_t axis, std::vector<TfEncoding>& encodings, uint32_t bw,
                                                   std::vector<std::vector<float>>& splits,
@@ -303,7 +329,8 @@ void TensorQuantizer::computePartialEncoding(uint8_t bw, TfEncoding& encoding, b
 {
     if (encoding.min == 0 && encoding.max == 0)
     {
-        computeMinMaxRangeFromDeltaOffset(bw, encoding, useSymmetricEncodings, useUnsignedSymmetric, useStrictSymmetric);
+        computeMinMaxRangeFromDeltaOffset(bw, encoding, useSymmetricEncodings, useUnsignedSymmetric,
+                                          useStrictSymmetric);
     }
     else if (encoding.delta == 0)
     {

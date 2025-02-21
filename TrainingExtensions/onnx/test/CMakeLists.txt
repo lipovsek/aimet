@@ -36,21 +36,54 @@
 
 if (ENABLE_CUDA)
     add_test(OnnxTrainingExtensionTest
-            pytest ${CMAKE_CURRENT_SOURCE_DIR} --junitxml=${CMAKE_CURRENT_BINARY_DIR}/py_test_output.xml
+            ${Python3_EXECUTABLE} -m pytest ${CMAKE_CURRENT_SOURCE_DIR} --junitxml=${CMAKE_CURRENT_BINARY_DIR}/py_test_output.xml
             )
 
 else (ENABLE_CUDA)
     add_test(OnnxTrainingExtensionTest
-            pytest ${CMAKE_CURRENT_SOURCE_DIR} -m "not cuda" --junitxml=${CMAKE_CURRENT_BINARY_DIR}/py_test_output.xml
+            ${Python3_EXECUTABLE} -m pytest ${CMAKE_CURRENT_SOURCE_DIR} -m "not cuda" --junitxml=${CMAKE_CURRENT_BINARY_DIR}/py_test_output.xml
             )
 
 endif (ENABLE_CUDA)
 
-set_property(TEST OnnxTrainingExtensionTest
-      APPEND PROPERTY ENVIRONMENT "${AIMET_PYTHONPATH}")
+add_subdirectory(python/models/customops)
+
+if(NOT DEFINED ENV{FAST_RELEASE})
+    # When building PyPI wheel packages (aka FAST_RELEASE),
+    # we only want to test the pure wheel package without relying on any other build artifacts
+    set_property(TEST OnnxTrainingExtensionTest
+          APPEND PROPERTY ENVIRONMENT "${AIMET_PYTHONPATH}")
+endif()
 
 if(DEFINED ENV{DEPENDENCY_DATA_PATH})
-set_property(TEST OnnxTrainingExtensionTest
-      APPEND PROPERTY ENVIRONMENT "${DEPENDENCY_DATA_PATH}")
+    set_property(TEST OnnxTrainingExtensionTest
+        APPEND PROPERTY ENVIRONMENT "${DEPENDENCY_DATA_PATH}")
 endif(DEFINED ENV{DEPENDENCY_DATA_PATH})
 
+if (ENABLE_CUDA)
+    add_executable(OnnxTrainingExtensionCppTest
+            TestOnnxTensorOps.cpp)
+
+    target_compile_options(OnnxTrainingExtensionCppTest
+            PRIVATE
+            -DONNX_CUDA=1
+            )
+
+    target_include_directories(OnnxTrainingExtensionCppTest PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../src
+            ${EIGEN3_INCLUDE_DIR}
+            ${ONNXRUNTIME_INCLUDE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../common/include
+            )
+
+    target_link_libraries(OnnxTrainingExtensionCppTest
+            gtest_main
+            OnnxCppOps
+            MoDlQuantization
+            MoDlQuantizationCuda
+            CUDA::cublas
+            )
+
+    add_test(OnnxTrainingExtensionCppTest
+            OnnxTrainingExtensionCppTest --gtest_output=xml:cpp_test_output.xml)
+endif (ENABLE_CUDA)

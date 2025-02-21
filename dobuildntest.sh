@@ -58,6 +58,8 @@ run_acceptance_tests=0
 
 EXIT_CODE=0
 
+variant_docs="tf-torch-cpu"
+
 # Array to store python source file paths
 declare -a PYTHON_SRC_PATHS=()
 # Variable to store python source file paths
@@ -209,6 +211,7 @@ fi
 echo "Starting AIMET build and test..."
 workspaceFolder=`readlink -f ${workspaceFolder}`
 buildFolder=$workspaceFolder/build
+installFolder=$workspaceFolder/build/staging/universal
 artifactsFolder=$buildFolder/artifacts
 AIMET_TORCH_HOME=${buildFolder}/torch_pretrain_data
 
@@ -254,12 +257,40 @@ if [ $run_prep -eq 1 ]; then
     ## wget -N https://download.pytorch.org/models/resnet18-5c106cde.pth -P ${AIMET_TORCH_HOME}/checkpoints
     ## wget -N https://download.pytorch.org/models/inception_v3_google-1a9a5a14.pth -P ${AIMET_TORCH_HOME}/checkpoints
 
+    github_url="https://github.com"
+    if [[ ${GITHUB_MIRROR_URL} ]]; then
+        github_url=${GITHUB_MIRROR_URL}
+        export GIT_SSH_COMMAND='ssh -i /tmp/.ssh/id_rsa -o "StrictHostKeyChecking=no"'
+    fi
+    echo -e "Using ${github_url} for public repos..."
+
     # Clone the google test repo if not already present
-    google_test_path="${workspaceFolder}/ThirdParty/googletest/googletest-release-1.8.0"
+    google_test_path="${workspaceFolder}/ThirdParty/google/googletest-release-1.12.1"
     if [ ! -e ${google_test_path} ]; then
-        mkdir -p $workspaceFolder/ThirdParty/googletest
-        pushd $workspaceFolder/ThirdParty/googletest
-        git clone https://github.com/google/googletest.git -b release-1.8.0 googletest-release-1.8.0
+        echo "Setting up googletest from internal sources"
+        mkdir -p ${workspaceFolder}/ThirdParty/google
+        pushd ${workspaceFolder}/ThirdParty/google
+        if [[ -f "${DEPENDENCY_DATA_PATH}/googletest.zip" ]]; then
+            unzip ${DEPENDENCY_DATA_PATH}/googletest.zip
+        else
+            echo "WARNING.! fetching googletest from external sources"
+            git clone ${github_url}/google/googletest.git -b release-1.12.1 googletest-release-1.12.1
+        fi
+        popd
+        check_stage $? "Preparation" "true"
+    else
+        echo "googletest package exists.. proceeding further"
+    fi
+
+    # Clone patchelf repo if not already present
+    patch_elf_path="${buildFolder}/_deps/patchelf-src/bin/patchelf"
+    if [ ! -e ${patch_elf_path} ]; then
+        echo "Setting up patchelf from Internal sources"
+        mkdir -p ${buildFolder}/_deps/patchelf-src/
+        pushd ${buildFolder}/_deps/patchelf-src/
+        if [[ -f "${DEPENDENCY_DATA_PATH}/patchelf.tar.gz" ]]; then
+            tar -xvzf ${DEPENDENCY_DATA_PATH}/patchelf.tar.gz
+        fi
         popd
         check_stage $? "Preparation" "true"
     fi
@@ -287,13 +318,22 @@ if [ $run_prep -eq 1 ]; then
             python_src_path_endings+=("Examples/torch/utils")
             pycov_dir_endings+=("TrainingExtensions/torch/src/python:TrainingExtensions/torch/test")
         fi
+        if [[ "$AIMET_VARIANT" == *"onnx"* ]]; then
+            python_src_path_endings+=("TrainingExtensions/onnx/src/python/aimet_onnx")
+            python_src_path_endings+=("Examples/onnx/quantization")
+            python_src_path_endings+=("Examples/onnx/utils")
+            pycov_dir_endings+=("TrainingExtensions/onnx/src/python:TrainingExtensions/onnx/test")
+        fi
     else
-        # For default variant, add both tensorflow and/or torch paths
+        # For default variant, add both tensorflow and/or torch and/or onnx paths
         python_src_path_endings+=("TrainingExtensions/tensorflow/src/python/aimet_tensorflow")
         pycov_dir_endings+=("TrainingExtensions/tensorflow/src/python:TrainingExtensions/tensorflow/test")
 
         python_src_path_endings+=("TrainingExtensions/torch/src/python/aimet_torch")
         pycov_dir_endings+=("TrainingExtensions/torch/src/python:TrainingExtensions/torch/test")
+
+        python_src_path_endings+=("TrainingExtensions/onnx/src/python/aimet_onnx")
+        pycov_dir_endings+=("TrainingExtensions/onnx/src/python:TrainingExtensions/onnx/test")
 
         python_src_path_endings+=("Examples/torch/compression")
         python_src_path_endings+=("Examples/torch/quantization")
@@ -301,7 +341,8 @@ if [ $run_prep -eq 1 ]; then
         python_src_path_endings+=("Examples/tensorflow/compression")
         python_src_path_endings+=("Examples/tensorflow/quantization")
         python_src_path_endings+=("Examples/tensorflow/utils")
-
+        python_src_path_endings+=("Examples/onnx/quantization")
+        python_src_path_endings+=("Examples/onnx/utils")
     fi
 
     # Populate an array of python src paths for use in later stages
@@ -356,169 +397,179 @@ if [ $run_build -eq 1 ]; then
     cd $buildFolder
 
     extra_opts=""
+
     if [ -n "$SW_VERSION" ]; then
         extra_opts+=" -DSW_VERSION=${SW_VERSION}"
     fi
-    # Add build options based on variant
+
     if [ -n "$AIMET_VARIANT" ]; then
+        # Add build options based on variant
         if [[ "$AIMET_VARIANT" == *"gpu"* ]]; then
             extra_opts+=" -DENABLE_CUDA=ON"
-        fi
-        if [[ "$AIMET_VARIANT" == *"cpu"* ]]; then
+        elif [[ "$AIMET_VARIANT" == *"cpu"* ]]; then
             extra_opts+=" -DENABLE_CUDA=OFF"
         fi
-        if [[ "$AIMET_VARIANT" == *"tf"* ]]; then
-            extra_opts+=" -DENABLE_TENSORFLOW=ON"
-        fi
-        if [[ "$AIMET_VARIANT" == *"torch"* ]]; then
-            extra_opts+=" -DENABLE_TORCH=ON"
-        fi
-        if [[ "$AIMET_VARIANT" != *"tf"* ]]; then
-            extra_opts+=" -DENABLE_TENSORFLOW=OFF"
-        fi
-        if [[ "$AIMET_VARIANT" != *"torch"* ]]; then
-            extra_opts+=" -DENABLE_TORCH=OFF"
+        if [[ "$AIMET_VARIANT" == "${variant_docs}" ]]; then
+            # For doc variant, cmake "test" targets are NOT supported AND we need to enable all frameworks.
+            extra_opts+=" -DENABLE_TESTS=OFF -DENABLE_TENSORFLOW=ON -DENABLE_TORCH=ON -DENABLE_ONNX=ON"
+        elif [[ "$AIMET_VARIANT" == *"tf"* ]]; then
+            extra_opts+=" -DENABLE_TENSORFLOW=ON -DENABLE_TORCH=OFF -DENABLE_ONNX=OFF"
+        elif [[ "$AIMET_VARIANT" == *"torch"* ]]; then
+            extra_opts+=" -DENABLE_TENSORFLOW=OFF -DENABLE_TORCH=ON -DENABLE_ONNX=OFF"
+        elif [[ "$AIMET_VARIANT" == *"onnx"* ]]; then
+            extra_opts+=" -DENABLE_TENSORFLOW=OFF -DENABLE_TORCH=OFF -DENABLE_ONNX=ON"
+        else
+            echo -e "ERROR: Invalid variant string!"
+            exit 3
         fi
     fi
     # Do not exit on failure by default from this point forward
     set +e
-    cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ${extra_opts} ..
+    cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_INSTALL_PREFIX=${installFolder} ${extra_opts} ..
 
     make -j 8
     check_stage $? "Build" "true"
 
-    echo -e "\n********** Stage 2a: Generate Docs **********\n"
-    if [ -n "$DOC_TARGET" ]; then
-        make ${DOC_TARGET}
-    else
-        make doc
+    if [[ "$AIMET_VARIANT" == "${variant_docs}" ]]; then
+        echo -e "\n********** Stage 2a: Generate Docs **********\n"
+        if [ -n "$DOC_TARGET" ]; then
+            make ${DOC_TARGET}
+        else
+            make doc
+        fi
+        check_stage $? "Generate Doc" "true"
     fi
-    check_stage $? "Generate Doc" "true"
 fi
 
-if [ $run_package_gen -eq 1 ]; then
-    cd $buildFolder
 
-    echo -e "\n********** Stage 2b: Install **********\n"
-    make install
-    check_stage $? "Install" "true"
+# Skip all other stages for the docs variant
+if [[ "$AIMET_VARIANT" != "${variant_docs}" ]]; then
 
-    echo -e "\n********** Stage 2c: Package **********\n"
-    make packageaimet
-    check_stage $? "Package" "true"
-fi
+    if [ $run_package_gen -eq 1 ]; then
+        cd $buildFolder
 
-if [ $run_unit_tests -eq 1 ]; then
-    echo -e "\n********** Stage 3: Unit tests **********\n"
-    cd $buildFolder
-    set +e
-    unit_test_cmd=""
-    if [[ -z ${DEPENDENCY_DATA_PATH} ]]; then
-        echo -e "DEPENDENCY_DATA_PATH was NOT set"
-    else
-        echo -e "DEPENDENCY_DATA_PATH was set to ${DEPENDENCY_DATA_PATH}"
-        unit_test_cmd+="export DEPENDENCY_DATA_PATH=${DEPENDENCY_DATA_PATH} && "
+        echo -e "\n********** Stage 2b: Install **********\n"
+        make install
+        check_stage $? "Install" "true"
+
+        echo -e "\n********** Stage 2c: Package **********\n"
+        make packageaimet
+        check_stage $? "Package" "true"
     fi
-    unit_test_cmd+="export TORCH_HOME=${AIMET_TORCH_HOME} && ctest --verbose"
-    eval " $unit_test_cmd"
-    unit_test_rc=$?
-    python ${toolsFolder}/unittesthelper.py ${workspaceFolder}
-    check_stage $unit_test_rc "Unit tests" "false"
-fi
 
-if [ $run_code_violation -eq 1 ]; then
-    echo -e "\n********** Stage 4: Code violation checks **********\n"
-    cd $workspaceFolder
-    pylint_results_dir=$outputFolder/code_violation_result
-    mkdir -p ${pylint_results_dir}
+    if [ $run_unit_tests -eq 1 ]; then
+        echo -e "\n********** Stage 3: Unit tests **********\n"
+        cd $buildFolder
+        set +e
+        unit_test_cmd=""
+        if [[ -z ${DEPENDENCY_DATA_PATH} ]]; then
+            echo -e "DEPENDENCY_DATA_PATH was NOT set"
+        else
+            echo -e "DEPENDENCY_DATA_PATH was set to ${DEPENDENCY_DATA_PATH}"
+            unit_test_cmd+="export DEPENDENCY_DATA_PATH=${DEPENDENCY_DATA_PATH} && "
+        fi
+        unit_test_cmd+="export TORCH_HOME=${AIMET_TORCH_HOME} && ctest --verbose"
+        eval " $unit_test_cmd"
+        unit_test_rc=$?
+        python ${toolsFolder}/unittesthelper.py ${workspaceFolder}
+        check_stage $unit_test_rc "Unit tests" "false"
+    fi
 
-    for python_src_path in "${PYTHON_SRC_PATHS[@]}"; do
-        # Construct the pylint results file name
-        # Remove the top-level path from the full path for brevity
-        pylint_results_file_name=$(echo ${python_src_path#${workspaceFolder}/})
-        # Replace forward slashes with underscores
-        pylint_results_file_name=$(echo $pylint_results_file_name | sed -e 's/\//_/g')        
-        # Append the suffix and extension
-        pylint_results_file_name+="_pylint_results.out"
+    if [ $run_code_violation -eq 1 ]; then
+        echo -e "\n********** Stage 4: Code violation checks **********\n"
+        cd $workspaceFolder
+        pylint_results_dir=$outputFolder/code_violation_result
+        mkdir -p ${pylint_results_dir}
 
-        PYTHONPATH=$PYTHONPATH_VALUE \
-        PYLINTHOME=${buildFolder} \
-        pylint --rcfile=${workspaceFolder}/.pylintrc -r n --msg-template='{path}:{line}: [{msg_id}({symbol}), {obj}] {msg}' ${python_src_path} 2>&1 \
-        | tee ${pylint_results_dir}/${pylint_results_file_name}
-        code_violation_result=$?
+        for python_src_path in "${PYTHON_SRC_PATHS[@]}"; do
+            # Construct the pylint results file name
+            # Remove the top-level path from the full path for brevity
+            pylint_results_file_name=$(echo ${python_src_path#${workspaceFolder}/})
+            # Replace forward slashes with underscores
+            pylint_results_file_name=$(echo $pylint_results_file_name | sed -e 's/\//_/g')        
+            # Append the suffix and extension
+            pylint_results_file_name+="_pylint_results.out"
 
-        if [ $code_violation_result -eq 0 ]; then
-            if grep -q "error:" ${pylint_results_dir}/${pylint_results_file_name}; then
-                echo -e "\n********** ${python_src_path} code violation analysis results START **********\n"
-                cat ${pylint_results_dir}/${pylint_results_file_name}
-                echo -e "\n********** ${python_src_path} code violation analysis results END **********\n"
+            PYTHONPATH=$PYTHONPATH_VALUE \
+            PYLINTHOME=${buildFolder} \
+            pylint --rcfile=${workspaceFolder}/.pylintrc -r n --msg-template='{path}:{line}: [{msg_id}({symbol}), {obj}] {msg}' ${python_src_path} 2>&1 \
+            | tee ${pylint_results_dir}/${pylint_results_file_name}
+            code_violation_result=$?
+
+            if [ $code_violation_result -eq 0 ]; then
+                if grep -q "error:" ${pylint_results_dir}/${pylint_results_file_name}; then
+                    echo -e "\n********** ${python_src_path} code violation analysis results START **********\n"
+                    cat ${pylint_results_dir}/${pylint_results_file_name}
+                    echo -e "\n********** ${python_src_path} code violation analysis results END **********\n"
+                fi
             fi
-        fi
-        check_stage $code_violation_result "Code violation checks: ${python_src_path}" "false"
-    done
-fi
-
-if [ $run_static_analysis -eq 1 ]; then
-    echo -e "\n********** Stage 5: Static analysis **********\n"
-    static_analysis_result=0
-    clangtidy_results_dir=$outputFolder
-    mkdir -p ${clangtidy_results_dir}
-    #TODO: Do not fail from the static analysis command since there are many unresolved errors
-    set +e
-    cd $buildFolder; python3 /usr/bin/run-clang-tidy.py >| ${clangtidy_results_dir}/clang-tidy_results.out
-    static_analysis_result=$?
-    set -e
-    # Check for errors in static analysis log file and if found, display the log.
-    if grep -q "error:" "${clangtidy_results_dir}/clang-tidy_results.out"; then
-        static_analysis_result=1
-        echo -e "\n********** Static analysis results START **********\n"
-        cat ${clangtidy_results_dir}/clang-tidy_results.out
-        echo -e "\n********** Static analysis results END **********\n"
+            check_stage $code_violation_result "Code violation checks: ${python_src_path}" "false"
+        done
     fi
-    check_stage $static_analysis_result "Static analysis" "false"
-fi
 
-if [ $run_acceptance_tests -eq 1 ]; then
-    echo -e "\n********** Stage 6: Acceptance tests **********\n"
-    cd $buildFolder
-    set +e
-    make AcceptanceTests
-    acceptance_test_rc=$?
-    python ${toolsFolder}/acceptancetesthelper.py ${workspaceFolder}
-    check_stage $acceptance_test_rc "Acceptance tests" "false"
-fi
-
-if [ $run_code_coverage -eq 1 ]; then
-    echo -e "\n********** Stage 7: Code coverage **********\n"
-    set +e
-    pycov_results_dir=$outputFolder/coverage_test_results
-
-    # Loop over the code coverage paths
-    for ((index=0;index<${#PYCOV_SRC_PATHS[@]};++index)); do
-        pycov_src_path=${PYCOV_SRC_PATHS[index]}
-        pycov_test_path=${PYCOV_TEST_PATHS[index]}
-
-	    # Verify that the directories exist
-        if [ ! -d ${pycov_src_path} ] || [ ! -d ${pycov_test_path} ]; then
-            echo -e "\n[ERROR] Code coverage directories do not exist\n"
-            coverage_test_rc=1
+    if [ $run_static_analysis -eq 1 ]; then
+        echo -e "\n********** Stage 5: Static analysis **********\n"
+        static_analysis_result=0
+        clangtidy_results_dir=$outputFolder
+        mkdir -p ${clangtidy_results_dir}
+        #TODO: Do not fail from the static analysis command since there are many unresolved errors
+        set +e
+        cd $buildFolder; python3 /usr/bin/run-clang-tidy.py >| ${clangtidy_results_dir}/clang-tidy_results.out
+        static_analysis_result=$?
+        set -e
+        # Check for errors in static analysis log file and if found, display the log.
+        if grep -q "error:" "${clangtidy_results_dir}/clang-tidy_results.out"; then
+            static_analysis_result=1
+            echo -e "\n********** Static analysis results START **********\n"
+            cat ${clangtidy_results_dir}/clang-tidy_results.out
+            echo -e "\n********** Static analysis results END **********\n"
         fi
+        check_stage $static_analysis_result "Static analysis" "false"
+    fi
 
-        # Construct the code coverage results file name
-        # Remove the top-level path from the full path for brevity
-        pycov_results_file_name=$(echo ${pycov_src_path#${workspaceFolder}/})
-        # Replace forward slashes with underscores
-        pycov_results_file_name=$(echo $pycov_results_file_name | sed -e 's/\//_/g')
-        # Append the suffix and extension
-        pycov_results_file_name+="_code_coverage.xml"
+    if [ $run_acceptance_tests -eq 1 ]; then
+        echo -e "\n********** Stage 6: Acceptance tests **********\n"
+        cd $buildFolder
+        set +e
+        make AcceptanceTests
+        acceptance_test_rc=$?
+        python ${toolsFolder}/acceptancetesthelper.py ${workspaceFolder}
+        check_stage $acceptance_test_rc "Acceptance tests" "false"
+    fi
 
-        # Run the code coverage
-        TORCH_HOME=${AIMET_TORCH_HOME} PYTHONPATH=$PYTHONPATH_VALUE py.test --cov=${pycov_src_path} ${pycov_test_path} --cov-report xml:${pycov_results_dir}/${pycov_results_file_name}
-        coverage_test_rc=$?
-        cp -a ${pycov_results_dir}/${pycov_results_file_name} $outputFolder
-    done
-    check_stage $coverage_test_rc "Code coverage" "false"
-fi
+    if [ $run_code_coverage -eq 1 ]; then
+        echo -e "\n********** Stage 7: Code coverage **********\n"
+        set +e
+        pycov_results_dir=$outputFolder/coverage_test_results
+
+        # Loop over the code coverage paths
+        for ((index=0;index<${#PYCOV_SRC_PATHS[@]};++index)); do
+            pycov_src_path=${PYCOV_SRC_PATHS[index]}
+            pycov_test_path=${PYCOV_TEST_PATHS[index]}
+
+            # Verify that the directories exist
+            if [ ! -d ${pycov_src_path} ] || [ ! -d ${pycov_test_path} ]; then
+                echo -e "\n[ERROR] Code coverage directories do not exist\n"
+                coverage_test_rc=1
+            fi
+
+            # Construct the code coverage results file name
+            # Remove the top-level path from the full path for brevity
+            pycov_results_file_name=$(echo ${pycov_src_path#${workspaceFolder}/})
+            # Replace forward slashes with underscores
+            pycov_results_file_name=$(echo $pycov_results_file_name | sed -e 's/\//_/g')
+            # Append the suffix and extension
+            pycov_results_file_name+="_code_coverage.xml"
+
+            # Run the code coverage
+            TORCH_HOME=${AIMET_TORCH_HOME} PYTHONPATH=$PYTHONPATH_VALUE py.test --cov=${pycov_src_path} ${pycov_test_path} --cov-report xml:${pycov_results_dir}/${pycov_results_file_name}
+            coverage_test_rc=$?
+            cp -a ${pycov_results_dir}/${pycov_results_file_name} $outputFolder
+        done
+        check_stage $coverage_test_rc "Code coverage" "false"
+    fi
+
+fi # end if [[ "$AIMET_VARIANT" != "${variant_docs}" ]]
 
 echo -e "\n outputFolder = ${outputFolder}"
 if grep -q FAIL "${outputFolder}/summary.txt"; then
@@ -526,4 +577,3 @@ if grep -q FAIL "${outputFolder}/summary.txt"; then
 fi
 
 exit $EXIT_CODE
-

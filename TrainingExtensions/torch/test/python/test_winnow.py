@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -47,9 +46,9 @@ Scenario 4 : conv2d/Linear with zero planes right below an Add layer
  """
 
 import os
+import tempfile
 import pytest
 import unittest
-import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -57,17 +56,16 @@ import torchvision
 from torchvision import models
 from aimet_common.utils import AimetLogger
 from aimet_common.winnow.winnow_utils import OpConnectivity, ConnectivityType
-from aimet_torch.examples.test_models import ModuleListModel, SingleResidual
+from .models.test_models import ModuleListModel, SingleResidual
 from aimet_torch.winnow.winnow import winnow_model
 from aimet_torch.winnow.mask_propagation_winnower import MaskPropagationWinnower
 from aimet_torch.winnow.winnow_utils import zero_out_input_channels, search_for_zero_planes, DownsampleLayer
 from aimet_torch.utils import get_layer_name
 from aimet_torch.meta.connectedgraph import ConnectedGraph
-from aimet_torch.examples.mobilenet import MobileNetV2, MobileNetV1
+from .models.mobilenet import MobileNetV2, MobileNetV1
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Test)
 
-# pylint: disable=too-many-lines
 
 def mobilenetv1(pretrained=False, **_):
     """Constructs a MobileNetV1 model.
@@ -148,7 +146,7 @@ def get_network_dict():
     return network_dict
 
 
-def get_model(share_weights=False, upsample=False):     # pylint: disable=too-many-statements
+def get_model(share_weights=False, upsample=False):
     """ Return a network dict for the model """
     block0 = [{'conv1_1': [3, 64, 3, 1, 1]},
               {'conv1_2': [64, 64, 3, 1, 1]}, {'pool1_stage1': [2, 2, 0]},
@@ -275,7 +273,7 @@ def get_model(share_weights=False, upsample=False):     # pylint: disable=too-ma
 ###############################################################################
 
 
-class AnotherSingleResidual(nn.Module):     # pylint: disable=too-many-instance-attributes
+class AnotherSingleResidual(nn.Module):
     """ A model with a single residual connection.
         Use this model for unit testing purposes. """
 
@@ -332,7 +330,7 @@ class AnotherSingleResidual(nn.Module):     # pylint: disable=too-many-instance-
         return x
 
 
-class SingleResidualScenario4(nn.Module):       # pylint: disable=too-many-instance-attributes
+class SingleResidualScenario4(nn.Module):
     """ A model with a single residual connection.
         Use this model for unit testing purposes. """
 
@@ -377,7 +375,7 @@ class SingleResidualScenario4(nn.Module):       # pylint: disable=too-many-insta
         return x
 
 
-class DualResidual(nn.Module):      # pylint: disable=too-many-instance-attributes
+class DualResidual(nn.Module):
     """ A model with a two residual connections.
         Use this model for unit testing purposes. """
 
@@ -481,9 +479,9 @@ pretrained_settings = {
 }
 
 
-class BNInceptionModule(nn.Module):     # pylint: disable=too-many-instance-attributes
+class BNInceptionModule(nn.Module):
     """ BNInception submodule class """
-    def __init__(self, in_dim, dim1x1, dimr3x3, dim3x3,     # pylint: disable=too-many-arguments
+    def __init__(self, in_dim, dim1x1, dimr3x3, dim3x3,
                  dimdr3x3, dimd3x3, dimp, pool='avg'):
         """
             pool: 'avg' or 'max'
@@ -523,7 +521,7 @@ class BNInceptionModule(nn.Module):     # pylint: disable=too-many-instance-attr
             in_dim, dimp, kernel_size=1, stride=1)
         self.bnincept_pool_proj_bn = nn.BatchNorm2d(dimp, momentum=0.1)
 
-    def forward(self, *inputs):     # pylint: disable=too-many-locals
+    def forward(self, *inputs):
         out_1x1 = self.bnincept_1x1(inputs[0])
         out_1x1_bn = self.bnincept_1x1_bn(out_1x1)
         _ = self.relu(out_1x1_bn)
@@ -552,7 +550,7 @@ class BNInceptionModule(nn.Module):     # pylint: disable=too-many-instance-attr
         return output
 
 
-class BNInceptionStrideModule(nn.Module):       # pylint: disable=too-many-instance-attributes
+class BNInceptionStrideModule(nn.Module):
     """ BNInception Stride Module class """
     def __init__(self, in_dim, dimr3x3, dim3x3, dimdr3x3, dimd3x3):
         super(BNInceptionStrideModule, self).__init__()
@@ -598,7 +596,7 @@ class BNInceptionStrideModule(nn.Module):       # pylint: disable=too-many-insta
         return output
 
 
-class BNInception(nn.Module):       # pylint: disable=too-many-instance-attributes
+class BNInception(nn.Module):
     """ BNInception class """
     def __init__(self, num_classes=1000, reduction=True):
         super(BNInception, self).__init__()
@@ -714,11 +712,11 @@ def bninception(num_classes=1000, pretrained='imagenet'):
         assert num_classes == settings['num_classes'], \
             "num_classes should be {}, but is {}".format(settings['num_classes'], num_classes)
         # model.load_state_dict(model_zoo.load_url(settings['url']))
-        model.input_space = settings['input_space']     # pylint: disable=attribute-defined-outside-init
-        model.input_size = settings['input_size']       # pylint: disable=attribute-defined-outside-init
-        model.input_range = settings['input_range']     # pylint: disable=attribute-defined-outside-init
-        model.mean = settings['mean']                   # pylint: disable=attribute-defined-outside-init
-        model.std = settings['std']                     # pylint: disable=attribute-defined-outside-init
+        model.input_space = settings['input_space']
+        model.input_size = settings['input_size']
+        model.input_range = settings['input_range']
+        model.mean = settings['mean']
+        model.std = settings['std']
     return model
 
 # ########################################################################################################
@@ -753,7 +751,7 @@ def load_model_vgg16(local_path):
     return model
 
 
-class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=too-many-public-methods
+class TestTrainingExtensionsWinnow(unittest.TestCase):
     """ Unit test cases for winnowing. """
 
     def test_winnowing_partial(self):
@@ -958,7 +956,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
     def test_winnowing_resnet18_onnx_export(self):
         """ Tests winnowing resnet18 with multiple layers  with zero planes. """
 
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18()
         model.eval()
 
         input_shape = [1, 3, 224, 224]
@@ -1006,15 +1004,13 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
         input_tensor = torch.rand(input_shape)
 
         # Save the model as ONNX.
-        path = './data/'
-        if not os.path.exists(path):
-            os.makedirs(path)
-        filename = 'winnowed_index_select' + '.onnx'
-        final_path = os.path.join(path, filename)
-        torch.onnx.export(new_model, input_tensor, final_path, verbose=True, export_params=True,
-                          operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK)
-        print("Saved the winnowed model as ONNX")
-        self.assertEqual(0, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filename = 'winnowed_index_select' + '.onnx'
+            final_path = os.path.join(tmpdir, filename)
+            torch.onnx.export(new_model, input_tensor, final_path, verbose=True, export_params=True,
+                              operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK)
+            print("Saved the winnowed model as ONNX")
+            self.assertEqual(0, 0)
 
     def test_winnowing_single_layer_below_add_single_residual_scenario4(self):
         """ Tests the simple single residual model for Scenario 4. """
@@ -1085,7 +1081,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
         """ Tests the winnow_model() API for winnowing resnet18 with
         multiple layers  with zero planes."""
 
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18()
         model.eval()
         zeroed_model = zero_out_select_input_channels(model)
         input_shape = (1, 3, 224, 224)
@@ -1107,7 +1103,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
         Tests the winnow_model() API and check the memory leak
         """
 
-        model = models.resnet18(pretrained=True).cuda()
+        model = models.resnet18().cuda()
         model.eval()
         zeroed_model = zero_out_select_input_channels(model)
         input_shape = (1, 3, 224, 224)
@@ -1134,7 +1130,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
         """ Tests the winnow_model() API for winnowing resnet18 with
         multiple layers  with zero planes."""
 
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18()
         zeroed_model = zero_out_select_input_channels(model)
         input_shape = (1, 3, 224, 224)
         # winnow_model() API.
@@ -1153,7 +1149,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
     def test_winnow_model_inplace_known_zero_planes_api(self):
         """ Tests winnowing resnet18 with multiple layers  with zero planes. """
 
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18()
         model.eval()
         input_shape = (1, 3, 224, 224)
         module_zero_channels_list = create_list_of_modules_to_winnow(model)
@@ -1182,7 +1178,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
     def test_winnow_copy_of_model_known_zero_planes_api(self):
         """ Tests winnowing resnet18 with multiple layers  with zero planes. """
 
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18()
         model.eval()
         input_shape = (1, 3, 224, 224)
         module_zero_channels_list = create_list_of_modules_to_winnow(model)
@@ -1304,7 +1300,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
     def test_winnowing_resnet18_on_cuda(self):
         """ Tests winnowing resnet18 with multiple layers  with zero planes. """
 
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18()
         model.eval()
         model = model.cuda()
         input_shape = (1, 3, 224, 224)
@@ -1343,7 +1339,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
         OpConnectivity.pytorch_dict['adaptive_avg_pool2d'] = ConnectivityType.direct
         OpConnectivity.pytorch_dict['dropout'] = ConnectivityType.direct
         OpConnectivity.pytorch_dict['flatten'] = ConnectivityType.skip
-        model = models.inception_v3(pretrained=True)
+        model = models.inception_v3()
         model.eval()
 
         # Purposefully, model is not switched to CUDA at this time.
@@ -1372,7 +1368,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
             winnowed_model(torch.rand(input_shape).cuda())
         self.assertEqual(0, 0)
 
-    def test_inception_model_winnowing_multiple_modules(self):      # pylint: disable=too-many-locals
+    def test_inception_model_winnowing_multiple_modules(self):
         """ Test winnowing multiple modules on inception model """
         # These modules are included as a hack to allow tests using inception model to pass,
         # as the model uses functionals instead of modules.
@@ -1535,7 +1531,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
         """ Tests the winnow_model() API for winnowing resnet18 with
         multiple layers  with zero planes."""
 
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18()
         input_shape = (1, 3, 224, 224)
 
         test_conv1 = model.layer2[0].conv1
@@ -1568,7 +1564,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
 
     def test_resnet18_winnow_first_module(self):
         """ Tests for asserting on winnowing input to first module, using resnet18 """
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18()
         input_shape = (1, 3, 224, 224)
 
         # model.conv1 is first module for resnet18
@@ -1587,7 +1583,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
 
     def test_resnet18_no_modules_winnowed(self):
         """ Tests for returning unchanged model when no channels are to be winnowed """
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18()
         input_shape = (1, 3, 224, 224)
 
         list_of_modules_to_winnow = [
@@ -1605,7 +1601,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
 
     def test_resnet18_winnow_non_conv2d_module(self):
         """ Tests for asserting on attempting to winnow non conv2d module """
-        model = models.resnet18(pretrained=True)
+        model = models.resnet18()
         input_shape = (1, 3, 224, 224)
 
         fc_module = model.fc
@@ -1774,8 +1770,6 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):      # pylint: disable=to
         self.assertTrue(new_model.conv1.in_channels == 3)
         self.assertTrue(new_model.conv1.out_channels == 31)
 
-    # pylint: disable=too-many-locals
-    # pylint: disable=protected-access
     def test_winnowing_with_downsample(self):
         """ Test winnowing a model that has a downsample layer already inserted from a previous winnow pass """
         model = SingleResidual()

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3.5
-
 #  =============================================================================
 #
 #  @@-COPYRIGHT-START-@@
@@ -42,7 +40,7 @@
     For example, Conv2d, Fc, Add. """
 
 from aimet_common.connected_graph.product import Product
-from aimet_common.utils import AimetLogger
+from aimet_common.utils import AimetLogger, deprecated
 
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Winnow)
@@ -113,7 +111,7 @@ class Op:    # pylint: disable=too-many-public-methods
         self._is_anonymous = is_anonymous
         self._type = op_type
         self._inputs = []
-        self._output = None
+        self.outputs = []
         self._op_info = OpInformation()
 
     def __repr__(self):
@@ -176,21 +174,30 @@ class Op:    # pylint: disable=too-many-public-methods
         return [inp.producer for inp in self._inputs if inp.producer]
 
     @property
+    @deprecated("Use the Op.outputs list instead.")
     def output(self):
         """ Returns the output of an operation. """
-        return self._output
+        if len(self.outputs) > 1:
+            raise RuntimeError(f"{self} has more than one output, cannot use legacy output property.")
+        if self.outputs:
+            return self.outputs[0]
+        return None
 
     @output.setter
+    @deprecated("Use the Op.outputs list instead.")
     def output(self, product: Product):
         """ Sets a product as the output of an Operation. """
-        self._output = product
+        if len(self.outputs) > 1:
+            raise RuntimeError(f"{self} has more than one output, cannot use legacy output property.")
+        if product:
+            self.outputs = [product]
+        else:
+            self.outputs = []
 
     @property
     def output_ops(self):
         """ Returns all the inputs of an Operation. """
-        if self.output:
-            return self.output.consumers
-        return []
+        return [consumer for output in self.outputs for consumer in output.consumers]
 
     @property
     def groups(self):
@@ -256,9 +263,9 @@ def determine_preceding_op_input_product_index_in_multi_input_op(preceding_op, m
 
     preceding_op_dotted_name = preceding_op.dotted_name
 
-    for index in range(len(multi_input_op.inputs)):
-        if multi_input_op.inputs[index].producer is not None and \
-                multi_input_op.inputs[index].producer.dotted_name == preceding_op_dotted_name:
+    for index, inp in enumerate(multi_input_op.inputs):
+        if inp.producer is not None and \
+                inp.producer.dotted_name == preceding_op_dotted_name:
             logger.debug("Preceding Op: %s, product index: %s, multi input Op: %s",
                          preceding_op.dotted_name, index, multi_input_op.dotted_name)
             return index
@@ -274,8 +281,8 @@ def determine_succeeding_op_output_product_index_in_multi_output_op(succeeding_o
     """
     succeeding_op_dotted_name = succeeding_op.dotted_name
 
-    for index in range(len(multi_output_op.output.consumers)):
-        if multi_output_op.output.consumers[index].dotted_name == succeeding_op_dotted_name:
+    for index, out in enumerate(multi_output_op.output_ops):
+        if out.dotted_name == succeeding_op_dotted_name:
             logger.debug("Succeeding Op: %s, product index: %s, multi output Op: %s",
                          succeeding_op_dotted_name, index, multi_output_op.dotted_name)
             return index

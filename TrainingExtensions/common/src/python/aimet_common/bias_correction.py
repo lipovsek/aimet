@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2019, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2019-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -35,13 +34,21 @@
 #
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
+
 """  holds common code for bias correction """
+
+import numpy as np
+from scipy.stats import norm
 
 from aimet_common.defs import ActivationType
 from aimet_common.utils import AimetLogger
 from aimet_common.connected_graph.operation import Op
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
+
+CONV_OP_TYPES = ['Conv1d', 'Conv2D', 'DepthwiseConv2dNative', 'Conv', 'ConvTranspose', 'Conv3d']
+LINEAR_OP_TYPES = ['Dense', 'Gemm', 'MatMul']
+BN_OP_TYPES = ['FusedBatchNormV3', 'FusedBatchNorm', 'BatchNormalization', 'BatchNorm3d']
 
 
 class ConvBnInfoType:
@@ -94,17 +101,14 @@ class ConvBnPatternHandler:
         activation_type = ActivationType.no_activation
         conv_op = None
         bn_op = None
-        convolution_types = ['Conv1d', 'Conv2D', 'DepthwiseConv2dNative', 'Conv', 'ConvTranspose']
-        linear_types = ['Dense', 'Gemm', 'MatMul']
-        bn_types = ['FusedBatchNormV3', 'FusedBatchNorm', 'BatchNormalization']
 
         for op in op_subset:
-            if op.type in convolution_types + linear_types:
+            if op.type in CONV_OP_TYPES + LINEAR_OP_TYPES:
                 conv_op = op
                 op_key = get_op_dict_key(conv_op)
-                if op_key in self.conv_linears_with_bn_dict.keys():
+                if op_key in self.conv_linears_with_bn_dict:
                     bn_activation_info = self.conv_linears_with_bn_dict[op_key]
-            elif op.type in bn_types:
+            elif op.type in BN_OP_TYPES:
                 bn_op = op
             elif op.type in ['Relu6', 'Clip']:
                 activation_type = ActivationType.relu6
@@ -112,11 +116,11 @@ class ConvBnPatternHandler:
                 activation_type = ActivationType.relu
 
         if len(op_subset) >= 2:
-            if op_subset[0].type in bn_types:
+            if op_subset[0].type in BN_OP_TYPES:
                 bn_activation_info.input_bn = bn_op
                 bn_activation_info.in_activation_type = activation_type
             # we do not match linear layers with preceding bn for bias correction
-            elif op_subset[0].type in convolution_types + linear_types:
+            elif op_subset[0].type in CONV_OP_TYPES + LINEAR_OP_TYPES:
                 bn_activation_info.output_bn = bn_op
                 bn_activation_info.out_activation_type = activation_type
             # in tf linear layer has two ops together [flatten/reshape -- dense] , check for len 3
@@ -140,3 +144,60 @@ def get_op_dict_key(op: Op):
     if module.__hash__ is None:
         return op
     return module
+
+
+def empirical_bias_correction(reference_outputs: np.ndarray, quantized_outputs: np.ndarray, bias: np.ndarray) -> np.ndarray:
+    """
+    Empirical bias correction.
+
+    :param quantized_outputs:
+    :param reference_outputs:
+    :param bias:
+    :return: Updated bias
+    """
+    error = quantized_outputs - reference_outputs
+    error = error.mean(3).mean(2).mean(0)
+    _bias = bias - error
+    return _bias
+
+
+def analytical_bias_correction(fp_weight: np.ndarray,
+                               q_dq_weight: np.ndarray,
+                               bias: np.ndarray,
+                               beta: np.ndarray,
+                               gamma: np.ndarray,
+                               activation_type: ActivationType) -> np.ndarray:
+    """
+    Analytical bias correction.
+
+    :param fp_weight:
+    :param q_dq_weight:
+    :param bias:
+    :param beta:
+    :param gamma:
+    :param activation_type:
+    :return: Updated bias
+    """
+    diff = q_dq_weight - fp_weight
+    epsilon = diff.sum(3).sum(2)
+
+    if activation_type == ActivationType.no_activation:
+        e_x = beta
+    elif activation_type == ActivationType.relu:
+        e_x = beta * (1 - norm.cdf(-beta / gamma)) + gamma * norm.pdf(-beta / gamma)
+    elif activation_type == ActivationType.relu6:
+        b = 6
+        z = norm.pdf(-beta / gamma) - norm.pdf((b - beta) / gamma)
+        Z = norm.cdf((b - beta) / gamma) - norm.cdf(-beta / gamma)
+        e_x = gamma * z + beta * Z + b * (1 - norm.cdf((b - beta) / gamma))
+    else:
+        raise ValueError('Unsupported activation type: ', activation_type)
+
+    if epsilon.shape[1] == 1:
+        ep = epsilon.reshape(epsilon.shape[0])
+        error = np.multiply(ep, e_x)
+    else:
+        error = np.matmul(epsilon, e_x)
+
+    _bias = bias - error
+    return _bias

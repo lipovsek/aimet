@@ -1,4 +1,3 @@
-# /usr/bin/env python3.8
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -36,9 +35,14 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 import onnx
-import test_models
+import torch
+from packaging import version
+
 import aimet_onnx.utils as utils
 from aimet_onnx.utils import ParamUtils
+from aimet_onnx.adaround.utils import ModelData, read_attributes_for_op
+
+from .models import models_for_tests
 
 
 class TestUtils:
@@ -49,7 +53,7 @@ class TestUtils:
         """
         Test remove nodes by given type
         """
-        model = test_models.build_dummy_model()
+        model = models_for_tests.build_dummy_model()
         node_ls = [node.op_type for node in model.graph.node]
         assert node_ls == ['Conv', 'Relu', 'MaxPool', 'Flatten', 'Gemm']
         # Remove first layer of dummy model
@@ -67,7 +71,7 @@ class TestUtils:
         """
         Test replace op type of nodes with given op type
         """
-        model = test_models.build_dummy_model()
+        model = models_for_tests.build_dummy_model()
         node_ls = [node.op_type for node in model.graph.node]
         assert node_ls == ['Conv', 'Relu', 'MaxPool', 'Flatten', 'Gemm']
 
@@ -79,7 +83,7 @@ class TestUtils:
         """
         Test get weights
         """
-        model = test_models.build_dummy_model()
+        model = models_for_tests.build_dummy_model()
         for node in model.graph.initializer:
             assert node.raw_data == utils.get_weights(node.name, model.graph)
 
@@ -87,7 +91,7 @@ class TestUtils:
         """
         Test get nodes with ordered
         """
-        model = test_models.build_dummy_model()
+        model = models_for_tests.build_dummy_model()
         node_dict = utils.get_ordered_dict_of_nodes(model.graph)
         node_keys = list(node_dict.keys())
 
@@ -96,7 +100,7 @@ class TestUtils:
             assert node_dict[node.name] == node
 
     def test_weight_utils(self):
-        model = test_models.build_dummy_model()
+        model = models_for_tests.build_dummy_model()
         for node in model.graph.node:
             if node.op_type == 'Conv':
                 weights = ParamUtils.get_param(model, node, 1)
@@ -119,7 +123,7 @@ class TestUtils:
                 assert bias.name == 'fc_b'
 
     def test_utils_transposed_conv_model(self):
-        model = test_models.transposed_conv_model()
+        model = models_for_tests.transposed_conv_model()
         model = model.model
         for node in model.graph.node:
             if node.op_type == 'ConvTranspose':
@@ -133,11 +137,25 @@ class TestUtils:
                 assert bias.name == 'conv1.bias'
                 break
 
+    def test_utils_const_param_model(self):
+        model = models_for_tests.const_param_model()
+        for node in model.graph.node:
+            if node.op_type == 'InstanceNormalization':
+                weights = ParamUtils.get_param(model, node, 1)
+                weights_shape = ParamUtils.get_shape(model, node, 1)
+                bias = ParamUtils.get_param(model, node, 2)
+                bias_shape = ParamUtils.get_shape(model, node, 2)
+                assert bias_shape == [32]
+                assert weights_shape == [32]
+                assert weights.name == '/down_blocks.0/resnets.0/norm1/Constant_1_output_0'
+                assert bias.name == '/down_blocks.0/resnets.0/norm1/Constant_2_output_0'
+                break
+
     def test_remove_node(self):
         """
         Test remove node from model
         """
-        model = test_models.build_dummy_model()
+        model = models_for_tests.build_dummy_model()
         node_ls = [node.op_type for node in model.graph.node]
         assert node_ls == ['Conv', 'Relu', 'MaxPool', 'Flatten', 'Gemm']
         gemm_node = model.graph.node[-1]
@@ -152,7 +170,32 @@ class TestUtils:
         """
         Test get attribute value from node
         """
-        model = test_models.build_dummy_model()
+        model = models_for_tests.build_dummy_model()
         conv_layer = model.graph.node[0]
         assert utils.get_node_attribute(conv_layer, "pads") == [1, 1, 1, 1]
         assert utils.get_node_attribute(conv_layer, "kernel_shape") == [3, 3]
+
+    def test_replace_relu6_with_relu(self):
+        if version.parse(torch.__version__) >= version.parse("1.13"):
+            model = models_for_tests.depthwise_conv_model_with_relu6()
+            relu6_count = 0
+            original_relu_count = 0
+            for node in model.model.graph.node:
+                if node.op_type == 'Clip':
+                    relu6_count += 1
+                if node.op_type == 'Relu':
+                    original_relu_count += 1
+
+            utils.replace_relu6_with_relu(model)
+
+            relu_count = 0
+            for node in model.model.graph.node:
+                if node.op_type == 'Relu':
+                    relu_count += 1
+
+            assert relu_count - original_relu_count == relu6_count
+
+    def test_create_model_data_single_residual_model(self):
+        model = models_for_tests.transposed_conv_model_without_bn()
+        model_data = ModelData(model.model)
+        assert len(model_data.module_to_info) == 3

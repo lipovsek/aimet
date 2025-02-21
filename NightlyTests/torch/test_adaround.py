@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -51,8 +50,8 @@ from torchvision import models
 from aimet_common.utils import AimetLogger
 from aimet_common.defs import QuantScheme
 from aimet_torch.utils import create_fake_data_loader, create_rand_tensors_given_shapes
-from aimet_torch.quantsim import QuantizationSimModel
-from aimet_torch.adaround.adaround_weight import Adaround, AdaroundParameters
+from aimet_torch.v1.quantsim import QuantizationSimModel
+from aimet_torch.v1.adaround.adaround_weight import Adaround, AdaroundParameters
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Test)
 
@@ -100,7 +99,7 @@ class AdaroundAcceptanceTests(unittest.TestCase):
 
         # Test exported encodings JSON file
         with open('./resnet18.encodings') as json_file:
-            encoding_data = json.load(json_file)
+            encoding_data = json.load(json_file)['param_encodings']
             print(encoding_data)
 
         self.assertTrue(isinstance(encoding_data["conv1.weight"], list))
@@ -137,7 +136,7 @@ class AdaroundAcceptanceTests(unittest.TestCase):
 
         # Read exported param encodings JSON file
         with open('./resnet18.encodings') as json_file:
-            encoding_data = json.load(json_file)
+            encoding_data = json.load(json_file)['param_encodings']
 
         encoding = encoding_data["conv1.weight"][0]
         before_min, before_max, before_delta, before_offset = encoding.get('min'), encoding.get('max'),\

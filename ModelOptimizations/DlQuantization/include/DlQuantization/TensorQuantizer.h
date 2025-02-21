@@ -2,7 +2,7 @@
 //
 //  @@-COPYRIGHT-START-@@
 //
-//  Copyright (c) 2020 - 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+//  Copyright (c) 2020 - 2023, Qualcomm Innovation Center, Inc. All rights reserved.
 //
 //  Redistribution and use in source and binary forms, with or without
 //  modification, are permitted provided that the following conditions are met:
@@ -41,10 +41,10 @@
 
 #include <memory>
 
+#include "DlQuantization/TensorQuantizerOpFacade.h"
 #include <DlQuantization/IQuantizationEncodingAnalyzer.hpp>
 #include <DlQuantization/ITensorQuantizationSim.h>
 #include <DlQuantization/Quantization.hpp>
-#include "DlQuantization/TensorQuantizerOpFacade.h"
 
 
 namespace DlQuantization
@@ -56,12 +56,11 @@ namespace DlQuantization
 class TensorQuantizer : public TensorQuantizerOpFacade
 {
 public:
-
     /**
-    * Constructor
-    * @param quantScheme Quantization scheme (e.g. TF-Enhanced)
-    * @param roundingMode Rounding mode to use during quantization
-    */
+     * Constructor
+     * @param quantScheme Quantization scheme (e.g. TF-Enhanced)
+     * @param roundingMode Rounding mode to use during quantization
+     */
     TensorQuantizer(QuantizationMode quantScheme, RoundingMode roundingMode);
 
     /**
@@ -92,8 +91,8 @@ public:
      * encoding).
      */
     void computeEncodingFromData(uint8_t bw, const float* data, size_t count, TfEncoding& encoding,
-                                 ComputationMode cpuGpuMode, bool useSymmetricEncodings,
-                                 bool useUnsignedSymmetric, bool useStrictSymmetric);
+                                 ComputationMode cpuGpuMode, bool useSymmetricEncodings, bool useUnsignedSymmetric,
+                                 bool useStrictSymmetric);
 
     /**
      * @brief Compute the encoding for this tensor given partial TfEncoding data i.e
@@ -102,8 +101,8 @@ public:
      * @param[in/out] encoding Partial encoding containing min, max, delta and offset values
      * @relates EncodingAnalyzer::computeEncoding
      */
-    void computePartialEncoding(uint8_t bw, TfEncoding& encoding, bool useSymmetricEncodings,
-                                bool useUnsignedSymmetric, bool useStrictSymmetric);
+    void computePartialEncoding(uint8_t bw, TfEncoding& encoding, bool useSymmetricEncodings, bool useUnsignedSymmetric,
+                                bool useStrictSymmetric);
 
     /**
      * Convert a tensor from float to quantized int and back to float
@@ -115,8 +114,11 @@ public:
      * @param bitwidth to be used
      * @param useCuda If true, both the input and output tensors are assumed to be in CUDA memory
      */
-    void quantizeDequantize(const float* input, std::size_t tensorSize, float* output,
-                            double encodingMin, double encodingMax, unsigned int bitwidth, bool useCuda) override;
+    void quantizeDequantize(const float* input, std::size_t tensorSize, float* output, double encodingMin,
+                            double encodingMax, unsigned int bitwidth, bool useCuda) override;
+
+    void quantizeDequantize(const float* input, std::size_t tensorSize, float* output, double encodingMin,
+                            double encodingMax, unsigned int bitwidth, bool useCuda, void* stream) override;
 
     /**
      * @brief Convert a tensor from DTYPE to quantized 8-bit packed format
@@ -124,8 +126,8 @@ public:
      * @param shiftToSigned
      */
     void quantizeTensorPacked(const float* input, std::size_t tensorSize, std::vector<uint8_t>& output,
-                              double encodingMin, double encodingMax, uint8_t bw, RoundingMode roundMode,
-                              bool useCuda, bool shiftToSigned);
+                              double encodingMin, double encodingMax, uint8_t bw, RoundingMode roundMode, bool useCuda,
+                              bool shiftToSigned);
 
     /**
      * @brief Perform per channel (axis) quantization on a float tensor and dequantize back to float
@@ -139,17 +141,13 @@ public:
      * @param shiftToSigned
      * @param[in/out] output The output tensor
      */
-    void quantizeDequantizePerChannelTensor(const float* input, const std::vector<uint32_t>& inputShape,
-                                            uint32_t axis, float* output,
-                                            std::vector <TfEncoding> &encodings,
-                                            uint8_t bw, RoundingMode roundMode,
-                                            bool useCuda, bool shiftToSigned);
+    void quantizeDequantizePerChannelTensor(const float* input, const std::vector<uint32_t>& inputShape, uint32_t axis,
+                                            float* output, std::vector<TfEncoding>& encodings, uint8_t bw,
+                                            RoundingMode roundMode, bool useCuda, bool shiftToSigned);
 
-    void quantizePerChannelTensorPacked(const float* input, const std::vector<uint32_t>& inputShape,
-                                        uint32_t axis, std::vector<uint8_t>& output,
-                                        std::vector <TfEncoding> &encodings,
-                                        uint8_t bw, RoundingMode roundMode,
-                                        bool useCuda, bool shiftToSigned);
+    void quantizePerChannelTensorPacked(const float* input, const std::vector<uint32_t>& inputShape, uint32_t axis,
+                                        std::vector<uint8_t>& output, std::vector<TfEncoding>& encodings, uint8_t bw,
+                                        RoundingMode roundMode, bool useCuda, bool shiftToSigned);
 
     /**
      * @brief Converts a quantized int tensor back to float
@@ -158,54 +156,55 @@ public:
      * @param encoding The min, max, delta and offset values
      * @param output[in/out]  The output tensor
      */
-    void dequantize(const uint8_t* input, std::size_t tensorSize, double encodingMin, double encodingMax, uint8_t bw, float* output,
-                    bool shiftToSigned);
+    void dequantize(const uint8_t* input, std::size_t tensorSize, double encodingMin, double encodingMax, uint8_t bw,
+                    float* output, bool shiftToSigned);
 
-    void dequantizePerChannelTensor(const uint8_t* input, const std::vector<uint32_t> &inputShape, uint32_t axis,
-                                    const std::vector<TfEncoding> &encodings, uint8_t bw, float* output, bool useSymmetricEncodings);
+    void dequantizePerChannelTensor(const uint8_t* input, const std::vector<uint32_t>& inputShape, uint32_t axis,
+                                    const std::vector<TfEncoding>& encodings, uint8_t bw, float* output,
+                                    bool useSymmetricEncodings);
 
     /**
-    * sets quantScheme and creates new encoding analyzer instance
-    * @param quantScheme Quantization scheme (e.g. TF-Enhanced)
-    */
+     * sets quantScheme and creates new encoding analyzer instance
+     * @param quantScheme Quantization scheme (e.g. TF-Enhanced)
+     */
     void setQuantScheme(QuantizationMode quantScheme);
 
     /**
-    * gets quantScheme configured for this Tensor Quantizer
-    * @return quantScheme as QuantizationMode
-    */
+     * gets quantScheme configured for this Tensor Quantizer
+     * @return quantScheme as QuantizationMode
+     */
     QuantizationMode getQuantScheme();
 
     /**
-    * gets strict symmetric flag configured for this Tensor Quantizer
-    * @return quantScheme as QuantizationMode
-    */
+     * gets strict symmetric flag configured for this Tensor Quantizer
+     * @return quantScheme as QuantizationMode
+     */
     bool getStrictSymmetric();
 
-   /**
-   * sets strict symmetric flag
-   * @param bool, True if strict symmetric, False otherwise
-   */
+    /**
+     * sets strict symmetric flag
+     * @param bool, True if strict symmetric, False otherwise
+     */
     void setStrictSymmetric(bool useStrictSymmetric);
 
     /**
-    * gets unsigned symmetric flag config for this Tensor Quantizer
-    * @return bool, True if unsigned symmetric mode, False otherwise
-    */
+     * gets unsigned symmetric flag config for this Tensor Quantizer
+     * @return bool, True if unsigned symmetric mode, False otherwise
+     */
     bool getUnsignedSymmetric();
 
-   /**
-   * sets unsigned symmetric flag
-   * @param bool, True or False
-   */
+    /**
+     * sets unsigned symmetric flag
+     * @param bool, True or False
+     */
     void setUnsignedSymmetric(bool useUnsignedsymmetric);
 
     /**
-   * Returns a histogram that represents a PDF of tensor values seen by this encoding analyzer so far
-   * @return Histogram of statistics. The histogram returned is a vector of buckets. Each bucket is a tuple of
-   * two values - the float value representing the left edge of the bucket and a PDF of the values in this bucket
-   * relative to all the values seen across all buckets
-   */
+     * Returns a histogram that represents a PDF of tensor values seen by this encoding analyzer so far
+     * @return Histogram of statistics. The histogram returned is a vector of buckets. Each bucket is a tuple of
+     * two values - the float value representing the left edge of the bucket and a PDF of the values in this bucket
+     * relative to all the values seen across all buckets
+     */
     std::vector<std::tuple<double, double>> getStatsHistogram();
 
     /**
@@ -218,14 +217,33 @@ public:
      * @param splits    Slices of the input tensor along the axis
      * @param splitShape The shape of each input slice
      */
-    void generatePerChannelEncodings(const float* input, const std::vector<uint32_t> &inputShape, uint32_t axis,
-                                     std::vector<TfEncoding> &encodings, uint32_t bw, std::vector<std::vector<float>> &splits,
-                                     std::vector<uint32_t> &splitShape, bool useCuda);
 
-    inline bool hasValidStats(){return _validStats;}
+    /**
+     * @brief Sets the specified percentile value for the encoding analyzer
+     *
+     * @param percentile Percentile value to set.
+     */
+    void setPercentileValue(float percentile);
 
-    RoundingMode roundingMode;      ///< Rounding mode to use during quantization
-    bool isEncodingValid;           ///< Is encoding valid
+    /**
+     * @brief Fetches the percentile value for the encoding analyzer
+     *
+     * @return Percentile value of the encoding analyzer.
+     */
+    float getPercentileValue();
+
+    void generatePerChannelEncodings(const float* input, const std::vector<uint32_t>& inputShape, uint32_t axis,
+                                     std::vector<TfEncoding>& encodings, uint32_t bw,
+                                     std::vector<std::vector<float>>& splits, std::vector<uint32_t>& splitShape,
+                                     bool useCuda);
+
+    inline bool hasValidStats()
+    {
+        return _validStats;
+    }
+
+    RoundingMode roundingMode;   ///< Rounding mode to use during quantization
+    bool isEncodingValid;        ///< Is encoding valid
 
 private:
     QuantizationMode _quantScheme;   ///< Quantization scheme (e.g TF-Enhanced)

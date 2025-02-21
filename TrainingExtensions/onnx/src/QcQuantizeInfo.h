@@ -38,25 +38,36 @@
 
 #pragma once
 
-#include <DlQuantization/IQuantizationEncodingAnalyzer.hpp>
-#include <DlQuantization/QuantizerFactory.hpp>
+#include "DlQuantization/IQuantizationEncodingAnalyzer.hpp"
+#include "DlQuantization/QuantizerFactory.hpp"
+#include "DlQuantization/TensorQuantizer.h"
 #include <string>
 
 
 struct QcQuantizeInfo
 {
-    void set_tensor_quantizer(uint64_t addr)
+    void set_tensor_quantizer(std::vector<uint64_t>& addr)
     {
-        tensorQuantizerRef = reinterpret_cast<DlQuantization::TensorQuantizerOpFacade*>(addr);
+        tensorQuantizerRef = std::vector<DlQuantization::TensorQuantizer*>();
+        for (uint64_t i: addr)
+        {
+            tensorQuantizerRef.push_back(reinterpret_cast<DlQuantization::TensorQuantizer*>(i));
+        }
     }
-    DlQuantization::TensorQuantizer* get_tensor_quantizer() const
+    std::vector<DlQuantization::TensorQuantizer*> get_tensor_quantizer()
     {
-        return reinterpret_cast<DlQuantization::TensorQuantizer*>(tensorQuantizerRef);
+        return tensorQuantizerRef;
     }
-    DlQuantization::TensorQuantizerOpFacade* tensorQuantizerRef;
-    DlQuantization::TfEncoding* encoding;
+
+    std::vector<DlQuantization::TensorQuantizer*> tensorQuantizerRef;
+    DlQuantization::Encodings encoding;
     DlQuantization::TensorQuantizerOpMode opMode;
     bool useSymmetricEncoding;
     bool enabled;
+    bool isIntDataType;
+    bool usePerChannelMode;
+    int channelAxis;
+    int blockAxis;
+    uint blockSize;
     std::string name;
 };

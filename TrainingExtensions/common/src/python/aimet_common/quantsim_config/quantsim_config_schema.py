@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2020, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2020-2023, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -97,7 +96,7 @@ QUANTSIM_CONFIG_SCHEMA = {
                                 "type": "object",
                                 "properties": {
                                     "bitwidth": {
-                                        "type": "number",
+                                        "type": "integer",
                                         "enum" : [4, 8, 16, 32]
                                     },
                                     "dtype": {
@@ -112,7 +111,7 @@ QUANTSIM_CONFIG_SCHEMA = {
                                 "type": "object",
                                 "properties": {
                                     "bitwidth": {
-                                        "type": "number",
+                                        "type": "integer",
                                         "enum" : [4, 8, 16, 32]
                                     },
                                     "dtype": {
@@ -202,7 +201,7 @@ QUANTSIM_CONFIG_SCHEMA = {
                                         "type": "object",
                                         "properties": {
                                             "bitwidth": {
-                                                "type": "number",
+                                                "type": "integer",
                                                 "enum" : [4, 8, 16, 32]
                                             },
                                             "dtype": {
@@ -217,7 +216,7 @@ QUANTSIM_CONFIG_SCHEMA = {
                                         "type": "object",
                                         "properties": {
                                             "bitwidth": {
-                                                "type": "number",
+                                                "type": "integer",
                                                 "enum" : [4, 8, 16, 32]
                                             },
                                             "dtype": {
@@ -229,7 +228,7 @@ QUANTSIM_CONFIG_SCHEMA = {
                                         "additionalProperties": False
                                     },
                                 },
-                                "required": ["activation", "param"],
+                                "required": ["activation"],
                                 "additionalProperties": False
                             },
                             "minItems": 1,
@@ -238,7 +237,19 @@ QUANTSIM_CONFIG_SCHEMA = {
                         "per_channel_quantization": {
                             "type": "string",
                             "pattern": "^True$|^False$"
-                        }
+                        },
+                        "encoding_constraints": {
+                            "type": "object",
+                            "properties": {
+                                "min": {
+                                    "type": "number"
+                                },
+                                "max": {
+                                    "type": "number"
+                                }
+                            },
+                            "required": ["min", "max"]
+                        },
                     },
                     "additionalProperties": False
                 }

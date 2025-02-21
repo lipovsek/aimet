@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -38,7 +37,6 @@
 
 import pytest
 import copy
-import unittest
 import numpy as np
 import torch
 import torch.nn as nn
@@ -47,10 +45,10 @@ from aimet_common.defs import QuantScheme
 import aimet_torch.bias_correction
 import aimet_torch.layer_selector
 from aimet_torch import bias_correction
-from aimet_torch.quantsim import QuantParams
-from aimet_torch.examples.mobilenet import MobileNetV2
+from aimet_torch.v1.quantsim import QuantParams
 from aimet_torch import batch_norm_fold
-from aimet_torch.examples.imagenet_dataloader import ImageNetDataLoader
+from models.mobilenet import MobileNetV2
+from models.imagenet_dataloader import ImageNetDataLoader
 
 
 def evaluate(model, early_stopping_iterations, use_cuda):
@@ -64,7 +62,7 @@ def evaluate(model, early_stopping_iterations, use_cuda):
     return model(random_input)
 
 
-class TestBiasCorrection():
+class TestBiasCorrection:
 
     @pytest.mark.cuda
     def test_bias_correction_empirical(self):
@@ -87,18 +85,17 @@ class TestBiasCorrection():
                              quant_scheme=QuantScheme.post_training_tf)
         bias_correction.correct_bias(model.to(device="cuda"), params, 1, data_loader.train_loader, 1, layers_to_ignore=[model.features[0][0]])
 
-        assert(np.allclose(model.features[0][0].bias.detach().cpu().numpy(),
-                                    model_copy.features[0][0].bias.detach().cpu().numpy()))
+        assert np.allclose(model.features[0][0].bias.detach().cpu().numpy(),
+                           model_copy.features[0][0].bias.detach().cpu().numpy())
 
-        assert(not np.allclose(model.features[1].conv[0].bias.detach().cpu().numpy(),
-                                     model_copy.features[1].conv[0].bias.detach().cpu().numpy()))
+        assert not np.allclose(model.features[1].conv[0].bias.detach().cpu().numpy(),
+                               model_copy.features[1].conv[0].bias.detach().cpu().numpy())
 
         # To check if wrappers got removed
-        assert (isinstance(model.features[11].conv[0], nn.Conv2d))
+        assert isinstance(model.features[11].conv[0], nn.Conv2d)
 
     @pytest.mark.cuda
     def test_bias_correction_hybrid(self):
-
         torch.manual_seed(10)
 
         model = MobileNetV2().to(torch.device('cpu'))
@@ -124,14 +121,14 @@ class TestBiasCorrection():
                                      module_prop_list,
                                      False)
 
-        assert (np.allclose(model.features[0][0].bias.detach().cpu().numpy(),
-                                    model_copy.features[0][0].bias.detach().cpu().numpy()))
+        assert np.allclose(model.features[0][0].bias.detach().cpu().numpy(),
+                           model_copy.features[0][0].bias.detach().cpu().numpy())
 
-        assert (np.allclose(model.features[1].conv[0].bias.detach().cpu().numpy(),
-                                     model_copy.features[1].conv[0].bias.detach().cpu().numpy()))
+        assert not np.allclose(model.features[1].conv[0].bias.detach().cpu().numpy(),
+                               model_copy.features[1].conv[0].bias.detach().cpu().numpy())
 
         # To check if wrappers got removed
-        assert (isinstance(model.features[11].conv[0], nn.Conv2d))
+        assert isinstance(model.features[11].conv[0], nn.Conv2d)
 
     def test_dummy(self):
         # pytest has a 'feature' that returns an error code when all tests for a given suite are not selected

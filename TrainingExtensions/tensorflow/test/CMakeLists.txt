@@ -1,7 +1,7 @@
 #==============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2018, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2018-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -35,45 +35,28 @@
 #==============================================================================
 
 if (ENABLE_CUDA)
-    set(CUDA_FLAG "not blah")
-else (ENABLE_CUDA)
-    set(CUDA_FLAG "not cuda")
-endif (ENABLE_CUDA)
-
-if (TF_VERSION MATCHES "^1.15")
-    set(TF_VERSION_FLAG "not tf2")
-else ()
-    set(TF_VERSION_FLAG "not tf1")
-endif ()
-
-string(APPEND MARKER_FLAG ${CUDA_FLAG} " and " ${TF_VERSION_FLAG})
-
-add_test(TfNonEagerTrainingExtensionPythonTest
-        ${Python3_EXECUTABLE} -m pytest ${CMAKE_CURRENT_SOURCE_DIR}/python/non_eager -m ${MARKER_FLAG} --junitxml=${CMAKE_CURRENT_BINARY_DIR}/py_test_non_eager_output.xml
-        )
-
-set_property(TEST TfNonEagerTrainingExtensionPythonTest
-      APPEND PROPERTY ENVIRONMENT "${AIMET_PYTHONPATH}")
-
-if(DEFINED ENV{DEPENDENCY_DATA_PATH})
-set_property(TEST TfNonEagerTrainingExtensionPythonTest
-      APPEND PROPERTY ENVIRONMENT "${DEPENDENCY_DATA_PATH}")
-endif(DEFINED ENV{DEPENDENCY_DATA_PATH})
-
-if (NOT TF_VERSION MATCHES "^1.15")
-    add_test(TfEagerTrainingExtensionTest
-            ${Python3_EXECUTABLE} -m pytest ${CMAKE_CURRENT_SOURCE_DIR}/python/eager -m ${MARKER_FLAG} --junitxml=${CMAKE_CURRENT_BINARY_DIR}/py_test_eager_output.xml
+    add_test(TfTrainingExtensionTest
+            ${Python3_EXECUTABLE} -m pytest ${CMAKE_CURRENT_SOURCE_DIR} --junitxml=${CMAKE_CURRENT_BINARY_DIR}/py_test_output.xml
             )
 
-    set_property(TEST TfEagerTrainingExtensionTest
+else (ENABLE_CUDA)
+    add_test(TfTrainingExtensionTest
+            ${Python3_EXECUTABLE} -m pytest ${CMAKE_CURRENT_SOURCE_DIR} -m "not cuda" --junitxml=${CMAKE_CURRENT_BINARY_DIR}/py_test_output.xml
+            )
+
+endif (ENABLE_CUDA)
+
+if(NOT DEFINED ENV{FAST_RELEASE})
+    # When building PyPI wheel packages (aka FAST_RELEASE),
+    # we only want to test the pure wheel package without relying on any other build artifacts
+    set_property(TEST TfTrainingExtensionTest
           APPEND PROPERTY ENVIRONMENT "${AIMET_PYTHONPATH}")
+endif()
 
-    if(DEFINED ENV{DEPENDENCY_DATA_PATH})
-    set_property(TEST TfEagerTrainingExtensionTest
-          APPEND PROPERTY ENVIRONMENT "${DEPENDENCY_DATA_PATH}")
-    endif(DEFINED ENV{DEPENDENCY_DATA_PATH})
-
-endif ()
+if(DEFINED ENV{DEPENDENCY_DATA_PATH})
+set_property(TEST TfTrainingExtensionTest
+      APPEND PROPERTY ENVIRONMENT "${DEPENDENCY_DATA_PATH}")
+endif(DEFINED ENV{DEPENDENCY_DATA_PATH})
 
 add_executable(TfTrainingExtensionCppTest
     TestTfTensorOps.cpp)

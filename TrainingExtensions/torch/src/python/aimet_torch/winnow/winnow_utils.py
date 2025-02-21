@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -38,9 +37,8 @@
 """ Utilities for winnowing """
 
 from typing import List, Tuple
-import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 
 from aimet_common.polyslice import PolySlice
 
@@ -98,28 +96,13 @@ class ReShape(nn.Module):
 
     def __init__(self, *args):
         """ Desired shape is passed in as argument. """
-        super(ReShape, self).__init__()
+        super().__init__()
         self.shape = args
 
     # pylint: disable=arguments-differ
     def forward(self, x):
         """ forward pass """
         return x.view(self.shape)
-
-
-def to_numpy(tensor):
-    """ Converts a PyTorch Tensor to a Numpy array"""
-    if isinstance(tensor, np.ndarray):
-        return tensor
-    if hasattr(tensor, 'is_cuda'):
-        if tensor.is_cuda:
-            return tensor.cpu().detach().numpy()
-    if hasattr(tensor, 'detach'):
-        return tensor.detach().numpy()
-    if hasattr(tensor, 'numpy'):
-        return tensor.numpy()
-
-    return np.array(tensor)
 
 
 def zero_out_input_channels(module, input_channels_to_prune):

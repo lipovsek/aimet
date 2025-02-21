@@ -1,9 +1,8 @@
-# /usr/bin/env python3
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2020, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2020-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -42,6 +41,7 @@ from typing import Tuple, Union, List, Dict
 import torch
 
 # Import AIMET specific modules
+from aimet_common.connected_graph.connectedgraph_utils import CG_SPLIT
 from aimet_common.utils import AimetLogger
 from aimet_torch.meta.operation import Op
 from aimet_torch.meta.connectedgraph import ConnectedGraph
@@ -90,10 +90,10 @@ def get_module_act_func_pair(model: torch.nn.Module, model_input: Union[Tuple[to
         if cur_module:
             module_act_func_pair[cur_module] = None
 
-            if op.output:
-                assert op.output.consumers, 'op output should have at least one consumer op.'
+            if op.outputs:
+                assert op.output_ops, 'op output should have at least one consumer op.'
                 # Get the next op
-                next_op = op.output.consumers[0]
+                next_op = op.output_ops[0]
                 # Get module associated with next op
                 next_module = next_op.get_module()
 
@@ -131,12 +131,13 @@ def get_ops_with_missing_modules(model: torch.nn.Module, model_input: Union[torc
     except:
         logger.error('A connected graph failed to be built. This may prevent from AIMET features from being able to '
                      'run on the model. Please address the errors shown.')
+        # pylint: disable=raise-missing-from
         raise AssertionError('A connected graph failed to be built. This may prevent from AIMET features from being '
                              'able to run on the model. Please address the errors shown.')
 
     missing_modules = []
     for op in conn_graph.get_all_ops().values():
-        if not op.get_module() and op.type not in ConnectedGraph.math_invariant_types and op.type != 'Split':
+        if not op.get_module() and op.type not in ConnectedGraph.math_invariant_types and op.type != CG_SPLIT:
             missing_modules.append(op)
 
     return missing_modules

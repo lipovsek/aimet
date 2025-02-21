@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -36,6 +35,7 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 
+import itertools
 import logging
 import os
 import pytest
@@ -58,17 +58,13 @@ from aimet_common.data_cache_utility import is_cache_env_set, is_mnist_cache_pre
     copy_cache_mnist_to_local_build
 from aimet_common.compression_algo import CompressionAlgo
 
-import aimet_torch.svd.svd_intf_defs_deprecated
 import aimet_torch.utils
 from aimet_torch.compress import ModelCompressor
 from aimet_torch.defs import ModuleCompRatioPair, ChannelPruningParameters
-from aimet_torch.examples import mnist_torch_model
-from aimet_torch.examples import mnist_torch_model as mnist_model
-from aimet_torch.examples.imagenet_dataloader import ImageNetDataLoader
-from aimet_torch.examples.supervised_classification_pipeline import \
+from models import mnist_torch_model
+from models.imagenet_dataloader import ImageNetDataLoader
+from models.supervised_classification_pipeline import \
     create_stand_alone_supervised_classification_evaluator
-from aimet_torch.svd import svd as svd_intf
-from aimet_torch.utils import IterFirstX
 from aimet_torch.visualize_serialized_data import VisualizeCompression
 
 
@@ -352,7 +348,7 @@ class SvdAcceptanceTests(unittest.TestCase):
         AimetLogger.set_level_for_all_areas(logging.DEBUG)
 
         input_shape = (1, 3, 224, 224)
-        model = models.resnet18(pretrained=True).to(torch.device('cuda'))
+        model = models.resnet18().to(torch.device('cuda'))
 
         manual_params = aimet_torch.defs.WeightSvdParameters.ManualModeParams(
             [ModuleCompRatioPair(model.layer1[0].conv1, 0.5),
@@ -387,7 +383,7 @@ class SvdAcceptanceTests(unittest.TestCase):
         AimetLogger.set_level_for_all_areas(logging.DEBUG)
 
         input_shape = (1, 3, 224, 224)
-        model = models.resnet18(pretrained=True).to(torch.device('cuda'))
+        model = models.resnet18().to(torch.device('cuda'))
         modules_to_ignore = [model.conv1,
                              model.layer2[0].downsample[0],
                              model.layer3[0].downsample[0],
@@ -420,47 +416,6 @@ class SvdAcceptanceTests(unittest.TestCase):
         self.assertFalse(isinstance(compressed_model.fc, torch.nn.Sequential))
 
     @pytest.mark.cuda
-    def test_weight_svd_compress_auto_tar(self):
-
-        torch.cuda.empty_cache()
-        torch.manual_seed(1)
-        numpy.random.seed(1)
-        torch.backends.cudnn.deterministic = True
-
-        AimetLogger.set_level_for_all_areas(logging.DEBUG)
-
-        input_shape = (1, 3, 224, 224)
-        model = models.resnet18(pretrained=True).to(torch.device('cuda'))
-        modules_to_ignore = [model.conv1,
-                             model.layer2[0].downsample[0],
-                             model.layer3[0].downsample[0],
-                             model.layer4[0].downsample[0],
-                             model.layer4[1].conv1,
-                             model.layer4[1].conv2,
-                             model.fc
-                             ]
-
-        tar_params = aimet_common.defs.TarRankSelectionParameters(num_rank_indices=3)
-        rank_select = RankSelectScheme.tar
-        auto_params = aimet_torch.defs.WeightSvdParameters.AutoModeParams(rank_select_scheme=rank_select,
-                                                                          select_params=tar_params,
-                                                                          modules_to_ignore=modules_to_ignore)
-        params = aimet_torch.defs.WeightSvdParameters(aimet_torch.defs.WeightSvdParameters.Mode.auto, auto_params,
-                                                      multiplicity=8)
-
-        results = ModelCompressor.compress_model(model, evaluate, 10, input_shape,
-                                                 aimet_common.defs.CompressionScheme.weight_svd,
-                                                 cost_metric=aimet_common.defs.CostMetric.mac, parameters=params,
-                                                 visualization_url=None)
-
-        compressed_model, stats = results
-        print(compressed_model)
-        print(stats)
-
-        self.assertFalse(isinstance(compressed_model.conv1, torch.nn.Sequential))
-        self.assertFalse(isinstance(compressed_model.fc, torch.nn.Sequential))
-
-    @pytest.mark.cuda
     def test_weight_svd_compress_auto_high_multiplicity(self):
 
         torch.cuda.empty_cache()
@@ -471,7 +426,7 @@ class SvdAcceptanceTests(unittest.TestCase):
         AimetLogger.set_level_for_all_areas(logging.DEBUG)
 
         input_shape = (1, 3, 224, 224)
-        model = models.resnet18(pretrained=True).to(torch.device('cuda'))
+        model = models.resnet18().to(torch.device('cuda'))
         modules_to_ignore = [model.conv1,
                              model.layer2[0].downsample[0],
                              model.layer3[0].downsample[0],
@@ -503,25 +458,6 @@ class SvdAcceptanceTests(unittest.TestCase):
         self.assertFalse(isinstance(compressed_model.conv1, torch.nn.Sequential))
         self.assertFalse(isinstance(compressed_model.fc, torch.nn.Sequential))
 
-    def test_svd_manual_rank_sel_weight_svd_deprecated(self):
-
-        torch.cuda.empty_cache()
-
-        AimetLogger.set_level_for_all_areas(logging.DEBUG)
-        # load trained MNIST model
-        model = torch.load(os.path.join('./', 'data', 'mnist_trained_on_CPU.pth'))
-
-        compressed_model, stats = svd_intf.Svd.compress_model(model=model, run_model=mnist_model.evaluate,
-                                                              run_model_iterations=1, input_shape=(1, 1, 28, 28),
-                                                              compression_type=aimet_torch.svd.svd_intf_defs_deprecated.CompressionTechnique.svd,
-                                                              cost_metric=aimet_torch.svd.svd_intf_defs_deprecated.CostMetric.mac,
-                                                              layer_selection_scheme=aimet_torch.svd.svd_intf_defs_deprecated.LayerSelectionScheme.manual,
-                                                              rank_selection_scheme=aimet_torch.svd.svd_intf_defs_deprecated.RankSelectionScheme.manual,
-                                                              layer_rank_list=[[model.conv2, 27]])
-        baseline_model_accuracy = stats.baseline_model_accuracy
-        compressed_best_model_accuracy = stats.compressed_model_accuracy
-        self.assertTrue(baseline_model_accuracy >= compressed_best_model_accuracy)
-
     @pytest.mark.cuda
     def test_spatial_svd_with_fine_tuning(self):
         torch.cuda.empty_cache()
@@ -543,7 +479,7 @@ class SvdAcceptanceTests(unittest.TestCase):
 
         params = aimet_torch.defs.SpatialSvdParameters(aimet_torch.defs.SpatialSvdParameters.Mode.auto, auto_params,
                                                        multiplicity=1)
-        results = ModelCompressor.compress_model(model, mnist_model.evaluate, 10, input_shape,
+        results = ModelCompressor.compress_model(model, mnist_torch_model.evaluate, 10, input_shape,
                                                  aimet_common.defs.CompressionScheme.spatial_svd,
                                                  cost_metric=aimet_common.defs.CostMetric.mac, parameters=params,
                                                  trainer=Trainer(), visualization_url=None)
@@ -564,7 +500,7 @@ class SvdAcceptanceTests(unittest.TestCase):
         torch.backends.cudnn.deterministic = True
 
         input_shape = (1, 3, 224, 224)
-        model = models.resnet18(pretrained=True).to(torch.device('cuda'))
+        model = models.resnet18().to(torch.device('cuda'))
 
         modules_to_ignore = [model.conv1,
                              model.layer2[0].downsample[0],
@@ -613,7 +549,7 @@ class ChannelPruningAcceptanceTests(unittest.TestCase):
 
         data_loader = ImageNetDataLoader(image_dir, image_size, batch_size, num_workers)
         input_shape = (1, 3, 224, 224)
-        model = models.resnet18(pretrained=True).to(torch.device('cuda'))
+        model = models.resnet18().to(torch.device('cuda'))
         manual_params = ChannelPruningParameters.ManualModeParams([ModuleCompRatioPair(model.layer1[0].conv2, 0.3),
                                                                    ModuleCompRatioPair(model.layer2[1].conv1, 0.5)])
         params = ChannelPruningParameters(data_loader.train_loader, 5000,
@@ -695,7 +631,7 @@ class ChannelPruningAcceptanceTests(unittest.TestCase):
 
         data_loader = ImageNetDataLoader(image_dir, image_size, batch_size, num_workers)
         input_shape = (1, 3, 224, 224)
-        model = models.resnet18(pretrained=True).to(torch.device('cuda'))
+        model = models.resnet18().to(torch.device('cuda'))
         model.eval()
 
         modules_to_ignore = [model.conv1,
@@ -746,7 +682,7 @@ class ChannelPruningAcceptanceTests(unittest.TestCase):
 
         data_loader = ImageNetDataLoader(image_dir, image_size, batch_size, num_workers)
         input_shape = (1, 3, 224, 224)
-        model = models.resnet18(pretrained=True).to(torch.device('cuda'))
+        model = models.resnet18().to(torch.device('cuda'))
         model.eval()
 
         modules_to_ignore = [model.conv1,
@@ -819,7 +755,7 @@ def evaluate(model, early_stopping_iterations, use_cuda):
     data_loader = ImageNetDataLoader(image_dir, image_size, batch_size, num_workers)
     if early_stopping_iterations is not None:
         # wrapper around validation data loader to run only 'X' iterations to save time
-        val_loader = IterFirstX(data_loader.val_loader, early_stopping_iterations)
+        val_loader = itertools.islice(data_loader.val_loader, early_stopping_iterations)
     else:
         # iterate over entire validation data set
         val_loader = data_loader.val_loader

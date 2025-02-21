@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2018-2022, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2018-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -38,22 +37,29 @@
 """ Utility classes and functions that are used by NightlyTests files as well as
     common to both PyTorch and TensorFlow. """
 
+import sys
+from contextlib import contextmanager
+import functools
 import json
+import importlib.util
 import logging
 import logging.config
 import logging.handlers
 import math
 import os
 import signal
-import socket
 import subprocess
 import threading
 import time
+import warnings
 from enum import Enum
-from typing import Callable
-
-import yaml
+from typing import Callable, Dict, List, Optional, TextIO, Union, Any
+import multiprocessing
 from tqdm import tqdm
+from bokeh.server.server import Server
+from bokeh.application import Application
+from aimet_common import defs
+
 
 try:
     # The build system updates Product, Version and Feature set information in the package_info file.
@@ -66,6 +72,24 @@ except ImportError:
     Postfix = ''
 
 
+def _red(msg: str):
+    return f'\x1b[31;21m{msg}\x1b[0m'
+
+
+def deprecated(msg: str):
+    """
+    Wrap a function or class such that a deprecation warning is printed out when invoked
+    """
+    def decorator(_callable):
+        @functools.wraps(_callable)
+        def fn_wrapper(*args, **kwargs):
+            warnings.warn(_red(f'{_callable.__qualname__} will be deprecated soon in the later versions. {msg}'),
+                          DeprecationWarning, stacklevel=2)
+            return _callable(*args, **kwargs)
+        return fn_wrapper
+    return decorator
+
+
 class ModelApi(Enum):
     """ Enum differentiating between Pytorch or Tensorflow """
     pytorch = 0
@@ -74,17 +98,7 @@ class ModelApi(Enum):
     onnx = 3
 
 
-class CallbackFunc:
-    """
-    Class encapsulating callback function, and it's argument(s)
-    """
-    def __init__(self, func: Callable, func_callback_args=None):
-        """
-        :param func: Callable Function
-        :param func_callback_args: Arguments passed to the callable function as-is.
-        """
-        self.func = func
-        self.args = func_callback_args
+CallbackFunc = defs.CallbackFunc
 
 
 class SingletonType(type):
@@ -131,8 +145,11 @@ class AimetLogger(metaclass=SingletonType):
         Nas = 'Nas'
         NasPipeline = 'NasPipeline'
         DeviceFramework = 'DeviceFramework'
-        BatchNormFoldiing = "BatchNormFolding"
+        BatchNormFolding = "BatchNormFolding"
         ModelPreparer = "ModelPreparer"
+        LayerOutputs = 'LayerOutputs'
+        QuantAnalyzer = 'QuantAnalyzer'
+        SeqMse = 'SeqMse'
 
     def __init__(self):
         self._logger = logging.getLogger()
@@ -144,7 +161,7 @@ class AimetLogger(metaclass=SingletonType):
         with open(abs_file_path, encoding='utf-8') as logging_configuration_file:
             try:
                 config_dict = json.loads(logging_configuration_file.read())
-            except:
+            except:  # pylint: disable=raise-missing-from
                 raise ValueError("Logging configuration file: default_logging_config.json contains invalid format")
 
         logging.config.dictConfig(config_dict)
@@ -154,11 +171,11 @@ class AimetLogger(metaclass=SingletonType):
         # Need to fix this issue and then remove the pylint disablement.
         configured_items = list(logging.root.manager.loggerDict.items()) # pylint: disable=no-member
 
-        log_areas_list = list()
+        log_areas_list = []
         for x in AimetLogger.LogAreas:
             log_areas_list.append(x.value)
 
-        configured_areas_list = list()
+        configured_areas_list = []
         for name, _ in configured_items:
             configured_areas_list.append(name)
 
@@ -187,6 +204,17 @@ class AimetLogger(metaclass=SingletonType):
         for area in AimetLogger.LogAreas:
             AimetLogger.set_area_logger_level(area, level)
 
+def log_with_error_and_assert_if_false(condition: bool, logger: logging.Logger, error_msg: str):
+    """
+    If condition is false, log an error and assert with the same error message.
+
+    :param condition: Condition to check
+    :param logger: Logger to log error with
+    :param error_msg: Error message string
+    """
+    if not condition:
+        logger.error(error_msg)
+        assert condition, error_msg
 
 def round_up_to_multiplicity(multiplicity: int, num: int, max_allowable_num: int):
     """
@@ -228,7 +256,7 @@ def kill_process_with_name_and_port_number(name: str, port_number: int):
     """ Kill a process that is associated with a port number displayed by the command: ps -x """
 
     logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
-    p = subprocess.Popen(['ps', '-x'], stdout=subprocess.PIPE)
+    p = subprocess.Popen(['ps', '-x'], stdout=subprocess.PIPE)  # pylint: disable=consider-using-with
     out, _ = p.communicate()
 
     for line in out.splitlines():
@@ -241,23 +269,50 @@ def kill_process_with_name_and_port_number(name: str, port_number: int):
             break
 
 
-def start_bokeh_server_session(port: int):
+def start_bokeh_server_session(port: int = None):
     """
     start a bokeh server programmatically. Used for testing purposes.
-    :param port: port number
+    :param port: Port number. If not specified, bokeh server will listen on an arbitrary free port.
     :return: Returns the Bokeh Server URL and the process object used to create the child server process
     """
+    manager = multiprocessing.Manager()
+    d = manager.dict()
+    server_started = manager.Event()
 
-    host_name = socket.gethostname()
-    bokeh_serve_command = "bokeh serve  --allow-websocket-origin=" + \
-                          host_name + ":" + str(port) + " --allow-websocket-origin=localhost:" + str(port) + " --port=" + str(port) + " &"
-    process = subprocess.Popen(bokeh_serve_command,  # pylint: disable=subprocess-popen-preexec-fn
-                               shell=True,
-                               preexec_fn=os.setsid)
-    url = "http://" + host_name + ":" + str(port)
-    # Doesn't allow document to be added to server unless there is some sort of wait time.
-    time.sleep(4)
-    return url, process
+    def start_bokeh_server(port: int = None):
+        os.setsid()
+
+        # If port is 0, server automatically finds and listens on an arbitrary free port.
+        port = port or 0
+        try:
+            server = Server({'/': Application()}, port=port)
+            server.start()
+            d['port'] = server.port
+            server_started.set()
+            server.run_until_shutdown()
+        except Exception as e:
+            d['exception'] = e
+            raise
+
+    proc = multiprocessing.Process(target=start_bokeh_server, args=(port,))
+
+    proc.start()
+    server_started.wait(timeout=10)
+
+    if 'port' not in d:
+        if proc:
+            proc.terminate()
+
+        if 'exception' in d:
+            e = d['exception']
+            raise RuntimeError(f'Bokeh server failed with the following error: {e}')
+
+        raise RuntimeError('Bokeh Server failed with an unknown error')
+
+    port = d['port']
+    address = f'http://localhost:{port}'
+
+    return address, proc
 
 
 def log_package_info():
@@ -279,18 +334,17 @@ def log_package_info():
         logging.info("%s", Product)
 
 
-def save_json_yaml(encoding_file_path: str, encodings_dict: dict):
+@deprecated("This function will be deprecated in a future AIMET release. Saving to YAML has also been deprecated and"
+            " only a json file will be saved.")
+def save_json_yaml(file_path: str, dict_to_save: dict):
     """
-    Function which saves encoding in YAML and JSON file format
-    :param encoding_file_path: file name to use to generate the yaml and json file
-    :param encodings_dict: dictionary containing the encoding
+    Function which saves encoding in JSON file format
+    :param file_path: file name to use to generate the json file
+    :param dict_to_save: dictionary to save
     """
-    encoding_file_path_json = encoding_file_path
-    encoding_file_path_yaml = encoding_file_path + '.yaml'
+    encoding_file_path_json = file_path
     with open(encoding_file_path_json, 'w') as encoding_fp_json:
-        json.dump(encodings_dict, encoding_fp_json, sort_keys=True, indent=4)
-    with open(encoding_file_path_yaml, 'w') as encoding_fp_yaml:
-        yaml.dump(encodings_dict, encoding_fp_yaml, default_flow_style=False, allow_unicode=True)
+        json.dump(dict_to_save, encoding_fp_json, sort_keys=True, indent=4)
 
 
 class TqdmStreamHandler(logging.StreamHandler):
@@ -299,7 +353,7 @@ class TqdmStreamHandler(logging.StreamHandler):
     """
     def emit(self, record):
         with tqdm.external_write_mode(file=self.stream):
-            super(TqdmStreamHandler, self).emit(record)
+            super().emit(record)
 
 
 
@@ -361,19 +415,19 @@ class Spinner(tqdm):
             f"{prefix} {title}" for prefix in self.prefixes
         ]
 
-        super(Spinner, self).__init__()
+        super().__init__()
 
     def __str__(self):
         return self._messages[self._index]
 
     def __enter__(self):
         self._refresh_thread.start()
-        return super(Spinner, self).__enter__()
+        return super().__enter__()
 
     def __exit__(self, *args, **kwargs): # pylint: disable=arguments-differ
         self._stop.set()
         self._refresh_thread.join()
-        super(Spinner, self).__exit__(*args, **kwargs)
+        super().__exit__(*args, **kwargs)
 
 
 class Handle:
@@ -394,3 +448,88 @@ class Handle:
 
     def __exit__(self, *_):
         self.remove()
+
+
+def convert_configs_values_to_bool(dictionary: Dict):
+    """
+    Recursively traverse all key value pairs in dictionary and set any string values representing booleans to
+    booleans.
+    :param dictionary: Dictionary to set values to True or False if applicable
+    """
+    for key, value in dictionary.items():
+        if value == 'True':
+            dictionary[key] = True
+        elif value == 'False':
+            dictionary[key] = False
+        elif isinstance(value, List):
+            for item in value:
+                if isinstance(item, Dict):
+                    convert_configs_values_to_bool(item)
+        elif isinstance(value, Dict):
+            convert_configs_values_to_bool(value)
+        else:
+            pass
+
+
+@contextmanager
+def profile(label: str, file: Union[str, os.PathLike, TextIO] = None, new_file: bool = False, logger: Optional[logging.Logger] = None,
+            cleanup: Callable[[], Any] = None):
+    """
+    Profile a block of code and save profiling information into a file.
+
+    :param label: String label associated with the block of code to profile (shows up in the profiling print)
+    :param file: File path and name or a file-like object to send output text to (Default: stdout)
+    :param new_file: True if a new file is to be created to hold profiling info, False if an existing file should be
+        appended to. This flag is only valid when ``file`` is a path, not a file-like object.
+    :param logger: If logger is provided, profiling string will also be printed with INFO logging level
+    :param cleanup: If provided, this will be called before ending profiling. This can be useful for synchronizing cuda streams.
+    """
+    should_close = False
+    if isinstance(file, (str, os.PathLike)):
+        mode = 'w' if new_file else 'a'
+        file = open(file, mode) # pylint: disable=consider-using-with
+        should_close = True
+    elif file is None:
+        file = sys.stdout
+
+    assert hasattr(file, 'write')
+
+    try:
+        with Spinner(label):
+            start = time.perf_counter()
+            yield
+            if cleanup:
+                cleanup()
+            end = time.perf_counter()
+
+        profiling_string = f'{label}: {end - start:.2f}s'
+
+        if logger:
+            logger.info(profiling_string)
+
+        print(profiling_string, file=file)
+    finally:
+        if should_close:
+            file.close()
+
+
+def import_from_path(module_name, file_path):
+    """
+    Import a module from a given file path
+
+    :param module_name: The name to assign to the module
+    :param file_path: The path to the module file
+    :return: The imported module
+    """
+
+    file_path = os.path.abspath(file_path)
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+
+    # if the module is already present return it
+    if module_name in sys.modules and sys.modules[module_name].__spec__ == spec:
+        return sys.modules[module_name]
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module

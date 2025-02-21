@@ -1,4 +1,3 @@
-# /usr/bin/env python3.6
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -43,7 +42,7 @@ import unittest.mock
 
 import torch
 import torch.nn.functional as functional
-from aimet_torch.adaround.adaround_loss import AdaroundLoss, AdaroundHyperParameters
+from aimet_torch._base.adaround.adaround_loss import AdaroundLoss, AdaroundHyperParameters
 
 class TestAdaroundLoss(unittest.TestCase):
     """ Test AdaroundLoss """

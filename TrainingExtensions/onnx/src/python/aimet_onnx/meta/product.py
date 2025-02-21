@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -44,4 +43,5 @@ class Product(aimet_common.connected_graph.product.Product):
 
     def __init__(self, name, shape):
         super().__init__(name, shape)
-        self.tensor_dict = dict()
+        self.tensor_dict = {}
+        self.tensor = None

@@ -37,7 +37,7 @@
 //==============================================================================
 
 #include "QcQuantizeInfo.h"
-#include <DlQuantization/Quantization.hpp>
+#include "DlQuantization/Quantization.hpp"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -53,5 +53,10 @@ PYBIND11_MODULE(libquant_info, m)
         .def_readwrite("opMode", &QcQuantizeInfo::opMode)
         .def_readwrite("name", &QcQuantizeInfo::name)
         .def_readwrite("enabled", &QcQuantizeInfo::enabled)
-        .def_readwrite("useSymmetricEncoding", &QcQuantizeInfo::useSymmetricEncoding);
+        .def_readwrite("useSymmetricEncoding", &QcQuantizeInfo::useSymmetricEncoding)
+        .def_readwrite("usePerChannelMode", &QcQuantizeInfo::usePerChannelMode)
+        .def_readwrite("isIntDataType", &QcQuantizeInfo::isIntDataType)
+        .def_readwrite("channelAxis", &QcQuantizeInfo::channelAxis)
+        .def_readwrite("blockSize", &QcQuantizeInfo::blockSize)
+        .def_readwrite("blockAxis", &QcQuantizeInfo::blockAxis);
 }

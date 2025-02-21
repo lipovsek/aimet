@@ -54,9 +54,9 @@ from torchvision import models
 
 # imports for AIMET
 from aimet_common.defs import QuantScheme, EvalFunction
-from aimet_torch.batch_norm_fold import fold_all_batch_norms
+from aimet_torch.v1.batch_norm_fold import fold_all_batch_norms
 from aimet_torch.cross_layer_equalization import equalize_model
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch.v1.quantsim import QuantizationSimModel
 
 # imports for data pipelines
 from Examples.common import image_net_config
@@ -173,7 +173,7 @@ def apply_cross_layer_equalization(model: torch.nn.Module, input_shape: tuple):
         Batch Norm Folding
         Cross Layer Scaling
         High Bias Fold
-    Converts any ReLU6 into ReLU.
+        Converts any ReLU6 into ReLU.
     :param model: the loaded model
     :param input_shape: the shape of the input to the model
     :return:

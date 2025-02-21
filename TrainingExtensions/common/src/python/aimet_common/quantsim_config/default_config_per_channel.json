@@ -24,6 +24,29 @@
 
   "op_type":
   {
+    "BatchNormalization":
+    {
+      "params": {
+        "running_mean": {
+          "is_quantized": "False"
+        },
+        "running_var": {
+          "is_quantized": "False"
+        }
+      }
+    },
+    "Cast":
+    {
+      "is_output_quantized": "False"
+    },
+    "Dropout":
+    {
+      "is_output_quantized": "False"
+    },
+    "Expand":
+    {
+      "is_output_quantized": "False"
+    },
     "Squeeze":
     {
       "is_output_quantized": "False"
@@ -39,6 +62,18 @@
     "Gemm":
     {
       "per_channel_quantization": "False"
+    },
+    "MatMul":
+    {
+      "per_channel_quantization": "False"
+    },
+    "LayerNorm":
+    {
+      "per_channel_quantization": "False"
+    },
+    "Gather":
+    {
+      "is_output_quantized": "False"
     }
   },
 
@@ -49,6 +84,9 @@
     },
     {
       "op_list": ["Conv", "Clip"]
+    },
+    {
+      "op_list": ["ConvTranspose", "Relu"]
     },
     {
       "op_list": ["Add", "Relu"]
