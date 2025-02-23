@@ -93,6 +93,9 @@ DTYPE GetMax(const DTYPE* data, int cnt, ComputationMode cpuGpuMode);
 template <typename DTYPE>
 DTYPE GetMin(const DTYPE* data, int cnt, ComputationMode cpuGpuMode);
 
+template <typename DTYPE>
+std::tuple<DTYPE, DTYPE> GetMinMax(const DTYPE* data, int cnt, ComputationMode cpuGpuMode);
+
 // Android compiler doesn't have std::log2, so define it here
 double logBase2(double d);
 
@@ -111,11 +114,7 @@ double logBase2(double d);
  * memory allocator available.
  */
 template <typename DTYPE>
-void UpdatePdf(const DTYPE* data,
-               int cnt,
-               ComputationMode mode_cpu_gpu,
-               bool signed_vals,
-               PDF& pdf,
+void UpdatePdf(const DTYPE* data, int cnt, ComputationMode mode_cpu_gpu, bool signed_vals, PDF& pdf,
                IAllocator* allocator);
 
 /**
@@ -131,13 +130,8 @@ void UpdatePdf(const DTYPE* data,
  * memory allocator available.
  */
 template <typename DTYPE>
-void GetHistogram(const DTYPE* data,
-                  const int cnt,
-                  uint32_t histogram[PDF_SIZE],
-                  const DTYPE bucket_size,
-                  const DTYPE pdf_offset,
-                  const ComputationMode mode_cpu_gpu,
-                  const bool is_signed,
+void GetHistogram(const DTYPE* data, const int cnt, uint32_t histogram[PDF_SIZE], const DTYPE bucket_size,
+                  const DTYPE pdf_offset, const ComputationMode mode_cpu_gpu, const bool is_signed,
                   IAllocator* allocator);
 
 /**
@@ -184,12 +178,8 @@ void* MemoryAllocation_cpu(size_t bytes);
 void MemoryFree_cpu(void* data);
 
 template <typename DTYPE>
-void GetHistogram_cpu(const DTYPE* data,
-                      int cnt,
-                      uint32_t histogram[PDF_SIZE],
-                      const DTYPE bucket_size,
-                      const DTYPE pdf_offset,
-                      const bool is_signed);
+void GetHistogram_cpu(const DTYPE* data, int cnt, uint32_t histogram[PDF_SIZE], const DTYPE bucket_size,
+                      const DTYPE pdf_offset, const bool is_signed);
 
 /**
  * @brief Returns a histogram that represents a PDF of tensor values seen so far.
@@ -222,6 +212,7 @@ void updateTensorHistogram_cpu(const DTYPE* data, int tensorSize, TensorProfilin
 std::vector<double> rescaleHistogram(const std::vector<double>& srcHist, const double srcHistMin,
                                      const double srcHistMax, const double destHistMin, const double destHistMax);
 
+
 // GPU implementations...
 #ifdef GPU_QUANTIZATION_ENABLED
 
@@ -230,6 +221,9 @@ DTYPE GetMax_gpu(const DTYPE* data, int cnt);
 
 template <typename DTYPE>
 DTYPE GetMin_gpu(const DTYPE* data, int cnt);
+
+template <typename DTYPE>
+std::tuple<DTYPE, DTYPE> GetMinMax_gpu(const DTYPE* data, int cnt);
 
 void ElementwiseMult_gpu(const float* in, size_t cnt, float factor, float* out);
 
@@ -244,13 +238,8 @@ void* MemoryAllocation_gpu(size_t bytes);
 bool MemoryFree_gpu(void* data);
 
 template <typename DTYPE>
-void GetHistogram_gpu(const DTYPE* data,
-                      int cnt,
-                      uint32_t histogram[PDF_SIZE],
-                      const DTYPE bucket_size,
-                      const DTYPE pdf_offset,
-                      const bool is_signed,
-                      IAllocator* allocator);
+void GetHistogram_gpu(const DTYPE* data, int cnt, uint32_t histogram[PDF_SIZE], const DTYPE bucket_size,
+                      const DTYPE pdf_offset, const bool is_signed, IAllocator* allocator);
 
 #endif   // GPU_QUANTIZATION_ENABLED
 

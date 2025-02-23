@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -42,7 +41,7 @@ import typing
 import numpy as np
 import tensorflow as tf
 
-import aimet_common.libpymo as libpymo
+from aimet_common import _libpymo as libpymo
 from aimet_common.utils import AimetLogger
 from aimet_tensorflow.keras.batch_norm_fold import fold_all_batch_norms
 from aimet_tensorflow.keras.graphsearchtuils import GraphSearchUtils, ClsSet
@@ -58,6 +57,12 @@ BatchNormFoldedPair = typing.Union[typing.Tuple[tf.keras.layers.Conv2D,
 
 ScaleFactor = typing.Union[np.ndarray, typing.Tuple[np.ndarray, np.ndarray]]
 ReluFlag = typing.Union[bool, typing.Tuple[bool, bool]]
+
+Convs = typing.Union[tf.keras.layers.Conv2D,
+                     tf.keras.layers.DepthwiseConv2D,
+                     tf.keras.layers.Conv2DTranspose]
+
+_supported_convs = Convs.__args__
 
 class ClsSetInfo:
     """
@@ -168,9 +173,7 @@ class CrossLayerScaling:
         """
 
         for layer in cls_set:
-            # NOTE: DepthwiseConv2D and Conv2DTranspose is subclass of Conv2D
-            #   The check below covers all of Conv2D, DepthwiseConv2D and Conv2DTranspose class
-            if not isinstance(layer, tf.keras.layers.Conv2D):
+            if not isinstance(layer, _supported_convs):
                 raise ValueError("Only Conv or Transposed Conv layers are supported for CLE")
 
         scaling_params, prev_layer_params, curr_layer_params, next_layer_params = \
@@ -461,16 +464,14 @@ class HighBiasFold:
 def equalize_model(model: tf.keras.Model) -> tf.keras.Model:
     """
     High-level API to perform Cross-Layer Equalization (CLE) on the given model
+
     :param model: tf.keras.Model
     :return: CLE applied tf.keras.Model
     """
     # replace any ReLU6 layers with ReLU
     model_for_cle, _ = model_transform_utils.replace_relu6_with_relu(model)
 
-    folded_pairs, potential_folded_functional_model = fold_all_batch_norms(model_for_cle)
-    # fold_all_batch_norms could return a new model if the original model was a Functional model
-    # If so, we need to use the new model for CLE
-    model_for_cle = potential_folded_functional_model if potential_folded_functional_model else model_for_cle
+    folded_pairs, model_for_cle = fold_all_batch_norms(model_for_cle)
 
     equalize_bn_folded_model(model_for_cle, folded_pairs)
 

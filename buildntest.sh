@@ -1,37 +1,37 @@
 #!/bin/bash
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
-#  
+#
 #  Copyright (c) 2020, Qualcomm Innovation Center, Inc. All rights reserved.
-#  
-#  Redistribution and use in source and binary forms, with or without 
+#
+#  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
-#  
-#  1. Redistributions of source code must retain the above copyright notice, 
+#
+#  1. Redistributions of source code must retain the above copyright notice,
 #     this list of conditions and the following disclaimer.
-#  
-#  2. Redistributions in binary form must reproduce the above copyright notice, 
-#     this list of conditions and the following disclaimer in the documentation 
+#
+#  2. Redistributions in binary form must reproduce the above copyright notice,
+#     this list of conditions and the following disclaimer in the documentation
 #     and/or other materials provided with the distribution.
-#  
-#  3. Neither the name of the copyright holder nor the names of its contributors 
-#     may be used to endorse or promote products derived from this software 
+#
+#  3. Neither the name of the copyright holder nor the names of its contributors
+#     may be used to endorse or promote products derived from this software
 #     without specific prior written permission.
-#  
-#  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
-#  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE 
-#  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE 
-#  ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE 
-#  LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
-#  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
-#  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
-#  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
-#  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
+#
+#  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+#  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+#  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+#  ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+#  LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+#  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+#  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+#  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+#  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 #  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 #  POSSIBILITY OF SUCH DAMAGE.
-#  
+#
 #  SPDX-License-Identifier: BSD-3-Clause
-#  
+#
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 
@@ -61,7 +61,7 @@ usage() {
   echo -e "\nThis is a script to build and run tests on AIMET code."
   echo -e "This script must be executed from within the AIMET repo's top-level folder."
   echo -e "NOTE: This script will build and start a docker container.\n"
-  
+
   echo "${0} [-o <output_folder>]"
   echo "    -b --> build the code"
   echo "    -p --> generate pip packages"
@@ -155,23 +155,24 @@ if [ ! -d "../aimet" ] && [ ! -d "../aimet-main" ]; then
 fi
 
 # Set the docker file path
-# This is the default value (for python 3.8 docker files)
+# This is the default value (for python 3.10 docker files)
 dockerfile_path=${scriptPath}/Jenkins
 if [ -n "$PYTHON_VER" ]; then
     # If the python version variable was set, then switch the path
-    if [ "${PYTHON_VER}" == "3.7" ]; then
-        # The python 3.7 docker files are located in a sub-directory
-        dockerfile_path="${scriptPath}/Jenkins/python37"
-    elif [ "${PYTHON_VER}" != "3.8" ]; then
-        # We only support python 3.8 or 3.7 versions.
-        echo "ERROR: Invalid PYTHON_VER (${PYTHON_VER}). Must be either 3.8 or 3.7!"
+    if [ "${PYTHON_VER}" != "3.10" ]; then
+        # We only support python 3.10 version.
+        echo "ERROR: Invalid PYTHON_VER (${PYTHON_VER}). Must be either 3.10!"
         exit 3
     fi
 fi
 
 
 # Set the root URL that hosts the pre-built development docker image
-if [ -n "$AIMET_PREBUILT_DOCKER_IMAGE_URL" ]; then
+if [ -n "$PREBUILT_DOCKER_IMAGE_URL" ]; then
+    prebuilt_docker_image_url=${PREBUILT_DOCKER_IMAGE_URL}
+elif [[ "$CHANGE_TARGET" =~ "release-aimet" ]]; then
+    prebuilt_docker_image_url=${AIMET_PREBUILT_DOCKER_IMAGE_URL}"-release"
+elif [ -n "$AIMET_PREBUILT_DOCKER_IMAGE_URL" ]; then
     # Use a custom source if one is provided
     prebuilt_docker_image_url=${AIMET_PREBUILT_DOCKER_IMAGE_URL}
 else
@@ -218,7 +219,7 @@ if [[ -z "${BUILD_NUMBER}" ]]; then
 else
     # If invoked from jenkins, kill anly previous running containers starting with "aimet-dev_"
     containers=($(docker ps | awk '/aimet-dev_/ {print $NF}'))
-    for container_name in "${containers[@]}"; do 
+    for container_name in "${containers[@]}"; do
         docker kill "$container_name" || true;
     done
 fi
@@ -232,6 +233,10 @@ else
     echo -e "*** Building docker image${loading_symbol} ***\n"
     pushd ${dockerfile_path}
     DOCKER_BUILD_CMD="docker build -t ${docker_image_name} -f ${docker_file} ."
+    if [[ ${ALTERNATIVE_DOCKER_REGISTRY} ]];
+    then
+        DOCKER_BUILD_CMD+=" --build-arg REGISTRY=${ALTERNATIVE_DOCKER_REGISTRY}"
+    fi
     if [ $interactive_mode -eq 1 ] && [ $dry_run -eq 1 ]; then
         echo ${DOCKER_BUILD_CMD}
         echo
@@ -246,9 +251,14 @@ if [ -n "${DEPENDENCY_DATA_PATH}" ]; then
    docker_add_vol_mount+=${DEPENDENCY_DATA_PATH}
    USER_ENV_VARS+=("DEPENDENCY_DATA_PATH")
 else
-   # If it does not exist, then just add the path of the current script since we cannot leave it 
+   # If it does not exist, then just add the path of the current script since we cannot leave it
    # empty
    docker_add_vol_mount+=${scriptPath}
+fi
+
+# Add patchelf mirror url to the environment
+if [ -n "${PATCHELF_INTERNAL_URL}" ]; then
+   USER_ENV_VARS+=("PATCHELF_INTERNAL_URL")
 fi
 
 # Check if and which version of nvidia docker is present
@@ -276,10 +286,19 @@ else
     exit 3
 fi
 
+# Mirror URL prefix for github repos (if one exists)
+additional_opts="-v /etc/passwd:/etc/passwd:ro "
+if [ -n "${GITHUB_MIRROR_URL}" ]; then
+   USER_ENV_VARS+=("GITHUB_MIRROR_URL")
+   echo "git-user:x:$(id -u):$(id -g):Git User:/tmp:/bin/bash" > /tmp/fake_passwd
+   additional_opts=" -w /tmp -v /usr2/${USER}/.ssh:/tmp/.ssh -v /tmp/fake_passwd:/etc/passwd:ro "
+fi
+
 echo -e "Starting docker container${loading_symbol} \n"
 DOCKER_RUN_CMD="${DOCKER_RUN_PREFIX} --rm --name=$docker_container_name -e DISPLAY=:0 \
 				-u $(id -u ${USER}):$(id -g ${USER}) \
-				-v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro \
+				${additional_opts} \
+				-v /etc/group:/etc/group:ro \
 				-v /tmp/.X11-unix:/tmp/.X11-unix \
 				-v ${workspaceFolder}:${workspaceFolder} \
 				-v ${outputRootFolder}:${outputRootFolder} \

@@ -2,7 +2,7 @@
 //
 //  @@-COPYRIGHT-START-@@
 //
-//  Copyright (c) 2020-2022, Qualcomm Innovation Center, Inc. All rights reserved.
+//  Copyright (c) 2020-2023, Qualcomm Innovation Center, Inc. All rights reserved.
 //
 //  Redistribution and use in source and binary forms, with or without
 //  modification, are permitted provided that the following conditions are met:
@@ -61,10 +61,16 @@ template <typename T>
 T copyLiteralToHost(const CPUDevice& d, const T* deviceValue);
 
 template <typename T>
+void copyArrayToHost(const CPUDevice& d, const T* srcPtr, T* destPtr, int count);
+
+template <typename T>
 void copyInputTensorsToOutputTensors(const GPUDevice& d, const T* inTensor, size_t count, T* outTensor);
 
 template <typename T>
 T copyLiteralToHost(const GPUDevice& d, const T* deviceValue);
+
+template <typename T>
+void copyArrayToHost(const GPUDevice& d, const T* srcPtr, T* destPtr, int count);
 
 void chipAndCopyPerChannelValues(const CPUDevice& d, Tensor tensorToCopyInto,
                                  TTypes<float>::ConstMatrix tensorToCopyFrom, int channel);
@@ -76,24 +82,34 @@ void sliceAndStoreTensor(const CPUDevice& d, Tensor* slicedTensor, Tensor tensor
 
 void sliceAndStoreTensor(const GPUDevice& d, Tensor* slicedTensor, Tensor tensorToSlice, int channel);
 
-void quantizeDequantize(const GPUDevice& d, TTypes<float>::ConstMatrix inputs,
-                        DlQuantization::TfEncoding encodings, TTypes<float>::Matrix outputs, int channel);
+void quantizeDequantize(const GPUDevice& d, TTypes<float>::ConstMatrix inputs, DlQuantization::TfEncoding encodings,
+                        TTypes<float>::Matrix outputs, int channel);
 
-void quantizeDequantize(const CPUDevice& d, TTypes<float>::ConstMatrix inputs,
-                        DlQuantization::TfEncoding encodings, TTypes<float>::Matrix outputs, int channel);
+void quantizeDequantize(const CPUDevice& d, TTypes<float>::ConstMatrix inputs, DlQuantization::TfEncoding encodings,
+                        TTypes<float>::Matrix outputs, int channel);
+
+void quantizeDequantizePerChannel(const GPUDevice& d, TTypes<float>::ConstMatrix inputs, TTypes<float>::Matrix outputs,
+                                  Tensor* encodingMin, Tensor* encodingMax, Tensor* encodingScale,
+                                  Tensor* encodingOffset, Tensor* encodingInvScaleTensor);
+
+void quantizeDequantizePerChannel(const CPUDevice& d, TTypes<float>::ConstMatrix inputs, TTypes<float>::Matrix outputs,
+                                  Tensor* encodingMin, Tensor* encodingMax, Tensor* encodingScale,
+                                  Tensor* encodingOffset, Tensor* encodingInvScaleTensor);
 
 #if GOOGLE_CUDA
-class TensorFlowCudaAllocator: public DlQuantization::IAllocator
+class TensorFlowCudaAllocator : public DlQuantization::IAllocator
 {
 public:
-    TensorFlowCudaAllocator(Allocator* allocator): allocator_(allocator) {}
+    TensorFlowCudaAllocator(Allocator* allocator) : allocator_(allocator)
+    {
+    }
 
     void* allocateRaw(size_t bytes) override
     {
         return allocator_->AllocateRaw(256, bytes);
     }
 
-    void deleteRaw(void *ptr) override
+    void deleteRaw(void* ptr) override
     {
         allocator_->DeallocateRaw(ptr);
     }
@@ -101,13 +117,12 @@ public:
 protected:
     Allocator* allocator_;
 };
-#endif // GOOGLE_CUDA
+#endif   // GOOGLE_CUDA
 
 template <typename D, typename T>
-void modeSpecificActionInt(const D& d, const T* inTensor, size_t count, T* outTensor,
-                        const uint64* tensorQuantizerRef, const int32* opMode,
-                        const double* min, const double* max, const int8* bw,
-                        const bool* useSymEncoding, DlQuantization::IAllocator* allocator)
+void modeSpecificActionInt(const D& d, const T* inTensor, size_t count, T* outTensor, const uint64* tensorQuantizerRef,
+                           const int32* opMode, const double* min, const double* max, const int8* bw,
+                           const bool* useSymEncoding, DlQuantization::IAllocator* allocator)
 {
     bool useCuda = false;
     if (std::is_same<D, GPUDevice>::value)
@@ -118,13 +133,13 @@ void modeSpecificActionInt(const D& d, const T* inTensor, size_t count, T* outTe
     // Note that all of the pointers to data here could either be pointing to CPU memory or GPU memory
     // We first copy everything to CPU memory and then use them
     auto tensorQuantizerRefHost = copyLiteralToHost<uint64>(d, tensorQuantizerRef);
-    auto opModeHost = copyLiteralToHost<int32>(d, opMode);
-    auto opModeEnum = static_cast<const DlQuantization::TensorQuantizerOpMode>(opModeHost);
-    auto encodingMin = copyLiteralToHost<double>(d, min);
-    auto encodingMax = copyLiteralToHost<double>(d, max);
-    auto tensorQuantizer = reinterpret_cast<DlQuantization::TensorQuantizerOpFacade*>(tensorQuantizerRefHost);
-    auto bitwidth = copyLiteralToHost<int8>(d, bw);
-    auto useSymmetricEncoding = copyLiteralToHost<bool>(d, useSymEncoding);
+    auto opModeHost             = copyLiteralToHost<int32>(d, opMode);
+    auto opModeEnum             = static_cast<const DlQuantization::TensorQuantizerOpMode>(opModeHost);
+    auto encodingMin            = copyLiteralToHost<double>(d, min);
+    auto encodingMax            = copyLiteralToHost<double>(d, max);
+    auto tensorQuantizer        = reinterpret_cast<DlQuantization::TensorQuantizerOpFacade*>(tensorQuantizerRefHost);
+    auto bitwidth               = copyLiteralToHost<int8>(d, bw);
+    auto useSymmetricEncoding   = copyLiteralToHost<bool>(d, useSymEncoding);
 
     switch (opModeEnum)
     {
@@ -147,6 +162,20 @@ void modeSpecificActionInt(const D& d, const T* inTensor, size_t count, T* outTe
     }
     case DlQuantization::TensorQuantizerOpMode::quantizeDequantize:
     {
+        // This is a complex check: here is the explanation
+        // If min < 0, then unsigned symmetric mode is immaterial
+        // Also if user explicitly requested to disable unsigned-symmetric mode, then we use regular symmetric
+        if (useSymmetricEncoding && ((encodingMin < 0.0) || (!tensorQuantizer->getUnsignedSymmetric())))
+        {
+            encodingMin = -encodingMax;
+            if (!tensorQuantizer->getStrictSymmetric())
+            {
+                double numSteps               = pow(2, bitwidth) - 1;
+                unsigned int numPositiveSteps = std::floor(numSteps / 2);
+                double delta                  = encodingMax / numPositiveSteps;
+                encodingMin -= delta;
+            }
+        }
         tensorQuantizer->quantizeDequantize(inTensor, count, outTensor, encodingMin, encodingMax, bitwidth, useCuda);
         break;
     }

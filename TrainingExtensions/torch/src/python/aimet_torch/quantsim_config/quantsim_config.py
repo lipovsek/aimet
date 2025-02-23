@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2020, 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2020-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -36,41 +35,44 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 """ Utilities for parsing and applying quantsim configurations from json config file """
+import copy
 from abc import abstractmethod
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Tuple, Set, Union
 import torch
+from torch.nn.modules import ConvTranspose2d
 
-from aimet_common.utils import AimetLogger
+from aimet_common.utils import AimetLogger, log_with_error_and_assert_if_false
 from aimet_common.graph_searcher import GraphSearcher
 from aimet_common.graph_pattern_matcher import PatternType
 from aimet_common.connected_graph.operation import Op
 from aimet_common.defs import QuantizationDataType, QuantDtypeBwInfo
-from aimet_common.connected_graph.connectedgraph_utils import get_all_input_ops, get_all_output_ops
+from aimet_common.connected_graph.connectedgraph_utils import CG_SPLIT
+from aimet_common.connected_graph import connectedgraph_utils as cg_utils
 from aimet_common.quantsim_config.json_config_importer import ConfigDictKeys, ConfigType, SupergroupType, OpType, \
     ParamType, DefaultsType, OpTypeType, ConfigDictType
 from aimet_common.quantsim_config.quantsim_config import QuantSimConfigurator as AimetCommonQuantSimConfigurator, \
     get_all_ops_in_neighborhood, get_setting_type, ENFORCE_TARGET_DTYPE_BITWIDTH_CONFIG, reformat_supported_kernels
 from aimet_common.quantsim_config.quantsim_config import SupergroupConfigCallback as AimetCommonSupergroupConfigCallback
-from aimet_torch.qc_quantize_op import QcQuantizeWrapper
-from aimet_torch.tensor_quantizer import TensorQuantizer
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch.onnx_utils import map_torch_types_to_onnx, pytorch_functional_name_to_onnx_dict
+from aimet_torch.translation_mapping import aimet_op_to_backend_op_name_map
+from aimet_torch.quantsim_config.builder import LazyQuantizeWrapper, LazyQuantizer
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
-
 MAP_PYTORCH_PARAM_NAME_TO_QUANTSIM_NAME = {
     "bias": "bias",
+    "sp_conv_3d.bias": "bias",
     "weight": "weight"
 }
 
-TensorQuantizersTupleType = Tuple[List[TensorQuantizer], List[TensorQuantizer], List[TensorQuantizer],
-                                  List[TensorQuantizer]]
+TensorQuantizersTupleType = Tuple[List[LazyQuantizer], List[LazyQuantizer], List[LazyQuantizer],
+                                  List[LazyQuantizer]]
 
 
 class SupergroupConfigCallback(AimetCommonSupergroupConfigCallback):
     """ Class acting as a callback for when supergroups are found """
 
-    def __init__(self, module_to_quantsim_wrapper_dict: Dict[torch.nn.Module, QcQuantizeWrapper]):
+    def __init__(self, module_to_quantsim_wrapper_dict: Dict[torch.nn.Module, LazyQuantizeWrapper]):
         self._module_to_quantsim_wrapper_dict = module_to_quantsim_wrapper_dict
 
     def __call__(self, _, op_list: List[Op]):
@@ -83,7 +85,6 @@ class SupergroupConfigCallback(AimetCommonSupergroupConfigCallback):
                 # and subsequent ops with wrappers will be set correctly anyway.
                 continue
             if op.get_module() is None:
-                logger.debug("Op %s has no associated module. Skipping processing for this op.", op)
                 continue
             if index == 0:
                 # turn off only output quantization of first op in the list
@@ -116,19 +117,13 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         self._named_modules_to_tensor_quantizers_dict = self._create_named_modules_to_tensor_quantizers_dict()
         self._elementwise_op_to_tensor_quantizers_dict = self._create_elementwise_op_to_tensor_quantizers_dict()
         self._disable_all_quantizers()
-        # TODO remove the below field and use the wrapper.supported_kernels instead. reformat_supported_kernels missing
-        #  as well
         self._supported_kernels = self._parse_supported_kernels()
-
         if ENFORCE_TARGET_DTYPE_BITWIDTH_CONFIG:
-            if self.check_correctness_of_dtype_bw_rules(
-                    QuantDtypeBwInfo(self._default_data_type, self._default_output_bw,
-                                     self._default_data_type, self._default_param_bw)):
+            if self.check_correctness_of_dtype_bw_rules(QuantDtypeBwInfo(self._default_data_type, self._default_output_bw,
+                                                                         self._default_data_type, self._default_param_bw)):
                 logger.info("Supported Kernel check for valid dtype and bitwidth overrides completed")
-
         self._set_quantsim_configs()
         self._generate_and_apply_op_instance_specific_config()
-
 
     def _create_named_modules_to_tensor_quantizers_dict(self) -> Dict[torch.nn.Module, TensorQuantizersTupleType]:
         """
@@ -140,14 +135,19 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         :return: Dictionary mapping op to tuple of lists of tensor quantizers to change
         """
         module_to_tensor_quantizers_dict = {}
+        module_to_cg_op_dict = {}
+        for op in self._conn_graph.get_all_ops().values():
+            module = op.get_module()
+            if module:
+                module_to_cg_op_dict[module] = op
         for module, quantsim_wrapper in self._module_to_quantsim_wrapper_dict.items():
             # Attempt to find op in connected graph corresponding to this module
-            op = [op for op in self._conn_graph.get_all_ops().values() if op.get_module() == module]
+            op = module_to_cg_op_dict.get(module)
             if op:
-                input_true_list = self._get_tensor_quantizers_for_input_true_setting(op[0])
-                output_true_list = self._get_tensor_quantizers_for_output_true_setting(op[0])
-                input_false_list = self._get_tensor_quantizers_for_input_false_setting(op[0])
-                output_false_list = self._get_tensor_quantizers_for_output_false_setting(op[0])
+                input_true_list = self._get_tensor_quantizers_for_input_true_setting(op)
+                output_true_list = self._get_tensor_quantizers_for_output_true_setting(op)
+                input_false_list = self._get_tensor_quantizers_for_input_false_setting(op)
+                output_false_list = self._get_tensor_quantizers_for_output_false_setting(op)
             else:
                 input_true_list = quantsim_wrapper.input_quantizers
                 output_true_list = quantsim_wrapper.output_quantizers
@@ -179,7 +179,7 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
                                                     output_false_list)
         return module_to_tensor_quantizers_dict
 
-    def _get_tensor_quantizers_for_input_true_setting(self, op: Op) -> List[TensorQuantizer]:
+    def _get_tensor_quantizers_for_input_true_setting(self, op: Op) -> List[LazyQuantizer]:
         """
         Get a list of tensor quantizers that would be affected if the given op is specified to have input quantization
         enabled.
@@ -196,17 +196,18 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
             while queue:
                 current_op = queue.pop()
                 if current_op.inputs:
-                    input_ops = [inp.producer for inp in current_op.inputs if not inp.is_model_input]
+                    input_ops = [inp.producer for inp in current_op.inputs if not inp.is_model_input and
+                                 not inp.is_const]
                     for input_op in input_ops:
                         if input_op.get_module() is not None and input_op.get_module() in \
                                 self._module_to_quantsim_wrapper_dict:
                             qc_quantize_wrapper = self._module_to_quantsim_wrapper_dict[input_op.get_module()]
                             tensor_quantizers_for_input_true.append(qc_quantize_wrapper.output_quantizers[0])
-                        elif input_op.type == 'Split':
+                        elif input_op.type == CG_SPLIT:
                             queue.append(input_op)
         return tensor_quantizers_for_input_true
 
-    def _get_tensor_quantizers_for_output_true_setting(self, op: Op) -> List[TensorQuantizer]:
+    def _get_tensor_quantizers_for_output_true_setting(self, op: Op) -> List[LazyQuantizer]:
         """
         Get a list of tensor quantizers that would be affected if the given op is specified to have output quantization
         enabled.
@@ -222,18 +223,18 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
             queue = [op]
             while queue:
                 current_op = queue.pop()
-                if current_op.output:
-                    output_ops = [consumer for consumer in current_op.output.consumers]
+                if current_op.outputs:
+                    output_ops = current_op.output_ops
                     for output_op in output_ops:
                         if output_op.get_module() is not None and output_op.get_module() in \
                                 self._module_to_quantsim_wrapper_dict:
                             qc_quantize_wrapper = self._module_to_quantsim_wrapper_dict[output_op.get_module()]
                             tensor_quantizers_for_output_true += qc_quantize_wrapper.input_quantizers
-                        elif output_op.type == 'Split':
+                        elif output_op.type == CG_SPLIT:
                             queue.append(output_op)
         return tensor_quantizers_for_output_true
 
-    def _get_tensor_quantizers_for_input_false_setting(self, op: Op) -> List[TensorQuantizer]:
+    def _get_tensor_quantizers_for_input_false_setting(self, op: Op) -> List[LazyQuantizer]:
         """
         Get a list of tensor quantizers that would be affected if the given op is specified to have input quantization
         disabled.
@@ -242,9 +243,9 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         quantization disabled.
         """
         tensor_quantizers_for_input_false = []
-        neighboring_input_ops = get_all_ops_in_neighborhood(op, 'input')
+        neighboring_input_ops = get_all_ops_in_neighborhood(op, 'input', split_type=CG_SPLIT)
         for input_op in neighboring_input_ops:
-            if input_op.type != 'Split' and input_op.get_module() is not None and input_op.get_module() in \
+            if input_op.type != CG_SPLIT and input_op.get_module() is not None and input_op.get_module() in \
                     self._module_to_quantsim_wrapper_dict:
                 qc_quantize_wrapper = self._module_to_quantsim_wrapper_dict[input_op.get_module()]
                 if neighboring_input_ops[input_op] == 'input':
@@ -253,7 +254,7 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
                     tensor_quantizers_for_input_false += qc_quantize_wrapper.output_quantizers
         return tensor_quantizers_for_input_false
 
-    def _get_tensor_quantizers_for_output_false_setting(self, op: Op) -> List[TensorQuantizer]:
+    def _get_tensor_quantizers_for_output_false_setting(self, op: Op) -> List[LazyQuantizer]:
         """
         Get a list of tensor quantizers that would be affected if the given op is specified to have output quantization
         disabled.
@@ -262,9 +263,9 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         quantization disabled.
         """
         tensor_quantizers_for_output_false = []
-        neighboring_output_ops = get_all_ops_in_neighborhood(op, 'output')
+        neighboring_output_ops = get_all_ops_in_neighborhood(op, 'output', split_type=CG_SPLIT)
         for output_op in neighboring_output_ops:
-            if output_op.type != 'Split' and output_op.get_module() is not None and output_op.get_module() in \
+            if output_op.type != CG_SPLIT and output_op.get_module() is not None and output_op.get_module() in \
                     self._module_to_quantsim_wrapper_dict:
                 qc_quantize_wrapper = self._module_to_quantsim_wrapper_dict[output_op.get_module()]
                 if neighboring_output_ops[output_op] == 'input':
@@ -374,33 +375,61 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
                     param_config = param_configs[quantsim_param_name]
                     _set_config_for_param(quantsim_wrapper.param_quantizers[param_name], param_config)
 
+    def _merge_op_types_info(self, op_configs: OpTypeType):
+        """
+        Merges op type info. from ONNX op type to backend op types
+
+        :param op_configs: Dictionary containing configurations for ops of certain types
+        """
+        merged_backend_types = []
+
+        for module, _ in self._named_modules_to_tensor_quantizers_dict.items():
+
+            onnx_types = map_torch_types_to_onnx.get(type(module))
+            backend_type = aimet_op_to_backend_op_name_map.get(type(module))
+
+            if onnx_types and backend_type in op_configs and backend_type not in merged_backend_types:
+                backend_type_op_config = op_configs[backend_type]
+                for onnx_type in onnx_types:
+                    if onnx_type in op_configs and backend_type != onnx_type:
+                        onnx_op_config = op_configs[onnx_type]
+                        op_configs[backend_type] = merge_op_type_config(backend_type_op_config, onnx_op_config)
+                        merged_backend_types.append(backend_type)
+
     def _set_op_type_configs(self, op_configs: OpTypeType):
         """
         Set configurations for all ops of specific types (third level of specificity in configuration file)
         :param op_configs: Dictionary containing configurations for ops of certain types
         """
         modified_tensor_quantizers = {}
+
+        self._merge_op_types_info(op_configs)
+
         # Set op type configs for named modules
         for module, input_output_tensor_quantizers in self._named_modules_to_tensor_quantizers_dict.items():
             onnx_types = map_torch_types_to_onnx.get(type(module))
-            if not onnx_types:
-                continue
-            for onnx_type in onnx_types:
-                if onnx_type in op_configs:
-                    op_config = op_configs[onnx_type]
-                    logger.info(' Set op level config for op = {%s}', onnx_type)
-                    self._set_config_for_module(input_output_tensor_quantizers, op_config, modified_tensor_quantizers,
-                                                module)
+            backend_type = aimet_op_to_backend_op_name_map.get(type(module))
+
+            if backend_type in op_configs:
+                self._set_config_for_module(input_output_tensor_quantizers, op_configs[backend_type],
+                                            modified_tensor_quantizers, module)
+            else:
+                if not onnx_types:
+                    continue
+                for onnx_type in onnx_types:
+                    if onnx_type in op_configs:
+                        op_config = op_configs[onnx_type]
+                        self._set_config_for_module(input_output_tensor_quantizers, op_config, modified_tensor_quantizers,
+                                                    module)
+
         # Set op type configs for elementwise ops
         for op, input_output_tensor_quantizers in self._elementwise_op_to_tensor_quantizers_dict.items():
             if op.type in op_configs:
                 op_config = op_configs[op.type]
-                logger.info(' Set op level config for elementwise op = {%s}', op.type)
                 self._set_config_for_module(input_output_tensor_quantizers, op_config, modified_tensor_quantizers)
 
-
     def _set_config_for_module(self, input_output_tensor_quantizers: TensorQuantizersTupleType, op_config: OpType,
-                               modified_tensor_quantizers: Dict[TensorQuantizer, Set], module: torch.nn.Module = None):
+                               modified_tensor_quantizers: Dict[LazyQuantizer, Set], module: torch.nn.Module = None):
         """
         Set configurations for a specific op
         :param input_output_tensor_quantizers: Tuple of 4 lists containing the following:
@@ -422,6 +451,9 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         if ConfigDictKeys.IS_SYMMETRIC in op_config:
             _modify_tensor_quantizers(input_output_tensor_quantizers, ConfigDictKeys.IS_SYMMETRIC,
                                       op_config[ConfigDictKeys.IS_SYMMETRIC], modified_tensor_quantizers)
+        if ConfigDictKeys.ENCODING_CONSTRAINTS in op_config:
+            _modify_tensor_quantizers(input_output_tensor_quantizers, ConfigDictKeys.ENCODING_CONSTRAINTS,
+                                      op_config[ConfigDictKeys.ENCODING_CONSTRAINTS], modified_tensor_quantizers)
 
         # Will only see this in the op_type section, not default
         if ConfigDictKeys.PARAMS in op_config:
@@ -455,7 +487,6 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
             conv_bn_pairs = []
 
             def handler(_, op_list):
-                from torch.nn.modules import ConvTranspose2d
                 conv, bn = op_list
                 conv_module = conv.get_module()
                 # Transposed depthwise convolutions are not supported for batchnorm folding
@@ -521,22 +552,31 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
 
     def _set_model_input_configs(self, model_input_configs: ConfigType):
         """
-        Set model input specific configurations (fifth level of specificity in configuration file)
+        Set model input specific configurations (fifth level of specificity in configuration file).
+
         :param model_input_configs: Configuration for model inputs
         """
-        input_ops = get_all_input_ops(self._conn_graph)
-        for op in input_ops:
-            if op.get_module() in self._named_modules_to_tensor_quantizers_dict:
-                modified_tensor_quantizers = {}
-                self._set_config_for_module(self._named_modules_to_tensor_quantizers_dict[op.get_module()],
-                                            model_input_configs, modified_tensor_quantizers)
+
+        if ConfigDictKeys.IS_INPUT_QUANTIZED in model_input_configs:
+            # Find all ops which are either model input ops or have constant inputs as inputs
+            input_ops = cg_utils.get_all_input_ops(self._conn_graph)
+            ops_to_set = list(set(input_ops).union(cg_utils.get_all_ops_with_constant_inputs(self._conn_graph)))
+
+            for op in ops_to_set:
+                if op.get_module() in self._module_to_quantsim_wrapper_dict:
+                    input_and_constant_input_indices = [idx for idx, inp in enumerate(op.inputs) if
+                                                        inp.is_model_input or inp.is_const]
+                    curr_module = self._module_to_quantsim_wrapper_dict[op.get_module()]
+                    for idx, quantizer in enumerate(curr_module.input_quantizers):
+                        if idx in input_and_constant_input_indices:
+                            quantizer.enabled = True
 
     def _set_model_output_configs(self, model_output_configs: ConfigType):
         """
         Set model output specific configurations (sixth level of specificity in configuration file)
         :param model_output_configs: Configuration for model outputs
         """
-        output_ops = get_all_output_ops(self._conn_graph)
+        output_ops = cg_utils.get_all_output_ops(self._conn_graph)
         for op in output_ops:
             if op.get_module() in self._named_modules_to_tensor_quantizers_dict:
                 modified_tensor_quantizers = {}
@@ -572,9 +612,9 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
                 output_quantizer.data_type = data_type
                 output_quantizer.bitwidth = bitwidth
 
-    # pylint: disable=arguments-differ
-    def _override_param_bw_dtype(self, quantize_wrapper: QcQuantizeWrapper, data_type: QuantizationDataType,
-                                 bitwidth: int):
+    # pylint: disable=arguments-renamed
+    def _override_param_bw_dtype(self, quantize_wrapper: LazyQuantizeWrapper, data_type: QuantizationDataType = None,
+                                 bitwidth: int = None):
         """
         overrides data type and bitwidth default config for param quantizers of given quantsim wrapper.
         :param quantize_wrapper : Quantize wrapper that to which param override will be applied to.
@@ -583,13 +623,13 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         :return:
         """
         # Set configs for all params
-        if quantize_wrapper.param_quantizers:
+        if quantize_wrapper.param_quantizers and data_type and bitwidth:
             for param_quantizer in quantize_wrapper.param_quantizers.values():
                 param_quantizer.data_type = data_type
                 param_quantizer.bitwidth = bitwidth
 
-    # pylint: disable=arguments-differ
-    def _override_act_bw_dtype(self, quantize_wrapper: QcQuantizeWrapper, data_type: QuantizationDataType,
+    # pylint: disable=arguments-renamed
+    def _override_act_bw_dtype(self, quantize_wrapper: LazyQuantizeWrapper, data_type: QuantizationDataType,
                                bitwidth: int):
         """
         Override activation bw and dtype for activation quantizers of the quantsim wrapper if applicable.
@@ -597,7 +637,6 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         :param data_type: data type as QuantizationDataType
         :param bitwidth: bitwidth
         """
-        # For now, only override activation bw and dtype for fp16 supported kernel.
         # For a standalone kernel supporting fp16, only its parameter quantizer needs to be changed to fp16 because
         # requantization will happen on the input and output of the kernel (int8 -> fp16 for input and fp16 -> int8 for
         # output), causing lower precision encodings to be necessary for input and output.
@@ -632,6 +671,10 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
                 for output_quantizer in quantize_wrapper.output_quantizers:
                     output_quantizer.bitwidth = bitwidth
                     output_quantizer.data_type = data_type
+        else:
+            for quantizer in quantize_wrapper.input_quantizers + quantize_wrapper.output_quantizers:
+                quantizer.bitwidth = bitwidth
+                quantizer.data_type = data_type
 
     # -----------------------------------[ override support end] --------------------------------------------- #
 
@@ -654,6 +697,22 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
                 if per_channel_quantization:
                     wrapper.enable_per_channel_quantization()
 
+def merge_op_type_config(backend_type_op_config: Dict, onnx_type_op_config: Dict) -> Dict:
+    """
+    Merges op_type_info from onnx_type_op_config to backend_type_op_config
+    except supported kernels
+
+    :param backend_type_op_config: Op. config generated from backend
+    :param onnx_type_op_config:  ONNX op type config
+    :return: Merged op type config
+    """
+    backend_type_op_config_supported_kernels = backend_type_op_config.get(ConfigDictKeys.SUPPORTED_KERNELS)
+    backend_type_op_config = copy.deepcopy(onnx_type_op_config)
+
+    if backend_type_op_config_supported_kernels:
+        backend_type_op_config[ConfigDictKeys.SUPPORTED_KERNELS] = backend_type_op_config_supported_kernels
+
+    return backend_type_op_config
 
 def config_generator_factory(hw_version, supported_kernels, per_channel_quantization):
     """
@@ -670,20 +729,25 @@ def config_generator_factory(hw_version, supported_kernels, per_channel_quantiza
     return config_generator
 
 
-def _create_module_to_quantsim_wrapper_dict(model: torch.nn.Module) -> Dict[torch.nn.Module, QcQuantizeWrapper]:
+def _create_module_to_quantsim_wrapper_dict(model: torch.nn.Module) -> Dict[torch.nn.Module, LazyQuantizeWrapper]:
     """
     Create a dictionary mapping modules in the model to corresponding quantsim wrappers
     :param model: Pytorch model with quantsim wrappers in place
     :return: Dictionary mapping modules in the model to corresponding quantsim wrappers
     """
+    # pylint: disable=import-outside-toplevel, cyclic-import
+    from aimet_torch._base.quantsim import _QuantizedModuleProtocol
+    from aimet_torch.v2.nn import BaseQuantizationMixin
     module_to_quantsim_wrapper_dict = {}
     for _, module in model.named_modules():
-        if isinstance(module, QcQuantizeWrapper):
+        if isinstance(module, BaseQuantizationMixin):
+            continue
+        if isinstance(module, (_QuantizedModuleProtocol, LazyQuantizeWrapper)):
             module_to_quantsim_wrapper_dict[module._module_to_wrap] = module      # pylint: disable=protected-access
     return module_to_quantsim_wrapper_dict
 
 
-def _set_config_for_param(param_quantizer: TensorQuantizer, param_config: ConfigType):
+def _set_config_for_param(param_quantizer: LazyQuantizer, param_config: ConfigType):
     """
     Set configurations for a specific param tensor quantizer
     :param param_quantizer: Tensor quantizer to set configurations for
@@ -697,7 +761,8 @@ def _set_config_for_param(param_quantizer: TensorQuantizer, param_config: Config
 
 
 def _modify_tensor_quantizers(input_output_tensor_quantizers: TensorQuantizersTupleType, setting_name: str,
-                              quantizer_setting: bool, modified_tensor_quantizers: Dict[TensorQuantizer, Set]):
+                              quantizer_setting: Union[dict, bool],
+                              modified_tensor_quantizers: Dict[LazyQuantizer, Set]):
     """
     Modify the appropriate tensor quantizers for the given quantizer setting.  If a tensor quantizer has already been
     modified, compare the old setting with the new setting and assert if the settings conflict.
@@ -721,16 +786,22 @@ def _modify_tensor_quantizers(input_output_tensor_quantizers: TensorQuantizersTu
             # Tensor quantizer's setting has already been modified
             if setting_name in [ConfigDictKeys.IS_INPUT_QUANTIZED, ConfigDictKeys.IS_OUTPUT_QUANTIZED]:
                 current_setting = tensor_quantizer.enabled
-            else:
+            elif setting_name == ConfigDictKeys.IS_SYMMETRIC:
                 current_setting = tensor_quantizer.use_symmetric_encodings
-            if current_setting != quantizer_setting:
-                logger.error('Conflicting tensor quantizer settings for symmetric encodings')
-                raise AssertionError('Conflicting tensor quantizer settings for symmetric encodings')
+            else:
+                current_setting = {ConfigDictKeys.MIN: tensor_quantizer.encoding_min_max_fixed_vals[0],
+                                   ConfigDictKeys.MAX: tensor_quantizer.encoding_min_max_fixed_vals[1]}
+            log_with_error_and_assert_if_false(current_setting == quantizer_setting,
+                                               logger,
+                                               f'Conflicting tensor quantizer settings for {setting_name}')
         else:
             if setting_name in [ConfigDictKeys.IS_INPUT_QUANTIZED, ConfigDictKeys.IS_OUTPUT_QUANTIZED]:
                 tensor_quantizer.enabled = quantizer_setting
-            else:
+            elif setting_name == ConfigDictKeys.IS_SYMMETRIC:
                 tensor_quantizer.use_symmetric_encodings = quantizer_setting
+            elif setting_name == ConfigDictKeys.ENCODING_CONSTRAINTS:
+                tensor_quantizer.encoding_min_max_fixed_vals = (quantizer_setting[ConfigDictKeys.MIN],
+                                                                quantizer_setting[ConfigDictKeys.MAX])
             if tensor_quantizer not in modified_tensor_quantizers:
                 modified_tensor_quantizers[tensor_quantizer] = {setting_type}
             else:
@@ -738,7 +809,7 @@ def _modify_tensor_quantizers(input_output_tensor_quantizers: TensorQuantizersTu
 
 
 def _get_tensor_quantizers_to_modify(input_output_tensor_quantizers: TensorQuantizersTupleType, setting_name: str,
-                                     quantizer_setting: bool) -> List[TensorQuantizer]:
+                                     quantizer_setting: bool) -> List[LazyQuantizer]:
     """
     Given the tuple containing lists of tensor quantizers to modify under different situations, identify a list of
     tensor quantizers to modify given the specific setting name and quantizer setting.
@@ -764,6 +835,8 @@ def _get_tensor_quantizers_to_modify(input_output_tensor_quantizers: TensorQuant
     if setting_name == ConfigDictKeys.IS_SYMMETRIC:
         # Will modify all input and output quantizers in the False case
         return input_false_list + output_false_list
+    if setting_name == ConfigDictKeys.ENCODING_CONSTRAINTS:
+        return output_true_list
     error_msg = f'Encountered unrecognized case for setting name {setting_name}, setting value {quantizer_setting}'
     logger.error(error_msg)
     raise AssertionError(error_msg)
@@ -864,8 +937,15 @@ class DefaultOpInstanceConfigGenerator(OpInstanceConfigGenerator):
         :param op_type: Type str retrieved from CG op
         :return: supported_kernels and per_channel_quantization fields
         """
-        supported_kernels = self.op_type_supported_kernels.get(op_type,
-                                                               self.op_type_supported_kernels[ConfigDictKeys.DEFAULTS])
+        supported_kernels = []
+        backend_type = aimet_op_to_backend_op_name_map.get(type(module))
+
+        if backend_type is not None:
+            supported_kernels = self.op_type_supported_kernels.get(backend_type)
+
+        if not supported_kernels:
+            supported_kernels = self.op_type_supported_kernels.get(op_type,
+                                                                   self.op_type_supported_kernels[ConfigDictKeys.DEFAULTS])
         pcq = self._generate_pcq(module)
 
         return supported_kernels, pcq

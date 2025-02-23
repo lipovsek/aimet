@@ -53,37 +53,35 @@ target_include_directories(TrainingExtensionsTf PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../common/include
         )
 
+target_link_libraries(TrainingExtensionsTf PUBLIC
+        MoDlCompression
+        MoDlQuantization
+        TensorFlow
+        PyWrapTensorFlowInternal
+        ${Python_LIBRARIES}
+        )
+
 if (ENABLE_CUDA)
-    target_compile_options(TrainingExtensionsTf
-            PRIVATE
+    target_compile_options(TrainingExtensionsTf PRIVATE
             -DGOOGLE_CUDA=1
             )
 
     target_link_libraries(TrainingExtensionsTf PUBLIC
-          MoDlCompression
-          MoDlQuantization
-          MoDlQuantizationCuda
-          TensorFlow
-          TrainingExtensionsTfCuda
-          PyWrapTensorFlowInternal
-          ${Python_LIBRARIES}
-          )
-
-else(ENABLE_CUDA)
-    target_link_libraries(TrainingExtensionsTf PUBLIC
-            MoDlCompression
-            MoDlQuantization
-            TensorFlow
-            PyWrapTensorFlowInternal
-            ${Python_LIBRARIES}
+            MoDlQuantizationCuda
+            TrainingExtensionsTfCuda
             )
-
 endif(ENABLE_CUDA)
 
 set_target_properties(TrainingExtensionsTf PROPERTIES
       OUTPUT_NAME "aimet_tf_ops"
-      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/aimet_common"
       )
+
+if(SKBUILD)
+else(SKBUILD)
+    set_target_properties(TrainingExtensionsTf PROPERTIES
+          LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/aimet_common"
+          )
+endif(SKBUILD)
 
 set(INIT_PY "\
 #==============================================================================\\n\
@@ -147,35 +145,48 @@ if (ENABLE_CUDA)
     add_library(TrainingExtensionsTfCuda
             src/AimetOpUtilsGpu.cu
             )
-
-    target_compile_options(TrainingExtensionsTfCuda
-            PRIVATE
-            -Xcompiler -fPIC -D_GLIBCXX_USE_CXX11_ABI=0
+    if (TF_VERSION VERSION_GREATER_EQUAL "2.9")
+        set(ABI_VALUE "1")
+    else ()
+        set(ABI_VALUE "0")
+    endif ()
+    target_compile_options(TrainingExtensionsTfCuda PRIVATE
+            -Xcompiler
+            -D_GLIBCXX_USE_CXX11_ABI=${ABI_VALUE}
             -DGOOGLE_CUDA=1
-            -I ${TF_LIB_DIR}/include --expt-relaxed-constexpr
+            -I ${TF_LIB_DIR}/include
+            --expt-relaxed-constexpr
             )
-
 endif(ENABLE_CUDA)
 
+if(SKBUILD)
+    install(FILES $<TARGET_FILE:TrainingExtensionsTf>
+        DESTINATION aimet_common
+    )
 
-install(FILES $<TARGET_FILE:TrainingExtensionsTf>
-      DESTINATION ${AIMET_INSTALL_DIR}/lib/python/aimet_common
-      )
+    install(DIRECTORY $<TARGET_FILE_DIR:TrainingExtensionsTf>/$<TARGET_FILE_PREFIX:TrainingExtensionsTf>$<TARGET_FILE_BASE_NAME:TrainingExtensionsTf>
+        DESTINATION aimet_common
+    )
+else(SKBUILD)
+    install(FILES $<TARGET_FILE:TrainingExtensionsTf>
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/aimet_common
+    )
 
-install(DIRECTORY $<TARGET_FILE_DIR:TrainingExtensionsTf>/$<TARGET_FILE_PREFIX:TrainingExtensionsTf>$<TARGET_FILE_BASE_NAME:TrainingExtensionsTf>
-    DESTINATION ${AIMET_INSTALL_DIR}/lib/python/aimet_common
-)
+    install(DIRECTORY $<TARGET_FILE_DIR:TrainingExtensionsTf>/$<TARGET_FILE_PREFIX:TrainingExtensionsTf>$<TARGET_FILE_BASE_NAME:TrainingExtensionsTf>
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/aimet_common
+    )
+endif(SKBUILD)
 
 add_custom_target(whl_prep_cp_tensorflow
     COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_TENSORFLOW_DIR}
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:TrainingExtensionsTf> ${WHL_PREP_AIMET_TENSORFLOW_DIR}/$<TARGET_FILE_NAME:TrainingExtensionsTf>
     COMMAND ${PATCHELF_EXE} --set-rpath '$$ORIGIN:$ORIGIN/../../tensorflow:$$ORIGIN/../../tensorflow/python' ${WHL_PREP_AIMET_TENSORFLOW_DIR}/$<TARGET_FILE_NAME:TrainingExtensionsTf>
-    DEPENDS TrainingExtensionsTf
+    DEPENDS TrainingExtensionsTf TfTrainingExtensionCppTest
 )
 add_custom_target(whl_prep_ln_tensorflow
     COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_TENSORFLOW_DIR}
     COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:TrainingExtensionsTf> ${WHL_PREP_AIMET_TENSORFLOW_DIR}/$<TARGET_FILE_NAME:TrainingExtensionsTf>
-    DEPENDS TrainingExtensionsTf
+    DEPENDS TrainingExtensionsTf TfTrainingExtensionCppTest
 )
 add_dependencies(whl_prep_cp whl_prep_cp_tensorflow)
 add_dependencies(whl_prep_ln whl_prep_ln_tensorflow)
@@ -183,4 +194,7 @@ add_dependencies(whl_prep_ln whl_prep_ln_tensorflow)
 whl_add_whl_action_target(tensorflow)
 
 add_subdirectory(src/python)
-add_subdirectory(test)
+
+if (ENABLE_TESTS)
+    add_subdirectory(test)
+endif()

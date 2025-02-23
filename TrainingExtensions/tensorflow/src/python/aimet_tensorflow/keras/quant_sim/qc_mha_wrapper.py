@@ -1,4 +1,3 @@
-# /usr/bin/env python3.8
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -39,14 +38,23 @@
 
 from typing import Union
 import math
-
 import tensorflow as tf
+from packaging import version
+
+# Disable pylint errors because of conditional imports
+# pylint: disable=ungrouped-imports
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.keras.layers.advanced_activations import _large_compatible_negative
-from tensorflow.python.keras.layers.multi_head_attention import MultiHeadAttention, _build_proj_equation, _get_output_shape
 from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.ops import math_ops, special_math_ops, array_ops
+if version.parse(tf.version.VERSION) < version.parse("2.10"):
+    from tensorflow.python.keras.layers.multi_head_attention import MultiHeadAttention, _build_proj_equation, _get_output_shape
+else:
+    from tensorflow.keras.layers import MultiHeadAttention
+    from keras.layers.attention.multi_head_attention import _build_proj_equation, _get_output_shape
 
+# Disable pylint warning since there is a conditional import above
+# pylint: disable=wrong-import-position
 from aimet_common.utils import AimetLogger
 from aimet_common.defs import QuantScheme, QuantizationDataType
 from aimet_tensorflow.keras.quantsim import QuantizerSettings, QcQuantizeWrapper
@@ -68,7 +76,7 @@ class QcQuantizableMultiHeadAttention(MultiHeadAttention):
                  default_data_type: QuantizationDataType = QuantizationDataType.int,
                  copy_source_weights=None,
                  **kwargs):
-        super(QcQuantizableMultiHeadAttention, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.quant_scheme = quant_scheme
         self.rounding_mode = rounding_mode
         self.default_output_bw = default_output_bw
@@ -93,7 +101,7 @@ class QcQuantizableMultiHeadAttention(MultiHeadAttention):
             "copy_source_weights":
                 self.copy_source_weights
         }
-        base_config = super(QcQuantizableMultiHeadAttention, self).get_config()
+        base_config = super().get_config()
         base_config.update(config)
         return base_config
 
@@ -113,7 +121,7 @@ class QcQuantizableMultiHeadAttention(MultiHeadAttention):
                                     num_inputs=num_inputs,
                                     input_quantizers=input_quantizers,
                                     output_quantizers=output_quantizers,
-                                    param_quantizers=param_quantizers)
+                                    param_quantizers=param_quantizers, name=layer.name)
         return wrapper
 
     def _build_from_signature(self, query, value, key=None):
@@ -123,7 +131,7 @@ class QcQuantizableMultiHeadAttention(MultiHeadAttention):
         :param value: value tensor or TensorShape
         :param key: key tensor or TensorShape
         """
-        super(QcQuantizableMultiHeadAttention, self)._build_from_signature(query, value, key)
+        super()._build_from_signature(query, value, key)
 
         if key is None:
             key = value
@@ -170,7 +178,7 @@ class QcQuantizableMultiHeadAttention(MultiHeadAttention):
         lambda layers for all operations that need quantized inputs or outputs, and wraps them with QcQuantizeWrappers
         :param rank: the rank of query, key, value tensors.
         """
-        super(QcQuantizableMultiHeadAttention, self)._build_attention(rank)
+        super()._build_attention(rank)
 
         def scale_and_multiply(inputs):
             return special_math_ops.einsum(self._dot_product_equation,
@@ -258,7 +266,7 @@ class QcQuantizableMultiHeadAttention(MultiHeadAttention):
             key_layer = self._key_dense
             value_layer = self._value_dense
             output_layer = self._output_dense
-            attn_func = super(QcQuantizableMultiHeadAttention, self)._compute_attention
+            attn_func = super()._compute_attention
 
         query = query_layer(query)
         key = key_layer(key)

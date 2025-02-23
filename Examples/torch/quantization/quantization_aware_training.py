@@ -55,7 +55,7 @@ import torch.utils.data as torch_data
 import aimet_common
 from aimet_torch import bias_correction
 from aimet_torch.cross_layer_equalization import equalize_model
-from aimet_torch.quantsim import QuantParams, QuantizationSimModel
+from aimet_torch.v1.quantsim import QuantParams, QuantizationSimModel
 
 # imports for data pipelines
 from Examples.common import image_net_config
@@ -71,7 +71,8 @@ logging.basicConfig(format=formatter)
 ###
 # This script utilizes AIMET to perform Quantization Aware Training on a resnet18
 # pretrained model with the ImageNet data set. This is intended as a working example
-# to show how AIMET APIs can be invoked.
+# to show how AIMET APIs can be invoked. Please check the documentation/code to
+# further understand how to fine tune and achieve higher accuracy
 
 # Scenario parameters:
 #    - AIMET quantization aware training using simulation model
@@ -115,10 +116,9 @@ class ImageNetDataPipeline:
 
     def finetune(self, model: torch.nn.Module):
         """
-        Finetunes the model.  The implemtation provided here is just an example,
+        Fine tunes the model. The implementation provided here is just an example,
         provide your own implementation if needed.
-
-        :param model: The model to finetune.
+        :param model: The model to fine tune
         """
 
         # Your code goes here instead of the example from below
@@ -135,12 +135,11 @@ class ImageNetDataPipeline:
 
 def apply_cross_layer_equalization(model: torch.nn.Module, input_shape: tuple):
     """
-    Applies CLE on the model and calculates model accuracy on quantized simulator
     Applying CLE on the model inplace consists of:
         Batch Norm Folding
         Cross Layer Scaling
         High Bias Fold
-    Converts any ReLU6 into ReLU.
+        Converts any ReLU6 into ReLU.
 
     :param model: the loaded model
     :param input_shape: the shape of the input to the model

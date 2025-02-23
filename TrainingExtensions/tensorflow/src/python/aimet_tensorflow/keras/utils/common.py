@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -39,14 +38,17 @@
 """ Common Utilities for tf 2 keras """
 import errno
 import os
-from typing import Union, List, Dict, Tuple, AnyStr
+from typing import Callable, Union, List, Dict, Tuple, AnyStr
+
 import tensorflow as tf
 from tensorflow.python.framework.convert_to_constants import convert_variables_to_constants_from_session_graph
 from tensorflow.python.framework.graph_util_impl import remove_training_nodes
+from packaging import version
 
+from aimet_common import _libpymo as libpymo
+from aimet_common.utils import AimetLogger, log_with_error_and_assert_if_false
 
-from aimet_common.utils import AimetLogger
-from aimet_tensorflow.defs import AxisHandling
+from aimet_tensorflow.keras.defs import AxisHandling
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
 
@@ -55,7 +57,31 @@ per_channel_quantizeable_layers = (tf.keras.layers.Conv2D, tf.keras.layers.Conv2
                                    tf.keras.layers.DepthwiseConv2D, tf.keras.layers.SeparableConv2D,
                                    tf.keras.layers.Dense)
 
-SUBMODULES_TO_SKIP = (tf.keras.layers.MultiHeadAttention,)
+def to_functional(func: Callable) -> tf.keras.Model:
+    """
+    Decorator to check if the input model is a Sequential model. If it is, then the model is converted to a
+    Functional model and the new model is returned. Otherwise, the same model is returned. This is necessary for node
+    mapping as the `.layers` API call does NOT include a Sequential models InputLayer.
+    :param func: Function to be decorated
+    :return: Decorated function
+    """
+
+    def wrapper(*args, **kwargs):
+        """
+        Wrapper function to check if the input model is a Sequential model. If it is, then the model is converted to a
+        Functional model and the new model is returned. Otherwise, the same model is returned.
+        :param args: args to be passed to the function
+        :param kwargs: kwargs to be passed to the function
+        :return: Decorated function
+        """
+        model = args[0]
+        if isinstance(model, tf.keras.Sequential):
+            _logger.info("Input model is a Sequential model. Converting to Functional model.")
+            model = tf.keras.Model(inputs=model.inputs, outputs=model.outputs)
+            args = (model,) + args[1:]
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 def is_lambda_operator(layer: tf.keras.layers.Layer) -> bool:
@@ -70,6 +96,22 @@ def is_lambda_operator(layer: tf.keras.layers.Layer) -> bool:
     return False
 
 
+# pylint: disable=import-outside-toplevel
+def is_a_tf_op_lambda_layer(layer: tf.keras.layers.Layer) -> bool:
+    """
+    Check if a layer is a TFOpLambda layer. These occur typically when a user is using built in TensorFlow operations
+    while build a Keras model. Some examples are tf.matmul, tf.transpose, and tf.concat
+    :param layer: Layer to check
+    :return True if the layer is a TFOpLambda layer, otherwise False.
+    """
+    if version.parse(tf.version.VERSION) >= version.parse("2.10"):
+        from keras.layers.core.tf_op_layer import TFOpLambda
+    else:
+        from tensorflow.python.keras.layers.core import TFOpLambda
+
+    return isinstance(layer, TFOpLambda)
+
+
 def module_to_name_map(cur_layer: (tf.keras.Model, tf.keras.layers.Layer)) \
         -> Dict[tf.keras.layers.Layer, Tuple[tf.keras.Model, str]]:
     """
@@ -80,8 +122,7 @@ def module_to_name_map(cur_layer: (tf.keras.Model, tf.keras.layers.Layer)) \
     """
 
     ref_name = {}
-    # pylint: disable=protected-access
-    for inner_layer in cur_layer._layers:
+    for inner_layer in cur_layer.layers:
         if not isinstance(inner_layer, tf.keras.layers.Layer):
             continue
         if inner_layer.submodules:
@@ -122,7 +163,7 @@ def _find_last_layers(cur_layer: (tf.keras.Model, tf.keras.layers.Layer)) \
 
     last_layers = []
     # pylint: disable=protected-access
-    for inner_layer in cur_layer._layers:
+    for inner_layer in cur_layer.layers:
         if not isinstance(inner_layer, tf.keras.layers.Layer):
             continue
         if inner_layer.outbound_nodes == []:
@@ -133,7 +174,7 @@ def _find_last_layers(cur_layer: (tf.keras.Model, tf.keras.layers.Layer)) \
 
     return last_layers
 
-
+@to_functional
 def create_layer_to_out_node_map(cur_layer: (tf.keras.Model, tf.keras.layers.Layer)) -> Dict:
     """
     To find the outbound nodes of one layer.
@@ -210,7 +251,7 @@ def _submodule_handler_node_to_layer_map(
 
     return im_node_layer_map, im_node_input, im_nodes_after_input_layer
 
-
+@to_functional
 def create_node_to_layer_map(cur_layer: (tf.keras.Model, tf.keras.layers.Layer)) -> Dict:
     """
     To find the input layers and output layer of one node.
@@ -220,8 +261,7 @@ def create_node_to_layer_map(cur_layer: (tf.keras.Model, tf.keras.layers.Layer))
     """
 
     node_layer_map = {}
-    # pylint: disable=protected-access
-    for inner_layer in cur_layer._layers:
+    for inner_layer in cur_layer.layers:
         if not isinstance(inner_layer, tf.keras.layers.Layer):
             continue
         for out_node in inner_layer.outbound_nodes:
@@ -235,10 +275,9 @@ def create_node_to_layer_map(cur_layer: (tf.keras.Model, tf.keras.layers.Layer))
             else:
                 node_layer_map[in_node] = [None, inner_layer]
 
-        # If the layer has submodules we try to find out the input/output map for those layers as well.
-        # But in case of few layers having submodules, internal connection for them is not present. It means
-        # inbound and outbound nodes for the submodules are empty so, we treat them as a single layer only.
-        if inner_layer.submodules and not isinstance(inner_layer, SUBMODULES_TO_SKIP):
+        # If the layer has additional inner layers, trace the internal connections for
+        # input/output mapping. Otherwise, treat it as a single layer.
+        if hasattr(inner_layer, "layers"):
             im_node_layer_map, im_node_input, im_nodes_after_input_layer = \
                 _submodule_handler_node_to_layer_map(inner_layer, node_layer_map)
             if len(im_nodes_after_input_layer) == 1:
@@ -433,7 +472,7 @@ def _link_following_layers_to_new_layer_output(new_tensor_output: tf.Tensor,
             if keras_input._keras_history.layer == replaced_layer:
                 keras_inputs[idx] = new_tensor_output
         # Flatten list if only one input
-        if isinstance(keras_inputs, list):
+        if isinstance(keras_inputs, list) and len(keras_inputs) == 1:
             keras_inputs = keras_inputs[0]
         _ = following_layer(keras_inputs)
 
@@ -493,6 +532,73 @@ def parse_activation_layer(
 
     return [onnx_activation]
 
+def create_encoding_from_dict(encoding_dict: dict) -> Tuple[Union[libpymo.TfEncoding, List[libpymo.TfEncoding]], bool]:
+    """
+    Create encoding object from encoding dictionary
+    :param encoding_dict: Dictionary containing encodings
+    :return: Encoding object or list of encoding objects, is_symmetric
+    """
+
+    def _create_tf_encoding_object(bw: int, max_enc: float, min_enc: float, offset_enc: float,
+                                   delta_enc: float) -> libpymo.TfEncoding:
+        """
+        helper function to create TfEncoding object
+        :param bw: bitwidth to be filled in encoding
+        :param max_enc: max value to be filled in encoding
+        :param min_enc: min value to be filled in encoding
+        :param offset_enc: offset to be filled in encoding
+        :param delta_enc: delta to be filled in encoding
+        :return encoding of type libpymo.TfEncoding()
+        """
+        enc = libpymo.TfEncoding()
+        enc.bw = bw
+        enc.max = max_enc
+        enc.min = min_enc
+        enc.offset = offset_enc
+        enc.delta = delta_enc
+        return enc
+
+    def _create_tf_encoding_factory(encoding_dict_to_convert) -> List[libpymo.TfEncoding]:
+        return [_create_tf_encoding_object(enc_dict.get('bitwidth'),
+                                           enc_dict.get('max'),
+                                           enc_dict.get('min'),
+                                           enc_dict.get('offset'),
+                                           enc_dict.get('scale')) for enc_dict in encoding_dict_to_convert]
+
+    # make a distinction between the per-channel and per-tensor flow
+    if isinstance(encoding_dict, List):
+        # Inserting logic to loop through encoding dict is_symmetric fields and replace boolean values with string
+        # 'True' or 'False' values. AdaRound exported parameter encodings were mistakenly exporting boolean values
+        # instead of string values like QuantSim export does.
+        # AdaRound exported encodings are fixed in the same commit to export string values now, but this logic is put
+        # in place temporarily to preserve backwards compatibility with older AdaRound exported encodings. It can be
+        # removed after some time once users have fully switched to using the string exported is_symmetric flag.
+        for enc_dict in encoding_dict:
+            if isinstance(enc_dict.get('is_symmetric'), bool):
+                enc_dict['is_symmetric'] = str(enc_dict['is_symmetric'])
+
+        log_with_error_and_assert_if_false(encoding_dict[0].get('is_symmetric') in ['True', 'False'],
+                                           _logger,
+                                           f'Unexpected value for is_symmetric: {encoding_dict[0].get("is_symmetric")}')
+        is_symmetric = encoding_dict[0].get('is_symmetric') == 'True'
+        return _create_tf_encoding_factory(encoding_dict), is_symmetric
+
+    # Inserting logic to loop through encoding dict is_symmetric fields and replace boolean values with string
+    # 'True' or 'False' values. AdaRound exported parameter encodings were mistakenly exporting boolean values
+    # instead of string values like QuantSim export does.
+    # AdaRound exported encodings are fixed in the same commit to export string values now, but this logic is put
+    # in place temporarily to preserve backwards compatibility with older AdaRound exported encodings. It can be
+    # removed after some time once users have fully switched to using the string exported is_symmetric flag.
+    if isinstance(encoding_dict.get('is_symmetric'), bool):
+        encoding_dict['is_symmetric'] = str(encoding_dict['is_symmetric'])
+
+    log_with_error_and_assert_if_false(encoding_dict.get('is_symmetric') in ['True', 'False'],
+                                       _logger,
+                                       f'Unexpected value for is_symmetric: {encoding_dict.get("is_symmetric")}')
+    is_symmetric = encoding_dict.get('is_symmetric') == 'True'
+    encoding_dict = [encoding_dict]
+    return _create_tf_encoding_factory(encoding_dict)[0], is_symmetric
+
 
 def get_number_of_outputs_and_axis_handling(layer, weight_shape, param_type) -> Tuple[int, AxisHandling]:
     """
@@ -529,6 +635,44 @@ def log_param_quantizer_wrapper_details(layer, axis_handling=None, num_output_ch
                       axis_handling, num_output_channels)
 
 
+def set_keras_backend_version_to_v2(func_to_run_before_setting_back_to_v2: Callable):
+    """
+    Special function for setting backend Keras specifics to V2 after converting a model to a frozen pb.
+
+    :param func_to_run_before_setting_back_to_v2: Function to run before setting the Keras backend to v2.
+    """
+    # Versioning changes are taken from Tensorflow backend in the link below. Essentially, the Functional Keras class
+    # has certain parts moved to v1 once calling things like tf.Graph. Here, we set back to the v2 version.
+    # https://github.com/tensorflow/tensorflow/blob/739d01fc1a4e8dc0fd95b8aed0f9dd107451e1b6/tensorflow/python/keras/utils/version_utils.py#L48-L63
+
+    # Imports kept inside the function to minimize confusion and to not be accidentally used anywhere else
+    def wrap(*args, **kwargs):
+        func_to_run_before_setting_back_to_v2(*args, **kwargs)
+        if version.parse(tf.version.VERSION) >= version.parse("2.10"):
+            from keras.engine.functional import Functional
+            from keras.engine import base_layer
+            from keras.engine import base_layer_v1
+
+            from keras.engine import training
+            from keras.engine import training_v1
+
+            from keras.utils.version_utils import swap_class
+        else:
+            from tensorflow.python.keras.engine.functional import Functional
+            from tensorflow.python.keras.engine import base_layer
+            from tensorflow.python.keras.engine import base_layer_v1
+
+            from tensorflow.python.keras.engine import training
+            from tensorflow.python.keras.engine import training_v1
+
+            from tensorflow.python.keras.utils.version_utils import swap_class
+
+        _ = swap_class(Functional, base_layer.Layer, base_layer_v1.Layer, use_v2=True)
+        _ = swap_class(Functional, training.Model, training_v1.Model, use_v2=True)
+    return wrap
+
+
+@set_keras_backend_version_to_v2
 def convert_h5_model_to_pb_model(h5_model_path: AnyStr, custom_objects: Dict = None):
     """
     This utility function converts a h5_model from Keras into a frozen pb for consumption by SNPE/QNN
@@ -536,14 +680,16 @@ def convert_h5_model_to_pb_model(h5_model_path: AnyStr, custom_objects: Dict = N
     :param custom_objects: If there are custom objects to load, Keras needs a dict of them to map them
     """
 
+    supported_file_types = ['h5', 'hdf5']
+
     # Function for validating if the file exist and is a h5
     def validate_model_path() -> Tuple[str, str]:
         if not os.path.exists(h5_model_path):
             raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), h5_model_path)
 
         model_name_split = os.path.basename(h5_model_path).split('.')
-        if model_name_split[1] != 'h5':
-            raise ValueError("File must be a h5 model.")
+        if model_name_split[-1] not in supported_file_types:
+            raise ValueError(f"File must be of types {supported_file_types}.")
 
         model_name = model_name_split[0] + '_converted.pb'
         save_path = os.path.dirname(h5_model_path)
@@ -589,4 +735,4 @@ def convert_h5_model_to_pb_model(h5_model_path: AnyStr, custom_objects: Dict = N
                                           [out.op.name for out in model.outputs])
             tf.io.write_graph(frozen_graph, save_path, model_name, as_text=False)
 
-            _logger.info("Success. The converted model is located at %s saved as %s", save_path, model_name)
+    _logger.info("Success. The converted model is located at %s saved as %s", save_path, model_name)

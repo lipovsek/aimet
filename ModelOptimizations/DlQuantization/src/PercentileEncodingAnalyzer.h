@@ -1,7 +1,7 @@
 //
 //  @@-COPYRIGHT-START-@@
 //
-//  Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+//  Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
 //
 //  Redistribution and use in source and binary forms, with or without
 //  modification, are permitted provided that the following conditions are met:
@@ -56,8 +56,8 @@ public:
      */
     void updateStats(const DTYPE* tensor, const size_t tensorSize, ComputationMode tensorCpuGpuMode) override;
 
-    void updateStats(const DTYPE* tensor, const size_t tensorSize,
-                     ComputationMode tensorCpuGpuMode, IAllocator* allocator) override;
+    void updateStats(const DTYPE* tensor, const size_t tensorSize, ComputationMode tensorCpuGpuMode,
+                     IAllocator* allocator) override;
 
     /***
      * Compute the encodings using the collected histogram stats by clipping the outliers based on the percentile
@@ -88,6 +88,13 @@ public:
      */
     void setPercentileValue(float percentile);
 
+    /**
+     * @brief Fetch the Percentile Value of the encoding analyzer
+     *
+     * @return percentile value
+     */
+    float getPercentileValue();
+
 private:
     PDF _stats;
     float _percentile  = 100;
@@ -108,4 +115,4 @@ private:
 
 }   // namespace DlQuantization
 
-#endif   // DL_QUANTIZATION_PERCENTILE_ENCODING_ANALYZER_H 
+#endif   // DL_QUANTIZATION_PERCENTILE_ENCODING_ANALYZER_H

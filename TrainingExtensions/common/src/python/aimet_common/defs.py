@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2019-2022, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2019-2023, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -37,13 +36,14 @@
 # =============================================================================
 
 """ Common type definitions that are used across aimet """
+
 import io
 from enum import Enum
 from typing import Union, Callable, Any, Optional, Dict, List
 from decimal import Decimal
 
 from aimet_common.layer_database import Layer
-import aimet_common.libpymo as libpymo
+from aimet_common import libpymo
 
 
 # supported quantization schemes
@@ -79,6 +79,9 @@ MAP_QUANT_SCHEME_TO_PYMO = {QuantScheme.post_training_tf: libpymo.QuantizationMo
 MAP_ROUND_MODE_TO_PYMO = {'nearest': libpymo.RoundingMode.ROUND_NEAREST,
                           'stochastic': libpymo.RoundingMode.ROUND_STOCHASTIC}
 
+RANGE_LEARNING_SCHEMES = {QuantScheme.training_range_learning_with_tf_init,
+                          QuantScheme.training_range_learning_with_tf_enhanced_init}
+
 
 class ActivationType(Enum):
     """ Enums to identify activation type"""
@@ -90,6 +93,9 @@ class ActivationType(Enum):
 
     relu6 = 2
     """ ReLU6 activation """
+
+    def __eq__(self, other: "ActivationType"):
+        return self.value == other.value and self.name == other.name # pylint: disable=comparison-with-callable
 
 
 class CostMetric(Enum):
@@ -120,9 +126,6 @@ class RankSelectScheme(Enum):
 
     greedy = 1
     """ Greedy scheme"""
-
-    tar = 2
-    """ TAR scheme """
 
 
 class LayerCompRatioPair:
@@ -162,45 +165,6 @@ class LayerCompRatioEvalScore:
     def __str__(self):
         return 'LayerCompRatioEvalScore: layer={}, comp-ratio={}, eval_score={}'. \
             format(self.layer.name, self.comp_ratio, self.eval_score)
-
-
-class TarPerRankIndexData:
-    """
-    TAR based algo stats require a combination of
-    (layer: nn.Module, CompRatio: Decimal, EvalScore:Decimal) per rank index to be stored
-    """
-
-    def __init__(self, layer: Layer, comp_ratio: Union[Decimal, None], eval_score: Union[Decimal, None]):
-        """
-        Constructor
-        :param layer: Reference to layer
-        :param comp_ratio: Comp-ratio as a floating point number between 0 and 1
-        :param eval_score: Eval score as a floating point number
-        """
-        self.layer = layer
-        self.comp_ratio = comp_ratio
-        self.eval_score = eval_score
-
-    def __str__(self):
-        return 'TarPerRankIndexData: layer={}, comp-ratio={}, eval-score={}'.format(self.layer.name, self.comp_ratio,
-                                                                                    self.eval_score)
-
-
-class TarRankSelectionParameters:
-    """
-    Configuration parameters for the TAR compression-ratio selection algorithm
-
-    :ivar num_rank_indices: Number of rank indices for ratio selection.
-
-    """
-    def __init__(self, num_rank_indices: int):
-
-        # Sanity check
-        if num_rank_indices < 2:
-            raise ValueError("Error: num_rank_indices={}. Need at least 2 candidates for "
-                             "TAR based compression-ratio selection".format(num_rank_indices))
-
-        self.num_rank_indices = num_rank_indices
 
 
 EvalFunction = Callable[[Any, Optional[int], bool], float]
@@ -344,6 +308,7 @@ class AdaroundConstants:
 
 class QuantizationDataType(Enum):
     """ Enumeration of tensor quantizer data types supported """
+    undefined = 0
     int = 1
     float = 2
 
@@ -359,7 +324,9 @@ class QuantDtypeBwInfo:
     QuantDtypeBwInfo holds activation dtype/bw and param dtype/bw
     """
 
-    def __init__(self, act_dtype: QuantizationDataType, act_bw: int, param_dtype: QuantizationDataType, param_bw: int):
+
+    def __init__(self, act_dtype: QuantizationDataType, act_bw: int,
+                 param_dtype: QuantizationDataType = QuantizationDataType.undefined, param_bw: int = 0):
         """
         Data class to hold dtype and bw info
         :param act_dtype: Activation datatype of type QuantizationDataType
@@ -373,9 +340,11 @@ class QuantDtypeBwInfo:
         self.param_bw = param_bw
         self._validate_inputs()
 
+    def __repr__(self):
+        return f'(activation:({self.act_dtype}, {self.act_bw}) param:({self.param_dtype}, {self.param_bw})'
+
     def __str__(self):
-        return (f'(activation_data_type = {self.act_dtype}, act_bw = {self.act_bw} '
-                f'param_data_type = {self.param_dtype} param_bw = {self.param_bw})')
+        return f'activation:({self.act_dtype}, {self.act_bw}) param:({self.param_dtype}, {self.param_bw})'
 
     def __eq__(self, other):
         return self.act_dtype == other.act_dtype and self.act_bw == other.act_bw and \
@@ -385,15 +354,16 @@ class QuantDtypeBwInfo:
         """
         Validate inputs
         """
-        if self.param_dtype == QuantizationDataType.float and self.param_bw != 16:
-            raise ValueError(
-                'float param_dtype can only be used when param_bw is set to 16, not ' + str(self.param_bw))
+        if self.param_dtype and self.param_bw:
+            if self.param_dtype == QuantizationDataType.float and self.param_bw not in [16, 32]:
+                raise ValueError(
+                    'float param_dtype can only be used when param_bw is set to 16, not ' + str(self.param_bw))
 
-        if self.act_dtype == QuantizationDataType.float and self.act_bw != 16:
+        if self.act_dtype == QuantizationDataType.float and self.act_bw not in [16, 32]:
             raise ValueError(
                 'float act_dtype can only be used when act_bw is set to 16, not ' + str(self.act_bw))
 
-    def is_same_activation(self, bw: int, dtype: QuantizationDataType):
+    def is_same_activation(self, dtype: QuantizationDataType, bw: int):
         """
         helper function to check if activation of the object is same as input
         :param bw: bitwidth to verify against
@@ -401,10 +371,39 @@ class QuantDtypeBwInfo:
         """
         return bw == self.act_bw and dtype == self.act_dtype
 
-    def is_same_param(self, bw: int, dtype: QuantizationDataType):
+    def is_same_param(self, dtype: QuantizationDataType, bw: int):
         """
         helper function to check if param of the object is same as input
         :param bw: bitwidth to verify against
         :param dtype: dtype to verify against
         """
         return bw == self.param_bw and dtype == self.param_dtype
+
+    def get_activation(self) -> tuple:
+        """ getter method for activation candidate"""
+        return self.act_dtype, self.act_bw
+
+    def get_param(self) -> tuple:
+        """ getter method for param candidate"""
+        return self.param_dtype, self.param_bw
+
+
+class CallbackFunc:
+    """
+    Class encapsulating call back function and it's arguments
+    """
+    def __init__(self, func: Callable, func_callback_args=None):
+        """
+        :param func: Callable Function
+        :param func_callback_args: Arguments passed to the callable function
+        """
+        self.func = func
+        self.args = func_callback_args
+
+class EncodingType(Enum):
+    """ Encoding type """
+    PER_TENSOR = 0
+    PER_CHANNEL = 1
+    PER_BLOCK = 2
+    LPBQ = 3
+    VECTOR = 4

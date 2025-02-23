@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -36,21 +35,29 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 """ Utilities for parsing and applying quantsim configurations from json config file """
+from abc import abstractmethod
+from typing import List, Dict, Tuple, Union
 
-from typing import List, Dict
+import onnx
+from packaging import version
 
-from onnx import onnx_pb
 from aimet_common.defs import QuantizationDataType
 from aimet_common.graph_searcher import GraphSearcher
 from aimet_common.connected_graph.connectedgraph_utils import get_all_input_ops, get_all_output_ops
 from aimet_common.quantsim_config.json_config_importer import ConfigDictKeys, ConfigType, OpType, ParamType, OpTypeType, \
     SupergroupType
 from aimet_common.quantsim_config.quantsim_config import QuantSimConfigurator as AimetCommonQuantSimConfigurator, \
-    get_setting_type, SupergroupConfigCallback as AimetCommonSupergroupConfigCallback
+    get_setting_type, SupergroupConfigCallback as AimetCommonSupergroupConfigCallback, reformat_supported_kernels
 from aimet_common.utils import AimetLogger
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
+from aimet_onnx.meta.connectedgraph import ConnectedGraph, CONSTANT_TYPE
 from aimet_onnx.utils import get_product_name_from_quantized_name
 from aimet_onnx.qc_quantize_op import OpMode, QcQuantizeOp
+
+# pylint: disable=no-name-in-module, ungrouped-imports
+if version.parse(onnx.__version__) >= version.parse("1.14.0"):
+    from onnx import ModelProto, NodeProto
+else:
+    from onnx.onnx_pb import ModelProto, NodeProto
 
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
@@ -69,7 +76,7 @@ class OpToQuantizers:
 class SupergroupConfigCallback(AimetCommonSupergroupConfigCallback):
     """ Class acting as a callback for when supergroups are found """
 
-    def __init__(self, model: onnx_pb.ModelProto, op_to_quantizers: Dict):
+    def __init__(self, model: ModelProto, op_to_quantizers: Dict):
         super().__init__()
         self._model = model
         self._op_to_quantizers = op_to_quantizers
@@ -87,7 +94,7 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
     """ Class for parsing and applying
     quantsim configurations from json config file """
 
-    def __init__(self, model: onnx_pb.ModelProto, conn_graph: ConnectedGraph, config_file: str, quantsim_output_bw: int,
+    def __init__(self, model: ModelProto, conn_graph: ConnectedGraph, config_file: str, quantsim_output_bw: int,
                  quantsim_param_bw: int, quantsim_data_type: QuantizationDataType = QuantizationDataType.int):
         super().__init__(config_file, quantsim_data_type, quantsim_output_bw, quantsim_param_bw)
 
@@ -96,24 +103,47 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         self._quant_ops_dict = {}
         self._param_names = {}
         self._activation_names = {}
+        self._input_quantizers = {}
         self._op_to_quantizer_lists_dict = None
         self._op_to_quantizers = {}
+        self._supported_kernels = self._parse_supported_kernels()
+        self._op_to_supported_kernel = {}
+
+    def get_op_to_supported_kernels(self) -> Dict:
+        """
+        Return _supported_kernels for every ONNX op in the graph
+        :return: Dictionary containing supported_kernels
+        """
+        return self._op_to_supported_kernel
+
+
+    def get_supported_kernels(self) -> Dict:
+        """
+        Return _supported_kernels parsed from the config file
+        :return: Dictionary containing supported_kernels
+        """
+        return self._supported_kernels
 
     def configure_quantizers(self, quant_ops_dict: Dict,
                              param_names: List[str],
-                             activation_names: List[str]):
+                             activation_names: List[str],
+                             input_activations: List[str]):
         """
         Configures quantizers based on config file
         """
         self._quant_ops_dict = quant_ops_dict
         self._param_names = param_names
         self._activation_names = activation_names
+        self._input_quantizers = input_activations
 
         self._op_to_quantizers = self._map_quantizers_to_ops()
 
         # Disable all quantizers
         self._disable_all_quantizers()
         self._set_quantsim_configs()
+        self._override_param_bw_dtype(self._param_names, self._default_data_type, self._default_param_bw)
+        self._override_act_bw_dtype(self._activation_names, self._default_data_type, self._default_output_bw)
+        self._generate_and_apply_op_instance_specific_config()
 
     def _map_quantizers_to_ops(self) -> Dict[str, OpToQuantizers]:
         """
@@ -121,19 +151,21 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         and output quantizers of an op
         """
         op_to_quantizers = {}
-        for name, op in self._conn_graph.get_all_ops().items():
-            if 'branch' in name:
-                continue
+        for _, op in self._conn_graph.get_all_ops().items():
             node = op.get_module()
+            if node is None:
+                continue
             op_to_quantizers[node.name] = OpToQuantizers()
             for input_product in node.input:
-                self._populate_input_and_param_quantizer(op_to_quantizers[node.name], input_product)
+                self._populate_input_quantizer(op_to_quantizers[node.name], input_product)
             for output_product in node.output:
                 self._populate_output_quantizer(op_to_quantizers[node.name], output_product)
+            for name, _ in op.parameters.items():
+                op_to_quantizers[node.name].parameter_quantizers.append((name, self._quant_ops_dict[name]))
 
         return op_to_quantizers
 
-    def _populate_input_and_param_quantizer(self, op_to_quantizers: OpToQuantizers, input_product: str):
+    def _populate_input_quantizer(self, op_to_quantizers: OpToQuantizers, input_product: str):
         """
         Populate input and param quantizer for an op
         """
@@ -143,8 +175,6 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
             return
         if product_name in self._activation_names:
             op_to_quantizers.input_quantizers.append(self._quant_ops_dict[product_name])
-        else:
-            op_to_quantizers.parameter_quantizers.append((product_name, self._quant_ops_dict[product_name]))
 
     def _populate_output_quantizer(self, op_to_quantizers: OpToQuantizers, output_product: str):
         """
@@ -171,7 +201,10 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         :param data_type: data type as QuantizationDataType
         :return:
         """
-        raise NotImplementedError
+        for param_name in quantizer_data:
+            if param_name in self._quant_ops_dict:
+                self._quant_ops_dict[param_name].data_type = data_type
+                self._quant_ops_dict[param_name].bitwidth = bitwidth
 
     def _override_act_bw_dtype(self, quantizer_data, data_type: QuantizationDataType, bitwidth: int):
         """
@@ -181,7 +214,10 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         :param data_type: data type as QuantizationDataType
         :return:
         """
-        raise NotImplementedError
+        for act_name in quantizer_data:
+            if act_name in self._quant_ops_dict:
+                self._quant_ops_dict[act_name].data_type = data_type
+                self._quant_ops_dict[act_name].bitwidth = bitwidth
 
     def _override_default_act_bw_dtype(self, data_type: QuantizationDataType, bitwidth: int):
         """
@@ -190,7 +226,7 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         :param bitwidth: bitwidth to be configured
         :return:
         """
-        raise NotImplementedError
+        self._override_act_bw_dtype(self._activation_names, data_type, bitwidth)
 
     def _override_default_param_bw_dtype(self, data_type: QuantizationDataType, bitwidth: int):
         """
@@ -199,7 +235,7 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         :param data_type: data type as QuantizationDataType
         :return:
         """
-        raise NotImplementedError
+        self._override_param_bw_dtype(self._param_names, data_type, bitwidth)
 
     def _set_param_configs(self, param_configs: ParamType):
         """
@@ -250,13 +286,27 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         Set model input specific configurations (fifth level of specificity in configuration file)
         :param model_input_configs: Configuration for model inputs
         """
+        modified_quantize_ops = {}
         input_ops = get_all_input_ops(self._conn_graph)
-        for input_op in input_ops:
-            op_name = input_op.name
-            if op_name in self._op_to_quantizers:
-                modified_quantize_ops = {}
-                self._set_config_for_op(op_name, self._op_to_quantizers[op_name],
+        for op in input_ops:
+            if op.name in self._op_to_quantizers:
+                self._set_config_for_op(op.name, self._op_to_quantizers[op.name],
                                         model_input_configs, modified_quantize_ops)
+
+        for activation_name in self._input_quantizers:
+            if self._quant_ops_dict[activation_name] not in modified_quantize_ops:
+                self._modify_activation_quantize_op([self._quant_ops_dict[activation_name]], ConfigDictKeys.IS_INPUT_QUANTIZED,
+                                                    model_input_configs[ConfigDictKeys.IS_INPUT_QUANTIZED], modified_quantize_ops)
+
+        for node in self._model.model.graph.node:
+            if node.op_type in CONSTANT_TYPE:
+                for activation_name in node.output:
+                    if activation_name not in self._param_names and activation_name in self._quant_ops_dict and \
+                            self._quant_ops_dict[activation_name] not in modified_quantize_ops:
+                        self._modify_activation_quantize_op([self._quant_ops_dict[activation_name]],
+                                                            ConfigDictKeys.IS_INPUT_QUANTIZED,
+                                                            model_input_configs[ConfigDictKeys.IS_INPUT_QUANTIZED],
+                                                            modified_quantize_ops)
 
     def _set_model_output_configs(self, model_output_configs: ConfigType):
         """
@@ -307,8 +357,20 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         for op_name, op_to_quantizer in self._op_to_quantizers.items():
             self._set_config_for_op(op_name, op_to_quantizer, default_op_configs, modified_quantize_ops)
 
-        for model_input in self._model.model.graph.input:
-            self._quant_ops_dict[model_input.name].enabled = False
+        input_ops = get_all_input_ops(self._conn_graph)
+        for op in input_ops:
+            if op.name in self._op_to_quantizers:
+                for input_quantizer in self._op_to_quantizers[op.name].input_quantizers:
+                    input_quantizer.enabled = False
+
+        for activation_name in self._input_quantizers:
+            self._quant_ops_dict[activation_name].enabled = False
+
+        for node in self._model.model.graph.node:
+            if node.op_type in CONSTANT_TYPE:
+                for activation_name in node.output:
+                    if activation_name in self._quant_ops_dict:
+                        self._quant_ops_dict[activation_name].enabled = False
 
     def _set_config_for_op(self, op_name, op_to_quantizer: OpToQuantizers, op_config: OpType,
                            modified_quantize_ops: Dict):
@@ -330,6 +392,9 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
             self._modify_activation_quantize_op(op_to_quantizer.input_quantizers + op_to_quantizer.output_quantizers,
                                                 ConfigDictKeys.IS_SYMMETRIC, op_config[ConfigDictKeys.IS_SYMMETRIC],
                                                 modified_quantize_ops)
+        if ConfigDictKeys.ENCODING_CONSTRAINTS in op_config:
+            self._modify_activation_quantize_op(op_to_quantizer.output_quantizers, ConfigDictKeys.ENCODING_CONSTRAINTS,
+                                                op_config[ConfigDictKeys.ENCODING_CONSTRAINTS], modified_quantize_ops)
 
         # Will only see this in the op_type section, not default
         if ConfigDictKeys.PARAMS in op_config:
@@ -348,7 +413,7 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
 
     @staticmethod
     def _modify_activation_quantize_op(quantize_ops_to_modify: List[QcQuantizeOp], setting_name: str,
-                                       quantizer_setting: bool, modified_quantize_ops: Dict):
+                                       quantizer_setting: Union[Dict, bool], modified_quantize_ops: Dict):
         """
         Modify the appropriate quantize ops for the given quantizer setting.  If a quantize op has already been
         modified, compare the old setting with the new setting and assert if the settings conflict.
@@ -367,8 +432,11 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
                 # Tensor quantizer's setting has already been modified
                 if setting_name in [ConfigDictKeys.IS_INPUT_QUANTIZED, ConfigDictKeys.IS_OUTPUT_QUANTIZED]:
                     current_setting = quantizer.enabled
-                else:
+                elif setting_name == ConfigDictKeys.IS_SYMMETRIC:
                     current_setting = quantizer.use_symmetric_encodings
+                else:
+                    current_setting = {ConfigDictKeys.MIN: quantizer._encoding_min_max_fixed_vals[0], # pylint: disable=protected-access
+                                       ConfigDictKeys.MAX: quantizer._encoding_min_max_fixed_vals[1]} # pylint: disable=protected-access
                 if current_setting != quantizer_setting:
                     logger.error('Conflicting tensor quantizer settings for symmetric encodings')
                     raise AssertionError('Conflicting tensor quantizer settings for symmetric encodings')
@@ -379,8 +447,11 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
                     else:
                         quantizer.enabled = True
                         quantizer.op_mode = OpMode.updateStats
-                else:
+                elif setting_name == ConfigDictKeys.IS_SYMMETRIC:
                     quantizer.use_symmetric_encodings = quantizer_setting
+                elif setting_name == ConfigDictKeys.ENCODING_CONSTRAINTS:
+                    quantizer.set_fixed_encoding_range((quantizer_setting[ConfigDictKeys.MIN],
+                                                        quantizer_setting[ConfigDictKeys.MAX]))
                 if quantizer not in modified_quantize_ops:
                     modified_quantize_ops[quantizer] = {setting_type}
                 else:
@@ -421,4 +492,88 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         fields (if absent use default per_channel_quantization) and generate op instance specific config
         :return: {op_instance_name, op_specific_config}
         """
-        raise NotImplementedError
+
+        per_channel_quantization = self._parse_per_channel_quantization()
+        hw_version = self._get_hw_version()
+        supported_kernels = reformat_supported_kernels(self._supported_kernels)
+        config_generator = config_generator_factory(hw_version, supported_kernels, per_channel_quantization)
+
+        for op in self._conn_graph.ordered_ops:
+            if op.dotted_name in self._op_to_quantizers:
+                self._op_to_supported_kernel[op.dotted_name], \
+                per_channel_quantization_flag = config_generator.generate(op.get_module(), op.type)
+                if per_channel_quantization_flag:
+                    for _, param_quantizer in self._op_to_quantizers[op.dotted_name].parameter_quantizers:
+                        param_quantizer.enable_per_channel_quantization()
+
+
+def config_generator_factory(hw_version, supported_kernels, per_channel_quantization):
+    """
+    factory to select the config generator based on the hw_version
+    :param hw_version: hw_version field from the config file
+    :param supported_kernels: aggregated supported_kernels fields from the config file
+    :param per_channel_quantization: aggregated per_channel_quantization fields from the config file
+    :return: Config Generator object
+    """
+
+    config_generator = DefaultOpInstanceConfigGenerator(supported_kernels, per_channel_quantization)
+    logger.info('Selecting DefaultOpInstanceConfigGenerator to compute the specialized config. hw_version:%s',
+                hw_version)
+    return config_generator
+
+
+class OpInstanceConfigGenerator:
+    """
+    Class to specify op instance specific rules and generate the updated config
+    """
+
+    def __init__(self, op_type_supported_kernels: dict, op_type_pcq: dict):
+        """
+        :param op_type_supported_kernels: supported_kernels fields from the config file(specific op types + default)
+        :param op_type_pcq: per_channel_quantization(pcq) fields from the config file(specific op types + default)
+        """
+        self.op_type_supported_kernels = op_type_supported_kernels
+        self.op_type_pcq = op_type_pcq
+        assert ConfigDictKeys.DEFAULTS in self.op_type_supported_kernels
+        assert ConfigDictKeys.DEFAULTS in self.op_type_pcq
+
+    @abstractmethod
+    def generate(self, op: NodeProto, op_type: str) -> dict:
+        """ generate the config for the given op """
+
+    def _generate_pcq(self, op: NodeProto) -> bool:
+        """
+        Helper function to generate the pcq field
+        :param op: op instance to generate the pcq value for
+        :return: pcq value for the op type
+
+        Steps:
+        1. Check if the onnx_type exist in the config file for pcq
+        2. If any entry is present, use it else use the default value
+        """
+        pcq = False
+
+        if op.op_type in self.op_type_pcq:
+            pcq = self.op_type_pcq[op.op_type]
+        elif self.op_type_pcq[ConfigDictKeys.DEFAULTS]:
+            pcq = True
+
+        return pcq
+
+
+class DefaultOpInstanceConfigGenerator(OpInstanceConfigGenerator):
+    """
+    Default implementation of OpInstanceConfigGenerator
+    """
+
+    def generate(self, op: NodeProto, op_type: str) -> Tuple[dict, bool]:
+        """
+        :param op: op to generate the specialized config
+        :param op_type: Type str retrieved from CG op
+        :return: supported_kernels and per_channel_quantization fields
+        """
+        supported_kernels = self.op_type_supported_kernels.get(op_type,
+                                                               self.op_type_supported_kernels[ConfigDictKeys.DEFAULTS])
+        pcq = self._generate_pcq(op)
+
+        return supported_kernels, pcq

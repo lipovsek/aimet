@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 #  =============================================================================
 #
 #  @@-COPYRIGHT-START-@@
@@ -49,7 +47,7 @@ class PolySlice:
 
     def __init__(self, dim=None, index=None):
         """dim is an int; indices may be a single int or list of int's"""
-        self._slices_by_dim = dict()  # a set per dimension
+        self._slices_by_dim = {}  # a set per dimension
         if dim is not None:
             assert index not in (None, [])
             self.set(dim, index)
@@ -58,8 +56,8 @@ class PolySlice:
         """ Printable representation of the object. """
         slices_by_dim = self.get_all()
         repr_str = ""
-        for dim in slices_by_dim.keys():
-            slices = ", ".join(str(idx) for idx in slices_by_dim[dim])
+        for dim, indices in slices_by_dim.items():
+            slices = ", ".join(str(idx) for idx in indices)
             repr_str += "dim." + str(dim) + ": " + slices + "  "
         return repr_str
 
@@ -76,7 +74,7 @@ class PolySlice:
     def add(self, dim, index):
         """Add one or more slices in the specified dimension"""
         to_add = index if isinstance(index, list) else [index]
-        if dim in self._slices_by_dim.keys():
+        if dim in self._slices_by_dim:
             for idx in to_add:
                 self._slices_by_dim[dim].add(idx)
         else:
@@ -89,7 +87,7 @@ class PolySlice:
 
     def get_dims(self):
         """ Returns the dimensions which have zero channels """
-        return sorted(self._slices_by_dim.keys())
+        return sorted(self._slices_by_dim)
 
     def get_slices(self, dim):
         """ Returns the indices which have zero channels. """
@@ -99,6 +97,6 @@ class PolySlice:
         """ Returns all the dimensions and the corresponding channels
         with zero planes. """
         result = OrderedDict()
-        for dim in sorted(self._slices_by_dim.keys()):
+        for dim in sorted(self._slices_by_dim):
             result[dim] = sorted(list(self._slices_by_dim[dim]))
         return result

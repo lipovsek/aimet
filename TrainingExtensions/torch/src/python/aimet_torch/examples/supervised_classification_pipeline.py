@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -72,8 +71,7 @@ import collections
 from ignite.engine import Engine, Events, create_supervised_evaluator
 from ignite.metrics import Accuracy, Loss, TopKCategoricalAccuracy
 import torch
-import torch.nn as nn
-from torch._six import string_classes
+from torch import nn
 
 from aimet_common.utils import AimetLogger
 
@@ -96,13 +94,13 @@ def convert_tensor(input_, device=None, non_blocking=False):
         else:
             input_ = input_.cuda(device=device, non_blocking=non_blocking)
 
-    elif isinstance(input_, string_classes):
+    elif isinstance(input_, str):
         return input_
 
-    elif isinstance(input_, collections.Mapping):
+    elif isinstance(input_, collections.Mapping):  # pylint: disable=no-member
         return {k: convert_tensor(sample, device=device) for k, sample in input_.items()}
 
-    elif isinstance(input_, collections.Sequence):
+    elif isinstance(input_, collections.Sequence):  # pylint: disable=no-member
         return [convert_tensor(sample, device=device) for sample in input_]
 
     else:

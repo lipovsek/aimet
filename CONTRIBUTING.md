@@ -35,7 +35,7 @@ Contributors should develop on [their own fork](https://help.github.com/en/githu
 ## Setup
 Go to https://github.com/quic/aimet and fork the repo using [these instructions](https://help.github.com/en/github/getting-started-with-github/fork-a-repo).
 
-Follow the [Requirements](USAGE.md#requirements) and [Setup](USAGE.md#setup-the-environment) sections in [USAGE.md](USAGE.md). Then return to this page.
+Follow the [Requirements](packaging/docker_install.md#requirements) and [Setup](packaging/docker_install.md#setup-the-environment) sections in [docker_install.md](packaging/docker_install.md). Then return to this page.
 
 ## Get code
 [Sync your fork](https://help.github.com/en/github/collaborating-with-issues-and-pull-requests/syncing-a-fork) with the latest from the upstream repository.
@@ -49,7 +49,7 @@ Clone the google test repo as follows:
 ```
 mkdir -p ./ThirdParty/googletest
 pushd ./ThirdParty/googletest
-git clone https://github.com/google/googletest.git -b release-1.8.0 googletest-release-1.8.0
+git clone https://github.com/google/googletest.git -b release-1.12.1 googletest-release-1.12.1
 popd
 ```
 *IMPORTANT:* Setup your pre-commit and commit-msg hook using the following way:

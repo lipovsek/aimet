@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2019, 2020, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2019-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -36,72 +35,11 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 """ Main class for pattern match based graph searcher"""
-
-import itertools
-from collections import deque
-from aimet_common.graph_pattern_matcher import PatternMatcher
+from typing import Optional
 from aimet_common.utils import AimetLogger
+from aimet_common.connected_graph.operation import Op
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
-
-
-class SlidingWindow:
-    """
-    Sliding window class implements a sliding window deque and provides api to update it's state
-    """
-
-    def __init__(self, window_size):
-        """
-        initializes params required for pattern matching
-        :param window_size: max length of sliding window
-        """
-        # deque structure will be sized based on length provided
-        self.current_op_window = deque(maxlen=window_size)
-
-    def get_sub_graph_type_pattern_2(self) -> list:
-        """
-         sub_graph is stored as deque of ops
-         this api converts it to list of op typ strings to aid with pattern matching
-        :return: list of op types of the ops in the op_types_in_sliding_window deque.
-        """
-
-        return [op.type for op in self.current_op_window]
-
-    def get_sub_graph_type_pattern(self) -> list:
-        """
-         sub_graph is stored as deque of ops
-         this api converts it to list of op typ strings to aid with pattern matching
-        :return: list of op types of the ops in the op_types_in_sliding_window deque.
-        """
-
-        return [op.type for op in self.current_op_window]
-
-    def append_to_sliding_window(self, op) -> None:
-        """
-        appends op provided to op_types_in_sliding_window deque.
-        :param op: Connected graph op type
-        :return: None
-        """
-
-        assert op is not None, 'Error, op passed to append_to_sliding_window is None'
-        self.current_op_window.append(op)
-
-    def remove_op_from_sliding_window(self, op) -> None:
-        """
-        removes op provided from sliding_window deque.
-        :param op: Connected graph op type
-        :return: None
-        """
-
-        self.current_op_window.remove(op)
-
-    def get_op_sliding_window(self) -> deque:
-        """
-        returns op_types_in_sliding_window
-        :return: current op sliding window
-        """
-        return self.current_op_window
-
 
 class GraphSearcher:
     """
@@ -116,77 +54,68 @@ class GraphSearcher:
         """
         self._connected_graph = conn_graph
         self._patterns_with_callbacks = patterns_with_callback
-        self.sliding_window = None
+        self.type_to_op_dict = {}
+        for op in conn_graph.get_all_ops().values():
+            if op.type in self.type_to_op_dict:
+                self.type_to_op_dict[op.type].append(op)
+            else:
+                self.type_to_op_dict[op.type] = [op]
 
-    def _find_patterns_apply_actions(self, op,
-                                     pattern_matcher: PatternMatcher,
-                                     visited_nodes,
-                                     ignore=None) -> None:
+    # pylint: disable=too-many-nested-blocks
+    def find_all_patterns_in_graph_apply_actions(self, ignore: Optional[Op]=None):
         """
-        Finds all patterns in the graph using DFS with sliding window based pattern matcher
-        :param op: starting op as connected graph op
-        :param pattern_matcher: pattern matcher instance
-        :param visited_nodes: list of ops visited to avoid loops during search
+        Find corresponding op sequences and apply actions.
         :param ignore: List of operations to ignore during searching
-        :return: None
         """
-        if op and op in visited_nodes:
-            return
 
-        if ignore and op in ignore:
-            pass
+        if ignore is None:
+            ignore = []
+
+        # Search patterns starting with longer patterns first
+        for pattern_type in sorted(self._patterns_with_callbacks, key=lambda l: len(l.pattern), reverse=True):
+            if pattern_type.pattern[0] in self.type_to_op_dict:
+                # One or more ops in the graph correspond to the current pattern's starting op type
+                for op in self.type_to_op_dict[pattern_type.pattern[0]]:
+                    matched_ops = self._match_pattern(op, pattern_type.pattern, ignore)
+                    if matched_ops:
+                        for matched_ops_list in matched_ops:
+                            pattern_type.action(pattern_type, matched_ops_list)
+                            logger.debug('found match: %s', matched_ops_list)
+
+    # pylint: disable=too-many-branches, too-many-return-statements
+    def _match_pattern(self, op, pattern, ignored_ops):
+        if not pattern:
+            return []
+
+        matched_ops = None
+        if op in ignored_ops:
+            if not op.outputs:
+                return None
+            for child_op in op.output_ops:
+                matched_child_ops = self._match_pattern(child_op, pattern, ignored_ops)
+                if matched_child_ops is not None:
+                    if matched_ops is None:
+                        matched_ops = []
+                    matched_ops.extend(matched_child_ops)
+            return matched_ops
+
+        if op.type != pattern[0]:
+            return None
+
+        if len(pattern) > 1:
+            # Still more to match
+            if not op.outputs:
+                return None
+            if len(op.output_ops) > 1: # Can't match patterns with branches
+                return None
+            for child_op in op.output_ops:
+                matched_child_ops = self._match_pattern(child_op, pattern[1:], ignored_ops)
+                if matched_child_ops:
+                    if matched_ops is None:
+                        matched_ops = []
+                    for matched_child_op_list in matched_child_ops:
+                        matched_ops.append([op] + matched_child_op_list)
         else:
-            # sliding window stores the op and the type
-            self.sliding_window.append_to_sliding_window(op)
-            op_types_sliding_window = self.sliding_window.get_sub_graph_type_pattern()
+            matched_ops = [[op]]
 
-            # we get the index in the sliding window and the matched pattern back from pattern matcher
-            matched_patterns_start_indices_dict = pattern_matcher.get_matching_patterns(op_types_sliding_window)
-
-            if matched_patterns_start_indices_dict:
-                for matched_pattern in matched_patterns_start_indices_dict.keys():
-                    for i in matched_patterns_start_indices_dict[matched_pattern]:
-                        # we need to call appropriate handler here based on the matched length and the starting op type
-                        op_subset = list(itertools.islice(self.sliding_window.get_op_sliding_window(), i,
-                                                          i+len(matched_pattern.pattern)))
-                        logger.info('...... subset to store %s', op_subset)
-                        matched_pattern.action(matched_pattern, op_subset)
-
-        # mark visited node
-        visited_nodes.add(op)
-
-        # recursively call if op has children
-        # move the op_sliding_window if output ops found ; continue DFS
-        if op.output:
-            for consumer in op.output.consumers:
-                GraphSearcher._find_patterns_apply_actions(self, consumer, pattern_matcher,
-                                                           visited_nodes, ignore=ignore)
-        # Done with the op, if this op in sliding window, remove it
-        if op in self.sliding_window.current_op_window:
-            self.sliding_window.remove_op_from_sliding_window(op)
-
-    def find_all_patterns_in_graph_apply_actions(self, ignore=None):
-        """
-        Finds corresponding op sequences and apply action.
-        :param ignore: List of operations to ignore during searching
-        :return: None
-        """
-
-        # Find the input node(s) in the graph
-        input_nodes = []
-        for op in self._connected_graph.get_all_ops().values():
-            if op.inputs and op.inputs[0].is_model_input:
-                input_nodes.append(op)
-
-        visited_nodes = set()
-
-        # define pattern matcher for graph search and set the sliding window length
-        pattern_matcher = PatternMatcher(self._patterns_with_callbacks)
-        self.sliding_window = SlidingWindow(pattern_matcher.get_pattern_max_length())
-
-        # find layers of interest
-        for op in input_nodes:
-
-            # perform DFS with sliding window
-            GraphSearcher._find_patterns_apply_actions(self, op, pattern_matcher,
-                                                       visited_nodes, ignore=ignore)
+        return matched_ops

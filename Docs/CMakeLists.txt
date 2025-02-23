@@ -2,7 +2,7 @@
 #
 #  @@-COPYRIGHT-START-@@
 #  
-#  Copyright (c) 2018, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2018-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #  
 #  Redistribution and use in source and binary forms, with or without 
 #  modification, are permitted provided that the following conditions are met:
@@ -37,7 +37,7 @@
 #=============================================================================
 
 install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-      DESTINATION ${AIMET_INSTALL_DIR}
+      DESTINATION .
       PATTERN "CMakeFiles*" EXCLUDE
       PATTERN "Makefile" EXCLUDE
       PATTERN "*.cmake" EXCLUDE

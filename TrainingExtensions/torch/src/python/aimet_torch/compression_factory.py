@@ -1,9 +1,8 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2018, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2018-2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -39,12 +38,11 @@
 """ Provides a factory to construct various AIMET model compression classes based on a scheme """
 
 from typing import Tuple, List
-
 import torch
 
 from aimet_common.defs import CostMetric, RankSelectScheme, EvalFunction, LayerCompRatioPair
 from aimet_common.cost_calculator import SpatialSvdCostCalculator, WeightSvdCostCalculator
-from aimet_common.comp_ratio_select import GreedyCompRatioSelectAlgo, TarRankSelectAlgo, ManualCompRatioSelectAlgo
+from aimet_common.comp_ratio_select import GreedyCompRatioSelectAlgo, ManualCompRatioSelectAlgo
 from aimet_common.comp_ratio_rounder import RankRounder, ChannelRounder
 from aimet_common.compression_algo import CompressionAlgo
 from aimet_common.bokeh_plots import BokehServerSession
@@ -53,10 +51,8 @@ from aimet_torch.utils import create_rand_tensors_given_shapes, get_device
 from aimet_torch.defs import SpatialSvdParameters, WeightSvdParameters, ChannelPruningParameters, ModuleCompRatioPair
 from aimet_torch.layer_selector import ConvFcLayerSelector, ConvNoDepthwiseLayerSelector, ManualLayerSelector
 from aimet_torch.layer_database import LayerDatabase
-from aimet_torch.svd.svd_pruner import SpatialSvdPruner, WeightSvdPruner
+from aimet_torch.svd.svd_pruner import SpatialSvdPruner, PyWeightSvdPruner
 from aimet_torch.channel_pruning.channel_pruner import InputChannelPruner, ChannelPruningCostCalculator
-from aimet_torch import pymo_utils
-
 
 class CompressionFactory:
     """ Factory to construct various AIMET model compression classes based on a scheme """
@@ -217,7 +213,7 @@ class CompressionFactory:
         use_cuda = next(model.parameters()).is_cuda
 
         # Create a pruner
-        pruner = WeightSvdPruner()
+        pruner = PyWeightSvdPruner()
         cost_calculator = WeightSvdCostCalculator()
         comp_ratio_rounding_algo = RankRounder(params.multiplicity, cost_calculator)
 
@@ -239,16 +235,6 @@ class CompressionFactory:
                                                                    comp_ratio_rounding_algo=comp_ratio_rounding_algo,
                                                                    use_cuda=use_cuda,
                                                                    bokeh_session=bokeh_session)
-            # TAR method
-            elif params.mode_params.rank_select_scheme is RankSelectScheme.tar:
-                tar_params = params.mode_params.select_params
-                comp_ratio_select_algo = TarRankSelectAlgo(layer_db=layer_db, pruner=pruner,
-                                                           cost_calculator=cost_calculator,
-                                                           eval_func=eval_callback,
-                                                           eval_iterations=eval_iterations,
-                                                           cost_metric=cost_metric,
-                                                           num_rank_indices=tar_params.num_rank_indices,
-                                                           use_cuda=use_cuda, pymo_utils_lib=pymo_utils)
             else:
                 raise ValueError("Unknown Rank selection scheme: {}".format(params.AutoModeParams.rank_select_scheme))
 

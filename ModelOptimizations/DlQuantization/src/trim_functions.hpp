@@ -51,20 +51,22 @@ inline double randUniformCpu();
 
 template <typename DTYPE>
 void quantizeDequantize(const DTYPE* in, int cnt, const TfEncoding& encoding, DTYPE* out, ComputationMode mode_cpu_gpu,
-                        RoundingMode rounding_mode);
+                        RoundingMode rounding_mode, void* stream);
+
+
+void quantizeDequantizeFp16ForGPU(const float* in, int cnt, float* out, void* stream);
+
 
 template <typename DTYPE>
 void quantizeToFxp(const DTYPE* in, int cnt, const TfEncoding& encoding, DTYPE* out, ComputationMode mode_cpu_gpu,
                    RoundingMode rounding_mode, bool shiftToSigned);
 
 template <typename DTYPE>
-void quantizeToFxpPacked(const DTYPE* in, int cnt, const TfEncoding& encoding,
-                         uint8_t* out, size_t out_size, ComputationMode mode_cpu_gpu,
-                         RoundingMode rounding_mode, bool shiftToSigned);
+void quantizeToFxpPacked(const DTYPE* in, int cnt, const TfEncoding& encoding, uint8_t* out, size_t out_size,
+                         ComputationMode mode_cpu_gpu, RoundingMode rounding_mode, bool shiftToSigned);
 
 template <typename DTYPE>
-void dequantizeFromPackedFxp(const uint8_t* input, int cnt,
-                             const TfEncoding& encoding, DTYPE* output,
+void dequantizeFromPackedFxp(const uint8_t* input, int cnt, const TfEncoding& encoding, DTYPE* output,
                              ComputationMode mode_cpu_gpu, bool shiftToSigned);
 
 template <typename DTYPE>
@@ -76,20 +78,31 @@ void quantizeToFxpCpu(const DTYPE* in, int cnt, const TfEncoding& encoding, DTYP
                       bool shiftToSigned);
 
 template <typename DTYPE>
-void quantizeToFxpPackedCpu(const DTYPE* in, int cnt, const TfEncoding& encoding,
-                            DTYPE* out, size_t out_size, RoundingMode rounding_mode, bool shiftToSigned);
+void quantizeToFxpPackedCpu(const DTYPE* in, int cnt, const TfEncoding& encoding, DTYPE* out, size_t out_size,
+                            RoundingMode rounding_mode, bool shiftToSigned);
 
 // Multi-threading implementation
 template <typename DTYPE>
-void dequantizeFromPackedFxpCpuMt(const uint8_t* input, int cnt,
-                                   const TfEncoding& encoding, DTYPE* output, bool shiftToSigned);
+void dequantizeFromPackedFxpCpuMt(const uint8_t* input, int cnt, const TfEncoding& encoding, DTYPE* output,
+                                  bool shiftToSigned);
 
 template <typename DTYPE>
-void dequantizeFromPackedFxpCpu(const uint8_t* input, int cnt,
-                                const TfEncoding& encoding, DTYPE* output, bool shiftToSigned);
+void dequantizeFromPackedFxpCpu(const uint8_t* input, int cnt, const TfEncoding& encoding, DTYPE* output,
+                                bool shiftToSigned);
 
 double computeDelta(double encodingMin, double encodingMax, double numSteps);
 double computeOffset(double encodingMin, double delta);
+
+template <typename DTYPE>
+void quantizeDequantizePerChannel(const DTYPE* in, int numChannel, int numElement, int numElementPerChannel, DTYPE* out,
+                                  DTYPE* encodingMin, DTYPE* encodingMax, DTYPE* encodingDelta, DTYPE* encodingOffset,
+                                  ComputationMode modeCpuGpu, RoundingMode roundingMode, void* stream);
+
+
+template <typename DTYPE>
+void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings& encodings,
+                                    int64_t numElement, const TensorDims& inputStrides,
+                                    const TensorDims& encodingStrides);
 
 
 // GPU implementations ...
@@ -100,8 +113,18 @@ void quantizeToFxpGpu(const DTYPE* in, int cnt, const TfEncoding& encoding, DTYP
                       bool shiftToSigned);
 
 template <typename DTYPE>
-void quantizeDequantizeGpu(const DTYPE* in, int cnt, const TfEncoding& encoding, DTYPE* out,
-                           RoundingMode rounding_mode);
+void quantizeDequantizeGpu(const DTYPE* in, int cnt, const TfEncoding& encoding, DTYPE* out, RoundingMode rounding_mode,
+                           void* stream);
+
+template <typename DTYPE>
+void quantizeDequantizePerChannelGpu(const DTYPE* in, int numChannel, int numElement, int numElementPerChannel,
+                                     DTYPE* out, DTYPE* encodingMin, DTYPE* encodingMax, DTYPE* encodingDelta,
+                                     DTYPE* encodingOffset, RoundingMode roundingMode, void* stream);
+
+template <typename DTYPE>
+void quantizeDequantizeBroadcastGpu(const DTYPE* in, DTYPE* out, const Encodings& encodings,
+                                    int64_t numElements, const TensorDims& inputStrides,
+                                    const TensorDims& encodingStrides, void* stream);
 
 #endif   // GPU_QUANTIZATION_ENABLED
 

@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 #  =============================================================================
 #
@@ -72,7 +71,7 @@ class ModuleReducer(AimetCommonModuleReducer):
 
         super().__init__(using_cuda, reshape, op_to_mask_dict)
         self._model = model
-        self._parent_module_ref = dict()
+        self._parent_module_ref = {}
 
         self._generate_parent_ref(self._model)
 
@@ -181,7 +180,7 @@ class ModuleReducer(AimetCommonModuleReducer):
         bn_op_out_mask = output_ch_masks[output_mask_index]
 
         # Get the next downstream Op's input mask
-        downstream_op = bn_op.output.consumers[0]
+        downstream_op = bn_op.output_ops[0]
         downstream_op_mask = self._op_to_mask_dict[downstream_op]
         downstream_op_input_masks = downstream_op_mask.input_channel_masks
         downstream_op_mask_index = determine_preceding_op_input_product_index_in_multi_input_op(bn_op,
@@ -207,7 +206,7 @@ class ModuleReducer(AimetCommonModuleReducer):
             if op_input_product.parm_name == "input":
                 continue
             cur_parm = getattr(named_module, op_input_product.parm_name)
-            if op_input_product.parm_name == "running_mean" or op_input_product.parm_name == "running_var":
+            if op_input_product.parm_name in ("running_mean", "running_var"):
                 bn_running_parm = torch.nn.Parameter(reduce_tensor(cur_parm, output_reduction), requires_grad=False)
                 named_module.register_buffer(op_input_product.parm_name, bn_running_parm)
             else:
@@ -313,9 +312,9 @@ class ModuleReducer(AimetCommonModuleReducer):
         input_producer_op_mask = self._op_to_mask_dict[input_producer_op]
         input_producer_op_out_masks = input_producer_op_mask.output_channel_masks
         input_producer_op_out_mask = None
-        if len(input_producer_op.output.consumers) == 1:
+        if len(input_producer_op.output_ops) == 1:
             input_producer_op_out_mask = input_producer_op_out_masks[0]
-        elif len(input_producer_op.output.consumers) > 1:
+        elif len(input_producer_op.output_ops) > 1:
             input_producer_op_output_mask_index = \
                 determine_succeeding_op_output_product_index_in_multi_output_op(conv_op, input_producer_op)
             input_producer_op_out_mask = input_producer_op_out_masks[input_producer_op_output_mask_index]
@@ -344,7 +343,7 @@ class ModuleReducer(AimetCommonModuleReducer):
         """
 
         logger.debug("Prepend Downsample: Op dotted name: %s, Op type: %s next down module dotted name: %s, type: %s",
-                     op.dotted_name, op.type, op.output.consumers[0].dotted_name, op.output.consumers[0].type)
+                     op.dotted_name, op.type, op.output_ops[0].dotted_name, op.output_ops[0].type)
 
         if op.type in get_conv_ops_for_api(ModelApi.pytorch):
             conv_op = op
@@ -481,7 +480,7 @@ def get_next_conv_op_for_op_with_single_consumer(op: Operation):
 
     single_consumer_op_index = 0
     while op.type not in ['Conv2d', 'convolution']:     # TODO: remove 'Conv2d' when old CG is gone
-        op = op.output.consumers[single_consumer_op_index]
+        op = op.output_ops[single_consumer_op_index]
     return op
 
 

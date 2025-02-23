@@ -1,194 +1,227 @@
-.. #==============================================================================
-   #  @@-COPYRIGHT-START-@@
-   #
-   #  Copyright 2022 Qualcomm Technologies, Inc. All rights reserved.
-   #  Confidential & Proprietary - Qualcomm Technologies, Inc. ("QTI")
-   #
-   #  The party receiving this software directly from QTI (the "Recipient")
-   #  may use this software as reasonably necessary solely for the purposes
-   #  set forth in the agreement between the Recipient and QTI (the
-   #  "Agreement"). The software may be used in source code form solely by
-   #  the Recipient's employees (if any) authorized by the Agreement. Unless
-   #  expressly authorized in the Agreement, the Recipient may not sublicense,
-   #  assign, transfer or otherwise provide the source code to any third
-   #  party. Qualcomm Technologies, Inc. retains all ownership rights in and
-   #  to the software
-   #
-   #  This notice supersedes any other QTI notices contained within the software
-   #  except copyright notices indicating different years of publication for
-   #  different portions of the software. This notice does not supersede the
-   #  application of any third party copyright notice to that third party's
-   #  code.
-   #
-   #  @@-COPYRIGHT-END-@@
-   #==============================================================================
+.. _install-index:
 
-.. _ug-installation:
-
-##############################
-AIMET Installation and Setup
-##############################
-
-This page provides instructions to install AIMET package on Ubuntu 18.04 LTS with Nvidia GPU. Please follow the instructions in the order provided, unless specified otherwise.
-
-=============
+############
 Installation
-=============
+############
 
-**NOTE:**
-    #. Please pre-pend the "apt-get install" and "pip3 install" commands with "sudo -H" as appropriate.
-    #. These instructions assume that pip packages will be installed in the path: /usr/local/lib/python3.8/dist-packages. If that is not the case, please modify it accordingly.
+This page describes instructions for installing the latest version of AIMET across all frameworks
+(PyTorch, TensorFlow, and ONNX) and compute platforms. Please choose **ONE** of the available
+installation options based on your needs and preferences.
 
+- :ref:`PyPI <default-package>`
+- :ref:`Alternative packages <alternative-packages>`
+- :ref:`Host install from scratch <host-install-from-scratch>`
+- :ref:`Docker install <docker-install>`
+- :ref:`Building from source <building-from-source>`
 
-Install prerequisite packages
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. _default-package:
 
-Install the basic pre-requisite packages as follows:
+PyPI
+====
 
-.. code-block::
+To install the latest version of AIMET for the PyTorch framework, which supports the new **aimet_torch 2**
+interface, use the :ref:`Quick start <install-quick-start>` instructions.
 
-    apt-get update
-    apt-get install python3.8 python3.8-dev python3-pip
-    python3 -m pip install --upgrade pip
-    apt-get install --assume-yes wget gnupg2
+.. _alternative-packages:
 
-Install GPU packages
-~~~~~~~~~~~~~~~~~~~~
+Alternative packages
+====================
 
-**NOTE:**
+Install the latest version of AIMET for supported framework variants and compute platforms including
+TensorFlow, ONNX and PyTorch (legacy `aimet_torch.v1` interface) from the .whl files hosted at
+https://github.com/quic/aimet/releases.
 
-#. Do this section ONLY for the PyTorch or Tensorflow GPU packages.
-#. Visit this page https://developer.nvidia.com/cuda-11.1.1-download-archive to obtain the exact and up-to-date installation instructions for your environment.
+Prerequisites
+-------------
 
-.. code-block::
+The AIMET package requires the following host platform setup. The following prerequisites apply
+to all frameworks variants.
 
-    wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/cuda-ubuntu1804.pin
-    mv cuda-ubuntu1804.pin /etc/apt/preferences.d/cuda-repository-pin-600
-    wget https://developer.download.nvidia.com/compute/cuda/11.1.1/local_installers/cuda-repo-ubuntu1804-11-1-local_11.1.1-455.32.00-1_amd64.deb
-    dpkg -i cuda-repo-ubuntu1804-11-1-local_11.1.1-455.32.00-1_amd64.deb
-    apt-key add /var/cuda-repo-ubuntu1804-11-1-local/7fa2af80.pub
-    echo "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64 /" > /etc/apt/sources.list.d/cuda.list
-    echo "deb https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1804/x86_64 /" > /etc/apt/sources.list.d/nvidia-ml.list
-    apt-get update
-    apt-get -y install cuda
+* 64-bit Intel x86-compatible processor
+* OS: Ubuntu 22.04 LTS
+* Python 3.10
+* For GPU variants:
+    * Nvidia GPU card (Compute capability 5.2 or later)
+    * Nvidia driver version 455 or later (using the latest driver is recommended; both CUDA and cuDNN are supported)
 
-    wget http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1804/x86_64/nvidia-machine-learning-repo-ubuntu1804_1.0.0-1_amd64.deb
-    dpkg -i nvidia-machine-learning-repo-ubuntu1804_1.0.0-1_amd64.deb
-    apt-get update
+.. note::
+    Starting with the AIMET 2 release, there is no longer a dependency on ``liblapacke``. 
+    Install the following Debian package if (and only if) you are still using AIMET 1.x.
 
+.. code-block:: bash
 
-Install AIMET packages
-~~~~~~~~~~~~~~~~~~~~~~~
+    apt-get install liblapacke
 
-Go to https://github.com/quic/aimet/releases and identify the release tag of the package you want to install.
+Choose and install a package
+----------------------------
 
-Set the <variant_string> to ONE of the following depending on your desired variant
+Use one of the following commands to install AIMET based on your choice of framework and compute platform.
 
-#. For the PyTorch GPU variant, use "torch_gpu"
-#. For the PyTorch CPU variant, use "torch_cpu"
-#. For the TensorFlow GPU variant, use "tf_gpu"
-#. For the TensorFlow CPU variant, use "tf_cpu"
+.. tab-set::
+    :sync-group: platform
 
-.. code-block::
+    .. tab-item:: PyTorch
+        :sync: torch
 
-    export AIMET_VARIANT=<variant_string>
+        .. important::
+            Legacy `aimet_torch.v1` necessitates x86_64 architecture, Python 3.10 and PyTorch version 2.1.
 
-Replace <variant_string> in the steps below with the appropriate tag:
+        **PyTorch 2.1**
 
-.. code-block::
+        With CUDA 12.x:
 
-    export AIMET_VARIANT=<variant_string>
+        .. parsed-literal::
 
-Set the package download URL as follows:
+           python3 -m pip install |download_url|\ |version|/aimet_torch-|version|\+cu121\ |torch_whl_suffix| -f |torch_pkg_url|
 
-.. code-block::
+        With CPU only:
 
-    export download_url="https://github.com/quic/aimet/releases/download/${release_tag}"
+        .. parsed-literal::
 
-Set the common suffix for the package files as follows:
-
-**NOTE:** Set wheel_file_suffix to cp38-cp38-linux_x86_64.whl OR cp36-cp36m-linux_x86_64 OR cp37-cp37m-linux_x86_64 OR py3-none-any as appropriate depending on the actual wheel filename(s) on the https://github.com/quic/aimet/releases.
-
-.. code-block::
-
-    export wheel_file_suffix="cp38-cp38-linux_x86_64.whl"
-
-Install the AIMET packages in the order specified below:
-
-**NOTE:** Python dependencies will automatically get installed.
-
-.. code-block::
-
-    python3 -m pip install ${download_url}/AimetCommon-${AIMET_VARIANT}_${release_tag}-${wheel_file_suffix}
-
-    # Install ONE of the following depending on the variant
-    python3 -m pip install ${download_url}/AimetTorch-${AIMET_VARIANT}_${release_tag}-${wheel_file_suffix} -f https://download.pytorch.org/whl/torch_stable.html
-    # OR
-    python3 -m pip install ${download_url}/AimetTensorflow-${AIMET_VARIANT}_${release_tag}-${wheel_file_suffix}
-
-    python3 -m pip install ${download_url}/Aimet-${AIMET_VARIANT}_${release_tag}-${wheel_file_suffix}
+            python3 -m pip install |download_url|\ |version|/aimet_torch-|version|\+cpu\ |torch_whl_suffix| -f |torch_pkg_url|
 
 
-Install common debian packages
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    .. tab-item:: TensorFlow
+        :sync: tf
 
-Install the common debian packages as follows:
+        **Tensorflow 2.10 GPU**
 
-.. code-block::
+        With CUDA 11.x:
 
-    cat /usr/local/lib/python3.8/dist-packages/aimet_common/bin/reqs_deb_common.txt | xargs apt-get --assume-yes install
+        .. parsed-literal::
 
-Install tensorflow GPU debian packages
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            python3 -m pip install |download_url|\ |version|/aimet_tensorflow-|version|\+cu118\ |whl_suffix|
 
-**NOTE:** Do this ONLY for the TensorFlow GPU package.
+        With CPU only:
 
-.. code-block::
+        .. parsed-literal::
 
-    cat /usr/local/lib/python3.8/dist-packages/aimet_tensorflow/bin/reqs_deb_tf_gpu.txt | xargs apt-get --assume-yes install
+            python3 -m pip install |download_url|\ |version|/aimet_tensorflow-|version|\+cpu\ |whl_suffix|
 
-Install torch GPU debian packages
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    .. tab-item:: ONNX
+        :sync: onnx
 
-**NOTE:** Do this ONLY for the PyTorch GPU package.
+        **ONNX 1.16 GPU**
 
-.. code-block::
+        With CUDA 11.x:
 
-    cat /usr/local/lib/python3.8/dist-packages/aimet_torch/bin/reqs_deb_torch_gpu.txt | xargs apt-get --assume-yes install
+        .. parsed-literal::
 
-Replace Pillow with Pillow-SIMD
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cu118\ |whl_suffix| -f |torch_pkg_url|
 
-**Optional:** Replace the Pillow package with Pillow-SIMD as follows:
+        With CPU only:
 
-.. code-block::
+        .. parsed-literal::
 
-    python3 -m pip uninstall -y pillow
-    python3 -m pip install --no-cache-dir Pillow-SIMD==7.0.0.post3
+            python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cpu\ |whl_suffix| -f |torch_pkg_url|
 
-Post installation steps
-~~~~~~~~~~~~~~~~~~~~~~~~
+Verifying the installation
+--------------------------
 
-.. code-block::
+Verify your installation using the following instructions.
 
-    ln -s /usr/lib/x86_64-linux-gnu/libjpeg.so /usr/lib
+**Step 1:** Handle imports and other setup.
 
-**NOTE:** Do the following step ONLY for the PyTorch or Tensorflow GPU packages.
+.. code-block:: python
 
-.. code-block::
+    import numpy as np
+    from aimet_common import libpymo
 
-    # If you installed the CUDA 11.x drivers
-    ln -s /usr/local/cuda-11.0 /usr/local/cuda
-    # OR if you installed the CUDA 10.x drivers
-    ln -s /usr/local/cuda-10.0 /usr/local/cuda
+    x = np.random.randn(100)
 
-=================
-Environment setup
-=================
+    quant_scheme = libpymo.QuantizationMode.QUANTIZATION_TF
+    analyzer = libpymo.EncodingAnalyzerForPython(quant_scheme)
 
-Set the common environment variables as follows:
+**Step 2:** Compute scale and offset.
 
-.. code-block::
+.. code-block:: python
 
-    source /usr/local/lib/python3.8/dist-packages/aimet_common/bin/envsetup.sh
+    bitwidth = 8
+    is_symmetric, strict_symmetric, unsigned_symmetric = True, False, True
+    use_cuda = False
+    analyzer.updateStats(x, use_cuda)
+    encoding, _ = analyzer.computeEncoding(bitwidth, is_symmetric, strict_symmetric, unsigned_symmetric)
 
+    print(f'Min: {encoding.min}, Max: {encoding.max}, Scale(delta): {encoding.delta}, Offset: {encoding.offset}')
+
+The encodings values should be similar to the one shown below.
+
+.. rst-class:: script-output
+
+    .. code-block:: none
+
+        Min: -3.3734087606114667, Max: 3.3470540046691895, Scale(delta): 0.026354755942277083, Offset: -128.0
+
+**Step 3:** Perform quantize-dequantize.
+
+.. code-block:: python
+
+    quantizer = libpymo.TensorQuantizationSimForPython()
+    out = quantizer.quantizeDequantize(x,
+                                       encoding,
+                                       libpymo.RoundingMode.ROUND_NEAREST,
+                                       bitwidth,
+                                       use_cuda)
+    print(out)
+
+The quantized-dequantized output should be similar to the one shown below.
+
+.. rst-class:: script-output
+
+    .. code-block:: none
+
+        [-1.291383    0.36896658  1.0541903  -1.2123188  -2.2137995   1.2650282
+         -0.23719281  0.10541902  0.50074035 -0.05270951 -0.94877124  0.
+          0.10541902  0.52709514 -0.7115784   2.2401543  -0.34261182  2.0293162
+          0.34261182 -0.6061594  -0.36896658 -0.6588689  -1.5022211  -0.10541902
+         -1.4758663  -0.8433522   0.7115784  -0.23719281  0.44803086 -0.94877124
+          0.18448329 -1.0014807   0.55344987 -0.13177378  0.15812853 -0.7115784
+         -0.4216761   1.1068997  -0.07906426  1.6603496   0.55344987 -0.47438562
+         -0.6325141   0.4216761  -1.4495116   1.5549306  -0.6325141  -1.2123188
+          0.50074035  1.291383    0.07906426 -1.2123188  -2.0820258   1.0014807
+         -0.18448329 -0.4216761   1.0278355  -0.21083805  0.52709514  1.6867044
+         -0.68522364  1.0278355  -0.55344987 -0.26354757  0.10541902 -0.02635476
+          0.6588689  -0.34261182 -0.05270951  3.347054    0.07906426 -1.080545
+         -0.57980466  1.4231569  -0.6588689   1.291383   -0.13177378  0.31625706
+         -0.36896658  0.05270951 -0.81699747 -1.4231569  -1.1068997  -0.68522364
+          0.7115784  -1.2650282  -0.7115784   0.50074035  0.28990233 -0.73793316
+          0.21083805  2.4246376  -0.15812853  0.52709514 -0.02635476 -0.13177378
+         -1.8711877   0.4216761  -0.55344987 -0.76428795]
+
+Old versions
+------------
+
+You can also view the release notes for older AIMET versions at https://github.com/quic/aimet/releases.
+Follow the documentation corresponding to that release to select and install the appropriate AIMET package.
+
+.. _host-install-from-scratch:
+
+Host install from scratch
+=========================
+
+The :ref:`Host install from scratch <install-host>` page contains the procedure to prepare the environment
+and manually install and setup AIMET (including prerequisites and dependencies for all framework and
+variants) on a fresh Linux host machine. Use it if you experienced problems installing and/or
+using AIMET via any of the previous installation procedures.
+
+.. _docker-install:
+
+Docker install
+==============
+
+The :ref:`Docker install <install-docker>` page describes how to install AIMET in a Docker
+container using pre-built or locally built Docker images.
+
+.. _building-from-source:
+
+Building from source
+====================
+
+For most users, installing the pre-built AIMET package via the pip package manager offers the best
+experience. However, if you want to use the latest code or contribute to AIMET, you need to build it
+from source. To build the latest AIMET code from the source, see `build AIMET from source <https://github.com/quic/aimet/blob/develop/packaging/docker_install.md>`_.
+
+.. |torch_whl_suffix| replace:: \-cp310-none-any.whl
+.. |whl_suffix| replace:: \-cp310-cp310-manylinux_2_34_x86_64.whl
+.. |download_url| replace:: \https://github.com/quic/aimet/releases/download/
+.. |torch_pkg_url| replace:: \https://download.pytorch.org/whl/torch_stable.html

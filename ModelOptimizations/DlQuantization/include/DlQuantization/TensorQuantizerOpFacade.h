@@ -2,7 +2,7 @@
 //
 //  @@-COPYRIGHT-START-@@
 //
-//  Copyright (c) 2020, Qualcomm Innovation Center, Inc. All rights reserved.
+//  Copyright (c) 2020-2023, Qualcomm Innovation Center, Inc. All rights reserved.
 //
 //  Redistribution and use in source and binary forms, with or without
 //  modification, are permitted provided that the following conditions are met:
@@ -74,28 +74,31 @@ public:
      * @param tensorSize Size of the tensor (number of tensor elements)
      * @param useCuda If true, the tensor is assumed to be in CUDA memory
      */
-    virtual void updateStats(const float* tensor, std::size_t tensorSize, bool useCuda) = 0;
+    virtual void updateStats(const float* tensor, std::size_t tensorSize, bool useCuda)                    = 0;
     virtual void updateStats(const float* tensor, std::size_t tensorSize, bool useCuda, IAllocator* alloc) = 0;
 
     /**
-    * Convert a tensor from float to quantized int and back to float
-    * @param input Input tensor
-    * @param tensorSize Size of the input tensor (number of tensor elements)
-    * @param output Output tensor
-    * @param encodingMin minimum value of encoding range
-    * @param encodingMax maximum value of encoding range
-    * @param bitwidth to be used
-    * @param useCuda If true, both the input and output tensors are assumed to be in CUDA memory
-    */
-    virtual void quantizeDequantize(const float* input, std::size_t tensorSize, float* output,
-                                    double encodingMin, double encodingMax, unsigned int bitwidth, bool useCuda) = 0;
+     * Convert a tensor from float to quantized int and back to float
+     * @param input Input tensor
+     * @param tensorSize Size of the input tensor (number of tensor elements)
+     * @param output Output tensor
+     * @param encodingMin minimum value of encoding range
+     * @param encodingMax maximum value of encoding range
+     * @param bitwidth to be used
+     * @param useCuda If true, both the input and output tensors are assumed to be in CUDA memory
+     */
+    virtual void quantizeDequantize(const float* input, std::size_t tensorSize, float* output, double encodingMin,
+                                    double encodingMax, unsigned int bitwidth, bool useCuda) = 0;
 
+    virtual void quantizeDequantize(const float* input, std::size_t tensorSize, float* output, double encodingMin,
+                                    double encodingMax, unsigned int bitwidth, bool useCuda, void* stream) = 0;
     /**
      * Compute the encoding for this tensor using stats collected so far
      */
     virtual TfEncoding computeEncoding(unsigned int bitwidth, bool useSymmetricEncoding) = 0;
 
-
+    virtual bool getStrictSymmetric()   = 0;
+    virtual bool getUnsignedSymmetric() = 0;
 };
 
 

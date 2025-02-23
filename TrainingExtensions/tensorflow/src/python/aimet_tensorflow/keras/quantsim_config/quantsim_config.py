@@ -1,4 +1,3 @@
-# /usr/bin/env python3.8
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -38,8 +37,16 @@
 """ Utilities for parsing and applying quantsim configurations from json config file """
 from typing import List, Tuple, Dict, Union
 
+import tensorflow as tf
 from tensorflow.keras import layers
 
+from packaging import version
+if version.parse(tf.version.VERSION) >= version.parse("2.10.1"):
+    from keras.layers.core.tf_op_layer import TFOpLambda
+else:
+    from tensorflow.python.keras.layers.core import TFOpLambda  # pylint: disable=ungrouped-imports
+
+# pylint: disable=wrong-import-position
 from aimet_common.connected_graph.connectedgraph_utils import get_all_input_ops, get_all_output_ops
 from aimet_common.connected_graph.operation import Op
 from aimet_common.defs import QuantScheme, QuantizationDataType
@@ -56,7 +63,7 @@ from aimet_tensorflow.keras.connectedgraph import ConnectedGraph
 from aimet_tensorflow.keras.quant_sim.qc_quantize_wrapper import QuantizerSettings
 from aimet_tensorflow.keras.quant_sim.tensor_quantizer import ActivationTensorQuantizer, ParamPerTensorQuantizer, \
     ParamPerChannelQuantizer
-from aimet_tensorflow.utils.constants import QUANT_ALLOWED_DTYPES
+from aimet_tensorflow.keras.utils.constants import QUANT_ALLOWED_DTYPES
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
 
@@ -68,6 +75,11 @@ AFFECTED_QUANTIZERS = "affected_quantizers"
 INPUT_QUANTIZERS = "input_quantizers"
 OUTPUT_QUANTIZERS = "output_quantizers"
 PARAM_QUANTIZERS = "param_quantizers"
+
+MAP_TF_PARAM_NAME_TO_QUANTSIM_NAME = {
+    "bias": "bias",
+    "weight": "weight"
+}
 
 
 class TreeLikeDictionary(dict):
@@ -162,8 +174,19 @@ def _initialize_input_quantizers(layer: layers.Layer, quant_settings: QuantizerS
     :param enabled: Flag for quantized or not
     :return: Input quantizers corresponding to layer
     """
-    layer_input_list = layer.inbound_nodes[0].keras_inputs
-    num_inputs = len(layer_input_list)
+    keras_inputs = layer.inbound_nodes[0].keras_inputs
+    num_inputs = len(keras_inputs)
+    quantizer_state_list = []
+    for i in range(num_inputs):
+        quantizer_state_list.append(enabled and (keras_inputs[i].dtype in QUANT_ALLOWED_DTYPES))
+
+    # Special case for TFOpLambda layers as the input can be other Keras layers, tf operations, or static tf.tensors
+    if isinstance(layer, TFOpLambda) and isinstance(layer.input, List):
+        num_inputs = len(layer.input)
+        quantizer_state_list = []
+        for i in range(num_inputs):
+            quantizer_state_list.append(enabled and (layer.input[i].dtype in QUANT_ALLOWED_DTYPES))
+
     input_quantizers = []
     for i in range(num_inputs):
         activation_tensor_quantizer = ActivationTensorQuantizer(layer,
@@ -175,7 +198,8 @@ def _initialize_input_quantizers(layer: layers.Layer, quant_settings: QuantizerS
                                                                 quant_settings.is_symmetric,
                                                                 quant_settings.use_strict_symmetric,
                                                                 quant_settings.use_unsigned_symmetric,
-                                                                enabled and layer.output.dtype in QUANT_ALLOWED_DTYPES)
+                                                                quantizer_state_list[i])
+
         input_quantizers.append(activation_tensor_quantizer)
     return input_quantizers
 
@@ -190,18 +214,23 @@ def _initialize_output_quantizers(layer: layers.Layer, quant_settings: Quantizer
     :param enabled: Flag for quantized or not
     :return: Output quantizers corresponding to layer
     """
+
+    # `layer.output` will be a list if there is more than one otherwise it's just a single output
+    num_outputs = len(layer.output) if isinstance(layer.output, List) else 1
     output_quantizers = []
-    activation_tensor_quantizer = ActivationTensorQuantizer(layer,
-                                                            f"{layer.name}_output_quantizer_0",
-                                                            quant_settings.quant_scheme,
-                                                            quant_settings.round_mode,
-                                                            quant_settings.bitwidth,
-                                                            quant_settings.data_type,
-                                                            quant_settings.is_symmetric,
-                                                            quant_settings.use_strict_symmetric,
-                                                            quant_settings.use_unsigned_symmetric,
-                                                            enabled and layer.output.dtype in QUANT_ALLOWED_DTYPES)
-    output_quantizers.append(activation_tensor_quantizer)
+    for idx in range(num_outputs):
+        layer_output_dtype = layer.output[idx].dtype if isinstance(layer.output, List) else layer.output.dtype
+        activation_tensor_quantizer = ActivationTensorQuantizer(layer,
+                                                                f"{layer.name}_output_quantizer_{idx}",
+                                                                quant_settings.quant_scheme,
+                                                                quant_settings.round_mode,
+                                                                quant_settings.bitwidth,
+                                                                quant_settings.data_type,
+                                                                quant_settings.is_symmetric,
+                                                                quant_settings.use_strict_symmetric,
+                                                                quant_settings.use_unsigned_symmetric,
+                                                                enabled and layer_output_dtype in QUANT_ALLOWED_DTYPES)
+        output_quantizers.append(activation_tensor_quantizer)
     return output_quantizers
 
 
@@ -273,8 +302,13 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
     def __init__(self, connected_graph: ConnectedGraph, quant_scheme: Union[QuantScheme, str], rounding_mode: str,
                  default_output_bw: int, default_param_bw: int,
                  default_data_type: QuantizationDataType = QuantizationDataType.int, config_file: str = None):
-        super(QuantSimConfigurator, self).__init__(config_file, default_data_type, default_output_bw,
-                                                   default_param_bw)
+        super().__init__(config_file, default_data_type, default_output_bw, default_param_bw)
+        RANGE_LEARNING = (QuantScheme.training_range_learning_with_tf_init,
+                          QuantScheme.training_range_learning_with_tf_enhanced_init)
+        self._quantsim_configs['defaults']['strict_symmetric'] = self._quantsim_configs['defaults'].get(
+            'strict_symmetric', False) or quant_scheme in RANGE_LEARNING
+        self._quantsim_configs['defaults']['unsigned_symmetric'] = False if self._quantsim_configs[
+            'defaults']['strict_symmetric'] else self._quantsim_configs['defaults'].get('unsigned_symmetric', False)
         self._connected_graph = connected_graph
         self._layer_to_affected_quantizer_info_dict = self._create_layer_to_affected_quantizer_info_dict()
         self._layer_to_config_dict = TreeLikeDictionary()
@@ -421,17 +455,68 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         Set supergroup specific configurations (fourth level of specificity in configuration file)
         :param supergroups_configs: Configurations for supergroups
         """
+
+        def find_scale_foldable_bns(cg):
+            """
+            Find Batch Norms that can be folded to scale
+            """
+            conv_bn_pairs = []
+
+            def handler(_, op_list):
+                conv, bn = op_list
+                conv_bn_pairs.append((conv, bn))
+
+            patterns_with_callbacks = []
+            conv_types = ['Conv', 'ConvTranspose']  # TODO: Add Conv1d when supported on Keras
+            linear_types = ['Gemm', 'MatMul']
+
+            for op_type in conv_types + linear_types:
+                patterns_with_callbacks.append(PatternType(pattern=[op_type, 'BatchNormalization'],
+                                                           action=handler))
+
+            # Create graph searcher instance with connected graph and patterns to search
+            graph_searcher = GraphSearcher(cg, patterns_with_callbacks)
+            graph_searcher.find_all_patterns_in_graph_apply_actions()
+            return conv_bn_pairs
+
+        conv_bn_pairs = find_scale_foldable_bns(self._connected_graph)
+        foldable_bns = [bn for _, bn in conv_bn_pairs]
+
         patterns_with_callbacks = []
         for supergroup_config in supergroups_configs:
             callback = SupergroupConfigCallback(self._layer_to_config_dict)
             op_list = supergroup_config[ConfigDictKeys.OP_LIST]
-            patterns_with_callbacks.append(
-                PatternType(pattern=op_list, action=callback))
+            patterns_with_callbacks.append(PatternType(pattern=op_list, action=callback))
 
         if patterns_with_callbacks:
-            graph_searcher = GraphSearcher(
-                self._connected_graph, patterns_with_callbacks)
-            graph_searcher.find_all_patterns_in_graph_apply_actions()
+            graph_searcher = GraphSearcher(self._connected_graph, patterns_with_callbacks)
+            graph_searcher.find_all_patterns_in_graph_apply_actions(ignore=foldable_bns)
+
+        def fuse_config(conv: Op, bn: Op):
+            """
+            Fuse configs of conv and bn
+
+            If conv output quantizers is enabled, disable it and enable output quantizer of BN instead
+            so that we fold batch norm to conv
+            """
+            conv_layer = conv.get_module()
+            bn_layer = bn.get_module()
+
+            if conv_layer not in self._layer_to_config_dict:
+                return
+
+            if bn_layer not in self._layer_to_config_dict:
+                return
+
+            self._layer_to_config_dict[bn_layer][ConfigDictKeys.IS_INPUT_QUANTIZED][SETTING] = False
+            self._layer_to_config_dict[bn_layer][ConfigDictKeys.PARAMS][ConfigDictKeys.IS_QUANTIZED][SETTING] = False
+
+            self._layer_to_config_dict[bn_layer][ConfigDictKeys.IS_OUTPUT_QUANTIZED][SETTING] = \
+                self._layer_to_config_dict[conv_layer][ConfigDictKeys.IS_OUTPUT_QUANTIZED][SETTING]
+            self._layer_to_config_dict[conv_layer][ConfigDictKeys.IS_OUTPUT_QUANTIZED][SETTING] = False
+
+        for conv, bn in conv_bn_pairs:
+            fuse_config(conv, bn)
 
     def _set_model_input_configs(self, model_input_configs: ConfigType):
         """

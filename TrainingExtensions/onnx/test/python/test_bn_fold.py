@@ -1,4 +1,3 @@
-# /usr/bin/env python3.8
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -44,16 +43,19 @@ import onnxruntime as rt
 import numpy as np
 import torchvision
 import pytest
-
 import torch
 
-from aimet_onnx.batch_norm_fold import _find_conv_bn_pairs, find_all_batch_norms_to_fold, fold_all_batch_norms_to_weight
+from aimet_onnx.batch_norm_fold import _find_conv_bn_pairs, find_all_batch_norms_to_fold, fold_all_batch_norms_to_weight, _update_standalone_batchnorm_ops
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
+from aimet_onnx.utils import make_dummy_input
 
-from test_models import BNAfterConv, BNBeforeConv, BNAfterDynamicMatMul, BNAfterConvTranspose, BNAfterConv1d, \
+from .models import models_for_tests
+from .models.models_for_tests import BNAfterConv, BNBeforeConv, BNAfterDynamicMatMul, BNAfterConvTranspose, BNAfterConv1d, \
                         BNAfterLinear, BNBeforeLinear, BNBeforeFlattenLinear, BNBeforeConv1d, BNBeforeConvTranspose, \
-                        MyModel, _convert_to_onnx_no_fold, _convert_to_onnx, initialize_bn_params, BNAfterConvTranspose1d
+                        MyModel, _convert_to_onnx_no_fold, _convert_to_onnx, initialize_bn_params,  \
+                        BNAfterConvTranspose1d
 
+providers = ['CPUExecutionProvider']
 
 def get_outputs_after_fold(model, test_data):
     onnx.checker.check_model(model.model)
@@ -65,8 +67,8 @@ def get_outputs_after_fold(model, test_data):
     folded_filename = './onnx_test_model_folded.onnx'
     onnx.save(model.model, folded_filename)
 
-    sess = rt.InferenceSession(filename)
-    fold_sess = rt.InferenceSession(folded_filename)
+    sess = rt.InferenceSession(filename, providers=providers)
+    fold_sess = rt.InferenceSession(folded_filename, providers=providers)
 
     input_name = sess.get_inputs()[0].name
     baseline_output = sess.run(None, {input_name: test_data})
@@ -100,11 +102,11 @@ class TestBatchNormFold:
 
         connected_graph = ConnectedGraph(model)
         bn_info = _find_conv_bn_pairs(connected_graph)
-        conv1 = connected_graph.get_op_from_module_name('Conv_0')
-        conv3 = connected_graph.get_op_from_module_name('Conv_6')
+        conv1 = connected_graph.get_op_from_module_name('/conv1/Conv')
+        conv3 = connected_graph.get_op_from_module_name('/conv3/Conv')
         assert len(bn_info.keys()) == 2
-        assert connected_graph.get_op_from_module_name('BatchNormalization_1') == bn_info[conv1].output_bn
-        assert connected_graph.get_op_from_module_name('BatchNormalization_5') == bn_info[conv3].input_bn
+        assert connected_graph.get_op_from_module_name('/bn1/BatchNormalization') == bn_info[conv1].output_bn
+        assert connected_graph.get_op_from_module_name('/bn2/BatchNormalization') == bn_info[conv3].input_bn
 
     def test_find_bn_before_linear(self):
         x = torch.randn((32, 10))
@@ -121,10 +123,10 @@ class TestBatchNormFold:
         model = _convert_to_onnx_no_fold(model, x)
         conn_graph = ConnectedGraph(model)
         bn_info = _find_conv_bn_pairs(conn_graph)
-        linear_layer = conn_graph.get_op_from_module_name('MatMul_5')
+        linear_layer = conn_graph.get_op_from_module_name('/fc2/MatMul')
         assert len(bn_info.keys()) == 1
         assert linear_layer in bn_info.keys()
-        assert bn_info[linear_layer].input_bn == conn_graph.get_op_from_module_name('BatchNormalization_2')
+        assert bn_info[linear_layer].input_bn == conn_graph.get_op_from_module_name('/bn1/BatchNormalization')
 
     def test_find_bn_after_linear(self):
         x = torch.randn((32, 10))
@@ -132,10 +134,10 @@ class TestBatchNormFold:
         model = _convert_to_onnx_no_fold(model, x)
         conn_graph = ConnectedGraph(model)
         bn_info = _find_conv_bn_pairs(conn_graph)
-        linear_layer = conn_graph.get_op_from_module_name('Gemm_0')
+        linear_layer = conn_graph.get_op_from_module_name('/fc1/Gemm')
         assert len(bn_info.keys()) == 1
         assert linear_layer in bn_info.keys()
-        assert bn_info[linear_layer].output_bn == conn_graph.get_op_from_module_name('BatchNormalization_1')
+        assert bn_info[linear_layer].output_bn == conn_graph.get_op_from_module_name('/bn1/BatchNormalization')
 
     def test_find_bn_after_convtranspose(self):
         x = torch.randn((2, 10, 24, 24))
@@ -143,10 +145,10 @@ class TestBatchNormFold:
         model = _convert_to_onnx_no_fold(model, x)
         conn_graph = ConnectedGraph(model)
         bn_info = _find_conv_bn_pairs(conn_graph)
-        conv_layer = conn_graph.get_op_from_module_name('ConvTranspose_0')
+        conv_layer = conn_graph.get_op_from_module_name('/conv1/ConvTranspose')
         assert len(bn_info.keys()) == 1
         assert conv_layer in bn_info.keys()
-        assert bn_info[conv_layer].output_bn == conn_graph.get_op_from_module_name('BatchNormalization_1')
+        assert bn_info[conv_layer].output_bn == conn_graph.get_op_from_module_name('/bn1/BatchNormalization')
 
     def test_find_bn_after_conv1d(self):
         x = torch.randn((2, 10, 24))
@@ -154,10 +156,10 @@ class TestBatchNormFold:
         model = _convert_to_onnx_no_fold(model, x)
         conn_graph = ConnectedGraph(model)
         bn_info = _find_conv_bn_pairs(conn_graph)
-        conv_layer = conn_graph.get_op_from_module_name('Conv_0')
+        conv_layer = conn_graph.get_op_from_module_name('/conv1/Conv')
         assert len(bn_info.keys()) == 1
         assert conv_layer in bn_info.keys()
-        assert bn_info[conv_layer].output_bn == conn_graph.get_op_from_module_name('BatchNormalization_1')
+        assert bn_info[conv_layer].output_bn == conn_graph.get_op_from_module_name('/bn1/BatchNormalization')
 
     def test_filter_bn_before_conv_transpose(self):
         x = torch.randn((2, 10, 24, 24))
@@ -239,10 +241,9 @@ class TestBatchNormFold:
         model = _convert_to_onnx_no_fold(model, x)
         conn_graph = ConnectedGraph(model)
         conv_bn, bn_conv = find_all_batch_norms_to_fold(conn_graph)
-        linear_layer = conn_graph.get_op_from_module_name('Gemm_4')
+        linear_layer = conn_graph.get_op_from_module_name('/fc2/Gemm')
         assert len(bn_conv) == 1
         assert linear_layer.get_module() == bn_conv[0][1]
-        assert not conv_bn
 
     def test_fold_bn_before_flatten_no_bias(self):
         torch.manual_seed(10)
@@ -257,8 +258,8 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "Gemm_4"
-        assert len(model.graph().node) == layers_orig - 1
+        assert pairs[0][0].name == "/fc2/Gemm"
+        assert len(model.graph().node) == layers_orig - 2
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
     def test_fold_bn_before_flatten_no_bias_with_transpose(self):
@@ -274,8 +275,8 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "Gemm_5"
-        assert len(model.graph().node) == layers_orig - 1
+        assert pairs[0][0].name == "/fc2/Gemm"
+        assert len(model.graph().node) == layers_orig - 2
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
     def test_fold_resnet18(self):
@@ -308,7 +309,7 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "Conv_3"
+        assert pairs[0][0].name == "/conv2/Conv"
         assert len(model.graph().node) == layers_orig - 1
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
@@ -335,6 +336,7 @@ class TestBatchNormFold:
         torch.manual_seed(10)
         torch_model = BNAfterConv(bias=bias, padding=padding, groups=groups)
         torch_model.eval()
+        initialize_bn_params(torch_model)
 
         input_shape = (2, 10, 24, 24)
         test_data = np.random.randn(*input_shape).astype(np.float32)
@@ -343,7 +345,7 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "Conv_2"
+        assert pairs[0][0].name == "/conv2/Conv"
         assert len(model.graph().node) == layers_orig - 1
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
@@ -360,7 +362,7 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "ConvTranspose_0"
+        assert pairs[0][0].name == "/conv1/ConvTranspose"
         assert len(model.graph().node) == layers_orig - 1
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
@@ -377,7 +379,7 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "ConvTranspose_0"
+        assert pairs[0][0].name == "/conv1/ConvTranspose"
         assert len(model.graph().node) == layers_orig - 1
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
@@ -394,7 +396,7 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "Gemm_5"
+        assert pairs[0][0].name == "/fc2/Gemm"
         assert len(model.graph().node) == layers_orig - 1
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
@@ -402,7 +404,7 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "Gemm_3"
+        assert pairs[0][0].name == "/fc2/Gemm"
         assert len(model.graph().node) == layers_orig - 1
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
@@ -419,7 +421,7 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "Gemm_3"
+        assert pairs[0][0].name == "/fc2/Gemm"
         assert len(model.graph().node) == layers_orig - 1
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
@@ -436,7 +438,7 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "Gemm_0"
+        assert pairs[0][0].name == "/fc1/Gemm"
         assert len(model.graph().node) == layers_orig - 1
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
@@ -453,7 +455,7 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "Gemm_1"
+        assert pairs[0][0].name == "/fc1/Gemm"
         assert len(model.graph().node) == layers_orig - 1
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
@@ -461,7 +463,7 @@ class TestBatchNormFold:
         layers_orig = len(model.graph().node)
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
-        assert pairs[0][0].name == "Gemm_0"
+        assert pairs[0][0].name == "/fc1/Gemm"
         assert len(model.graph().node) == layers_orig - 1
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
@@ -515,4 +517,46 @@ class TestBatchNormFold:
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
         assert len(model.graph().node) == layers_orig
+        assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
+
+    def test_single_batchnorm_layer(self):
+        np.random.seed(0)
+        model = models_for_tests.batchnorm_model()
+        dummy_input = make_dummy_input(model)
+        output = rt.InferenceSession(model.SerializeToString(), providers=providers).run(None, dummy_input)[0]
+        _update_standalone_batchnorm_ops(model)
+        output_after_update = rt.InferenceSession(model.SerializeToString(), providers=providers).run(None, dummy_input)[0]
+        assert np.allclose(output, output_after_update, atol=1e-4)
+        for tensor in model.graph.initializer:
+            if tensor.name == "batchnorm.input_var":
+                np_tensor = onnx.numpy_helper.to_array(tensor)
+                assert np.all(np_tensor == np.ones_like(np_tensor))
+            if tensor.name == "batchnorm.input_mean":
+                np_tensor = onnx.numpy_helper.to_array(tensor)
+                assert np.all(np_tensor == np.zeros_like(np_tensor))
+
+    def test_single_bn_layer_with_constants(self):
+        np.random.seed(0)
+        model = models_for_tests.batchnorm_model_constants()
+        dummy_input = make_dummy_input(model)
+        output = rt.InferenceSession(model.SerializeToString(), providers=providers).run(None, dummy_input)[0]
+        _update_standalone_batchnorm_ops(model)
+        output_after_update = rt.InferenceSession(model.SerializeToString(), providers=providers).run(None, dummy_input)[0]
+        assert np.allclose(output, output_after_update, atol=1e-4)
+        for node in model.graph.node:
+            if node.name == "input_var":
+                np_tensor = onnx.numpy_helper.to_array(node.attribute[0].t)
+                assert np.all(np_tensor == np.ones_like(np_tensor))
+            if node.name == "input_mean":
+                np_tensor = onnx.numpy_helper.to_array(node.attribute[0].t)
+                assert np.all(np_tensor == np.zeros_like(np_tensor))
+
+    def test_fold_with_shared_stats(self):
+        torch.manual_seed(0)
+        model = models_for_tests.shared_stat_batchnorm_model()
+        test_data = np.random.randn(10, 10, 8, 8).astype(np.float32)
+        baseline_output, folded_output, pairs = get_outputs_after_fold(ONNXModel(model), test_data)
+
+        bns_after_fold = {node for node in model.graph.node if node.op_type == "BatchNormalization"}
+        assert len(bns_after_fold) == 0
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)

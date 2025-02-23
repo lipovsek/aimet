@@ -40,6 +40,7 @@
 #ifndef QUANTIZATION_HPP
 #define QUANTIZATION_HPP
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace DlQuantization
@@ -61,7 +62,6 @@ enum ComputationMode
 class IAllocator
 {
 public:
-
     /**
      * @brief Allocate memory to the associated device and return the pointer.
      * @param bytes Bytes to allocate
@@ -72,7 +72,7 @@ public:
      * @brief Deallocate the memory occupied by the pointer.
      * @param ptr Pointer to deallocate.
      */
-    virtual void deleteRaw(void *ptr) = 0;
+    virtual void deleteRaw(void* ptr) = 0;
 };
 
 
@@ -117,7 +117,6 @@ struct TfEncoding
     double delta;
     double offset;
     int bw;
-
 };
 
 /**
@@ -148,6 +147,32 @@ enum RoundingMode
     ROUND_NEAREST,
     ROUND_STOCHASTIC
 };
+
+using TensorDim = int64_t;
+using TensorDims = std::vector<TensorDim>;
+using Encodings = std::vector<TfEncoding>;
+
+/**
+ * @brief Performs quantize-dequantize using numpy-style broadcasting between input and encodings
+ *
+ * @tparam T Floating point data type of input/output/encodings
+ * @param inTensor Pointer to input data
+ * @param outTensor Pointer to output data, must be on same device as input
+ * @param encodings Vector of TfEncoding pointers
+ * @param inputShape Shape of input tensor data
+ * @param encodingShape Shape of encoding vector
+ * @param mode CPU/GPU computation mode
+ * @param stream Pointer cuda stream to use for computation
+ */
+template <typename T>
+void quantizeDequantizeBroadcast(const T* inTensor,
+                                 T* outTensor,
+                                 const Encodings& encodings,
+                                 const TensorDims& inputShape,
+                                 const TensorDims& encodingShape,
+                                 ComputationMode mode,
+                                 void* stream = nullptr);
+
 
 }   // End of namespace DlQuantization.
 

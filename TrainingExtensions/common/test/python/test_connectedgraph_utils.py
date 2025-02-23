@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -39,6 +38,8 @@
 
 import json
 import os
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 from aimet_common.connected_graph.connectedgraph import ConnectedGraph
 from aimet_common.connected_graph.operation import Op
@@ -150,22 +151,20 @@ def test_serialize_products():
 
 @patch("aimet_common.connected_graph.connectedgraph.ConnectedGraph.__abstractmethods__", set())
 def test_export_connected_graph():
-    conn_graph = get_dummy_connected_graph()
-    connectedgraph_utils.export_connected_graph(conn_graph, '/tmp/', 'dummy_cg_export')
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        conn_graph = get_dummy_connected_graph()
+        connectedgraph_utils.export_connected_graph(conn_graph, tmp_dir, 'dummy_cg_export')
 
-    with open('/tmp/dummy_cg_export.json', 'r') as cg_export_file:
-        cg_export = json.load(cg_export_file)
+        with open(Path(tmp_dir, "dummy_cg_export.json"), 'r') as cg_export_file:
+            cg_export = json.load(cg_export_file)
 
-    assert 'ops' in cg_export
-    assert 'products' in cg_export
-    assert 'activations' in cg_export['products']
-    assert 'parameters' in cg_export['products']
-    assert len(cg_export['ops']) == 5
-    assert len(cg_export['products']['activations']) == 5
-    assert len(cg_export['products']['parameters']) == 3
-
-    if os.path.exists('/tmp/dummy_cg_export.json'):
-        os.remove('/tmp/dummy_cg_export.json')
+        assert 'ops' in cg_export
+        assert 'products' in cg_export
+        assert 'activations' in cg_export['products']
+        assert 'parameters' in cg_export['products']
+        assert len(cg_export['ops']) == 5
+        assert len(cg_export['products']['activations']) == 5
+        assert len(cg_export['products']['parameters']) == 3
 
 def get_dummy_connected_graph():
     """
@@ -199,20 +198,20 @@ def get_dummy_connected_graph():
     prod_1_3 = Product('op1_to_op3', None)
     prod_1_3.producer = op1
     prod_1_3.add_consumer(op3)
-    op1.output = prod_1_3
+    op1.outputs = [prod_1_3]
     op3.add_input(prod_1_3)
 
     prod_2_3 = Product('op2_to_op3', None)
     prod_2_3.producer = op2
     prod_2_3.add_consumer(op3)
-    op2.output = prod_2_3
+    op2.outputs = [prod_2_3]
     op3.add_input(prod_2_3)
 
     prod_3_out = Product('op3_to_multiple_ops', None)
     prod_3_out.producer = op3
     prod_3_out.add_consumer(op4)
     prod_3_out.add_consumer(op5)
-    op3.output = prod_3_out
+    op3.outputs = [prod_3_out]
     op4.add_input(prod_3_out)
     op5.add_input(prod_3_out)
 

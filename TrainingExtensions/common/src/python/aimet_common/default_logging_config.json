@@ -117,7 +117,26 @@
             "level": "INFO",
             "handlers": ["console"],
             "propagate": false
+        },
+
+        "LayerOutputs": {
+            "level": "INFO",
+            "handlers": ["console"],
+            "propagate": false
+        },
+
+        "QuantAnalyzer": {
+            "level": "INFO",
+            "handlers": ["console"],
+            "propagate": false
+        },
+
+        "SeqMse": {
+            "level": "INFO",
+            "handlers": ["console"],
+            "propagate": false
         }
+
     },
 
     "root": {

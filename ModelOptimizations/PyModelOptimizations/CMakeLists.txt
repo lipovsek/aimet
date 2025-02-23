@@ -2,7 +2,7 @@
 #
 #  @@-COPYRIGHT-START-@@
 #
-#  Copyright (c) 2018 - 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+#  Copyright (c) 2018 - 2024, Qualcomm Innovation Center, Inc. All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
 #  modification, are permitted provided that the following conditions are met:
@@ -40,52 +40,56 @@ Python3_add_library(PyModelOptimizations SHARED
         PyModelOptimizations.cpp
         PyTensorQuantizer.cpp)
 
+target_link_libraries(PyModelOptimizations PUBLIC
+        MoDlQuantization
+        MoDlEqualization
+        MoDlCompression
+        ${OPENCV_LINK_LIBRARIES}
+        z
+        )
+
 if (ENABLE_CUDA)
-    target_link_libraries(PyModelOptimizations
-          PUBLIC
-             stdc++
-             MoDlQuantization
-             MoDlEqualization
-             MoDlQuantizationCuda
-             MoDlCompression
-
+    target_link_libraries(PyModelOptimizations PUBLIC
+            MoDlQuantizationCuda
             CUDA::cublas
-             ${OPENCV_LINK_LIBRARIES}
-             z
-          )
-
-else (ENABLE_CUDA)
-    target_link_libraries(PyModelOptimizations
-            PUBLIC
-            stdc++
-            MoDlQuantization
-            MoDlEqualization
-            MoDlCompression
-
-            ${OPENCV_LINK_LIBRARIES}
-            z
             )
-
 endif (ENABLE_CUDA)
 
 set_target_properties(PyModelOptimizations
       PROPERTIES
          OUTPUT_NAME "pymo"
+         PREFIX "_lib"
          SUFFIX ".${Python3_SOABI}.so"
-         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/aimet_common/"
       )
 
-install(TARGETS PyModelOptimizations
-        LIBRARY DESTINATION ${AIMET_INSTALL_DIR}/lib/python/aimet_common
-)
+add_dependencies(PyModelOptimizations generate_deps)
 
-add_custom_target(whl_prep_cp_common_PyModelOptimizations
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_COMMON_DIR}
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:PyModelOptimizations> ${WHL_PREP_AIMET_COMMON_DIR}/$<TARGET_FILE_NAME:PyModelOptimizations>
-        DEPENDS PyModelOptimizations
-)
-add_custom_target(whl_prep_ln_common_PyModelOptimizations
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_COMMON_DIR}
-        COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:PyModelOptimizations> ${WHL_PREP_AIMET_COMMON_DIR}/$<TARGET_FILE_NAME:PyModelOptimizations>
-        DEPENDS PyModelOptimizations
-)
+if (SKBUILD)
+    set_target_properties(PyModelOptimizations PROPERTIES
+        INSTALL_RPATH "\$ORIGIN:\$ORIGIN/../../.."
+        )
+    install(TARGETS PyModelOptimizations
+        LIBRARY DESTINATION aimet_common
+        )
+else (SKBUILD)
+    set_target_properties(PyModelOptimizations
+          PROPERTIES
+             LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/aimet_common/"
+          )
+
+    install(TARGETS PyModelOptimizations
+            LIBRARY
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/aimet_common
+    )
+
+    add_custom_target(whl_prep_cp_common_PyModelOptimizations
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_COMMON_DIR}
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:PyModelOptimizations> ${WHL_PREP_AIMET_COMMON_DIR}/$<TARGET_FILE_NAME:PyModelOptimizations>
+            DEPENDS PyModelOptimizations
+    )
+    add_custom_target(whl_prep_ln_common_PyModelOptimizations
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_COMMON_DIR}
+            COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:PyModelOptimizations> ${WHL_PREP_AIMET_COMMON_DIR}/$<TARGET_FILE_NAME:PyModelOptimizations>
+            DEPENDS PyModelOptimizations
+    )
+endif (SKBUILD)

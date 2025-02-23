@@ -1,4 +1,3 @@
-# /usr/bin/env python3.8
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -39,22 +38,31 @@
 
 from typing import Dict, List, Tuple
 import contextlib
-from onnx import onnx_pb, numpy_helper
 import numpy as np
+import onnx
+from onnx import numpy_helper
+from onnxruntime.quantization.onnx_quantizer import ONNXModel
+from packaging import version
 
 from aimet_common.bias_correction import ConvBnPatternHandler
 from aimet_common.graph_pattern_matcher import PatternType
 from aimet_common.graph_searcher import GraphSearcher
 from aimet_common.connected_graph.connectedgraph_utils import get_ordered_ops
-import aimet_common.libpymo as libpymo
+from aimet_common import _libpymo as libpymo
 from aimet_common.utils import AimetLogger
 
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.meta.connectedgraph import WEIGHT_INDEX, BIAS_INDEX, RUNNING_MEAN_INDEX, RUNNING_VAR_INDEX
 from aimet_onnx.meta.operations import Op
-from aimet_onnx.utils import get_node_attribute, remove_node, transpose_tensor, ParamUtils
+from aimet_onnx.utils import get_node_attribute, remove_node, transpose_tensor, ParamUtils, retrieve_constant_input
 
-logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.BatchNormFoldiing)
+# pylint: disable=no-name-in-module, ungrouped-imports
+if version.parse(onnx.__version__) >= version.parse("1.14.0"):
+    from onnx import NodeProto, TensorProto, ModelProto
+else:
+    from onnx.onnx_pb import NodeProto, TensorProto, ModelProto
+
+logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.BatchNormFolding)
 
 ConvType = ['Conv', 'ConvTranspose']
 LinearType = ['Gemm', 'MatMul']
@@ -104,8 +112,8 @@ def _find_conv_bn_pairs(connected_graph: ConnectedGraph) -> Dict:
 
 
 def find_all_batch_norms_to_fold(connected_graph: ConnectedGraph,
-                                 ) -> Tuple[List[Tuple[onnx_pb.NodeProto, onnx_pb.NodeProto]],
-                                            List[Tuple[onnx_pb.NodeProto, onnx_pb.NodeProto]]]:
+                                 ) -> Tuple[List[Tuple[NodeProto, NodeProto]],
+                                            List[Tuple[NodeProto, NodeProto]]]:
     """
     Find all possible batch norm layers that can be folded. Returns a list of pairs such that (bn, layer)
     means bn will be forward-folded into layer and (layer, bn) means bn will be backward-folded into layer
@@ -124,7 +132,7 @@ def find_all_batch_norms_to_fold(connected_graph: ConnectedGraph,
     # Backward fold is given priority over Forward fold
     for node in ordered_conv_fc_nodes:
         # Filter out combinations that are not supported
-        if node in conv_linear_bn_activation_info_dict.keys():
+        if node in conv_linear_bn_activation_info_dict:
             bn_info = conv_linear_bn_activation_info_dict[node]
             if bn_info.output_bn and bn_info.output_bn not in bn_picked_for_folding:
                 if is_valid_bn_fold(node.get_module(), model, True):
@@ -136,7 +144,7 @@ def find_all_batch_norms_to_fold(connected_graph: ConnectedGraph,
     bn_conv_pairs = []
     for node in ordered_conv_fc_nodes:
         # Filter out combinations that are not supported
-        if node in conv_linear_bn_activation_info_dict.keys():
+        if node in conv_linear_bn_activation_info_dict:
             bn_info = conv_linear_bn_activation_info_dict[node]
             if bn_info.input_bn and bn_info.input_bn not in bn_picked_for_folding:
                 if is_valid_bn_fold(node.get_module(), model, False):
@@ -165,7 +173,7 @@ def get_ordered_conv_linears(conn_graph: ConnectedGraph) -> List[Op]:
     return ordered_convs
 
 
-def is_valid_bn_fold(conv_linear: onnx_pb.NodeProto, model: onnx_pb.ModelProto, fold_backward: bool) -> bool:
+def is_valid_bn_fold(conv_linear: NodeProto, model: ModelProto, fold_backward: bool) -> bool:
     """
     Determine if a given layer can successfully absorb a BatchNorm given the layer type and parameters
     :param conv_linear: The Conv/Linear layer to fold a BatchNorm into.
@@ -194,13 +202,15 @@ def is_valid_bn_fold(conv_linear: onnx_pb.NodeProto, model: onnx_pb.ModelProto, 
     return valid
 
 
-def fold_all_batch_norms_to_weight(model: onnx_pb.ModelProto) -> [List]:
+def fold_all_batch_norms_to_weight(model: ModelProto) -> [List]:
     """
     Fold all possible batch_norm layers in a model into the weight of the corresponding conv layers
 
     :param model: onnx Model to perform BN fold on
     :return: A list of pairs of layers [(Conv/Linear, BN layer that got folded)]
     """
+    if isinstance(model, ONNXModel):
+        model = model.model
     connected_graph = ConnectedGraph(model)
     model = connected_graph.model
     conv_bn_pairs, bn_conv_pairs = find_all_batch_norms_to_fold(connected_graph)
@@ -216,12 +226,14 @@ def fold_all_batch_norms_to_weight(model: onnx_pb.ModelProto) -> [List]:
         bn_convs.append((conv, bn_layer))
         remove_node(bn, model.graph)
 
+    _update_standalone_batchnorm_ops(model)
+
     return conv_bns, bn_convs
 
 
-def _fold_to_weight(model: onnx_pb.ModelProto,
-                    conv_linear: onnx_pb.NodeProto,
-                    bn: onnx_pb.NodeProto,
+def _fold_to_weight(model: ModelProto,
+                    conv_linear: NodeProto,
+                    bn: NodeProto,
                     fold_backward: bool):
     """
     Fold BatchNorm into the weight and bias of the given layer.
@@ -274,7 +286,7 @@ def _fold_to_weight(model: onnx_pb.ModelProto,
     return bn_layer
 
 
-def _matmul_to_gemm(node: onnx_pb.NodeProto, model: onnx_pb.ModelProto):
+def _matmul_to_gemm(node: NodeProto, model: ModelProto):
     """
     Convert MatMul node to Gemm and initialize bias to zeros
 
@@ -299,8 +311,8 @@ def _matmul_to_gemm(node: onnx_pb.NodeProto, model: onnx_pb.ModelProto):
     node.input.append(bias_name)
 
 
-def _call_mo_batch_norm_fold(weight: onnx_pb.TensorProto,
-                             bias: onnx_pb.TensorProto,
+def _call_mo_batch_norm_fold(weight: TensorProto,
+                             bias: TensorProto,
                              bn_params: libpymo.BNParams,
                              fold_backward: bool):
     """
@@ -329,7 +341,7 @@ def _call_mo_batch_norm_fold(weight: onnx_pb.TensorProto,
     weight.raw_data = np.asarray(weight_tensor.data, dtype=np.float32).tobytes()
 
 
-def get_bn_params(model: onnx_pb.ModelProto, bn: onnx_pb.NodeProto, channels: int) -> libpymo.BNParams:
+def get_bn_params(model: ModelProto, bn: NodeProto, channels: int) -> libpymo.BNParams:
     """
     Returns the populated libpymo.BNParams object for the given BatchNormalization layer with
     parameters repeated if necessary.
@@ -350,13 +362,15 @@ def get_bn_params(model: onnx_pb.ModelProto, bn: onnx_pb.NodeProto, channels: in
     runningVar = numpy_helper.to_array(ParamUtils.get_param(model, bn, RUNNING_VAR_INDEX))
 
     epsilon = get_node_attribute(bn, "epsilon")
+    if epsilon is None:
+        epsilon = 1e-5 # Default onnx epsilon value
     sigma = np.sqrt(runningVar + epsilon)
     bn_params.runningVar = np.repeat(sigma.reshape(-1), resize)
 
     return bn_params
 
 
-def copy_bn_params_to_bn_layer(bn: onnx_pb.NodeProto, bn_params: libpymo.BNParams) -> BNLayer:
+def copy_bn_params_to_bn_layer(bn: NodeProto, bn_params: libpymo.BNParams) -> BNLayer:
     """
     Copies bn params to a BN layer which can be used later by High bias absorption
     :param bn: BN layer
@@ -391,7 +405,7 @@ def _expand_shape_to_4d(weight_tensor: libpymo.TensorParams):
             weight_tensor.shape = orig_shape
 
 
-def get_input_output_channels(node: onnx_pb.NodeProto, model: onnx_pb.ModelProto) -> Tuple[int, int]:
+def get_input_output_channels(node: NodeProto, model: ModelProto) -> Tuple[int, int]:
     """
     Find the input and output channels of a given layer.
     :param node: The node to find the input/output channels of
@@ -400,6 +414,9 @@ def get_input_output_channels(node: onnx_pb.NodeProto, model: onnx_pb.ModelProto
     """
     weight = ParamUtils.get_param(model, node, WEIGHT_INDEX)
     groups = get_node_attribute(node, "group")
+    # If group atttribute does not exist in the node,then default is 1
+    if not groups:
+        groups = 1
     if node.op_type == "Conv":
         num_in_channels = weight.dims[1] * groups
         num_out_channels = weight.dims[0]
@@ -420,24 +437,48 @@ def get_input_output_channels(node: onnx_pb.NodeProto, model: onnx_pb.ModelProto
     return num_in_channels, num_out_channels
 
 
-def retrieve_constant_input(node: onnx_pb.NodeProto, model: onnx_pb.ModelProto, index: int
-                            ) -> Tuple[onnx_pb.TensorProto, bool]:
+# pylint: disable=too-many-locals
+def _update_standalone_batchnorm_ops(model: ModelProto):
     """
-    Retrieves node input at the specified index if the input has a corresponding initializer in model.graph.initializer
-    and is separated from node by no more than one Transpose operation.
-    :param node: The node to find the input for
-    :param model: The model to which the node belongs
-    :param index: The index of the desired input within node.input
-    :return: Tuple containing the input parameter and a bool specifying whether the param is transposed before entering
-             the node
+    Update weight and bias of standalone batchnorm ops in the model.
+    :param model: onnx Model for which batchnorm parameters are to be updated.
     """
-    weight_input = node.input[WEIGHT_INDEX]
-    transposed = False
-    weight = ParamUtils.get_param(model, node, index)
-    if not weight:
-        # Check if the weight is transposed before entering the node
-        for other_node in model.graph.node:
-            if weight_input in other_node.output and other_node.op_type == "Transpose":
-                weight = ParamUtils.get_param(model, other_node, 0)
-                transposed = True
-    return weight, transposed
+
+    for node in model.graph.node:
+        if node.op_type in BatchNormType:
+
+            # get parameter names and indices
+            weight_name, bias_name, running_mean_name, running_var_name = node.input[1:]
+            init_w, init_b, init_rm, init_rv = [ParamUtils.get_param(model, node, idx) for idx in range(1, 5)]
+
+            attr = [item for item in node.attribute if item.name == "epsilon"]
+            if not attr:
+                attr = onnx.helper.make_attribute("epsilon", 1e-5) # Default epsilon value
+                node.attribute.append(attr)
+            else:
+                attr = attr[0]
+
+            epsilon = attr.f
+            tensor_w = numpy_helper.to_array(init_w)
+            tensor_b = numpy_helper.to_array(init_b)
+            tensor_rm = numpy_helper.to_array(init_rm)
+            tensor_rv = numpy_helper.to_array(init_rv)
+
+            # update values
+            inv_sigma = np.reciprocal(np.sqrt(tensor_rv + epsilon))
+            tensor_w = tensor_w * inv_sigma
+            tensor_b = tensor_b - tensor_rm * tensor_w
+            tensor_rm = np.zeros(tensor_w.shape, tensor_w.dtype)
+            tensor_rv = np.ones(tensor_w.shape, tensor_w.dtype)
+            attr.f = 0.
+
+            init_w_ = numpy_helper.from_array(tensor_w, weight_name)
+            init_b_ = numpy_helper.from_array(tensor_b, bias_name)
+            init_rm_ = numpy_helper.from_array(tensor_rm, running_mean_name)
+            init_rv_ = numpy_helper.from_array(tensor_rv, running_var_name)
+
+            # update initializers
+            init_w.CopyFrom(init_w_)
+            init_b.CopyFrom(init_b_)
+            init_rm.CopyFrom(init_rm_)
+            init_rv.CopyFrom(init_rv_)

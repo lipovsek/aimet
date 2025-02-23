@@ -35,21 +35,31 @@
 #  @@-COPYRIGHT-END-@@
 #
 #=============================================================================
-cmake_minimum_required(VERSION 3.17)
 
 project(aimet_common)
 
 if(NOT TARGET PyModelOptimizations)
-    set(AIMET_INSTALL_DIR ${CMAKE_INSTALL_PREFIX})
     add_subdirectory("../../../../" "${CMAKE_CURRENT_BINARY_DIR}/aimet" EXCLUDE_FROM_ALL)
     install(
         FILES $<TARGET_FILE:PyModelOptimizations>
         DESTINATION ${CMAKE_INSTALL_PREFIX}
     )
 else()
-    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        DESTINATION ${AIMET_INSTALL_DIR}/lib
+    if(SKBUILD)
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/aimet_common
+        DESTINATION .
         PATTERN "__pycache*" EXCLUDE
         PATTERN "CMakeLists.txt" EXCLUDE
+        PATTERN "_deps.pyi" EXCLUDE
+        PATTERN "_gen.py" EXCLUDE
+       )
+    else()
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        PATTERN "__pycache*" EXCLUDE
+        PATTERN "CMakeLists.txt" EXCLUDE
+        PATTERN "_deps.pyi" EXCLUDE
+        PATTERN "_gen.py" EXCLUDE
         )
+    endif()
 endif()

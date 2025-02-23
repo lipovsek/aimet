@@ -35,176 +35,117 @@
 //  @@-COPYRIGHT-END-@@
 //
 //==============================================================================
-// MIT License
-//
-// Copyright (c) Microsoft Corporation
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-//==============================================================================
 
 #include "QcQuantizeOp.h"
 #include "AimetOpUtils.h"
 
 
-#include <cmath>
-#include <mutex>
 #include <vector>
+#include <iostream>
 
-static const char* c_OpDomain = "aimet.customop";
 
-// Code reuse from onnxruntime start:
-// Source: https://github.com/microsoft/onnxruntime/blob/861125ccbc0853b2761bbc268841342550a4ff58/onnxruntime/test/testdata/custom_op_library/custom_op_library.cc#L19-L46
+#ifdef ONNX_CUDA
+static OnnxCudaAllocator cudaAllocator;
+#endif
+static OnnxCpuAllocator cpuAllocator;
 
-struct OrtTensorDimensions : std::vector<int64_t>
+
+QcQuantizeOp::QcQuantizeOp(const OrtApi* api, const OrtKernelInfo* info) : api_(*api), info_(info)
 {
-    OrtTensorDimensions(Ort::CustomOpApi ort, const OrtValue* value)
-    {
-        OrtTensorTypeAndShapeInfo* info = ort.GetTensorTypeAndShape(value);
-        std::vector<int64_t>::operator=(ort.GetTensorShape(info));
-        ort.ReleaseTensorTypeAndShapeInfo(info);
-    }
-};
-
-
-struct OrtCustomOpDomainDeleter
-{
-    explicit OrtCustomOpDomainDeleter(const OrtApi* ort_api)
-    {
-        ort_api_ = ort_api;
-    }
-    void operator()(OrtCustomOpDomain* domain) const
-    {
-        ort_api_->ReleaseCustomOpDomain(domain);
-    }
-
-    const OrtApi* ort_api_;
-};
-
-
-using OrtCustomOpDomainUniquePtr = std::unique_ptr<OrtCustomOpDomain, OrtCustomOpDomainDeleter>;
-static std::vector<OrtCustomOpDomainUniquePtr> ort_custom_op_domain_container;
-static std::mutex ort_custom_op_domain_mutex;
-
-
-static void AddOrtCustomOpDomainToContainer(OrtCustomOpDomain* domain, const OrtApi* ort_api)
-{
-    std::lock_guard<std::mutex> lock(ort_custom_op_domain_mutex);
-    auto ptr = std::unique_ptr<OrtCustomOpDomain, OrtCustomOpDomainDeleter>(domain, OrtCustomOpDomainDeleter(ort_api));
-    ort_custom_op_domain_container.push_back(std::move(ptr));
+    int64_t quantInfoPointer;
+    api->KernelInfoGetAttribute_int64(info_, "quant_info", &quantInfoPointer);
+    quantInfo = reinterpret_cast<struct QcQuantizeInfo*>(quantInfoPointer);
 }
 
 
-static const QcQuantizeOp c_QcQuantizeOp;
-
-// Code reuse from onnxruntime end
-
-
-QcQuantizeKernel::QcQuantizeKernel(const OrtApi* api, const OrtKernelInfo* info) : api_(*api), info_(info)
-{
-    quant_info =
-        reinterpret_cast<struct QcQuantizeInfo*>(api_.KernelInfoGetAttribute<std::int64_t>(info_, "quant_info"));
-}
-
-
-void QcQuantizeKernel::Compute(OrtKernelContext* context)
+void QcQuantizeOp::computeImpl(const Ort::Custom::Tensor<float>& input, Ort::Custom::Tensor<float>& output,
+                               void* stream, bool useCuda, DlQuantization::IAllocator* allocator)
 {
     // Setup inputs
-    const OrtValue* input = api_.KernelContext_GetInput(context, 0);
-    auto input_data       = api_.GetTensorData<float>(input);
-    OrtTensorDimensions dimensions(api_, input);
-    // Setup outputs
-    OrtValue* output = api_.KernelContext_GetOutput(context, 0, dimensions.data(), dimensions.size());
-    auto result      = api_.GetTensorMutableData<float>(output);
-    OrtTensorTypeAndShapeInfo* output_info = api_.GetTensorTypeAndShape(output);
-    size_t size                            = api_.GetTensorShapeElementCount(output_info);
+    auto inputData  = input.Data();
+    auto inputShape = input.Shape();
+    auto size     = input.NumberOfElement();
+    auto result     = output.Allocate(inputShape);
 
-    DlQuantization::TfEncoding* encoding = quant_info->encoding;
-
-    DlQuantization::TensorQuantizerOpMode op_mode = quant_info->opMode;
+    DlQuantization::TensorQuantizerOpMode opMode = quantInfo->opMode;
     // Disable unused quantizers
-    if (!quant_info->enabled)
+    if (!quantInfo->enabled)
     {
-        op_mode = DlQuantization::TensorQuantizerOpMode::passThrough;
+        opMode = DlQuantization::TensorQuantizerOpMode::passThrough;
     }
 
-    api_.ReleaseTensorTypeAndShapeInfo(output_info);
+    if (quantInfo->isIntDataType)
+    {
+        if (quantInfo->usePerChannelMode)
+        {
+            const int channelAxis = quantInfo->channelAxis;
+            const int blockAxis = (quantInfo-> blockSize == 0) ? -1 : quantInfo->blockAxis;
+            const BroadcastShapeInfo shapeInfo {inputShape, channelAxis, blockAxis, quantInfo->blockSize};
+            modeSpecificActionBroadcastInt(inputData, result, shapeInfo, quantInfo->tensorQuantizerRef, opMode,
+                                   quantInfo->encoding, quantInfo->useSymmetricEncoding, allocator, useCuda, stream);
+        }
+        else
+        {
+            modeSpecificActionInt(inputData, size, result, quantInfo->tensorQuantizerRef[0], opMode, &(quantInfo->encoding[0]),
+                                  quantInfo->useSymmetricEncoding, allocator, useCuda, stream);
+        }
+    }
+    else
+    {
+        modeSpecificActionFloat(inputData, size, result, opMode, allocator, useCuda, stream);
+    }
 
-    DlQuantization::IAllocator* allocator = nullptr;
-    modeSpecificActionInt(input_data, size, result, quant_info->tensorQuantizerRef, op_mode, encoding,
-                          quant_info->useSymmetricEncoding, allocator);
+    // We only ever need to run in oneShotQuantizeDequantize once, afterwards just use quantizeDequantize
+    if (opMode == DlQuantization::TensorQuantizerOpMode::oneShotQuantizeDequantize)
+    {
+        quantInfo->opMode = DlQuantization::TensorQuantizerOpMode::quantizeDequantize;
+    }
 }
 
 
-void* QcQuantizeOp::CreateKernel(const OrtApi& api, const OrtKernelInfo* info)
+struct QcQuantizeOpCpu : QcQuantizeOp
 {
-    return new QcQuantizeKernel(&api, info);
-};
+    using QcQuantizeOp::QcQuantizeOp;
 
-
-const char* QcQuantizeOp::GetName()
-{
-    return "QcQuantizeOp";
-};
-
-
-size_t QcQuantizeOp::GetInputTypeCount()
-{
-    return 1;
-};
-
-
-ONNXTensorElementDataType QcQuantizeOp::GetInputType(size_t /*index*/)
-{
-    return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
-};
-
-
-size_t QcQuantizeOp::GetOutputTypeCount()
-{
-    return 1;
-};
-
-
-ONNXTensorElementDataType QcQuantizeOp::GetOutputType(size_t /*index*/)
-{
-    return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
-};
-
-
-
-
-OrtStatus* ORT_API_CALL RegisterCustomOps(OrtSessionOptions* options, const OrtApiBase* api)
-{
-    OrtCustomOpDomain* domain = nullptr;
-    const OrtApi* ortApi      = api->GetApi(ORT_API_VERSION);
-
-    if (auto status = ortApi->CreateCustomOpDomain(c_OpDomain, &domain))
+    void Compute(const Ort::Custom::Tensor<float>& input, Ort::Custom::Tensor<float>& output)
     {
-        return status;
+        computeImpl(input, output, nullptr, false, &cpuAllocator);
     }
+};
 
-    AddOrtCustomOpDomainToContainer(domain, ortApi);
 
-    if (auto status = ortApi->CustomOpDomain_Add(domain, &c_QcQuantizeOp))
+#ifdef ONNX_CUDA
+
+struct QcQuantizeOpCuda : QcQuantizeOp
+{
+    using QcQuantizeOp::QcQuantizeOp;
+
+    void Compute(const Ort::Custom::CudaContext& cuda_ctx, const Ort::Custom::Tensor<float>& input,
+                 Ort::Custom::Tensor<float>& output)
     {
-        return status;
-    }
+        cudaStream_t stream = cuda_ctx.cuda_stream;
+        if ((quantInfo->opMode == DlQuantization::TensorQuantizerOpMode::updateStats) ||
+            (quantInfo->opMode == DlQuantization::TensorQuantizerOpMode::oneShotQuantizeDequantize))
+        {
+            // updateStats doesn't use cuda stream, must synchronize first to ensure input buffer is populated
+            cudaStreamSynchronize(stream);
+        }
 
-    return ortApi->AddCustomOpDomain(options, domain);
+        computeImpl(input, output, stream, true, &cudaAllocator);
+    }
+};
+
+#endif
+
+
+void RegisterOps(Ort::CustomOpDomain& domain)
+{
+    static const std::unique_ptr<Ort::Custom::OrtLiteCustomOp> qcQuantCpuOpPointer {
+        Ort::Custom::CreateLiteCustomOp<QcQuantizeOpCpu>("QcQuantizeOp", "CPUExecutionProvider")};
+    domain.Add(qcQuantCpuOpPointer.get());
+#ifdef ONNX_CUDA
+    static const std::unique_ptr<Ort::Custom::OrtLiteCustomOp> qcQuantCudaOpPointer {
+        Ort::Custom::CreateLiteCustomOp<QcQuantizeOpCuda>("QcQuantizeOp", "CUDAExecutionProvider")};
+    domain.Add(qcQuantCudaOpPointer.get());
+#endif
 }

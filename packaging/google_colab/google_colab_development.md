@@ -1,5 +1,5 @@
 # AIMET Build, Installation and Usage in Google Colab
-This page provides instructions to build, install and use the AIMET software in Google colab environment. Please follow the instructions in the order provided, unless specified otherwise. 
+This page provides instructions to build, install and use the AIMET software in Google colab environment. Please follow the instructions in the order provided, unless specified otherwise.
 
 > **_NOTE:_** These instructions are *out of date* and may NOT work with the latest code.
 
@@ -85,17 +85,17 @@ Please run below commands to install dependencies to build AIMET:
 
 !make -j16 install > /dev/null
 
-!wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/cuda-repo-ubuntu1804_10.0.130-1_amd64.deb
+!wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-repo-ubuntu2004_10.0.130-1_amd64.deb
 
-!apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/7fa2af80.pub
+!apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/7fa2af80.pub
 
-!dpkg -i cuda-repo-ubuntu1804_10.0.130-1_amd64.deb
+!dpkg -i cuda-repo-ubuntu2004_10.0.130-1_amd64.deb
 
 !apt-get update
 
-!wget http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1804/x86_64/nvidia-machine-learning-repo-ubuntu1804_1.0.0-1_amd64.deb
+!wget http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2004/x86_64/nvidia-machine-learning-repo-ubuntu2004_1.0.0-1_amd64.deb
 
-!apt install ./nvidia-machine-learning-repo-ubuntu1804_1.0.0-1_amd64.deb
+!apt install ./nvidia-machine-learning-repo-ubuntu2004_1.0.0-1_amd64.deb
 
 !apt-get update
 
@@ -149,7 +149,7 @@ Please run below commands to install dependencies to build AIMET:
 
 !pip3 install pytest
 
-!pip3 install setuptools==41.0.1
+!pip3 install setuptools==49.4.0
 
 !pip3 install keras==2.2.4
 
@@ -180,7 +180,7 @@ Please run below commands to fetch AIMET, and googletest from github repo, and c
 
 %pushd ./ThirdParty/googletest
 
-!git clone https://github.com/google/googletest.git -b release-1.8.0 googletest-release-1.8.0
+!git clone https://github.com/google/googletest.git -b release-1.12.1  googletest-release-1.12.1
 
 %popd
 

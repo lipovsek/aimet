@@ -1,4 +1,3 @@
-#!/usr/bin/env python3.6
 
 #  =============================================================================
 #
@@ -57,6 +56,7 @@ class Op(aimet_common.connected_graph.operation.Op):
         """
         super().__init__(name, dotted_name, output_shape, is_anonymous, op_type)
         self._parameters = {}
+        self.transposed_params = False
 
     def add_param(self, param: str, product: Product, product_type: Union[str, None]):
         """ Add a parameter product to parameters dictionary """

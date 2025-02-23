@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 #  =============================================================================
 #
@@ -74,7 +73,9 @@ class MaskPropagationWinnower(AimetCommonMaskPropagationWinnower):
         """
 
         super().__init__(list_of_modules_to_winnow, reshape, in_place, verbose)
-        model.apply(has_hooks)
+
+        if any(has_hooks(module) for module in model.modules()):
+            logger.warning("The specified model has registered hooks which might break winnowing")
 
         debug_level = logger.getEffectiveLevel()
         logger.debug("Current log level: %s", debug_level)
@@ -177,7 +178,7 @@ class MaskPropagationWinnower(AimetCommonMaskPropagationWinnower):
             raise ValueError("The list of channels to winnow is empty for the module: %s" % name)
 
         max_channel_num = max(list_of_channels_to_winnow)
-        max_in_channel_index = (module.in_channels - 1)
+        max_in_channel_index = module.in_channels - 1
         if max_channel_num > max_in_channel_index:
             raise ValueError("Channel number: %s exceeds module's max channel number index: %s for module: %s" %
                              (max_channel_num, max_in_channel_index, name))

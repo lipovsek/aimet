@@ -19,7 +19,7 @@ This page provides instructions to build, install and use the AIMET software in 
 ## Requirements
 The AIMET package requires the following host platform setup:
 - 64-bit Intel x86-compatible processor
-- Linux Ubuntu: 18.04 LTS
+- Linux Ubuntu: 22.04 LTS
 - bash command shell
 - For GPU variants:
   - Nvidia GPU card (Compute capability 5.2 or later)
@@ -49,12 +49,12 @@ Clone the google test repo as follows:
 cd aimet
 mkdir -p ./ThirdParty/googletest
 pushd ./ThirdParty/googletest
-git clone https://github.com/google/googletest.git -b release-1.8.0 googletest-release-1.8.0
+git clone https://github.com/google/googletest.git -b release-1.12.1  googletest-release-1.12.1
 popd
 ```
 
 ## Setup the environment
-In order to build and run AIMET code, several dependencies are required (such as python, cmake, tensorflow, pytorch, etc). [Docker files](../Jenkins) and [Docker images](https://artifacts.codelinaro.org/ui/native/codelinaro-aimet/aimet-dev) with all prerequisites and dependencies are available for each AIMET variant. Following are the available development options:
+In order to build and run AIMET code, several dependencies are required (such as python, cmake, tensorflow, pytorch, onnx, etc). [Docker files](../Jenkins) and [Docker images](https://artifacts.codelinaro.org/ui/native/codelinaro-aimet/aimet-dev) with all prerequisites and dependencies are available for each AIMET variant. Following are the available development options:
 - Use the appropriate [pre-built Docker image](https://artifacts.codelinaro.org/ui/native/codelinaro-aimet/aimet-dev) using the instructions [here](#docker-information). This is the *recommended* option.
 - Build the docker image locally and launch a launch container docker using the instructions [here](#docker-information).
 - Install the dependencies on your machine and setup your environment using [the appropriate Dockerfile](../Jenkins) as a guide.
@@ -76,9 +76,12 @@ mkdir build && cd build
 # To build for GPU, use -DENABLE_CUDA=ON. To build for CPU, use -DENABLE_CUDA=OFF.
 # To include torch, use -DENABLE_TORCH=ON. To exclude torch, use -DENABLE_TORCH=OFF.
 # To include tensorflow, use -DENABLE_TENSORFLOW=ON. To exclude tensorflow, use -DENABLE_TENSORFLOW=OFF.
-cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DENABLE_CUDA=ON -DENABLE_TORCH=ON -DENABLE_TENSORFLOW=ON
+# To include onnx, use -DENABLE_ONNX=ON. To exclude onnx, use -DENABLE_ONNX=OFF.
+# Add a installation location -DCMAKE_INSTALL_PREFIX="<install_path>"
+# Following is an example command for the Torch GPU variant with installation within the current build path. Please modify it as appropriate.
+cmake .. -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DENABLE_CUDA=ON -DENABLE_TORCH=ON -DENABLE_TENSORFLOW=OFF -DENABLE_ONNX=OFF -DCMAKE_INSTALL_PREFIX="./staging/universal"
 
-make -j8 
+make -j8
 ```
 
 After a successful build, install the package using the following instructions:
@@ -105,15 +108,24 @@ make doc
 
 To begin navigating the documentation, open the page `$WORKSPACE/aimet/build/staging/universal/Docs/user_guide/index.html` on any browser.
 
+## Generate wheel packages
+Run the following commands to generate installable python wheel packages:
+```bash
+cd $WORKSPACE/aimet/build
+make packageaimet
+```
+
 ## Docker information
 Code may *optionally* be developed inside a development docker container. This section describes how to build a docker image and launch a container using the provided [Dockerfiles](../Jenkins).
 
 ### Set variant
 Set the `<variant_string>` to ONE of the following depending on your desired variant
-- For the PyTorch GPU variant, use `"torch-gpu"`
-- For the PyTorch CPU variant, use `"torch-cpu"`
+- For the PyTorch 2.1 GPU variant, use `"torch-gpu"`
+- For the PyTorch 2.1 CPU variant, use `"torch-cpu"`
 - For the TensorFlow GPU variant, use `"tf-gpu"`
 - For the TensorFlow CPU variant, use `"tf-cpu"`
+- For the ONNX GPU variant, use `"onnx-gpu"`
+- For the ONNX CPU variant, use `"onnx-cpu"`
 ```bash
 export AIMET_VARIANT=<variant_string>
 ```
@@ -154,7 +166,7 @@ docker run --rm -it -u $(id -u ${USER}):$(id -g ${USER}) \
 > **NOTE**
 * Feel free to modify the above `docker run` command based on the environment and filesystem on your host machine.
 * If nvidia-docker 2.0 is installed, then add `--gpus all` to the `docker run` commands in order to enable GPU access inside the docker container.
-* If nvidia-docker 1.0 is installed, then replace `docker run` with `nvidia-docker run` in order to enable GPU access inside the docker container. 
+* If nvidia-docker 1.0 is installed, then replace `docker run` with `nvidia-docker run` in order to enable GPU access inside the docker container.
 * Port forwarding needs to be done in order to run the Visualization APIs from docker container. This can be achieved by running the docker container as follows:
 
 ```bash
@@ -164,7 +176,7 @@ docker run -p ${port_id}:${port_id} --rm -it -u $(id -u ${USER}):$(id -g ${USER}
   -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro \
   -v ${HOME}:${HOME} -v ${WORKSPACE}:${WORKSPACE} \
   -v "/local/mnt/workspace":"/local/mnt/workspace" \
-  --entrypoint /bin/bash -w ${WORKSPACE} --hostname ${docker_container_name} ${docker_image_name} 
+  --entrypoint /bin/bash -w ${WORKSPACE} --hostname ${docker_container_name} ${docker_image_name}
 ```
 
 ### Build and launch docker using script
@@ -188,4 +200,38 @@ cd aimet
 ./buildntest.sh -e AIMET_VARIANT -i -n [-l]
 # OR
 ./buildntest.sh -e AIMET_VARIANT -i -n -m "sample_dir_1 sample_dir2" [-l]
+```
+
+# AIMET 2.0
+## Get the code
+To obtain the code, first define a workspace and follow these instructions:
+
+```bash
+git clone https://github.com/quic/aimet.git
+cd aimet
+```
+## Setup the environment
+In order to build and run AIMET code, several dependencies are required. The [docker file](../Jenkins/fast-release/Dockerfile.ci) provides a docker image with all installed dependencies. To buil a docker image the regular `docker build` commnad should be used. Depends on the desired variant extda arguments should be provided to `docker build` command to specify version of python, cuda, torch, onnx, tensorflow. For example:
+```bash
+docker build --tag aimet --build-arg VER_PYTHON=3.10 --build-arg VER_CUDA=12.1.1 --build-arg VER_TORCH=2.1.2 --file  Jenkins/fast-release/Dockerfile.ci .
+```
+To build AIMET:
+```bash
+docker run --rm --gpus all -v $PWD:$PWD -w $PWD aimet bash -c '. /etc/profile.d/conda.sh ; CMAKE_ARGS='-DENABLE_CUDA=ON -DENABLE_TORCH=ON -DENABLE_ONNX=OFF -DENABLE_TENSORFLOW=OFF' python3 -m build --no-isolation .'
+```
+To install AIMET:
+```bash
+docker run --rm --gpus all -v $PWD:$PWD -w $PWD aimet bash -c '. /etc/profile.d/conda.sh ; CMAKE_ARGS='-DENABLE_CUDA=ON -DENABLE_TORCH=ON -DENABLE_ONNX=OFF -DENABLE_TENSORFLOW=OFF' python3 -m pip install --no-build-isolation -e .'
+```
+You can also build and/or install AIMET in your own environment. You should have installed cuda and C++ compiler, libeigen3, ninja and pip-tool (to install all dependencies required to build selected AIMET variant):
+```bash
+docker run --rm --gpus all nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 bash -c '\
+    export CMAKE_ARGS="-DENABLE_CUDA=ON -DENABLE_TORCH=ON -DENABLE_ONNX=OFF -DENABLE_TENSORFLOW=OFF" ; \
+    apt update -qq && apt install -y git g++ libeigen3-dev ninja-build python3-pip &>/dev/null && \
+    python3 -m pip install pip-tools && \
+    git clone https://github.com/quic/aimet.git && \
+    python3 -m piptools compile --resolver=backtracking --extra=.,dev,test  --output-file=- aimet/pyproject.toml | python3 -m pip install -r /dev/stdin && \
+    python3 -m pip install --no-build-isolation -e ./aimet
+    python3 -m pytest ./aimet/TrainingExtensions/{common,torch}/test/python
+'
 ```

@@ -1,4 +1,3 @@
-# /usr/bin/env python3.5
 # -*- mode: python -*-
 # =============================================================================
 #  @@-COPYRIGHT-START-@@
@@ -47,11 +46,11 @@ import torch.nn.functional as F
 from torch import nn as nn
 from torchvision.ops import roi_align
 
-import aimet_torch.elementwise_ops as aimet_elementwise
+import aimet_torch._base.nn.modules.custom as aimet_elementwise
 
 
 # pylint: disable=too-many-instance-attributes
-from aimet_torch.elementwise_ops import Multiply
+from aimet_torch._base.nn.modules.custom import Multiply
 
 
 class SingleResidual(nn.Module):
