@@ -40,8 +40,7 @@
 
 # pylint: disable=no-name-in-module, ungrouped-imports, too-many-lines
 
-import copy
-from typing import List, Dict, Collection
+from typing import List, Dict, Collection, Union, Tuple
 from collections import defaultdict
 from dataclasses import dataclass
 from contextlib import contextmanager
@@ -52,6 +51,7 @@ import onnxruntime
 import torch
 from onnx.utils import Extractor
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
+
 from aimet_common.libpymo import TensorQuantizerOpMode
 from aimet_common.defs import QuantScheme
 from aimet_common.utils import AimetLogger, deprecated
@@ -228,56 +228,119 @@ class SequentialMse:
             for name in quantizer_keys:
                 self.sim.qc_quantize_op_dict[name].enabled = enabled[name]
 
-    def _get_min_max_from_weights(self, dependency_node: DependencyNode):
+    def _get_min_and_max_for_candidate_selection(
+        self,
+        dependency_node: DependencyNode,
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Get per channel min/max values across output channel.
+        Get absolute max and its negation for candidate selection.
 
-        :param dependency_node: Dependevy node which is to be optimized
-        :return: per_channel_min and per_channel_max
+        This function computes the maximum absolute values of a weight tensor
+        based on the quantization granularity (per-tensor/per-channel, or block-wise),
+        and returns both the max and its symmetric negative counterpart.
+
+        TODO: Evaluate alignment with aimet-torch which returns recalibrated min/max instead of absolute min/max
+
+        :param dependency_node: Dependency node which is to be optimized
+        :return: Tuple of min and max values for candidate selection.
         """
         # pylint: disable=protected-access
-        channel_axis = QuantizationSimModel._get_quantization_axes(
-            dependency_node.cg_op
-        )[0]
+        weight_name = self.dependency_graph.get_param_name(dependency_node)
+        weight = self.dependency_graph.get_param_value(dependency_node)
+        abs_weight = np.abs(weight)
 
-        weight_data = self.dependency_graph.get_param_value(dependency_node)
-        # Handle negative indexing
-        if channel_axis < 0:
-            channel_axis += len(weight_data.shape)
+        quantizer = self.sim.qc_quantize_op_dict[weight_name]
+        assert quantizer.use_symmetric_encodings  # Symmetric encodings for parameters
 
-        axis = tuple(i for i in range(len(weight_data.shape)) if i != channel_axis)
-        per_channel_max = np.max(abs(weight_data), axis=axis)
-        return [-per_channel_max, per_channel_max]
+        tensor_shape = list(quantizer.tensor_quantizer_params.tensor_shape)
+        channel_axis = quantizer.tensor_quantizer_params.channel_axis
+        block_axis = quantizer.tensor_quantizer_params.block_axis
 
-    def _get_candidates(self, per_channel_max, per_channel_min):
+        # `channel_axis`, `block_axis` might not be up-to-date, if `enable_per_channel_quantization` or `_enable_blockwise_quantization` are not called before
+        # handle negative axis
+        channel_axis = (
+            channel_axis if channel_axis >= 0 else channel_axis + len(tensor_shape)
+        )
+        block_axis = block_axis if block_axis >= 0 else block_axis + len(tensor_shape)
+
+        block_size = quantizer.quant_info.blockSize
+        if block_size == 0:
+            # Per-tensor/per-channel
+            reduce_axes = tuple(
+                i for i in range(len(tensor_shape)) if i != channel_axis
+            )
+            max_tensor = np.amax(abs_weight, axis=reduce_axes)
+            min_tensor = -max_tensor
+            return min_tensor, max_tensor
+
+        # Block quantization
+        num_blocks = tensor_shape[block_axis] // block_size
+        reshaped_shape = (
+            tensor_shape[:block_axis]
+            + [num_blocks, block_size]
+            + tensor_shape[block_axis + 1 :]
+        )
+        abs_weight = abs_weight.reshape(*reshaped_shape)
+
+        def get_reduction_axes(shape_len, block_axis, channel_axis):
+            # Determine which axes to keep during reduction:
+            # Keep `block_axis`,
+            # Keep `channel_axis`, but if it comes after `block_axis`, its index shifts by +1 due to reshaping.
+            # All other axes are reduced.
+            keep_axes = {
+                block_axis,
+                channel_axis if channel_axis < block_axis else channel_axis + 1,
+            }
+            return tuple(i for i in range(shape_len) if i not in keep_axes)
+
+        reduce_axes = get_reduction_axes(
+            len(abs_weight.shape), block_axis, channel_axis
+        )
+        max_tensor = np.amax(abs_weight, axis=reduce_axes, keepdims=True)
+        max_tensor = np.squeeze(
+            max_tensor, axis=block_axis + 1
+        )  # Remove the block dimension after reduction.
+        min_tensor = -max_tensor
+
+        return min_tensor, max_tensor
+
+    def _get_candidate(
+        self,
+        candidate_idx: Union[int, np.ndarray],
+        min_tensor: np.ndarray,
+        max_tensor: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Perform grid search.
-        :param per_channel_max: Per channel max values
-        :param per_channel_min: Per channel min values
+        Get candidate min and max tensors on the fly.
+
+        NOTE: Divides `min_tensor` and `max_tensor` into `num_candidates` equal parts and
+              select the values corresponding to the `candidate_idx + 1`
+
+        :param min_tensor: Min tensor
+        :param max_tensor: Max tensor
         :return: candidates
         """
-        candidates = []
         num_candidates = self.params.num_candidates
-        for i in range(num_candidates):
-            cand_max = per_channel_max / num_candidates * (i + 1)
-            cand_min = per_channel_min / num_candidates * (i + 1)
-            candidates.append((cand_max, cand_min))
-        return candidates
+
+        cand_min = min_tensor / num_candidates * (candidate_idx + 1)
+        cand_max = max_tensor / num_candidates * (candidate_idx + 1)
+
+        return cand_min, cand_max
 
     def _compute_encoding_from_candidate(
-        self, candidate, dependency_node: DependencyNode
+        self,
+        dependency_node: DependencyNode,
+        x_min: np.ndarray,
+        x_max: np.ndarray,
     ):
         """
-        computes the encoding using candidate min and candidate max
+        Computes the encoding using candidate min and candidate max values.
 
-        :param candidate: list containing min and max value
         :param dependency_node: Corresponding Dependency node
-        :return: encoding
+        :param x_min: min values
+        :param x_max: max values
         """
-
-        cand_max = candidate[0]
-        cand_min = candidate[1]
-        cand = np.stack((cand_max, cand_min), axis=-1)
+        cand = np.stack((x_min, x_max), axis=-1)
 
         weight_name = self.dependency_graph.get_param_name(dependency_node)
         quantize_op = self.sim.qc_quantize_op_dict[weight_name]
@@ -374,16 +437,19 @@ class SequentialMse:
         :param dep_nodes_to_parallelize: Dependency nodes to be parallelized.
         """
 
-        def _set_candidates(index: int):
+        def _set_candidates(candidate_index: int):
             """
             Helper function to set candidate based on index for ops at same level.
             Internally computes the encoding using candidate min and candidate max
 
-            :param index: Index of candidate
+            :param candidate_index: Index of candidate
             """
             for dep_node in dep_nodes_to_parallelize:
-                candidate = min_max_candidates[dep_node.cg_op.name]
-                self._compute_encoding_from_candidate(candidate[index], dep_node)
+                init_min_val, init_max_val = initial_min_max[dep_node.cg_op.name]
+                cand_min, cand_max = self._get_candidate(
+                    candidate_index, init_min_val, init_max_val
+                )
+                self._compute_encoding_from_candidate(dep_node, cand_min, cand_max)
 
         def _compute_loss(all_fp_outputs: List, all_sim_outputs: List):
             """
@@ -415,14 +481,14 @@ class SequentialMse:
             return subgraph_inputs, subgraph_outputs
 
         total_loss = defaultdict(list)
-        min_max_candidates = {}
 
-        # Perform grid search
+        # Cache the initial min and max values
+        initial_min_max = {}
         for dep_node in dep_nodes_to_parallelize:
-            per_channel_min, per_channel_max = self._get_min_max_from_weights(dep_node)
-            min_max_candidates[dep_node.cg_op.name] = self._get_candidates(
-                per_channel_max, per_channel_min
+            init_min_val, init_max_val = self._get_min_and_max_for_candidate_selection(
+                dep_node
             )
+            initial_min_max[dep_node.cg_op.name] = (init_min_val, init_max_val)
 
         subgraph_inp_names, subgraph_outs_names = _get_dep_node_io_names(
             dep_nodes_to_parallelize
@@ -453,22 +519,23 @@ class SequentialMse:
         # Postprocessing (not vectorized)
         for dep_node in dep_nodes_to_parallelize:
             loss = total_loss[dep_node.cg_op.name]
-            stacked_loss = np.stack(loss, axis=0)
-            arg_min_ = np.argmin(stacked_loss, axis=0, keepdims=True)
-            best_max = torch.stack(
-                [
-                    torch.tensor(cand_max)
-                    for cand_max, _ in min_max_candidates[dep_node.cg_op.name]
-                ]
-            ).gather(0, torch.tensor(arg_min_))[0]
-            best_min = torch.stack(
-                [
-                    torch.tensor(cand_min)
-                    for _, cand_min in min_max_candidates[dep_node.cg_op.name]
-                ]
-            ).gather(0, torch.tensor(arg_min_))[0]
-            best_candidate = (best_max, best_min)
-            self._compute_encoding_from_candidate(best_candidate, dep_node)
+            stacked_loss = np.stack(
+                loss, axis=0
+            )  # Resulting shape depends on granularity: per-tensor and per-channel: (num_candidates, num_channels) and per-block: (num_candidates, num_channels, num_blocks)
+
+            # Find the index of the minimum loss along the candidate axis (axis=0)
+            best_indices = np.argmin(stacked_loss, axis=0)
+            init_min, init_max = initial_min_max[dep_node.cg_op.name]
+
+            # Unsqueeze best_indices until it matches dim length of max_val
+            while best_indices.ndim < init_max.ndim:
+                best_indices = best_indices[..., np.newaxis]
+
+            # Use the best indices to compute corresponding best candidate min and max tensors
+            best_min, best_max = self._get_candidate(best_indices, init_min, init_max)
+
+            # Compute and freeze parameter encodings using best candidate
+            self._compute_encoding_from_candidate(dep_node, best_min, best_max)
             self._freeze_encodings(dep_node)
 
         dep_node_names = [dep_node.cg_op.name for dep_node in dep_nodes_to_parallelize]

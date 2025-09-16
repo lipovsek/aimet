@@ -178,12 +178,12 @@ def calculate_delta_offset(
 
 
 def compute_min_max_given_delta_offset(
-    delta: float,
-    offset: int,
+    delta: Union[float, np.ndarray],
+    offset: Union[int, np.ndarray],
     bitwidth: int,
     use_symmetric_encodings: bool,
     use_strict_symmetric: bool,
-) -> Tuple[float, float]:
+) -> Tuple[float, float] | Tuple[np.ndarray, np.ndarray]:
     """
     Compute min and max given delta and offset.
 
@@ -198,8 +198,19 @@ def compute_min_max_given_delta_offset(
     if use_symmetric_encodings and use_strict_symmetric:
         num_steps -= 1
 
+    # Check if both delta and offset are scalars
+    is_scalar = np.isscalar(delta) and np.isscalar(offset)
+
+    delta = np.asarray(delta, dtype=np.float32)
+    offset = np.asarray(offset, dtype=np.float32)
+
     min_val = delta * offset
     max_val = (num_steps + offset) * delta
+
+    # If inputs were scalars, return scalars
+    if is_scalar:
+        return float(min_val), float(max_val)
+
     return min_val, max_val
 
 

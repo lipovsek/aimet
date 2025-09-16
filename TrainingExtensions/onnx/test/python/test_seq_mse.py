@@ -37,6 +37,7 @@
 # =============================================================================
 
 import pytest
+from unittest.mock import MagicMock
 import torch
 import copy
 import json
@@ -45,6 +46,8 @@ import os
 import itertools
 from onnx.utils import Extractor
 import logging
+
+from aimet_common import libquant_info
 from aimet_common.utils import AimetLogger
 from aimet_onnx import apply_seq_mse
 from aimet_onnx.sequential_mse.dependency_graph import (
@@ -57,6 +60,11 @@ from aimet_onnx.sequential_mse.seq_mse import SequentialMse
 from aimet_common.defs import QuantScheme
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.utils import make_dummy_input
+from aimet_onnx.qc_quantize_op import (
+    QcQuantizeOp,
+    OpMode,
+    TensorQuantizerParams,
+)
 
 from .models.test_models import single_linear_layer_model
 from .models.test_models import single_conv_layer_model
@@ -153,81 +161,81 @@ def data_loader(dummy_input):
     return [dummy_input for _ in range(10)]
 
 
-@pytest.mark.parametrize("param_bw", [2, 31])
-@pytest.mark.parametrize("loss_fn", ["mse", "l1"])
-@pytest.mark.parametrize("enable_pcq", [True, False])
-def test_do_seq_mse_for_conv(param_bw, loss_fn, enable_pcq):
-    model = single_conv_layer_model()
-    sim = QuantizationSimModel(
-        model=copy.deepcopy(model),
+@pytest.mark.parametrize(
+    "granularity, shape, channel_axis, block_axis",
+    [
+        ("per_block", (30, 15), 0, 1),
+        ("per_channel", (30, 15), 0, 1),
+        ("per_tensor", (30, 15), 0, 1),
+        ("per_block", (300, 150), 1, 0),  # index shift by +1
+        ("per_channel", (300, 150), 1, 0),
+        ("per_tensor", (300, 150), 1, 0),
+        ("per_block", (30, 15, 3, 3), 0, 1),
+        ("per_channel", (30, 15, 3, 3), 0, 1),
+        ("per_tensor", (30, 15, 3, 3), 0, 1),
+        ("per_block", (300, 150, 3, 3), 1, 0),  # index shift by +1
+        ("per_channel", (300, 150, 3, 3), 1, 0),
+        ("per_tensor", (300, 150, 3, 3), 1, 0),
+    ],
+)
+def test_min_max_for_candidate_selection(granularity, shape, channel_axis, block_axis):
+    """
+    Test _get_min_and_max_for_candidate_selection which returns absolute min/max
+    values for different quantization granularity.
+    """
+    # Mock dependency node and graph
+    mock_dep_node = MagicMock()
+    mock_dep_graph = MagicMock()
+    mock_dep_graph.get_param_name.return_value = "mock_weight"
+
+    calibration_tensor = np.random.randn(*shape).astype(np.float32)
+    mock_dep_graph.get_param_value.return_value = calibration_tensor
+
+    # Create quantizer
+    tensor_quantizer_params = TensorQuantizerParams(shape, channel_axis, block_axis)
+    quant_info = libquant_info.QcQuantizeInfo()
+    bitwidth = 4
+    quantizer = QcQuantizeOp(
+        quant_info,
+        bitwidth=bitwidth,
+        op_mode=OpMode.updateStats,
         quant_scheme=QuantScheme.post_training_tf,
-        default_activation_bw=8,
-        default_param_bw=param_bw,
-        providers=["CPUExecutionProvider"],
-        config_file=_get_config_file(
-            is_symmetric=True,
-            strict_symmetric=False,
-            unsigned_symmetric=False,
-            pcq=enable_pcq,
-        ),
+        tensor_quantizer_params=tensor_quantizer_params,
+        use_symmetric_encodings=True,
     )
-    seq_params = SeqMseParams(num_batches=1)
-    seq_params.loss_fn = loss_fn
-    inputs = [make_dummy_input(model.model) for _ in range(10)]
-    seq_mse = SequentialMse(sim.model, sim, seq_params, inputs)
-    conv_node = seq_mse.dependency_graph._name_to_node["/conv/Conv"]
-    seq_mse._run_seq_mse([conv_node])
-    _, per_channel_max = seq_mse._get_min_max_from_weights(conv_node)
-    if not enable_pcq:
-        per_channel_max = max(per_channel_max)
-
-    weight_name = seq_mse.dependency_graph.get_param_name(conv_node)
-    quantize_op = seq_mse.sim.qc_quantize_op_dict[weight_name]
-    encodings = quantize_op.get_encodings()
-    encodings_max = [encoding.max for encoding in encodings]
-    if param_bw == 31:
-        assert np.all(np.isclose(encodings_max, per_channel_max))
+    # Set granularity
+    if granularity == "per_channel":
+        quantizer.enable_per_channel_quantization()
+    elif granularity == "per_block":
+        block_size = 3
+        quantizer._enable_blockwise_quantization(block_size=block_size)
     else:
-        assert not np.all(np.isclose(encodings_max, per_channel_max))
+        pass
+    quantizer.update_encoding_stats(calibration_tensor)
+    quantizer.compute_encodings()
 
+    # Mock sim object
+    mock_sim = MagicMock()
+    mock_sim._quant_scheme = QuantScheme.post_training_tf
+    mock_sim.qc_quantize_op_dict = {"mock_weight": quantizer}
 
-@pytest.mark.parametrize("param_bw", [2, 31])
-@pytest.mark.parametrize("loss_fn", ["mse", "l1", "sqnr"])
-@pytest.mark.parametrize("enable_pcq", [True, False])
-@pytest.mark.parametrize("pass_model", [True, False])
-def test_do_seq_mse_for_linear(param_bw, loss_fn, enable_pcq, pass_model):
-    model = single_linear_layer_model()
-    sim = QuantizationSimModel(
-        model=copy.deepcopy(model),
-        quant_scheme=QuantScheme.post_training_tf,
-        default_activation_bw=8,
-        default_param_bw=param_bw,
-        providers=["CPUExecutionProvider"],
-        config_file=_get_config_file(
-            is_symmetric=True,
-            strict_symmetric=False,
-            unsigned_symmetric=False,
-            pcq=True,
-        ),
-    )
-    inputs = [make_dummy_input(model.model) for _ in range(10)]
-    seq_params = SeqMseParams(num_batches=1)
-    seq_params.loss_fn = loss_fn
-    if pass_model:
-        seq_mse = SequentialMse(model, sim, seq_params, inputs)
-    else:
-        seq_mse = SequentialMse(None, sim, seq_params, inputs)
-    fc_node = seq_mse.dependency_graph._name_to_node["/fc/MatMul"]
-    seq_mse._run_seq_mse([fc_node])
-    _, per_channel_max = seq_mse._get_min_max_from_weights(fc_node)
-    weight_name = seq_mse.dependency_graph.get_param_name(fc_node)
-    quantize_op = seq_mse.sim.qc_quantize_op_dict[weight_name]
-    encodings = quantize_op.encodings
-    encodings_max = [encoding.max for encoding in encodings]
-    if param_bw == 31:
-        assert np.all(np.isclose(encodings_max, per_channel_max))
-    else:
-        assert not np.all(np.isclose(encodings_max, per_channel_max))
+    # Mock seq_mse object w/o calling the __init__
+    seq_mse = object.__new__(SequentialMse)
+    seq_mse.sim = mock_sim
+    seq_mse.dependency_graph = mock_dep_graph
+
+    _, max_val = seq_mse._get_min_and_max_for_candidate_selection(mock_dep_node)
+    if granularity == "per_tensor":  # per-tensor and per-channel are handled similarly
+        max_val = np.max(max_val)
+
+    encodings = quantizer.get_encodings()
+    enc_max = np.array([enc.max for enc in encodings])
+    enc_min = np.array([enc.min for enc in encodings])
+    delta = (enc_max - enc_min) / (2**bitwidth - 1)
+
+    assert np.allclose(
+        enc_max, max_val.flatten(), atol=delta
+    )  # Allow 1-tick difference
 
 
 @pytest.mark.parametrize("param_bw", [2, 31])
