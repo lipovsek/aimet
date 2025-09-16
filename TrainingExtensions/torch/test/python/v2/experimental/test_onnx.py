@@ -1152,7 +1152,9 @@ def test_export_large_model(
     Given: model that exceeds 2GB
     """
     x = torch.randn(1, 2**15)
-    sim = QuantizationSimModel(large_model, x)
+    sim = QuantizationSimModel(
+        large_model, x, config_file="htp_quantsim_config_v81_per_channel_linear.json"
+    )
     sim.compute_encodings(lambda model: model(x))
 
     onnx_path = os.path.join(tmp_path, "qdq_model.onnx")
@@ -1180,7 +1182,9 @@ def test_export_large_model(
 
     for e in encodings:
         y_scale = e["y_scale"]
-        assert any(np.allclose(y_scale, q.get_scale().item()) for q in quantizers)
+        assert any(
+            np.allclose(y_scale, q.get_scale().numpy().flatten()) for q in quantizers
+        )
 
     """
     When: Export to onnx QDQ

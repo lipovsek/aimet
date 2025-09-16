@@ -41,7 +41,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 import functools
 import math
-from typing import Sequence, Iterable
+from typing import Sequence, Iterable, Optional
 
 import onnx
 import onnxscript
@@ -389,7 +389,9 @@ def export(model: torch.nn.Module, *args, **kwargs):
         return torch.onnx.export(model, *args, **kwargs)
 
 
-def remove_quantization_nodes_from_onnx_graph(model: onnx.ModelProto):  # pylint: disable=too-many-locals, too-many-branches
+def remove_quantization_nodes_from_onnx_graph(
+    model: onnx.ModelProto, base_dir: Optional[str] = None
+):  # pylint: disable=too-many-locals, too-many-branches
     """
     Remove quantization nodes from ONNX graph with quantization nodes
     :param model: ONNX model with quantization nodes
@@ -421,7 +423,7 @@ def remove_quantization_nodes_from_onnx_graph(model: onnx.ModelProto):  # pylint
 
     for node in qtzr_nodes:
         # Get quantizer name in torch model
-        encoding = _get_encoding_from_onnx_node(model, node)
+        encoding = _get_encoding_from_onnx_node(model, node, base_dir)
 
         # Connect next node to the prev node of quantizer node
         if node.output[0] in name_to_consumer:
@@ -473,7 +475,9 @@ def remove_quantization_nodes_from_onnx_graph(model: onnx.ModelProto):  # pylint
     return tensor_to_encoding_map
 
 
-def _get_tensor_from_constant_name(onnx_model: onnx.ModelProto, constant_name: str):
+def _get_tensor_from_constant_name(
+    onnx_model: onnx.ModelProto, constant_name: str, base_dir: Optional[str] = None
+):
     """
     Returns tensor from the constant name.
     """
@@ -481,7 +485,7 @@ def _get_tensor_from_constant_name(onnx_model: onnx.ModelProto, constant_name: s
         if constant_name in node.output:
             for attr in node.attribute:
                 if attr.name == "value":
-                    return onnx.numpy_helper.to_array(attr.t)
+                    return onnx.numpy_helper.to_array(attr.t, base_dir=base_dir)
             raise RuntimeError(
                 f"Cannot find value attribute inside constant node {constant_name}"
             )
@@ -489,7 +493,9 @@ def _get_tensor_from_constant_name(onnx_model: onnx.ModelProto, constant_name: s
 
 
 def _get_encoding_from_onnx_node(
-    onnx_model: onnx.ModelProto, quant_node: onnx.NodeProto
+    onnx_model: onnx.ModelProto,
+    quant_node: onnx.NodeProto,
+    base_dir: Optional[str] = None,
 ):
     """
     Get encoding from quantization node.
@@ -516,8 +522,12 @@ def _get_encoding_from_onnx_node(
             if block_size == [1]:
                 block_size = None
 
-        scale = torch.tensor(_get_tensor_from_constant_name(onnx_model, scale_name))
-        offset = torch.tensor(_get_tensor_from_constant_name(onnx_model, offset_name))
+        scale = torch.tensor(
+            _get_tensor_from_constant_name(onnx_model, scale_name, base_dir)
+        )
+        offset = torch.tensor(
+            _get_tensor_from_constant_name(onnx_model, offset_name, base_dir)
+        )
 
     assert scale is not None
     assert offset is not None

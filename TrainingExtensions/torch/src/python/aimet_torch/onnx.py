@@ -354,11 +354,13 @@ def _to_onnx(
         if quantizer
     }
 
+    base_dir = str(Path(f if isinstance(f, str) else f.name).absolute().parent)
     tensor_to_encoding_map: Mapping[str, Tuple[EncodingBase, bool]]
     tensor_to_encoding_map = {
         name: (encoding, name in param_names)
         for name, encoding in _onnx.remove_quantization_nodes_from_onnx_graph(
-            onnx_model
+            onnx_model,
+            base_dir=base_dir,
         ).items()
     }
     tensor_to_encoding_map |= _derive_data_movement_op_encoding(
@@ -389,15 +391,14 @@ def _derive_data_movement_op_encoding(
         inp_encoding = encodings.get(input_name)
         out_encoding = encodings.get(output_name)
 
-        if not inp_encoding and not out_encoding:
-            # No input encoding to inherit; skip
-            return {}
-
         if inp_encoding and out_encoding:
             # Both input and output encoding already exists; skip
             return {}
 
-        if out_encoding:
+        # Only per-tensor encodings can be safely propagated through data movement ops
+        # because some data movement ops such as Reshape and Transpose can't reuse
+        # the same channel/block axes across inputs and outputs
+        if out_encoding and out_encoding.granularity == "pertensor":
             if len(consumers[input_name]) > 1 or len(node.output) > 1:
                 # If input has more than one consumer or if there are more than one output,
                 # it is NOT safe to reuse output encoding for input quantization
@@ -405,9 +406,15 @@ def _derive_data_movement_op_encoding(
             else:
                 # Reuse output encoding for input quantization
                 return {input_name: copy.deepcopy(out_encoding)}
-        else:
+
+        # Only per-tensor encodings can be safely propagated through data movement ops
+        # because some data movement ops such as Reshape and Transpose can't reuse
+        # the same channel/block axes across inputs and outputs
+        if inp_encoding and inp_encoding.granularity == "pertensor":
             # Reuse input encoding for output quantization
             return {output_name: copy.deepcopy(inp_encoding)}
+
+        return {}
 
     for node in data_movement_ops:
         enc = derive_encoding(node)
