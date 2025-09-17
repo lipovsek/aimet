@@ -564,22 +564,24 @@ class QcQuantizeOp:
         if not self.enabled:
             return None
 
-        if self._encoding_min_max_fixed_vals is None:
-            encodings = self._tensor_quantizer.computeEncodings(
-                self.use_symmetric_encodings
-            )
-        else:
+        encodings = self._tensor_quantizer.computeEncodings(
+            self.use_symmetric_encodings
+        )
+
+        if self._encoding_min_max_fixed_vals:
             min_val, max_val = self._encoding_min_max_fixed_vals
+
             encodings = [
                 create_encoding_from_min_max(
-                    min_val,
-                    max_val,
+                    e.min if min_val is None else min_val,
+                    e.max if max_val is None else max_val,
                     self.bitwidth,
                     self.use_symmetric_encodings,
                     self.use_strict_symmetric,
                 )
-                for _ in range(int(np.prod(self._encoding_shape())))
+                for e in encodings
             ]
+
         self.load_encodings(encodings)
         return encodings
 
@@ -828,7 +830,9 @@ class QcQuantizeOp:
 
         return is_clipped
 
-    def set_fixed_encoding_range(self, fixed_range: Tuple[float, float]):
+    def set_fixed_encoding_range(
+        self, fixed_range: Tuple[Optional[float], Optional[float]]
+    ):
         """
         Set the min/max values to be used when computing encodings
 

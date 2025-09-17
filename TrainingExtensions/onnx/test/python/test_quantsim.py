@@ -3144,6 +3144,34 @@ class TestEncodingPropagation:
             output_encoding.delta, expected_scale, atol=np.finfo(np.float32).eps
         )
 
+    def test_partial_encoding_constraints(self):
+        """
+        Given: model as below
+
+        [input] --> Conv -> [output]
+        """
+        pt_model = torch.nn.Conv2d(3, 3, 3).eval()
+        dummy_input = torch.randn(1, 3, 224, 224)
+        model = _convert_to_onnx(pt_model, dummy_input)
+
+        """
+        When: Partially fix Conv output encodings to [0, ?]
+        Then: Conv output quantizers should be fixed to range [0, ?]
+        """
+        dummy_input = make_dummy_input(model.model)
+        sim = QuantizationSimModel(model, config_file="htp_v81")
+
+        output_qtzr = sim.qc_quantize_op_dict["output"]
+        output_qtzr.set_fixed_encoding_range((0.0, None))
+
+        sim.compute_encodings([dummy_input])
+
+        (output_encoding,) = output_qtzr.get_encodings()
+        assert output_encoding.min == 0
+
+        (output,) = sim.session.run(None, dummy_input)
+        assert np.all(output >= 0)
+
     @pytest.mark.parametrize(
         "op_type_under_test",
         [torch.nn.AvgPool2d, torch.nn.Upsample],
