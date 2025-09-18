@@ -1212,6 +1212,7 @@ def test_quantize_dequantize_then_quantize_and_dequantize_equality(
     assert torch.equal(a, b)
 
 
+@torch.no_grad()
 @pytest.mark.parametrize(
     "q",
     (
@@ -1223,18 +1224,67 @@ def test_allow_overwrite(x, q):
     with q.compute_encodings():
         q(x)
 
+    q_min, q_max = q.min.detach().clone(), q.max.detach().clone()
+
     """
-    Given: _allow_overwrite set to True
+    Given: allow_overwrite set to False
     When: Try to recompute encodings
     Then: Encoding does NOT get overwritten by compute_encodings
     """
-    q_min, q_max = q.min.detach().clone(), q.max.detach().clone()
     q.allow_overwrite(False)
+    assert not q.is_overwrite_allowed()
+    assert not q.is_overwrite_allowed("min")
+    assert not q.is_overwrite_allowed("max")
+    # Check deprecated _allow_overwrite flag for backwards compatibility
+    assert not q._allow_overwrite
+
     with q.compute_encodings():
-        q(x * 10)
+        q(x * 2)
 
     assert torch.equal(q_min, q.min)
     assert torch.equal(q_max, q.max)
+    q.min.copy_(q_min)
+    q.max.copy_(q_max)
+
+    """
+    Given: allow_overwrite set to True
+    When: Try to recompute encodings
+    Then: Encoding should be overwritten by compute_encodings
+    """
+    q.allow_overwrite(True)
+    assert q.is_overwrite_allowed()
+    assert q.is_overwrite_allowed("min")
+    assert q.is_overwrite_allowed("max")
+    # Check deprecated _allow_overwrite flag for backwards compatibility
+    assert q._allow_overwrite
+
+    with q.compute_encodings():
+        q(x * 2)
+
+    assert torch.equal(q.min, q_min * 2)
+    assert torch.equal(q.max, q_max * 2)
+    q.min.copy_(q_min)
+    q.max.copy_(q_max)
+
+    """
+    Given: allow_overwrite partially set to True
+    When: Try to recompute encodings
+    Then: Only min should be overwritten by compute_encodings
+    """
+    q.allow_overwrite(min=False)
+    assert q.is_overwrite_allowed()
+    assert not q.is_overwrite_allowed("min")
+    assert q.is_overwrite_allowed("max")
+    # Check deprecated _allow_overwrite flag for backwards compatibility
+    assert q._allow_overwrite
+
+    with q.compute_encodings():
+        q(x * 2)
+
+    assert torch.equal(q.min, q_min)
+    assert torch.equal(q.max, q_max * 2)
+    q.min.copy_(q_min)
+    q.max.copy_(q_max)
 
 
 @pytest.mark.parametrize("params", ["min_max", "scale_offset"])

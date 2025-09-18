@@ -174,6 +174,8 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         else:
             self.register_buffer("maxval", None)
 
+        self._is_overwrite_allowed.update({"maxval": True})
+
         self._assert_supported_dtype()
 
     def _assert_supported_dtype(self):
@@ -324,7 +326,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         During ``compute_encodings`` is enabled, the quantizer forward pass performs
         dynamic quantization using the batch statistics.
         """
-        if not self.encoding_analyzer or not self._allow_overwrite:
+        if not self.encoding_analyzer or not any(self._is_overwrite_allowed.values()):
             yield
             return
 

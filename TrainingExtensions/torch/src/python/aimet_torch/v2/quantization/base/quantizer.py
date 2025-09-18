@@ -41,7 +41,7 @@ import copy
 from collections import OrderedDict
 import contextlib
 import weakref
-from typing import Optional, List, Dict, TYPE_CHECKING
+from typing import Optional, List, Dict, TYPE_CHECKING, overload
 import functools
 
 import torch
@@ -75,7 +75,7 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
         # This info will be used for judging whether the current parameter has ever been
         # initialized after it was instantiated.
         self._initial_parameters = OrderedDict()
-        self._allow_overwrite = True
+        self._is_overwrite_allowed: dict[str, bool] = OrderedDict()
 
     def forward(self, input: torch.Tensor) -> "QuantizedTensorBase":  # pylint: disable=redefined-builtin
         """
@@ -269,6 +269,51 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
         setstate(state)
         self.set_extra_state(is_initialized)
 
+    @overload
     def allow_overwrite(self, mode: bool):
         """Set allow_overwite flag"""
-        self._allow_overwrite = mode
+
+    @overload
+    def allow_overwrite(self, **kwargs):
+        """Set allow_overwite flag"""
+
+    def allow_overwrite(self, *args, **kwargs):
+        mode = kwargs.get("mode", args[0] if args else None)
+
+        if mode is not None:
+            allow_overwrite = {
+                param_name: mode for param_name in self._is_overwrite_allowed.keys()
+            }
+        else:
+            allow_overwrite = kwargs.copy()
+
+        expected_keys = self._is_overwrite_allowed.keys()
+        unexpected_keys = allow_overwrite.keys() - expected_keys
+        if unexpected_keys:
+            unexpected_keys = sorted(list(unexpected_keys))
+            expected_keys = sorted(list(expected_keys))
+            raise RuntimeError(
+                f"'allow_overwrite' expected param names {expected_keys};"
+                f" got unexpected parameter names {unexpected_keys}"
+            )
+
+        self._is_overwrite_allowed.update(allow_overwrite)
+
+    def is_overwrite_allowed(self, name=None):
+        if name:
+            is_overwrite_allowed = self._is_overwrite_allowed[name]
+        else:
+            is_overwrite_allowed = any(self._is_overwrite_allowed.values())
+
+        return is_overwrite_allowed
+
+    # Define _allow_overwrite getter/setter for backwards compatibility
+    @property
+    @deprecated(f"Use {is_overwrite_allowed.__qualname__} function instead")
+    def _allow_overwrite(self) -> bool:
+        return self.is_overwrite_allowed()
+
+    @_allow_overwrite.setter
+    @deprecated(f"Use {allow_overwrite.__qualname__} function instead")
+    def _allow_overwrite(self, mode: bool):
+        self.allow_overwrite(mode)

@@ -200,6 +200,12 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
             )
 
         self._reparametrize_to_min_max()
+        self._is_overwrite_allowed.update(
+            {
+                "min": True,
+                "max": True,
+            }
+        )
 
     def _is_scale_offset_quantizer(self):
         return "scale" in self._parameters and "offset" in self._parameters
@@ -376,17 +382,51 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
         return offset.to(dtype)
 
     @torch.no_grad()
-    def set_range(self, min: torch.Tensor, max: torch.Tensor):
+    def set_range(
+        self,
+        min: Optional[torch.Tensor],
+        max: Optional[torch.Tensor],
+    ):
         """
-        Set quantization parameters to the given min-max range
+        Set quantization parameters to the given min-max range.
+        If only one of min or max is set to None, this function will fix only one end of the encoding range.
+        If both are set to None, this function is no-op.
+
+        Args:
+            min (torch.Tensor | None): Minimum value of quantization encoding range
+            max (torch.Tensor | None): Maximum value of quantization encoding range
         """
+        if min is None and max is None:
+            return
+
+        if min is not None and not isinstance(min, torch.Tensor):
+            min = torch.tensor(min)
+
+        if max is not None and not isinstance(max, torch.Tensor):
+            max = torch.tensor(max)
+
         if self._is_min_max_quantizer():
             with SafeGatheredParameters(
                 self.parameters(recurse=False), modifier_rank=0
             ):
-                self.min.copy_(min)
-                self.max.copy_(max)
+                if min is not None:
+                    self.min.copy_(min)
+                if max is not None:
+                    self.max.copy_(max)
         else:
+            if min is None:
+                min = self.get_min()
+
+            if max is None:
+                max = self.get_max()
+
+            if min is None or max is None:
+                raise ValueError(
+                    f"{type(self).__name__}.set_range(...) with partial input, "
+                    "such as `set_range(min=0.0, max=None)` or `set_range(min=None, max=1.0), "
+                    "cannot be supported for quantizers parametrized with scale & offset."
+                )
+
             # Compute scale/offset with float32 for numerical stability
             scale, offset = _get_scale_offset(
                 min.to(torch.float32),
@@ -552,7 +592,7 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
         During ``compute_encodings`` is enabled, the quantizer forward pass performs
         dynamic quantization using the batch statistics.
         """
-        if not self._allow_overwrite:
+        if not any(self._is_overwrite_allowed.values()):
             yield
             return
 
@@ -631,8 +671,11 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
         except StatisticsNotFoundError:
             return
 
-        if enc_min is None or enc_max is None:
-            return
+        if not self._is_overwrite_allowed["min"]:
+            enc_min = None
+
+        if not self._is_overwrite_allowed["max"]:
+            enc_max = None
 
         self.set_range(enc_min, enc_max)
 

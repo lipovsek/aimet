@@ -221,18 +221,39 @@ def test_allow_overwrite(x):
     )
     with q.compute_encodings():
         q(x)
+    q_max = q.maxval.detach().clone()
 
     """
-    Given: _allow_overwrite set to False
+    Given: allow_overwrite set to False
     When: Try to recompute encodings
     Then: Encoding does NOT get overwritten by compute_encodings
     """
-    q_max = q.maxval.detach().clone()
     q.allow_overwrite(False)
+    assert not q.is_overwrite_allowed()
+    assert not q.is_overwrite_allowed("maxval")
+    # Check deprecated _allow_overwrite flag for backwards compatibility
+    assert not q._allow_overwrite
+
     with q.compute_encodings():
-        q(x * 10)
+        q(x * 2)
 
     assert torch.equal(q_max, q.maxval)
+
+    """
+    Given: allow_overwrite set to True
+    When: Try to recompute encodings
+    Then: Encoding does NOT get overwritten by compute_encodings
+    """
+    q.allow_overwrite(True)
+    assert q.is_overwrite_allowed()
+    assert q.is_overwrite_allowed("maxval")
+    # Check deprecated _allow_overwrite flag for backwards compatibility
+    assert q._allow_overwrite
+
+    with q.compute_encodings():
+        q(x * 2)
+
+    assert torch.equal(q.maxval, q_max * 2)
 
 
 @pytest.mark.parametrize(
