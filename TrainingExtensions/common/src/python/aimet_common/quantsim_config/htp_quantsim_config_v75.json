@@ -111,10 +111,6 @@
         }
       }
     },
-    "ScatterElements":
-    {
-      "is_output_quantized": "False"
-    },
     "Sigmoid":
     {
       "encoding_constraints":
