@@ -1,8 +1,15 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
+import os
 import copy
+import numpy as np
 import torch
+
+from aimet_onnx.experimental.adascale.adascale_optimizer import (
+    AdaScale,
+    adascale_model_config_dict,
+)
 
 from aimet_onnx.experimental.adascale.quantizer import (
     add_qlinear_layers,
@@ -136,3 +143,33 @@ class TestAdascaleOnnx:
 
         modified_out = new_qdq(input_with_adascale_params_folded)
         assert torch.equal(modified_out, adascale_out)
+
+
+def test_get_decoder_blocks(monkeypatch):
+    path = os.path.abspath(os.path.join("../../../../GenAITests"))
+    monkeypatch.syspath_prepend(path)
+    from GenAITests.onnx.models.qwen import Qwen_25_ONNX
+
+    context_length = 32
+    sequence_length = 16
+    model_id = "Qwen/Qwen2-0.5B"
+    model_cls = Qwen_25_ONNX
+    sim = model_cls.instantiate_quantsim(
+        model_id, context_length, sequence_length, small_model=True
+    )
+
+    inputs = {
+        "input_ids": np.random.randint(0, 100, size=(1, 16), dtype=np.int32),
+        "attention_mask": np.random.randint(0, 100, size=(1, 1, 16, 32)).astype(
+            np.float32
+        ),
+        "position_ids": np.arange(0, 16).reshape(1, 16).astype(np.int32),
+        "past_key_0_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
+        "past_value_0_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
+        "past_key_1_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
+        "past_value_1_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
+    }
+
+    AdaScale.apply_adascale(
+        sim, inputs, adascale_model_config_dict["Qwen2Model"], num_iterations=1
+    )
