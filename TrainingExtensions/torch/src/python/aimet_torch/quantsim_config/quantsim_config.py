@@ -1082,7 +1082,7 @@ def _modify_tensor_quantizers(
             elif setting_name == ConfigDictKeys.ENCODING_CONSTRAINTS:
                 tensor_quantizer.encoding_min_max_fixed_vals = (
                     quantizer_setting[ConfigDictKeys.MIN],
-                    quantizer_setting[ConfigDictKeys.MAX],
+                    quantizer_setting.get(ConfigDictKeys.MAX, None),
                 )
             if tensor_quantizer not in modified_tensor_quantizers:
                 modified_tensor_quantizers[tensor_quantizer] = {setting_type}

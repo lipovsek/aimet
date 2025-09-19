@@ -217,7 +217,7 @@ QUANTSIM_CONFIG_SCHEMA = {
                                 "min": {"type": "number"},
                                 "max": {"type": "number"},
                             },
-                            "required": ["min", "max"],
+                            "required": ["min"],
                         },
                     },
                     "additionalProperties": False,

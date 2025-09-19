@@ -45,7 +45,7 @@ from aimet_common.defs import QuantScheme, QuantizationDataType
 from aimet_torch.quantsim_config.builder import LazyQuantizeWrapper, LazyQuantizer
 import aimet_torch.fp_quantization as v1_fp_quantization
 from aimet_torch.v2.quantization.float import FloatQuantizeDequantize
-from aimet_torch.v2.quantization.affine import QuantizeDequantize
+from aimet_torch.v2.quantization.affine import QuantizeDequantize, AffineQuantizerBase
 from aimet_torch.v2.quantization.encoding_analyzer import (
     MinMaxEncodingAnalyzer,
     PercentileEncodingAnalyzer,
@@ -210,17 +210,20 @@ class _V2LazyQuantizeWrapper(LazyQuantizeWrapper):
         for quantizer, quantizer_info in zip(quantizer_list, quantizer_info_list):
             # pylint: disable=protected-access
             if (
-                quantizer is not None
+                isinstance(quantizer, AffineQuantizerBase)
                 and quantizer_info.encoding_min_max_fixed_vals
-                and "min" in quantizer._initial_parameters
-                and "max" in quantizer._initial_parameters
             ):
                 fixed_min, fixed_max = quantizer_info.encoding_min_max_fixed_vals
 
-                if np.allclose(fixed_min, -fixed_max):
+                if (
+                    fixed_min is not None
+                    and fixed_max is not None
+                    and np.allclose(fixed_min, -fixed_max)
+                ):
                     # Symmetric range. Set symmetric=True to ensure symmetry
                     quantizer.symmetric = True
 
                 quantizer.set_range(fixed_min, fixed_max)
-                quantizer.allow_overwrite(False)
-                quantizer.requires_grad_(False)
+                quantizer.allow_overwrite(min=fixed_min is None, max=fixed_max is None)
+                quantizer.min.requires_grad_(fixed_min is None)
+                quantizer.max.requires_grad_(fixed_max is None)

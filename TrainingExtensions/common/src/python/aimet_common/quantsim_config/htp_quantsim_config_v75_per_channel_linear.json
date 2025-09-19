@@ -150,6 +150,13 @@
     {
       "is_output_quantized": "False"
     },
+    "Relu":
+    {
+      "encoding_constraints":
+      {
+        "min": 0.0
+      }
+    },
     "RMSNormalization":
     {
       "per_channel_quantization": "False",

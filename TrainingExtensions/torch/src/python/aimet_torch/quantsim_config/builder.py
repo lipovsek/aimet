@@ -221,12 +221,17 @@ class LazyQuantizer(ABC):
         self.channel_axis = ch_axis
 
     @property
-    def encoding_min_max_fixed_vals(self) -> Optional[Tuple[float, float]]:
+    def encoding_min_max_fixed_vals(
+        self,
+    ) -> Optional[Tuple[Optional[float], Optional[float]]]:
         """Accessor to self._encoding_min_max_fixed_vals"""
         return self._encoding_min_max_fixed_vals
 
     @encoding_min_max_fixed_vals.setter
-    def encoding_min_max_fixed_vals(self, min_max_vals: Tuple[float, float]):
+    def encoding_min_max_fixed_vals(
+        self, min_max_vals: Tuple[Optional[float], Optional[float]]
+    ):
+        # pylint: disable=redefined-builtin
         """self._encoding_min_max_fixed_vals setter"""
         log_with_error_and_assert_if_false(
             isinstance(min_max_vals, tuple), logger, "Min max vals must be a tuple"
@@ -234,14 +239,18 @@ class LazyQuantizer(ABC):
         log_with_error_and_assert_if_false(
             len(min_max_vals) == 2, logger, "Min max vals must be a tuple of two values"
         )
-        log_with_error_and_assert_if_false(
-            min_max_vals[0] < min_max_vals[1],
-            logger,
-            "Min value "
-            + str(min_max_vals[0])
-            + " is not less than max val "
-            + str(min_max_vals[1]),
-        )
+
+        min, max = min_max_vals
+        if min is not None and max is not None:
+            log_with_error_and_assert_if_false(
+                min < max,
+                logger,
+                "Min value "
+                + str(min_max_vals[0])
+                + " is not less than max val "
+                + str(min_max_vals[1]),
+            )
+
         if self.quant_scheme != QuantScheme.post_training_tf:
             self.quant_scheme = QuantScheme.post_training_tf
         self._encoding_min_max_fixed_vals = min_max_vals

@@ -3148,21 +3148,24 @@ class TestEncodingPropagation:
         """
         Given: model as below
 
-        [input] --> Conv -> [output]
+        [input] --> Conv -> Relu -> [output]
         """
-        pt_model = torch.nn.Conv2d(3, 3, 3).eval()
+        pt_model = torch.nn.Sequential(
+            torch.nn.Conv2d(3, 3, 3),
+            torch.nn.ReLU(),
+        ).eval()
         dummy_input = torch.randn(1, 3, 224, 224)
         model = _convert_to_onnx(pt_model, dummy_input)
 
         """
-        When: Partially fix Conv output encodings to [0, ?]
-        Then: Conv output quantizers should be fixed to range [0, ?]
+        When: Create quantsim with HTP config file
+        Then: Relu output quantizers should be fixed to range [0, ?]
         """
         dummy_input = make_dummy_input(model.model)
         sim = QuantizationSimModel(model, config_file="htp_v81")
 
         output_qtzr = sim.qc_quantize_op_dict["output"]
-        output_qtzr.set_fixed_encoding_range((0.0, None))
+        assert output_qtzr._encoding_min_max_fixed_vals == (0.0, None)
 
         sim.compute_encodings([dummy_input])
 

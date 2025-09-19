@@ -36,6 +36,7 @@
 # =============================================================================
 """v1 lazy quant wrapper / quantizer"""
 
+from typing import Tuple, Optional
 from aimet_torch.quantsim_config.builder import LazyQuantizeWrapper, LazyQuantizer
 from aimet_torch.v1.utils import get_v1_quant_scheme_for_initialization
 from aimet_torch.v1.qc_quantize_op import (
@@ -96,6 +97,20 @@ class _V1LazyQuantizer(LazyQuantizer):
         quantizer.is_unsigned_symmetric = self.is_unsigned_symmetric
         quantizer.use_unsigned_symmetric = self.use_unsigned_symmetric
         quantizer.use_strict_symmetric = self.use_strict_symmetric
+
+    @LazyQuantizer.encoding_min_max_fixed_vals.setter
+    def encoding_min_max_fixed_vals(
+        self, min_max_vals: Tuple[Optional[float], Optional[float]]
+    ):
+        # pylint: disable=redefined-builtin
+        min, max = min_max_vals
+
+        # NOTE: aimet_torch v1 does NOT support partial encoding freeze
+        # not to break legacy code.
+        if min is None or max is None:
+            return
+
+        LazyQuantizer.encoding_min_max_fixed_vals.fset(self, (min, max))
 
 
 class _V1LazyQuantizeWrapper(LazyQuantizeWrapper):

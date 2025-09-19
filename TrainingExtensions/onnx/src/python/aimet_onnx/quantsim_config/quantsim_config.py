@@ -596,9 +596,9 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
                     quantizer.use_symmetric_encodings = quantizer_setting
                 elif setting_name == ConfigDictKeys.ENCODING_CONSTRAINTS:
                     fixed_min = quantizer_setting[ConfigDictKeys.MIN]
-                    fixed_max = quantizer_setting[ConfigDictKeys.MAX]
+                    fixed_max = quantizer_setting.get(ConfigDictKeys.MAX, None)
 
-                    if np.allclose(fixed_min, -fixed_max):
+                    if fixed_max is not None and np.allclose(fixed_min, -fixed_max):
                         # Symmetric range. Set symmetric=True to ensure symmetry
                         quantizer.use_symmetric_encodings = True
 

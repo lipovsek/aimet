@@ -67,6 +67,13 @@
         "max": 1.0
       }
     },
+    "Relu":
+    {
+      "encoding_constraints":
+      {
+        "min": 0.0
+      }
+    },
     "Mean":
     {
       "is_output_quantized": "False"

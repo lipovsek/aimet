@@ -1045,57 +1045,54 @@ class TestQuantsim:
         assert sim.model.expand.output_quantizers[0] is None
 
     def test_encoding_min_max_fixed_vals(self):
-        quantsim_config = {
-            "defaults": {
-                "ops": {"is_output_quantized": "True", "is_symmetric": "False"},
-                "params": {"is_quantized": "False", "is_symmetric": "True"},
-            },
-            "params": {"weight": {"is_quantized": "True"}},
-            "op_type": {
-                "Softmax": {"encoding_constraints": {"min": 0.0, "max": 1.0}},
-            },
-            "supergroups": [],
-            "model_input": {},
-            "model_output": {},
-        }
-        with tempfile.TemporaryDirectory() as temp_dir:
-            with open(os.path.join(temp_dir, "config.json"), "w") as f:
-                json.dump(quantsim_config, f)
+        """
+        When: Create sim with HTP config file
+        Then:
+          - Relu output encoding should be partially fixed to [0, ?]
+          - Softmax output encoding should be partially fixed to [0, 1]
+        """
 
-            class SoftmaxModel(torch.nn.Module):
-                def __init__(self):
-                    super(SoftmaxModel, self).__init__()
-                    self.linear = torch.nn.Linear(3, 8)
-                    self.softmax = torch.nn.Softmax()
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = torch.nn.Conv2d(3, 3, 3)
+                self.relu = torch.nn.ReLU()
+                self.softmax = torch.nn.Softmax()
 
-                def forward(self, inp):
-                    x = self.linear(inp)
-                    x = self.softmax(x)
-                    return x
+            def forward(self, inp):
+                x = self.conv(inp)
+                x = self.relu(x)
+                x = self.softmax(x)
+                return x
 
-            model = SoftmaxModel()
-            dummy_input = torch.randn(1, 3)
+        model = Model()
+        dummy_input = torch.randn(1, 3, 10, 10)
 
-            qsim = QuantizationSimModel(
-                model, dummy_input, config_file=os.path.join(temp_dir, "config.json")
-            )
-            assert torch.equal(
-                qsim.model.softmax.output_quantizers[0].min, torch.tensor(0.0)
-            )
-            assert torch.equal(
-                qsim.model.softmax.output_quantizers[0].max, torch.tensor(1.0)
-            )
+        qsim = QuantizationSimModel(model, dummy_input, config_file="htp_v81")
 
-            qsim = QuantizationSimModel(
-                model,
-                dummy_input,
-                config_file=os.path.join(temp_dir, "config.json"),
-                default_param_bw=16,
-                default_output_bw=16,
-                default_data_type=QuantizationDataType.float,
-            )
-            assert not hasattr(qsim.model.softmax.output_quantizers[0], "min")
-            assert not hasattr(qsim.model.softmax.output_quantizers[0], "max")
+        assert not qsim.model.relu.output_quantizers[0].is_initialized()
+        assert qsim.model.relu.output_quantizers[0].min == 0.0
+        assert not qsim.model.relu.output_quantizers[0].min.requires_grad
+        assert qsim.model.relu.output_quantizers[0].max.requires_grad
+
+        assert qsim.model.softmax.output_quantizers[0].is_initialized()
+        assert qsim.model.softmax.output_quantizers[0].min == 0.0
+        assert qsim.model.softmax.output_quantizers[0].max == 1.0
+        assert not qsim.model.softmax.output_quantizers[0].min.requires_grad
+        assert not qsim.model.softmax.output_quantizers[0].max.requires_grad
+
+        qsim = QuantizationSimModel(
+            model,
+            dummy_input,
+            config_file="htp_v81",
+            default_param_bw=16,
+            default_output_bw=16,
+            default_data_type=QuantizationDataType.float,
+        )
+        assert not hasattr(qsim.model.relu.output_quantizers[0], "min")
+        assert not hasattr(qsim.model.relu.output_quantizers[0], "max")
+        assert not hasattr(qsim.model.softmax.output_quantizers[0], "min")
+        assert not hasattr(qsim.model.softmax.output_quantizers[0], "max")
 
     def test_export_to_onnx_direct_fixed_param_names(self):
         torch.manual_seed(0)

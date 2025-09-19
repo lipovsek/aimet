@@ -62,6 +62,13 @@
     {
       "is_output_quantized": "False"
     },
+    "Relu":
+    {
+      "encoding_constraints":
+      {
+        "min": 0.0
+      }
+    },
     "Reshape":
     {
       "is_output_quantized": "False"
