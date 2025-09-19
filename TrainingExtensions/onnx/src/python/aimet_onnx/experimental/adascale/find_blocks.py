@@ -38,6 +38,23 @@ def get_conv_linear_layers_decoder_block(
     return layers_in_each_decoder_block
 
 
+def get_all_layers_per_decoder_block(
+    quantsim: QuantizationSimModel,
+    decoder_blocks_end_points: List[Tuple],
+    block_index: int,
+) -> List[Tuple]:
+    """
+    Returns all the layers between decoder block boundaries
+    """
+    all_ops = quantsim.connected_graph.ordered_ops
+    op_name_to_index = {op.name: index for index, op in enumerate(all_ops)}
+    return all_ops[
+        op_name_to_index[
+            str(decoder_blocks_end_points[block_index][0])
+        ] : op_name_to_index[str(decoder_blocks_end_points[block_index][1])] + 1
+    ]
+
+
 def get_decoder_blocks_end_points(quantsim: QuantizationSimModel) -> List[Tuple]:
     """
     Gets end points of the decoder blocks
