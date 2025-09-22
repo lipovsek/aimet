@@ -154,7 +154,7 @@ def test_get_decoder_blocks(monkeypatch):
     sequence_length = 16
     model_id = "Qwen/Qwen2-0.5B"
     model_cls = Qwen_25_ONNX
-    sim = model_cls.instantiate_quantsim(
+    sim, _ = model_cls.instantiate_quantsim(
         model_id, context_length, sequence_length, small_model=True
     )
 

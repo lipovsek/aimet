@@ -17,7 +17,7 @@ from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 
 from aimet_common.utils import AimetLogger  # pylint: disable=import-error
 from aimet_onnx.quantsim import QuantizationSimModel
-from aimet_onnx.adascale.find_blocks import (
+from aimet_onnx.experimental.adascale.find_blocks import (
     get_decoder_blocks_end_points,
     get_conv_linear_layers_decoder_block,
 )

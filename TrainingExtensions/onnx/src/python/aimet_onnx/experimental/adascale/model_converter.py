@@ -1,13 +1,10 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-import onnx
 from onnx import numpy_helper
-import numpy as np
 import torch
 from torch.nn import Parameter
 import copy
-from typing import List, Tuple
 
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
@@ -16,8 +13,6 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from aimet_onnx.experimental.adascale.find_blocks import (
     get_decoder_blocks_end_points,
 )
-
-import torch.nn as nn
 
 decoder_block_to_layername_map = {
     LlamaDecoderLayer: [
@@ -188,7 +183,7 @@ class ModelConverter:
                     init_key = parent2_node.input[0]
         return init_key
 
-    def _get_pt_model(self, **kwargs):
+    def _get_pt_model(self):
         # TODO [ananmukh] - use onnx node info to get the config and remove config hardcoding
         """
         create self.pt_model
