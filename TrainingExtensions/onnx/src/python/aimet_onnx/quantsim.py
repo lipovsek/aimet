@@ -437,6 +437,11 @@ class QuantizationSimModel:
         self._get_activations_to_quantize(dummy_input)
 
         self._add_quantization_nodes()
+        self._producers: dict[str, onnx.NodeProto] = {
+            output: node
+            for node in self.model.model.graph.node
+            for output in node.output
+        }
 
         # Apply configurations based on provided config file.
         quantsim_configurator = self._add_configuration_(config_file)
@@ -2359,7 +2364,7 @@ class QuantizationSimModel:
         for op in reversed(data_movement_ops):
             propogate_quantizer(op)
 
-    def _get_enabled_quantizer(self, tensor_name: str) -> QcQuantizeOp:
+    def _get_enabled_quantizer(self, tensor_name: str) -> Optional[QcQuantizeOp]:
         """
         Returns closest enabled quantizer to tensor traversing upwards only through invariant ops
 
@@ -2369,10 +2374,7 @@ class QuantizationSimModel:
         if quantizer and quantizer.enabled:
             return quantizer
 
-        prod_dict = self.connected_graph.get_all_products()
-        product = prod_dict.get(tensor_name, None)
-
-        if product == None:
+        if tensor_name not in self.connected_graph.get_all_products():
             if tensor_name.endswith(("_updated", "_qdq")):
                 raise KeyError(
                     f"Could not find quantizer for tensor {tensor_name}. Input tensor_name must be the name of a tensor in the original (unquantized) graph"
@@ -2382,19 +2384,95 @@ class QuantizationSimModel:
                     f"Could not find quantizer for tensor {tensor_name}. Tensor name does not exist in the graph"
                 )
 
-        producer = product.producer
+        path = self._get_path_to_effective_quantizer(tensor_name)
 
-        if producer == None:
-            return None
+        if path:
+            *_, qc_quantize_op_node = path
+            quantizer = self.qc_quantize_op_dict[qc_quantize_op_node.input[0]]
+            if quantizer.enabled:
+                return quantizer
 
-        if not (_is_grid_preserving_op(producer.type)):
-            return None
+        return None
 
-        if len(producer.inputs) == 0:
-            return None
+    def _get_path_to_effective_quantizer(
+        self, tensor_name: str
+    ) -> Optional[List[onnx.NodeProto]]:
+        """
+        Returns graph path from a tensor to the "effective" quantizer associated with it (if any).
 
-        upstream_tensor = producer.inputs[0]
-        return self._get_enabled_quantizer(upstream_tensor.name)
+        Node Q is the effective quantizer of tensor X if and only if:
+
+            1. Q is an enabled QcQuantizeOp, and;
+            2. Q(X) == X, and;
+            3. Q is the closest ancestor of tensor X that satisfies 1 and 2
+
+
+        For example, Q is the effective quantizer of X in all of the following examples:
+
+            1. ... -> QcQuantizeOp ---> ...
+                          (Q)      (X)
+
+            2. ... -> QcQuantizeOp -> Transpose ---> ...
+                          (Q)                   (X)
+
+        On the other hand, Q is NOT the effective quantizer of X in any of the following examples:
+
+            1. ... -> QcQuantizeOp -> QcQuantizeOp ---> ...
+                          (Q)                      (X)
+
+               (Reason: Q is not the closest ancestor of X that satisfies 1 and 2)
+
+            2. ... -> QcQuantizeOp -> Conv ---> ...
+                          (Q)              (X)
+
+               (Reason: Q(X) != X)
+
+        Args:
+            tensor_name (str): Name of tensor for which to find the path to the effective quantizer
+
+        Returns:
+            List of tensor name and NodeProto in alternating order,
+            indicating the path from the tensor to its effective quantizer.
+            Returns None if the effective quantizer doesn't exist.
+
+            For example, given the following graph:
+
+             ... -> QcQuantizeOp -----> Transpose -----> ...
+                        (Q)       (Y)      (T)     (X)
+
+            `_get_path_to_effective_quantizer("X")` returns [T, Q].
+        """
+        producer = self._producers.get(tensor_name, None)
+        path = [producer]
+
+        def is_disabled_quantizer(node: onnx.NodeProto):
+            return (
+                node.op_type == "QcQuantizeOp"
+                and not self.qc_quantize_op_dict[node.input[0]].enabled
+            )
+
+        def is_enabled_quantizer(node: onnx.NodeProto):
+            return (
+                node.op_type == "QcQuantizeOp"
+                and self.qc_quantize_op_dict[node.input[0]].enabled
+            )
+
+        while (
+            producer
+            and producer.input
+            and (
+                _is_grid_preserving_op(producer.op_type)
+                or is_disabled_quantizer(producer)
+            )
+        ):
+            tensor_name = producer.input[0]
+            producer = self._producers.get(tensor_name, None)
+            path += [producer]
+
+        if producer and is_enabled_quantizer(producer):
+            return [node for node in path if not is_disabled_quantizer(node)]
+
+        return None
 
 
 def _to_unsigned_encoding(encoding: dict) -> dict:

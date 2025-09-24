@@ -2721,11 +2721,14 @@ class TestQuantSim:
 
         quantizer = sim._get_enabled_quantizer("output")
         assert quantizer == sim.qc_quantize_op_dict["relu_output"]
+        path = sim._get_path_to_effective_quantizer("output_updated")
+        assert path[0].op_type == "MaxPool"
+        assert path[1].op_type == "Reshape"
+        assert path[2].op_type == "QcQuantizeOp"
 
         sim.qc_quantize_op_dict["relu_output"].enabled = False
-
-        quantizer = sim._get_enabled_quantizer("output")
-        assert quantizer == None
+        assert sim._get_enabled_quantizer("output") is None
+        assert sim._get_path_to_effective_quantizer("output_updated") is None
 
     @pytest.mark.parametrize("providers", [CPU_PROVIDERS, CUDA_PROVIDERS])
     def test_fp16_model_encodings(self, providers):
