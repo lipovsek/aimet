@@ -22,14 +22,16 @@ class LocalTransformOptimizer:
         )
 
     def __init__(self, transformed_layers: list[TransformationMixin]):
-        self.layers = transformed_layers
-        self.parameters = []
+        self.layers = list(transformed_layers)
+        self.parameters = set()
         for layer in self.layers:
             for transform in itertools.chain(
                 layer.right_hand_transforms, layer.left_hand_transforms
             ):
                 if transform.mergeable:
-                    self.parameters.extend(list(transform.parameters()))
+                    self.parameters |= set(
+                        param for param in transform.parameters() if param.requires_grad
+                    )
         self.optimizer = torch.optim.AdamW(self.parameters, lr=self.lr)
 
     # pylint: disable=protected-access

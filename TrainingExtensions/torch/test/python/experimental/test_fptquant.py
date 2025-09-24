@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Test aimet-torch fptquant"""
 
+import numpy as np
+import random
 import os
 import tempfile
 import onnx
@@ -10,10 +12,14 @@ import torch
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
 from aimet_torch.experimental.fptquant.fptquant_transforms import (
     GroupedHadamardTransformOp,
+    MultiHeadValueTransformOp,
     set_export_to_custom_hadamard,
 )
 from aimet_torch.experimental.fptquant import fptquant_config
 from aimet_torch.experimental.fptquant.fptquant_optimizer import FPTQuant
+from aimet_torch.experimental.fptquant.fptquant_local_transform_optimizer import (
+    LocalTransformOptimizer,
+)
 from aimet_torch.quantsim import QuantizationSimModel
 from aimet_torch.nn import QuantizationMixin
 
@@ -215,3 +221,45 @@ def test_grouped_hadamard_training_and_export():
             if node.domain == "qti_aisw" and node.op_type == "HadamardTransform":
                 found_custom_fht = True
         assert found_custom_fht
+
+
+@pytest.mark.cuda
+def test_local_optimizer_determinism():
+    seed = 123
+    head_dim = 100
+    results = []
+
+    """
+    Given: Same random seed
+    When: Apply MultiHeadValueTransformOp to v_proj and o_proj
+    Then: The outcome must be deterministic; the resulting transformation matrices must be equal
+    """
+    for _ in range(2):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+        transform = MultiHeadValueTransformOp(
+            head_dim, num_attention_heads=1, num_key_value_heads=1
+        ).to(device="cuda", dtype=torch.float32)
+
+        v_proj = TransformationMixin.from_module(
+            torch.nn.Linear(head_dim, head_dim, bias=False, device="cuda")
+        )
+        v_proj.add_right_hand_transform(transform)
+
+        o_proj = TransformationMixin.from_module(
+            torch.nn.Linear(head_dim, head_dim, bias=False, device="cuda")
+        )
+        o_proj.add_left_hand_transform(transform.get_inverted_op())
+
+        optimizer = LocalTransformOptimizer(transformed_layers=[v_proj, o_proj])
+        optimizer.optimize()
+
+        results.append(transform.state_dict())
+
+    state_dict_1, state_dict_2 = results
+    assert list(state_dict_1.keys()) == list(state_dict_2.keys())
+    for p1, p2 in zip(state_dict_1.values(), state_dict_2.values()):
+        assert torch.equal(p1, p2)
