@@ -203,7 +203,7 @@ class TestQuantizedTensor:
         ]:
             """
             Given: QuantizedTensor
-            When: Cast to non-floating point dtypes
+            When: Cast to integer dtypes
             Then: Throw error
             """
             data = torch.arange(256, dtype=torch.float)  # actual content of qtensor
@@ -212,6 +212,20 @@ class TestQuantizedTensor:
 
             with pytest.raises(RuntimeError):
                 _ = cast_fn(qtensor)
+
+        """
+        When: Cast to boolean dtype
+        Then:
+          1. Should be casted normally
+          2. Output must be a plain torch.Tensor, not a Quantized- or DequantizedTensor
+        """
+        data = torch.arange(256, dtype=torch.float)  # actual content of qtensor
+        qtensor = data.clone().as_subclass(qtensor_cls)
+        qtensor.encoding = AffineEncoding(scale, offset, bitwidth)
+        assert torch.equal(qtensor.bool(), qtensor != 0)
+        assert torch.equal(qtensor.to(torch.bool), qtensor != 0)
+        assert qtensor.bool().dtype == torch.bool
+        assert type(qtensor.bool()) == torch.Tensor
 
     @pytest.mark.parametrize(
         "scale, offset, bitwidth, signed",
