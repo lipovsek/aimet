@@ -37,6 +37,7 @@
 """Common utility for Quantization"""
 
 import os
+import functools
 from typing import Union, Tuple, Dict
 import numpy as np
 
@@ -412,6 +413,7 @@ def extract_global_quantizer_args(
     return quant_args
 
 
+@functools.lru_cache
 def _get_minimum_scale(num_steps: int) -> float:
     """
     Return the minimum scale given the number of steps in the quantization grid.

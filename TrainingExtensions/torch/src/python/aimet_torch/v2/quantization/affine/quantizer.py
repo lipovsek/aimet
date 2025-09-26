@@ -343,9 +343,8 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
             num_steps = self.qmax - self.qmin
             scale = (self.max.to(dtype) - self.min.to(dtype)) / num_steps
 
-        return torch.clamp_min(
-            scale.to(dtype), _get_minimum_scale(self.qmax - self.qmin)
-        )
+        minimum_scale = _get_minimum_scale(self.qmax - self.qmin)
+        return scale.abs().clamp_min_(minimum_scale).to(dtype)
 
     def get_offset(self, dtype=None) -> Optional[torch.Tensor]:
         """

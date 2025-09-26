@@ -2688,7 +2688,11 @@ def test_affine_encoding_schema_2_0_0_nonstandard_dtype():
 def test_positive_scale(min_val, max_val):
     """
     When: qtzr.min >= qtzr.max
-    Then: Scale should be strictly positive, offsets should be within (-qmax, -qmin), and outputs should be finite
+    Then:
+      1. Scale should be strictly positive
+      2. Offset should be within (-qmax, -qmin)
+      3. Output should be finite
+      4. Gradient should be non-zero unless min & max are too close to each other
     """
     x = torch.randn(100, 10)
     qtzr = QuantizeDequantize(shape=(10,), qmin=0, qmax=255, symmetric=False)
@@ -2709,3 +2713,10 @@ def test_positive_scale(min_val, max_val):
     assert torch.all(torch.isfinite(offset))
     assert torch.all(scale > 0)
     assert torch.all(torch.logical_and(offset <= 0, offset >= -255))
+
+    loss = torch.nn.functional.mse_loss(out, x)
+    loss.backward()
+
+    assert torch.all(qtzr.min.grad != 0)
+    if abs(max_val - min_val) > _get_minimum_scale(qtzr.qmax - qtzr.qmin):
+        assert torch.all(qtzr.max.grad != 0)
