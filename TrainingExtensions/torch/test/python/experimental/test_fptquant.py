@@ -88,17 +88,6 @@ def test_quantized_grouped_hadamard_transform(size):
     after_merge_out = qsim.model(dummy_input)
     assert torch.allclose(before_merge_out, after_merge_out, atol=1e-6)
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        set_export_to_custom_hadamard(qsim.model, True)
-        qsim.export(tmp_dir, "quantized_hadamard_export", dummy_input)
-
-        onnx_model = onnx.load(os.path.join(tmp_dir, "quantized_hadamard_export.onnx"))
-        found_custom_fht = False
-        for node in onnx_model.graph.node:
-            if node.domain == "qti_aisw" and node.op_type == "HadamardTransform":
-                found_custom_fht = True
-        assert found_custom_fht
-
 
 def test_insert_nonmergeable_down_project():
     class Block(torch.nn.Module):
@@ -175,52 +164,6 @@ def test_grouped_hadamard_training_equivalence(size):
     eval_out = transformed_linear(dummy_input)
 
     assert torch.equal(training_out, eval_out)
-
-
-def test_grouped_hadamard_training_and_export():
-    linear = torch.nn.Linear(24, 24, bias=False)
-    transformed_linear = TransformationMixin.from_module(linear)
-    transform = GroupedHadamardTransformOp(24)
-    transformed_linear.add_left_hand_transform(transform)
-
-    dummy_input = torch.randn(1, 24)
-
-    transformed_linear.train()
-
-    optimizer = torch.optim.Adam(transformed_linear.parameters())
-    loss = transformed_linear(dummy_input).sum()
-    loss.backward()
-    optimizer.step()
-
-    transformed_linear.eval()
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        torch.onnx.export(
-            transformed_linear,
-            dummy_input,
-            os.path.join(tmp_dir, "hadamard_export.onnx"),
-            autograd_inlining=False,
-        )
-        onnx_model = onnx.load(os.path.join(tmp_dir, "hadamard_export.onnx"))
-        found_custom_fht = False
-        for node in onnx_model.graph.node:
-            if node.domain == "qti_aisw" and node.op_type == "HadamardTransform":
-                found_custom_fht = True
-        assert not found_custom_fht
-
-        set_export_to_custom_hadamard(transformed_linear, True)
-        torch.onnx.export(
-            transformed_linear,
-            dummy_input,
-            os.path.join(tmp_dir, "hadamard_export.onnx"),
-            autograd_inlining=False,
-        )
-        onnx_model = onnx.load(os.path.join(tmp_dir, "hadamard_export.onnx"))
-        found_custom_fht = False
-        for node in onnx_model.graph.node:
-            if node.domain == "qti_aisw" and node.op_type == "HadamardTransform":
-                found_custom_fht = True
-        assert found_custom_fht
 
 
 @pytest.mark.cuda

@@ -166,13 +166,27 @@ def _fuse_r1_rotation(module, fuse_before, had_matrix):
     with torch.no_grad():
         if isinstance(module, torch.nn.Linear):
             if fuse_before:
-                module.weight.copy_(module.weight @ had_matrix.T)
+                module.weight.copy_(
+                    module.weight @ had_matrix.T.to(dtype=module.weight.data.dtype)
+                )
             else:
-                module.weight.copy_((module.weight.T @ had_matrix.T).T)
+                module.weight.copy_(
+                    (
+                        module.weight.T
+                        @ had_matrix.T.to(dtype=module.weight.data.dtype)
+                    ).T
+                )
                 if module.bias is not None:
-                    module.bias.copy_((module.bias.T @ had_matrix.T).T)
+                    module.bias.copy_(
+                        (
+                            module.bias.T
+                            @ had_matrix.T.to(dtype=module.weight.data.dtype)
+                        ).T
+                    )
         elif isinstance(module, torch.nn.Embedding):
             if not fuse_before:
-                module.weight.copy_(module.weight @ had_matrix.T)
+                module.weight.copy_(
+                    module.weight @ had_matrix.T.to(dtype=module.weight.data.dtype)
+                )
             else:
                 raise RuntimeError("Embedding module is expected to fuse after only")

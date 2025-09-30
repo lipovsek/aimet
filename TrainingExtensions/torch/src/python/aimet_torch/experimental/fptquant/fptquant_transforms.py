@@ -3,13 +3,12 @@
 
 # pylint: disable=missing-docstring
 
-import math
 import itertools
 import torch
-import torch.nn.functional as F
-import scipy
 
-from aimet_torch.v2.nn.true_quant import QuantizationMixin
+from aimet_torch.v2.nn import QuantizationMixin
+from aimet_torch.v2.nn.modules.custom import QuantizedHadamardRotation
+from aimet_torch._base.nn.modules.custom import HadamardRotation
 from aimet_torch.experimental.transforms.transform_ops import (
     InvertibleTransformOp,
     MatrixTransformOp,
@@ -26,10 +25,10 @@ class ScaledRotateTransformOp(InvertibleTransformOp):
         k_proj_out_features = head_dim * num_key_value_heads
 
         self.rotation = torch.nn.Parameter(
-            torch.randn(k_proj_out_features // 2), requires_grad=True
+            torch.zeros(k_proj_out_features // 2), requires_grad=True
         )
         self.scale = torch.nn.Parameter(
-            torch.randn((num_key_value_heads, head_dim // 2)), requires_grad=True
+            torch.ones((num_key_value_heads, head_dim // 2)), requires_grad=True
         )
 
     @staticmethod
@@ -72,7 +71,7 @@ class ScalingTransformOp(InvertibleTransformOp):
     def __init__(self, intermediate_size):
         super().__init__(True)
         self.scale = torch.nn.Parameter(
-            torch.randn(intermediate_size), requires_grad=True
+            torch.ones(intermediate_size), requires_grad=True
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -88,38 +87,15 @@ class ScalingTransformOp(InvertibleTransformOp):
         return self.forward(weight)
 
 
-class GroupedHadamardTransformOp(InvertibleTransformOp):
+class GroupedHadamardTransformOp(InvertibleTransformOp, HadamardRotation):
     def __init__(self, intermediate_size):
-        super().__init__(True)
-        num_two_factors = 0
-        remaining_factor = intermediate_size
-        while remaining_factor & 1 == 0:
-            remaining_factor = remaining_factor >> 1
-            num_two_factors += 1
-        self.register_buffer(
-            "hadamard",
-            torch.tensor(
-                scipy.linalg.hadamard(2**num_two_factors), dtype=torch.float32
-            ),
-        )
-        self.mergeable = False
-        self.use_custom_hadamard = False
+        super().__init__(mergeable=False, size=intermediate_size)
 
     def forward(self, x):
-        hadamard_rank = self.hadamard.shape[0]
-        scale = 1 / math.sqrt(hadamard_rank)
-        n_groups = x.shape[-1] // hadamard_rank
-        if self.training or not self.use_custom_hadamard:
-            x_reshape = x.reshape(*x.shape[:-1], n_groups, hadamard_rank)
-            return (F.linear(x_reshape, self.hadamard) * scale).reshape(x.shape)
-        return GroupedHadamardFunc.apply(x, scale, int(hadamard_rank))
+        return HadamardRotation.forward(self, x)
 
     def inverse(self, x):
-        hadamard_rank = self.hadamard.shape[0]
-        scale = 1 / math.sqrt(hadamard_rank)
-        n_groups = x.shape[-1] // hadamard_rank
-        x_reshape = x.reshape(*x.shape[:-1], n_groups, hadamard_rank)
-        return (F.linear(x_reshape, self.hadamard) * scale).reshape(x.shape)
+        return HadamardRotation.forward(self, x)
 
     def get_inverted_op(self):
         inverted_op = super().get_inverted_op()
@@ -130,60 +106,9 @@ class GroupedHadamardTransformOp(InvertibleTransformOp):
         return self.forward(weight)
 
 
-class GroupedHadamardFunc(torch.autograd.Function):
-    @staticmethod
-    def symbolic(g, inp, scale, hadamard_rank):
-        output = g.op(
-            "qti_aisw::HadamardTransform", inp, scale_f=scale, rank_i=hadamard_rank
-        )
-
-        input_type = inp.type()
-        output_type = input_type.with_sizes(input_type.sizes())
-        output.setType(output_type)
-
-        return output
-
-    @staticmethod
-    def forward(ctx, inp, scale, hadamard_rank):  # pylint: disable=arguments-differ, unused-argument
-        hadamard = torch.tensor(
-            scipy.linalg.hadamard(hadamard_rank), dtype=torch.float32
-        )
-        n_groups = inp.shape[-1] // hadamard_rank
-        inp_reshape = inp.reshape(*inp.shape[:-1], n_groups, hadamard_rank)
-        return (F.linear(inp_reshape, hadamard.to(inp.device)) * scale).reshape(
-            inp.shape
-        )
-
-    @staticmethod
-    def backward(ctx, _grad):  # pylint: disable=arguments-differ
-        raise NotImplementedError()
-
-
 @QuantizationMixin.implements(GroupedHadamardTransformOp)
-class QuantizedGroupedHadamardTransformOp(
-    QuantizationMixin, GroupedHadamardTransformOp
-):
-    def __quant_init__(self):
-        super().__quant_init__()
-
-        # Declare the number of input/output quantizers
-        self.input_quantizers = torch.nn.ModuleList([None])
-        self.output_quantizers = torch.nn.ModuleList([None])
-
-    def forward(self, x):  # pylint: disable=arguments-differ
-        # Quantize input tensors
-        if self.input_quantizers[0]:
-            x = self.input_quantizers[0](x)
-
-        # Run forward with quantized inputs and parameters
-        with self._patch_quantized_parameters():
-            ret = super().forward(x)
-
-        # Quantize output tensors
-        if self.output_quantizers[0]:
-            ret = self.output_quantizers[0](ret)
-
-        return ret
+class QuantizedGroupedHadamardTransformOp(QuantizedHadamardRotation):
+    pass
 
 
 class MultiHeadValueTransformOp(InvertibleTransformOp):
@@ -250,9 +175,7 @@ class RotationTransformOp(InvertibleTransformOp):
                 "with 'merge_transforms(True)' before exporting to ONNX"
             )
         orig_dtype = x.dtype
-        return (x.to(dtype=torch.float32) @ self.rotation.weight.data).to(
-            dtype=orig_dtype
-        )
+        return (x.to(dtype=torch.float32) @ self.rotation.weight.T).to(dtype=orig_dtype)
 
     def inverse(self, x: torch.Tensor) -> torch.Tensor:
         if torch.onnx.is_in_onnx_export():
@@ -263,9 +186,7 @@ class RotationTransformOp(InvertibleTransformOp):
                 "with 'merge_transforms(True)' before exporting to ONNX"
             )
         orig_dtype = x.dtype
-        return (x.to(dtype=torch.float32) @ self.rotation.weight.data.T).to(
-            dtype=orig_dtype
-        )
+        return (x.to(dtype=torch.float32) @ self.rotation.weight).to(dtype=orig_dtype)
 
     def left_hand_merge(self, weight: torch.Tensor) -> torch.Tensor:
         orig_dtype = weight.dtype

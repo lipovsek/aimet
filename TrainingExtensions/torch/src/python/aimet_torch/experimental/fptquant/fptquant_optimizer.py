@@ -1,6 +1,5 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
-
 # pylint: disable=missing-docstring
 
 import torch
@@ -30,6 +29,12 @@ from .fptquant_local_transform_optimizer import LocalTransformOptimizer
 
 
 class FPTQuant:
+    _enable_residual_transform = True
+    _enable_down_project_transform = True
+    _enable_up_down_scaling_transform = True
+    _enable_value_transform = True
+    _enable_prerope_transform = True
+
     @staticmethod
     def insert_fpt_quant_transforms(model: torch.nn.Module, config: PretrainedConfig):
         if model.model.embed_tokens.weight is model.lm_head.weight:
@@ -38,38 +43,41 @@ class FPTQuant:
                 "model.config.tie_word_embeddings or a similar relevant setting is set to False for the model."
             )
 
-        FPTQuant._fuse_norm_layer_into_linears(model.model.norm, [model.lm_head])
+        if FPTQuant._enable_residual_transform:
+            FPTQuant._fuse_norm_layer_into_linears(model.model.norm, [model.lm_head])
+
+        model.model.embed_tokens = TransformationMixin.from_module(
+            model.model.embed_tokens
+        )
+        model.lm_head = TransformationMixin.from_module(model.lm_head)
 
         joint_residual_transform = FPTQuant._get_residual_transform(config).to(
             device=model.device, dtype=torch.float32
         )
-        model.model.embed_tokens = TransformationMixin.from_module(
-            model.model.embed_tokens
-        )
-        model.model.embed_tokens.add_right_hand_transform(joint_residual_transform)
-
-        model.lm_head = TransformationMixin.from_module(model.lm_head)
-        model.lm_head.add_left_hand_transform(
-            joint_residual_transform.get_inverted_op()
-        )
+        if FPTQuant._enable_residual_transform:
+            model.model.embed_tokens.add_right_hand_transform(joint_residual_transform)
+            model.lm_head.add_left_hand_transform(
+                joint_residual_transform.get_inverted_op()
+            )
 
         layers_to_optimize = [model.model.embed_tokens, model.lm_head]
 
         for block_interface in tqdm(
             FPTQuant._get_blocks(model), desc="Block transforms inserted"
         ):
-            FPTQuant._fuse_norm_layer_into_linears(
-                block_interface.input_norm,
-                [
-                    block_interface.q_proj,
-                    block_interface.k_proj,
-                    block_interface.v_proj,
-                ],
-            )
-            FPTQuant._fuse_norm_layer_into_linears(
-                block_interface.post_attention_norm,
-                [block_interface.up_proj, block_interface.gate_proj],
-            )
+            if FPTQuant._enable_residual_transform:
+                FPTQuant._fuse_norm_layer_into_linears(
+                    block_interface.input_norm,
+                    [
+                        block_interface.q_proj,
+                        block_interface.k_proj,
+                        block_interface.v_proj,
+                    ],
+                )
+                FPTQuant._fuse_norm_layer_into_linears(
+                    block_interface.post_attention_norm,
+                    [block_interface.up_proj, block_interface.gate_proj],
+                )
 
             block_interface.q_proj = TransformationMixin.from_module(
                 block_interface.q_proj
@@ -93,17 +101,26 @@ class FPTQuant:
                 block_interface.gate_proj
             )
 
-            FPTQuant._apply_prerope_transform(block_interface, config, model.device)
-            FPTQuant._apply_value_transform(block_interface, config, model.device)
-            FPTQuant._apply_up_down_scaling_transform(
-                block_interface, config, model.device
-            )
-            FPTQuant._apply_residual_transform(
-                block_interface, joint_residual_transform
-            )
-            FPTQuant._apply_down_projection_transform(
-                block_interface, config, model.device
-            )
+            if FPTQuant._enable_prerope_transform:
+                FPTQuant._apply_prerope_transform(block_interface, config, model.device)
+
+            if FPTQuant._enable_value_transform:
+                FPTQuant._apply_value_transform(block_interface, config, model.device)
+
+            if FPTQuant._enable_up_down_scaling_transform:
+                FPTQuant._apply_up_down_scaling_transform(
+                    block_interface, config, model.device
+                )
+
+            if FPTQuant._enable_residual_transform:
+                FPTQuant._apply_residual_transform(
+                    block_interface, joint_residual_transform
+                )
+
+            if FPTQuant._enable_down_project_transform:
+                FPTQuant._apply_down_projection_transform(
+                    block_interface, config, model.device
+                )
 
             layers_to_optimize.extend(
                 [
@@ -117,8 +134,15 @@ class FPTQuant:
                 ]
             )
 
-        transform_optimizer = LocalTransformOptimizer(layers_to_optimize)
-        transform_optimizer.optimize()
+        if (
+            FPTQuant._enable_residual_transform
+            or FPTQuant._enable_down_project_transform
+            or FPTQuant._enable_up_down_scaling_transform
+            or FPTQuant._enable_value_transform
+            or FPTQuant._enable_prerope_transform
+        ):
+            transform_optimizer = LocalTransformOptimizer(layers_to_optimize)
+            transform_optimizer.optimize()
 
     @staticmethod
     def merge_fpt_quant_transforms(model: torch.nn.Module):
@@ -271,7 +295,10 @@ class FPTQuant:
 
     @staticmethod
     def _get_residual_transform(config: PretrainedConfig) -> RotationTransformOp:
-        return RotationTransformOp(matrix=get_hadamard_matrix(config.hidden_size))
+        matrix = get_hadamard_matrix(config.hidden_size) / torch.sqrt(
+            torch.tensor(config.hidden_size)
+        )
+        return RotationTransformOp(matrix=matrix)
 
     @staticmethod
     def _apply_residual_transform(

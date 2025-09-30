@@ -14,8 +14,8 @@ def is_mergeable_transform(module: torch.nn.Module) -> bool:
 
 
 class TransformOp(torch.nn.Module):
-    def __init__(self, mergeable: bool = True):
-        super().__init__()
+    def __init__(self, mergeable: bool = True, **kwargs):
+        super().__init__(**kwargs)
         self.mergeable = mergeable
 
     def right_hand_merge(self, weight: torch.Tensor) -> torch.Tensor:

@@ -39,9 +39,12 @@
 
 from typing import Callable, Any, Tuple, Union, List, Type
 
+import math
 import torchvision
 import torch
 import torch.nn
+import torch.nn.functional as F
+import scipy
 
 
 def forward_function_wrapper(functional: Callable) -> Any:
@@ -689,6 +692,31 @@ class RmsNorm(torch.nn.Module):
         rms = torch.sqrt(squared_mean + self.epsilon)
         res = (torch.div(x, rms) * self.weight + self.bias).to(dtype=input_dtype)
         return res
+
+
+class HadamardRotation(torch.nn.Module):
+    """Custom module for Hadamard Rotation"""
+
+    def __init__(self, size: int):
+        super().__init__()
+        num_two_factors = 0
+        remaining_factor = size
+        while remaining_factor & 1 == 0:
+            remaining_factor = remaining_factor >> 1
+            num_two_factors += 1
+        self.register_buffer(
+            "hadamard",
+            torch.tensor(
+                scipy.linalg.hadamard(2**num_two_factors), dtype=torch.float32
+            ),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        hadamard_rank = self.hadamard.shape[0]
+        scale = 1 / math.sqrt(hadamard_rank)
+        n_groups = x.shape[-1] // hadamard_rank
+        x_reshape = x.reshape(*x.shape[:-1], n_groups, hadamard_rank)
+        return (F.linear(x_reshape, self.hadamard) * scale).reshape(x.shape)
 
 
 class NullRequant(Reshape):

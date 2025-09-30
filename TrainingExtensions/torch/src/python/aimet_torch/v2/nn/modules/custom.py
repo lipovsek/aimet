@@ -547,6 +547,30 @@ class QuantizedRmsNorm(QuantizationMixin, RmsNorm):
         return out
 
 
+@QuantizationMixin.implements(HadamardRotation)
+class QuantizedHadamardRotation(QuantizationMixin, HadamardRotation):
+    """Custom module for HadamardRotation"""
+
+    # pylint: disable=arguments-differ
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for HadamardRotation
+        """
+        # Quantize input tensors
+        if self.input_quantizers[0]:
+            x = self.input_quantizers[0](x)
+
+        # Run forward with quantized inputs and parameters
+        with self._patch_quantized_parameters():
+            ret = super().forward(x)
+
+        # Quantize output tensors
+        if self.output_quantizers[0]:
+            ret = self.output_quantizers[0](ret)
+
+        return ret
+
+
 # @QuantizationMixin.implements(Square)
 # class QuantizedSquare(_DispatchMixin, QuantizationMixin, Square):
 #     """ Quantized Square """

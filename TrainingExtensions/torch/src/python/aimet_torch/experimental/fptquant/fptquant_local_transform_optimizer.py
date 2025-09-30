@@ -46,11 +46,12 @@ class LocalTransformOptimizer:
     def optimize(self):
         for _ in tqdm(range(self.num_iterations), desc="Locally optimizing transforms"):
             self.optimizer.zero_grad()
-            loss = torch.stack(
-                tuple(
-                    self.compute_loss(layer._compute_merged_params()[0])
-                    for layer in self.layers
-                )
-            ).sum(dim=0)
+            with torch.nn.utils.parametrize.cached():
+                loss = torch.stack(
+                    tuple(
+                        self.compute_loss(layer._compute_merged_params()[0])
+                        for layer in self.layers
+                    )
+                ).sum(dim=0)
             loss.backward()
             self.optimizer.step()
