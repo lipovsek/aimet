@@ -242,12 +242,26 @@ class RotationTransformOp(InvertibleTransformOp):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if torch.onnx.is_in_onnx_export():
+            raise RuntimeError(
+                f"{type(self)} cannot be exported to ONNX as it involves "
+                "complex operations that aren't supported in ONNX. "
+                "Please try merging this transformation statically "
+                "with 'merge_transforms(True)' before exporting to ONNX"
+            )
         orig_dtype = x.dtype
         return (x.to(dtype=torch.float32) @ self.rotation.weight.data).to(
             dtype=orig_dtype
         )
 
     def inverse(self, x: torch.Tensor) -> torch.Tensor:
+        if torch.onnx.is_in_onnx_export():
+            raise RuntimeError(
+                f"{type(self)} cannot be exported to ONNX as it involves "
+                "complex operations that aren't supported in ONNX. "
+                "Please try merging this transformation statically "
+                "with 'merge_transforms(True)' before exporting to ONNX"
+            )
         orig_dtype = x.dtype
         return (x.to(dtype=torch.float32) @ self.rotation.weight.data.T).to(
             dtype=orig_dtype
