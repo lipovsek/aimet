@@ -50,7 +50,7 @@ from aimet_onnx.utils import (
     add_hook_to_get_activation,
     remove_activation_hooks,
     create_input_dict,
-    build_session,
+    OrtInferenceSession,
 )
 
 # pylint: disable=no-name-in-module, ungrouped-imports
@@ -133,10 +133,8 @@ class ActivationSampler:
         """
         # TODO: optional: Clean all the outputs except the one we want?
         handle = add_hook_to_get_activation(model, activation)
-        sess = build_session(
-            model,
-            self.providers,
-            self._quant_sim._user_onnx_libs,
+        sess = OrtInferenceSession(
+            model, self.providers, self._quant_sim._ort_session_options
         )
         return sess, handle
 

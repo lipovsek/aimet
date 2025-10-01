@@ -13,7 +13,7 @@ from aimet_onnx.utils import (
     add_hook_to_get_activation,
     remove_activation_hooks,
     create_input_dict,
-    build_session,
+    OrtInferenceSession,
 )
 
 # pylint: disable=no-name-in-module, ungrouped-imports
@@ -33,7 +33,6 @@ class ActivationSampler:
         activation_name: str,
         model: ModelProto,
         providers: Optional[Sequence[str | Tuple[str, Dict[Any, Any]]]] = None,
-        user_onnx_libs: Optional[List[str]] = None,
     ):
         """
         :param activation_name: tensor name of the module whose output we want to retrieve
@@ -43,7 +42,6 @@ class ActivationSampler:
         :return: Input data to quant op, Output data from original op
         """
         self._model = model
-        self.user_onnx_libs = user_onnx_libs if user_onnx_libs else None
         self._activation_name = activation_name
         self._sess, self._handle = self.create_session(
             self._model, activation_name, providers
@@ -59,10 +57,9 @@ class ActivationSampler:
         :param activation: activation to add a hook to
         """
         handle = add_hook_to_get_activation(model, activation)
-        sess = build_session(
+        sess = OrtInferenceSession(
             model,
             providers,
-            self.user_onnx_libs,
         )
         return sess, handle
 

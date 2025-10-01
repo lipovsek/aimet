@@ -41,7 +41,7 @@ import itertools
 import platform
 import tempfile
 from pathlib import Path
-from typing import Dict, Iterable, List, Union, Tuple, Callable
+from typing import Dict, Iterable, List, Union, Tuple, Callable, Optional
 from contextlib import contextmanager
 import os
 import pickle
@@ -50,9 +50,10 @@ import torch
 import onnx
 from onnx import helper, numpy_helper
 from onnxruntime import SessionOptions, InferenceSession
+import shutil
 
 from aimet_common import libquant_info
-from aimet_common.utils import AimetLogger, compute_psnr
+from aimet_common.utils import AimetLogger, compute_psnr, deprecated
 from aimet_common.onnx._utils import _ParamUtils
 from packaging import version
 
@@ -583,12 +584,90 @@ def create_input_dict(
     return dict(zip(input_names, input_batch_list))
 
 
+def create_ort_session_options_with_aimet_custom_ops() -> SessionOptions:
+    """
+    Returns onnxruntime session options with aimet custom ops registered
+    :return: onnxruntime session options
+    """
+
+    session_options = SessionOptions()
+
+    shared_library = os.path.join(
+        os.path.dirname(libquant_info.__file__),
+        "libaimet_onnxrt_ops.dll"
+        if platform.system() == "Windows"
+        else "libaimet_onnxrt_ops.so",
+    )
+
+    session_options.register_custom_ops_library(shared_library)
+    return session_options
+
+
+class OrtInferenceSession(InferenceSession):
+    """
+    onnxruntime inference session with automatic handling of model cleanup.
+
+    If session_options are not provided,
+        creates session options with aimet custom ops registered.
+    If path is not provided,
+        creates a temp directory to store model external data and cleans it up on object deletion.
+    """
+
+    def __init__(
+        self,
+        model: onnx.ModelProto,
+        providers: List,
+        session_options: SessionOptions = None,
+        path: str = None,
+    ):
+        """
+        Build and return onnxruntime inference session
+
+        :param model: onnx model
+        :param providers: providers to execute onnxruntime
+        :param session_options: onnxruntime session options
+        :param path: path where to store model external data
+        """
+
+        self.model_dir: Optional[str] = None
+
+        if path is None:
+            self.model_dir = tempfile.mkdtemp()
+            path = self.model_dir
+
+        model_path = os.path.join(path, "model.onnx")
+        save_model_with_external_weights(
+            model, model_path, location=Path(model_path).name + ".data"
+        )
+
+        if session_options is None:
+            session_options = create_ort_session_options_with_aimet_custom_ops()
+
+        super().__init__(
+            path_or_bytes=model_path,
+            sess_options=session_options,
+            providers=providers,
+        )
+
+    def __del__(self):
+        if self.model_dir is None:
+            return
+
+        try:
+            shutil.rmtree(self.model_dir)
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning(
+                "Error while cleaning up temp dir at %s: %s", self.model_dir, e
+            )
+
+
+@deprecated("Use `aimet_onnx.utils.OrtInferenceSession` instead")
 def build_session(
     model: onnx.ModelProto,
     providers: List,
     user_onnx_libs: List[str] = None,
     path: str = None,
-):
+) -> OrtInferenceSession:
     """
     Build and return onnxruntime inference session
 
@@ -597,29 +676,13 @@ def build_session(
     :param user_onnx_libs: list of paths to user custom ONNX op libraries
     :param path: path where to store model external data
     """
-    sess_options = SessionOptions()
-    shared_library = os.path.join(
-        os.path.dirname(libquant_info.__file__),
-        "libaimet_onnxrt_ops.dll"
-        if platform.system() == "Windows"
-        else "libaimet_onnxrt_ops.so",
+    sess_options = create_ort_session_options_with_aimet_custom_ops()
+    for lib in user_onnx_libs or []:
+        sess_options.register_custom_ops_library(lib)
+
+    return OrtInferenceSession(
+        model, providers, session_options=sess_options, path=path
     )
-    sess_options.register_custom_ops_library(shared_library)
-    if user_onnx_libs is not None:
-        for lib in user_onnx_libs:
-            sess_options.register_custom_ops_library(lib)
-
-    with tempfile.TemporaryDirectory(dir=path) as tempdir:
-        output_path = os.path.join(tempdir, "model.onnx")
-
-        save_model_with_external_weights(
-            model, output_path, location=Path(output_path).name + ".data"
-        )
-        return InferenceSession(
-            path_or_bytes=output_path,
-            sess_options=sess_options,
-            providers=providers,
-        )
 
 
 class ModuleData:
@@ -632,18 +695,18 @@ class ModuleData:
         model: ModelProto,
         activation_name: str,
         providers: List,
-        user_onnx_libs: List[str] = None,
+        session_options: SessionOptions = None,
     ):
         """
         :param model: ONNX model
         :param activation_name: tensor corresponding to activation name to fetch
         :param providers: CPU/GPU execution providers
-        :param user_onnx_libs: List of paths to all compiled ONNX custom ops libraries
+        :param session_options: ONNX Runtime session options
         """
         self._model = model
         self._activation_name = activation_name
         self._providers = providers
-        self._user_onnx_libs = user_onnx_libs
+        self._session_options = session_options
 
     def collect_activation(self, model_input: Dict[str, List[np.ndarray]]) -> List:
         """
@@ -654,7 +717,9 @@ class ModuleData:
         """
 
         handle = add_hook_to_get_activation(self._model.model, self._activation_name)
-        sess = build_session(self._model.model, self._providers, self._user_onnx_libs)
+        sess = OrtInferenceSession(
+            self._model.model, self._providers, self._session_options
+        )
         if self._activation_name in model_input:
             # Workaround memory corruption bug in onnxruntime >= 1.19 when a graph output is also a graph input
             # https://github.com/microsoft/onnxruntime/issues/21922

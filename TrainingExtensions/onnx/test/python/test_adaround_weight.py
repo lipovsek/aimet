@@ -50,7 +50,7 @@ import onnx
 import aimet_onnx
 from aimet_onnx import apply_adaround, QuantizationSimModel
 from aimet_onnx.adaround.utils import AdaroundSupportedModules, ModelData
-from aimet_onnx.utils import make_dummy_input, ParamUtils, build_session
+from aimet_onnx.utils import make_dummy_input, ParamUtils
 from .models import models_for_tests
 from .models.models_for_tests import conv_prelu_model
 

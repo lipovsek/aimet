@@ -51,7 +51,7 @@ from aimet_common.layer_output_utils import SaveInputOutput, save_layer_output_n
 from aimet_onnx.utils import (
     create_input_dict,
     add_hook_to_get_activation,
-    build_session,
+    OrtInferenceSession,
 )
 
 # pylint: disable=no-name-in-module, ungrouped-imports
@@ -151,7 +151,7 @@ class LayerOutput:
 
         LayerOutput.register_activations(self.model, self.activation_names)
 
-        self.session = build_session(self.model, providers)
+        self.session = OrtInferenceSession(self.model, providers)
 
         # Replace special characters with underscore. This gives valid file names to store activation tensors.
         self.sanitized_activation_names = [

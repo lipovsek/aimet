@@ -118,11 +118,13 @@ from aimet_onnx.qc_quantize_op import (
 )
 from aimet_onnx.quantsim_config.quantsim_config import QuantSimConfigurator
 from aimet_onnx.utils import (
+    build_session,
     make_dummy_input,
     save_model_with_external_weights,
     add_hook_to_get_activation,
     remove_activation_hooks,
-    build_session,
+    create_ort_session_options_with_aimet_custom_ops,
+    OrtInferenceSession,
 )
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
@@ -423,7 +425,7 @@ class QuantizationSimModel:
         self._quant_scheme = quant_scheme
         self._param_type = param_type
         self._activation_type = activation_type
-        self._user_onnx_libs = user_onnx_libs
+        self._ort_session_options = create_ort_session_options_with_aimet_custom_ops()
         self.param_names = []
         self.input_quantizers_name = []
         self.activation_names = []
@@ -431,6 +433,10 @@ class QuantizationSimModel:
         self._path = path
         if self._path:
             os.makedirs(self._path, exist_ok=True)
+
+        # Register user provided custom libs into ORT session options
+        for lib in user_onnx_libs or []:
+            self._ort_session_options.register_custom_ops_library(lib)
 
         # Get names of parameters and activations to quantize
         self._get_param_names()
@@ -458,11 +464,10 @@ class QuantizationSimModel:
         if _tie_qtzrs:
             self._tie_quantizers_for_op_types(op_types_to_tie_qtzrs)
 
-        # Build onnxruntime inference session
-        self.session = build_session(
+        self.session = OrtInferenceSession(
             self.model.model,
             self.providers,
-            user_onnx_libs=self._user_onnx_libs,
+            session_options=self._ort_session_options,
             path=self._path,
         )
 
@@ -753,10 +758,10 @@ class QuantizationSimModel:
         hooks = []
         for name in activations:
             hooks.append(add_hook_to_get_activation(self.model.model, name))
-        sess = build_session(
+        sess = OrtInferenceSession(
             self.model.model,
             ["CPUExecutionProvider"],
-            user_onnx_libs=self._user_onnx_libs,
+            session_options=self._ort_session_options,
             path=self._path,
         )
         outputs = sess.run(None, dummy_input)
@@ -895,7 +900,7 @@ class QuantizationSimModel:
         self.qc_quantize_op_dict[input_name].data_type = dtype
 
     @staticmethod
-    @deprecated("Use `aimet_onnx.utils.build_session` instead")
+    @deprecated("Use `aimet_onnx.utils.OrtInferenceSession` instead")
     def build_session(
         model: onnx.ModelProto,
         providers: List,
@@ -1743,10 +1748,10 @@ class QuantizationSimModel:
         """
         Rebuilds `self.session` object to reflect any changes in the source model.
         """
-        self.session = build_session(
+        self.session = OrtInferenceSession(
             self.model.model,
             self.providers,
-            user_onnx_libs=self._user_onnx_libs,
+            session_options=self._ort_session_options,
             path=self._path,
         )
 
@@ -2241,7 +2246,7 @@ class QuantizationSimModel:
         if not partial_model.graph.output:
             return {}
 
-        sess = build_session(partial_model, ["CPUExecutionProvider"])
+        sess = OrtInferenceSession(partial_model, ["CPUExecutionProvider"])
         out = sess.run(list(qdq_params.keys()), {})
         return {
             qdq_param_name: qdq_param

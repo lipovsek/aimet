@@ -34,6 +34,11 @@
 #
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
+
+import gc
+import os
+import tempfile
+
 import onnx
 import torch
 from packaging import version
@@ -290,3 +295,43 @@ class TestUtils:
         assert utils.contains_tensor_type(model, onnx.TensorProto.BFLOAT16)
         assert utils.contains_tensor_type(model, onnx.TensorProto.FLOAT)
         assert not utils.contains_tensor_type(model, onnx.TensorProto.FLOAT16)
+
+
+class TestORTInferenceSession:
+    """
+    Test OrtInferenceSession class in utils
+    """
+
+    def test_user_provided_directory(self):
+        """
+        Test user provided directory
+        """
+        model = models_for_tests.build_dummy_model()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session = utils.OrtInferenceSession(
+                model=model, providers=["CPUExecutionProvider"], path=tmp_dir
+            )
+            assert session is not None
+            assert session.model_dir is None
+
+    def test_session_managed_directory(self):
+        """
+        Test Session managed directory
+        """
+        model = models_for_tests.build_dummy_model()
+
+        session = utils.OrtInferenceSession(
+            model=model, providers=["CPUExecutionProvider"]
+        )
+        assert session.model_dir is not None
+        assert os.path.exists(session.model_dir)
+        assert session is not None
+
+        model_dir = session.model_dir
+
+        del session
+
+        # Ensure temp directory is deleted after session manager is deleted
+        gc.collect()
+        assert not os.path.exists(model_dir)

@@ -45,7 +45,7 @@ import numpy as np
 import onnxruntime as ort
 from torch.utils.data import Dataset, DataLoader
 
-from aimet_onnx.utils import make_dummy_input, build_session
+from aimet_onnx.utils import make_dummy_input, OrtInferenceSession
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.layer_output_utils import LayerOutput, LayerOutputUtil
 from .models.models_for_tests import (
@@ -117,7 +117,7 @@ class TestLayerOutput:
             )
 
         # Verify whether captured outputs are correct. This can only be checked for final output of the model
-        session = build_session(model, providers)
+        session = OrtInferenceSession(model, providers, path=temp_dir_path)
         assert np.array_equal(
             session.run(None, input_dict)[0], output_name_to_output_val_dict["output"]
         )
@@ -145,7 +145,9 @@ class TestLayerOutput:
             )
 
         # Verify whether captured outputs are correct. This can only be checked for final output of the model
-        session = build_session(quantsim.model.model, providers)
+        session = OrtInferenceSession(
+            quantsim.model.model, providers, path=temp_dir_path
+        )
         assert np.array_equal(
             session.run(None, input_dict)[0], output_name_to_output_val_dict["output"]
         )
@@ -227,7 +229,9 @@ class TestLayerOutputUtil:
             os.path.join(temp_dir_path, "outputs", "layer_outputs_0", "output.raw"),
             dtype=np.float32,
         ).reshape((1, 10))
-        session = build_session(quantsim.model.model, providers)
+        session = OrtInferenceSession(
+            quantsim.model.model, providers, path=temp_dir_path
+        )
         input_dict = {
             "input": np.expand_dims(dummy_dataset.__getitem__(0).numpy(), axis=0)
         }

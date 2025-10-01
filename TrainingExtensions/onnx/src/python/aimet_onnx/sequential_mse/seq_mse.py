@@ -60,7 +60,7 @@ from aimet_onnx.sequential_mse.dependency_graph import (
     DependencyGraph,
     SUPPORTED_MODULES,
 )
-from aimet_onnx.utils import disable_quantizers, build_session
+from aimet_onnx.utils import disable_quantizers, OrtInferenceSession
 from aimet_onnx.sequential_mse.dependency_graph import DependencyNode
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SeqMse)
@@ -691,10 +691,10 @@ class SequentialMse:
         :return: Session
         """
         try:
-            session = build_session(
+            session = OrtInferenceSession(
                 model,
                 self.sim.providers,
-                user_onnx_libs=self.sim._user_onnx_libs,
+                session_options=self.sim._ort_session_options,
                 path=self.sim._path,
             )
             yield session
