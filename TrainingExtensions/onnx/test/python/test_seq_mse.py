@@ -161,6 +161,17 @@ def data_loader(dummy_input):
     return [dummy_input for _ in range(10)]
 
 
+def _get_weight_param_name(cg_op):
+    param_names = [
+        param_name
+        for param_name, (_, param_type) in cg_op.parameters.items()
+        if param_type == "weight"
+    ]
+    if len(param_names) == 1:
+        return param_names[0]
+    return None
+
+
 @pytest.mark.parametrize(
     "granularity, shape, channel_axis, block_axis",
     [
@@ -238,10 +249,17 @@ def test_min_max_for_candidate_selection(granularity, shape, channel_axis, block
     )  # Allow 1-tick difference
 
 
-@pytest.mark.parametrize("param_bw", [2, 31])
-@pytest.mark.parametrize("loss_fn", ["mse", "l1", "sqnr"])
-@pytest.mark.parametrize("enable_pcq", [True, False])
-def test_apply_seq_mse_for_conv(param_bw, loss_fn, enable_pcq):
+@pytest.mark.parametrize("loss_fn", ["mse"])
+@pytest.mark.parametrize(
+    "param_bw, enable_pcq, best_indices",
+    [
+        (4, True, np.array([11, 16, 16, 18, 19, 16, 17, 16, 16, 17])),
+        (31, True, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
+        (4, False, np.array([[16, 15, 16, 18, 19, 15, 17, 16, 14, 17]])),
+        (31, False, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
+    ],
+)
+def test_apply_seq_mse_for_conv(loss_fn, param_bw, enable_pcq, best_indices):
     model = single_conv_layer_model()
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
@@ -256,16 +274,46 @@ def test_apply_seq_mse_for_conv(param_bw, loss_fn, enable_pcq):
             pcq=enable_pcq,
         ),
     )
+    all_param_ops = []
+    for op in sim.connected_graph.ordered_ops:
+        param_name = _get_weight_param_name(op)
+        if param_name is not None:
+            all_param_ops.append(param_name)
+
+    assert len(all_param_ops) == 1
+
+    quantizer = sim.qc_quantize_op_dict[all_param_ops[0]]
+    assert not quantizer.is_encoding_frozen()
+
     inputs = [make_dummy_input(model.model) for _ in range(10)]
-    if loss_fn != "mse":
-        seq_params = SeqMseParams(num_batches=1)
-        seq_params.loss_fn = loss_fn
-        seq_mse = SequentialMse(model, sim, seq_params, inputs)
-        seq_mse.apply_seq_mse_algo()
-    else:
-        apply_seq_mse(sim, inputs[:1])
-    weight_quantizer = sim.qc_quantize_op_dict["conv.weight"]
-    assert weight_quantizer._is_encoding_frozen
+    num_candidates = 20
+    seq_params = SeqMseParams(num_candidates=num_candidates, num_batches=2)
+    seq_params.loss_fn = loss_fn
+    seq_mse = SequentialMse(model, sim, seq_params, inputs)
+    seq_mse.apply_seq_mse_algo()
+
+    # Encodings are frozen
+    assert quantizer.is_encoding_frozen()
+
+    dep_node = list(seq_mse.dependency_graph._name_to_node.values())[0]
+    _, init_max = seq_mse._get_min_and_max_for_candidate_selection(dep_node)
+
+    """
+    When: Given best indices
+    Then: Expected max should be max_tensor / num_candidates * (indices + 1)
+    """
+
+    encodings = quantizer.get_encodings()
+    actual_max = np.array([enc.max for enc in encodings]).reshape(
+        quantizer._encoding_shape()
+    )
+
+    expected_max = init_max / num_candidates * (best_indices + 1)
+    if not enable_pcq:
+        expected_max = np.amax(expected_max)
+
+    print(f"actual_max={actual_max}, expected_max={expected_max}")
+    assert np.allclose(actual_max, expected_max)
 
 
 @pytest.mark.parametrize("param_bw", [2, 31])

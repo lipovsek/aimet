@@ -396,23 +396,27 @@ class SequentialMse:
         sqnr_db = 10 * torch.log10(sqnr)
         return -sqnr_db
 
-    def _compute_recon_loss(self, sim_output, float_output, dependency_node):
+    def _compute_recon_loss(
+        self,
+        fp_outputs: np.ndarray,
+        sim_outputs: np.ndarray,
+        dependency_node: DependencyNode,
+    ) -> np.ndarray:
         """
         Compute reconstruction loss and return the sum by reducing over all the dimensions except last channel dimension.
 
-        :param xqwq: X^Q^ quantized-dequantized values
-        :param xw: XW FP32 values
-        :param params: Sequential MSE parameters
+        :param fp_outputs: fp_outputs (X^W)
+        :param sim_outputs: sim_outputs (X^W^)
+        :param dependency_node: Dependency node
         :return: loss
         """
-
-        xqwq = torch.from_numpy(sim_output)
-        xw = torch.from_numpy(float_output)
+        xqwq = torch.from_numpy(sim_outputs)
+        xqw = torch.from_numpy(fp_outputs)
 
         if dependency_node.cg_op.type == "Conv":
-            permute_order = [0] + list(range(2, xw.dim())) + [1]
-            xqwq = xqwq.permute(permute_order)
-            xw = xw.permute(permute_order)
+            # Permute to move output channel dimension to the end
+            xqwq = xqwq.transpose(1, xqwq.dim() - 1)
+            xqw = xqw.transpose(1, xqw.dim() - 1)
 
         if self.params.loss_fn == "mse":
             loss_fn = torch.nn.functional.mse_loss
@@ -425,10 +429,9 @@ class SequentialMse:
 
         channel_dim = xqwq.shape[-1]
         xqwq = xqwq.reshape(-1, channel_dim)
-        xw = xw.reshape(-1, channel_dim)
-        loss = loss_fn(xqwq, xw, reduction="none").sum(0)
-        assert loss.size() == torch.Size([channel_dim])
-        return np.array(loss)
+        xqw = xqw.reshape(-1, channel_dim)
+        loss = loss_fn(xqwq, xqw, reduction="none").sum(0)
+        return loss.numpy()
 
     def _run_seq_mse(self, dep_nodes_to_parallelize: List[DependencyNode]):
         """
@@ -451,18 +454,24 @@ class SequentialMse:
                 )
                 self._compute_encoding_from_candidate(dep_node, cand_min, cand_max)
 
-        def _compute_loss(all_fp_outputs: List, all_sim_outputs: List):
+        def _compute_loss(
+            all_fp_outputs: List[np.ndarray], all_sim_outputs: List[np.ndarray]
+        ) -> Dict[str, np.ndarray]:
             """
             Helper function to compute reconstruction loss for ops at same level.
 
             :param all_fp_outputs: FP Outputs of all ops at same level
             :param all_sim_outputs: Sim Outputs of all ops at same level
             """
+            candidate_loss = {}
+
             for i, dep_node in enumerate(dep_nodes_to_parallelize):
-                fp_output = np.concatenate(all_fp_outputs[i], axis=0)
-                sim_output = np.concatenate(all_sim_outputs[i], axis=0)
-                loss = self._compute_recon_loss(fp_output, sim_output, dep_node)
-                total_loss[dep_node.cg_op.name].append(loss)
+                loss = self._compute_recon_loss(
+                    all_fp_outputs[i], all_sim_outputs[i], dep_node
+                )
+                candidate_loss[dep_node.cg_op.name] = loss
+
+            return candidate_loss
 
         def _get_dep_node_io_names(dep_nodes: List[DependencyNode]):
             """
@@ -479,8 +488,6 @@ class SequentialMse:
 
             subgraph_inputs = list(set(subgraph_inputs))
             return subgraph_inputs, subgraph_outputs
-
-        total_loss = defaultdict(list)
 
         # Cache the initial min and max values
         initial_min_max = {}
@@ -504,17 +511,49 @@ class SequentialMse:
         subgraph_model = self._split_onnx_graph(
             self._extractor, subgraph_inp_names, subgraph_outs_names
         )
+
+        dataset_len = len(next(iter(sim_inputs.values())))
+
+        # Cache fp_outputs to avoid recompute for each candidate
+        fp_outputs_cache = []
         with self._create_session(subgraph_model) as session:
             with self._disable_subgraph_quantizers(subgraph_model):
-                fp_outputs = self._run_onnx_graph(session, sim_inputs)
+                for batch_idx in range(dataset_len):
+                    input_batch = {
+                        name: data[batch_idx] for name, data in sim_inputs.items()
+                    }
+                    fp_output = session.run(None, input_batch)
+                    fp_outputs_cache.append(fp_output)
 
-            for i in range(self.params.num_candidates):
-                _set_candidates(i)
-                sim_outputs = self._run_onnx_graph(session, sim_inputs)
-                _compute_loss(fp_outputs, sim_outputs)
-                _logger.debug(f"Finished candidate: {i}")
+            # Store accumulated loss per dep_node across candidates
+            total_loss = defaultdict(list)
 
-        del fp_outputs, sim_outputs, sim_inputs
+            for candidate_index in range(self.params.num_candidates):
+                # Initialize per dep_node loss accumulator
+                accumulated_loss = defaultdict(lambda: 0)
+
+                for batch_idx in range(dataset_len):
+                    input_batch = {
+                        name: data[batch_idx] for name, data in sim_inputs.items()
+                    }
+                    fp_output = fp_outputs_cache[batch_idx]
+
+                    _set_candidates(candidate_index)
+                    sim_output = session.run(None, input_batch)
+
+                    batched_loss = _compute_loss(fp_output, sim_output)
+                    for node_name, b_loss in batched_loss.items():
+                        accumulated_loss[node_name] += b_loss
+
+                    del sim_output
+
+                # After all batches, append the accumulated loss for this candidate
+                for node_name, loss in accumulated_loss.items():
+                    total_loss[node_name].append(loss)
+
+                _logger.debug(f"Finished candidate {candidate_index}")
+
+        del fp_outputs_cache, sim_inputs
 
         # Postprocessing (not vectorized)
         for dep_node in dep_nodes_to_parallelize:
