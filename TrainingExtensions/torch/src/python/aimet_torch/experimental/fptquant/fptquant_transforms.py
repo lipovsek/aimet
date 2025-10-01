@@ -95,7 +95,14 @@ class GroupedHadamardTransformOp(InvertibleTransformOp, HadamardRotation):
         return HadamardRotation.forward(self, x)
 
     def inverse(self, x):
-        return HadamardRotation.forward(self, x)
+        # pylint: disable=access-member-before-definition, attribute-defined-outside-init
+        hadamard = self.hadamard
+
+        try:
+            self.hadamard = hadamard.transpose(1, 0)
+            return HadamardRotation.forward(self, x)
+        finally:
+            self.hadamard = hadamard
 
     def get_inverted_op(self):
         inverted_op = super().get_inverted_op()

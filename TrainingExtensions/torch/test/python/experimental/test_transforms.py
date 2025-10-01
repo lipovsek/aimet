@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Test aimet-torch transforms"""
 
+from typing import Callable
+from functools import partial
 import pytest
 import torch
 
@@ -14,7 +16,15 @@ from aimet_torch.experimental.transforms.transformed_layers import (
 )
 from aimet_torch.experimental.transforms.transform_ops import (
     IdentityTransformOp,
+    InvertibleTransformOp,
     MatrixTransformOp,
+)
+from aimet_torch.experimental.fptquant.fptquant_transforms import (
+    ScaledRotateTransformOp,
+    ScalingTransformOp,
+    GroupedHadamardTransformOp,
+    MultiHeadValueTransformOp,
+    RotationTransformOp,
 )
 
 
@@ -158,7 +168,6 @@ def test_transformed_layer_merge():
     assert torch.allclose(orig_result, merged_result)
 
 
-@pytest.mark.skip("Skipping test for now")
 def test_op_inverse():
     # Create a matrix transform op
     # Get its inverse
@@ -222,7 +231,6 @@ def test_op_inverse_2():
     assert torch.allclose(merged_result, transformed_result, atol=1e-5)
 
 
-@pytest.mark.skip("Skipping test for now")
 def test_multiple_transforms():
     model = LinearModel()
 
@@ -292,3 +300,41 @@ def test_non_mergeable_transforms():
 
     merged_result = model(dummy_input)
     assert torch.allclose(merged_result, orig_result, atol=1e-5)
+
+
+# 90 degree counter-clockwise rotation matrix
+def _90_degree_rotation_matrix() -> torch.Tensor:
+    return torch.tensor(
+        [[0, 1], [-1, 0]],
+        dtype=torch.float32,
+    )
+
+
+@pytest.mark.parametrize(
+    "transform_factory",
+    [
+        IdentityTransformOp,
+        partial(MatrixTransformOp, matrix=_90_degree_rotation_matrix()),
+        partial(
+            ScaledRotateTransformOp,
+            head_dim=2,
+            num_attention_heads=1,
+            num_key_value_heads=1,
+        ),
+        partial(ScalingTransformOp, intermediate_size=2),
+        partial(GroupedHadamardTransformOp, intermediate_size=2),
+        partial(
+            MultiHeadValueTransformOp,
+            head_dim=2,
+            num_attention_heads=1,
+            num_key_value_heads=1,
+        ),
+    ],
+)
+def test_inverse(
+    transform_factory: Callable[[], InvertibleTransformOp],
+):
+    transform = transform_factory()
+    inverse = transform.get_inverted_op()
+    x = torch.arange(-50, 50, step=0.1).reshape(500, 2)
+    assert torch.allclose(inverse(transform(x)), x, rtol=1e-3)
