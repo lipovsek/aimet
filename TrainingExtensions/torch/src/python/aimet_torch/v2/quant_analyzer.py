@@ -144,6 +144,14 @@ class QuantAnalyzer(QuantAnalyzerBase):
         return v1_histograms
 
     @staticmethod
+    @contextlib.contextmanager
+    def _recompute_param_histogram(quantizer: QuantizerBase, param: torch.nn.Parameter):
+        with quantizer.compute_encodings():
+            _ = quantizer(param)
+        yield
+        quantizer.encoding_analyzer.reset_stats()
+
+    @staticmethod
     def _is_quantizer_enabled(quantizer: Optional[QuantizerBase]):
         return quantizer is not None
 

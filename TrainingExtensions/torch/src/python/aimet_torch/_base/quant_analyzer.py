@@ -429,6 +429,11 @@ class QuantAnalyzerBase(ABC):
         :param title: Title of the plot.
         """
 
+    # pylint: disable=unused-argument
+    @staticmethod
+    def _recompute_param_histogram(quantizer, param):
+        return contextlib.nullcontext()
+
     def check_model_sensitivity_to_quantization(
         self,
         sim: _QuantizationSimModelInterface,
@@ -674,11 +679,14 @@ class QuantAnalyzerBase(ABC):
                     )
             for param_name, quantizer in quant_wrapper.param_quantizers.items():
                 if quantizer is not None and self._get_quantizer_encodings(quantizer):
-                    self._create_and_export_stats_histogram_plot(
-                        quantizer,
-                        os.path.join(weights_pdf_dir, wrapped_module_name),
-                        title=f"{wrapped_module_name}_{param_name}",
-                    )
+                    with self._recompute_param_histogram(
+                        quantizer, getattr(quant_wrapper, param_name)
+                    ):
+                        self._create_and_export_stats_histogram_plot(
+                            quantizer,
+                            os.path.join(weights_pdf_dir, wrapped_module_name),
+                            title=f"{wrapped_module_name}_{param_name}",
+                        )
         _logger.info("Exported per layer stats histogram plot(s).")
 
     def export_per_layer_mse_loss(

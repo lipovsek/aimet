@@ -307,6 +307,9 @@ class BaseQuantizationMixin(abc.ABC):
                 ):
                     _ = param_qtzr(param)
 
+                if param_qtzr.encoding_analyzer is not None:
+                    param_qtzr.encoding_analyzer.reset_stats()
+
     def compute_param_encodings(self):
         """Compute encodings of parameter quantizers"""
         self._compute_param_encodings(overwrite=True)

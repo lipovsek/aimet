@@ -37,6 +37,7 @@
 
 """Tool to visualize min and max activations/weights of quantized modules in a given model"""
 
+import contextlib
 import os
 from pathlib import Path
 import torch
@@ -67,6 +68,7 @@ from bokeh.models.dom import HTML
 from bokeh.plotting import figure, save, curdoc
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.utils import get_ordered_list_of_modules
+from aimet_torch.v2.nn.base import BaseQuantizationMixin
 from aimet_torch.v2.quantization.base import QuantizerBase
 from aimet_torch.v2.quantization.encoding_analyzer import (
     _MinMaxObserver,
@@ -109,11 +111,30 @@ def _visualize(
     ordered_list = get_ordered_list_of_modules(sim.model, dummy_input)
     stats_list = []
 
-    # Collect stats from observers
-    for i in ordered_list:
-        module_stats = _get_observer_stats(i, percentile_list=percentile_list)
-        if module_stats is not None:
-            stats_list.append(module_stats)
+    @contextlib.contextmanager
+    def _recompute_param_histogram(quantizer, param):
+        with quantizer.compute_encodings():
+            _ = quantizer(param)
+        yield
+        quantizer.encoding_analyzer.reset_stats()
+
+    # Recompute all param quantizer histograms and then release them
+    with contextlib.ExitStack() as stack:
+        for module in sim.model.modules():
+            if isinstance(module, BaseQuantizationMixin):
+                for param_name, param_quantizer in module.param_quantizers.items():
+                    if param_quantizer is not None:
+                        stack.enter_context(
+                            _recompute_param_histogram(
+                                param_quantizer, getattr(module, param_name)
+                            )
+                        )
+
+        # Collect stats from observers
+        for i in ordered_list:
+            module_stats = _get_observer_stats(i, percentile_list=percentile_list)
+            if module_stats is not None:
+                stats_list.append(module_stats)
 
     # Raise an error if no stats were found
     if len(stats_list) == 0:
