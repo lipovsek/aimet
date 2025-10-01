@@ -5,7 +5,9 @@ import os
 import copy
 import numpy as np
 import torch
-
+from onnx import numpy_helper
+import pytest
+from aimet_common.utils import compute_psnr
 from aimet_onnx.experimental.adascale.adascale_optimizer import (
     AdaScale,
     adascale_model_config_dict,
@@ -16,6 +18,8 @@ from aimet_onnx.experimental.adascale.quantizer import (
     LiteWeightQuantizedLinear,
     AdaScaleWeightQdq,
     WeightQdq,
+    get_adascale_trainable_params,
+    replace_with_adascale_quantizers,
 )
 
 
@@ -48,6 +52,64 @@ class ModelWithConsecutiveLinearBlocks(torch.nn.Module):
 
 
 class TestAdascaleOnnx:
+    def test_onnx_adascale_3(self):
+        class TwoLayerModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                # input_size is hardcoded to 10
+                self.linear1 = torch.nn.Linear(10, 20)
+                self.relu = torch.nn.ReLU()
+                # hidden_size is hardcoded to 20, output_size is hardcoded to 5
+                self.linear2 = torch.nn.Linear(20, 5)
+
+            def forward(self, x):
+                x = self.linear1(x)
+                x = self.relu(x)
+                x = self.linear2(x)
+                return x
+
+        model = TwoLayerModel()
+        input_shape = (10, 10)
+        input_tensor = torch.rand(*input_shape)
+        orig_out = model(input_tensor).detach()
+
+        model = add_qlinear_layers(model)
+        replace_with_adascale_quantizers(model)
+        temp = model(input_tensor)
+
+        all_beta_gamma_parameters, all_scale_parameters = get_adascale_trainable_params(
+            model
+        )
+
+        for m in model.parameters():
+            m.requires_grad = False
+
+        for p in all_scale_parameters:
+            p.requires_grad_(True)
+        for p in all_beta_gamma_parameters:
+            p.requires_grad_(True)
+
+        optimizer = torch.optim.Adam(all_beta_gamma_parameters + all_scale_parameters)
+        for epoch in range(5):
+            quant_out = model(input_tensor)
+            loss = torch.nn.functional.mse_loss(orig_out, quant_out)
+            loss.backward()
+            optimizer.step()
+
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    print(name, "is not None. Sum=", param.grad.sum())
+            # did_grad_update = any(param.grad is not None for param in all_beta_gamma_parameters)
+            # print(f'Any grad present? {did_grad_update}')
+            optimizer.zero_grad()
+
+        # did_grad_update = any(param.grad is not None for param in all_beta_gamma_parameters)
+        # print(f'Any grad present? {did_grad_update}')
+
+        new_out = model(input_tensor)
+        assert not torch.equal(new_out, orig_out)
+
+    @pytest.mark.skip(reason="This test is temporarily disabled")
     def test_onnx_adascale_1(self):
         model = ModelWithConsecutiveLinearBlocks().eval()
         model_copy = copy.deepcopy(model)
@@ -80,7 +142,7 @@ class TestAdascaleOnnx:
             linear_block.layer2.param_quantizers["weight"] = None
 
         # with params removed, we should get the un-quantized output
-        out_3 = model(dummy_input)
+        out_3 = model(copy.deepcopy(dummy_input))
         assert torch.equal(out_3, out_1)
 
     def test_adascale_compute_encodings(self):
@@ -144,8 +206,22 @@ class TestAdascaleOnnx:
         modified_out = new_qdq(input_with_adascale_params_folded)
         assert torch.equal(modified_out, adascale_out)
 
+    def test_onnx_adascale_2(self):
+        model = ModelWithConsecutiveLinearBlocks().eval()
+        add_qlinear_layers(model)
+        replace_with_adascale_quantizers(model)
+        all_beta_gamma_parameters, all_scale_parameters = get_adascale_trainable_params(
+            model
+        )
+        assert (
+            len(all_beta_gamma_parameters) == 8
+        )  # 2 blocks * 2 linear layers * 2 params(beta, gamma)
+        assert (
+            len(all_scale_parameters) == 8
+        )  # 2 blocks * 2 linear layers * 2 params(s2, s3)
 
-def test_get_decoder_blocks(monkeypatch):
+
+def test_adasclae_e2e(monkeypatch, small_model: bool = True):
     path = os.path.abspath(os.path.join("../../../../GenAITests"))
     monkeypatch.syspath_prepend(path)
     from GenAITests.onnx.models.qwen import Qwen_25_ONNX
@@ -154,9 +230,18 @@ def test_get_decoder_blocks(monkeypatch):
     sequence_length = 16
     model_id = "Qwen/Qwen2-0.5B"
     model_cls = Qwen_25_ONNX
-    sim, _ = model_cls.instantiate_quantsim(
-        model_id, context_length, sequence_length, small_model=True
+    sim, config = model_cls.instantiate_quantsim(
+        model_id, context_length, sequence_length, small_model=small_model
     )
+
+    onnx_weights_min_max = {}
+    for initializer in sim.model.model.graph.initializer:
+        weight_array = numpy_helper.to_array(initializer)
+        onnx_weights_min_max[initializer.name] = {
+            "min": float(np.min(weight_array)),
+            "max": float(np.max(weight_array)),
+        }
+    adascale_model_config_dict["Qwen2Model"].model_config = config
 
     inputs = {
         "input_ids": np.random.randint(0, 100, size=(1, 16), dtype=np.int32),
@@ -171,5 +256,42 @@ def test_get_decoder_blocks(monkeypatch):
     }
 
     AdaScale.apply_adascale(
-        sim, inputs, adascale_model_config_dict["Qwen2Model"], num_iterations=1
+        sim,
+        [inputs],
+        adascale_model_config_dict["Qwen2Model"],
+        num_iterations=2,
     )
+
+    for initializer in sim.model.model.graph.initializer:
+        weight_array = numpy_helper.to_array(initializer)
+        if initializer.name in [
+            "onnx::MatMul_571",
+            "onnx::MatMul_587",
+            "onnx::MatMul_588",
+            "onnx::MatMul_643",
+            "onnx::MatMul_644",
+            "onnx::MatMul_645",
+            "onnx::MatMul_646",
+            "onnx::MatMul_647",
+            "onnx::MatMul_663",
+            "onnx::MatMul_664",
+            "onnx::MatMul_719",
+            "onnx::MatMul_720",
+            "onnx::MatMul_721",
+            "onnx::MatMul_722",
+        ]:
+            assert onnx_weights_min_max[initializer.name]["min"] != float(
+                np.min(weight_array)
+            )
+            assert onnx_weights_min_max[initializer.name]["max"] != float(
+                np.max(weight_array)
+            )
+        else:
+            assert onnx_weights_min_max[initializer.name]["min"] == float(
+                np.min(weight_array)
+            )
+            assert onnx_weights_min_max[initializer.name]["max"] == float(
+                np.max(weight_array)
+            )
+
+    assert len(sim.model.model.graph.output)

@@ -20,10 +20,10 @@ def test_get_decoder_blocks(monkeypatch):
     end_points_names = [(op1.name, op2.name) for op1, op2 in end_points]
     assert end_points_names == [
         (
-            "/model/model/layers.0/input_layernorm/Mul",
-            "/model/model/layers.1/input_layernorm/Mul",
+            "/model/model/layers.0/input_layernorm/Pow",
+            "/model/model/layers.1/input_layernorm/Pow",
         ),
-        ("/model/model/layers.1/input_layernorm/Mul", "/model/model/norm/Mul"),
+        ("/model/model/layers.1/input_layernorm/Pow", "/model/model/norm/Pow"),
     ]
     conv_linear_blocks = get_conv_linear_layers_decoder_block(sim, end_points)
     conv_linear_blocks_names = []

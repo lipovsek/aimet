@@ -6,7 +6,6 @@
 from typing import List, Dict, Union, Optional, Sequence, Tuple, Any
 
 import numpy as np
-import onnxruntime as ort
 import onnx
 from packaging import version
 
@@ -24,14 +23,6 @@ else:
     from onnx.onnx_pb import ModelProto
 
 
-# TODO: Remove redundant session build/teardown
-#       and and always use "EXHUASTIVE" (ORT default policy)
-if ort.__version__ < "1.20":
-    _cudnn_conv_algo_search = "DEFAULT"
-else:
-    _cudnn_conv_algo_search = "HEURISTIC"
-
-
 class ActivationSampler:
     """
     For a module in the model, collect the module's FP output and Quantized input activation data
@@ -41,7 +32,7 @@ class ActivationSampler:
         self,
         activation_name: str,
         model: ModelProto,
-        device: Optional[Sequence[str | Tuple[str, Dict[Any, Any]]]],
+        providers: Optional[Sequence[str | Tuple[str, Dict[Any, Any]]]] = None,
         user_onnx_libs: Optional[List[str]] = None,
     ):
         """
@@ -55,11 +46,11 @@ class ActivationSampler:
         self.user_onnx_libs = user_onnx_libs if user_onnx_libs else None
         self._activation_name = activation_name
         self._sess, self._handle = self.create_session(
-            self._model, activation_name, device
+            self._model, activation_name, providers
         )
 
     def create_session(
-        self, model: onnx.ModelProto, activation: Union[str, List[str]], device
+        self, model: onnx.ModelProto, activation: Union[str, List[str]], providers
     ):
         """
         Helper to create a session using both module's input and output tensor names
@@ -70,7 +61,7 @@ class ActivationSampler:
         handle = add_hook_to_get_activation(model, activation)
         sess = build_session(
             model,
-            device,
+            providers,
             self.user_onnx_libs,
         )
         return sess, handle

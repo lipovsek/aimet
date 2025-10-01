@@ -3,30 +3,46 @@
 
 """AdaScale implementation"""
 
-from typing import Collection, Dict
+import contextlib
+from typing import Collection, Dict, Tuple, Optional, Sequence, Any
 
 import copy
 from dataclasses import dataclass
 from typing import Type
 import numpy as np
 import torch
+import tqdm
 
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 
 from aimet_common.utils import AimetLogger  # pylint: disable=import-error
+from aimet_onnx.utils import (
+    add_hook_to_get_activation,
+    build_session,
+    remove_activation_hooks,
+    get_torch_device,
+)
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.experimental.adascale.find_blocks import (
     get_decoder_blocks_end_points,
-    get_conv_linear_layers_decoder_block,
+    get_position_embedding_names,
 )
+
+from aimet_onnx.experimental.adascale.quantizer import (
+    add_qlinear_layers,
+    get_adascale_trainable_params,
+    replace_with_adascale_quantizers,
+)
+
 from aimet_onnx.experimental.adascale.activation_sampler import ActivationSampler
+from aimet_onnx.experimental.adascale.model_converter import ModelConverter
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
 
-_QT_SAMPLING_PROB = 0.5
+_QT_SAMPLING_PROB = 1.0
 _LOSS_FN = torch.nn.MSELoss()
 
 
@@ -73,13 +89,14 @@ class AdaScale:
     @classmethod
     def apply_adascale(
         cls,
-        qsim: QuantizationSimModel,
+        sim: QuantizationSimModel,
         inputs: Collection[Dict[str, np.ndarray]],
         adascale_model_config: AdaScaleModelConfig,
         num_iterations: int = 1500,
+        providers: Optional[Sequence[str | Tuple[str, Dict[Any, Any]]]] = None,
     ):
         """
-        :param qsim: Quantization Sim model
+        :param sim: Quantization Sim model
         :param inputs: (Collection[Dict[str, np.ndarray]]): The set of input samples to use during optimization.
         :param adascale_model_config: Adascale model config. There are pre-defined configs for
                                       LlamaModel, Qwen2Model, MistralModel. For other models use AdaScaleModelConfig
@@ -101,49 +118,187 @@ class AdaScale:
 
         Warning: This feature is currently considered experimental pending API changes
         """
+        torch_device = get_torch_device(sim.session)
         # pylint: disable=protected-access
-        qsim._compute_param_encodings(overwrite=False)
+        # Disable all activation quantizers
+        with cls._disable_activation_quantizers(sim):
+            # Compute param encodings
+            sim._compute_param_encodings(overwrite=False)
 
-        adascale_blocks_end_points, modules = cls._get_blocks(qsim)
+            adascale_blocks_end_points = get_decoder_blocks_end_points(sim)
 
-        device = int(
-            qsim.session.get_provider_options()
-            .get("CUDAExecutionProvider", {})
-            .get("device_id", "0")
-        )
-
-        fp32_model = copy.deepcopy(qsim.model.model)
-        fp32_model = QuantizationSimModel.remove_quantizers(fp32_model)
-
-        for start_layer, _ in adascale_blocks_end_points:
-            fp_input, qsim_input = cls._sample_block_inputs(
-                qsim, fp32_model, start_layer.outputs[0], inputs, device
+            cos_name, sin_name = get_position_embedding_names(
+                sim, adascale_blocks_end_points
             )
-            print(fp_input, qsim_input)
+
+            # Read in sin and cos
+            hook1 = add_hook_to_get_activation(sim.model.model, cos_name)
+            hook2 = add_hook_to_get_activation(sim.model.model, sin_name)
+            sess = build_session(sim.model.model, providers, None)
+            cos, sin = sess.run([cos_name, sin_name], inputs[0])
+            cos = np.squeeze(cos, axis=1)
+            sin = np.squeeze(sin, axis=1)
+            remove_activation_hooks(sim.model.model, hook1)
+            remove_activation_hooks(sim.model.model, hook2)
+
+            del sess
+
+            fp32_model = copy.deepcopy(sim.model.model)
+            fp32_model = QuantizationSimModel.remove_quantizers(fp32_model)
+            converter = ModelConverter(sim, adascale_model_config)
+
+            for idx in range(len(adascale_blocks_end_points)):
+                # for idx in range(0,4):
+                _logger.info("Optimizing decoder block: %d", idx)
+
+                qsim_sess = ActivationSampler(
+                    adascale_blocks_end_points[idx][0].inputs[0].name,
+                    sim.model.model,
+                    sim.providers,
+                )
+
+                fp_inputs, qsim_inputs = [], []
+                for input in inputs:  # pylint: disable=redefined-builtin
+                    qsim_inputs.append(qsim_sess.sample_acts(input))
+
+                qsim_sess.restore_graph()
+                # Cleanup qsim session
+                del qsim_sess
+
+                fp32_sess = ActivationSampler(
+                    adascale_blocks_end_points[idx][0].inputs[0].name,
+                    fp32_model,
+                    sim.providers,
+                )
+                for input in inputs:
+                    fp_inputs.append(fp32_sess.sample_acts(input))
+                fp32_sess.restore_graph()
+                # Cleanup fp32 session
+                del fp32_sess
+
+                torch_fp_input = [torch.from_numpy(arr).float() for arr in fp_inputs]
+                torch_quant_input = [
+                    torch.from_numpy(arr).float() for arr in qsim_inputs
+                ]
+
+                pytorch_block = converter._copy_weights_onnx_to_pt(idx)
+                pytorch_block.requires_grad_(False)
+
+                fp_out = []
+                for i, input in enumerate(torch_fp_input):
+                    out = pytorch_block(
+                        input,
+                        position_embeddings=(
+                            torch.from_numpy(cos).float(),
+                            torch.from_numpy(sin).float(),
+                        ),
+                        attention_mask=torch.from_numpy(
+                            inputs[i]["attention_mask"]
+                        ).float(),
+                    )[0].detach()
+                    out.requires_grad_(False)
+                    fp_out.append(out)
+
+                pytorch_block = add_qlinear_layers(pytorch_block)
+                replace_with_adascale_quantizers(pytorch_block)
+
+                # only set adascale params to train mode
+                all_beta_gamma_parameters, all_scale_parameters = (
+                    get_adascale_trainable_params(pytorch_block)
+                )
+                adascale_params = all_beta_gamma_parameters + all_scale_parameters
+                for p in adascale_params:
+                    p.requires_grad = True
+
+                trainable_params = [
+                    {
+                        "params": all_beta_gamma_parameters,
+                        "lr": adascale_model_config.beta_gamma_lr,
+                    },
+                    {
+                        "params": all_scale_parameters,
+                        "lr": adascale_model_config.scales_lr,
+                    },
+                ]
+
+                optimizer = torch.optim.Adam(trainable_params)
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=num_iterations, eta_min=0.0
+                )
+
+                pytorch_block.to(torch_device)
+                with torch.set_grad_enabled(True):
+                    for iteration in tqdm.tqdm(range(num_iterations)):
+                        fp_input = torch_fp_input[iteration % len(torch_fp_input)]
+                        quant_input = torch_quant_input[
+                            iteration % len(torch_quant_input)
+                        ]
+                        if _QT_SAMPLING_PROB == 1.0:
+                            input = quant_input
+                        elif _QT_SAMPLING_PROB == 0.0:
+                            input = fp_input
+                        else:
+                            input = torch.where(
+                                torch.rand_like(quant_input, dtype=quant_input.dtype)
+                                < _QT_SAMPLING_PROB,
+                                quant_input,
+                                fp_input,
+                            )
+
+                        # todo: use probabilitistic sampling of qt and fp input
+                        quant_out = pytorch_block(
+                            input.to(torch_device),
+                            position_embeddings=(
+                                torch.from_numpy(cos).float().to(torch_device),
+                                torch.from_numpy(sin).float().to(torch_device),
+                            ),
+                            attention_mask=torch.from_numpy(inputs[0]["attention_mask"])
+                            .float()
+                            .to(torch_device),
+                        )[0]
+
+                        loss = _LOSS_FN(
+                            quant_out,
+                            fp_out[iteration % len(torch_quant_input)].to(torch_device),
+                        )
+
+                        loss.backward()
+                        optimizer.step()
+                        scheduler.step()
+                        optimizer.zero_grad()
+
+                converter._copy_weights_encodings_pt_to_onnx(pytorch_block)
+
+                # Rebuild the session
+                sim._rebuild_session()
+
+                # Cleanup
+                del torch_fp_input
+                del torch_quant_input
 
     @staticmethod
-    def _get_blocks(qsim):
-        """helper to get all the blocks in the model represented by adascale_model_config_dict"""
-        end_points = get_decoder_blocks_end_points(qsim)
-        conv_linear_modules = get_conv_linear_layers_decoder_block(qsim, end_points)
-        return end_points, conv_linear_modules
+    @contextlib.contextmanager
+    def _disable_activation_quantizers(qsim):
+        """
+        Disable activation quantizers
+        :param qsim: Quantization simulator
+        """
 
-    @staticmethod
-    def _copy_weights_onnx_to_pt(block_type, modules):
-        raise NotImplementedError()
+        enabled_activation_quantizers = [
+            name
+            for name in qsim.activation_names
+            if qsim.qc_quantize_op_dict[name].enabled
+        ]
 
-    @staticmethod
-    def _sample_block_inputs(qsim, fp32_model, activation, inputs, device):
-        qsim_sess = ActivationSampler(activation.name, qsim.model.model, device)
-        qsim_input = qsim_sess.sample_acts(inputs)
-        fp32_sess = ActivationSampler(activation.name, fp32_model, device)
+        try:
+            for name in enabled_activation_quantizers:
+                qsim.qc_quantize_op_dict[name].enabled = False
 
-        fp_input = fp32_sess.sample_acts(inputs)
-        return fp_input, qsim_input
+            yield qsim
 
-    @staticmethod
-    def _copy_weights_encodings_pt_to_onnx(pt_block):
-        raise NotImplementedError()
+        finally:
+            for name in enabled_activation_quantizers:
+                qsim.qc_quantize_op_dict[name].enabled = True
 
 
 apply_adascale = AdaScale.apply_adascale

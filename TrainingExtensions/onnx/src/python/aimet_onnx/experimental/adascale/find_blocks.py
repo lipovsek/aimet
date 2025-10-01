@@ -68,3 +68,64 @@ def get_decoder_blocks_end_points(quantsim: QuantizationSimModel) -> List[Tuple]
         decoder_blocks_end_points = graph_pass_obj.decoder_blocks
         return decoder_blocks_end_points
     raise ValueError(f"Graph pass requested but not found: {PASS_TO_RUN}")
+
+
+def get_position_embedding_names(
+    quantsim: QuantizationSimModel,
+    decoder_blocks_end_points: List[Tuple],
+) -> List[str]:
+    """
+    Returns the names of the position embedding inputs to the decoder blocks
+    """
+    all_ops = quantsim.connected_graph.ordered_ops
+    op_name_to_index = {op.name: index for index, op in enumerate(all_ops)}
+
+    shared_inputs = set()
+    running_inputs = set()
+
+    # Find common inputs to all decoder blocks
+    for _, block in enumerate(decoder_blocks_end_points):
+        start_index = op_name_to_index[block[0].name]
+        end_index = op_name_to_index[block[1].name]
+
+        running_inputs = set()
+        for op in all_ops[start_index : end_index + 1]:
+            for inp in op.inputs:
+                if inp.producer is not None:
+                    running_inputs.add(inp)
+
+        if len(shared_inputs) == 0:
+            shared_inputs = running_inputs
+        else:
+            shared_inputs = shared_inputs.intersection(running_inputs)
+
+    # Check which all inputs are coming from position embeddings
+    def _get_input_coming_from_op_type(inp, op_type, index):
+        if inp.producer is None:
+            return False, index
+        if inp.producer.type == op_type:
+            return True, index
+        for parent_inp in inp.producer.inputs:
+            check, new_index = _get_input_coming_from_op_type(
+                parent_inp, op_type, index + 1
+            )
+            if check:
+                return True, new_index
+        return False, index
+
+    def _get_closest_input_from_op_type(shared_inputs, op_type):
+        index = 10000
+        closest_from_op = None
+        for inp in shared_inputs:
+            check, cur_index = _get_input_coming_from_op_type(inp, op_type, 0)
+            if check and cur_index < index:
+                index = cur_index
+                closest_from_op = inp.name
+        return closest_from_op
+
+    # We have LayerNorm as a common block before each decoder block
+    # Hence, need to traverse back and find input that is closest to given op type.
+    cosine_emb = _get_closest_input_from_op_type(shared_inputs, "Cos")
+    sin_emb = _get_closest_input_from_op_type(shared_inputs, "Sin")
+
+    return cosine_emb, sin_emb

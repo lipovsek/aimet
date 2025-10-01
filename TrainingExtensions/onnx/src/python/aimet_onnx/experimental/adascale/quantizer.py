@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 # pylint: disable=import-error
-import copy
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import torch
 from aimet_common.quantsim import _get_minimum_scale
@@ -17,6 +16,16 @@ from aimet_onnx.experimental.adascale.utils import (
     reduce,
     get_symmetric_offset,
 )
+
+
+class RoundManual(torch.autograd.Function):  # pylint: disable=abstract-method
+    @staticmethod
+    def forward(ctx, x):  # pylint: disable=arguments-differ, abstract-method, unused-argument
+        return torch.round(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pylint: disable=arguments-differ
+        return grad_output
 
 
 class WeightQdq(torch.nn.Module):
@@ -88,7 +97,7 @@ class WeightQdq(torch.nn.Module):
             shifted_tensor = torch.sub(tensor, scale, alpha=zero_point_shift)
 
         # QDQ
-        x_round = torch.round_(shifted_tensor.to(scale.dtype) / scale).sub_(offset)
+        x_round = RoundManual.apply(shifted_tensor.to(scale.dtype) / scale).sub_(offset)
         x_quant = x_round.clamp_(qmin, qmax)
         x_qdq = x_quant.add_(offset).mul_(scale)
 
@@ -239,6 +248,10 @@ class AdaScaleWeightQdq(WeightQdq):
 
         self.min.requires_grad = False
         self.max.requires_grad = False
+        self.beta.requires_grad = True
+        self.gamma.requires_grad = True
+        self.s2.requires_grad = True
+        self.s3.requires_grad = True
 
     def get_adascale_trainable_parameters(self):
         """Method to query all the trainable parameters of AdaScale QDQ"""
@@ -342,14 +355,10 @@ class LiteWeightQuantizedLinear(torch.nn.Linear):
         )
         return qlinear
 
-    def forward(self, *args, **kwargs):
-        orig_weight = copy.deepcopy(getattr(self, "weight", None))
-        if self.param_quantizers["weight"] is not None:
-            self.weight = torch.nn.Parameter(
-                self.param_quantizers["weight"](orig_weight)
-            )
-        output = super().forward(*args, **kwargs)
-        self.weight = orig_weight
+    def forward(self, input) -> torch.Tensor:  # pylint: disable=redefined-builtin
+        qdq_tensor = self.param_quantizers["weight"](self.weight)
+        output = torch.nn.functional.linear(input, qdq_tensor, self.bias)
+
         return output
 
 
@@ -372,7 +381,7 @@ def add_qlinear_layers(
             setattr(module, name, _convert_to_qmodule(child))
         return module
 
-    _convert_to_qmodule(model)
+    model = _convert_to_qmodule(model)
     return model
 
 
@@ -386,3 +395,21 @@ def replace_with_adascale_quantizers(model: torch.nn.Module) -> torch.nn.Module:
                 block_size=m.param_quantizers["weight"].block_size,
                 zero_point_shift=m.param_quantizers["weight"].zero_point_shift,
             )
+
+
+def get_adascale_trainable_params(
+    non_leaf_module: torch.nn.Module,
+) -> Tuple[List, List]:
+    """Get all the adascale scale params present in the non-leaf module"""
+    all_scale_parameters = []
+    all_beta_gamma_parameters = []
+    for module in non_leaf_module.modules():
+        if isinstance(module, LiteWeightQuantizedLinear) and isinstance(
+            module.param_quantizers["weight"], AdaScaleWeightQdq
+        ):
+            beta_gamma_params, scale_parameters = module.param_quantizers[
+                "weight"
+            ].get_adascale_trainable_parameters()
+            all_beta_gamma_parameters.extend(beta_gamma_params)
+            all_scale_parameters.extend(scale_parameters)
+    return all_beta_gamma_parameters, all_scale_parameters
