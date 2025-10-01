@@ -1980,30 +1980,9 @@ class QuantizationSimModel:
             prequantize_constants (bool): If True, output model will contain quantized values for constant tensors.
                 If False, the model will contain floating point data and Q -> DQ nodes.
         """
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            return self._to_onnx_qdq(
-                os.path.join(tmp_dir, "onnx.model"),
-                prequantize_constants=prequantize_constants,
-            )
+        return self._to_onnx_qdq(prequantize_constants=prequantize_constants)
 
-    def _to_onnx_qdq(
-        self,
-        f: str | os.PathLike,
-        *,
-        save_as_external_data: bool = False,
-        all_tensors_to_one_file: bool = True,
-        location: str | None = None,
-        size_threshold: int = 1024,
-        convert_attribute: bool = False,
-        prequantize_constants: bool = False,
-    ) -> onnx.ModelProto:
-        if not isinstance(f, (str, os.PathLike)):
-            raise TypeError(
-                f"{QuantizationSimModel.to_onnx_qdq.__qualname__} only supports "
-                f"argument `f` of type str; got {type(f)}"
-            )
-        f = Path(f).absolute()
-
+    def _to_onnx_qdq(self, prequantize_constants: bool) -> onnx.ModelProto:
         try:
             invalid_bitwidth = next(
                 qtzr.bitwidth
@@ -2075,19 +2054,6 @@ class QuantizationSimModel:
         model_copy = onnx.ModelProto()
         model_copy.CopyFrom(self.model.model)
 
-        # Save model early. When save_as_external_data is True,
-        # saving model early helps speed up export and prevent OOM
-        onnx.save_model(
-            model_copy,
-            str(f),
-            save_as_external_data=save_as_external_data,
-            all_tensors_to_one_file=all_tensors_to_one_file,
-            location=location,
-            size_threshold=size_threshold,
-            convert_attribute=convert_attribute,
-        )
-        model_copy = onnx.load_model(str(f), load_external_data=save_as_external_data)
-
         self._overwrite_parameters(model_copy, self._get_qdq_parameters())
 
         aimet_qc_quantize_nodes = [
@@ -2135,7 +2101,6 @@ class QuantizationSimModel:
             **qdq_node_info,
             onnx_opset=desired_onnx_opset_version,
             prequantize_constants=prequantize_constants,
-            base_dir=str(f.parent),
         )
 
         # Restore original model's output names
@@ -2185,19 +2150,6 @@ class QuantizationSimModel:
                         node.input[j] = last_node.output[i]
 
         ONNXModel(model_copy).topological_sort()
-
-        # Save updated model, overwriting the previously saved model
-        onnx.save_model(
-            model_copy,
-            str(f),
-            save_as_external_data=save_as_external_data,
-            all_tensors_to_one_file=all_tensors_to_one_file,
-            location=location,
-            size_threshold=size_threshold,
-            convert_attribute=convert_attribute,
-        )
-        model_copy = onnx.load_model(str(f), load_external_data=save_as_external_data)
-
         return model_copy
 
     def _get_qdq_parameters(self):
