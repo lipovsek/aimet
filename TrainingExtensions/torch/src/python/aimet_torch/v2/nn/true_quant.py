@@ -62,6 +62,7 @@ from torch._VF import (  # pylint: disable=no-name-in-module
     rnn_relu_cell as _rnn_relu_cell,
     rnn_tanh_cell as _rnn_tanh_cell,
 )
+from torch.utils._pytree import tree_map
 
 from aimet_torch.v2.quantization.base import QuantizerBase
 from aimet_torch.v2.quantization.tensor import QuantizedTensorBase
@@ -492,42 +493,39 @@ class _DispatchMixin(metaclass=_DispatchMeta):
         else:
             kernel = self._custom_kernel_helper(kernel)
 
-        with self._patch_quantized_parameters():
-            with _dispatch(builtin_torch_fn, kernel):
-                output = super().forward(*args, **kwargs)
+        with _dispatch(builtin_torch_fn, kernel):
+            output = super().forward(*args, **kwargs)
 
         return _dequantize_if_applicable(output)
 
+    def _quantize_if_param(self, args):
+        params = {
+            param: self.param_quantizers[name]
+            for name, param in self.named_parameters(recurse=False)
+            if name in self.param_quantizers and self.param_quantizers[name]
+        }
+
+        def quantize_if_param(tensor: torch.Tensor):
+            param_qtzr = params.get(tensor, None)
+            if param_qtzr:
+                return param_qtzr(tensor)
+            return tensor
+
+        return tree_map(quantize_if_param, args)
+
     def _builtin_torch_fn_helper(self, fn: Callable[..., Tensor]):
         def wrapper(*args, **kwargs):
-            params = {
-                name: (param, self.param_quantizers[name])
-                for name, param in self.named_parameters(recurse=False)
-                if name in self.param_quantizers and self.param_quantizers[name]
-            }
-
-            def quantize_if_param(tensor: torch.Tensor):
-                if _torch_compiler_is_exporting():
-                    for _, (param, param_qtzr) in params.items():
-                        if param is tensor:
-                            return param_qtzr(tensor)
-                return tensor
-
+            args, kwargs = self._quantize_if_param((args, kwargs))
             qtzd_args = tuple(
                 _quantize_dequantize_if_applicable(x, qtzr)
                 for x, qtzr in zip(args, self.input_quantizers)
             )
-            qtzd_args = tuple(quantize_if_param(x) for x in qtzd_args)
-
             others = tuple(
                 _dequantize_if_applicable(x) for x in args[len(self.input_quantizers) :]
             )
-            others = tuple(quantize_if_param(x) for x in others)
-
             kwargs = {
                 key: _dequantize_if_applicable(value) for key, value in kwargs.items()
             }
-            kwargs = {key: quantize_if_param(value) for key, value in kwargs.items()}
 
             output = fn(*qtzd_args, *others, **kwargs)
 
@@ -537,6 +535,7 @@ class _DispatchMixin(metaclass=_DispatchMeta):
 
     def _custom_kernel_helper(self, fn: Callable[..., QuantizedTensorBase]):
         def wrapper(*args, **kwargs):
+            args, kwargs = self._quantize_if_param((args, kwargs))
             qtzd_args = (
                 _quantize_if_applicable(x, qtzr)
                 for x, qtzr in zip(args, self.input_quantizers)
@@ -1024,6 +1023,11 @@ class QuantizedEmbeddingBag(_DispatchMixin, QuantizationMixin, nn.EmbeddingBag):
                     per_sample_weights, qtzr
                 )
 
+            weight_qtzr = self.param_quantizers["weight"]
+
+            if weight_qtzr:
+                weight = weight_qtzr(weight)
+
             output = fn(
                 input,
                 weight,
@@ -1181,6 +1185,7 @@ class QuantizedGRU(_DispatchMixin, QuantizationMixin, nn.GRU):
 
         def gru(*args):
             args = self._quantize_inputs(args, apply)
+            args = self._quantize_if_param(args)
             output, h_n = fn(*args)
             return (
                 apply(output, self.output_quantizers[0]),
@@ -1219,6 +1224,7 @@ class QuantizedGRUCell(_DispatchMixin, QuantizationMixin, nn.GRUCell):
         apply = _quantize_dequantize_if_applicable
 
         def gru_cell(input, hx, *args, **kwargs):
+            input, hx, args, kwargs = self._quantize_if_param((input, hx, args, kwargs))
             input = apply(input, self.input_quantizers[0])
             hx = apply(hx, self.input_quantizers[1])
             output = fn(input, hx, *args, **kwargs)
@@ -1401,6 +1407,7 @@ class QuantizedLSTM(_DispatchMixin, QuantizationMixin, nn.LSTM):
 
         def lstm(*args):
             args = self._quantize_inputs(args, apply)
+            args = self._quantize_if_param(args)
             output, h_n, c_n = fn(*args)
             return (
                 apply(output, self.output_quantizers[0]),
@@ -1440,6 +1447,7 @@ class QuantizedLSTMCell(_DispatchMixin, QuantizationMixin, nn.LSTMCell):
         apply = _quantize_dequantize_if_applicable
 
         def lstm_cell(input, hx, *args, **kwargs):
+            input, hx, args, kwargs = self._quantize_if_param((input, hx, args, kwargs))
             input = apply(input, self.input_quantizers[0])
             h, c = hx
             h_qtzr, c_qtzr = self.input_quantizers[1:]
@@ -1830,6 +1838,7 @@ class QuantizedRNN(_DispatchMixin, QuantizationMixin, nn.RNN):
 
         def rnn(*args):
             args = self._quantize_inputs(args, apply)
+            args = self._quantize_if_param(args)
             output, h_n = fn(*args)
             return (
                 apply(output, self.output_quantizers[0]),
@@ -1879,6 +1888,7 @@ class QuantizedRNNCell(_DispatchMixin, QuantizationMixin, nn.RNNCell):
         apply = _quantize_dequantize_if_applicable
 
         def rnn_cell(input, hx, *args, **kwargs):
+            input, hx, args, kwargs = self._quantize_if_param((input, hx, args, kwargs))
             input = apply(input, self.input_quantizers[0])
             hx = apply(hx, self.input_quantizers[1])
             output = fn(input, hx, *args, **kwargs)
