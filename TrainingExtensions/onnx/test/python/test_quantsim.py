@@ -64,7 +64,6 @@ from aimet_common.quantsim_config.utils import (
     get_path_for_per_channel_config,
     get_path_for_per_tensor_config,
 )
-from aimet_common.quantsim import _is_bias_out_of_int32_range
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.quantsim import (
     QuantizationSimModel,
@@ -77,8 +76,8 @@ from aimet_onnx.quantsim import (
 )
 import aimet_onnx
 from aimet_onnx.qc_quantize_op import OpMode, GroupedBlockQuantizeDequantize
-from aimet_onnx.utils import make_dummy_input, disable_quantizers
-from aimet_onnx import int8, int16
+from aimet_onnx.utils import make_dummy_input
+from aimet_onnx import int8
 from .models import models_for_tests, test_models
 from .models.models_for_tests import (
     batchnorm_model,
@@ -1574,7 +1573,6 @@ class TestQuantSim:
             "model_output": {},
         }
         output_features = model.graph.output[0].type.tensor_type.shape.dim[-1].dim_value
-        dummy_input = make_dummy_input(model)
         with tempfile.TemporaryDirectory() as temp_dir:
             config_file = os.path.join(temp_dir, "config.json")
             with open(config_file, "w") as f:
@@ -1771,9 +1769,6 @@ class TestQuantSim:
                 path=tempdir,
                 config_file=os.path.join(tempdir, "quantsim_config.json"),
             )
-
-            def callback(session, dummy_input):
-                session.run(None, dummy_input)
 
             dummy_tensor = make_dummy_input(model)
             sim.compute_encodings([dummy_tensor])
@@ -4591,87 +4586,6 @@ class TestDynamicWeightSymmetryMapping:
             onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=False)
             self._assert_uint_activation(onnx_qdq_model)
 
-    def test_dynamic_conv_symmetry(self):
-        model = models_for_tests.dynamic_conv_model()
-        quantsim_config = {
-            "defaults": {
-                "ops": {"is_output_quantized": "True"},
-                "params": {"is_quantized": "True", "is_symmetric": "True"},
-                "per_channel_quantization": "False",
-                "strict_symmetric": "False",
-                "unsigned_symmetric": "False",
-            },
-            "params": {},
-            "op_type": {},
-            "supergroups": [],
-            "model_input": {"is_input_quantized": "True"},
-            "model_output": {"is_output_quantized": "True"},
-        }
-
-        with tempfile.TemporaryDirectory() as tempdir:
-            with open(os.path.join(tempdir, "quantsim_config.json"), "w") as f:
-                json.dump(quantsim_config, f)
-
-            sim = QuantizationSimModel(
-                model,
-                path=tempdir,
-                config_file=os.path.join(tempdir, "quantsim_config.json"),
-                default_activation_bw=16,
-            )
-
-            assert sim.qc_quantize_op_dict["dynamic_conv.weight"].enabled
-            assert sim.qc_quantize_op_dict[
-                "dynamic_conv.weight"
-            ].use_symmetric_encodings
-
-            """
-            When: Export to onnx QDQ
-            Then: All activation quantizers must be uint
-            """
-            onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=False)
-            self._assert_uint_activation(onnx_qdq_model)
-
-    @pytest.mark.parametrize("conv_transpose", [True, False])
-    def test_dynamic_conv_symmetry(self, conv_transpose):
-        model = models_for_tests.dynamic_conv_model(conv_transpose=conv_transpose)
-        quantsim_config = {
-            "defaults": {
-                "ops": {"is_output_quantized": "True"},
-                "params": {"is_quantized": "True", "is_symmetric": "True"},
-                "per_channel_quantization": "False",
-                "strict_symmetric": "False",
-                "unsigned_symmetric": "False",
-            },
-            "params": {},
-            "op_type": {},
-            "supergroups": [],
-            "model_input": {"is_input_quantized": "True"},
-            "model_output": {"is_output_quantized": "True"},
-        }
-
-        with tempfile.TemporaryDirectory() as tempdir:
-            with open(os.path.join(tempdir, "quantsim_config.json"), "w") as f:
-                json.dump(quantsim_config, f)
-
-            sim = QuantizationSimModel(
-                model,
-                path=tempdir,
-                config_file=os.path.join(tempdir, "quantsim_config.json"),
-                default_activation_bw=16,
-            )
-
-            assert sim.qc_quantize_op_dict["dynamic_conv.weight"].enabled
-            assert sim.qc_quantize_op_dict[
-                "dynamic_conv.weight"
-            ].use_symmetric_encodings
-
-            """
-            When: Export to onnx QDQ
-            Then: All activation quantizers must be uint
-            """
-            onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=False)
-            self._assert_uint_activation(onnx_qdq_model)
-
     @pytest.mark.parametrize("conv_transpose", [True, False])
     def test_dynamic_conv_symmetry(self, conv_transpose):
         model = models_for_tests.dynamic_conv_model(conv_transpose=conv_transpose)
@@ -4752,7 +4666,7 @@ class TestDynamicWeightSymmetryMapping:
             self._assert_uint_activation(onnx_qdq_model)
 
     @pytest.mark.skip
-    def test_quantsim_create_speed(self, tmp_path):
+    def test_quantsim_create_speed(self):
         from onnx import helper, TensorProto
 
         model = models_for_tests.conv_relu_model()
