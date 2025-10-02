@@ -19,7 +19,7 @@ import pytest
     "model_factory",
     [
         resnet18,
-        # mobilenet_v3_large,
+        mobilenet_v3_large,
     ],
 )
 def test_export(model_factory, tmp_path: Path):

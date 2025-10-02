@@ -433,11 +433,6 @@ _dispatchable_torch_functions = set(
     itertools.chain(*get_overridable_functions().values())
 )
 
-# NOTE: ``torch.overrides.get_overridable_functions()`` doesn't include
-#       F.hardswish, F.hardsigmoid, or Tensor.unflatten, even though
-#       they are implemented in a perfectly dispatchable manner.
-_dispatchable_torch_functions |= {F.hardswish, F.hardsigmoid, Tensor.unflatten}
-
 
 class _Dispatcher(BaseTorchFunctionMode):
     def __init__(self, dispatch_table: Mapping[Callable, Callable]):
@@ -1271,19 +1266,39 @@ class QuantizedHardshrink(_DispatchMixin, QuantizationMixin, nn.Hardshrink):
 
 
 @QuantizationMixin.implements(nn.Hardsigmoid)
-class QuantizedHardsigmoid(_DispatchMixin, QuantizationMixin, nn.Hardsigmoid):
+class QuantizedHardsigmoid(QuantizationMixin, nn.Hardsigmoid):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.Hardsigmoid)
-    _builtin_torch_fn = F.hardsigmoid
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.Hardswish)
-class QuantizedHardswish(_DispatchMixin, QuantizationMixin, nn.Hardswish):
+class QuantizedHardswish(QuantizationMixin, nn.Hardswish):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.Hardswish)
-    _builtin_torch_fn = F.hardswish
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.Hardtanh)
@@ -2160,12 +2175,20 @@ class QuantizedTripletMarginWithDistanceLoss(
 
 
 @QuantizationMixin.implements(nn.Unflatten)
-class QuantizedUnflatten(_DispatchMixin, QuantizationMixin, nn.Unflatten):
+class QuantizedUnflatten(QuantizationMixin, nn.Unflatten):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.Unflatten)
 
-    def _get_builtin_torch_fn(self):
-        return Tensor.unflatten
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.Unfold)
