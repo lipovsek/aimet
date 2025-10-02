@@ -48,6 +48,7 @@ import pathlib
 import time
 import random
 
+from onnx.external_data_helper import uses_external_data, _get_all_tensors
 import onnx.numpy_helper
 import torch
 import numpy as np
@@ -60,6 +61,7 @@ from onnxsim import simplify
 from aimet_common import quantsim
 from aimet_common import libpymo
 from aimet_common.defs import QuantScheme, QuantizationDataType, EncodingType, qtype
+from aimet_common.onnx._utils import _convert_version_with_external_weights
 from aimet_common.quantsim_config.utils import (
     get_path_for_per_channel_config,
     get_path_for_per_tensor_config,
@@ -5169,21 +5171,7 @@ def test_from_onnx_qdq_split_op():
     _assert_sim_equal(sim, sim_2)
 
 
-@pytest.mark.parametrize(
-    "activation_type",
-    [
-        aimet_onnx.int8,
-        # NOTE: INT16 activation will trigger up-conversion to opset 21
-        # during export because INT16 QDQ was only added in opset 21.
-        # However, currently this will fail because onnx version converter
-        # has a bug with large models. This bug is expected to be fixed in onnx 1.19.
-        # TODO (kyunggeu): Uncomment this when onnx 1.19 is released
-        # aimet_onnx.int16,
-    ],
-)
-def test_to_onnx_qdq_large_model(
-    activation_type,
-):
+def test_to_onnx_qdq_large_model():
     seed = 200
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -5209,8 +5197,8 @@ def test_to_onnx_qdq_large_model(
         model = onnx.load_model(path, load_external_data=True)
         sim = QuantizationSimModel(
             model,
-            param_type=aimet_onnx.int8,
-            activation_type=activation_type,
+            param_type=aimet_onnx.int4,
+            activation_type=aimet_onnx.int16,
         )
         input = np.random.randn(1, 2**14).astype(np.float32)
         sim.compute_encodings([{"input": input}])
@@ -5227,10 +5215,6 @@ def test_to_onnx_qdq_large_model(
                 os.path.join(tmpdir, "model_qdq.onnx"),
                 save_as_external_data=True,
             )
-            count = sum(
-                1 for node in qdq_model.graph.node if node.op_type == "DequantizeLinear"
-            )
-            print("Number of dequantizeLinear nodes: ", count)
 
             sess_options = ort.SessionOptions()
             sess_options.graph_optimization_level = (
@@ -5243,4 +5227,58 @@ def test_to_onnx_qdq_large_model(
 
             (out_onnx_qdq,) = sess.run(None, {"input": input})
             (out_sim,) = sim.session.run(None, {"input": input})
-            assert np.allclose(out_sim, out_onnx_qdq, atol=1e-7)
+
+            atol = sim.qc_quantize_op_dict["output"].get_encodings()[0].delta
+            assert np.allclose(out_sim, out_onnx_qdq, atol=atol)
+
+
+@pytest.mark.parametrize(
+    "model_factory",
+    [
+        partial(standalone_gemm, in_channels=64, out_channels=64, opset_version=11),
+        partial(
+            standalone_batchnorm_constants,
+            input_shape=(1, 3, 100, 100),
+            opset_version=11,
+        ),
+    ],
+)
+@pytest.mark.parametrize("save_as_external_data", [False, True])
+def test_convert_version_with_external_weights(
+    model_factory, save_as_external_data, tmp_path
+):
+    model = model_factory()
+    input = make_dummy_input(model)
+
+    onnx.save_model(
+        model,
+        tmp_path / "model.onnx",
+        save_as_external_data=save_as_external_data,
+        size_threshold=0,
+        convert_attribute=True,
+    )
+    external_data = {
+        tensor.name: tensor.external_data[:]
+        for tensor in _get_all_tensors(model)
+        if uses_external_data(tensor)
+    }
+
+    sess_1 = ort.InferenceSession(tmp_path / "model.onnx")
+    (out_1,) = sess_1.run(None, input)
+
+    """
+    When: _convert_version_with_external_weights
+    Then:
+      1. Converted model must preserve the same external_data field in all tensors
+      2. Converted model should produce the same output as the original
+    """
+    model = _convert_version_with_external_weights(model, 21)
+    assert external_data == {
+        tensor.name: tensor.external_data[:]
+        for tensor in _get_all_tensors(model)
+        if uses_external_data(tensor)
+    }
+    sess_2 = ort.InferenceSession(tmp_path / "model.onnx")
+    (out_2,) = sess_2.run(None, input)
+
+    assert np.all(out_1 == out_2)

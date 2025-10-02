@@ -3239,10 +3239,13 @@ def standalone_batchnorm(input_shape: tuple[int, int, int, int]):
 batchnorm_model = functools.partial(standalone_batchnorm, (10, 10, 8, 8))
 
 
-def standalone_batchnorm_constants(input_shape):
+def standalone_batchnorm_constants(
+    input_shape, opset_version: int = _DEFAULT_OPSET_VERSION
+):
     _, num_channels, *_ = input_shape
 
     model = make_model(
+        opset_imports=[helper.make_operatorsetid("", opset_version)],
         graph=helper.make_graph(
             name="BatchnormModel",
             inputs=[
@@ -3314,7 +3317,7 @@ def standalone_batchnorm_constants(input_shape):
                     name="batchnorm",
                 ),
             ],
-        )
+        ),
     )
     onnx.checker.check_model(model, True)
     return model
@@ -4057,8 +4060,11 @@ def model_with_ignore_ops(tmpdir):
     return onnx.load(model_file_path)
 
 
-def standalone_gemm(in_channels: int, out_channels: int):
+def standalone_gemm(
+    in_channels: int, out_channels: int, opset_version: int = _DEFAULT_OPSET_VERSION
+):
     model = make_model(
+        opset_imports=[helper.make_operatorsetid("", opset_version)],
         graph=helper.make_graph(
             name="Gemm",
             inputs=[
@@ -4073,7 +4079,7 @@ def standalone_gemm(in_channels: int, out_channels: int):
             ],
             initializer=[
                 numpy_helper.from_array(
-                    np.random.randn(out_channels, in_channels).astype(np.float32),
+                    np.random.randn(in_channels, out_channels).astype(np.float32),
                     name="weight",
                 ),
                 numpy_helper.from_array(

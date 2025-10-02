@@ -49,6 +49,11 @@ import numpy as np
 import onnx
 from onnx import ModelProto, NodeProto, TensorProto
 from onnx.numpy_helper import from_array, to_array
+from onnx.external_data_helper import (
+    load_external_data_for_tensor,
+    uses_external_data,
+    _get_all_tensors,
+)
 
 from aimet_common.onnx import opset10, opset13, opset21
 from aimet_common.utils import AimetLogger
@@ -629,20 +634,38 @@ def _is_htp_interpolation_op(op_type: str) -> bool:
 
 def _convert_version_with_external_weights(model, target_opset_version):
     """
-    Upgrade opset version without loading weights into memory
+    Upgrade opset version with weights flushed to disk temporarily
     """
+    regular_tensors = {
+        tensor.name
+        for tensor in _get_all_tensors(model)
+        if not uses_external_data(tensor)
+    }
+
     with tempfile.TemporaryDirectory() as tmp_dir:
         onnx_file = os.path.join(tmp_dir, "model.onnx")
+
+        # Temporarily switch regular (internal) tensors to external
         onnx.save_model(
             model,
             onnx_file,
             save_as_external_data=True,
             location="model.data",
         )
+        external_tensors = {
+            tensor.name: tensor.external_data[:]
+            for tensor in _get_all_tensors(model)
+            if tensor.name in regular_tensors and uses_external_data(tensor)
+        }
 
-        model = onnx.load_model(onnx_file, load_external_data=False)
         model = onnx.version_converter.convert_version(model, target_opset_version)
-        onnx.external_data_helper.load_external_data_for_model(model, tmp_dir)
+
+        # Only load tensors that are temporarily switched from interal to external
+        for tensor in _get_all_tensors(model):
+            if tensor.name in external_tensors:
+                load_external_data_for_tensor(tensor, tmp_dir)
+                tensor.data_location = TensorProto.DEFAULT
+                del tensor.external_data[:]
 
     return model
 
@@ -660,7 +683,7 @@ def _convert_version(
             "onnx.version_converter.convert_version failed with exception: %s. Retrying with external data",
             str(e),
         )
-        _convert_version_with_external_weights(model, target_opset_version)
+        model = _convert_version_with_external_weights(model, target_opset_version)
 
     logger.info("The opset of the onnx model is updated to %s.", target_opset_version)
     return model
