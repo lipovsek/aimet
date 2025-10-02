@@ -285,28 +285,42 @@ def _torch_fake_quantize(
     qmin: int,
     qmax: int,
 ) -> Optional[torch.Tensor]:
-    scale_internal_dtype = torch.float32
+    scale_internal_dtype = None if scale.dtype == torch.float32 else torch.float32
     tensor_internal_dtype = tensor.dtype
+    output_dtype = tensor.dtype
 
     if _torch_version < (2, 6, 0) and tensor_internal_dtype == torch.bfloat16:
         # torch.fake_quantize only supports bfloat16 in >=2.6.0
         tensor_internal_dtype = torch.float32
 
+    if output_dtype == tensor_internal_dtype:
+        output_dtype = None
+
+    if tensor_internal_dtype == tensor.dtype:
+        tensor_internal_dtype = None
+
     is_per_tensor = scale.numel() == offset.numel() == 1
 
     if is_per_tensor:
+        tensor = tensor.to(tensor_internal_dtype)
+        scale = scale.to(scale_internal_dtype)
+        zp = -offset.to(torch.int32)
         return torch.fake_quantize_per_tensor_affine(
-            tensor.to(tensor_internal_dtype),
-            scale.view(()).to(scale_internal_dtype),
-            -offset.to(torch.int32).view(()),
+            tensor,
+            scale.view(()) if scale.dim() > 0 else scale,
+            zp.view(()) if zp.dim() > 0 else zp,
             qmin,
             qmax,
-        ).to(tensor.dtype)
+        ).to(output_dtype)
 
-    scale = scale.view(*(1 for _ in range(tensor.dim() - scale.dim())), *scale.shape)
-    offset = offset.view(
-        *(1 for _ in range(tensor.dim() - offset.dim())), *offset.shape
+    scale_shape = tuple((*(1 for _ in range(tensor.dim() - scale.dim())), *scale.shape))
+    if scale_shape != scale.shape:
+        scale = scale.view(*scale_shape)
+    offset_shape = tuple(
+        (*(1 for _ in range(tensor.dim() - offset.dim())), *offset.shape)
     )
+    if offset_shape != offset.shape:
+        offset = offset.view(*offset_shape)
 
     is_per_channel = scale.shape == offset.shape and all(
         scale_dim in (1, tensor_dim)
@@ -320,14 +334,17 @@ def _torch_fake_quantize(
         if len(axes) == 1:
             (axis,) = axes
             try:
+                tensor = tensor.to(tensor_internal_dtype)
+                scale = scale.to(scale_internal_dtype)
+                zp = -offset.to(torch.int32)
                 return torch.fake_quantize_per_channel_affine(
-                    tensor.to(tensor_internal_dtype),
-                    scale.flatten().to(scale_internal_dtype),
-                    -offset.to(torch.int32).flatten(),
+                    tensor,
+                    scale.flatten() if scale.dim() > 1 else scale,
+                    zp.flatten() if zp.dim() > 1 else zp,
                     axis,
                     qmin,
                     qmax,
-                ).to(tensor.dtype)
+                ).to(output_dtype)
             except RuntimeError:
                 # NOTE: torch.fake_quantize_per_channel_affine throws runtime error
                 # if zero_point is not in [qmin, qmax]. In practice, this error will
