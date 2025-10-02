@@ -65,7 +65,12 @@ from torch._VF import (  # pylint: disable=no-name-in-module
 
 from aimet_torch.v2.quantization.base import QuantizerBase
 from aimet_torch.v2.quantization.tensor import QuantizedTensorBase
-from aimet_torch.v2.utils import patch_attr, _ContextManager, allow_recompute
+from aimet_torch.v2.utils import (
+    patch_attr,
+    _ContextManager,
+    allow_recompute,
+    _torch_compiler_is_exporting,
+)
 from .base import BaseQuantizationMixin
 
 
@@ -449,8 +454,10 @@ class _Dispatcher(BaseTorchFunctionMode):
 
 @contextlib.contextmanager
 def _dispatch(torch_func: Callable, custom_impl: Callable):
-    if torch_func not in _dispatchable_torch_functions:
-        raise RuntimeError(f"PyTorch doesn't support overriding {torch_func}")
+    if not _torch_compiler_is_exporting():
+        if torch_func not in _dispatchable_torch_functions:
+            # Skip raising early exception during torch.export.export
+            raise RuntimeError(f"PyTorch doesn't support overriding {torch_func}")
 
     dispatch_table = {torch_func: custom_impl}
 
@@ -493,16 +500,34 @@ class _DispatchMixin(metaclass=_DispatchMeta):
 
     def _builtin_torch_fn_helper(self, fn: Callable[..., Tensor]):
         def wrapper(*args, **kwargs):
+            params = {
+                name: (param, self.param_quantizers[name])
+                for name, param in self.named_parameters(recurse=False)
+                if name in self.param_quantizers and self.param_quantizers[name]
+            }
+
+            def quantize_if_param(tensor: torch.Tensor):
+                if _torch_compiler_is_exporting():
+                    for _, (param, param_qtzr) in params.items():
+                        if param is tensor:
+                            return param_qtzr(tensor)
+                return tensor
+
             qtzd_args = tuple(
                 _quantize_dequantize_if_applicable(x, qtzr)
                 for x, qtzr in zip(args, self.input_quantizers)
             )
+            qtzd_args = tuple(quantize_if_param(x) for x in qtzd_args)
+
             others = tuple(
                 _dequantize_if_applicable(x) for x in args[len(self.input_quantizers) :]
             )
+            others = tuple(quantize_if_param(x) for x in others)
+
             kwargs = {
                 key: _dequantize_if_applicable(value) for key, value in kwargs.items()
             }
+            kwargs = {key: quantize_if_param(value) for key, value in kwargs.items()}
 
             output = fn(*qtzd_args, *others, **kwargs)
 

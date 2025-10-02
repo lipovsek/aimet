@@ -50,6 +50,7 @@ from aimet_torch.v2.utils import (
     _is_expandable,
     StatisticsNotFoundError,
     docstring,
+    _torch_compiler_is_exporting,
 )
 from aimet_torch.v2.quantization.encoding_analyzer import (
     EncodingAnalyzer,
@@ -1015,7 +1016,8 @@ class QuantizeDequantize(AffineQuantizerBase):
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
-        input = input.as_subclass(torch.Tensor)
+        if not _torch_compiler_is_exporting():
+            input = input.as_subclass(torch.Tensor)
 
         output = quantize_dequantize(
             input,
@@ -1026,8 +1028,9 @@ class QuantizeDequantize(AffineQuantizerBase):
             block_size=self.block_size,
             zero_point_shift=self.zero_point_shift,
         )
-        output = output.as_subclass(DequantizedTensor)
-        output.encoding = encoding
+        if not _torch_compiler_is_exporting():
+            output = output.as_subclass(DequantizedTensor)
+            output.encoding = encoding
         return output
 
 

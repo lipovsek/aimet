@@ -40,6 +40,7 @@
 from typing import Callable, Tuple, Any
 import functools
 import itertools
+from packaging import version
 
 import torch
 
@@ -109,6 +110,10 @@ class _ContextManager:
         return wrapper
 
 
+class _NullAttribute:
+    pass
+
+
 def patch_attr(obj, attr_name, new_attr) -> _ContextManager:
     """
     Temporarily overwrite object attribute
@@ -117,10 +122,10 @@ def patch_attr(obj, attr_name, new_attr) -> _ContextManager:
         if attr_name in obj._parameters or attr_name in obj._buffers:  # pylint: disable=protected-access
             return _patch_param_or_buffer(obj, attr_name, new_attr)
 
-    class _NullAttribute:
-        pass
-
-    old_attr = getattr(obj, attr_name, _NullAttribute())
+    if hasattr(obj, attr_name):
+        old_attr = getattr(obj, attr_name)
+    else:
+        old_attr = _NullAttribute()
     action = lambda: setattr(obj, attr_name, new_attr)
 
     def cleanup():
@@ -429,3 +434,23 @@ def default_forward_fn(model, inputs):
     if isinstance(inputs, torch.Tensor):
         inputs = [inputs]
     return model(*inputs)
+
+
+_torch_compiler_is_compiling: Callable[[], bool]
+_torch_compiler_is_dynamo_compiling: Callable[[], bool]
+_torch_compiler_is_exporting: Callable[[], bool]
+
+if version.parse(torch.__version__) >= version.parse("2.7"):
+    _torch_compiler_is_compiling = torch.compiler.is_compiling
+    _torch_compiler_is_dynamo_compiling = torch.compiler.is_dynamo_compiling
+    _torch_compiler_is_exporting = torch.compiler.is_exporting
+else:
+    # torch < 2.7.0 doesn't have torch.compiler.is_compiling/exporting API
+    def _torch_compiler_is_compiling() -> bool:
+        return False
+
+    def _torch_compiler_is_dynamo_compiling() -> bool:
+        return False
+
+    def _torch_compiler_is_exporting() -> bool:
+        return False

@@ -40,7 +40,11 @@ import functools
 from packaging import version
 from typing import Callable, Optional, List, Tuple
 import torch
-from aimet_torch.v2.utils import _is_expandable, _ContextManager
+from aimet_torch.v2.utils import (
+    _is_expandable,
+    _ContextManager,
+    _torch_compiler_is_exporting,
+)
 import aimet_torch.v2.experimental.onnx._export as _onnx
 
 
@@ -238,7 +242,14 @@ def quantize_dequantize(
         if ret is not None:
             return ret
 
+    if _torch_compiler_is_exporting():
+        raise RuntimeError
+
     output_dtype = internal_dtype = tensor.dtype
+
+    # Skip numerical stability check during torch.export.export
+    # as if-else statements in these util functions lead to graph break
+    # although those checks are irrelevant for the sake of export
 
     if not _is_numerically_stable(internal_dtype, qmin, qmax):
         internal_dtype = torch.float32

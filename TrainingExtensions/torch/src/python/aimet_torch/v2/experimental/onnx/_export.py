@@ -586,13 +586,29 @@ def _precompute_encodings(model: torch.nn.Module):
     # pylint: disable=import-outside-toplevel
     from aimet_torch.quantization.base import QuantizerBase
 
+    with torch.no_grad():
+        encodings = {
+            q: q.get_encodings()
+            for q in model.modules()
+            if isinstance(q, QuantizerBase)
+        }
+
+    def is_initialized(q: QuantizerBase):
+        return encodings[q] is not None
+
+    def get_cached_encodings(q: QuantizerBase):
+        return encodings[q]
+
     with ExitStack() as stack:
         for q in model.modules():
             if isinstance(q, QuantizerBase):
                 ctx = patch_attr(
-                    q, "get_encodings", functools.lru_cache(q.get_encodings)
+                    q, "get_encodings", functools.partial(get_cached_encodings, q)
                 )
                 stack.enter_context(ctx)
-                with torch.no_grad():
-                    q.get_encodings()
+
+                ctx = patch_attr(
+                    q, "is_initialized", functools.partial(is_initialized, q)
+                )
+                stack.enter_context(ctx)
         yield
