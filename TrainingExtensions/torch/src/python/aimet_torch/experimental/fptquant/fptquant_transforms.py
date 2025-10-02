@@ -3,7 +3,6 @@
 
 # pylint: disable=missing-docstring
 
-import itertools
 import torch
 
 from aimet_torch.v2.nn import QuantizationMixin
@@ -126,9 +125,9 @@ class MultiHeadValueTransformOp(InvertibleTransformOp):
         self.head_dim = head_dim
         self.matrix_per_head = torch.nn.ModuleList(
             [
-                MatrixTransformOp(torch.eye(head_dim)),
+                MatrixTransformOp(torch.eye(head_dim))
+                for _ in range(self.num_key_value_heads)
             ]
-            * self.num_key_value_heads
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -140,9 +139,14 @@ class MultiHeadValueTransformOp(InvertibleTransformOp):
 
     def inverse(self, x: torch.Tensor) -> torch.Tensor:
         slices = torch.chunk(x, self.num_attention_heads, dim=-1)
+        repeated_matrices = [
+            matrix
+            for matrix in self.matrix_per_head
+            for _ in range(len(slices) // len(self.matrix_per_head))
+        ]
         results = [
             transform.inverse(slice)
-            for transform, slice in zip(itertools.cycle(self.matrix_per_head), slices)
+            for transform, slice in zip(repeated_matrices, slices)
         ]
         return torch.cat(results, dim=-1)
 

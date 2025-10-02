@@ -4,16 +4,12 @@
 
 import numpy as np
 import random
-import os
-import tempfile
-import onnx
 import pytest
 import torch
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
 from aimet_torch.experimental.fptquant.fptquant_transforms import (
     GroupedHadamardTransformOp,
     MultiHeadValueTransformOp,
-    set_export_to_custom_hadamard,
 )
 from aimet_torch.experimental.fptquant import fptquant_config
 from aimet_torch.experimental.fptquant.fptquant_optimizer import FPTQuant
@@ -206,3 +202,13 @@ def test_local_optimizer_determinism():
     assert list(state_dict_1.keys()) == list(state_dict_2.keys())
     for p1, p2 in zip(state_dict_1.values(), state_dict_2.values()):
         assert torch.equal(p1, p2)
+
+
+def test_separate_matrix_per_head():
+    transform = MultiHeadValueTransformOp(
+        head_dim=100, num_attention_heads=32, num_key_value_heads=8
+    )
+    total_named_parameters = sum(
+        1 for _ in transform.named_parameters(remove_duplicate=True)
+    )
+    assert total_named_parameters == 8
