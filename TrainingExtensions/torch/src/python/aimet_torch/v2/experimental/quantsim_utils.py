@@ -111,10 +111,13 @@ def _propagate_output_encodings(
     sim: QuantizationSimModel, condition: Callable[[torch.nn.Module], bool]
 ):
     """Propagate output encodings of all the modules that satisfies the given condition."""
-    # pylint: disable=redefined-builtin
+    # pylint: disable=redefined-builtin, protected-access
     cg = sim.connected_graph
 
-    def _set_src_qtzr(x: Product, consumer: Op, qtzr):
+    def _set_src_qtzr(x: Product, consumer: Op, qtzr: AffineQuantizerBase):
+        if len(x.consumers) > 1 and not all(qtzr._is_overwrite_allowed.values()):
+            return
+
         producer = x.producer
 
         if not producer:

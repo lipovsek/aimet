@@ -229,7 +229,6 @@ def test_allow_overwrite(x):
     Then: Encoding does NOT get overwritten by compute_encodings
     """
     q.allow_overwrite(False)
-    assert not q.is_overwrite_allowed()
     assert not q.is_overwrite_allowed("maxval")
     # Check deprecated _allow_overwrite flag for backwards compatibility
     assert not q._allow_overwrite
@@ -245,7 +244,6 @@ def test_allow_overwrite(x):
     Then: Encoding does NOT get overwritten by compute_encodings
     """
     q.allow_overwrite(True)
-    assert q.is_overwrite_allowed()
     assert q.is_overwrite_allowed("maxval")
     # Check deprecated _allow_overwrite flag for backwards compatibility
     assert q._allow_overwrite

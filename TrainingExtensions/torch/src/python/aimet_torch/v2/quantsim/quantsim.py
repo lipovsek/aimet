@@ -81,6 +81,7 @@ from aimet_torch.v2.nn import (
     BaseQuantizationMixin,
     QuantizationMixin,
     UnknownModuleError,
+    QuantizedReLU,
 )
 from aimet_torch.v2.nn.fake_quant import _legacy_impl
 from aimet_torch.v2._builder import _V2LazyQuantizeWrapper
@@ -758,7 +759,11 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
             if all(_is_htp_interpolation_op(op_type) for op_type in onnx_op_types):
                 htp_interpolation_ops.add(qmodule)
 
-        propagate_output_encodings(self, lambda module: module in htp_interpolation_ops)
+        propagate_output_encodings(
+            self,
+            lambda module: module in htp_interpolation_ops
+            or (isinstance(module, QuantizedReLU) and module.output_quantizers[0]),
+        )
 
 
 class _QuantizationSimOnnxExport:

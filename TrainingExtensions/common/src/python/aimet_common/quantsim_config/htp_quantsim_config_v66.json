@@ -102,18 +102,6 @@
   "supergroups":
   [
     {
-      "op_list": ["Conv", "Relu"]
-    },
-	{
-      "op_list": ["Conv", "Clip"]
-	},
-    {
-      "op_list": ["Conv", "BatchNormalization", "Relu"]
-    },
-    {
-      "op_list": ["Conv", "Transpose", "Relu"]
-    },
-    {
       "op_list": ["ConvTranspose", "Relu"]
     },
     {

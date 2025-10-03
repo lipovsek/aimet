@@ -1232,7 +1232,6 @@ def test_allow_overwrite(x, q):
     Then: Encoding does NOT get overwritten by compute_encodings
     """
     q.allow_overwrite(False)
-    assert not q.is_overwrite_allowed()
     assert not q.is_overwrite_allowed("min")
     assert not q.is_overwrite_allowed("max")
     # Check deprecated _allow_overwrite flag for backwards compatibility
@@ -1252,7 +1251,6 @@ def test_allow_overwrite(x, q):
     Then: Encoding should be overwritten by compute_encodings
     """
     q.allow_overwrite(True)
-    assert q.is_overwrite_allowed()
     assert q.is_overwrite_allowed("min")
     assert q.is_overwrite_allowed("max")
     # Check deprecated _allow_overwrite flag for backwards compatibility
@@ -1272,7 +1270,6 @@ def test_allow_overwrite(x, q):
     Then: Only min should be overwritten by compute_encodings
     """
     q.allow_overwrite(min=False)
-    assert q.is_overwrite_allowed()
     assert not q.is_overwrite_allowed("min")
     assert q.is_overwrite_allowed("max")
     # Check deprecated _allow_overwrite flag for backwards compatibility

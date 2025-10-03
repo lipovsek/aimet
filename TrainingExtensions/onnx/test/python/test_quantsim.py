@@ -51,6 +51,7 @@ import random
 from onnx.external_data_helper import uses_external_data, _get_all_tensors
 import onnx.numpy_helper
 import torch
+import torch.nn.functional as F
 import numpy as np
 from onnx import load_model
 import onnx
@@ -2832,6 +2833,95 @@ class TestQuantSim:
 
                 assert np.allclose(fp32_values, fp16_values, atol=0.01)
                 assert abs(fp32_encodings.offset - fp16_encodings.offset) <= 1
+
+    def test_conv_relu_supergroup(self, tmp_path: pathlib.Path):
+        """
+        When: Create quantsim with HTP V69 config or lower
+        Then:
+          - Conv-Relu should NOT be a supergroup
+          - Conv output quantizer must be tied with Relu output quantizer
+        """
+        model = conv_relu()
+        with _apply_constraints(True):
+            sim = QuantizationSimModel(model, config_file="htp_v69")
+
+        conv_input_qtzr = sim.qc_quantize_op_dict["input"]
+        conv_output_qtzr = sim.qc_quantize_op_dict["conv_output"]
+        relu_output_qtzr = sim.qc_quantize_op_dict["output"]
+        assert conv_output_qtzr.enabled
+        assert conv_output_qtzr is relu_output_qtzr
+        assert conv_input_qtzr is not relu_output_qtzr
+
+        """
+        When: Export
+        Then: Conv and Relu output encoding should remain identical
+        """
+        sim.compute_encodings(
+            [{"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}]
+        )
+
+        sim.export(tmp_path, "export")
+        with open(tmp_path / "export.encodings") as f:
+            encodings = json.load(f)
+
+        _, conv_out_enc, relu_out_enc = encodings["activation_encodings"]
+        conv_out_enc.pop("name")
+        relu_out_enc.pop("name")
+        assert conv_out_enc == relu_out_enc
+
+        """
+        When: Create quantsim with HTP V73 config or higher
+        Then:
+          - Conv-Relu should be a supergroup
+          - Conv input quantizer must NOT be tied with Relu output quantizer
+        """
+        model = conv_relu()
+        with _apply_constraints(True):
+            sim = QuantizationSimModel(model, config_file="htp_v73")
+
+        conv_input_qtzr = sim.qc_quantize_op_dict["input"]
+        conv_output_qtzr = sim.qc_quantize_op_dict["conv_output"]
+        relu_output_qtzr = sim.qc_quantize_op_dict["output"]
+        assert not conv_output_qtzr.enabled
+        assert conv_output_qtzr is not relu_output_qtzr
+        assert conv_input_qtzr is not relu_output_qtzr
+
+    def test_conv_relu_multiple_consumers(self):
+        """
+        Given: model as below
+
+          ... -> conv -> q_out1 --+--> relu ----> q_out2 -> [output_1]
+                                  +--> softmax -> q_out3 -> [output_2]
+
+          where q_out2 has fixed encoding constraints [0, ?]
+        """
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = torch.nn.Conv2d(3, 3, 3)
+
+            def forward(self, x):
+                x = self.conv(x)
+                return F.relu(x), F.softmax(x)
+
+        """
+        When: _apply_constraints(True) with HTP V69 config
+        Then: q_out1 should not be tied with q_out2
+        """
+        pt_model = Model().eval()
+        x = torch.randn(1, 3, 24, 24)
+        model = _convert_to_onnx(pt_model, x)
+        dummy_input = make_dummy_input(model.model)
+
+        with _apply_constraints(True):
+            sim = QuantizationSimModel(model, config_file="htp_v69")
+
+            sim.compute_encodings([dummy_input])
+            assert not _compare_encodings(
+                sim.qc_quantize_op_dict["/conv/Conv_output_0"].encodings[0],
+                sim.qc_quantize_op_dict["output"].encodings[0],
+            )
 
 
 class TestEncodingPropagation:

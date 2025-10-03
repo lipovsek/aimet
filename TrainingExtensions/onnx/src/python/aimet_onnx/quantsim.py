@@ -37,6 +37,7 @@
 """Implementation for simulating models running on Quantized hardware"""
 
 # pylint: disable=wrong-import-order
+from collections import defaultdict
 import contextlib
 import tempfile
 from pathlib import Path
@@ -165,6 +166,7 @@ op_types_to_tie_qtzrs = [
     "Resize",
     "Max",
     "ReduceMax",
+    "Relu",
     "Min",
     "ReduceMin",
     "ScatterElements",
@@ -1919,6 +1921,12 @@ class QuantizationSimModel:
 
         :param op_types_to_tie: List of onnx ops for which to tie quantizers
         """
+        # pylint: disable=protected-access
+        n_consumers: dict[str, int] = defaultdict(int)
+        for node in self.model.model.graph.node:
+            for inp in node.input:
+                n_consumers[inp] += 1
+
         for op in self.connected_graph.ordered_ops:
             if op.type not in op_types_to_tie:
                 continue
@@ -1957,7 +1965,29 @@ class QuantizationSimModel:
                     #   Softmax ---------> QDQ ---------> MatMul
                     #                    [-1, 1]
                     #                    symmetric
-                    input_qtzr._merge_constraints(output_qtzr)  # pylint: disable=protected-access
+
+                    if (
+                        output_qtzr._encoding_min_max_fixed_vals
+                        and output_qtzr._encoding_min_max_fixed_vals
+                        != input_qtzr._encoding_min_max_fixed_vals
+                    ):
+                        path = self._get_path_to_effective_quantizer(
+                            op.get_module().input[0]
+                        )
+                        if path and any(
+                            n_consumers[node.output[0]] != 1 for node in path
+                        ):
+                            # Input is consumed by multiple consumers when output range is constrained.
+                            # For example:
+                            #                           [0, ?]
+                            #   Conv ---> Q1 -+-> Relu -> Q2
+                            #                 +-> Add --> Q3
+                            #
+                            # In this case, we skip tying Q1 and Q2
+                            # as it can lead to catastrophic accuracy drop.
+                            continue
+
+                    input_qtzr._merge_constraints(output_qtzr)
 
                 self._set_quantizer(out.name, node_input_map, input_qtzr)
 

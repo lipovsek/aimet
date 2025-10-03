@@ -42,6 +42,7 @@ import json
 import pytest
 import random
 import numpy as np
+import pathlib
 
 import onnx
 import torch
@@ -51,7 +52,6 @@ from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
 from aimet_common.defs import QuantizationDataType, QuantScheme
 import aimet_torch
 from aimet_torch import onnx_utils
-from aimet_torch.model_preparer import prepare_model
 from aimet_torch.v2.quantsim import QuantizationSimModel, load_encodings_to_sim
 from aimet_torch.v2.quantization import DequantizedTensor
 from aimet_torch.v2.quantization.encoding_analyzer import PercentileEncodingAnalyzer
@@ -1462,7 +1462,7 @@ class TestQuantsim:
         ]
 
     @pytest.mark.parametrize(
-        "module_factory,                                  input_factory",
+        "module_factory, input_factory",
         [
             (lambda: nn.Upsample(scale_factor=2), lambda: randn(1, 1, 10, 10)),
             (
@@ -1473,6 +1473,7 @@ class TestQuantsim:
                 lambda: nn.UpsamplingNearest2d(scale_factor=2),
                 lambda: randn(1, 1, 10, 10),
             ),
+            (lambda: nn.ReLU(), lambda: randn(1, 1, 10, 10)),
             # (lambda torchvision.transforms.Resize(),        lambda: ...),
             # TODO: Need to enable output quantization of interpolation layers
             #       in htp config file to pass below test cases
@@ -1521,6 +1522,115 @@ class TestQuantsim:
         inp_enc.pop("name")
         out_enc.pop("name")
         assert inp_enc == out_enc
+
+    def test_conv_relu_supergroup(self, tmp_path: pathlib.Path):
+        """
+        When: Create quantsim with HTP V69 config or lower
+        Then:
+          - Conv-Relu should NOT be a supergroup
+          - Conv output quantizer must be tied with Relu output quantizer
+        """
+        model = torch.nn.Sequential(
+            torch.nn.Conv2d(3, 3, 3),
+            torch.nn.ReLU(),
+        )
+        x = torch.randn(1, 3, 10, 10)
+        sim = QuantizationSimModel(model, x, config_file="htp_v69")
+        (conv_output_qtzr,) = sim.model[0].output_quantizers
+        (relu_output_qtzr,) = sim.model[1].output_quantizers
+        assert conv_output_qtzr is relu_output_qtzr
+
+        """
+        When: Compute_encodings and run QAT
+        Then: Conv output encoding should remain non-negative
+        """
+        sim.compute_encodings(lambda model: model(x))
+        old_params = {
+            name: param.clone().detach() for name, param in sim.model.named_parameters()
+        }
+        optim = torch.optim.AdamW(sim.model.parameters())
+
+        for _ in range(5):
+            x = torch.randn(1, 3, 10, 10)
+            sim_out = sim.model(x)
+
+            with torch.no_grad():
+                fp_out = model(x)
+
+            loss = torch.nn.functional.mse_loss(sim_out, fp_out)
+            loss.backward()
+            optim.step()
+            optim.zero_grad()
+
+        assert conv_output_qtzr.min == relu_output_qtzr.min == 0
+        # Sanity check to prevent trivial pass
+        assert not all(
+            torch.equal(param_old, param_new)
+            for param_old, param_new in zip(old_params.values(), sim.model.parameters())
+        )
+
+        """
+        When: Export
+        Then: Conv and Relu output encoding should remain identical
+        """
+        sim.export(tmp_path, "export", x)
+
+        with open(tmp_path / "export.encodings") as f:
+            encodings = json.load(f)
+
+        _, conv_out_enc, relu_out_enc = encodings["activation_encodings"]
+        conv_out_enc.pop("name")
+        relu_out_enc.pop("name")
+        assert conv_out_enc == relu_out_enc
+
+        """
+        When: Create quantsim with HTP V73 config or higher
+        Then:
+          - Conv-Relu should be a supergroup
+          - Conv input quantizer must NOT be tied with Relu output quantizer
+        """
+        model = torch.nn.Sequential(
+            torch.nn.Conv2d(3, 3, 3),
+            torch.nn.ReLU(),
+        )
+        x = torch.randn(1, 3, 10, 10)
+        sim = QuantizationSimModel(model, x, config_file="htp_v73")
+        (conv_input_qtzr,) = sim.model[0].input_quantizers
+        (conv_output_qtzr,) = sim.model[0].output_quantizers
+        (relu_output_qtzr,) = sim.model[1].output_quantizers
+        assert conv_output_qtzr is None
+        assert conv_input_qtzr is not relu_output_qtzr
+
+        """
+        Given: model as below
+
+          ... -> conv -> q_out1 --+--> relu ----> q_out2 -> [output_1]
+                                  +--> softmax -> q_out3 -> [output_2]
+
+          where q_out2 has fixed encoding constraints [0, ?]
+        """
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = torch.nn.Conv2d(3, 3, 3)
+                self.relu = torch.nn.ReLU()
+                self.softmax = torch.nn.Softmax()
+
+            def forward(self, x):
+                x = self.conv(x)
+                return self.relu(x), self.softmax(x)
+
+        """
+        When: Create quantsim with HTP V69 config
+        Then: q_out1 should not be tied with q_out2
+        """
+        model = Model()
+        x = torch.randn(1, 3, 10, 10)
+        sim = QuantizationSimModel(model, x, config_file="htp_v69")
+        (conv_output_qtzr,) = sim.model.conv.output_quantizers
+        (relu_output_qtzr,) = sim.model.relu.output_quantizers
+        assert conv_output_qtzr is not relu_output_qtzr
 
 
 class TestQuantsimUtilities:
