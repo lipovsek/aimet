@@ -65,7 +65,9 @@ if encoding_version not in VALID_ENCODING_VERSIONS:
     )
 
 
-def gate_min_max(min_val: float, max_val: float) -> Tuple[float, float]:
+def gate_min_max(
+    min_val: Union[float, np.ndarray], max_val: Union[float, np.ndarray]
+) -> Tuple[Union[float, np.ndarray], Union[float, np.ndarray]]:
     """
     Gates min and max encoding values to retain zero in the range representation.
     Rules : min at maximum can be zero, max at minimum can be zero and
@@ -142,14 +144,19 @@ def create_encoding_from_min_max(
 
 
 def calculate_delta_offset(
-    min_val: float,
-    max_val: float,
+    min_val: Union[float, np.ndarray],
+    max_val: Union[float, np.ndarray],
     bitwidth: int,
     use_symmetric_encodings: bool,
     use_strict_symmetric: bool,
-) -> Tuple[float, int]:
+) -> Tuple[Union[float, np.ndarray], Union[int, np.ndarray]]:
     """
     Calculates delta and offset given min and max.
+
+    Quantization policy:
+    - Asymmetric quantization is applied if all channels have strictly non-negative ranges (i.e., np.all(min_val >= 0)).
+    - Symmetric quantization is applied only if `use_symmetric_encodings=True` and
+     at least one channel has a negative range (i.e., np.any(min_val < 0)).
 
     :param min_val: min encoding value
     :param max_val: max encoding value
@@ -164,16 +171,38 @@ def calculate_delta_offset(
 
     min_val, max_val = gate_min_max(min_val, max_val)
 
-    # Use only max val to compute delta in the case of signed symmetric
-    if use_symmetric_encodings and min_val < 0:
-        num_positive_steps = np.floor(num_steps / 2)
-        delta = max_val / num_positive_steps
-        offset = -num_positive_steps
+    # Check if both delta and offset are scalars
+    if np.isscalar(min_val) and np.isscalar(max_val):
+        # Use only max val to compute delta in the case of signed symmetric
+        if use_symmetric_encodings and min_val < 0:
+            num_positive_steps = np.floor(num_steps / 2)
+            delta = max_val / num_positive_steps
+            offset = -num_positive_steps
+            if not use_strict_symmetric:
+                offset -= 1
+        else:
+            delta = (max_val - min_val) / num_steps
+            offset = round(min_val / delta)
+        return delta, offset
+
+    # np.array case
+    min_val = np.asarray(min_val, dtype=np.float32)
+    max_val = np.asarray(max_val, dtype=np.float32)
+
+    delta = np.empty_like(min_val, dtype=np.float32)
+    offset = np.empty_like(min_val, dtype=np.int32)
+
+    num_positive_steps = np.floor(num_steps / 2)
+
+    apply_symmetric = use_symmetric_encodings and not np.all(min_val >= 0)
+    if apply_symmetric:
+        delta[:] = max_val / num_positive_steps
+        offset[:] = -num_positive_steps
         if not use_strict_symmetric:
-            offset -= 1
+            offset[:] -= 1
     else:
-        delta = (max_val - min_val) / num_steps
-        offset = round(min_val / delta)
+        delta[:] = (max_val - min_val) / num_steps
+        offset[:] = np.round(min_val / delta).astype(np.int32)
 
     return delta, offset
 

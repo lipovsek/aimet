@@ -51,21 +51,95 @@ class TestCommonQuantSim:
     def test_offset_delta_compute(self):
         """test computation of delta and offset for export"""
 
-        max = 1.700559472933134
-        min = -2.1006477158567995
+        # Test asymmetric quantization with scalar inputs
+        max_val = 1.700559472933134
+        min_val = -2.1006477158567995
         bitwidth = 8
 
-        expected_delta = (max - min) / (2**bitwidth - 1)
-        expected_offset = np.round(min / expected_delta)
+        expected_delta = (max_val - min_val) / (2**bitwidth - 1)
+        expected_offset = np.round(min_val / expected_delta)
         delta, offset = calculate_delta_offset(
-            min,
-            max,
+            min_val,
+            max_val,
             bitwidth,
             use_strict_symmetric=False,
             use_symmetric_encodings=False,
         )
-        assert expected_delta == delta
+        assert np.isclose(delta, expected_delta)
         assert expected_offset == offset
+
+        # Test symmetric quantization with scalar inputs
+        max_val = 2.0
+        min_val = -2.0
+        bitwidth = 8
+
+        num_steps = 2**bitwidth - 1
+        num_positive_steps = np.floor(num_steps / 2)
+        expected_delta = max_val / num_positive_steps
+        expected_offset = -num_positive_steps - 1
+
+        delta, offset = calculate_delta_offset(
+            min_val,
+            max_val,
+            bitwidth,
+            use_symmetric_encodings=True,
+            use_strict_symmetric=False,
+        )
+        assert np.isclose(delta, expected_delta)
+        assert offset == expected_offset
+
+        # Test symmetric quantization with array inputs
+        min_val = np.array([-2.0, 0.0, -1.0], dtype=np.float32)
+        max_val = np.array([2.0, 1.0, 1.0], dtype=np.float32)
+        bitwidth = 8
+
+        num_steps = 2**bitwidth - 1
+        num_positive_steps = np.floor(num_steps / 2)
+        expected_delta = np.array(
+            [
+                max_val[0] / num_positive_steps,  # symmetric
+                max_val[1] / num_positive_steps,  # symmetric
+                max_val[2] / num_positive_steps,  # symmetric
+            ]
+        )
+        expected_offset = np.array(
+            [
+                -num_positive_steps - 1,
+                -num_positive_steps - 1,
+                -num_positive_steps - 1,
+            ]
+        )
+
+        delta, offset = calculate_delta_offset(
+            min_val,
+            max_val,
+            bitwidth,
+            use_symmetric_encodings=True,
+            use_strict_symmetric=False,
+        )
+        assert np.allclose(delta, expected_delta)
+        assert np.array_equal(offset, expected_offset)
+
+        # Test asymmetric quantization with array inputs
+        min_val = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        max_val = np.array([3.0, 4.0, 5.0], dtype=np.float32)
+        bitwidth = 8
+
+        delta, offset = calculate_delta_offset(
+            min_val,
+            max_val,
+            bitwidth,
+            use_symmetric_encodings=True,
+            use_strict_symmetric=False,
+        )
+        symmetric_mask = min_val < 0
+        assert not np.any(symmetric_mask)
+
+        expected_delta = (max_val - min_val) / (2**bitwidth - 1)
+        expected_offset = np.round(min_val / expected_delta).astype(np.int32)
+
+        assert np.allclose(delta, expected_delta)
+        assert np.array_equal(offset, expected_offset)
 
     @pytest.mark.parametrize(
         "enc_min, enc_max, is_symmetric, is_strict",

@@ -152,11 +152,20 @@ def scale_offset_arrays_to_encodings(
     """
     Converts scale offset arrays to a list of TfEncoding objects
     """
+    # Flatten arrays
+    scales_flat = scales.flatten()
+    offsets_flat = offsets.flatten()
+
+    # Vectorized min/max computation
+    min_vals, max_vals = compute_min_max_given_delta_offset(
+        scales_flat, offsets_flat, bitwidth, False, False
+    )
+
+    # Construct TfEncoding objects
     encodings = []
-    for scale, offset in zip(scales.flatten().tolist(), offsets.flatten().tolist()):
-        min_val, max_val = compute_min_max_given_delta_offset(
-            scale, offset, bitwidth, False, False
-        )
+    for scale, offset, min_val, max_val in zip(
+        scales_flat, offsets_flat, min_vals, max_vals
+    ):
         encoding = libpymo.TfEncoding()
 
         encoding.bw = bitwidth
