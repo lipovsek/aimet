@@ -35,7 +35,7 @@ RUN apt update && \
     && rm /tmp/conda.sh \
     && ${CONDA} config --set channel_priority strict \
     && ${CONDA} init --no-user --system --all \
-    && ${CONDA} install -y conda-devenv \
+    && ${CONDA} install -y conda=25.7.0 conda-devenv \
     && ${CONDA} clean --yes --all --verbose \
     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 10 --slave /usr/bin/g++ g++ /usr/bin/g++-10 --slave /usr/bin/gcov gcov /usr/bin/gcov-10 \
     && git config --system --add safe.directory '*'
