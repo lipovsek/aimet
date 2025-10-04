@@ -26,8 +26,10 @@ class Qwen_25_Torch(Qwen_25):
         context_length: int,
         sequence_length: int,
         small_model: bool = False,
+        dtype: torch.dtype = torch.float32,
     ) -> QuantizationSimModel:
         model = cls.instantiate_model(model_id, small_model)
+        model = model.to(dtype=dtype)
 
         # Need to wrap model in this in order to enable JIT trace
         traceable_model = ONNXExportableModuleWithCache(model)

@@ -3,6 +3,7 @@
 
 """GenAI test runner"""
 
+import warnings
 import pytest
 import torch
 import gc
@@ -33,6 +34,12 @@ def test_llm_quantization(test_parameters):
     context_length = model_kwargs.pop("context_length")
     sequence_length = model_kwargs.pop("sequence_length")
     model_id = model_kwargs.pop("model_id", None)
+    model_dtype = model_kwargs.pop("dtype", None)
+
+    if model_dtype is not None:
+        warnings.warn(
+            "User-specified dtypes are not yet supported in ONNX GenAITests. All models are FP32 by default."
+        )
 
     dataset_kwargs = test_parameters.pop("dataset")
     dataset_cls = dataset_kwargs.pop("class")

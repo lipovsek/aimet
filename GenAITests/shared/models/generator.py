@@ -24,6 +24,7 @@ def get_past_keyval_with_shift(
     new_key_vals: list[torch.Tensor],
     length: int,
     device: torch.device = torch.device("cpu"),
+    dtype: torch.dtype = torch.float32,
 ) -> list[torch.Tensor]:
     """
     Combine past_key_vals with new_key_vals and clip them so there are no more than `length` tokens worth of context.
@@ -68,8 +69,8 @@ def get_past_keyval_with_shift(
         )
         val_cache = val_cache[:, :, -length:, :]
 
-        ret.append(key_cache)
-        ret.append(val_cache)
+        ret.append(key_cache.to(dtype=dtype))
+        ret.append(val_cache.to(dtype=dtype))
     return ret
 
 
@@ -250,6 +251,7 @@ class Generator(GenerationMixin, torch.nn.Module):
             new_key_vals=past_key_values,
             length=context_length - sequence_length,
             device=device,
+            dtype=model.dtype,
         )
 
         # Mask out dummy entries in KV cache
@@ -280,8 +282,8 @@ class Generator(GenerationMixin, torch.nn.Module):
         position_ids = position_ids[..., -sequence_length:]
 
         return (
-            padded_input_ids.to(torch.int32),
-            cm_attention_mask,
+            padded_input_ids.to(dtype=torch.int32),
+            cm_attention_mask.to(dtype=model.dtype),
             position_ids,
             *padded_past_key_values,
         )

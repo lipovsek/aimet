@@ -30,6 +30,9 @@ def test_llm_quantization(test_parameters):
     sequence_length = model_kwargs.pop("sequence_length")
     model_id = model_kwargs.pop("model_id", None)
 
+    if "dtype" in model_kwargs:
+        model_kwargs["dtype"] = getattr(torch, model_kwargs["dtype"])
+
     dataset_kwargs = test_parameters.pop("dataset")
     dataset_cls = dataset_kwargs.pop("class")
 
