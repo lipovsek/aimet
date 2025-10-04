@@ -267,6 +267,11 @@ class BaseQuantizationMixin(abc.ABC):
         return super().forward(*args, **kwargs)
 
     def _patch_quantized_parameters(self):
+        # Early exit for stateless modules.
+        # This helps mitigate dynamo tracing problems during torch.export.export
+        if not any(self.param_quantizers.values()):
+            return contextlib.nullcontext()
+
         stack = contextlib.ExitStack()
         for param_name, param_quantizer in self.param_quantizers.items():
             if param_quantizer and param_quantizer.is_initialized():
@@ -883,6 +888,9 @@ class BaseQuantizationMixin(abc.ABC):
                 torch.nn.Parameter(param, requires_grad=param.requires_grad),
             )
             self.param_quantizers[param_name] = param_qtzr
+
+    def _is_dynamo_traceable(self):
+        return not any(self.param_quantizers.values())
 
 
 def _remove_quantizers(quantizers, keys):

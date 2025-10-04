@@ -75,12 +75,20 @@ class QuantizedAvgPool2d(_DispatchMixin, QuantizationMixin, AvgPool2d):
 
     _builtin_torch_fn = F.avg_pool2d
 
+    def _is_dynamo_traceable(self):
+        # F.avg_pool2d isn't dynamo-traceable
+        return False
+
 
 @QuantizationMixin.implements(Reshape)
 class QuantizedReshape(_DispatchMixin, QuantizationMixin, Reshape):
     """Quantized Reshape"""
 
     _builtin_torch_fn = torch.reshape
+
+    def _is_dynamo_traceable(self):
+        # torch.reshape isn't dynamo-traceable
+        return False
 
 
 @QuantizationMixin.implements(RSqrt)
@@ -245,8 +253,6 @@ class QuantizedSqrt(_DispatchMixin, QuantizationMixin, Sqrt):
     _builtin_torch_fn = torch.sqrt
 
 
-#
-#
 # @QuantizationMixin.implements(Maximum)
 # class QuantizedMaximum(_DispatchMixin, QuantizationMixin, Maximum):
 #     """ Quantized Maximum """
@@ -336,6 +342,10 @@ class QuantizedCumSum(_DispatchMixin, QuantizationMixin, CumSum):
     """Quantized CumSum"""
 
     _builtin_torch_fn = torch.cumsum
+
+    def _is_dynamo_traceable(self):
+        # torch.cumsum isn't dynamo-traceable
+        return False
 
 
 # @QuantizationMixin.implements(MaskedFill)
@@ -708,17 +718,17 @@ class QuantizedBatchNorm(_DispatchMixin, QuantizationMixin, BatchNorm):
         return batch_norm_wrapper
 
 
-#
-#
 @QuantizationMixin.implements(GroupNorm)
 class QuantizedGroupNorm(_DispatchMixin, QuantizationMixin, GroupNorm):
     """Quantized GroupNorm"""
 
-    _builtin_torch_fn = torch.nn.functional.group_norm
+    _builtin_torch_fn = F.group_norm
+
+    def _is_dynamo_traceable(self):
+        # F.group_norm isn't dynamo-traceable
+        return False
 
 
-#
-#
 @QuantizationMixin.implements(Normalize)
 class QuantizedNormalize(_DispatchMixin, QuantizationMixin, Normalize):
     """Quantized Normalize"""
@@ -726,8 +736,6 @@ class QuantizedNormalize(_DispatchMixin, QuantizationMixin, Normalize):
     _builtin_torch_fn = torch.nn.functional.normalize
 
 
-#
-#
 @QuantizationMixin.implements(NullRequant)
 class QuantizedNullRequant(QuantizationMixin, NullRequant):
     """Quantized module for NullRequant"""
@@ -749,8 +757,6 @@ class QuantizedNullRequant(QuantizationMixin, NullRequant):
         return out
 
 
-#
-#
 # @QuantizationMixin.implements(Pad)
 # class QuantizedPad(_DispatchMixin, QuantizationMixin, Pad):
 #     """ Quantized Pad """

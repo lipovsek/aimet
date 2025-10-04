@@ -4,8 +4,10 @@ from pathlib import Path
 from packaging import version
 import torch
 from torchvision.models import resnet18, mobilenet_v3_large
+import torch.nn.functional as F
 from torch.export import ExportedProgram
 from aimet_torch import QuantizationSimModel
+from aimet_torch.nn import QuantizationMixin
 from aimet_torch.v2.experimental.export import export
 import onnx
 import pytest
@@ -62,3 +64,41 @@ def test_export(model_factory, tmp_path: Path):
         and node.target.name().startswith("aten::fake_quantize")
     ]
     assert len(aten_fake_quantize_nodes) == len(onnx_qdq_nodes)
+
+
+def test_dynamo_error():
+    class CustomModule(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.eye(10))
+
+        def forward(self, x):
+            return F.linear(x, self.weight)
+
+    @QuantizationMixin.implements(CustomModule)
+    class QuantizedCustomModule(QuantizationMixin, CustomModule):
+        def forward(self, x):
+            # Quantize input tensors
+            if self.input_quantizers[0]:
+                x = self.input_quantizers[0](x)
+
+            # Run forward with quantized inputs and parameters
+            with self._patch_quantized_parameters():
+                ret = super().forward(x)
+
+            # Quantize output tensors
+            if self.output_quantizers[0]:
+                ret = self.output_quantizers[0](ret)
+
+            return ret
+
+    """
+    When: Call export with a non-exportable module
+    Then: Throw runtime error
+    """
+    model = torch.nn.Sequential(CustomModule())
+    x = torch.randn(10, 10)
+    sim = QuantizationSimModel(model, x, config_file="htp_v81")
+
+    with pytest.raises(RuntimeError):
+        _ = export(sim.model, args=(x,))

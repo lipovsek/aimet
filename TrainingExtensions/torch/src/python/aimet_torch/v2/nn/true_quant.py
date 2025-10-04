@@ -309,6 +309,11 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
             yield
 
     def _patch_dequantized_parameters(self):
+        # Early exit for stateless modules.
+        # This helps mitigate dynamo tracing problems during torch.export.export
+        if not any(self.param_quantizers.values()):
+            return contextlib.nullcontext()
+
         stack = contextlib.ExitStack()
         for param_name, _ in self.param_quantizers.items():
             qparam = getattr(self, param_name)
@@ -448,17 +453,14 @@ class _Dispatcher(BaseTorchFunctionMode):
         return super().__torch_function__(impl, types, args, kwargs)
 
 
-@contextlib.contextmanager
-def _dispatch(torch_func: Callable, custom_impl: Callable):
+def _dispatch(torch_func: Callable, custom_impl: Callable) -> _Dispatcher:
     if not _torch_compiler_is_exporting():
         if torch_func not in _dispatchable_torch_functions:
             # Skip raising early exception during torch.export.export
             raise RuntimeError(f"PyTorch doesn't support overriding {torch_func}")
 
     dispatch_table = {torch_func: custom_impl}
-
-    with _Dispatcher(dispatch_table):
-        yield
+    return _Dispatcher(dispatch_table)
 
 
 class _DispatchMeta(QuantizationMixinMeta):
@@ -546,6 +548,9 @@ class _DispatchMixin(metaclass=_DispatchMeta):
             return fn(*qtzd_args, *others, **kwargs)
 
         return wrapper
+
+    def _is_dynamo_traceable(self):
+        return True
 
 
 def _generate_docstring(parent_cls):
@@ -759,6 +764,10 @@ class QuantizedCTCLoss(_DispatchMixin, QuantizationMixin, nn.CTCLoss):
     _builtin_torch_fn = F.ctc_loss
     __quant_init__ = QuantizationMixin.__unary__
 
+    def _is_dynamo_traceable(self):
+        # F.ctc_loss isn't dynamo-traceable
+        return False
+
 
 @QuantizationMixin.implements(nn.ChannelShuffle)
 class QuantizedChannelShuffle(_DispatchMixin, QuantizationMixin, nn.ChannelShuffle):
@@ -771,49 +780,109 @@ class QuantizedChannelShuffle(_DispatchMixin, QuantizationMixin, nn.ChannelShuff
 if version.parse(torch.__version__) >= version.parse("2.1.0"):
 
     @QuantizationMixin.implements(nn.CircularPad1d)
-    class QuantizedCircularPad1d(_DispatchMixin, QuantizationMixin, nn.CircularPad1d):
+    class QuantizedCircularPad1d(QuantizationMixin, nn.CircularPad1d):
         # pylint: disable=missing-class-docstring
         __doc__ = _generate_docstring(parent_cls=nn.CircularPad1d)
-        _builtin_torch_fn = F.pad
         __quant_init__ = QuantizationMixin.__unary__
+
+        def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+            if self.input_quantizers[0]:
+                input = self.input_quantizers[0](input)
+
+            output = super().forward(input)
+
+            if self.output_quantizers[0]:
+                output = self.output_quantizers[0](output)
+
+            return output
 
     @QuantizationMixin.implements(nn.CircularPad2d)
-    class QuantizedCircularPad2d(_DispatchMixin, QuantizationMixin, nn.CircularPad2d):
+    class QuantizedCircularPad2d(QuantizationMixin, nn.CircularPad2d):
         # pylint: disable=missing-class-docstring
         __doc__ = _generate_docstring(parent_cls=nn.CircularPad2d)
-        _builtin_torch_fn = F.pad
         __quant_init__ = QuantizationMixin.__unary__
 
+        def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+            if self.input_quantizers[0]:
+                input = self.input_quantizers[0](input)
+
+            output = super().forward(input)
+
+            if self.output_quantizers[0]:
+                output = self.output_quantizers[0](output)
+
+            return output
+
     @QuantizationMixin.implements(nn.CircularPad3d)
-    class QuantizedCircularPad3d(_DispatchMixin, QuantizationMixin, nn.CircularPad3d):
+    class QuantizedCircularPad3d(QuantizationMixin, nn.CircularPad3d):
         # pylint: disable=missing-class-docstring
         __doc__ = _generate_docstring(parent_cls=nn.CircularPad3d)
-        _builtin_torch_fn = F.pad
         __quant_init__ = QuantizationMixin.__unary__
+
+        def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+            if self.input_quantizers[0]:
+                input = self.input_quantizers[0](input)
+
+            output = super().forward(input)
+
+            if self.output_quantizers[0]:
+                output = self.output_quantizers[0](output)
+
+            return output
 
 
 @QuantizationMixin.implements(nn.ConstantPad1d)
-class QuantizedConstantPad1d(_DispatchMixin, QuantizationMixin, nn.ConstantPad1d):
+class QuantizedConstantPad1d(QuantizationMixin, nn.ConstantPad1d):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.ConstantPad2d)
-    _builtin_torch_fn = F.pad
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.ConstantPad2d)
-class QuantizedConstantPad2d(_DispatchMixin, QuantizationMixin, nn.ConstantPad2d):
+class QuantizedConstantPad2d(QuantizationMixin, nn.ConstantPad2d):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.ConstantPad2d)
-    _builtin_torch_fn = F.pad
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.ConstantPad3d)
-class QuantizedConstantPad3d(_DispatchMixin, QuantizationMixin, nn.ConstantPad3d):
+class QuantizedConstantPad3d(QuantizationMixin, nn.ConstantPad3d):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.ConstantPad3d)
-    _builtin_torch_fn = F.pad
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 # @QuantizationMixin.implements(nn.Container)
@@ -1201,6 +1270,10 @@ class QuantizedGRU(_DispatchMixin, QuantizationMixin, nn.GRU):
 
         return gru
 
+    def _is_dynamo_traceable(self):
+        # Not traceable due to bug in dynamo MRO resolution
+        return False
+
 
 @QuantizationMixin.implements(nn.GRUCell)
 class QuantizedGRUCell(_DispatchMixin, QuantizationMixin, nn.GRUCell):
@@ -1247,6 +1320,10 @@ class QuantizedGaussianNLLLoss(_DispatchMixin, QuantizationMixin, nn.GaussianNLL
     __doc__ = _generate_docstring(parent_cls=nn.GaussianNLLLoss)
     _builtin_torch_fn = F.gaussian_nll_loss
     __quant_init__ = QuantizationMixin.__ternary__
+
+    def _is_dynamo_traceable(self):
+        # F.gaussian_nll_loss isn't dynamo-traceable
+        return False
 
 
 @QuantizationMixin.implements(nn.GroupNorm)
@@ -1339,6 +1416,10 @@ class QuantizedInstanceNorm1d(_DispatchMixin, QuantizationMixin, nn.InstanceNorm
     _builtin_torch_fn = F.instance_norm
     __quant_init__ = QuantizationMixin.__unary__
 
+    def _is_dynamo_traceable(self):
+        # Not traceable due to bug in dynamo MRO resolution
+        return False
+
 
 @QuantizationMixin.implements(nn.InstanceNorm2d)
 class QuantizedInstanceNorm2d(_DispatchMixin, QuantizationMixin, nn.InstanceNorm2d):
@@ -1347,6 +1428,10 @@ class QuantizedInstanceNorm2d(_DispatchMixin, QuantizationMixin, nn.InstanceNorm
     _builtin_torch_fn = F.instance_norm
     __quant_init__ = QuantizationMixin.__unary__
 
+    def _is_dynamo_traceable(self):
+        # Not traceable due to bug in dynamo MRO resolution
+        return False
+
 
 @QuantizationMixin.implements(nn.InstanceNorm3d)
 class QuantizedInstanceNorm3d(_DispatchMixin, QuantizationMixin, nn.InstanceNorm3d):
@@ -1354,6 +1439,10 @@ class QuantizedInstanceNorm3d(_DispatchMixin, QuantizationMixin, nn.InstanceNorm
     __doc__ = _generate_docstring(parent_cls=nn.InstanceNorm3d)
     _builtin_torch_fn = F.instance_norm
     __quant_init__ = QuantizationMixin.__unary__
+
+    def _is_dynamo_traceable(self):
+        # Not traceable due to bug in dynamo MRO resolution
+        return False
 
 
 @QuantizationMixin.implements(nn.KLDivLoss)
@@ -1443,6 +1532,10 @@ class QuantizedLSTM(_DispatchMixin, QuantizationMixin, nn.LSTM):
             return fn(*args, output_encodings=output_encodings)
 
         return lstm
+
+    def _is_dynamo_traceable(self):
+        # Not traceable due to bug in dynamo MRO resolution
+        return False
 
 
 @QuantizationMixin.implements(nn.LSTMCell)
@@ -1874,6 +1967,10 @@ class QuantizedRNN(_DispatchMixin, QuantizationMixin, nn.RNN):
 
         return rnn
 
+    def _is_dynamo_traceable(self):
+        # Not traceable due to bug in dynamo MRO resolution
+        return False
+
 
 # @QuantizationMixin.implements(nn.RNNBase)
 # class QuantizedRNNBase(_DispatchMixin, QuantizationMixin, nn.RNNBase):
@@ -1955,55 +2052,113 @@ class QuantizedReLU6(_DispatchMixin, QuantizationMixin, nn.ReLU6):
 
 
 @QuantizationMixin.implements(nn.ReflectionPad1d)
-class QuantizedReflectionPad1d(_DispatchMixin, QuantizationMixin, nn.ReflectionPad1d):
+class QuantizedReflectionPad1d(QuantizationMixin, nn.ReflectionPad1d):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.ReflectionPad1d)
-    _builtin_torch_fn = F.pad
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.ReflectionPad2d)
-class QuantizedReflectionPad2d(_DispatchMixin, QuantizationMixin, nn.ReflectionPad2d):
+class QuantizedReflectionPad2d(QuantizationMixin, nn.ReflectionPad2d):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.ReflectionPad2d)
-    _builtin_torch_fn = F.pad
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 if version.parse(torch.__version__) >= version.parse("1.10.0"):
 
     @QuantizationMixin.implements(nn.ReflectionPad3d)
-    class QuantizedReflectionPad3d(
-        _DispatchMixin, QuantizationMixin, nn.ReflectionPad3d
-    ):
+    class QuantizedReflectionPad3d(QuantizationMixin, nn.ReflectionPad3d):
         # pylint: disable=missing-class-docstring
         __doc__ = _generate_docstring(parent_cls=nn.ReflectionPad3d)
-        _builtin_torch_fn = F.pad
         __quant_init__ = QuantizationMixin.__unary__
+
+        def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+            if self.input_quantizers[0]:
+                input = self.input_quantizers[0](input)
+
+            output = super().forward(input)
+
+            if self.output_quantizers[0]:
+                output = self.output_quantizers[0](output)
+
+            return output
 
 
 @QuantizationMixin.implements(nn.ReplicationPad1d)
-class QuantizedReplicationPad1d(_DispatchMixin, QuantizationMixin, nn.ReplicationPad1d):
+class QuantizedReplicationPad1d(QuantizationMixin, nn.ReplicationPad1d):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.ReplicationPad1d)
-    _builtin_torch_fn = F.pad
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.ReplicationPad2d)
-class QuantizedReplicationPad2d(_DispatchMixin, QuantizationMixin, nn.ReplicationPad2d):
+class QuantizedReplicationPad2d(QuantizationMixin, nn.ReplicationPad2d):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.ReplicationPad2d)
-    _builtin_torch_fn = F.pad
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.ReplicationPad3d)
-class QuantizedReplicationPad3d(_DispatchMixin, QuantizationMixin, nn.ReplicationPad3d):
+class QuantizedReplicationPad3d(QuantizationMixin, nn.ReplicationPad3d):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.ReplicationPad3d)
-    _builtin_torch_fn = F.pad
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.SELU)
@@ -2120,13 +2275,22 @@ class QuantizedTanhshrink(_DispatchMixin, QuantizationMixin, nn.Tanhshrink):
     __quant_init__ = QuantizationMixin.__unary__
 
 
-# @QuantizationMixin.implements(nn.Threshold)
 @QuantizationMixin.implements(nn.Threshold)
-class QuantizedThreshold(_DispatchMixin, QuantizationMixin, nn.Threshold):
+class QuantizedThreshold(QuantizationMixin, nn.Threshold):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.Threshold)
-    _builtin_torch_fn = F.threshold
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 # @QuantizationMixin.implements(nn.Transformer)
@@ -2166,12 +2330,28 @@ class QuantizedTripletMarginLoss(
 
 @QuantizationMixin.implements(nn.TripletMarginWithDistanceLoss)
 class QuantizedTripletMarginWithDistanceLoss(
-    _DispatchMixin, QuantizationMixin, nn.TripletMarginWithDistanceLoss
+    QuantizationMixin, nn.TripletMarginWithDistanceLoss
 ):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.TripletMarginWithDistanceLoss)
-    _builtin_torch_fn = F.triplet_margin_with_distance_loss
     __quant_init__ = QuantizationMixin.__ternary__
+
+    def forward(self, anchor: Tensor, positive: Tensor, negative: Tensor) -> Tensor:  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            anchor = self.input_quantizers[0](anchor)
+
+        if self.input_quantizers[1]:
+            positive = self.input_quantizers[1](positive)
+
+        if self.input_quantizers[2]:
+            negative = self.input_quantizers[2](negative)
+
+        output = super().forward(anchor, positive, negative)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.Unflatten)
@@ -2230,26 +2410,56 @@ class QuantizedUpsamplingNearest2d(
 if version.parse(torch.__version__) >= version.parse("2.1.0"):
 
     @QuantizationMixin.implements(nn.ZeroPad1d)
-    class QuantizedZeroPad1d(_DispatchMixin, QuantizationMixin, nn.ZeroPad1d):
+    class QuantizedZeroPad1d(QuantizationMixin, nn.ZeroPad1d):
         # pylint: disable=missing-class-docstring
         __doc__ = _generate_docstring(parent_cls=nn.ZeroPad1d)
-        _builtin_torch_fn = F.pad
         __quant_init__ = QuantizationMixin.__unary__
+
+        def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+            if self.input_quantizers[0]:
+                input = self.input_quantizers[0](input)
+
+            output = super().forward(input)
+
+            if self.output_quantizers[0]:
+                output = self.output_quantizers[0](output)
+
+            return output
 
 
 @QuantizationMixin.implements(nn.ZeroPad2d)
-class QuantizedZeroPad2d(_DispatchMixin, QuantizationMixin, nn.ZeroPad2d):
+class QuantizedZeroPad2d(QuantizationMixin, nn.ZeroPad2d):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.ZeroPad2d)
-    _builtin_torch_fn = F.pad
     __quant_init__ = QuantizationMixin.__unary__
+
+    def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 if version.parse(torch.__version__) >= version.parse("2.1.0"):
 
     @QuantizationMixin.implements(nn.ZeroPad3d)
-    class QuantizedZeroPad3d(_DispatchMixin, QuantizationMixin, nn.ZeroPad3d):
+    class QuantizedZeroPad3d(QuantizationMixin, nn.ZeroPad3d):
         # pylint: disable=missing-class-docstring
         __doc__ = _generate_docstring(parent_cls=nn.ZeroPad3d)
-        _builtin_torch_fn = F.pad
         __quant_init__ = QuantizationMixin.__unary__
+
+        def forward(self, input: torch.Tensor):  # pylint: disable=arguments-differ
+            if self.input_quantizers[0]:
+                input = self.input_quantizers[0](input)
+
+            output = super().forward(input)
+
+            if self.output_quantizers[0]:
+                output = self.output_quantizers[0](output)
+
+            return output
