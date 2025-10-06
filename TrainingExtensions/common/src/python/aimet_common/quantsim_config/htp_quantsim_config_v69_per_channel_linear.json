@@ -156,7 +156,12 @@
     },
     "LayerNormalization":
     {
-      "per_channel_quantization": "False"
+      "per_channel_quantization": "False",
+      "params": {
+        "weight": {
+          "is_symmetric": "False"
+        }
+      }
     },
     "BatchNormalization":
     {

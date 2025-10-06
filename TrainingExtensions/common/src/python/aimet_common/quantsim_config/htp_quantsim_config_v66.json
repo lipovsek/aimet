@@ -58,6 +58,15 @@
       "is_output_quantized": "False",
       "per_channel_quantization": "False"
     },
+    "LayerNormalization":
+    {
+      "per_channel_quantization": "False",
+      "params": {
+        "weight": {
+          "is_symmetric": "False"
+        }
+      }
+    },
     "Upsample":
     {
       "is_output_quantized": "False"
