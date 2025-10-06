@@ -62,12 +62,20 @@ class PPL(EvaluationMetric):
         tokenizer: PreTrainedTokenizer,
         context_length: int,
         batch_size: int = 1,
+        num_iterations: int = None,
     ) -> float:
         dataset = Wikitext.load_encoded_dataset(tokenizer, context_length, "test")
         dataloader = DataLoader(dataset, batch_size=batch_size)
 
         neg_log_likelihoods = []
-        for batch in tqdm(dataloader, total=len(dataloader), desc="Evaluating PPL"):
+        for i, batch in tqdm(
+            enumerate(dataloader),
+            total=num_iterations or len(dataloader),
+            desc="Evaluating PPL",
+        ):
+            if num_iterations is not None and i >= num_iterations:
+                break
+
             batch["input_ids"] = batch["input_ids"].to(model.device)
             outputs = model(input_ids=batch["input_ids"][0])
             neg_log_likelihoods.append(
