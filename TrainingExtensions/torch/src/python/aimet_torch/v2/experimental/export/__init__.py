@@ -1,8 +1,12 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
+from typing import Any
 from packaging.version import parse
 import torch
 from torch.export import ExportedProgram
+import torch.fx.node
+from torch.fx.passes.shape_prop import TensorMetadata
+from torch._subclasses.fake_tensor import FakeTensorMode
 from ..onnx._export import _precompute_encodings
 from ...nn import QuantizationMixin
 
@@ -41,4 +45,127 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
     # Pre-compute scale and offset to omit verbose
     # scale/offset derivation logic in the exported graph
     with _precompute_encodings(mod), torch.no_grad():
-        return torch.export.export(mod, *args, **kwargs)
+        ep = torch.export.export(mod, *args, **kwargs)
+
+    for fake_quantize_node in ep.graph.nodes:
+        if (
+            fake_quantize_node.op == "call_function"
+            and fake_quantize_node.target.name().startswith("aten::fake_quantize")
+        ):
+            _fold_scale_and_zp(fake_quantize_node, ep)
+
+    ep.graph.eliminate_dead_code()
+    # TODO: Clean up dangling input specs
+    return ep
+
+
+def _fold_scale_and_zp(fake_quantize_node: torch.fx.Node, ep: ExportedProgram):
+    scale: torch.Tensor = _eval_node(fake_quantize_node.all_input_nodes[1], ep)
+    scale_placeholder: torch.fx.Node = _insert_placeholder(
+        ep,
+        val=scale,
+        node_name=f"p_{fake_quantize_node.name}_scale",
+        tensor_name=f"{fake_quantize_node.name}_scale",
+        consumer=fake_quantize_node,
+    )
+    fake_quantize_node.replace_input_with(
+        fake_quantize_node.all_input_nodes[1], scale_placeholder
+    )
+
+    if len(fake_quantize_node.all_input_nodes) > 2:
+        zero_point: torch.Tensor = _eval_node(fake_quantize_node.all_input_nodes[2], ep)
+        zero_point_placeholder: torch.fx.Node = _insert_placeholder(
+            ep,
+            val=zero_point,
+            node_name=f"p_{fake_quantize_node.name}_zero_point",
+            tensor_name=f"{fake_quantize_node.name}_zero_point",
+            consumer=fake_quantize_node,
+        )
+        fake_quantize_node.replace_input_with(
+            fake_quantize_node.all_input_nodes[2], zero_point_placeholder
+        )
+
+
+def _insert_placeholder(
+    ep: ExportedProgram,
+    val: torch.Tensor,
+    node_name: str,
+    tensor_name: str,
+    consumer: torch.fx.Node,
+):
+    from torch.export.graph_signature import InputKind, InputSpec, TensorArgument
+
+    with ep.graph.inserting_before(consumer):
+        node = ep.graph.create_node(
+            op="placeholder",
+            target=node_name,
+            name=node_name,
+        )
+    fake_mode = FakeTensorMode()
+    converter = fake_mode.fake_tensor_converter
+    fake_tensor = converter.from_real_tensor(fake_mode, val)
+    node.meta.update(
+        {
+            "val": fake_tensor,
+            "example_value": fake_tensor,
+            "tensor_metadata": TensorMetadata(
+                shape=val.shape,
+                dtype=val.dtype,
+                requires_grad=val.requires_grad,
+                stride=val.stride(),
+                memory_format=torch.contiguous_format,
+                is_quantized=False,
+                qparams={},
+            ),
+            "seq_nr": 1,
+            # "from_node": [],
+        }
+    )
+
+    i = InputSpec(
+        kind=InputKind.BUFFER,
+        arg=TensorArgument(name=node_name),
+        target=tensor_name,
+        persistent=True,
+    )
+    ep.graph_signature.input_specs.append(i)
+    ep.state_dict.update({tensor_name: val})
+
+    return node
+
+
+def _eval_node(
+    arg: torch.fx.node.Argument,
+    ep: ExportedProgram,
+) -> Any:
+    input_specs = {spec.arg.name: spec for spec in ep.graph_signature.input_specs}
+    params_and_constants = ep.state_dict | ep.constants
+
+    def _do_eval(arg: torch.fx.node.Argument):
+        if not isinstance(arg, torch.fx.Node):
+            return arg
+
+        node = arg
+
+        if node.op == "placeholder":
+            input_spec = input_specs[node.name]
+            param_or_const_name = input_spec.target
+            if param_or_const_name not in params_and_constants:
+                raise RuntimeError(
+                    "Couldn't find parameter, buffer, or constant "
+                    f"with name {param_or_const_name} of node {node.name}"
+                )
+            return params_and_constants[param_or_const_name]
+
+        if not callable(node.target):
+            raise RuntimeError(
+                f"Internal error occurred. Expected node {node.name} (op: {node.op}) "
+                f"to be callable, but got node.target of type {type(node.target)}"
+            )
+
+        args = tuple(_do_eval(arg) for arg in node.args)
+        kwargs = {key: _do_eval(val) for key, val in node.kwargs.items()}
+
+        return node.target(*args, **kwargs)
+
+    return _do_eval(arg)
