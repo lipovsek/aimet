@@ -34,6 +34,7 @@
 #
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
+import copy
 import os
 import json
 import pathlib
@@ -1059,7 +1060,7 @@ def test_data_movement_op_encoding_generation_edge_case():
     assert not new_encodings
 
 
-def test_back_to_back_qdq():
+def test_back_to_back_qdq(tmp_path):
     class Model(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -1121,6 +1122,62 @@ def test_back_to_back_qdq():
     # onnx_model = onnx.load_model("qdq_model.onnx")
     # num_dq = len([dq for dq in onnx_model.graph.node if dq.op_type == "DequantizeLinear"])
     # assert num_dq == 6, f"Expected 6 DequantizeLinear nodes, but got {num_dq}"
+
+    """
+    Given: Sim that contains redundant back-to-back qdq
+    """
+    input = torch.randn(100, 10)
+    model = Model()
+    sim = aimet_torch.QuantizationSimModel(
+        model,
+        input,
+        default_param_bw=8,
+        default_output_bw=8,
+        config_file="htp_v81",
+    )
+    sim.model.softmax.input_quantizers[0] = copy.deepcopy(
+        sim.model.linear.output_quantizers[0]
+    )
+    sim.compute_encodings(lambda model: model(input))
+
+    """
+    When: Export to onnx QDQ
+    Then:
+      1. Should be exported normally
+      2. The redundant back-to-back QDQs should be consolidated into one QDQ
+
+        weight -> QDQ ---V
+        input --> QDQ -> Gemm -> QDQ -------> QDQ -> Softmax -> QDQ -> output
+        bias_q -> DQ ----^       <-consolidated->
+    """
+    aimet_torch.onnx.export(
+        sim.model,
+        input,
+        tmp_path / "qdq_model.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+    )
+    onnx_model = onnx.load_model(tmp_path / "qdq_model.onnx")
+    num_dq = len(
+        [dq for dq in onnx_model.graph.node if dq.op_type == "DequantizeLinear"]
+    )
+    assert num_dq == 5, f"Expected 5 DequantizeLinear nodes, but got {num_dq}"
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out,) = sess.run(None, {"input": input.detach().numpy()})
+
+    with torch.no_grad():
+        expected_out = sim.model(input)
+
+    atol = sim.model.softmax.output_quantizers[0].get_scale().item()
+    assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
 
 
 @pytest.fixture(scope="module")

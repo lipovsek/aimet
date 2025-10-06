@@ -41,6 +41,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 import functools
 import math
+import numpy as np
 from typing import Sequence, Iterable, Optional
 
 import onnx
@@ -408,18 +409,39 @@ def remove_quantization_nodes_from_onnx_graph(
         qdq.output[0] for qdq in qtzr_nodes
     )
     if back_to_back_qdq_tensors:
-        msg = (
-            "Exporting back-to-back QDQ is not supported. "
-            "Detected back-to-back QDQ in the following node sequences:\n"
-        )
+        msg = []
         for tensor in back_to_back_qdq_tensors:
-            producer = name_to_producer[tensor].name
+            producer = name_to_producer[tensor]
+            scale = _get_tensor_from_constant_name(
+                model, producer.input[1], base_dir=base_dir
+            )
+            offset = _get_tensor_from_constant_name(
+                model, producer.input[2], base_dir=base_dir
+            )
             for consumer in name_to_consumer[tensor]:
                 if consumer.op_type not in ONNX_QUANTIZER_OP_TYPES:
                     continue
-                msg += f"  * {producer} -> {consumer.name}\n"
 
-        raise NotImplementedError(msg)
+                if consumer.attribute == producer.attribute:
+                    scale_ = _get_tensor_from_constant_name(
+                        model, consumer.input[1], base_dir=base_dir
+                    )
+                    offset_ = _get_tensor_from_constant_name(
+                        model, consumer.input[2], base_dir=base_dir
+                    )
+                    if np.allclose(scale, scale_) and np.all(offset == offset_):
+                        # Back-to-back QDQ nodes share same quantization config & parameters.
+                        # Tolerate.
+                        continue
+
+                msg.append(f"  * {producer.name} -> {consumer.name}")
+
+        if msg:
+            raise NotImplementedError(
+                "Exporting back-to-back QDQ is not supported. "
+                "Detected back-to-back QDQ in the following node sequences:\n"
+                + "\n".join(msg)
+            )
 
     for node in qtzr_nodes:
         # Get quantizer name in torch model
