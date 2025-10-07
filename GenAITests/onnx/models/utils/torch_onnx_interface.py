@@ -58,6 +58,10 @@ class TorchONNXInterface(torch.nn.Module):
     def device(self) -> torch.device:
         return torch.device("cuda")
 
+    @property
+    def dtype(self) -> torch.dtype:
+        return torch.float32
+
     def forward(
         self,
         *args: torch.Tensor,

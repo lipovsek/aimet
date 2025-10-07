@@ -40,7 +40,6 @@ class Qwen_25_ONNX(Qwen_25):
             model_id = cls.DEFAULT_MODEL_ID
 
         model = cls.instantiate_model(model_id, small_model)
-        config = model.config
         exportable_model = ONNXExportableModuleWithCache(model)
 
         dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
@@ -93,4 +92,4 @@ class Qwen_25_ONNX(Qwen_25):
         # Tie kv_cache
         _tie_quantizers_for_kv_cache(quant_sim)
 
-        return (quant_sim, config)
+        return quant_sim

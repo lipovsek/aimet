@@ -13,9 +13,7 @@ def test_get_decoder_blocks(monkeypatch):
     monkeypatch.syspath_prepend(path)
     from GenAITests.onnx.models.qwen import Qwen_25_ONNX
 
-    sim, _ = Qwen_25_ONNX.instantiate_quantsim(
-        "Qwen/Qwen2-0.5B", 32, 16, small_model=True
-    )
+    sim = Qwen_25_ONNX.instantiate_quantsim("Qwen/Qwen2-0.5B", 32, 16, small_model=True)
     end_points = get_decoder_blocks_end_points(sim)
     end_points_names = [(op1.name, op2.name) for op1, op2 in end_points]
     assert end_points_names == [

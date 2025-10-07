@@ -7,7 +7,6 @@ import numpy as np
 import torch
 from onnx import numpy_helper
 import pytest
-from aimet_common.utils import compute_psnr
 from aimet_onnx.experimental.adascale.adascale_optimizer import (
     AdaScale,
     adascale_model_config_dict,
@@ -221,16 +220,22 @@ class TestAdascaleOnnx:
         )  # 2 blocks * 2 linear layers * 2 params(s2, s3)
 
 
-def test_adasclae_e2e(monkeypatch, small_model: bool = True):
+def test_adascale_e2e(monkeypatch, small_model: bool = True):
     path = os.path.abspath(os.path.join("../../../../GenAITests"))
     monkeypatch.syspath_prepend(path)
+    from transformers import AutoConfig
     from GenAITests.onnx.models.qwen import Qwen_25_ONNX
 
     context_length = 32
     sequence_length = 16
     model_id = "Qwen/Qwen2-0.5B"
     model_cls = Qwen_25_ONNX
-    sim, config = model_cls.instantiate_quantsim(
+
+    llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    if small_model:
+        llm_config.num_hidden_layers = 2
+
+    sim = model_cls.instantiate_quantsim(
         model_id, context_length, sequence_length, small_model=small_model
     )
 
@@ -241,7 +246,7 @@ def test_adasclae_e2e(monkeypatch, small_model: bool = True):
             "min": float(np.min(weight_array)),
             "max": float(np.max(weight_array)),
         }
-    adascale_model_config_dict["Qwen2Model"].model_config = config
+    adascale_model_config_dict["Qwen2Model"].model_config = llm_config
 
     inputs = {
         "input_ids": np.random.randint(0, 100, size=(1, 16), dtype=np.int32),
@@ -295,3 +300,73 @@ def test_adasclae_e2e(monkeypatch, small_model: bool = True):
             )
 
     assert len(sim.model.model.graph.output)
+
+
+@pytest.mark.skip(reason="Too long to run in CI")
+def test_qwen_adascale_e2e_ppl(monkeypatch, small_model=False):
+    """AdaScale test pipeline for qwen model"""
+    from unittest.mock import patch
+
+    with patch(
+        "aimet_onnx.experimental.adascale.adascale_optimizer._DEBUG_NUM_BLOCKS_TO_ADASCALE",
+        new=2,
+    ):
+        path = os.path.abspath(os.path.join("../../../../GenAITests"))
+        monkeypatch.syspath_prepend(path)
+        from transformers import AutoConfig
+        from GenAITests.onnx.models.qwen import Qwen_25_ONNX
+        from GenAITests.shared.models.generator import Generator
+        from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
+        from GenAITests.onnx.helpers.quant_recipes import _prefill_inputs
+        from GenAITests.shared.helpers.datasets import Wikitext
+        from GenAITests.shared.helpers.metrics import PPL
+
+        context_length = 512
+        sequence_length = 512
+        model_id = "Qwen/Qwen2.5-0.5B"
+        model_cls = Qwen_25_ONNX
+
+        llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+        if small_model:
+            llm_config.num_hidden_layers = 2
+
+        sim = model_cls.instantiate_quantsim(
+            model_id, context_length, sequence_length, small_model=small_model
+        )
+
+        tokenizer = Qwen_25_ONNX.instantiate_tokenizer(model_id)
+
+        train_dataset = Wikitext.load_encoded_dataset(
+            tokenizer, context_length, "train"
+        )
+        quantsim_with_torch_interface = TorchONNXInterface(sim, llm_config)
+        generator = Generator(
+            quantsim_with_torch_interface, tokenizer, sequence_length, context_length
+        )
+
+        inputs = _prefill_inputs(sim, generator, train_dataset, num_iterations=20)
+
+        adascale_model_config_dict["Qwen2Model"].model_config = llm_config
+
+        for name in sim.activation_names:
+            sim.qc_quantize_op_dict[name].enabled = False
+        sim.compute_encodings(inputs)
+
+        ppl_score_before_ada = PPL.evaluate(
+            generator, tokenizer, context_length, num_iterations=50
+        )
+        print("PPL before Adascale: ", ppl_score_before_ada)
+
+        AdaScale.apply_adascale(
+            sim,
+            inputs,
+            adascale_model_config_dict["Qwen2Model"],
+            num_iterations=1500,
+        )
+
+        sim.compute_encodings(inputs)
+        ppl_score_after_ada = PPL.evaluate(
+            generator, tokenizer, context_length, num_iterations=50
+        )
+        print("Computed PPL score after applying AdaScale", ppl_score_after_ada)
+        assert ppl_score_before_ada > ppl_score_after_ada

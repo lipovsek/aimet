@@ -46,15 +46,22 @@ adascale_model_config_dict = {
 }
 
 
-def test_decoder_block_weights_copy(monkeypatch):
+def test_decoder_block_weights_copy(monkeypatch, small_model=True):
     path = os.path.abspath(os.path.join("../../../../GenAITests"))
     monkeypatch.syspath_prepend(path)
+    from transformers import AutoConfig
     from GenAITests.onnx.models.qwen import Qwen_25_ONNX
 
-    sim, config = Qwen_25_ONNX.instantiate_quantsim(
-        "Qwen/Qwen2.5-0.5B", 4096, 2048, small_model=True
+    model_id = "Qwen/Qwen2.5-0.5B"
+    llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    if small_model:
+        llm_config.num_hidden_layers = 2
+
+    sim = Qwen_25_ONNX.instantiate_quantsim(
+        model_id, 4096, 2048, small_model=small_model
     )
-    adascale_model_config_dict["Qwen2Model"].model_config = config
+
+    adascale_model_config_dict["Qwen2Model"].model_config = llm_config
 
     converter = ModelConverter(sim, adascale_model_config_dict["Qwen2Model"])
 
@@ -180,15 +187,20 @@ def test_decoder_block_weights_copy(monkeypatch):
     )
 
 
-def test_model_round_trip(monkeypatch):
+def test_model_round_trip(monkeypatch, small_model=True):
     path = os.path.abspath(os.path.join("../../../../GenAITests"))
     monkeypatch.syspath_prepend(path)
+    from transformers import AutoConfig
     from GenAITests.onnx.models.qwen import Qwen_25_ONNX
 
-    sim, config = Qwen_25_ONNX.instantiate_quantsim(
-        "Qwen/Qwen2.5-0.5B", 4096, 2048, small_model=True
+    model_id = "Qwen/Qwen2.5-0.5B"
+    sim = Qwen_25_ONNX.instantiate_quantsim(
+        model_id, 4096, 2048, small_model=small_model
     )
-    adascale_model_config_dict["Qwen2Model"].model_config = config
+    llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    if small_model:
+        llm_config.num_hidden_layers = 2
+    adascale_model_config_dict["Qwen2Model"].model_config = llm_config
 
     def _update_onnx_weights(model, set_zeros: bool = False):
         for initializer in model.graph.initializer:
