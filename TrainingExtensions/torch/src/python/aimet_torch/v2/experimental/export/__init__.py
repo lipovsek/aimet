@@ -57,9 +57,49 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
         ):
             _fold_scale_and_zp(q_dq_node, ep)
 
-    ep.graph.eliminate_dead_code()
-    # TODO: Clean up dangling input specs
+    _remove_dangling_nodes(ep)
     return ep
+
+
+def _remove_dangling_nodes(ep: ExportedProgram):
+    output_node = ep.graph.output_node()
+    visited: set[torch.fx.Node] = set()
+    stack = [output_node]
+
+    # Reverse-DFS from output node
+    while stack:
+        node = stack.pop(-1)
+        if node in visited:
+            continue
+        visited.add(node)
+        stack += node.all_input_nodes
+
+    # Mark all visited nodes as non-dangling node
+    dangling_nodes = set(ep.graph.nodes) - visited
+
+    # Remove dangling nodes from graph
+    for node in reversed(list(ep.graph.nodes)):
+        if node in dangling_nodes:
+            ep.graph.erase_node(node)
+
+    ep.graph.eliminate_dead_code()
+    ep.graph_module.recompile()
+
+    # Clean up graph_signature and state_dict
+    ep.graph_signature.input_specs = [
+        input_spec
+        for input_spec in ep.graph_signature.input_specs
+        if ep.graph.find_nodes(op="placeholder", target=input_spec.arg.name, sort=False)
+    ]
+    all_targets: set[str | None] = set(
+        input_spec.target for input_spec in ep.graph_signature.input_specs
+    )
+
+    for dangling_key in ep.state_dict.keys() - all_targets:
+        del ep.state_dict[dangling_key]
+
+    for dangling_key in ep.constants.keys() - all_targets:
+        del ep.constants[dangling_key]
 
 
 def _fold_scale_and_zp(q_dq_node: torch.fx.Node, ep: ExportedProgram):

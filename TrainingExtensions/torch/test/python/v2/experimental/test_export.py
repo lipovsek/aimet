@@ -98,6 +98,40 @@ def test_export(model_factory, tmp_path: Path):
                     "zero_point"
                 )
 
+    """
+    Then: There should be no dangling node, graph_signature or state dict entry
+    """
+    stack = [ep.graph.output_node()]
+    visited = set()
+    while stack:
+        node = stack.pop(-1)
+        if node in visited:
+            continue
+        visited.add(node.name)
+        stack += node.all_input_nodes
+    assert visited == set(node.name for node in ep.graph.nodes)
+
+    from torch.export.graph_signature import InputKind
+
+    for input_spec in ep.graph_signature.input_specs:
+        assert input_spec.arg.name in visited
+
+        if input_spec.kind in (
+            InputKind.PARAMETER,
+            InputKind.BUFFER,
+            InputKind.CONSTANT_TENSOR,
+        ):
+            assert (
+                input_spec.target in ep.state_dict.keys()
+                or input_spec.target in ep.constants.keys()
+            )
+
+    all_targets = set(
+        input_spec.target for input_spec in ep.graph_signature.input_specs
+    )
+    assert not (ep.state_dict.keys() - all_targets)
+    assert not (ep.constants.keys() - all_targets)
+
 
 @pytest.mark.skipif(
     version.parse(torch.__version__) < version.parse("2.7.0"),
