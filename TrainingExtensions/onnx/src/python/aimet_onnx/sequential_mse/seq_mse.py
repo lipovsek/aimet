@@ -529,6 +529,7 @@ class SequentialMse:
             total_loss = defaultdict(list)
 
             for candidate_index in range(self.params.num_candidates):
+                _set_candidates(candidate_index)
                 # Initialize per dep_node loss accumulator
                 accumulated_loss = defaultdict(lambda: 0)
 
@@ -537,8 +538,6 @@ class SequentialMse:
                         name: data[batch_idx] for name, data in sim_inputs.items()
                     }
                     fp_output = fp_outputs_cache[batch_idx]
-
-                    _set_candidates(candidate_index)
                     sim_output = session.run(None, input_batch)
 
                     batched_loss = _compute_loss(fp_output, sim_output)
