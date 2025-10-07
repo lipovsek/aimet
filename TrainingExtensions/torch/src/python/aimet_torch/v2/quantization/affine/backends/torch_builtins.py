@@ -40,6 +40,7 @@ import functools
 from packaging import version
 from typing import Callable, Optional, List, Tuple
 import torch
+import torch.ao.quantization.fx._decomposed
 from aimet_torch.v2.utils import (
     _is_expandable,
     _ContextManager,
@@ -305,7 +306,7 @@ def _torch_fake_quantize(
         tensor = tensor.to(tensor_internal_dtype)
         scale = scale.to(scale_internal_dtype)
         zp = -offset.to(torch.int32)
-        return torch.fake_quantize_per_tensor_affine(
+        return _call_torch_fake_quantize_per_tensor(
             tensor,
             scale.view(()) if scale.dim() > 0 else scale,
             zp.view(()) if zp.dim() > 0 else zp,
@@ -337,7 +338,7 @@ def _torch_fake_quantize(
                 tensor = tensor.to(tensor_internal_dtype)
                 scale = scale.to(scale_internal_dtype)
                 zp = -offset.to(torch.int32)
-                return torch.fake_quantize_per_channel_affine(
+                return _call_torch_fake_quantize_per_channel(
                     tensor,
                     scale.flatten() if scale.dim() > 1 else scale,
                     zp.flatten() if zp.dim() > 1 else zp,
@@ -352,6 +353,101 @@ def _torch_fake_quantize(
                 return None
 
     return None
+
+
+@functools.lru_cache
+def _get_dtype(qmin: int, qmax: int) -> torch.dtype:
+    for bitwidth in (1, 2, 3, 4, 5, 6, 7, 8, 16, 32):
+        if 0 <= qmin < qmax < 2**bitwidth:
+            try:
+                return getattr(torch, f"uint{bitwidth}")
+            except AttributeError:
+                pass
+
+        if -(2 ** (bitwidth - 1)) <= qmin < qmax < 2 ** (bitwidth - 1):
+            try:
+                return getattr(torch, f"int{bitwidth}")
+            except AttributeError:
+                pass
+
+    raise RuntimeError(
+        f"qmin={qmin}, qmax={qmax} isn't representable "
+        "with any integer dtypes available in pytorch"
+    )
+
+
+def _call_torch_fake_quantize_per_tensor(
+    input: torch.Tensor,  # pylint: disable=redefined-builtin
+    scale: torch.Tensor,
+    zero_point: torch.Tensor,
+    qmin: int,
+    qmax: int,
+) -> torch.Tensor:
+    if _torch_compiler_is_exporting():
+        dtype = _get_dtype(qmin, qmax)
+        input_q = torch.ops.quantized_decomposed.quantize_per_tensor(
+            input,
+            scale.item(),
+            zero_point.item(),
+            qmin,
+            qmax,
+            dtype,
+        )
+        return torch.ops.quantized_decomposed.dequantize_per_tensor(
+            input_q,
+            scale.item(),
+            zero_point.item(),
+            qmin,
+            qmax,
+            dtype,
+        )
+
+    return torch.fake_quantize_per_tensor_affine(
+        input,
+        scale,
+        zero_point,
+        qmin,
+        qmax,
+    )
+
+
+def _call_torch_fake_quantize_per_channel(
+    input: torch.Tensor,  # pylint: disable=redefined-builtin
+    scale: torch.Tensor,
+    zero_point: torch.Tensor,
+    axis: int,
+    qmin: int,
+    qmax: int,
+) -> torch.Tensor:
+    if _torch_compiler_is_exporting():
+        dtype = _get_dtype(qmin, qmax)
+        input_q = torch.ops.quantized_decomposed.quantize_per_channel(
+            input,
+            scale,
+            zero_point,
+            axis,
+            qmin,
+            qmax,
+            dtype,
+        )
+        return torch.ops.quantized_decomposed.dequantize_per_channel(
+            input_q,
+            scale,
+            zero_point,
+            axis,
+            qmin,
+            qmax,
+            dtype,
+        )
+
+    return torch.fake_quantize_per_channel_affine(
+        input,
+        scale,
+        zero_point,
+        axis,
+        qmin,
+        qmax,
+    )
 
 
 @_onnx.register_symbolic(_onnx.dequantize_symbolic)

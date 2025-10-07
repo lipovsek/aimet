@@ -76,23 +76,27 @@ def test_export(model_factory, tmp_path: Path):
     onnx_qdq_nodes = [
         node for node in onnx_model.graph.node if node.op_type == "quantize_dequantize"
     ]
-    aten_fake_quantize_nodes = [
+    torch_dq_nodes = [
         node
         for node in ep.graph.nodes
         if node.op == "call_function"
-        and node.target.name().startswith("aten::fake_quantize")
+        and node.target.name().startswith("quantized_decomposed::dequantize")
     ]
-    assert len(aten_fake_quantize_nodes) == len(onnx_qdq_nodes)
+    assert len(torch_dq_nodes) == len(onnx_qdq_nodes)
 
     """
     Then: All scales and zero_points should be constant-folded
     """
-    for fake_quantize_node in aten_fake_quantize_nodes:
-        for inp_node in fake_quantize_node.all_input_nodes[1:]:
-            assert inp_node.op == "placeholder"
-            assert inp_node.name.endswith("scale") or inp_node.name.endswith(
-                "zero_point"
-            )
+    for q_dq_node in ep.graph.nodes:
+        if q_dq_node.op == "call_function" and (
+            q_dq_node.target.name().startswith("quantized_decomposed::quantize")
+            or q_dq_node.target.name().startswith("quantized_decomposed::dequantize")
+        ):
+            for inp_node in q_dq_node.all_input_nodes[1:]:
+                assert inp_node.op == "placeholder"
+                assert inp_node.name.endswith("scale") or inp_node.name.endswith(
+                    "zero_point"
+                )
 
 
 @pytest.mark.skipif(
