@@ -103,6 +103,7 @@ map_torch_types_to_onnx = {
     nn.MaxUnpool2d: ["MaxUnpool"],
     nn.MaxUnpool3d: ["MaxUnpool"],
     nn.LayerNorm: ["LayerNormalization"],
+    nn.Identity: ["Identity"],
     nn.InstanceNorm2d: ["InstanceNormalization"],
     nn.InstanceNorm1d: ["InstanceNormalization"],
     nn.LeakyReLU: ["LeakyRelu"],
