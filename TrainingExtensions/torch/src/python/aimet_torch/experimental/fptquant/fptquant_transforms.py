@@ -87,7 +87,7 @@ class ScalingTransformOp(InvertibleTransformOp):
 
 
 class GroupedHadamardTransformOp(InvertibleTransformOp, HadamardRotation):
-    def __init__(self, intermediate_size):
+    def __init__(self, intermediate_size: int):
         super().__init__(mergeable=False, size=intermediate_size)
 
     def forward(self, x):

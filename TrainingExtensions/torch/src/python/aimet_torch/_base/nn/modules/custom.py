@@ -37,7 +37,7 @@
 
 """Custom modules for functional operations defined under torch and torch.nn.functional packages"""
 
-from typing import Callable, Any, Tuple, Union, List, Type
+from typing import Callable, Any, Tuple, Union, List, Type, Optional
 
 import math
 import torchvision
@@ -697,7 +697,9 @@ class RmsNorm(torch.nn.Module):
 class HadamardRotation(torch.nn.Module):
     """Custom module for Hadamard Rotation"""
 
-    def __init__(self, size: int):
+    scale: float
+
+    def __init__(self, size: int, scale: Optional[float] = None):
         super().__init__()
         num_two_factors = 0
         remaining_factor = size
@@ -710,13 +712,17 @@ class HadamardRotation(torch.nn.Module):
                 scipy.linalg.hadamard(2**num_two_factors), dtype=torch.float32
             ),
         )
+        if scale:
+            self.scale = scale
+        else:
+            hadamard_rank = self.hadamard.shape[0]
+            self.scale = 1 / math.sqrt(hadamard_rank)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         hadamard_rank = self.hadamard.shape[0]
-        scale = 1 / math.sqrt(hadamard_rank)
         n_groups = x.shape[-1] // hadamard_rank
         x_reshape = x.reshape(*x.shape[:-1], n_groups, hadamard_rank)
-        return (F.linear(x_reshape, self.hadamard) * scale).reshape(x.shape)
+        return (F.linear(x_reshape, self.hadamard) * self.scale).reshape(x.shape)
 
 
 class NullRequant(Reshape):
