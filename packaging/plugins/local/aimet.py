@@ -135,7 +135,7 @@ def get_aimet_dependencies() -> list[str]:
     aimet_variant = get_aimet_variant()
     base_path = pathlib.Path(_PKG_ROOT, "packaging", "dependencies")
 
-    if aimet_variant in ("torch-gpu", "onnx-cpu", "onnx-torch-cpu"):
+    if aimet_variant in ("torch-cpu", "torch-gpu", "onnx-cpu", "onnx-torch-cpu"):
         deps_path = pathlib.Path(base_path, "fast-release", aimet_variant)
 
     # To publish the aimet-onnx-gpu wheel on PyPI, we have to temporarily use 'onnxruntime' as a dependency.

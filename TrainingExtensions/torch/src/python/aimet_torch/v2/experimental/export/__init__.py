@@ -19,9 +19,9 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
     This function takes set of same arguments as `torch.export.export()`_
     """
     # pylint: disable=protected-access
-    if parse(torch.__version__) < parse("2.7"):
+    if parse(torch.__version__) < parse("2.8.0"):
         raise RuntimeError(
-            "Exporting to torch.exoprt.ExportedProgram is only supported with torch>=2.7; "
+            "Exporting to torch.exoprt.ExportedProgram is only supported with torch>=2.8.0; "
             f" got torch=={torch.__version__}"
         )
 
@@ -48,7 +48,10 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
         ep = torch.export.export(mod, *args, **kwargs)
 
     for q_dq_node in ep.graph.nodes:
-        if not q_dq_node.op == "call_function":
+        if not (
+            q_dq_node.op == "call_function"
+            and isinstance(q_dq_node.target, torch._ops.OpOverload)
+        ):
             continue
         if (
             q_dq_node.target.name().startswith("aten::fake_quantize")

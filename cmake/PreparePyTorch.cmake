@@ -109,11 +109,17 @@ macro(update_torch_cuda_arch_list)
     # compiled for:
     #   1. Remove sm_ prefixes from the CUDA architecture names.
     #   2. Change python list into a CMake list.
-    execute_process(COMMAND ${Python3_EXECUTABLE} "-c" "import torch; print(';'.join(arch.split('_')[1] for arch in torch.cuda.get_arch_list()))"
-                    RESULT_VARIABLE TORCH_NOT_FOUND
-                    OUTPUT_VARIABLE CMAKE_CUDA_ARCHITECTURES
-                    OUTPUT_STRIP_TRAILING_WHITESPACE
-                    )
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} "-c"
+        "import torch; \
+        arch_list = [arch.split('_')[1] for arch in torch.cuda.get_arch_list()]; \
+        print(';'.join([n for n in arch_list if int(n) <= 90]))" # NOTE: cuda 12.1 only suuports arch <= 90
+        # COMMAND cut -d "_" -f 2
+        # COMMAND awk '$1 < 80'
+        RESULT_VARIABLE TORCH_NOT_FOUND
+        OUTPUT_VARIABLE CMAKE_CUDA_ARCHITECTURES
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
     message(STATUS "** Updated CMAKE_CUDA_ARCHITECTURES to ${CMAKE_CUDA_ARCHITECTURES} **")
 
     # Set torch cuda architecture list variable

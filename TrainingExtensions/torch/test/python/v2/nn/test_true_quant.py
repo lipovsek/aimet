@@ -1321,7 +1321,7 @@ def test_default_kernels(module_factory, input_factory):
     for out_, tout_ in zip(tree_flatten(out)[0], tree_flatten(tout)[0]):
         assert torch.equal(out_, tout_)
 
-    if version.parse(torch.__version__) >= version.parse("2.7.0"):
+    if version.parse(torch.__version__) >= version.parse("2.8.0"):
         """
         When: Export a quantized modules with torch.export.export
         Then: 1) Tracing shouldn't fail

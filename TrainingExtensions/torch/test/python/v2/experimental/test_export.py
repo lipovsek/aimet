@@ -25,8 +25,8 @@ def conv_relu(**_):
 
 
 @pytest.mark.skipif(
-    version.parse(torch.__version__) < version.parse("2.7.0"),
-    reason="aimet_torch.export.export is only supported in torch >= 2.7.0",
+    version.parse(torch.__version__) < version.parse("2.8.0"),
+    reason="aimet_torch.export.export is only supported in torch >= 2.8.0",
 )
 @pytest.mark.parametrize(
     "model_factory",
@@ -134,8 +134,8 @@ def test_export(model_factory, tmp_path: Path):
 
 
 @pytest.mark.skipif(
-    version.parse(torch.__version__) < version.parse("2.7.0"),
-    reason="aimet_torch.export.export is only supported in torch >= 2.7.0",
+    version.parse(torch.__version__) < version.parse("2.8.0"),
+    reason="aimet_torch.export.export is only supported in torch >= 2.8.0",
 )
 def test_dynamo_error():
     class CustomModule(torch.nn.Module):

@@ -69,6 +69,7 @@ confidence=
 disable=I, R, C,
         e1129,
         fixme,
+        not-callable,
         unspecified-encoding
 
 

@@ -267,7 +267,7 @@ class PtqResult:
         Load model.
         :return: Loaded model.
         """
-        return torch.load(self.model_path).to(self.device)
+        return torch.load(self.model_path, weights_only=False).to(self.device)
 
     def as_dict(self):
         """Convert to dictionary"""

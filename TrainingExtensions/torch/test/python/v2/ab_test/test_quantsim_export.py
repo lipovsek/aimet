@@ -607,7 +607,8 @@ class TestQuantsimOnnxExport:
             # Gather weights from exported .pth file
             sim.export(tmp_dir, "model_for_weight_export", dummy_input)
             exported_model = torch.load(
-                os.path.join(tmp_dir, "model_for_weight_export.pth")
+                os.path.join(tmp_dir, "model_for_weight_export.pth"),
+                weights_only=False,
             )
             conv_weights.append(exported_model.conv.weight.detach())
 

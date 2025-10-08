@@ -676,7 +676,7 @@ class TestFX:
         model_transformed = prepare_model(model)
 
         torch.save(model_transformed, "./modified_resnet18.pth")
-        saved_model = torch.load("./modified_resnet18.pth")
+        saved_model = torch.load("./modified_resnet18.pth", weights_only=False)
         saved_model.eval()
         print(saved_model)
 
@@ -701,14 +701,16 @@ class TestFX:
         torch.save(model_transformed.state_dict(), "./modified_resnet18.pth")
 
         # 1) Load the state_dict in same transformed model
-        model_transformed.load_state_dict(torch.load("./modified_resnet18.pth"))
+        model_transformed.load_state_dict(
+            torch.load("./modified_resnet18.pth", weights_only=False)
+        )
         model_transformed.eval()
 
         # Eval for both models
         assert torch.allclose(model_transformed(input_tensor), model(input_tensor))
 
         # 2) Load the dict in original model
-        model.load_state_dict(torch.load("./modified_resnet18.pth"))
+        model.load_state_dict(torch.load("./modified_resnet18.pth", weights_only=False))
         model.eval()
 
         # Eval for both models
@@ -746,7 +748,9 @@ class TestFX:
                 print(encoding_data)
 
             # Check the exported model
-            loaded_model = torch.load(os.path.join(tmp_dir, "modified_resnet18.pth"))
+            loaded_model = torch.load(
+                os.path.join(tmp_dir, "modified_resnet18.pth"), weights_only=False
+            )
 
             # Load weights from exported model to load qdq weight
             model_transformed.load_state_dict(loaded_model.state_dict())

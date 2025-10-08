@@ -1160,7 +1160,9 @@ class TestQuantizationSimStaticGrad:
                 )
 
             # check the exported model
-            loaded_model = torch.load(os.path.join(temp_dir, "two_input_model.pth"))
+            loaded_model = torch.load(
+                os.path.join(temp_dir, "two_input_model.pth"), weights_only=False
+            )
             loaded_model(torch.rand(1, 1, 28, 28), torch.rand(1, 1, 28, 28))
 
     def test_no_fine_tuning_tf_enhanced(self):
@@ -1830,7 +1832,7 @@ class TestQuantizationSimStaticGrad:
         with tempfile.TemporaryDirectory() as tmp_dir:
             torch.save(sim.model, os.path.join(tmp_dir, "xx"))
 
-            loaded_model = torch.load(os.path.join(tmp_dir, "xx"))
+            loaded_model = torch.load(os.path.join(tmp_dir, "xx"), weights_only=False)
             loaded_model.eval()
             output_after_load = loaded_model(dummy_input)
 
@@ -2101,7 +2103,8 @@ class TestQuantizationSimStaticGrad:
             # Gather weights from exported .pth file
             sim.export(tmp_dir, "model_for_weight_export", dummy_input)
             exported_model = torch.load(
-                os.path.join(tmp_dir, "model_for_weight_export.pth")
+                os.path.join(tmp_dir, "model_for_weight_export.pth"),
+                weights_only=False,
             )
             conv_weights.append(exported_model.conv.weight.detach())
 
@@ -2167,7 +2170,9 @@ class TestQuantizationSimStaticGrad:
 
             with tempfile.TemporaryDirectory() as tmp_dir:
                 sim.export(tmp_dir, "recurrent_save", dummy_input)
-                exported_model = torch.load(os.path.join(tmp_dir, "recurrent_save.pth"))
+                exported_model = torch.load(
+                    os.path.join(tmp_dir, "recurrent_save.pth"), weights_only=False
+                )
 
                 # Check that weight from quantized module was copied to original module successfully
                 assert isinstance(

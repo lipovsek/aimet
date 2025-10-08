@@ -414,7 +414,7 @@ class TestQcQuantizeRecurrentOp(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as f:
             torch.save(quant_op, f)
             f.seek(0)
-            loaded_model = torch.load(f)
+            loaded_model = torch.load(f, weights_only=False)
             loaded_model.eval()
         # compare the parameters
         for name, param in quant_op.named_parameters(recurse=False):

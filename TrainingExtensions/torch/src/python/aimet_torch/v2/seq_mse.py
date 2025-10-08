@@ -40,7 +40,6 @@
 from typing import List, Optional, Tuple
 import contextlib
 import torch
-from torch import nn
 from torch.utils.data import DataLoader
 
 from aimet_common.utils import AimetLogger
@@ -54,6 +53,7 @@ from aimet_torch.v2.quantization.affine import (
 from aimet_torch.v2.nn.base import BaseQuantizationMixin
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.deepspeed_utils import SafeGatheredParameters
+from .utils import remove_activation_quantizers, remove_param_quantizers
 
 __all__ = [
     "SequentialMse",
@@ -151,47 +151,26 @@ class SequentialMse(SequentialMseBase):
         :return: List of quantizers to be disabled.
         """
         # pylint: disable=protected-access
-        name_to_fp32_module_dict = {}
-        for name, fp32_module in model.named_modules():
-            name_to_fp32_module_dict[name] = fp32_module
+        fp_modules_to_exclude = set(modules_to_exclude or [])
+        qmodules_to_exclude = set(
+            sim.model.get_submodule(name)
+            for name, fp_module in model.named_modules()
+            if fp_module in fp_modules_to_exclude
+        )
 
-        original_input_quantizers = {}
-        original_output_quantizers = {}
-        original_param_quantizers = {}
-        for name, qmodule in sim.named_qmodules():
-            original_input_quantizers[name] = qmodule.input_quantizers
-            original_output_quantizers[name] = qmodule.output_quantizers
-            qmodule.input_quantizers = nn.ModuleList(
-                [None for _ in qmodule.input_quantizers]
-            )
-            qmodule.output_quantizers = nn.ModuleList(
-                [None for _ in qmodule.output_quantizers]
-            )
+        with contextlib.ExitStack() as stack:
+            for _, qmodule in sim.named_qmodules():
+                ctx = remove_activation_quantizers(qmodule)
+                stack.enter_context(ctx)
 
-            if not isinstance(qmodule, SUPPORTED_MODULES):
-                original_param_quantizers[name] = qmodule.param_quantizers
-                qmodule.param_quantizers = nn.ModuleDict(
-                    {key: None for key in qmodule.param_quantizers.keys()}
-                )
+                if (
+                    not isinstance(qmodule, SUPPORTED_MODULES)
+                    or qmodule in qmodules_to_exclude
+                ):
+                    ctx = remove_param_quantizers(qmodule)
+                    stack.enter_context(ctx)
 
-            # disable param quantizers from exclusion list
-            if modules_to_exclude:
-                with contextlib.suppress(KeyError):
-                    fp32_module = name_to_fp32_module_dict[name]
-                    if fp32_module in modules_to_exclude:
-                        original_param_quantizers[name] = qmodule.param_quantizers
-                        qmodule.param_quantizers = nn.ModuleDict(
-                            {key: None for key in qmodule.param_quantizers.keys()}
-                        )
-
-        yield
-
-        for name, qmodule in sim.named_qmodules():
-            qmodule.input_quantizers = original_input_quantizers[name]
-            qmodule.output_quantizers = original_output_quantizers[name]
-
-            if name in original_param_quantizers:
-                qmodule.param_quantizers = original_param_quantizers[name]
+            yield
 
     @classmethod
     def compute_param_encodings(
