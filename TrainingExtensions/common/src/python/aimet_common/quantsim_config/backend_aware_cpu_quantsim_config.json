@@ -1027,7 +1027,7 @@
                 }
             ]
         },
-        "InstanceNorm": {
+        "InstanceNormalization": {
             "supported_kernels": [
                 {
                     "activation": {
