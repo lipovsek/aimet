@@ -10,7 +10,7 @@ from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 
-from aimet_onnx.experimental.adascale.quantizer import LiteWeightQuantizedLinear
+from aimet_onnx.experimental.adascale.quantizer import QuantizedLinear
 
 from aimet_common.utils import AimetLogger
 
@@ -232,7 +232,7 @@ class ModelConverter:
         Given a pt_block with adascale params computed, copy the params to onnx model
         """
         for name, module in pt_block.named_modules():
-            if isinstance(module, LiteWeightQuantizedLinear):
+            if isinstance(module, QuantizedLinear):
                 pytorch_weight = (
                     module.param_quantizers["weight"]
                     .get_folded_weight(module.weight)

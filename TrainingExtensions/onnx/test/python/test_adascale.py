@@ -14,8 +14,9 @@ from aimet_onnx.experimental.adascale.adascale_optimizer import (
 
 from aimet_onnx.experimental.adascale.quantizer import (
     add_qlinear_layers,
-    LiteWeightQuantizedLinear,
-    AdaScaleWeightQdq,
+    QuantizedLinear,
+    AdaScaleLinearWeightQdq,
+    AdaScaleConvWeightQdq,
     WeightQdq,
     get_adascale_trainable_params,
     replace_with_adascale_quantizers,
@@ -37,6 +38,21 @@ class ModelWithLinears(torch.nn.Module):
         return self.layer2(x)
 
 
+class ModelWithConvs(torch.nn.Module):
+    def __init__(self):
+        super(ModelWithConvs, self).__init__()
+
+        self.layer1 = torch.nn.Conv2d(64, 32, (3, 3))
+        self.relu1 = torch.nn.ReLU()
+        self.dropout = torch.nn.Dropout()
+        self.layer2 = torch.nn.Conv2d(32, 64, (3, 3))
+
+    def forward(self, x):
+        x = self.relu1(self.layer1(x))
+        x = self.dropout(x)
+        return self.layer2(x)
+
+
 class ModelWithConsecutiveLinearBlocks(torch.nn.Module):
     def __init__(self):
         super(ModelWithConsecutiveLinearBlocks, self).__init__()
@@ -50,8 +66,21 @@ class ModelWithConsecutiveLinearBlocks(torch.nn.Module):
         return x
 
 
-class TestAdascaleOnnx:
-    def test_onnx_adascale_3(self):
+class ModelWithConsecutiveConvBlocks(torch.nn.Module):
+    def __init__(self):
+        super(ModelWithConsecutiveConvBlocks, self).__init__()
+        self.blocks = torch.nn.ModuleList(ModelWithConvs() for _ in range(2))
+        self.softmax = torch.nn.Softmax(dim=1)
+
+    def forward(self, x):
+        for linear_block in self.blocks:
+            x = linear_block(x)
+        x = self.softmax(x)
+        return x
+
+
+class TestAdascaleQuantizer:
+    def test_quantizer_backprop(self):
         class TwoLayerModel(torch.nn.Module):
             def __init__(self):
                 super().__init__()
@@ -83,33 +112,28 @@ class TestAdascaleOnnx:
         for m in model.parameters():
             m.requires_grad = False
 
-        for p in all_scale_parameters:
-            p.requires_grad_(True)
-        for p in all_beta_gamma_parameters:
+        for p in all_scale_parameters + all_beta_gamma_parameters:
             p.requires_grad_(True)
 
         optimizer = torch.optim.Adam(all_beta_gamma_parameters + all_scale_parameters)
+
         for epoch in range(5):
             quant_out = model(input_tensor)
             loss = torch.nn.functional.mse_loss(orig_out, quant_out)
             loss.backward()
             optimizer.step()
 
-            for name, param in model.named_parameters():
-                if param.grad is not None:
-                    print(name, "is not None. Sum=", param.grad.sum())
-            # did_grad_update = any(param.grad is not None for param in all_beta_gamma_parameters)
-            # print(f'Any grad present? {did_grad_update}')
-            optimizer.zero_grad()
+            if epoch < 4:
+                optimizer.zero_grad()
 
-        # did_grad_update = any(param.grad is not None for param in all_beta_gamma_parameters)
-        # print(f'Any grad present? {did_grad_update}')
+        # All scale and beta, gamma params should have a grad
+        for p in all_scale_parameters + all_beta_gamma_parameters:
+            assert p.grad is not None
 
         new_out = model(input_tensor)
         assert not torch.equal(new_out, orig_out)
 
-    @pytest.mark.skip(reason="This test is temporarily disabled")
-    def test_onnx_adascale_1(self):
+    def test_qlinear_layer_replacement(self):
         model = ModelWithConsecutiveLinearBlocks().eval()
         model_copy = copy.deepcopy(model)
         input_shape = (1, 3, 32, 64)
@@ -129,8 +153,8 @@ class TestAdascaleOnnx:
                 linear_block_1.layer2.weight, linear_block_2.layer2.weight
             )
 
-            assert isinstance(linear_block_1.layer1, LiteWeightQuantizedLinear)
-            assert isinstance(linear_block_1.layer2, LiteWeightQuantizedLinear)
+            assert isinstance(linear_block_1.layer1, QuantizedLinear)
+            assert isinstance(linear_block_1.layer2, QuantizedLinear)
 
         # multiple calls show no change in model parameters (no attrs set to train mode)
         out_2_a = model(copy.deepcopy(dummy_input))
@@ -144,7 +168,7 @@ class TestAdascaleOnnx:
         out_3 = model(copy.deepcopy(dummy_input))
         assert torch.equal(out_3, out_1)
 
-    def test_adascale_compute_encodings(self):
+    def test_single_quantizer_backprop(self):
         """
         Given:
         - Create QDQ module, store initial scale and create adascale equivalent with the QDQ module
@@ -157,31 +181,29 @@ class TestAdascaleOnnx:
         - Compare original scale with new scale
         """
 
-        weight_shape, qdq_shape = (1, 3, 224, 224), (1, 3, 1, 1)
+        weight_shape, qdq_shape = (30, 20), (30, 1)
         torch.manual_seed(0)
-        input_tensor = torch.rand(*weight_shape)
+        weight_tensor = torch.rand(*weight_shape)
 
         torch.manual_seed(1)
         expected_tensor = torch.rand(*weight_shape)
 
-        qdq = WeightQdq(input_tensor, qdq_shape, 4)
+        qdq = WeightQdq(weight_tensor, qdq_shape, 4)
 
-        adascale_qdq = AdaScaleWeightQdq(input_tensor, qdq_shape, 4)
+        adascale_qdq = AdaScaleLinearWeightQdq(weight_tensor, qdq_shape, 4)
         assert torch.equal(adascale_qdq.min, qdq.min)
         assert torch.equal(adascale_qdq.max, qdq.max)
-        assert torch.equal(qdq(input_tensor), adascale_qdq(input_tensor))
+        assert torch.equal(qdq(weight_tensor), adascale_qdq(weight_tensor))
 
-        adascale_qdq.eval()
-        lwc_params, scale_params = adascale_qdq.get_adascale_trainable_parameters()
-        adascale_params = lwc_params + scale_params
-        for p in adascale_params:
-            p.requires_grad = True
+        beta_gamma, scale_params = adascale_qdq.get_adascale_trainable_parameters()
+        for p in beta_gamma + scale_params:
+            assert p.requires_grad
 
-        orig_output = adascale_qdq(input_tensor)
+        orig_output = adascale_qdq(weight_tensor)
         prev_loss = None
-        optimizer = torch.optim.Adam(adascale_params)
+        optimizer = torch.optim.Adam(beta_gamma + scale_params)
         for epoch in range(5):
-            quant_out = adascale_qdq(input_tensor)
+            quant_out = adascale_qdq(weight_tensor)
             loss = torch.nn.functional.mse_loss(expected_tensor, quant_out)
             assert prev_loss != loss
             prev_loss = loss
@@ -189,23 +211,23 @@ class TestAdascaleOnnx:
             optimizer.step()
             optimizer.zero_grad()
 
-        adascale_out = adascale_qdq(input_tensor)
+        adascale_out = adascale_qdq(weight_tensor)
         # verify training is changing the output
         assert not torch.equal(adascale_out, orig_output)
 
         # verify adascale_qdq can be converted to regular qdq
-        input_with_adascale_params_folded = adascale_qdq.get_folded_weight(input_tensor)
-        new_qdq = WeightQdq(input_tensor, qdq_shape, 4)
+        weight_after_adascale_fold = adascale_qdq.get_folded_weight(weight_tensor)
+
+        new_qdq = WeightQdq(weight_after_adascale_fold, qdq_shape, 4)
         new_qdq.set_range(adascale_qdq.get_min(), adascale_qdq.get_max())
+
         assert torch.equal(adascale_qdq.get_max(), new_qdq.get_max())
         assert torch.equal(adascale_qdq.get_min(), new_qdq.get_min())
-        assert torch.equal(adascale_qdq.get_scale(), new_qdq.get_scale())
-        assert torch.equal(adascale_qdq.get_offset(), new_qdq.get_offset())
 
-        modified_out = new_qdq(input_with_adascale_params_folded)
+        modified_out = new_qdq(weight_after_adascale_fold)
         assert torch.equal(modified_out, adascale_out)
 
-    def test_onnx_adascale_2(self):
+    def test_get_adascale_trainable_params_linear(self):
         model = ModelWithConsecutiveLinearBlocks().eval()
         add_qlinear_layers(model)
         replace_with_adascale_quantizers(model)
@@ -219,17 +241,252 @@ class TestAdascaleOnnx:
             len(all_scale_parameters) == 8
         )  # 2 blocks * 2 linear layers * 2 params(s2, s3)
 
+    def test_get_adascale_trainable_params_conv(self):
+        model = ModelWithConsecutiveConvBlocks().eval()
+        add_qlinear_layers(model)
+        replace_with_adascale_quantizers(model)
+        all_beta_gamma_parameters, all_scale_parameters = get_adascale_trainable_params(
+            model
+        )
+        assert (
+            len(all_beta_gamma_parameters) == 8
+        )  # 2 blocks * 2 conv layers * 2 params(beta, gamma)
+        assert (
+            len(all_scale_parameters) == 12
+        )  # 2 blocks * 2 conv layers * 3 params(s2, s3, s4)
+
+    def test_adascale_forward_linear(self):
+        weight_shape, qdq_shape = (3, 10), (3, 1)
+        out_channels_dim = 0
+        torch.manual_seed(0)
+        bw = 4
+
+        weight_tensor = torch.rand(*weight_shape)
+
+        # torch.rand returns random values in [0, 1)
+        # here is the math for finding min, max, scale, offset for symmetric quantization
+        expected_max = torch.max(
+            weight_tensor.view(weight_shape[0], -1), dim=1
+        ).values.reshape(qdq_shape)
+        expected_scale = expected_max / float(
+            2 ** (bw - 1) - 1
+        )  # 2^(bits-1)-1 = 7 for 4 bits
+        expected_min = -1 * expected_max - expected_scale
+
+        adascale_qdq = AdaScaleLinearWeightQdq(weight_tensor, qdq_shape, 4)
+
+        # At construction, min, max, scale, offset should match expected values, since the learnable scales are 0
+        assert torch.allclose(adascale_qdq.get_max(), expected_max)
+        assert torch.allclose(adascale_qdq.get_min(), expected_min)
+        assert torch.allclose(adascale_qdq.get_scale(), expected_scale)
+        assert torch.equal(adascale_qdq.get_offset(), torch.zeros(qdq_shape))
+
+        def simple_ada_qdq(weight, max, min, s2, s3, gamma, beta):
+            # simple adascale forward that mimics the one in AdaScaleLinearWeightQdq
+            scaled_weight = (weight / torch.exp(s2)) / torch.exp(s3)
+            max = max * torch.exp(gamma)  # new max
+            min = min * torch.exp(beta)  # new min
+            scale = (max - min) / float(2 ** (bw) - 1)  # new scale
+
+            # Regular qdq
+            quantized = torch.clamp(
+                torch.round(scaled_weight / scale), -(2 ** (bw - 1)), 2 ** (bw - 1) - 1
+            )
+            dequantized = quantized * scale
+
+            return dequantized
+
+        # With s2, s3 = 0, beta, gamma = 0, output should match simple_ada_qdq output
+        test_s2 = torch.full(weight_shape, 0.0)
+        test_s3 = torch.full(qdq_shape, 0.0)
+        test_gamma = torch.full(qdq_shape, 0.0)
+        test_beta = torch.full(qdq_shape, 0.0)
+
+        out_1 = adascale_qdq(weight_tensor)
+        out_2 = simple_ada_qdq(
+            weight_tensor,
+            expected_max,
+            expected_min,
+            test_s2,
+            test_s3,
+            test_gamma,
+            test_beta,
+        )
+        assert torch.allclose(out_1, out_2)
+
+        # With s2 = 1, s3 = 0, beta, gamma = 0, output should match simple_ada_qdq output
+        test_s2 = torch.full(weight_shape, 1.0)
+        test_s3 = torch.full(qdq_shape, 0.0)
+        test_gamma = torch.full(qdq_shape, 0.0)
+        test_beta = torch.full(qdq_shape, 0.0)
+
+        adascale_qdq.s2.data = test_s2
+
+        out_1 = adascale_qdq(weight_tensor)
+        out_2 = simple_ada_qdq(
+            weight_tensor,
+            expected_max,
+            expected_min,
+            test_s2,
+            test_s3,
+            test_gamma,
+            test_beta,
+        )
+        assert torch.allclose(out_1, out_2)
+
+        # With s2 = 1, s3 = 1, beta, gamma = 1, output should match simple_ada_qdq output
+        test_s2 = torch.full(weight_shape, 1.0)
+        test_s3 = torch.full(qdq_shape, 1.0)
+        test_gamma = torch.full(qdq_shape, 1.0)
+        test_beta = torch.full(qdq_shape, 1.0)
+
+        adascale_qdq.s2.data = test_s2
+        adascale_qdq.s3.data = test_s3
+        adascale_qdq.gamma.data = test_gamma
+        adascale_qdq.beta.data = test_beta
+
+        out_1 = adascale_qdq(weight_tensor)
+        out_2 = simple_ada_qdq(
+            weight_tensor,
+            expected_max,
+            expected_min,
+            test_s2,
+            test_s3,
+            test_gamma,
+            test_beta,
+        )
+        assert torch.allclose(out_1, out_2)
+
+    def test_adascale_forward_conv(self):
+        weight_shape, qdq_shape = (3, 10, 5, 5), (3, 1, 1, 1)
+        s4_shape = (1, 10, 1, 1)
+        out_channels_dim = 0
+        torch.manual_seed(0)
+        bw = 4
+
+        weight_tensor = torch.rand(*weight_shape)
+
+        # torch.rand returns random values in [0, 1)
+        # here is the math for finding min, max, scale, offset for symmetric quantization
+        expected_max = torch.max(
+            weight_tensor.view(weight_shape[0], -1), dim=1
+        ).values.reshape(qdq_shape)
+        expected_scale = expected_max / float(
+            2 ** (bw - 1) - 1
+        )  # 2^(bits-1)-1 = 7 for 4 bits
+        expected_min = -1 * expected_max - expected_scale
+
+        adascale_qdq = AdaScaleConvWeightQdq(weight_tensor, qdq_shape, 4)
+
+        # At construction, min, max, scale, offset should match expected values, since the learnable scales are 0
+        assert torch.allclose(adascale_qdq.get_max(), expected_max)
+        assert torch.allclose(adascale_qdq.get_min(), expected_min)
+        assert torch.allclose(adascale_qdq.get_scale(), expected_scale)
+        assert torch.equal(adascale_qdq.get_offset(), torch.zeros(qdq_shape))
+
+        def simple_ada_qdq(weight, max, min, s2, s3, s4, gamma, beta):
+            # simple adascale forward that mimics the one in AdaScaleLinearWeightQdq
+            scaled_weight = ((weight / torch.exp(s2)) / torch.exp(s3)) / torch.exp(s4)
+            max = max * torch.exp(gamma)  # new max
+            min = min * torch.exp(beta)  # new min
+            scale = (max - min) / float(2 ** (bw) - 1)  # new scale
+
+            # Regular qdq
+            quantized = torch.clamp(
+                torch.round(scaled_weight / scale), -(2 ** (bw - 1)), 2 ** (bw - 1) - 1
+            )
+            dequantized = quantized * scale
+
+            return dequantized
+
+        # With s2, s3 = 0, beta, gamma = 0, output should match simple_ada_qdq output
+        test_s2 = torch.full(weight_shape, 0.0)
+        test_s3 = torch.full(qdq_shape, 0.0)
+        test_s4 = torch.full(s4_shape, 0.0)
+        test_gamma = torch.full(qdq_shape, 0.0)
+        test_beta = torch.full(qdq_shape, 0.0)
+
+        out_1 = adascale_qdq(weight_tensor)
+        out_2 = simple_ada_qdq(
+            weight_tensor,
+            expected_max,
+            expected_min,
+            test_s2,
+            test_s3,
+            test_s4,
+            test_gamma,
+            test_beta,
+        )
+        assert torch.allclose(out_1, out_2)
+
+        # With s2 = 1, s3 = 0, beta, gamma = 0, output should match simple_ada_qdq output
+        test_s2 = torch.full(weight_shape, 1.0)
+        test_s3 = torch.full(qdq_shape, 0.0)
+        test_s4 = torch.full(s4_shape, 0.0)
+        test_gamma = torch.full(qdq_shape, 0.0)
+        test_beta = torch.full(qdq_shape, 0.0)
+
+        adascale_qdq.s2.data = test_s2
+
+        out_1 = adascale_qdq(weight_tensor)
+        out_2 = simple_ada_qdq(
+            weight_tensor,
+            expected_max,
+            expected_min,
+            test_s2,
+            test_s3,
+            test_s4,
+            test_gamma,
+            test_beta,
+        )
+        assert torch.allclose(out_1, out_2)
+
+        # With s2 = 1, s3 = 1, beta, gamma = 1, output should match simple_ada_qdq output
+        test_s2 = torch.full(weight_shape, 1.0)
+        test_s3 = torch.full(qdq_shape, 1.0)
+        test_s4 = torch.full(s4_shape, 1.0)
+        test_gamma = torch.full(qdq_shape, 1.0)
+        test_beta = torch.full(qdq_shape, 1.0)
+
+        adascale_qdq.s2.data = test_s2
+        adascale_qdq.s3.data = test_s3
+        adascale_qdq.s4.data = test_s4
+        adascale_qdq.gamma.data = test_gamma
+        adascale_qdq.beta.data = test_beta
+
+        out_1 = adascale_qdq(weight_tensor)
+        out_2 = simple_ada_qdq(
+            weight_tensor,
+            expected_max,
+            expected_min,
+            test_s2,
+            test_s3,
+            test_s4,
+            test_gamma,
+            test_beta,
+        )
+        assert torch.allclose(out_1, out_2)
+
 
 def test_adascale_e2e(monkeypatch, small_model: bool = True):
     path = os.path.abspath(os.path.join("../../../../GenAITests"))
     monkeypatch.syspath_prepend(path)
     from transformers import AutoConfig
     from GenAITests.onnx.models.qwen import Qwen_25_ONNX
+    import random
 
     context_length = 32
     sequence_length = 16
     model_id = "Qwen/Qwen2-0.5B"
     model_cls = Qwen_25_ONNX
+
+    SEED = 20
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(SEED)
+        torch.cuda.manual_seed_all(SEED)
 
     llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     if small_model:
@@ -260,6 +517,12 @@ def test_adascale_e2e(monkeypatch, small_model: bool = True):
         "past_value_1_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
     }
 
+    # Create a copy of the weights before applying AdaScale
+    original_weights = {}
+    for initializer in sim.model.model.graph.initializer:
+        weight_array = numpy_helper.to_array(initializer)
+        original_weights[initializer.name] = weight_array.copy()
+
     AdaScale.apply_adascale(
         sim,
         [inputs],
@@ -268,7 +531,6 @@ def test_adascale_e2e(monkeypatch, small_model: bool = True):
     )
 
     for initializer in sim.model.model.graph.initializer:
-        weight_array = numpy_helper.to_array(initializer)
         if initializer.name in [
             "onnx::MatMul_571",
             "onnx::MatMul_587",
@@ -285,19 +547,11 @@ def test_adascale_e2e(monkeypatch, small_model: bool = True):
             "onnx::MatMul_721",
             "onnx::MatMul_722",
         ]:
-            assert onnx_weights_min_max[initializer.name]["min"] != float(
-                np.min(weight_array)
-            )
-            assert onnx_weights_min_max[initializer.name]["max"] != float(
-                np.max(weight_array)
-            )
+            weight_array = numpy_helper.to_array(initializer)
+            assert not np.all(original_weights[initializer.name] == weight_array)
         else:
-            assert onnx_weights_min_max[initializer.name]["min"] == float(
-                np.min(weight_array)
-            )
-            assert onnx_weights_min_max[initializer.name]["max"] == float(
-                np.max(weight_array)
-            )
+            weight_array = numpy_helper.to_array(initializer)
+            assert np.all(original_weights[initializer.name] == weight_array)
 
     assert len(sim.model.model.graph.output)
 

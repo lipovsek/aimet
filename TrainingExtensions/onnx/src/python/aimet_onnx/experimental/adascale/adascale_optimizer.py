@@ -44,7 +44,7 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
 _QT_SAMPLING_PROB = 1.0
 _LOSS_FN = torch.nn.MSELoss()
-_DEBUG_NUM_BLOCKS_TO_ADASCALE = None
+_DEBUG_NUM_PARTIAL_ITERATIONS = None
 
 
 @dataclass
@@ -150,10 +150,12 @@ class AdaScale:
 
             for idx in range(len(adascale_blocks_end_points)):
                 if (
-                    _DEBUG_NUM_BLOCKS_TO_ADASCALE is not None
-                    and idx >= _DEBUG_NUM_BLOCKS_TO_ADASCALE
+                    _DEBUG_NUM_PARTIAL_ITERATIONS is not None
+                    and idx >= _DEBUG_NUM_PARTIAL_ITERATIONS
                 ):
                     break
+
+                # for idx in range(0,4):
                 _logger.info("Optimizing decoder block: %d", idx)
 
                 qsim_sess = ActivationSampler(
