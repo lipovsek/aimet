@@ -1,6 +1,5 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
-
 # pylint: disable=import-error
 from typing import Optional, List, Tuple
 import math
@@ -52,6 +51,7 @@ class WeightQdq(torch.nn.Module):
         min_tensor, max_tensor = self.compute_min_max_tensors(
             weight_tensor, self.shape, self._get_num_steps()
         )
+
         self.register_parameter("min", torch.nn.Parameter(min_tensor))
         self.register_parameter("max", torch.nn.Parameter(max_tensor))
 

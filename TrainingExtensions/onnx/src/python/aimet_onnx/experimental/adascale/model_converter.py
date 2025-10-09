@@ -264,6 +264,61 @@ class ModelConverter:
                         onnx_param_name,
                     )
 
+                    if (
+                        self.qsim.qc_quantize_op_dict[
+                            onnx_param_name
+                        ].quant_info.blockSize
+                        != 0
+                    ):
+                        raise RuntimeError("AdaScale with BQ is not supported")
+
                     self.qsim.model.model.graph.initializer[
                         onnx_initializer_list_idx
                     ].CopyFrom(numpy_helper.from_array(pytorch_weight, onnx_param_name))
+
+                    # copy encodings over to onnx quantizers
+                    new_scales = (
+                        module.param_quantizers["weight"]
+                        .get_scale()
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
+                    new_offsets = (
+                        module.param_quantizers["weight"]
+                        .get_offset()
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
+                    new_min = (
+                        module.param_quantizers["weight"]
+                        .get_min()
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
+                    new_max = (
+                        module.param_quantizers["weight"]
+                        .get_max()
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
+                    enc = self.qsim.qc_quantize_op_dict[onnx_param_name].get_encodings()
+                    if (
+                        len(new_scales) != len(enc)
+                        or len(new_offsets) != len(enc)
+                        or len(new_min) != len(enc)
+                        or len(new_max) != len(enc)
+                    ):
+                        raise RuntimeError(
+                            "Encodings of the onnx quantizer and adascale quantizer have different lengths"
+                        )
+                    for i, encoding in enumerate(enc):
+                        encoding.delta = new_scales[i]
+                        encoding.offset = new_offsets[i]
+                        encoding.min = new_min[i]
+                        encoding.max = new_max[i]
+
+                    self.qsim.qc_quantize_op_dict[onnx_param_name].load_encodings(enc)
