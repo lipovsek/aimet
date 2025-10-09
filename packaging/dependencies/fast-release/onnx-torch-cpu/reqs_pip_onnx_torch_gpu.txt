@@ -25,3 +25,4 @@ tensorboard
 torch
 torchvision
 tqdm
+onnx2torch

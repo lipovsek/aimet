@@ -56,7 +56,9 @@ class TorchONNXInterface(torch.nn.Module):
 
     @property
     def device(self) -> torch.device:
-        return torch.device("cuda")
+        return (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
 
     @property
     def dtype(self) -> torch.dtype:

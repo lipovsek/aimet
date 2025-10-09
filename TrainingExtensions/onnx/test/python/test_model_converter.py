@@ -1,257 +1,107 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
+from onnx.utils import extract_model
+import onnxruntime as ort
 
+from aimet_onnx.experimental.adascale.model_converter import ModelConverter
+
+from aimet_onnx.quantsim import QuantizationSimModel
+import pytest
 import os
 import torch
 from onnx import numpy_helper
 import numpy as np
-
-from transformers.models.llama.modeling_llama import (
-    LlamaDecoderLayer,
-)
-
-from transformers.models.qwen2.modeling_qwen2 import (
-    Qwen2DecoderLayer,
-)
-
-from transformers.models.mistral.modeling_mistral import (
-    MistralDecoderLayer,
-)
-from aimet_onnx.experimental.adascale.model_converter import ModelConverter
-
 from dataclasses import dataclass
-from typing import Type
+import copy
+from GenAITests.shared.models.generator import Generator
+from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
+from GenAITests.onnx.helpers.quant_recipes import _prefill_inputs
+from GenAITests.shared.helpers.datasets import Wikitext
+from aimet_common.utils import compute_psnr
+from aimet_onnx.experimental.adascale.find_blocks import (
+    get_decoder_blocks_end_points,
+)
 
 
-# TODO Move AdaScaleModelConfig, adascale_model_config_dict to a utility file
-@dataclass
-class AdaScaleModelConfig:
-    block_type: Type = None  # block types to use in a given model
-    beta_gamma_lr: float = 1e-3  # lr for beta and gamma
-    scales_lr: float = 5e-4  # lr for s2, s3, [s4]
-    model_config: Type = None
-
-
-# mapping of model type and the corresponding adascale config
-adascale_model_config_dict = {
-    "LlamaModel": AdaScaleModelConfig(
-        block_type=LlamaDecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
-    ),
-    "Qwen2Model": AdaScaleModelConfig(
-        block_type=Qwen2DecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
-    ),
-    "MistralModel": AdaScaleModelConfig(
-        block_type=MistralDecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
-    ),
-}
-
-
-def test_decoder_block_weights_copy(monkeypatch, small_model=True):
+def test_model_round_trip(monkeypatch):
     path = os.path.abspath(os.path.join("../../../../GenAITests"))
     monkeypatch.syspath_prepend(path)
-    from transformers import AutoConfig
     from GenAITests.onnx.models.qwen import Qwen_25_ONNX
-
-    model_id = "Qwen/Qwen2.5-0.5B"
-    llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-    if small_model:
-        llm_config.num_hidden_layers = 2
-
-    sim = Qwen_25_ONNX.instantiate_quantsim(
-        model_id, 4096, 2048, small_model=small_model
-    )
-
-    adascale_model_config_dict["Qwen2Model"].model_config = llm_config
-
-    converter = ModelConverter(sim, adascale_model_config_dict["Qwen2Model"])
-
-    pt_block = converter._copy_weights_onnx_to_pt(0)
-
-    # Check if the params data in onnx initilizer's list == pytorch decoder blocks
-    assert torch.all(
-        pt_block.self_attn.q_proj.weight
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map["onnx::MatMul_571"]
-            ]
-        ).T
-    )
-
-    assert torch.all(
-        pt_block.self_attn.k_proj.weight
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map["onnx::MatMul_587"]
-            ]
-        ).T
-    )
-
-    assert torch.all(
-        pt_block.self_attn.v_proj.weight
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map["onnx::MatMul_588"]
-            ]
-        ).T
-    )
-
-    assert torch.all(
-        pt_block.self_attn.q_proj.bias
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map[
-                    "model.model.layers.0.self_attn.q_proj.bias"
-                ]
-            ]
-        )
-    )
-
-    assert torch.all(
-        pt_block.self_attn.k_proj.bias
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map[
-                    "model.model.layers.0.self_attn.k_proj.bias"
-                ]
-            ]
-        )
-    )
-
-    assert torch.all(
-        pt_block.self_attn.v_proj.bias
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map[
-                    "model.model.layers.0.self_attn.v_proj.bias"
-                ]
-            ]
-        )
-    )
-
-    assert torch.all(
-        pt_block.self_attn.o_proj.weight
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map["onnx::MatMul_643"]
-            ]
-        ).T
-    )
-
-    assert torch.all(
-        pt_block.mlp.gate_proj.weight
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map["onnx::MatMul_644"]
-            ]
-        ).T
-    )
-
-    assert torch.all(
-        pt_block.mlp.up_proj.weight
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map["onnx::MatMul_645"]
-            ]
-        ).T
-    )
-
-    assert torch.all(
-        pt_block.mlp.down_proj.weight
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map["onnx::MatMul_646"]
-            ]
-        ).T
-    )
-
-    assert torch.all(
-        pt_block.input_layernorm.weight
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map[
-                    "model.model.layers.0.input_layernorm.weight"
-                ]
-            ]
-        )
-    )
-
-    assert torch.all(
-        pt_block.post_attention_layernorm.weight
-        == numpy_helper.to_array(
-            sim.model.model.graph.initializer[
-                converter.initializer_name_to_index_map[
-                    "model.model.layers.0.post_attention_layernorm.weight"
-                ]
-            ]
-        )
-    )
-
-
-def test_model_round_trip(monkeypatch, small_model=True):
-    path = os.path.abspath(os.path.join("../../../../GenAITests"))
-    monkeypatch.syspath_prepend(path)
     from transformers import AutoConfig
-    from GenAITests.onnx.models.qwen import Qwen_25_ONNX
 
+    small_model = True
+    context_length = 32
+    sequence_length = 16
     model_id = "Qwen/Qwen2.5-0.5B"
     sim = Qwen_25_ONNX.instantiate_quantsim(
-        model_id, 4096, 2048, small_model=small_model
+        "Qwen/Qwen2.5-0.5B", 32, 16, small_model=small_model
     )
     llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     if small_model:
         llm_config.num_hidden_layers = 2
-    adascale_model_config_dict["Qwen2Model"].model_config = llm_config
+    ################ Input for qwen2.5
+    tokenizer = Qwen_25_ONNX.instantiate_tokenizer(model_id)
 
-    def _update_onnx_weights(model, set_zeros: bool = False):
-        for initializer in model.graph.initializer:
-            weight_array = numpy_helper.to_array(initializer)
-            new_array = (
-                np.zeros_like(weight_array) if set_zeros else np.ones_like(weight_array)
-            )
-            new_initializer = numpy_helper.from_array(new_array, initializer.name)
-            initializer.CopyFrom(new_initializer)
+    train_dataset = Wikitext.load_encoded_dataset(tokenizer, context_length, "train")
+    quantsim_with_torch_interface = TorchONNXInterface(sim, llm_config)
+    generator = Generator(
+        quantsim_with_torch_interface, tokenizer, sequence_length, context_length
+    )
 
-    def _check_onnx_weights(
-        model, layers_to_check: set = None, are_zeros: bool = False
+    inputs = _prefill_inputs(sim, generator, train_dataset, num_iterations=5)
+    ################ fp32 onnx model
+    CHECKPOINT_DIR = "onnx_checkpoints_debugging"
+    CHECKPOINT_FP_DIR = "onnx_checkpoints_debugging/fp_models"
+    os.makedirs(CHECKPOINT_FP_DIR, exist_ok=True)
+    path = os.path.abspath(os.path.join("../../../../GenAITests"))
+
+    fp32_model = copy.deepcopy(sim.model.model)
+    fp32_model = QuantizationSimModel.remove_quantizers(fp32_model)
+    common_inputs = ["attention_mask", "position_ids"]
+    adascale_blocks_end_points = get_decoder_blocks_end_points(sim)
+    block_inputs = [adascale_blocks_end_points[0][0].inputs[0].name]
+    converter = ModelConverter(fp32_model, CHECKPOINT_DIR)
+    model_before_block = os.path.join(CHECKPOINT_FP_DIR, "before_decoder_block.onnx")
+    fp_model_path = converter._get_onnx_fp_model()
+    extract_model(
+        fp_model_path, model_before_block, list(inputs[0].keys()), block_inputs
+    )
+    before_session = ort.InferenceSession(
+        model_before_block, providers=["CPUExecutionProvider"]
+    )
+    block_input_tensor = before_session.run(block_inputs, inputs[0])
+    for block_id, (block_start, block_end) in enumerate(
+        get_decoder_blocks_end_points(sim)
     ):
-        for initializer in model.graph.initializer:
-            if layers_to_check is not None and initializer.name not in layers_to_check:
-                continue
-
-            weight_array = numpy_helper.to_array(initializer)
-            if are_zeros:
-                assert (weight_array == 0.0).all()
-            else:
-                if not (weight_array == 1.0).all():
-                    print(f"Weight mismatch {initializer.name}")
-                else:
-                    print(f"Weight Match {initializer.name}")
-                assert (weight_array == 1.0).all()
-
-    def _update_torch_weights(model, set_zeros: bool = False):
-        for param in model.parameters():
-            if set_zeros:
-                param.data.zero_()
-            else:
-                param.data.fill_(1.0)
-
-    def _check_torch_weights(model, are_zeros: bool = False):
-        for param in model.parameters():
-            if are_zeros:
-                assert param.data.equal(torch.zeros_like(param.data))
-            else:
-                assert param.data.equal(torch.ones_like(param.data))
-
-    # Update ONNX model weights to zeros
-    _update_onnx_weights(sim.model.model, set_zeros=True)
-    _check_onnx_weights(sim.model.model, are_zeros=True)
-
-    converter = ModelConverter(sim, adascale_model_config_dict["Qwen2Model"])
-
-    pt_block = converter._copy_weights_onnx_to_pt(0)
-    # Check weights are zeros in pytorch decoder blocks
-    _check_torch_weights(pt_block, are_zeros=True)
-    # update pytorch weights to ones
-    _update_torch_weights(pt_block, set_zeros=False)
-    # Check weights are ones in pytorch decoder blocks
-    _check_torch_weights(pt_block, are_zeros=False)
+        block_inputs = [block_start.inputs[0].name]
+        block_input_names = (
+            block_inputs
+            + common_inputs
+            + [f"past_key_{block_id}_in", f"past_value_{block_id}_in"]
+        )
+        block_output_names = [block_end.inputs[0].name]
+        block_input_output_names = (block_input_names, block_output_names)
+        pt_block, block_model_path = converter.get_pt_block(block_input_output_names)
+        ################ run forward pass 1 through onnx block
+        onnx_fp_block_sess = ort.InferenceSession(
+            block_model_path, providers=["CPUExecutionProvider"]
+        )
+        block_test_inputs = inputs[0].copy()
+        block_test_inputs[block_inputs[0]] = block_input_tensor[0]
+        for name in inputs[0].keys():
+            if name not in block_input_names:
+                del block_test_inputs[name]
+        onnx_fp_out = onnx_fp_block_sess.run(None, block_test_inputs)
+        ################ run forward pass 2 through converted pytorch(assert 1==2)
+        torch_out = (
+            pt_block(
+                torch.from_numpy(block_input_tensor[0]).float(),
+                torch.from_numpy(inputs[0]["attention_mask"]).long(),
+                torch.from_numpy(inputs[0]["position_ids"]).long(),
+                torch.from_numpy(inputs[0][f"past_key_{block_id}_in"]).float(),
+                torch.from_numpy(inputs[0][f"past_value_{block_id}_in"]).float(),
+            )
+            .detach()
+            .numpy()
+        )
+        assert compute_psnr(onnx_fp_out[0], torch_out) == 100

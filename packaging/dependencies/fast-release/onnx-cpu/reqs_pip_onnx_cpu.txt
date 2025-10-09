@@ -14,3 +14,4 @@ scikit-learn
 scipy
 torch
 tqdm
+onnx2torch

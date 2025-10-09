@@ -37,7 +37,10 @@ from aimet_onnx.experimental.adascale.quantizer import (
 )
 
 from aimet_onnx.experimental.adascale.activation_sampler import ActivationSampler
-from aimet_onnx.experimental.adascale.model_converter import ModelConverter
+from aimet_onnx.experimental.adascale.model_converter_decoder_block import (
+    ModelConverter,
+)
+# from aimet_onnx.experimental.adascale.model_converter_onnx2torch import ModelConverter
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
@@ -188,7 +191,7 @@ class AdaScale:
                     torch.from_numpy(arr).float() for arr in qsim_inputs
                 ]
 
-                pytorch_block = converter._copy_weights_onnx_to_pt(idx)
+                pytorch_block = converter.get_pt_block(idx)
                 pytorch_block.requires_grad_(False)
 
                 fp_out = []
