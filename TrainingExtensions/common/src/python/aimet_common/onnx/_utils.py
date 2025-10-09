@@ -655,17 +655,27 @@ def _convert_version_with_external_weights(model, target_opset_version):
         external_tensors = {
             tensor.name: tensor.external_data[:]
             for tensor in _get_all_tensors(model)
-            if tensor.name in regular_tensors and uses_external_data(tensor)
+            if uses_external_data(tensor)
         }
 
         model = onnx.version_converter.convert_version(model, target_opset_version)
 
-        # Only load tensors that are temporarily switched from interal to external
+        # Restore original state of the model
         for tensor in _get_all_tensors(model):
             if tensor.name in external_tensors:
-                load_external_data_for_tensor(tensor, tmp_dir)
-                tensor.data_location = TensorProto.DEFAULT
+                # Step 1. Restore external_data of all tensors
+                # NOTE: This step is only necessary in onnx < 1.19,
+                # where version converter strips away external_data information
+                external_data = external_tensors[tensor.name]
+                tensor.data_location = TensorProto.EXTERNAL
                 del tensor.external_data[:]
+                tensor.external_data.extend(external_data)
+
+                # Step 2. Load raw_data of tensors that were original non-external
+                if tensor.name in regular_tensors:
+                    load_external_data_for_tensor(tensor, tmp_dir)
+                    tensor.data_location = TensorProto.DEFAULT
+                    del tensor.external_data[:]
 
     return model
 
