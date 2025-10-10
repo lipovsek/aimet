@@ -44,6 +44,7 @@ import traceback
 from typing import Any, List, Mapping, Tuple, Union
 from pathlib import Path
 
+import numpy as np
 import onnx
 import torch
 from torch.onnx import _constants
@@ -52,6 +53,7 @@ from aimet_common.onnx._utils import (
     _add_onnx_qdq_nodes,
     _is_grid_preserving_op,
     _convert_version,
+    contains_tensor_type,
 )
 
 from .nn import QuantizationMixin
@@ -558,6 +560,15 @@ def _to_onnx_qdq(
         opset.version for opset in onnx_model.opset_import if opset.domain == ""
     )
 
+    # TODO: Support exporting (b)float16 models
+    if contains_tensor_type(
+        onnx_model, (onnx.TensorProto.BFLOAT16, onnx.TensorProto.FLOAT16)
+    ):
+        raise RuntimeError(
+            "Exporting to onnx QDQ is only supported for float32 models."
+        )
+    float_types = [np.float32 for _ in range(len(qnn_encodings))]
+
     # Add onnx QDQ nodes in batch
     _add_onnx_qdq_nodes(
         onnx_model,
@@ -565,6 +576,7 @@ def _to_onnx_qdq(
         output_names=qdq_tensor_names.values(),
         node_name_prefixes=qnn_encodings.keys(),
         encodings=qnn_encodings.values(),
+        float_types=float_types,
         onnx_opset=onnx_opset_version,
         prequantize_constants=prequantize_constants,
         base_dir=base_dir,

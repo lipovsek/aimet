@@ -1594,6 +1594,17 @@ class QuantizationSimModel:
                 # Since weight_scale isn't available, exclude bias from quantization.
                 continue
 
+            input_qtzr = self._get_enabled_quantizer(op.inputs[0].name)
+            if not (
+                input_qtzr
+                and input_qtzr.enabled
+                and input_qtzr.data_type == QuantizationDataType.int
+                and input_qtzr.is_initialized()
+            ):
+                # Input quantizer wasn't created, enabled, or initialized.
+                # Since input_scale isn't available, exclude bias from quantization.
+                continue
+
             if encoding_type == EncodingType.PER_TENSOR.name:
                 bias_qtzr.enable_per_channel_quantization(False)
             elif encoding_type in [
@@ -2072,6 +2083,7 @@ class QuantizationSimModel:
             "output_names": [],
             "node_name_prefixes": [],
             "encodings": [],
+            "float_types": [],
         }
         param_names = set(self.param_names)
 
@@ -2094,6 +2106,9 @@ class QuantizationSimModel:
                 qdq_node_info["output_names"].append(aimet_node.output[0])
                 qdq_node_info["node_name_prefixes"].append(aimet_node.name)
                 qdq_node_info["encodings"].append(encodings)
+                qdq_node_info["float_types"].append(
+                    self.activation_dtypes[aimet_node.input[0]]
+                )
 
         self.remove_quantizers(model_copy)
 
@@ -2178,7 +2193,7 @@ class QuantizationSimModel:
                 inputs=[],
                 outputs=[
                     onnx.helper.make_tensor_value_info(
-                        qdq_param_name, onnx.TensorProto.FLOAT, shape=p.shape
+                        qdq_param_name, p.tensor.data_type, shape=p.shape
                     )
                     for qdq_param_name, p in qdq_params.items()
                 ],

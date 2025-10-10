@@ -54,7 +54,11 @@ import shutil
 
 from aimet_common import libquant_info
 from aimet_common.utils import AimetLogger, compute_psnr, deprecated
-from aimet_common.onnx._utils import _ParamUtils
+from aimet_common.onnx._utils import (  # pylint: disable=unused-import
+    _ParamUtils,
+    _get_node_attribute as get_node_attribute,
+    contains_tensor_type,
+)
 from packaging import version
 
 # pylint: disable=no-name-in-module, ungrouped-imports
@@ -226,20 +230,6 @@ def replace_node_with_op(node_type: str, new_type: str, onnx_graph: onnx.GraphPr
     for node in onnx_graph.node:
         if node.op_type == node_type:
             node.op_type = new_type
-
-
-def get_node_attribute(node: NodeProto, name: str):
-    """
-    Return the value of a node's attribute specified by its name
-
-    :param node: NodeProto object to retrieve the attribute from
-    :param name: string containing the name of the attribute to retrieve
-    :return: value of the attribute
-    """
-    for item in node.attribute:
-        if item.name == name:
-            return helper.get_attribute_value(item)
-    return None
 
 
 def get_weights(name: str, onnx_graph: onnx.GraphProto) -> bytes:
@@ -729,36 +719,6 @@ class ModuleData:
         remove_activation_hooks(self._model.model, handle)
 
         return outputs
-
-
-def contains_tensor_type(model: ModelProto, tensor_type: onnx.TensorProto.DataType):
-    """
-    Returns True if the model contains the specified tensor type.
-    """
-    if any(
-        tensor.type.tensor_type.elem_type == tensor_type
-        for tensor in itertools.chain(model.graph.input, model.graph.output)
-    ):
-        return True
-
-    if any(tensor.data_type == tensor_type for tensor in model.graph.initializer):
-        return True
-
-    for node in model.graph.node:
-        if node.op_type == "Cast":
-            cast_type = get_node_attribute(node, "to")
-            if cast_type == tensor_type:
-                return True
-
-        if node.op_type in ("Constant", "ConstantOfShape"):
-            value = get_node_attribute(node, "value")
-            if value is None:
-                continue
-
-            if value.data_type == tensor_type:
-                return True
-
-    return False
 
 
 def make_psnr_eval_fn(

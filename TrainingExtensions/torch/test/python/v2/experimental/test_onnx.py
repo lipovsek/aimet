@@ -48,6 +48,8 @@ import onnx
 from onnx import helper, TensorProto
 import tempfile
 from unittest.mock import patch
+from ..models_ import test_models
+
 from aimet_common.quantsim_config.utils import (
     get_path_for_per_channel_config,
     get_path_for_per_tensor_config,
@@ -720,6 +722,25 @@ def test_quantsim_export_onnx_qdq_resnet18(
         atol = torch.finfo(torch.float16).eps * 3
 
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
+
+
+@pytest.mark.parametrize("dtype", (torch.float16, torch.bfloat16))
+def test_non_float32_qdq_export(tmp_path, dtype):
+    x = torch.randn(1, 3, 32, 32).to(dtype)
+    model = test_models.SingleResidual().to(dtype)
+
+    sim = QuantizationSimModel(model, x, default_param_bw=8, default_output_bw=8)
+
+    sim.compute_encodings(lambda model: model(x))
+    onnx_path = os.path.join(tmp_path, "model.onnx")
+    with pytest.raises(RuntimeError):
+        aimet_torch.onnx.export(
+            sim,
+            x,
+            onnx_path,
+            input_names=["input"],
+            output_names=["output"],
+        )
 
 
 @pytest.mark.parametrize("target_opset", range(_constants.ONNX_MIN_OPSET, 22))

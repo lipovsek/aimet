@@ -4358,7 +4358,7 @@ def conv_prelu_model(
 
 
 def model_with_cast(tensor_type: onnx.TensorProto.DataType):
-    model = helper.make_model(
+    model = make_model(
         opset_imports=[helper.make_operatorsetid("", 21)],
         graph=helper.make_graph(
             name="CastModel",
@@ -4403,7 +4403,7 @@ def model_with_cast(tensor_type: onnx.TensorProto.DataType):
 
 
 def model_with_constant(tensor_type: onnx.TensorProto.DataType):
-    model = helper.make_model(
+    model = make_model(
         opset_imports=[helper.make_operatorsetid("", 21)],
         graph=helper.make_graph(
             name="CastModel",

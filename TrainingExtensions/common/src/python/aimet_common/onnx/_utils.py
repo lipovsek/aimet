@@ -40,6 +40,7 @@
 
 from collections import deque, defaultdict
 import functools
+import itertools
 from typing import Iterable, Optional, Sequence, Dict, List, Union
 
 import os
@@ -67,6 +68,7 @@ def _add_onnx_qdq_node(
     output_name: str,
     node_name_prefix: str,
     encodings: dict,
+    float_type: int,
     onnx_opset: int,
     prequantize_constants: bool,
     base_dir: Optional[str] = None,
@@ -91,6 +93,7 @@ def _add_onnx_qdq_node(
         [output_name],
         [node_name_prefix],
         [encodings],
+        [float_type],
         onnx_opset,
         prequantize_constants,
         base_dir=base_dir,
@@ -103,6 +106,7 @@ def _add_onnx_qdq_nodes(
     output_names: Iterable[str],
     node_name_prefixes: Iterable[str],
     encodings: Iterable[dict],
+    float_types: Iterable[np.dtype],
     onnx_opset: int,
     prequantize_constants: bool,
     base_dir: Optional[str] = None,
@@ -140,8 +144,8 @@ def _add_onnx_qdq_nodes(
     tensors_to_remove = {}
     inputs_to_rename = {}
 
-    for input_name, output_name, node_name_prefix, encoding in zip(
-        input_names, output_names, node_name_prefixes, encodings
+    for input_name, output_name, node_name_prefix, encoding, float_type in zip(
+        input_names, output_names, node_name_prefixes, encodings, float_types
     ):
         inputs_to_rename[input_name] = output_name
         output_dtype = encoding["output_dtype"]
@@ -151,7 +155,7 @@ def _add_onnx_qdq_nodes(
 
         y_scale = np.array(
             encoding.get("y_scale") or encoding.get("per_channel_float_scale")
-        ).astype(np.float32)
+        ).astype(float_type)
         per_block_int_scale = (
             np.array(encoding["per_block_int_scale"])
             if "per_block_int_scale" in encoding
@@ -318,6 +322,8 @@ def _quantize_const(
     const = to_array(const, base_dir=base_dir).astype(np.float32)
     unsigned, bitwidth = output_dtype.split("int")
     bitwidth = int(bitwidth)
+    # Always quantize in float32
+    y_scale = y_scale.astype(np.float32)
 
     if unsigned:
         clip_min = 0
@@ -361,6 +367,8 @@ def _dequantize_const(
         raise RuntimeError("Unsupported data type: {}")
 
     const_q = to_array(const_q)
+    # Always dequantize in float32
+    y_scale = y_scale.astype(np.float32)
 
     if per_block_int_scale is not None:
         block_axis = axis
@@ -1153,3 +1161,49 @@ def _is_lpbq_subgraph(
         for consumer in consumers[dq.output[0]].values()
     )
     return is_1st_dq or is_2nd_dq
+
+
+def _get_node_attribute(node: NodeProto, name: str):
+    """
+    Return the value of a node's attribute specified by its name
+
+    :param node: NodeProto object to retrieve the attribute from
+    :param name: string containing the name of the attribute to retrieve
+    :return: value of the attribute
+    """
+    for item in node.attribute:
+        if item.name == name:
+            return onnx.helper.get_attribute_value(item)
+    return None
+
+
+def contains_tensor_type(model: ModelProto, tensor_type: int | List[int]):
+    """
+    Returns True if the model contains the specified tensor type(s).
+    """
+    if isinstance(tensor_type, int):
+        tensor_type = [tensor_type]
+    if any(
+        tensor.type.tensor_type.elem_type in tensor_type
+        for tensor in itertools.chain(model.graph.input, model.graph.output)
+    ):
+        return True
+
+    if any(tensor.data_type in tensor_type for tensor in model.graph.initializer):
+        return True
+
+    for node in model.graph.node:
+        if node.op_type == "Cast":
+            cast_type = _get_node_attribute(node, "to")
+            if cast_type in tensor_type:
+                return True
+
+        if node.op_type in ("Constant", "ConstantOfShape"):
+            value = _get_node_attribute(node, "value")
+            if value is None:
+                continue
+
+            if value.data_type in tensor_type:
+                return True
+
+    return False

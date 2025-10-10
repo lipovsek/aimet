@@ -144,6 +144,23 @@ def _default_callback_with_args(session, args):
     )
 
 
+def _get_tensor_dtypes(model: onnx.ModelProto):
+    _to_np_dtype = onnx.helper.tensor_dtype_to_np_dtype
+    inferred_model = onnx.shape_inference.infer_shapes(model)
+    act_dtypes = {
+        vi.name: _to_np_dtype(vi.type.tensor_type.elem_type)
+        for vi in itertools.chain(
+            inferred_model.graph.value_info,
+            inferred_model.graph.input,
+            inferred_model.graph.output,
+        )
+    }
+    param_dtypes = {
+        t.name: _to_np_dtype(t.data_type) for t in inferred_model.graph.initializer
+    }
+    return act_dtypes | param_dtypes
+
+
 class DummyModel(SingleResidual):
     """
     Model
@@ -3761,9 +3778,18 @@ class TestEncodingPropagation:
                weight_matmul - bias_add
         """
         model = models_for_tests.conv_relu()
+        input_enc = {
+            "name": "input",
+            "bw": 8,
+            "dtype": "INT",
+            "enc_type": "PER_TENSOR",
+            "is_sym": False,
+            "offset": [0.0],
+            "scale": [1.0],
+        }
         encodings = {
             "param_encodings": [{**weight_encoding, "name": "conv_weight"}],
-            "activation_encodings": [],
+            "activation_encodings": [input_enc],
             "version": "1.0.0",
         }
 
@@ -4351,6 +4377,140 @@ def test_to_onnx_qdq(
     )
     (out_onnx_qdq,) = sess.run(None, {"input": input})
     assert np.allclose(out_sim, out_onnx_qdq, atol=atol, rtol=rtol)
+
+
+@pytest.mark.cuda()
+@pytest.mark.parametrize("prequantize_constants", [False, True])
+@pytest.mark.parametrize("export_int32_bias_encodings", [False, True])
+@pytest.mark.parametrize(
+    "param_dtype, activation_dtype",
+    [
+        ("int4", "int16"),
+        ("int4", "float16"),
+        ("int8", "int8"),
+        ("int8", "int16"),
+        ("float16", "float16"),
+        ("int4", "int8"),
+    ],
+)
+@pytest.mark.parametrize(
+    "model_factory, tolerance, output_name",
+    [  # Note: use larger tolerance to account for fp16 scales in QDQ model
+        (
+            partial(single_residual_model, opset_version=21, dtype=torch.float16),
+            2,
+            "output",
+        ),
+        (
+            partial(
+                models_for_tests.model_with_constant,
+                tensor_type=onnx.TensorProto.FLOAT16,
+            ),
+            2,
+            "output",
+        ),
+        (
+            partial(
+                models_for_tests.model_with_cast, tensor_type=onnx.TensorProto.FLOAT16
+            ),
+            2,
+            "relu_output",
+        ),
+    ],
+)
+def test_fp16_qdq_export(
+    model_factory,
+    tolerance: int,
+    output_name: str,
+    param_dtype: str,
+    activation_dtype: str,
+    export_int32_bias_encodings: bool,
+    prequantize_constants: bool,
+    tmp_path: pathlib.Path,
+):
+    # TODO: Enable these tests once fp32 internal precision is supported for fp16 quantizers
+    if "int16" in (param_dtype, activation_dtype):
+        pytest.skip("int16 QDQ is not stable with fp16 models")
+
+    ort.set_seed(0)
+    np.random.seed(0)
+    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    model = model_factory()
+    if isinstance(model, ort.quantization.onnx_model.ONNXModel):
+        model = model.model
+
+    init_dtypes = _get_tensor_dtypes(model)
+
+    sim = QuantizationSimModel(
+        model,
+        param_type=param_dtype,
+        activation_type=activation_dtype,
+        config_file="htp_v81",
+        providers=providers,
+    )
+
+    """
+    When: Export fp16 onnx QDQ model with sim.to_onnx_qdq()
+    """
+    input = make_dummy_input(sim.model.model)
+    sim.compute_encodings([input])
+
+    if export_int32_bias_encodings:
+        sim._concretize_int32_bias_quantizers()
+        # FIXME: Need extra tolerance due to numerical instability of AIMET int32 bias qdq.
+        tolerance += 1
+
+    (out_sim,) = sim.session.run(None, input)
+
+    onnx_qdq_model = sim.to_onnx_qdq(
+        prequantize_constants=prequantize_constants,
+    )
+
+    # NOTE: Should disable all ORT graph optimization to circumvent known bugs
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+
+    """
+    Then: Output of the onnx QDQ model should be equal to that of sim.session
+    """
+    if "int" in activation_dtype:
+        # Allow off-by-N error
+        atol = (
+            tolerance * sim._get_enabled_quantizer(output_name).get_encodings()[0].delta
+        )
+    else:
+        # Allow off-by-3 error, using float16.eps as a pseudo-scale
+        atol = 3 * np.finfo(np.float16).eps
+
+    rtol = 1e-3 * tolerance
+    sess = ort.InferenceSession(
+        onnx_qdq_model.SerializeToString(),
+        sess_options=sess_options,
+        providers=providers,
+    )
+    (out_onnx_qdq,) = sess.run(None, input)
+    assert np.allclose(out_sim, out_onnx_qdq, atol=atol, rtol=rtol)
+
+    dq_tensor_map = {
+        node.name: (node.input[1], node.output[0])
+        for node in onnx_qdq_model.graph.node
+        if node.op_type == "DequantizeLinear"
+    }
+    qdq_dtypes = _get_tensor_dtypes(onnx_qdq_model)
+
+    # Tensors present in the original graph should be unchanged (does not include pre-quantized constants)
+    for name, dtype in init_dtypes.items():
+        if name in qdq_dtypes:
+            assert dtype == qdq_dtypes[name]
+
+    # Dequantized tensor values should match the unquantized values from the original graph
+    for name, (scale, output) in dq_tensor_map.items():
+        assert qdq_dtypes[scale] == qdq_dtypes[output]
+        assert (
+            qdq_dtypes[output]
+            == init_dtypes[output.removesuffix("_updated").removesuffix("_qdq")]
+        )
 
 
 @pytest.mark.parametrize("prequantize_constants", [False, True])
