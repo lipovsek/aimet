@@ -93,14 +93,17 @@ class DependencyGraph:
         self,
         connected_graph: ConnectedGraph,
         data_loader: Iterable,
+        nodes_to_exclude: Optional[List[str]] = None,
     ):
         """
         Initializes the object of the Dependency Graph
 
-        :param model: FP32 model
+        :param connected_graph: ConnectedGraph object
         :param data_loader: DataLoader object
+        nodes_to_exclude: List of supported node name(s) to exclude from sequential MSE optimization
         """
         self.conn_graph = connected_graph
+        self._nodes_to_exclude = nodes_to_exclude or []
 
         self.starting_ops = []  # Tracks nodes with zero in-degree (starting ops)
         self._name_to_node = {}  # Tracks a node name to the dependency node itself
@@ -335,7 +338,6 @@ class DependencyGraph:
         :param dependent_node_names: nodes that this node depends on. (inward nodes)
         """
         op_output_names = [out.name for out in cg_op.outputs]
-        op_input_names = [inp.name for inp in cg_op.inputs]
         op_input_names = [
             inp.name for inp in cg_op.inputs if not (inp.is_const or inp.is_parm)
         ]
@@ -397,17 +399,20 @@ class DependencyGraph:
         """
         is_op_supported = False
 
-        op = src_op.get_module()
-        if op and (
-            self.is_supported_op(src_op)
-            or src_op.name in self._op_names_with_model_inputs
-        ):
-            is_op_supported = True
-            dependent_op_names = self._op_name_to_dependency_names[src_op.name]
-            self._add_dependency_node(src_op, dependent_op_names)
-            _logger.debug(
-                f"Added {src_op.name} to dependency graph with dependent_op_names: {len(dependent_op_names)}"
-            )
+        if src_op.name not in self._nodes_to_exclude:
+            op = src_op.get_module()
+            if op and (
+                self.is_supported_op(src_op)
+                or src_op.name in self._op_names_with_model_inputs
+            ):
+                is_op_supported = True
+                dependent_op_names = self._op_name_to_dependency_names[src_op.name]
+                self._add_dependency_node(src_op, dependent_op_names)
+                _logger.debug(
+                    f"Added {src_op.name} to dependency graph with dependent_op_names: {len(dependent_op_names)}"
+                )
+        else:
+            _logger.debug(f"Skipping {src_op.name} as it's in nodes_to_exclude")
 
         # If src_op is part of SUPPORTED_MODULES or has at least one input as a model input, include its name in _op_name_to_dependency_names.
         # Otherwise, include the names of the dependencies of parent_op in _op_name_to_dependency_names.

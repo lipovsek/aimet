@@ -40,7 +40,7 @@
 
 # pylint: disable=no-name-in-module, ungrouped-imports, too-many-lines
 
-from typing import List, Dict, Collection, Union, Tuple
+from typing import List, Dict, Collection, Union, Tuple, Optional
 from collections import defaultdict
 from dataclasses import dataclass
 from contextlib import contextmanager
@@ -70,6 +70,7 @@ def apply_seq_mse(
     sim: QuantizationSimModel,
     inputs: Collection[Dict[str, np.ndarray]],
     num_candidates: int = 20,
+    nodes_to_exclude: Optional[List[str]] = None,
 ):
     """
     Sequentially optimizes the QuantizationSimModel's weight encodings to reduce MSE loss at layer outputs.
@@ -79,9 +80,10 @@ def apply_seq_mse(
         inputs (Collection[Dict[str, np.ndarray]]): The set of input samples to use during optimization
         num_candidates (int): Number of encoding candidates to sweep for each weight. Decreasing this can reduce
             runtime but may lead to lower accuracy.
+        nodes_to_exclude (Optional[List[str]]): List of supported node name(s) to exclude from sequential MSE optimization
     """
     seq_mse_params = SeqMseParams(num_batches=None, num_candidates=num_candidates)
-    seq_mse = SequentialMse(None, sim, seq_mse_params, inputs)
+    seq_mse = SequentialMse(None, sim, seq_mse_params, inputs, nodes_to_exclude)
     seq_mse.apply_seq_mse_algo()
 
 
@@ -114,6 +116,7 @@ class SequentialMse:
         sim: QuantizationSimModel,
         params: SeqMseParams,
         data_loader: Collection[Dict[str, np.ndarray]],
+        nodes_to_exclude: Optional[List[str]] = None,
     ):
         """
         Initialize the sequential mse object
@@ -122,6 +125,7 @@ class SequentialMse:
         :param sim: QuantizationSimModel object
         :param params: Sequential MSE parameters
         :param data_loader: The set of input samples to use during optimization
+        nodes_to_exclude: List of supported node name(s) to exclude from sequential MSE optimization
         """
         # pylint: disable=protected-access
         assert sim._quant_scheme in (
@@ -131,6 +135,8 @@ class SequentialMse:
 
         self.sim = sim
         self.params = params
+        self._nodes_to_exclude = nodes_to_exclude or []
+
         data_loader = itertools.islice(data_loader, params.num_batches)
         # As of onnx 1.18, value info must be populated prior to instantiating Extractor
         with _add_value_info(sim.model.model):
@@ -138,7 +144,9 @@ class SequentialMse:
             with _disable_onnx_shape_inference():
                 self._extractor = Extractor(sim.model.model)
 
-        self.dependency_graph = DependencyGraph(sim.connected_graph, data_loader)
+        self.dependency_graph = DependencyGraph(
+            sim.connected_graph, data_loader, nodes_to_exclude
+        )
         self.data_loader = data_loader
 
     @deprecated("Use aimet_onnx.apply_seq_mse instead")
@@ -194,13 +202,16 @@ class SequentialMse:
         # Get list of all the enabled param quantizers of supported ops
         param_quantizer_names = []
         for cg_op in self.dependency_graph.conn_graph.ordered_ops:
-            if cg_op.type in SUPPORTED_MODULES:
-                for param_name in cg_op.parameters:
-                    if (
-                        param_name in self.sim.qc_quantize_op_dict
-                        and self.sim.qc_quantize_op_dict[param_name].enabled
-                    ):
-                        param_quantizer_names.append(param_name)
+            if cg_op.type not in SUPPORTED_MODULES:
+                continue
+
+            if cg_op.name in self._nodes_to_exclude:
+                continue
+
+            for param_name in cg_op.parameters:
+                quantizer = self.sim.qc_quantize_op_dict.get(param_name)
+                if quantizer and quantizer.enabled:
+                    param_quantizer_names.append(param_name)
 
         # Get list of all the quantizers that are not part of param quantizers of supported ops
         quantizers_to_be_disabled = []

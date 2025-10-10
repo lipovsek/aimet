@@ -657,6 +657,34 @@ def test_add_value_info():
     assert tensors_with_info == (all_tensors - (io_tensors | initializers))
 
 
+def test_nodes_to_exclude():
+    """Skip seq mse optimization if nodes to exclude provided"""
+    model = single_residual_model()
+    sim = QuantizationSimModel(
+        model=copy.deepcopy(model),
+        quant_scheme=QuantScheme.post_training_tf,
+        default_activation_bw=8,
+        default_param_bw=4,
+        providers=["CPUExecutionProvider"],
+    )
+    inputs = [make_dummy_input(model.model)]
+    excluded_node = "/conv3/Conv"
+    child_node = "/fc/Gemm"
+    apply_seq_mse(sim, inputs, nodes_to_exclude=[excluded_node])
+
+    for conn_graph_op in sim.connected_graph.ordered_ops:
+        if conn_graph_op.type in SUPPORTED_MODULES:
+            param_name = _get_weight_param_name(conn_graph_op)
+            quantizer = sim.qc_quantize_op_dict[param_name]
+
+            if conn_graph_op.name == excluded_node:
+                assert not quantizer.is_encoding_frozen()
+            elif conn_graph_op.name == child_node:
+                assert quantizer.is_encoding_frozen()
+            else:
+                assert quantizer.is_encoding_frozen()
+
+
 class TestDependencyGraph:
     @pytest.mark.parametrize(
         "model, cached_data",
@@ -725,3 +753,30 @@ class TestDependencyGraph:
         iterative_output = session.run(None, input_feed=input_dict)[0]
 
         assert np.all(iterative_output == one_shot_output)
+
+    def test_nodes_to_exclude(self):
+        """When nodes_to_exclude are provided, they should be excluded from dependency graph"""
+        model = models_for_tests.single_residual_model().model
+        dl = [{"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}]
+        dep_graph = DependencyGraph(
+            ConnectedGraph(model), dl, nodes_to_exclude=["/conv1/Conv"]
+        )
+        sorted_order = dep_graph.get_topologically_sorted_nodes()
+
+        for i, sorted_nodes in sorted_order.items():
+            print(f"{i}: {sorted_nodes}")
+
+        """
+        When: Given node is excluded
+        Then: The children of excluded nodes are still processed and added to dependency graph.
+        """
+
+        assert "/conv1/Conv" not in [
+            node.cg_op.name for nodes in sorted_order.values() for node in nodes
+        ]
+        assert "/conv2/Conv" in [
+            node.cg_op.name for nodes in sorted_order.values() for node in nodes
+        ]
+        assert "/fc/Gemm" in [
+            node.cg_op.name for nodes in sorted_order.values() for node in nodes
+        ]
