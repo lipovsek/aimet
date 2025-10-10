@@ -277,22 +277,6 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             if weight_tensor:
                 set_as_param(weight_tensor, my_op, "weight")
 
-        def create_bias_add_params(my_op: Op):
-            """
-            Create products for MatMul layer
-
-            :param my_op: Connected Graph Op
-            """
-            op = my_op.get_module()
-
-            bias_idx = _get_matmul_add_bias_idx(my_op, self.model)
-
-            if bias_idx is None:
-                return
-
-            bias_tensor, _ = retrieve_constant_input(op, self.model, bias_idx)
-            set_as_param(bias_tensor, my_op, "bias")
-
         def create_recurrent_type_params(my_op: Op):
             """
             Create products for RNN, LSTM and GRU layer
@@ -339,7 +323,6 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             logger.debug("Nothing to handle for op %s", my_op.name)
 
         switcher = {
-            "Add": create_bias_add_params,
             "Conv": create_weight_bias_params,
             "Gemm": create_weight_bias_params,
             "ConvTranspose": create_weight_bias_params,

@@ -1069,32 +1069,6 @@ class QuantizationSimModel:
                         target_quantizer_for_second_input.use_symmetric_encodings = True
                         target_quantizer_for_first_input.set_bitwidth(16)
 
-            else:
-                bias_idx = _get_matmul_add_bias_idx(op, self.model.model)
-
-                if bias_idx is not None:
-                    bias = op.inputs[bias_idx]
-                    matmul_output = op.inputs[1 - bias_idx]
-                    matmul = matmul_output.producer
-                    weight = next(
-                        param
-                        for param, param_type in matmul.parameters.values()
-                        if param_type == "weight"
-                    )
-
-                    matmul_output_qtzr = self.qc_quantize_op_dict[matmul_output.name]
-                    bias_qtzr = self.qc_quantize_op_dict[bias.name]
-                    weight_qtzr = self.qc_quantize_op_dict[weight.name]
-
-                    # Disable intermediate output quantization and bias quantization
-                    matmul_output_qtzr.enabled = False
-                    bias_qtzr.enabled = False
-
-                    # Let bias quantizers follow the same granularity as weight quantizer
-                    bias_qtzr.enable_per_channel_quantization(
-                        weight_qtzr.quant_info.usePerChannelMode
-                    )
-
     @deprecated("Use _get_enabled_quantizer instead")
     def _get_closest_enabled_quantizer(self, tensor: Product):
         """

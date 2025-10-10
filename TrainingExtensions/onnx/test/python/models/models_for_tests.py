@@ -1370,6 +1370,37 @@ def linear_split_into_matmul_add(opset_version=_DEFAULT_OPSET_VERSION):
     return model
 
 
+def unfusable_matmul_add(opset_version=_DEFAULT_OPSET_VERSION):
+    with tempfile.TemporaryDirectory() as save_dir:
+        # 3D input will split the linear layer in MatMul + Add in ONNX graph.
+        dummy_input = torch.randn(1, 2, 4)
+
+        class MatmulAdd(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.eye(4))
+                self.not_a_bias = torch.nn.Parameter(torch.zeros(2, 4))
+
+            def forward(self, x):
+                return x @ self.weight + self.not_a_bias
+
+        model = MatmulAdd().eval()
+        save_path = os.path.join(save_dir, "matmul_add.onnx")
+        # Export the model
+        torch.onnx.export(
+            model,  # model being run
+            dummy_input,  # model input (or a tuple for multiple inputs)
+            save_path,  # where to save the model (can be a file or file-like object)
+            export_params=True,  # store the trained parameter weights inside the model file
+            opset_version=opset_version,  # the ONNX version to export the model to
+            do_constant_folding=True,  # whether to execute constant folding for optimization
+            input_names=["input"],  # the model's input names
+            output_names=["output"],
+        )
+        model = ONNXModel(load_model(save_path))
+    return model
+
+
 def depthwise_conv_model(opset_version=_DEFAULT_OPSET_VERSION):
     x = torch.randn(1, 3, 224, 224, requires_grad=True)
     model = MockMobileNetV1()

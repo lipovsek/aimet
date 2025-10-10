@@ -53,6 +53,11 @@
     }
   },
 
+  "supergroup_pass_list":
+  [
+    "MatmulAdd"
+  ],
+
   "supergroups":
   [
     {

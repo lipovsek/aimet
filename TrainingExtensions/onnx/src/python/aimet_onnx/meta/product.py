@@ -34,9 +34,14 @@
 #
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
-"""Tf Product class and utilities"""
+"""Product class and utilities"""
 
+from typing import TYPE_CHECKING
+from onnx import TensorProto
 import aimet_common.connected_graph.product
+
+if TYPE_CHECKING:
+    from aimet_onnx.meta.operations import Op
 
 
 class Product(aimet_common.connected_graph.product.Product):
@@ -46,3 +51,10 @@ class Product(aimet_common.connected_graph.product.Product):
         super().__init__(name, shape)
         self.tensor_dict = {}
         self.tensor = None
+
+    def set_as_param(self, op: "Op", tensor: TensorProto):
+        self.shape = tensor.dims
+        self.is_parm = True
+        self.tensor_dict[op] = tensor
+        self.tensor = tensor
+        self.is_const = False  # Backward compatibility

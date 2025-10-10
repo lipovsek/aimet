@@ -108,6 +108,7 @@ from .models.models_for_tests import (
     transposed_conv_model,
     _convert_to_onnx,
     make_model,
+    unfusable_matmul_add,
 )
 
 CPU_PROVIDERS = ["CPUExecutionProvider"]
@@ -1587,10 +1588,33 @@ class TestQuantSim:
             sim.compute_encodings([make_dummy_input(model)])
             assert len(sim.qc_quantize_op_dict["weight"].encodings) == output_features
 
-    def test_linear_split_into_matmul_add(self):
-        model = linear_split_into_matmul_add()
+    @pytest.mark.parametrize(
+        "model_factory", [linear_split_into_matmul_add, unfusable_matmul_add]
+    )
+    def test_linear_split_into_matmul_add_supergroup(self, model_factory):
+        model = model_factory()
         with tempfile.TemporaryDirectory() as tempdir:
-            sim = QuantizationSimModel(model, activation_type="int16", path=tempdir)
+            quantsim_config = {
+                "defaults": {
+                    "ops": {"is_output_quantized": "True", "is_symmetric": "False"},
+                    "params": {"is_quantized": "False", "is_symmetric": "True"},
+                    "strict_symmetric": "False",
+                    "per_channel_quantization": "True",
+                },
+                "params": {"weight": {"is_quantized": "True"}},
+                "op_type": {},
+                "supergroup_pass_list": ["MatmulAdd"],
+                "supergroups": [],
+                "model_input": {"is_input_quantized": "True"},
+                "model_output": {},
+            }
+            config_file = os.path.join(tempdir, "config.json")
+            with open(config_file, "w") as f:
+                json.dump(quantsim_config, f)
+
+            sim = QuantizationSimModel(
+                model, activation_type="int16", config_file=config_file, path=tempdir
+            )
 
             sim.compute_encodings(make_dummy_input(model.model) for _ in range(3))
             sim.export(tempdir, "linear_matmul_add_pattern")
@@ -1598,14 +1622,72 @@ class TestQuantSim:
                 os.path.join(tempdir, "linear_matmul_add_pattern.encodings")
             ) as json_file:
                 encoding_data = json.load(json_file)
-                # Ensure that the encodings for the second input of Add op (bias) and output of MatMul aren't in JSON file.
-                assert len(encoding_data["activation_encodings"]) == 2
-                assert len(encoding_data["param_encodings"]) == 1
-                activation_names = {
-                    encoding["name"]
-                    for encoding in encoding_data["activation_encodings"]
-                }
-                assert activation_names == {"input", "output"}
+
+        # Ensure that the encodings for the second input of Add op (bias) and output of MatMul aren't in JSON file.
+        if model_factory == linear_split_into_matmul_add:
+            assert len(encoding_data["activation_encodings"]) == 2
+            assert len(encoding_data["param_encodings"]) == 1
+            activation_names = {
+                encoding["name"] for encoding in encoding_data["activation_encodings"]
+            }
+            assert activation_names == {"input", "output"}
+        else:
+            assert len(encoding_data["activation_encodings"]) == 4
+            assert len(encoding_data["param_encodings"]) == 1
+            activation_names = {
+                encoding["name"] for encoding in encoding_data["activation_encodings"]
+            }
+            assert activation_names == {
+                "input",
+                "not_a_bias",
+                "/MatMul_output_0",
+                "output",
+            }
+
+    def test_linear_split_into_matmul_add(self):
+        model = linear_split_into_matmul_add()
+        with tempfile.TemporaryDirectory() as tempdir:
+            quantsim_config = {
+                "defaults": {
+                    "ops": {"is_output_quantized": "True", "is_symmetric": "False"},
+                    "params": {"is_quantized": "False", "is_symmetric": "True"},
+                    "strict_symmetric": "False",
+                    "per_channel_quantization": "True",
+                },
+                "params": {"weight": {"is_quantized": "True"}},
+                "op_type": {},
+                "supergroup_pass_list": [],
+                "supergroups": [],
+                "model_input": {"is_input_quantized": "True"},
+                "model_output": {},
+            }
+            config_file = os.path.join(tempdir, "config.json")
+            with open(config_file, "w") as f:
+                json.dump(quantsim_config, f)
+
+            sim = QuantizationSimModel(
+                model, activation_type="int16", config_file=config_file, path=tempdir
+            )
+
+            sim.compute_encodings(make_dummy_input(model.model) for _ in range(3))
+            sim.export(tempdir, "linear_matmul_add_pattern")
+            with open(
+                os.path.join(tempdir, "linear_matmul_add_pattern.encodings")
+            ) as json_file:
+                encoding_data = json.load(json_file)
+
+        # Ensure that the encodings for the second input of Add op (bias) and output of MatMul are in JSON file.
+        assert len(encoding_data["activation_encodings"]) == 4
+        assert len(encoding_data["param_encodings"]) == 1
+        activation_names = {
+            encoding["name"] for encoding in encoding_data["activation_encodings"]
+        }
+        assert activation_names == {
+            "input",
+            "linear.bias",
+            "/linear/MatMul_output_0",
+            "output",
+        }
 
     @pytest.mark.skip(
         "OOM issues from high CPU memory usage, optimize quantsim memory usage before enabling"
@@ -3575,6 +3657,7 @@ class TestEncodingPropagation:
             },
             "params": {},
             "op_type": {},
+            "supergroup_pass_list": ["MatmulAdd"],
             "supergroups": [],
             "model_input": {"is_input_quantized": "True"},
             "model_output": {"is_output_quantized": "True"},

@@ -160,7 +160,9 @@
   "supergroup_pass_list":
   [
     "LayerNormalization",
-    "RMSNormalization"
+    "RMSNormalization",
+    "MatmulAdd"
+
   ],
   "supergroups":
   [
