@@ -6,6 +6,42 @@
 Release notes
 #############
 
+2.17.0
+======
+
+* Bug fixes and Improvements
+    * ONNX
+        * Optimize SeqMSE latency and CPU memory usage (`434ac6b`_)
+        * Support excluding nodes from SeqMSE optimization (`6a37239`_)
+        * Support exporting large models (> 2GB) to ONNX QDQ (`b1dafe6`_, `1bf8b82`_)
+        * Support exporting float16 ONNX models to ONNX QDQ (`66ccb45`_)
+        * Allow disabling MatMul-Add supergroup via config file (`e49660c`_)
+        * Fix bug where on-disk tensor data is deleted before InferenceSession (`d57a934`_)
+
+    * Torch
+        * Fix sim.export bug when using Python >= 3.12 (`ee949a2`_)
+        * Allow export for back-to-back quantizers which share the same encodings (`28a7382`_)
+        * Fix numerical issue in FPTQuant (`f0bc6c9`_)
+
+    * Common
+        * Remove Conv-Relu supergroup from HTP < V73 config files (`19e5a4e`_)
+        * Fix LayerNorm and InstanceNorm weight symmetry in HTP < V73 config files (`eb1ac5c`_, `ce1ea63`_)
+
+.. _434ac6b: https://github.com/quic/aimet/commit/434ac6b8ac5347935a0e3902b2e37e0c49dfe242
+.. _b1dafe6: https://github.com/quic/aimet/commit/b1dafe6fa5173fc2247802313224e40013b68822
+.. _19e5a4e: https://github.com/quic/aimet/commit/19e5a4ecb3a1e58bcf71f455d7d3855bcc5d86f2
+.. _28a7382: https://github.com/quic/aimet/commit/28a73829aee6d77991c100ea4ed9fdeab5fc009c
+.. _eb1ac5c: https://github.com/quic/aimet/commit/eb1ac5c36e7dd198d43d4aa450b5933cf94755b4
+.. _ce1ea63: https://github.com/quic/aimet/commit/ce1ea63845d0f7b6ddef66ebcc70922cbcad511b
+.. _1bf8b82: https://github.com/quic/aimet/commit/1bf8b82fe6c23846d9fe615773797a1df7fb5545
+.. _6a37239: https://github.com/quic/aimet/commit/6a37239ffbaf0187ead2ddee205960c403817e17
+.. _e49660c: https://github.com/quic/aimet/commit/e49660c87fb3097f247e680c93ddc1c1f62c8871
+.. _d57a934: https://github.com/quic/aimet/commit/d57a934cb25539f7f2809c3f5ef8b44e384ef051
+.. _ee949a2: https://github.com/quic/aimet/commit/ee949a2d1ad8a64c0de8bfbf34339251f0804294
+.. _66ccb45: https://github.com/quic/aimet/commit/66ccb45343abd6a475816b395a1658b6998df202
+.. _f0bc6c9: https://github.com/quic/aimet/commit/f0bc6c9b0ae4a45d517c8b96fc032022a07c6217
+
+
 2.16.0
 ======
 
@@ -43,7 +79,6 @@ Release notes
 ======
 
 * Bug fixes and Improvements
-
     * ONNX
         * Throws an error on `bfloat16` models (`5181860`_)
         * Added docs and examples for LiteMP (`3d5e0dd`_)
