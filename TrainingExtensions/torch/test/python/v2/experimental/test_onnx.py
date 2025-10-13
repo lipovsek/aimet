@@ -1208,17 +1208,14 @@ def large_model():
     )
 
 
+@pytest.fixture
+def tmp_path():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        yield pathlib.Path(tmpdir).resolve()
+
+
 @torch.no_grad()
-@pytest.mark.parametrize(
-    "opset_version",
-    [
-        19,
-        # NOTE: Currently fails because onnx version converter
-        # has a bug with large models. This bug is expected to be fixed in onnx 1.19.
-        # TODO (kyunggeu): Uncomment this when onnx 1.19 is released
-        # 21, TODO: Not supported yet
-    ],
-)
+@pytest.mark.parametrize("opset_version", [19, 21])
 @pytest.mark.parametrize("prequantize_constants", [False, True])
 def test_export_large_model(
     large_model: torch.nn.Module,

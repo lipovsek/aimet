@@ -99,10 +99,10 @@ def export(
 
 
     .. note::
-        Unlike `torch.onnx.export()`, this function allows up to opset 21.
-        to support 4/16-bit quantization only available in opset 21.
-        However, exporting to opset 21 is a beta feature and not fully stable yet.
-        For robustness, opset 20 or lower is recommended whenever possible.
+        For robustness, onnx >=1.19 is highly recommended with this API,
+        especially when exporting large models (>2GB).
+        This is due to a known bug in onnx <1.19 version converter.
+        For more information, see https://github.com/onnx/onnx/issues/6529
 
     .. note::
         Dynamo-based export (`dynamo=True`) is not supported yet

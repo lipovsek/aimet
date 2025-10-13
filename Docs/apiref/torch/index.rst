@@ -49,7 +49,7 @@ AIMET quantization for PyTorch models provides the following functionality.
 - :ref:`aimet_torch.quantsim <apiref-torch-quantsim>`
 - :ref:`aimet_torch.nn <apiref-torch-nn>`
 - :ref:`aimet_torch.quantization <apiref-torch-quantization>`
-- :ref:`aimet_torch.onnx (beta) <apiref-torch-onnx>`
+- :ref:`aimet_torch.onnx <apiref-torch-onnx>`
 - :ref:`aimet_torch.adaround <apiref-torch-adaround>`
 - :ref:`aimet_torch.seq_mse <apiref-torch-seq-mse>`
 - :ref:`aimet_torch.experimental.adascale <apiref-torch-adascale>`
