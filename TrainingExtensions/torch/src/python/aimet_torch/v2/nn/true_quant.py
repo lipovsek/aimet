@@ -1862,6 +1862,13 @@ class QuantizedNLLLoss2d(_DispatchMixin, QuantizationMixin, nn.NLLLoss2d):
     __quant_init__ = QuantizationMixin.__unary__
 
 
+@QuantizationMixin.implements(torch.nn.modules.linear.NonDynamicallyQuantizableLinear)
+class QuantizedNonDynamicallyQuantizableLinear(
+    QuantizedLinear, torch.nn.modules.linear.NonDynamicallyQuantizableLinear
+):
+    pass
+
+
 @QuantizationMixin.implements(nn.PReLU)
 class QuantizedPReLU(_DispatchMixin, QuantizationMixin, nn.PReLU):
     # pylint: disable=missing-class-docstring

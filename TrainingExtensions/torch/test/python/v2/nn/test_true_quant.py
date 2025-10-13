@@ -1017,6 +1017,10 @@ def _create_quantized_module(module):
         # (lambda: nn.LazyLinear(...),                    lambda: ...),
         (lambda: nn.LeakyReLU(), lambda: randn(100)),
         (lambda: nn.Linear(10, 10), lambda: randn(10, 10)),
+        (
+            lambda: nn.modules.linear.NonDynamicallyQuantizableLinear(10, 10),
+            lambda: randn(10, 10),
+        ),
         (lambda: nn.LocalResponseNorm(2), lambda: randn(1, 4, 5, 5)),
         (lambda: nn.LogSigmoid(), lambda: randn(100)),
         (lambda: nn.LogSoftmax(), lambda: randn(100)),
