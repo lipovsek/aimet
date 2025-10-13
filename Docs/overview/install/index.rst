@@ -78,13 +78,13 @@ Use one of the following commands to install AIMET based on your choice of frame
 
         .. parsed-literal::
 
-            python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cu121\ |whl_suffix| -f |torch_pkg_url|
+            python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cu121\ |whl_suffix|
 
         With CPU only:
 
         .. parsed-literal::
 
-            python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cpu\ |whl_suffix| -f |torch_pkg_url|
+            python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cpu\ |whl_suffix|
 
     .. tab-item:: PyTorch
         :sync: torch
@@ -93,13 +93,13 @@ Use one of the following commands to install AIMET based on your choice of frame
 
         .. parsed-literal::
 
-            python3 -m pip install |download_url|\ |version|/aimet_torch-|version|\+cu121\ |torch_whl_suffix| -f |torch_pkg_url|
+            python3 -m pip install |download_url|\ |version|/aimet_torch-|version|\+cu121\ |torch_whl_suffix|
 
         With CPU only:
 
         .. parsed-literal::
 
-            python3 -m pip install |download_url|\ |version|/aimet_torch-|version|\+cpu\ |torch_whl_suffix| -f |torch_pkg_url|
+            python3 -m pip install |download_url|\ |version|/aimet_torch-|version|\+cpu\ |torch_whl_suffix|
 
 Verifying the installation
 --------------------------
@@ -193,4 +193,3 @@ To do so, follow the steps outlined for building the latest AIMET codebase manua
 .. |torch_whl_suffix| replace:: \-py38-none-any.whl
 .. |whl_suffix| replace:: \-cp310-cp310-manylinux_2_34_x86_64.whl
 .. |download_url| replace:: \https://github.com/quic/aimet/releases/download/
-.. |torch_pkg_url| replace:: \https://download.pytorch.org/whl/torch_stable.html
