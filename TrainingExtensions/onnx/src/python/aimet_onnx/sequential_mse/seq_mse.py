@@ -178,6 +178,8 @@ class SequentialMse:
         3) run the onnx graph and compute encoding using seq mse algorithm
         4) re-enable the quantizer disabled in first step
         """
+        self.sim._compute_param_encodings(overwrite=False)
+
         with (
             disable_quantizers(self.sim, self._get_quantizers_to_be_disabled()),
             _remove_session(self.sim),
@@ -244,74 +246,19 @@ class SequentialMse:
         dependency_node: DependencyNode,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Get absolute max and its negation for candidate selection.
-
-        This function computes the maximum absolute values of a weight tensor
-        based on the quantization granularity (per-tensor/per-channel, or block-wise),
-        and returns both the max and its symmetric negative counterpart.
-
-        TODO: Evaluate alignment with aimet-torch which returns recalibrated min/max instead of absolute min/max
+        Get recalibrated min/max values for candidate selection.
 
         :param dependency_node: Dependency node which is to be optimized
         :return: Tuple of min and max values for candidate selection.
         """
         # pylint: disable=protected-access
+
         weight_name = self.dependency_graph.get_param_name(dependency_node)
-        weight = self.dependency_graph.get_param_value(dependency_node)
-        abs_weight = np.abs(weight)
-
         quantizer = self.sim.qc_quantize_op_dict[weight_name]
-        assert quantizer.use_symmetric_encodings  # Symmetric encodings for parameters
+        encodings = quantizer.get_encodings()
 
-        tensor_shape = list(quantizer.tensor_quantizer_params.tensor_shape)
-        channel_axis = quantizer.tensor_quantizer_params.channel_axis
-        block_axis = quantizer.tensor_quantizer_params.block_axis
-
-        # `channel_axis`, `block_axis` might not be up-to-date, if `enable_per_channel_quantization` or `_enable_blockwise_quantization` are not called before
-        # handle negative axis
-        channel_axis = (
-            channel_axis if channel_axis >= 0 else channel_axis + len(tensor_shape)
-        )
-        block_axis = block_axis if block_axis >= 0 else block_axis + len(tensor_shape)
-
-        block_size = quantizer.quant_info.blockSize
-        if block_size == 0:
-            # Per-tensor/per-channel
-            reduce_axes = tuple(
-                i for i in range(len(tensor_shape)) if i != channel_axis
-            )
-            max_tensor = np.amax(abs_weight, axis=reduce_axes)
-            min_tensor = -max_tensor
-            return min_tensor, max_tensor
-
-        # Block quantization
-        num_blocks = tensor_shape[block_axis] // block_size
-        reshaped_shape = (
-            tensor_shape[:block_axis]
-            + [num_blocks, block_size]
-            + tensor_shape[block_axis + 1 :]
-        )
-        abs_weight = abs_weight.reshape(*reshaped_shape)
-
-        def get_reduction_axes(shape_len, block_axis, channel_axis):
-            # Determine which axes to keep during reduction:
-            # Keep `block_axis`,
-            # Keep `channel_axis`, but if it comes after `block_axis`, its index shifts by +1 due to reshaping.
-            # All other axes are reduced.
-            keep_axes = {
-                block_axis,
-                channel_axis if channel_axis < block_axis else channel_axis + 1,
-            }
-            return tuple(i for i in range(shape_len) if i not in keep_axes)
-
-        reduce_axes = get_reduction_axes(
-            len(abs_weight.shape), block_axis, channel_axis
-        )
-        max_tensor = np.amax(abs_weight, axis=reduce_axes, keepdims=True)
-        max_tensor = np.squeeze(
-            max_tensor, axis=block_axis + 1
-        )  # Remove the block dimension after reduction.
-        min_tensor = -max_tensor
+        min_tensor = np.array([enc.min for enc in encodings], dtype=np.float32)
+        max_tensor = np.array([enc.max for enc in encodings], dtype=np.float32)
 
         return min_tensor, max_tensor
 

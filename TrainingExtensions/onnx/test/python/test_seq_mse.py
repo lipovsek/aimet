@@ -253,7 +253,7 @@ def test_min_max_for_candidate_selection(granularity, shape, channel_axis, block
 @pytest.mark.parametrize(
     "param_bw, enable_pcq, best_indices",
     [
-        (4, True, np.array([11, 16, 16, 18, 19, 16, 17, 16, 16, 17])),
+        (4, True, np.array([19, 19, 12, 18, 18, 18, 19, 15, 16, 16])),
         (31, True, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
         (4, False, np.array([[16, 15, 16, 18, 19, 15, 17, 16, 14, 17]])),
         (31, False, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
@@ -274,6 +274,8 @@ def test_apply_seq_mse_for_conv(loss_fn, param_bw, enable_pcq, best_indices):
             pcq=enable_pcq,
         ),
     )
+    sim._compute_param_encodings(overwrite=False)
+
     all_param_ops = []
     for op in sim.connected_graph.ordered_ops:
         param_name = _get_weight_param_name(op)
@@ -290,13 +292,16 @@ def test_apply_seq_mse_for_conv(loss_fn, param_bw, enable_pcq, best_indices):
     seq_params = SeqMseParams(num_candidates=num_candidates, num_batches=2)
     seq_params.loss_fn = loss_fn
     seq_mse = SequentialMse(model, sim, seq_params, inputs)
+
+    # Get the initial max tensor used to compute expected values.
+    dep_node = list(seq_mse.dependency_graph._name_to_node.values())[0]
+    _, init_max = seq_mse._get_min_and_max_for_candidate_selection(dep_node)
+
+    # Apply seq mse optimization
     seq_mse.apply_seq_mse_algo()
 
     # Encodings are frozen
     assert quantizer.is_encoding_frozen()
-
-    dep_node = list(seq_mse.dependency_graph._name_to_node.values())[0]
-    _, init_max = seq_mse._get_min_and_max_for_candidate_selection(dep_node)
 
     """
     When: Given best indices
