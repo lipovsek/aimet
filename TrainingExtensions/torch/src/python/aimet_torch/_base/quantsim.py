@@ -1191,6 +1191,16 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         # pylint: disable=unnecessary-comprehension
         all_modules_in_original_model = [module for module in original_model.modules()]
         cls._remove_quantization_wrappers(original_model, all_modules_in_original_model)
+
+        # Convert DequantizedTensors to plain torch.Tensor (if any)
+        def convert_params_to_plain_tensor(module: torch.nn.Module):
+            for name, param in module.named_parameters(recurse=False):
+                if type(param.detach()) != torch.Tensor:
+                    param = torch.nn.Parameter(param.as_subclass(torch.Tensor))
+                    setattr(module, name, param)
+
+        original_model.apply(convert_params_to_plain_tensor)
+
         return original_model
 
     @classmethod
