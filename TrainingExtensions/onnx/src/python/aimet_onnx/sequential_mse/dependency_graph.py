@@ -237,7 +237,9 @@ class DependencyGraph:
 
         return sim_inputs
 
-    def get_sim_data(self, dep_nodes: List[DependencyNode]) -> Dict[str, np.ndarray]:
+    def get_sim_data(
+        self, dep_nodes: List[DependencyNode]
+    ) -> Dict[str, List[np.ndarray]]:
         """
         :param dep_nodes: Corresponding dependency node
         :return: returns the sim data of the input tensor

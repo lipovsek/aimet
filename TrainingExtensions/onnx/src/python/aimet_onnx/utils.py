@@ -781,3 +781,24 @@ def get_torch_device(session: InferenceSession) -> torch.device:
         )
         return torch.device("cuda:" + str(device_id))
     return torch.device("cpu")
+
+
+def map_np_dtype_to_torch(np_dtype: np.dtype) -> torch.dtype:
+    """
+    Maps a numpy dtype to torch.dtype
+
+    :param np_dtype: Numpy dtype object
+    :return: Corresponding torch dtype
+    """
+    dtype_map = {
+        np.float16: torch.float16,
+        np.float32: torch.float32,
+        np.float64: torch.float64,
+        np.int32: torch.int32,
+        np.int64: torch.int64,
+    }
+
+    try:
+        return dtype_map[np_dtype.type]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported dtype: {np_dtype}") from exc

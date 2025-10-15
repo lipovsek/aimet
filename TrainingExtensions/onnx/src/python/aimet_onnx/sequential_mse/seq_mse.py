@@ -60,7 +60,12 @@ from aimet_onnx.sequential_mse.dependency_graph import (
     DependencyGraph,
     SUPPORTED_MODULES,
 )
-from aimet_onnx.utils import disable_quantizers, OrtInferenceSession
+from aimet_onnx.utils import (
+    disable_quantizers,
+    OrtInferenceSession,
+    get_torch_device,
+    map_np_dtype_to_torch,
+)
 from aimet_onnx.sequential_mse.dependency_graph import DependencyNode
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SeqMse)
@@ -356,10 +361,10 @@ class SequentialMse:
 
     def _compute_recon_loss(
         self,
-        fp_outputs: np.ndarray,
-        sim_outputs: np.ndarray,
+        fp_outputs: torch.Tensor,
+        sim_outputs: torch.Tensor,
         dependency_node: DependencyNode,
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         """
         Compute reconstruction loss and return the sum by reducing over all the dimensions except last channel dimension.
 
@@ -368,8 +373,8 @@ class SequentialMse:
         :param dependency_node: Dependency node
         :return: loss
         """
-        xqwq = torch.from_numpy(sim_outputs)
-        xqw = torch.from_numpy(fp_outputs)
+        xqwq = sim_outputs
+        xqw = fp_outputs
 
         if dependency_node.cg_op.type == "Conv":
             # Permute to move output channel dimension to the end
@@ -389,7 +394,7 @@ class SequentialMse:
         xqwq = xqwq.reshape(-1, channel_dim)
         xqw = xqw.reshape(-1, channel_dim)
         loss = loss_fn(xqwq, xqw, reduction="none").sum(0)
-        return loss.numpy()
+        return loss
 
     def _run_seq_mse(self, dep_nodes_to_parallelize: List[DependencyNode]):
         """
@@ -413,8 +418,8 @@ class SequentialMse:
                 self._compute_encoding_from_candidate(dep_node, cand_min, cand_max)
 
         def _compute_loss(
-            all_fp_outputs: List[np.ndarray], all_sim_outputs: List[np.ndarray]
-        ) -> Dict[str, np.ndarray]:
+            all_fp_outputs: List[torch.Tensor], all_sim_outputs: List[torch.Tensor]
+        ) -> Dict[str, torch.Tensor]:
             """
             Helper function to compute reconstruction loss for ops at same level.
 
@@ -471,38 +476,89 @@ class SequentialMse:
         )
 
         dataset_len = len(next(iter(sim_inputs.values())))
-
-        # Cache fp_outputs to avoid recompute for each candidate
-        fp_outputs_cache = []
         with self._create_session(subgraph_model) as session:
-            with self._disable_subgraph_quantizers(subgraph_model):
-                for batch_idx in range(dataset_len):
-                    input_batch = {
-                        name: data[batch_idx] for name, data in sim_inputs.items()
-                    }
-                    fp_output = session.run(None, input_batch)
-                    fp_outputs_cache.append(fp_output)
+            # Pre-compute output shapes per batch
+            all_out_shapes = []
+            all_out_dtypes = []
+            for batch_idx in range(dataset_len):
+                input_batch = {
+                    name: data[batch_idx] for name, data in sim_inputs.items()
+                }
+                outputs = session.run(None, input_batch)
+                out_shapes = [out.shape for out in outputs]
+                out_dtype = [out.dtype for out in outputs]
+                all_out_shapes.append(out_shapes)
+                all_out_dtypes.append(out_dtype)
+                del outputs
+
+            torch_device = get_torch_device(session)
+            device_type = torch_device.type
+            device_id = torch_device.index if torch_device.index is not None else 0
+
+            output_names = [out.name for out in session.get_outputs()]
 
             # Store accumulated loss per dep_node across candidates
             total_loss = defaultdict(list)
 
             for candidate_index in range(self.params.num_candidates):
                 _set_candidates(candidate_index)
+
                 # Initialize per dep_node loss accumulator
                 accumulated_loss = defaultdict(lambda: 0)
 
                 for batch_idx in range(dataset_len):
-                    input_batch = {
-                        name: data[batch_idx] for name, data in sim_inputs.items()
-                    }
-                    fp_output = fp_outputs_cache[batch_idx]
-                    sim_output = session.run(None, input_batch)
+                    # Create OrtValues per batch and bind them immediately
+                    # to avoid memory reuse issues in ORT
+                    binding = session.io_binding()
 
-                    batched_loss = _compute_loss(fp_output, sim_output)
+                    # Bind all inputs
+                    for name, data in sim_inputs.items():
+                        inp_ort_value = onnxruntime.OrtValue.ortvalue_from_numpy(
+                            data[batch_idx],
+                            device_type=device_type,
+                            device_id=device_id,
+                        )
+                        binding.bind_input(
+                            name=name,
+                            device_type=device_type,
+                            device_id=device_id,
+                            element_type=data[batch_idx].dtype,
+                            shape=data[batch_idx].shape,
+                            buffer_ptr=inp_ort_value.data_ptr(),
+                        )
+
+                    # Bind outputs dynamically
+                    shared_outputs = []
+                    for out_name, out_shape, out_dtype in zip(
+                        output_names,
+                        all_out_shapes[batch_idx],
+                        all_out_dtypes[batch_idx],
+                    ):
+                        torch_dtype = map_np_dtype_to_torch(out_dtype)
+                        shared_tensor = torch.empty(
+                            out_shape, dtype=torch_dtype, device=torch_device
+                        )
+                        shared_outputs.append(shared_tensor)
+                        binding.bind_output(
+                            name=out_name,
+                            device_type=device_type,
+                            device_id=device_id,
+                            element_type=out_dtype,
+                            shape=out_shape,
+                            buffer_ptr=shared_tensor.data_ptr(),
+                        )
+                    # Run fp inference
+                    with self._disable_subgraph_quantizers(subgraph_model):
+                        session.run_with_iobinding(binding)
+                    fp_outputs = [out.clone() for out in shared_outputs]
+
+                    # Run sim inference
+                    session.run_with_iobinding(binding)
+                    sim_outputs = [out for out in shared_outputs]
+
+                    batched_loss = _compute_loss(fp_outputs, sim_outputs)
                     for node_name, b_loss in batched_loss.items():
                         accumulated_loss[node_name] += b_loss
-
-                    del sim_output
 
                 # After all batches, append the accumulated loss for this candidate
                 for node_name, loss in accumulated_loss.items():
@@ -510,22 +566,23 @@ class SequentialMse:
 
                 _logger.debug(f"Finished candidate {candidate_index}")
 
-        del fp_outputs_cache, sim_inputs
+        del sim_inputs, fp_outputs, sim_outputs, shared_outputs
 
         # Postprocessing (not vectorized)
         for dep_node in dep_nodes_to_parallelize:
             loss = total_loss[dep_node.cg_op.name]
-            stacked_loss = np.stack(
-                loss, axis=0
+            stacked_loss = torch.stack(
+                loss, dim=0
             )  # Resulting shape depends on granularity: per-tensor and per-channel: (num_candidates, num_channels) and per-block: (num_candidates, num_channels, num_blocks)
 
             # Find the index of the minimum loss along the candidate axis (axis=0)
-            best_indices = np.argmin(stacked_loss, axis=0)
+            best_indices = stacked_loss.min(0)[1]
             init_min, init_max = initial_min_max[dep_node.cg_op.name]
 
             # Unsqueeze best_indices until it matches dim length of max_val
             while best_indices.ndim < init_max.ndim:
-                best_indices = best_indices[..., np.newaxis]
+                best_indices = best_indices[..., None]
+            best_indices = best_indices.cpu().numpy()
 
             # Use the best indices to compute corresponding best candidate min and max tensors
             best_min, best_max = self._get_candidate(best_indices, init_min, init_max)

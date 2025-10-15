@@ -249,24 +249,30 @@ def test_min_max_for_candidate_selection(granularity, shape, channel_axis, block
     )  # Allow 1-tick difference
 
 
+@pytest.mark.cuda
 @pytest.mark.parametrize("loss_fn", ["mse"])
 @pytest.mark.parametrize(
-    "param_bw, enable_pcq, best_indices",
+    "param_bw, use_cuda, enable_pcq, best_indices",
     [
-        (4, True, np.array([19, 19, 12, 18, 18, 18, 19, 15, 16, 16])),
-        (31, True, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
-        (4, False, np.array([[16, 15, 16, 18, 19, 15, 17, 16, 14, 17]])),
-        (31, False, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
+        (4, True, True, np.array([19, 19, 12, 18, 18, 18, 19, 15, 16, 16])),
+        (31, True, True, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
+        (4, True, False, np.array([[16, 15, 16, 18, 19, 15, 17, 16, 14, 17]])),
+        (31, True, False, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
+        (4, False, True, np.array([19, 19, 12, 18, 18, 18, 19, 15, 16, 16])),
+        (31, False, True, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
+        (4, False, False, np.array([[16, 15, 16, 18, 19, 15, 17, 16, 14, 17]])),
+        (31, False, False, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
     ],
 )
-def test_apply_seq_mse_for_conv(loss_fn, param_bw, enable_pcq, best_indices):
+def test_apply_seq_mse_for_conv(loss_fn, param_bw, use_cuda, enable_pcq, best_indices):
     model = single_conv_layer_model()
+    providers = ["CUDAExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,
         default_activation_bw=8,
         default_param_bw=param_bw,
-        providers=["CPUExecutionProvider"],
+        providers=providers,
         config_file=_get_config_file(
             is_symmetric=True,
             strict_symmetric=False,
