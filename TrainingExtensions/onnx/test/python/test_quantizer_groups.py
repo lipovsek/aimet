@@ -136,6 +136,7 @@ class TestQuantizerGroups:
                 save_dir,
                 input_names=["input.1"],
                 output_names=["outputs"],
+                dynamo=False,
             )
             sim = QuantizationSimModel(onnx.load(save_dir))
             _, quantizer_groups = find_quantizer_group(sim)

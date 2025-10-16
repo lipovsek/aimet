@@ -47,6 +47,7 @@ class TestDisableSupergroups:
                 input_names=["input"],
                 output_names=["output"],
                 opset_version=16,
+                dynamo=False,
             )
             onnx_model = onnx.load_model(onnx_model_path.name)
 
@@ -82,6 +83,7 @@ class TestDisableSupergroups:
                 input_names=["input", "w"],
                 output_names=["output"],
                 opset_version=16,
+                dynamo=False,
             )
             onnx_model = onnx.load_model(onnx_model_path.name)
 
@@ -118,6 +120,7 @@ class TestDisableSupergroups:
                 input_names=["input"],
                 output_names=["output"],
                 opset_version=16,
+                dynamo=False,
             )
             onnx_model = onnx.load_model(onnx_model_path.name)
 
@@ -157,6 +160,7 @@ class TestDisableSupergroups:
                 input_names=["input"],
                 output_names=["output_1", "output_2"],
                 opset_version=16,
+                dynamo=False,
             )
             onnx_model = onnx.load_model(onnx_model_path.name)
             sim = QuantizationSimModel(onnx_model)
@@ -195,6 +199,7 @@ class TestDisableSupergroups:
                 input_names=["input"],
                 output_names=["output_1", "output_2"],
                 opset_version=16,
+                dynamo=False,
             )
             onnx_model = onnx.load_model(onnx_model_path.name)
             sim = QuantizationSimModel(onnx_model)

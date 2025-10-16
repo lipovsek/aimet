@@ -270,6 +270,7 @@ class TestQuantSim:
                     "input": {0: "batch_size"},
                     "output": {0: "batch_size"},
                 },
+                dynamo=False,
             )
             onnx_model = load_model(os.path.join(tempdir, "dummy_model.onnx"))
             dummy_input = make_dummy_input(onnx_model)
@@ -802,6 +803,7 @@ class TestQuantSim:
                 training=torch.onnx.TrainingMode.PRESERVE,
                 input_names=["input"],
                 output_names=["output"],
+                dynamo=False,
             )
 
             onnx_model_cpu = load_model(os.path.join(tempdir, "dummy_model.onnx"))
@@ -854,6 +856,7 @@ class TestQuantSim:
                 training=torch.onnx.TrainingMode.PRESERVE,
                 input_names=["input"],
                 output_names=["output"],
+                dynamo=False,
             )
 
             onnx_model_cpu = load_model(os.path.join(tempdir, "dummy_model.onnx"))
@@ -943,6 +946,7 @@ class TestQuantSim:
                 training=torch.onnx.TrainingMode.PRESERVE,
                 input_names=["input"],
                 output_names=["output"],
+                dynamo=False,
             )
 
             onnx_model_cpu = load_model(os.path.join(tempdir, "dummy_model.onnx"))
@@ -5522,6 +5526,7 @@ def test_to_onnx_qdq_large_model():
             path,
             input_names=["input"],
             output_names=["output"],
+            dynamo=False,
         )
 
         """

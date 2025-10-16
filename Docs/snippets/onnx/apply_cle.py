@@ -57,6 +57,7 @@ torch.onnx.export(
     pt_model,
     (dummy_input,),
     file_path,
+    dynamo=False,
 )
 # Load exported ONNX model
 model = onnx.load_model(file_path)

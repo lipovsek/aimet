@@ -118,6 +118,7 @@ class TestBatchNormFold:
             do_constant_folding=False,  # whether to execute constant folding for optimization
             input_names=["input"],  # the model's input names
             output_names=["output"],
+            dynamo=False,
         )
         model = ONNXModel(load_model("./model_single_residual.onnx"))
 

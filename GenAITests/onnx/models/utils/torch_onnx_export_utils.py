@@ -58,6 +58,7 @@ def get_onnx_model(
                 input_names=input_names,
                 output_names=output_names,
                 opset_version=17,
+                dynamo=False,
             )
 
         print("Loading ONNX model...")

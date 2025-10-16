@@ -233,6 +233,7 @@ def test_model_with_conv():
         onnx_model_path,
         input_names=["input"],
         output_names=["output"],
+        dynamo=False,
     )
     onnx_model = onnx.load(onnx_model_path)
     initializer_name_to_index_map = {
@@ -292,6 +293,7 @@ def test_model_with_ModelWithConsecutiveConvBlocks(
         onnx_model_path,
         input_names=["input"],
         output_names=["output"],
+        dynamo=False,
     )
     onnx_model = onnx.load(onnx_model_path)
     initializer_name_to_index_map = {

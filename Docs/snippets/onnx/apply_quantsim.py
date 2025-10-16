@@ -60,6 +60,7 @@ torch.onnx.export(pt_model,
                       'input': {0: 'batch_size'},
                       'output': {0: 'batch_size'},
                   },
+                  dynamo=False,
                   )
 
 # Load exported ONNX model

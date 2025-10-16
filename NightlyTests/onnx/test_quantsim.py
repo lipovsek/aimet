@@ -109,6 +109,7 @@ class TestQuantizeAcceptance:
                     "output": {0: "batch_size"},
                 },
                 opset_version=12,
+                dynamo=False,
             )
 
             onnx_model = load_model(os.path.join(tmp_dir, "resnet18.onnx"))

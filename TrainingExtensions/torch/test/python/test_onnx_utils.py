@@ -191,7 +191,10 @@ class TestOnnxUtils:
         dummy_input = torch.randn(1, 3, 224, 224)
         with tempfile.TemporaryDirectory() as tmp_dir:
             torch.onnx.export(
-                model, dummy_input, os.path.join(tmp_dir, "resnet18.onnx")
+                model,
+                dummy_input,
+                os.path.join(tmp_dir, "resnet18.onnx"),
+                dynamo=False,
             )
             onnx_utils.OnnxSaver.set_node_names(
                 os.path.join(tmp_dir, "resnet18.onnx"),
@@ -236,7 +239,10 @@ class TestOnnxUtils:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             torch.onnx.export(
-                model, dummy_input, os.path.join(tmp_dir, model_name + ".onnx")
+                model,
+                dummy_input,
+                os.path.join(tmp_dir, model_name + ".onnx"),
+                dynamo=False,
             )
             onnx_utils.OnnxSaver.set_node_names(
                 os.path.join(tmp_dir, model_name + ".onnx"),
@@ -743,7 +749,7 @@ class TestOnnxUtils:
         with tempfile.TemporaryDirectory() as tmp_dir:
             onnx_path = os.path.join(tmp_dir, "MyModel.onnx")
 
-            torch.onnx.export(model, dummy_input, onnx_path)
+            torch.onnx.export(model, dummy_input, onnx_path, dynamo=False)
             onnx_utils.OnnxSaver.set_node_names(onnx_path, model, dummy_input)
 
             onnx_model = onnx.load(onnx_path)

@@ -1184,6 +1184,7 @@ def long_sequential_model(
             do_constant_folding=True,  # whether to execute constant folding for optimization
             input_names=["input"],  # the model's input names
             output_names=["output"],
+            dynamo=False,
         )
 
         model = load_model(save_path)

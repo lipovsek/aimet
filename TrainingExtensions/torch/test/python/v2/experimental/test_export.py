@@ -90,7 +90,7 @@ def test_export(model_factory, tmp_path: Path):
     """
     with torch.no_grad():
         path = tmp_path / f"{model_factory.__name__}_quantized.onnx"
-        torch.onnx.export(sim.model, x, path)
+        torch.onnx.export(sim.model, x, path, dynamo=False)
         onnx_model = onnx.load_model(path)
 
     onnx_qdq_nodes = [

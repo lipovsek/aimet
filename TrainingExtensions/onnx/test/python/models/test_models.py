@@ -98,6 +98,7 @@ def model_with_split():
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     model = ONNXModel(load_model("./model_with_one_split.onnx"))
     return model
@@ -117,6 +118,7 @@ def model_small_mnist():
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     model = ONNXModel(load_model("./model_simple_mnist.onnx"))
     return model
@@ -189,6 +191,7 @@ def single_residual_model():
         training=torch.onnx.TrainingMode.EVAL,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     model = ONNXModel(load_model("./model_single_residual.onnx"))
     return model
@@ -235,6 +238,7 @@ def concat_model():
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     model = ONNXModel(load_model("./concat_model.onnx"))
     return model
@@ -320,6 +324,7 @@ def linear_layer_model():
         training=torch.onnx.TrainingMode.EVAL,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
 
     model = ONNXModel(load_model("./linear_layer_model.onnx"))
@@ -356,6 +361,7 @@ def layernorm_model(dim=32, elementwise_affine=True, bias=True, include_add_ops=
             input_names=["input"],
             output_names=["output"],
             opset_version=16,
+            dynamo=False,
         )
         model = load_model(onnx_model_path.name)
 
@@ -420,6 +426,7 @@ def rmsnorm_model(
             input_names=["input"],
             output_names=["output"],
             opset_version=16,
+            dynamo=False,
         )
         model = load_model(onnx_model_path.name)
         return model
@@ -456,6 +463,7 @@ def conv_relu_model():
                 "input": {0: "batch_size"},
                 "output": {0: "batch_size"},
             },
+            dynamo=False,
         )
 
         model = load_model(save_path)
@@ -484,6 +492,7 @@ def single_linear_layer_model():
             training=torch.onnx.TrainingMode.EVAL,  # whether to execute constant folding for optimization
             input_names=["input"],  # the model's input names
             output_names=["output"],
+            dynamo=False,
         )
 
         model = ONNXModel(load_model(save_path))
@@ -512,6 +521,7 @@ def single_conv_layer_model():
             training=torch.onnx.TrainingMode.EVAL,  # whether to execute constant folding for optimization
             input_names=["input"],  # the model's input names
             output_names=["output"],
+            dynamo=False,
         )
 
         model = ONNXModel(load_model(save_path))

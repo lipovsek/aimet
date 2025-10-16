@@ -220,6 +220,7 @@ class TestQuantizerGroups:
             training=torch.onnx.TrainingMode.EVAL,  # whether to execute constant folding for optimization
             input_names=["input"],  # the model's input names
             output_names=["output"],
+            dynamo=False,
         )
 
         sim = QuantizationSimModel(model, dummy_input=dummy_input)

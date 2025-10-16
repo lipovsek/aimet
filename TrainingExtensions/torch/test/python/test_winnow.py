@@ -1286,6 +1286,7 @@ class TestTrainingExtensionsWinnow(unittest.TestCase):
                 verbose=True,
                 export_params=True,
                 operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
+                dynamo=False,
             )
             print("Saved the winnowed model as ONNX")
             self.assertEqual(0, 0)

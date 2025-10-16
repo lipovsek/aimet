@@ -105,6 +105,7 @@ def get_model():
             "input": {0: "batch_size"},
             "output": {0: "batch_size"},
         },
+        dynamo=False,
     )
 
     onnx_model = ONNXModel(load_model("./resnet18.onnx"))

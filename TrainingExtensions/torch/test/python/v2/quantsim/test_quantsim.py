@@ -2324,7 +2324,7 @@ def test_input_quantizer_enabling(model_factory):
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         onnx_path = os.path.join(tmp_dir, "model.onnx")
-        aimet_torch.onnx.export(sim.model, x, onnx_path)
+        aimet_torch.onnx.export(sim.model, x, onnx_path, dynamo=False)
         onnx_model = onnx.load_model(onnx_path)
 
     onnx_model = onnx.shape_inference.infer_shapes(onnx_model)

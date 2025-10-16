@@ -58,6 +58,7 @@ def mobilenetv2():
             "input": {0: "batch_size"},
             "output": {0: "batch_size"},
         },
+        dynamo=False,
     )
     model = ONNXModel(load_model("./model_mobilenetv2.onnx"))
     return model
@@ -80,6 +81,7 @@ def mobilenetv3_large_model():
             "input": {0: "batch_size"},
             "output": {0: "batch_size"},
         },
+        dynamo=False,
     )
     model = ONNXModel(load_model("./model_mobilenetv3.onnx"))
     return model
@@ -99,6 +101,7 @@ def resnet18():
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     model = ONNXModel(load_model("./model_resnet.onnx"))
     return model

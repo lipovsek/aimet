@@ -119,6 +119,7 @@ class TestQuantizeAcceptance:
                     "input": {0: "batch_size", 2: "time"},
                     "output": {0: "batch_size", 1: "time"},
                 },
+                dynamo=False,
             )
 
             onnx_model = load_model(os.path.join(tmp_dir, "deepspeech.onnx"))

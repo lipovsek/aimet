@@ -286,6 +286,7 @@ def apply_to_model(model_id, tmp_path):
             input_names=model.get_input_names(2),
             output_names=model.get_output_names(2),
             opset_version=17,
+            dynamo=False,
         )
 
         onnx_model = onnx.load(onnx_model_path)

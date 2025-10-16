@@ -45,7 +45,7 @@ model = mobilenet_v2(weights='DEFAULT').eval()
 
 dummy_input = torch.randn((10, 3, 224, 224))
 file_path = os.path.join('/tmp', f'mobilenet_v2.onnx')
-torch.onnx.export(model, dummy_input, file_path)
+torch.onnx.export(model, dummy_input, file_path, dynamo=False)
 onnx_model = onnx.load_model(file_path)
 # End of [step_1]
 

@@ -314,7 +314,7 @@ def test_onnx_export():
     """
     qdq = FloatQuantizeDequantize(dtype=torch.float16)
     with tempfile.TemporaryFile() as f:
-        torch.onnx.export(qdq, torch.randn(10, 10), f)
+        torch.onnx.export(qdq, torch.randn(10, 10), f, dynamo=False)
 
 
 def test_float_encoding_to():
