@@ -259,6 +259,8 @@ def _is_grid_preserving_op(node: torch.fx.Node) -> bool:
         "aten::nonzero",
         "aten::pad",
         "aten::permute",
+        "aten::relu",
+        "aten::relu_",
         "aten::repeat",
         "aten::repeat_interleave",
         "aten::reshape",
