@@ -342,26 +342,37 @@ class ConnectedGraph(AimetCommonConnectedGraph):
 
 
 def _get_matmul_add_bias_idx(cg_op: Op, model: ModelProto) -> Optional[int]:
-    if cg_op.type not in ("Add", "MatMul"):
+    """
+    Identifies the bias input index in an Add node that directly follows a MatMul.
+
+    :param cg_op: The MatMul op to analyse
+    :param model: The model containing the param metadata
+    :return: The index of the bias input in the Add node, or None if not found
+    """
+    if cg_op.type != "MatMul":
         return None
 
-    if cg_op.type == "MatMul":
-        if len(cg_op.outputs[0].consumers) == 1:
-            (consumer,) = cg_op.outputs[0].consumers
-            return _get_matmul_add_bias_idx(consumer, model)
+    # Ensure MatMul has exactly one consumer
+    consumers = cg_op.outputs[0].consumers
+    if len(consumers) != 1:
         return None
 
-    for inp1, inp2 in itertools.permutations(cg_op.inputs):
-        if not inp1.producer or inp1.producer.type != "MatMul":
+    add_op = consumers[0]
+    if add_op.type != "Add":
+        return None
+
+    for inp1, inp2 in itertools.permutations(add_op.inputs):
+        # Ensure inp1 is the output of this MatMul (cg_op)
+        if inp1 not in cg_op.outputs:
             continue
+
         if len(inp1.consumers) > 1:
             return None
 
         param = ParamUtils.get_param_by_name(model, inp2.name)
         # TODO: Refine this check. Checks that param is static tensor with rank 1
         if param and len(param.dims) == 1:
-            return cg_op.inputs.index(inp2)
-        return None
+            return add_op.inputs.index(inp2)
 
     return None
 

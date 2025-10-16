@@ -34,8 +34,10 @@
 #
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
+
 import itertools
 import pytest
+from unittest.mock import MagicMock, patch
 import torch
 from aimet_common.connected_graph.connectedgraph_utils import (
     get_all_input_ops,
@@ -44,9 +46,8 @@ from aimet_common.connected_graph.connectedgraph_utils import (
 from aimet_onnx.meta.connectedgraph import (
     ConnectedGraph,
     CONSTANT_TYPE,
-    OPS_WITH_PARAMS,
+    _get_matmul_add_bias_idx,
 )
-from aimet_onnx.utils import ParamUtils
 from .models import models_for_tests
 
 
@@ -257,3 +258,50 @@ class TestConnectedGraph:
         model.graph.node.pop(1)  # Remove constant node
         with pytest.raises(RuntimeError):
             cg = ConnectedGraph(model)
+
+    def test_get_matmul_add_bias_idx(self):
+        """Identify bias index for MatMul_1 -> MatMul_2 -> Add pattern"""
+        bias_param = MagicMock()
+        bias_param.dims = [64]
+
+        # Only patch within the scope of the test
+        # Use fully qualified path to `ParamUtils.get_param_by_name`
+        with patch(
+            "aimet_onnx.utils.ParamUtils.get_param_by_name",
+            return_value=bias_param,
+        ):
+            # Create Products
+            matmul1_output = MagicMock()
+            matmul2_output = MagicMock()
+            bias_input = MagicMock()
+            bias_input.name = "bias"
+
+            # Create Add op
+            add_op = MagicMock()
+            add_op.type = "Add"
+            add_op.inputs = [matmul2_output, bias_input]
+
+            # Create MatMul_2 op
+            matmul2_op = MagicMock()
+            matmul2_op.type = "MatMul"
+            matmul2_op.inputs = [matmul1_output]
+            matmul2_op.outputs = [matmul2_output]
+            matmul2_output.producer = matmul2_op
+            matmul2_output.consumers = [add_op]
+
+            # Create MatMul_1 op
+            matmul1_op = MagicMock()
+            matmul1_op.type = "MatMul"
+            matmul1_op.outputs = [matmul1_output]
+            matmul1_output.producer = matmul1_op
+            matmul1_output.consumers = [matmul2_op]
+
+            # Test MatMul_1 → MatMul_2 → Add
+            bias_idx_1 = _get_matmul_add_bias_idx(matmul1_op, MagicMock())
+            bias_idx_2 = _get_matmul_add_bias_idx(matmul2_op, MagicMock())
+
+            # MatMul_1 should not be associated with the Add
+            assert not bias_idx_1
+
+            # MatMul_2 should be correctly associated with the Add
+            assert bias_idx_2 == 1  # bias is second input to Add
