@@ -75,9 +75,9 @@ class QuantizedAvgPool2d(_DispatchMixin, QuantizationMixin, AvgPool2d):
 
     _builtin_torch_fn = F.avg_pool2d
 
-    def _is_dynamo_traceable(self):
-        # F.avg_pool2d isn't dynamo-traceable
-        return False
+    @classmethod
+    def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
+        return False, "F.avg_pool2d isn't dynamo-traceable"
 
 
 @QuantizationMixin.implements(Reshape)
@@ -86,9 +86,9 @@ class QuantizedReshape(_DispatchMixin, QuantizationMixin, Reshape):
 
     _builtin_torch_fn = torch.reshape
 
-    def _is_dynamo_traceable(self):
-        # torch.reshape isn't dynamo-traceable
-        return False
+    @classmethod
+    def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
+        return False, "torch.reshape isn't dynamo-traceable"
 
 
 @QuantizationMixin.implements(RSqrt)
@@ -343,9 +343,9 @@ class QuantizedCumSum(_DispatchMixin, QuantizationMixin, CumSum):
 
     _builtin_torch_fn = torch.cumsum
 
-    def _is_dynamo_traceable(self):
-        # torch.cumsum isn't dynamo-traceable
-        return False
+    @classmethod
+    def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
+        return False, "torch.cumsum isn't dynamo-traceable"
 
 
 # @QuantizationMixin.implements(MaskedFill)
@@ -724,9 +724,9 @@ class QuantizedGroupNorm(_DispatchMixin, QuantizationMixin, GroupNorm):
 
     _builtin_torch_fn = F.group_norm
 
-    def _is_dynamo_traceable(self):
-        # F.group_norm isn't dynamo-traceable
-        return False
+    @classmethod
+    def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
+        return False, "F.group_norm isn't dynamo-traceable"
 
 
 @QuantizationMixin.implements(Normalize)

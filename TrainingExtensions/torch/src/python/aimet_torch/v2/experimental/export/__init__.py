@@ -9,6 +9,7 @@ from torch.fx.passes.shape_prop import TensorMetadata
 from torch._subclasses.fake_tensor import FakeTensorMode
 from ..onnx._export import _precompute_encodings
 from ...nn import QuantizationMixin
+from ...quantization.affine import AffineQuantizerBase
 
 
 def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
@@ -25,19 +26,36 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
             f" got torch=={torch.__version__}"
         )
 
-    untraceable_modules = {
-        name: module
-        for name, module in mod.named_modules()
-        if isinstance(module, QuantizationMixin) and not module._is_dynamo_traceable()
-    }
+    #  If no quantizers are initialized, raise error
+    if all(
+        not qtzr.is_initialized()
+        for qtzr in mod.modules()
+        if isinstance(qtzr, AffineQuantizerBase)
+    ):
+        raise RuntimeError(
+            "Please ensure that the quantizers are initialized before exporting. "
+            "You can do this by running a forward pass with representative data "
+            "within QuantizationSimModel.compute_encodings() or "
+            "under aimet_torch.nn.compute_encodings() context manager."
+        )
+
+    # If any qmodule is not dynamo traceable, raise error
+    untraceable_modules = []
+
+    for name, module in mod.named_modules():
+        if not isinstance(module, QuantizationMixin):
+            continue
+        is_dynamo_traceable, reason = module._is_dynamo_traceable()
+        if not is_dynamo_traceable:
+            untraceable_modules.append((name, module, reason))
 
     if untraceable_modules:
         raise RuntimeError(
             "Following modules don't support dynamo tracing:\n"
             + "\n".join(
                 [
-                    f"- {name} (type: {type(module).__name__})"
-                    for name, module in untraceable_modules.items()
+                    f"- {name} (type: {type(module).__name__}): {reason}"
+                    for name, module, reason in untraceable_modules
                 ]
             )
         )

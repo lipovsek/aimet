@@ -43,7 +43,7 @@ import itertools
 from inspect import signature
 from abc import abstractmethod, ABCMeta
 from collections import OrderedDict
-from typing import Type, Any, Optional, Callable, Set, Mapping
+from typing import Type, Any, Optional, Callable, Set, Mapping, Tuple
 from weakref import WeakKeyDictionary
 import warnings
 
@@ -549,9 +549,6 @@ class _DispatchMixin(metaclass=_DispatchMeta):
 
         return wrapper
 
-    def _is_dynamo_traceable(self):
-        return True
-
 
 def _generate_docstring(parent_cls):
     return f"""
@@ -764,9 +761,9 @@ class QuantizedCTCLoss(_DispatchMixin, QuantizationMixin, nn.CTCLoss):
     _builtin_torch_fn = F.ctc_loss
     __quant_init__ = QuantizationMixin.__unary__
 
-    def _is_dynamo_traceable(self):
-        # F.ctc_loss isn't dynamo-traceable
-        return False
+    @classmethod
+    def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
+        return False, "F.ctc_loss isn't dynamo-traceable"
 
 
 @QuantizationMixin.implements(nn.ChannelShuffle)
@@ -1270,9 +1267,9 @@ class QuantizedGRU(_DispatchMixin, QuantizationMixin, nn.GRU):
 
         return gru
 
-    def _is_dynamo_traceable(self):
-        # Not traceable due to bug in dynamo MRO resolution
-        return False
+    @classmethod
+    def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
+        return False, "torch.nn.GRU isn't dynamo-traceable"
 
 
 @QuantizationMixin.implements(nn.GRUCell)
@@ -1321,9 +1318,9 @@ class QuantizedGaussianNLLLoss(_DispatchMixin, QuantizationMixin, nn.GaussianNLL
     _builtin_torch_fn = F.gaussian_nll_loss
     __quant_init__ = QuantizationMixin.__ternary__
 
-    def _is_dynamo_traceable(self):
-        # F.gaussian_nll_loss isn't dynamo-traceable
-        return False
+    @classmethod
+    def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
+        return False, "F.gaussian_nll_loss isn't dynamo-traceable"
 
 
 @QuantizationMixin.implements(nn.GroupNorm)
@@ -1416,10 +1413,6 @@ class QuantizedInstanceNorm1d(_DispatchMixin, QuantizationMixin, nn.InstanceNorm
     _builtin_torch_fn = F.instance_norm
     __quant_init__ = QuantizationMixin.__unary__
 
-    def _is_dynamo_traceable(self):
-        # Not traceable due to bug in dynamo MRO resolution
-        return False
-
 
 @QuantizationMixin.implements(nn.InstanceNorm2d)
 class QuantizedInstanceNorm2d(_DispatchMixin, QuantizationMixin, nn.InstanceNorm2d):
@@ -1428,10 +1421,6 @@ class QuantizedInstanceNorm2d(_DispatchMixin, QuantizationMixin, nn.InstanceNorm
     _builtin_torch_fn = F.instance_norm
     __quant_init__ = QuantizationMixin.__unary__
 
-    def _is_dynamo_traceable(self):
-        # Not traceable due to bug in dynamo MRO resolution
-        return False
-
 
 @QuantizationMixin.implements(nn.InstanceNorm3d)
 class QuantizedInstanceNorm3d(_DispatchMixin, QuantizationMixin, nn.InstanceNorm3d):
@@ -1439,10 +1428,6 @@ class QuantizedInstanceNorm3d(_DispatchMixin, QuantizationMixin, nn.InstanceNorm
     __doc__ = _generate_docstring(parent_cls=nn.InstanceNorm3d)
     _builtin_torch_fn = F.instance_norm
     __quant_init__ = QuantizationMixin.__unary__
-
-    def _is_dynamo_traceable(self):
-        # Not traceable due to bug in dynamo MRO resolution
-        return False
 
 
 @QuantizationMixin.implements(nn.KLDivLoss)
@@ -1533,9 +1518,9 @@ class QuantizedLSTM(_DispatchMixin, QuantizationMixin, nn.LSTM):
 
         return lstm
 
-    def _is_dynamo_traceable(self):
-        # Not traceable due to bug in dynamo MRO resolution
-        return False
+    @classmethod
+    def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
+        return False, "torch.nn.LSTM isn't dynamo-traceable"
 
 
 @QuantizationMixin.implements(nn.LSTMCell)
@@ -1977,9 +1962,9 @@ class QuantizedRNN(_DispatchMixin, QuantizationMixin, nn.RNN):
 
         return rnn
 
-    def _is_dynamo_traceable(self):
-        # Not traceable due to bug in dynamo MRO resolution
-        return False
+    @classmethod
+    def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
+        return False, "torch.nn.RNN isn't dynamo-traceable"
 
 
 # @QuantizationMixin.implements(nn.RNNBase)

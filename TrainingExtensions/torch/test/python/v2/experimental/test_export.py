@@ -3,12 +3,13 @@
 from pathlib import Path
 from packaging import version
 import torch
-import torch.nn.functional as F
 from torchvision.models import MobileNetV3, ResNet, resnet18, mobilenet_v3_large
 from torch.export import ExportedProgram
+import aimet_torch
 from aimet_torch import QuantizationSimModel
-from aimet_torch.nn import QuantizationMixin
 from aimet_torch.v2.experimental.export import export
+from transformers.models.llama.modeling_llama import LlamaRMSNorm
+import aimet_torch.v2.nn.transformers.models.llama
 import onnx
 import pytest
 
@@ -24,6 +25,18 @@ def conv_relu(**_):
     )
 
 
+def custom_rmsnorm(**_):
+    return torch.nn.Sequential(
+        aimet_torch.nn.modules.custom.RmsNorm([1, 3, 224, 224], [-1], epsilon=1e-6)
+    )
+
+
+def llama_rms_norm(**_):
+    return torch.nn.Sequential(
+        LlamaRMSNorm(hidden_size=224),
+    )
+
+
 @pytest.mark.skipif(
     version.parse(torch.__version__) < version.parse("2.8.0"),
     reason="aimet_torch.export.export is only supported in torch >= 2.8.0",
@@ -33,6 +46,8 @@ def conv_relu(**_):
     [
         conv,
         conv_relu,
+        custom_rmsnorm,
+        llama_rms_norm,
         resnet18,
         mobilenet_v3_large,
     ],
@@ -41,6 +56,11 @@ def test_export(model_factory, tmp_path: Path):
     model = model_factory(pretrained=False).requires_grad_(False).eval()
     x = torch.randn(1, 3, 224, 224)
     sim = QuantizationSimModel(model, x, config_file="htp_v81")
+
+    with pytest.raises(RuntimeError):
+        # Before computing encodings, export should raise error
+        export(sim.model, args=(x,))
+
     sim.compute_encodings(lambda model: model(x))
 
     if isinstance(model, ResNet):
@@ -131,45 +151,3 @@ def test_export(model_factory, tmp_path: Path):
     )
     assert not (ep.state_dict.keys() - all_targets)
     assert not (ep.constants.keys() - all_targets)
-
-
-@pytest.mark.skipif(
-    version.parse(torch.__version__) < version.parse("2.8.0"),
-    reason="aimet_torch.export.export is only supported in torch >= 2.8.0",
-)
-def test_dynamo_error():
-    class CustomModule(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.weight = torch.nn.Parameter(torch.eye(10))
-
-        def forward(self, x):
-            return F.linear(x, self.weight)
-
-    @QuantizationMixin.implements(CustomModule)
-    class QuantizedCustomModule(QuantizationMixin, CustomModule):
-        def forward(self, x):
-            # Quantize input tensors
-            if self.input_quantizers[0]:
-                x = self.input_quantizers[0](x)
-
-            # Run forward with quantized inputs and parameters
-            with self._patch_quantized_parameters():
-                ret = super().forward(x)
-
-            # Quantize output tensors
-            if self.output_quantizers[0]:
-                ret = self.output_quantizers[0](ret)
-
-            return ret
-
-    """
-    When: Call export with a non-exportable module
-    Then: Throw runtime error
-    """
-    model = torch.nn.Sequential(CustomModule())
-    x = torch.randn(10, 10)
-    sim = QuantizationSimModel(model, x, config_file="htp_v81")
-
-    with pytest.raises(RuntimeError):
-        _ = export(sim.model, args=(x,))

@@ -1331,7 +1331,8 @@ def test_default_kernels(module_factory, input_factory):
         Then: 1) Tracing shouldn't fail
               2) The exported module should produce the same output as the original module
         """
-        if not qmodule._is_dynamo_traceable():
+        is_dynamo_traceable, _ = qmodule._is_dynamo_traceable()
+        if not is_dynamo_traceable:
             with pytest.raises(RuntimeError):
                 _ = aimet_torch.v2.experimental.export.export(qmodule, args=inputs)
             return

@@ -40,7 +40,7 @@ import abc
 import contextlib
 import inspect
 import itertools
-from typing import Type, List, Dict, Union, Iterable, Mapping, Optional
+from typing import Type, List, Dict, Union, Iterable, Mapping, Optional, Tuple
 
 import torch
 from torch import nn
@@ -889,8 +889,13 @@ class BaseQuantizationMixin(abc.ABC):
             )
             self.param_quantizers[param_name] = param_qtzr
 
-    def _is_dynamo_traceable(self):
-        return not any(self.param_quantizers.values())
+    @classmethod
+    def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
+        """
+        Returns true if the module is traceable by torch dynamo
+        along with the reason if not traceable
+        """
+        return True, None
 
 
 def _remove_quantizers(quantizers, keys):
