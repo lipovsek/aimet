@@ -270,8 +270,8 @@ def test_apply_spinquant(hidden_size, use_bias):
     assert torch.allclose(orig_out.logits, new_out.logits, atol=1e-6)
 
 
-def test_get_hadamard_matrix():
-    hidden_size = 192
+@pytest.mark.parametrize("hidden_size", [192, 1536, 2560, 3584])
+def test_get_hadamard_matrix(hidden_size):
     had_matrix = get_hadamard_matrix(hidden_size)
 
     ones = torch.ones(hidden_size)
