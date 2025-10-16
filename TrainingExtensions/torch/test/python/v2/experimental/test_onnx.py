@@ -691,7 +691,7 @@ def test_quantsim_export_onnx_qdq_resnet18(
             node for node in onnx_model.graph.node if node.op_type == "DequantizeLinear"
         ]
         # Exported onnx qdq model can contain MORE qdq nodes than quantsim
-        # due to data movement op's output encodings that are generated
+        # as data movement op's output encodings that are generated
         # on-the-fly during export
         assert len(onnx_dq_nodes) >= len(sim_qdq_nodes)
 

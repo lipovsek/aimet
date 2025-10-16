@@ -1,11 +1,13 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
-from typing import Any
+
+# pylint: disable=protected-access
+from typing import Any, Tuple, Optional
 from packaging.version import parse
 import torch
 from torch.export import ExportedProgram
 import torch.fx.node
-from torch.fx.passes.shape_prop import TensorMetadata
+from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch._subclasses.fake_tensor import FakeTensorMode
 from ..onnx._export import _precompute_encodings
 from ...nn import QuantizationMixin
@@ -19,7 +21,6 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
 
     This function takes set of same arguments as `torch.export.export()`_
     """
-    # pylint: disable=protected-access
     if parse(torch.__version__) < parse("2.8.0"):
         raise RuntimeError(
             "Exporting to torch.exoprt.ExportedProgram is only supported with torch>=2.8.0; "
@@ -65,21 +66,209 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
     with _precompute_encodings(mod), torch.no_grad():
         ep = torch.export.export(mod, *args, **kwargs)
 
-    for q_dq_node in ep.graph.nodes:
-        if not (
-            q_dq_node.op == "call_function"
-            and isinstance(q_dq_node.target, torch._ops.OpOverload)
-        ):
-            continue
-        if (
-            q_dq_node.target.name().startswith("aten::fake_quantize")
-            or q_dq_node.target.name().startswith("quantized_decomposed::quantize")
-            or q_dq_node.target.name().startswith("quantized_decomposed::dequantize")
-        ):
-            _fold_scale_and_zp(q_dq_node, ep)
+    for node in ep.graph.nodes:
+        if _is_qdq_op(node):
+            _try_fold_scale_and_zp(node, ep)
+
+    for node in ep.graph.nodes:
+        if _is_grid_preserving_op(node):
+            _try_insert_output_qdq(ep, node)
+
+    for node in reversed(ep.graph.nodes):
+        if _is_grid_preserving_op(node):
+            _try_insert_input_qdq(ep, node)
 
     _remove_dangling_nodes(ep)
     return ep
+
+
+def _try_insert_output_qdq(ep: ExportedProgram, node: torch.fx.Node):
+    input_q, input_dq = _get_input_qdq(node)
+    output_q, output_dq = _get_output_qdq(node)
+
+    if not (
+        input_q is not None
+        and input_dq is not None
+        and output_q is None
+        and output_dq is None
+    ):
+        return
+
+    qtype = input_q.args[5] if len(input_q.args) > 5 else input_q.kwargs["dtype"]
+    with ep.graph.inserting_after(node):
+        output_q = ep.graph.create_node(
+            op=input_q.op,
+            target=input_q.target,
+            args=(node, *input_q.args[1:]),
+            kwargs=input_q.kwargs.copy(),
+            name=f"{input_q.name}_copy",
+        )
+        output_q.meta["val"] = node.meta["val"].to(qtype)
+        output_q.meta["tensor_meta"] = _extract_tensor_metadata(output_q.meta["val"])
+
+    with ep.graph.inserting_after(output_q):
+        output_dq = ep.graph.create_node(
+            op=input_dq.op,
+            target=input_dq.target,
+            args=(output_q, *input_dq.args[1:]),
+            kwargs=input_dq.kwargs.copy(),
+            name=f"{input_dq.name}_copy",
+        )
+        output_dq.meta.update(
+            {
+                "val": node.meta["val"].clone(),
+                "tensor_meta": node.meta["tensor_meta"],
+            }
+        )
+
+    node.replace_all_uses_with(output_dq)
+    output_q.args = (node, *input_q.args[1:])
+
+    ep.graph.eliminate_dead_code()
+    ep.graph_module.recompile()
+
+
+def _try_insert_input_qdq(ep: ExportedProgram, node: torch.fx.Node):
+    if node.all_input_nodes:
+        input = node.all_input_nodes[0]  # pylint: disable=redefined-builtin
+    else:
+        return
+
+    input_q, input_dq = _get_input_qdq(node)
+    output_q, output_dq = _get_output_qdq(node)
+
+    if not (
+        input
+        and len(input.users) == 1
+        and output_q is not None
+        and output_dq is not None
+        and input_q is None
+        and input_dq is None
+    ):
+        return
+
+    qtype = output_q.args[5] if len(output_q.args) > 5 else output_q.kwargs["dtype"]
+    with ep.graph.inserting_after(input):
+        input_q = ep.graph.create_node(
+            op=output_q.op,
+            target=output_q.target,
+            args=(input, *output_q.args[1:]),
+            kwargs=output_q.kwargs.copy(),
+            name=f"{output_q.name}_copy",
+        )
+        input_q.meta["val"] = input.meta["val"].to(qtype)
+        input_q.meta["tensor_meta"] = _extract_tensor_metadata(input_q.meta["val"])
+
+    with ep.graph.inserting_after(input_q):
+        input_dq = ep.graph.create_node(
+            op=output_dq.op,
+            target=output_dq.target,
+            args=(input_q, *output_dq.args[1:]),
+            kwargs=output_dq.kwargs.copy(),
+            name=f"{output_dq.name}_copy",
+        )
+        input_dq.meta.update(
+            {
+                "val": input.meta["val"].clone(),
+                "tensor_meta": node.meta["tensor_meta"],
+            }
+        )
+
+    input.replace_all_uses_with(input_dq)
+    input_q.args = (input, *input_q.args[1:])
+
+    ep.graph.eliminate_dead_code()
+    ep.graph_module.recompile()
+
+
+def _get_output_qdq(
+    node: torch.fx.Node,
+) -> Tuple[Optional[torch.fx.Node], Optional[torch.fx.Node]]:
+    (q,) = node.users if len(node.users) == 1 else (None,)
+    (dq,) = q.users if q and len(q.users) == 1 else (None,)
+
+    if not (
+        dq
+        and isinstance(dq.target, torch._ops.OpOverload)
+        and dq.target.name().startswith("quantized_decomposed::dequantize_per_tensor")
+    ):
+        dq = None
+        q = None
+
+    if not (
+        q
+        and isinstance(q.target, torch._ops.OpOverload)
+        and q.target.name().startswith("quantized_decomposed::quantize_per_tensor")
+    ):
+        q = None
+
+    return q, dq
+
+
+def _get_input_qdq(
+    node: torch.fx.Node,
+) -> Tuple[Optional[torch.fx.Node], Optional[torch.fx.Node]]:
+    dq = node.all_input_nodes[0] if node.all_input_nodes else None
+    q = dq.all_input_nodes[0] if dq and dq.all_input_nodes else None
+
+    if not (
+        dq
+        and isinstance(dq.target, torch._ops.OpOverload)
+        and dq.target.name().startswith("quantized_decomposed::dequantize_per_tensor")
+    ):
+        dq = None
+        q = None
+
+    if not (
+        q
+        and isinstance(q.target, torch._ops.OpOverload)
+        and q.target.name().startswith("quantized_decomposed::quantize_per_tensor")
+    ):
+        q = None
+
+    return q, dq
+
+
+def _is_qdq_op(node: torch.fx.Node) -> bool:
+    if not isinstance(node.target, torch._ops.OpOverload):
+        return False
+
+    return (
+        node.target.name().startswith("aten::fake_quantize")
+        or node.target.name().startswith("quantized_decomposed::quantize")
+        or node.target.name().startswith("quantized_decomposed::dequantize")
+    )
+
+
+def _is_grid_preserving_op(node: torch.fx.Node) -> bool:
+    if not isinstance(node.target, torch._ops.OpOverload):
+        return False
+
+    name, *_ = node.target.name().split(".")
+    return name in (
+        "aten::dropout",
+        "aten::dropout_",
+        "aten::expand",
+        "aten::gather",
+        "aten::flatten",
+        "aten::max_pool1d",
+        "aten::max_pool2d",
+        "aten::max_pool3d",
+        "aten::max",
+        "aten::min",
+        "aten::nonzero",
+        "aten::pad",
+        "aten::permute",
+        "aten::repeat",
+        "aten::repeat_interleave",
+        "aten::reshape",
+        "aten::slice",
+        "aten::squeeze",
+        "aten::tile",
+        "aten::topk",
+        "aten::transpose",
+        "aten::unsqueeze",
+    )
 
 
 def _remove_dangling_nodes(ep: ExportedProgram):
@@ -123,7 +312,7 @@ def _remove_dangling_nodes(ep: ExportedProgram):
         del ep.constants[dangling_key]
 
 
-def _fold_scale_and_zp(q_dq_node: torch.fx.Node, ep: ExportedProgram):
+def _try_fold_scale_and_zp(q_dq_node: torch.fx.Node, ep: ExportedProgram):
     if len(q_dq_node.all_input_nodes) > 1:
         scale: torch.Tensor = _eval_node(q_dq_node.all_input_nodes[1], ep)
         scale_placeholder: torch.fx.Node = _insert_placeholder(
@@ -170,18 +359,7 @@ def _insert_placeholder(
     node.meta.update(
         {
             "val": fake_tensor,
-            "example_value": fake_tensor,
-            "tensor_metadata": TensorMetadata(
-                shape=val.shape,
-                dtype=val.dtype,
-                requires_grad=val.requires_grad,
-                stride=val.stride(),
-                memory_format=torch.contiguous_format,
-                is_quantized=False,
-                qparams={},
-            ),
-            "seq_nr": 1,
-            # "from_node": [],
+            "tensor_meta": _extract_tensor_metadata(fake_tensor),
         }
     )
 

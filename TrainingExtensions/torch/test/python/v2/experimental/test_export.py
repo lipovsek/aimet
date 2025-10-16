@@ -1,16 +1,18 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
+import itertools
 from pathlib import Path
 from packaging import version
 import torch
-from torchvision.models import MobileNetV3, ResNet, resnet18, mobilenet_v3_large
+from torchvision.models import resnet18, mobilenet_v3_large
 from torch.export import ExportedProgram
 import aimet_torch
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.experimental.export import export
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 import aimet_torch.v2.nn.transformers.models.llama
-import onnx
+from aimet_torch.quantization.affine import AffineQuantizerBase
+from aimet_torch.model_preparer import prepare_model
 import pytest
 
 
@@ -54,6 +56,7 @@ def llama_rms_norm(**_):
 )
 def test_export(model_factory, tmp_path: Path):
     model = model_factory(pretrained=False).requires_grad_(False).eval()
+    model = prepare_model(model)
     x = torch.randn(1, 3, 224, 224)
     sim = QuantizationSimModel(model, x, config_file="htp_v81")
 
@@ -63,12 +66,8 @@ def test_export(model_factory, tmp_path: Path):
 
     sim.compute_encodings(lambda model: model(x))
 
-    if isinstance(model, ResNet):
-        last_layer = sim.model.fc
-    elif isinstance(model, MobileNetV3):
-        last_layer = sim.model.classifier[-1]
-    else:
-        last_layer = sim.model[-1]
+    last_layer_name = [name for name, _ in model.named_modules()][-1]
+    last_layer = sim.model.get_submodule(last_layer_name)
 
     """
     When: Export sim with aimet_torch.export.export
@@ -86,15 +85,17 @@ def test_export(model_factory, tmp_path: Path):
     assert torch.allclose(sim_out, ep_out, atol=atol)
 
     """
-    Then: The number of fake_quantize nodes should be equal to that of torch.onnx.export
+    Then: The number of qdq nodes should be equal to the number of quantizers in sim
     """
-    with torch.no_grad():
-        path = tmp_path / f"{model_factory.__name__}_quantized.onnx"
-        torch.onnx.export(sim.model, x, path, dynamo=False)
-        onnx_model = onnx.load_model(path)
-
-    onnx_qdq_nodes = [
-        node for node in onnx_model.graph.node if node.op_type == "quantize_dequantize"
+    quantizers = [
+        qtzr
+        for qmodule in sim.qmodules()
+        for qtzr in itertools.chain(
+            qmodule.input_quantizers,
+            qmodule.output_quantizers,
+            qmodule.param_quantizers.values(),
+        )
+        if isinstance(qtzr, AffineQuantizerBase) and qtzr.is_initialized()
     ]
     torch_dq_nodes = [
         node
@@ -102,7 +103,10 @@ def test_export(model_factory, tmp_path: Path):
         if node.op == "call_function"
         and node.target.name().startswith("quantized_decomposed::dequantize")
     ]
-    assert len(torch_dq_nodes) == len(onnx_qdq_nodes)
+    # Exported model can contain MORE qdq nodes than quantsim
+    # as data movement op's output encodings that are generated
+    # on-the-fly during export
+    assert len(torch_dq_nodes) >= len(quantizers)
 
     """
     Then: All scales and zero_points should be constant-folded
