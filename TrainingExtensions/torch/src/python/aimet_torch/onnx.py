@@ -40,6 +40,7 @@ from collections import defaultdict
 import copy
 import contextlib
 import io
+from packaging import version
 import traceback
 from typing import Any, List, Mapping, Tuple, Union
 from pathlib import Path
@@ -115,7 +116,8 @@ def export(
 
         >>> aimet_torch.onnx.export(sim.model, x, f="model.onnx",
         ...                         input_names=["input"], output_names=["output"],
-        ...                         opset_version=21, export_int32_bias=True)
+        ...                         opset_version=21, dynamo=False,
+        ...                         export_int32_bias=True)
         ...
         >>> import onnxruntime as ort
         >>> options = ort.SessionOptions()
@@ -282,6 +284,17 @@ def _check_opset_version(kwargs):
 
 
 def _check_unsupported_args(kwargs):
+    dynamo = kwargs.get("dynamo", False)
+
+    if dynamo:
+        msg = "dynamo=True is not supported yet."
+        if version.parse(torch.__version__) >= version.parse("2.9.0"):
+            msg += (
+                " PyTorch onnx.export has switched to use dynamo-based export by default since v2.9.0. "
+                "Please pass dynamo=False explicitly to disable dynamo-based export."
+            )
+        raise NotImplementedError(msg)
+
     export_params = kwargs.get("export_params", True)
 
     if not export_params:
@@ -293,11 +306,6 @@ def _check_unsupported_args(kwargs):
         raise NotImplementedError(
             "keep_initializers_as_inputs=True is not supported yet"
         )
-
-    dynamo = kwargs.get("dynamo", False)
-
-    if dynamo:
-        raise NotImplementedError("dynamo=True is not supported yet")
 
     do_constant_folding = kwargs.get("do_constant_folding", True)
 

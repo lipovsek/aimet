@@ -780,6 +780,7 @@ class _QuantizationSimOnnxExport:
         self,
         args: Union[Tuple[Any, ...], torch.Tensor],
         f: Union[str, io.BytesIO],
+        *,
         export_int32_bias: bool = True,
         **kwargs,
     ):
