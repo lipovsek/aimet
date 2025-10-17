@@ -123,7 +123,9 @@ def test_quantize_torch_ort_equal(
         full_path = os.path.join(dirname, "qtzr.onnx")
 
         with open(full_path, "wb") as f:
-            _export(qtzr, x, f, input_names=["input"], output_names=["output"])
+            _export(
+                qtzr, x, f, input_names=["input"], output_names=["output"], dynamo=False
+            )
 
         with torch.no_grad():
             y = qtzr(x)
@@ -225,7 +227,14 @@ def test_dequantize_torch_ort_equal(input_shape, scale_shape, block_size, symmet
         full_path = os.path.join(dirname, "qtzr.onnx")
 
         with open(full_path, "wb") as f:
-            _export(Dequantize(), x, f, input_names=["input"], output_names=["output"])
+            _export(
+                Dequantize(),
+                x,
+                f,
+                input_names=["input"],
+                output_names=["output"],
+                dynamo=False,
+            )
 
         with torch.no_grad():
             y = x.dequantize()
@@ -289,7 +298,14 @@ def test_export_torchvision_models(model_factory, input_shape):
         full_path = os.path.join(dirname, "torchvision_model.onnx")
 
         with open(full_path, "wb") as f:
-            _export(model, x, f, input_names=["input"], output_names=["output"])
+            _export(
+                model,
+                x,
+                f,
+                input_names=["input"],
+                output_names=["output"],
+                dynamo=False,
+            )
 
         """
         Then: The saved onnx model should pass onnx model checker
@@ -462,6 +478,7 @@ def test_quantsim_export_resnet18(
                 output_names=["output"],
                 dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
                 export_int32_bias=export_int32_bias,
+                dynamo=False,
             )
 
         """
@@ -670,6 +687,7 @@ def test_quantsim_export_onnx_qdq_resnet18(
             opset_version=21,
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
             export_int32_bias=export_int32_bias,
+            dynamo=False,
         )
 
         """
@@ -740,6 +758,7 @@ def test_non_float32_qdq_export(tmp_path, dtype):
             onnx_path,
             input_names=["input"],
             output_names=["output"],
+            dynamo=False,
         )
 
 
@@ -794,6 +813,7 @@ def test_minimum_opset(
                 f=full_path,
                 opset_version=target_opset,
                 dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+                dynamo=False,
             )
 
         if target_opset < minimum_required_opset:
@@ -813,6 +833,7 @@ def test_minimum_opset(
                         "input": {0: "batch_size"},
                         "output": {0: "batch_size"},
                     },
+                    dynamo=False,
                 )
             return
 
@@ -826,6 +847,7 @@ def test_minimum_opset(
             opset_version=target_opset,
             input_names=["input"],
             output_names=["output"],
+            dynamo=False,
         )
 
         """
@@ -864,6 +886,9 @@ def test_unsupported_args(kwargs):
     x = torch.zeros(10, 10)
     sim = QuantizationSimModel(model, x)
 
+    if "dynamo" not in kwargs:
+        kwargs["dynamo"] = False
+
     with pytest.raises((ValueError, RuntimeError, NotImplementedError)):
         aimet_torch.onnx.export(sim.model, x, f=os.devnull, **kwargs)
 
@@ -881,7 +906,7 @@ def test_non_standard_quantizer():
     )
 
     with pytest.raises(NotImplementedError):
-        aimet_torch.onnx.export(sim.model, x, f=os.devnull)
+        aimet_torch.onnx.export(sim.model, x, f=os.devnull, dynamo=False)
 
     """
     When: Export model with non-standard-bitwidth quantizer
@@ -891,7 +916,7 @@ def test_non_standard_quantizer():
     sim.model[0].param_quantizers["weight"].bitwidth = 9
 
     with pytest.raises(RuntimeError):
-        aimet_torch.onnx.export(sim.model, x, f=os.devnull)
+        aimet_torch.onnx.export(sim.model, x, f=os.devnull, dynamo=False)
 
 
 def test_data_movement_op_encoding_generation():
@@ -926,6 +951,7 @@ def test_data_movement_op_encoding_generation():
             input_names=["input"],
             output_names=["output"],
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+            dynamo=False,
         )
         onnx_model = onnx.load_model(full_path)
 
@@ -960,6 +986,7 @@ def test_data_movement_op_encoding_generation():
                 input_names=["input"],
                 output_names=["output"],
                 dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+                dynamo=False,
             )
         onnx_model_ = onnx.load_model(full_path)
         # patch sanity check
@@ -1122,6 +1149,7 @@ def test_back_to_back_qdq(tmp_path):
             input_names=["input"],
             output_names=["output"],
             opset_version=21,
+            dynamo=False,
         )
 
     with pytest.raises(NotImplementedError):
@@ -1130,6 +1158,7 @@ def test_back_to_back_qdq(tmp_path):
             "qdq_model.onnx",
             input_names=["input"],
             output_names=["output"],
+            dynamo=False,
         )
 
     # TODO: Uncomment this when AIMET begins to support exporting back-to-back QDQ
@@ -1178,6 +1207,7 @@ def test_back_to_back_qdq(tmp_path):
         input_names=["input"],
         output_names=["output"],
         opset_version=21,
+        dynamo=False,
     )
     onnx_model = onnx.load_model(tmp_path / "qdq_model.onnx")
     num_dq = len(
@@ -1246,6 +1276,7 @@ def test_export_large_model(
             output_names=["output"],
             opset_version=opset_version,
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+            dynamo=False,
         )
 
     with open(os.path.join(tmp_path, "qdq_model.encodings")) as f:
@@ -1274,6 +1305,7 @@ def test_export_large_model(
         opset_version=opset_version,
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
         prequantize_constants=prequantize_constants,
+        dynamo=False,
     )
 
     sess_options = ort.SessionOptions()
