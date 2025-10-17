@@ -53,16 +53,21 @@ def get_all_input_ops(conn_graph: ConnectedGraph) -> List[Op]:
     :param conn_graph: Connected graph to search for input ops in
     :return: List of all operations with no inputs
     """
+    memo = set()
+    ret = []
+    for _, op in _get_all_input_and_consumer(conn_graph):
+        if op not in memo:
+            memo.add(op)
+            ret.append(op)
+    return ret
 
+
+def _get_all_input_and_consumer(conn_graph: ConnectedGraph):
     all_ops = conn_graph.get_all_ops().values()
-    input_ops = []
     for op in all_ops:
         for item in op.inputs:
             if not item.producer and item.is_model_input:
-                if op not in input_ops:
-                    input_ops.append(op)
-
-    return input_ops
+                yield item, op
 
 
 def get_all_ops_with_constant_inputs(conn_graph: ConnectedGraph) -> Set[Op]:

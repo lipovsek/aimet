@@ -37,6 +37,8 @@
 import json
 import os
 import pytest
+import torch
+import onnx
 from aimet_common.defs import QuantizationDataType, qtype
 from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
@@ -408,3 +410,53 @@ class TestQuantSimConfig:
         assert not sim.qc_quantize_op_dict["batchnorm.bias"].enabled
         assert sim.qc_quantize_op_dict["batchnorm.weight"].enabled
         assert sim.qc_quantize_op_dict["output"].enabled
+
+    def test_input_qtzr_upon_residual_connection(self, tmp_path):
+        """
+        Given: A residual connection in the model graph
+
+          input -+-> MatMul --> Mul --> output
+                 +---------------^
+
+          where MatMul-Mul is defined as supergroup
+
+        When: Create QuantizationSimModel with htp_v81 config
+        Then: Intermediate output between MatMul and Mul should not be quantized
+
+          input -Q--+-> MatMul --> Mul -Q-> output
+                    +---------------^
+        """
+        config = {
+            "defaults": {
+                "ops": {"is_output_quantized": "True", "is_symmetric": "False"},
+                "params": {"is_quantized": "True", "is_symmetric": "True"},
+            },
+            "params": {"bias": {"is_quantized": "False"}},
+            "op_type": {},
+            "supergroups": [
+                {"op_list": ["MatMul", "Mul"]},
+            ],
+            "model_input": {"is_input_quantized": "True"},
+            "model_output": {},
+        }
+        with open(tmp_path / "config.json", "w") as f:
+            json.dump(config, f)
+
+        class Model(torch.nn.Module):
+            def forward(self, x):
+                return (x @ x) * x
+
+        model = Model()
+        torch.onnx.export(
+            model,
+            torch.randn(10, 10),
+            tmp_path / "residual.onnx",
+            input_names=["input"],
+            output_names=["output"],
+            opset_version=13,
+        )
+        model = onnx.load(tmp_path / "residual.onnx")
+        sim = QuantizationSimModel(model, config_file=tmp_path / "config.json")
+        assert sim.qc_quantize_op_dict["input"].enabled
+        assert sim.qc_quantize_op_dict["output"].enabled
+        assert not sim.qc_quantize_op_dict["/MatMul_output_0"].enabled
