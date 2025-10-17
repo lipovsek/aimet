@@ -290,7 +290,7 @@ def _check_unsupported_args(kwargs):
         msg = "dynamo=True is not supported yet."
         if version.parse(torch.__version__) >= version.parse("2.9.0"):
             msg += (
-                " PyTorch onnx.export has switched to use dynamo-based export by default since v2.9.0. "
+                " PyTorch onnx.export has switched to using dynamo-based export by default since v2.9.0. "
                 "Please pass dynamo=False explicitly to disable dynamo-based export."
             )
         raise NotImplementedError(msg)

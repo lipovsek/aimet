@@ -185,8 +185,19 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
         if version.parse(torch.__version__) < version.parse("1.10"):
             # This is for backward compatibility with torch < 1.10
             # which doesn't support get/set_extra_state() hooks
-            prefix = kwargs["prefix"]
+            prefix = kwargs.get("prefix", "")
             state_dict[f"{prefix}extra_state"] = self.get_extra_state()
+
+        if (
+            version.parse(torch.__version__) < version.parse("2")
+            and torch.onnx.is_in_onnx_export()
+        ):
+            # During ONNX export in torch 1.x, state_dict cannot contain
+            # non-tensor objects due to a bug in torch.onnx.export.
+            # Skip adding extra_state because extra_state is unnecessary anyway
+            # for ONNX export.
+            prefix = kwargs.get("prefix", "")
+            state_dict.pop(f"{prefix}_extra_state", None)
 
         return state_dict
 

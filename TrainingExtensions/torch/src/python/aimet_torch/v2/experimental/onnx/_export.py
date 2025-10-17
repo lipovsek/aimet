@@ -39,6 +39,7 @@
 from contextlib import contextmanager, ExitStack
 from collections import defaultdict
 from dataclasses import dataclass
+from packaging import version
 import functools
 import math
 import numpy as np
@@ -50,11 +51,21 @@ from onnxscript import opset15, opset16, opset17, opset18, opset19, opset20, ops
 import torch
 from torch.onnx import is_in_onnx_export, symbolic_helper
 
+try:
+    # torch <2.9
+    from torch.onnx._internal.jit_utils import GraphContext
+    from torch.onnx._globals import GLOBALS
+except ImportError:
+    # torch >=2.9
+    from torch.onnx._internal.torchscript_exporter.jit_utils import GraphContext
+    from torch.onnx._internal.torchscript_exporter._globals import GLOBALS
+
 from aimet_torch.v2.utils import patch_attr
 
 
 ONNX_QUANTIZER_OP_TYPES = ("quantize", "quantize_dequantize")
 aimet_opset = onnxscript.values.Opset(domain="aimet", version=1)
+_is_torch_2 = version.parse(torch.__version__) >= version.parse("2.0.0")
 
 
 def _quantize_template(opset: onnxscript.values.Opset) -> onnxscript.OnnxFunction:
@@ -187,6 +198,20 @@ def _shape(tensor):
 
 def quantize_symbolic(g, tensor, scale, offset, qmin, qmax, block_size=None):
     """Onnx symbolic function definition for affine quantize"""
+    if not _is_torch_2:
+        # torch <2 passes torch._C.Graph object instead of GraphContext.
+        # Temporarily wrap torch._C.Graph with GraphContext
+        from torch.onnx.utils import _params_dict
+
+        g = GraphContext(
+            graph=g,
+            block=g.block(),
+            opset=GLOBALS.export_onnx_opset_version,
+            original_node=None,
+            params_dict=_params_dict,
+            env={},
+        )
+
     # Unsqueeze scale, offset if scalars.
     # This is necessary because ONNX Resize operator requires non-scalar input tensors
     scale = _unsqueeze_scalar(g, scale)
@@ -212,6 +237,20 @@ def quantize_symbolic(g, tensor, scale, offset, qmin, qmax, block_size=None):
             old == new for old, new in zip(old_block_size, new_block_size) if old != -1
         )
         block_size = new_block_size
+
+    if not _is_torch_2:
+        # For torch <2, insert dummy placeholder node instead of
+        # a runnable onnxscript function since
+        # torch 1.x doesn't support adding onnxscript function to onnx graph
+        return g.op(
+            "aimet::quantize",
+            tensor,
+            scale,
+            offset,
+            qmin_i=qmin,
+            qmax_i=qmax,
+            block_size_i=block_size,
+        ).setType(tensor.type())
 
     opset = (
         _opset15
@@ -242,6 +281,20 @@ def quantize_symbolic(g, tensor, scale, offset, qmin, qmax, block_size=None):
 
 def dequantize_symbolic(g, tensor, scale, offset, block_size=None):
     """Onnx symbolic function definition for affine dequantize"""
+    if not _is_torch_2:
+        # torch <2 passes torch._C.Graph object instead of GraphContext.
+        # Temporarily wrap torch._C.Graph with GraphContext
+        from torch.onnx.utils import _params_dict
+
+        g = GraphContext(
+            graph=g,
+            block=g.block(),
+            opset=GLOBALS.export_onnx_opset_version,
+            original_node=None,
+            params_dict=_params_dict,
+            env={},
+        )
+
     # Unsqueeze scale, offset if scalars.
     # This is necessary because ONNX Resize operator requires non-scalar input tensors
     scale = _unsqueeze_scalar(g, scale)
@@ -267,6 +320,18 @@ def dequantize_symbolic(g, tensor, scale, offset, block_size=None):
             old == new for old, new in zip(old_block_size, new_block_size) if old != -1
         )
         block_size = new_block_size
+
+    if not _is_torch_2:
+        # For torch <2, insert dummy placeholder node instead of
+        # a runnable onnxscript function since
+        # torch 1.x doesn't support adding onnxscript function to onnx graph
+        return g.op(
+            "aimet::dequantize",
+            tensor,
+            scale,
+            offset,
+            block_size_i=block_size,
+        ).setType(tensor.type())
 
     opset = (
         _opset15
@@ -300,6 +365,21 @@ def quantize_dequantize_symbolic(
         raise RuntimeError(
             "torch.onnx.export not supported for nonzero zero_point_shift"
         )
+
+    if not _is_torch_2:
+        # torch <2 passes torch._C.Graph object instead of GraphContext.
+        # Temporarily wrap torch._C.Graph with GraphContext
+        from torch.onnx.utils import _params_dict
+
+        g = GraphContext(
+            graph=g,
+            block=g.block(),
+            opset=GLOBALS.export_onnx_opset_version,
+            original_node=None,
+            params_dict=_params_dict,
+            env={},
+        )
+
     scale = _unsqueeze_scalar(g, scale)
     offset = _unsqueeze_scalar(g, offset)
 
@@ -323,6 +403,20 @@ def quantize_dequantize_symbolic(
             old == new for old, new in zip(old_block_size, new_block_size) if old != -1
         )
         block_size = new_block_size
+
+    if not _is_torch_2:
+        # For torch <2, insert dummy placeholder node instead of
+        # a runnable onnxscript function since
+        # torch 1.x doesn't support adding onnxscript function to onnx graph
+        return g.op(
+            "aimet::quantize_dequantize",
+            tensor,
+            scale,
+            offset,
+            qmin_i=qmin,
+            qmax_i=qmax,
+            block_size_i=block_size,
+        ).setType(tensor.type())
 
     opset = (
         _opset15
