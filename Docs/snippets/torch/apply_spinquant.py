@@ -126,7 +126,7 @@ class LimitedBatchDataLoader:
 
 # [create-sim]
 from aimet_common.defs import QuantScheme
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch import QuantizationSimModel
 
 seq_length = 2048
 input_ids = torch.randint(0, model_config.vocab_size, (1, seq_length), device=device)

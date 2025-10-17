@@ -146,7 +146,7 @@ with place_model(model, torch.device("cuda")):
 # [ptq]
 from transformers.models import opt
 
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.nn.true_quant import QuantizationMixin
 from aimet_torch.peft import replace_lora_layers_with_quantizable_layers
 

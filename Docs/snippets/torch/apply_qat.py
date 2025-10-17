@@ -72,7 +72,7 @@ def evaluate(model, data_loader):
     return correct / len(data_loader.dataset)
 
 # step_1
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch import QuantizationSimModel
 sim = QuantizationSimModel(model, dummy_input)
 sim.compute_encodings(pass_calibration_data)
 

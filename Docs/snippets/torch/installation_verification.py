@@ -47,7 +47,7 @@ dummy_input = torch.randn((10, 3, 224, 224), device=device)
 # [step_2]
 from aimet_common.defs import QuantScheme
 from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch import QuantizationSimModel
 
 sim = QuantizationSimModel(model, 
                            dummy_input,

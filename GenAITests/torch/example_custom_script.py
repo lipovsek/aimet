@@ -19,9 +19,8 @@ from aimet_torch.v2.nn.transformers.models.llama.modeling_llama import (
 from aimet_torch.v2.quantsim.config_utils import (
     set_grouped_blockwise_quantization_for_weights,
 )
-from aimet_torch.v2.utils import remove_all_quantizers
-from aimet_torch.v2.nn.true_quant import QuantizedConv2d, QuantizedLinear
-from aimet_torch.utils import place_model
+from aimet_torch.nn import QuantizedConv2d, QuantizedLinear
+from aimet_torch.utils import place_model, remove_all_quantizers
 
 from GenAITests.shared.models.base import LLM
 from GenAITests.shared.models.generator import Generator

@@ -59,7 +59,7 @@ path = './'
 filename = 'mobilenet'
 
 # [step_1]
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch import QuantizationSimModel
 from aimet_torch.adaround.adaround_weight import Adaround, AdaroundParameters
 
 params = AdaroundParameters(data_loader=data_loader, num_batches=num_batches)

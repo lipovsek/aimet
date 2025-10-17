@@ -74,6 +74,14 @@ from torchvision import datasets, transforms
 
 from aimet_common.utils import AimetLogger, Handle
 from aimet_common.utils import profile as _profile, _red
+from .v2.utils import (  # pylint: disable=unused-import
+    remove_all_quantizers,
+    remove_activation_quantizers,
+    remove_input_quantizers,
+    remove_output_quantizers,
+    remove_param_quantizers,
+)
+
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
 
@@ -869,10 +877,9 @@ def disable_all_quantizers(model: torch.nn.Module):
     """
     # pylint: disable=import-outside-toplevel, cyclic-import
     from aimet_torch.v2.nn.base import BaseQuantizationMixin
-    import aimet_torch.v2.utils as v2_utils
 
     if any(isinstance(m, BaseQuantizationMixin) for m in model.modules()):
-        return v2_utils.remove_all_quantizers(model)
+        return remove_all_quantizers(model)
 
     param_quantizers, input_quantizers, output_quantizers = get_all_quantizers(model)
     all_quantizers = param_quantizers + input_quantizers + output_quantizers

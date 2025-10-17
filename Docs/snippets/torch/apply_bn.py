@@ -50,7 +50,7 @@ data_loader = DataLoader(data, batch_size=num_batches, num_workers = 4)
 dummy_input = torch.randn(1, 3, 224, 224).to(device)
 
 # [step_1]
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch import QuantizationSimModel
 from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
 
 sim = QuantizationSimModel(model=model, dummy_input=dummy_input, config_file=get_path_for_per_channel_config())

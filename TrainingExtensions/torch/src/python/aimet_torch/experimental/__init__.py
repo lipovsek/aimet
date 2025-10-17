@@ -35,3 +35,5 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 """Base package to define the experimental features in aimet-torch"""
+
+from ..v2.experimental import *  # pylint: disable=wildcard-import

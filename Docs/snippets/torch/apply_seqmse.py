@@ -76,7 +76,7 @@ dataloader = torch.utils.data.DataLoader(
 # End of dataloader
 
 # Create Quantization Simulation Model
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch import QuantizationSimModel
 
 dummy_input = torch.randn(1, 3, 224, 224).to(device)
 sim = QuantizationSimModel(model,

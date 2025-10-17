@@ -82,8 +82,8 @@ test_dataloader = DataLoader(test_dataset, batch_size=1, collate_fn=default_data
 import torch
 from transformers.models import opt
 
-from aimet_torch.quantsim import QuantizationSimModel
-from aimet_torch.v2.nn.true_quant import QuantizationMixin
+from aimet_torch import QuantizationSimModel
+from aimet_torch.nn import QuantizationMixin
 from aimet_torch.peft import replace_lora_layers_with_quantizable_layers
 
 # Generate dummy data used to instantiate QuantizationSimModel
@@ -150,10 +150,9 @@ def train_one_epoch(model, dataloader, device=torch.device("cuda")):
         optimizer.step()
 
 # [qwa_lora]
-from aimet_torch.utils import place_model
+from aimet_torch.utils import place_model, remove_all_quantizers
 from aimet_torch.peft import LoraLayer
-import aimet_torch.v2.quantization as Q
-from aimet_torch.v2.utils import remove_all_quantizers
+import aimet_torch.quantization as Q
 
 lora_a_layers = [module.lora_A for module in quantsim.model.modules() if isinstance(module, LoraLayer)]
 lora_b_layers = [module.lora_B for module in quantsim.model.modules() if isinstance(module, LoraLayer)]

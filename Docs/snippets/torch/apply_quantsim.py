@@ -107,7 +107,7 @@ model = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT).to(device)
 # Create Quantization Simulation Model
 from aimet_common.defs import QuantScheme
 from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
-from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch import QuantizationSimModel
 
 input_shape = (1, 3, 224, 224)
 dummy_input = torch.randn(input_shape).to(device)
