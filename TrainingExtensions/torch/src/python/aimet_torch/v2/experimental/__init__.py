@@ -36,6 +36,10 @@
 # =============================================================================
 
 # pylint: disable=missing-docstring
-from . import export
+try:
+    from . import export
+except ImportError:
+    pass
+
 from . import onnx
 from .quantsim_utils import *

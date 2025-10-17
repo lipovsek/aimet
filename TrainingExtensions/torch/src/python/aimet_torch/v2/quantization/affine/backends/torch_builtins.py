@@ -40,7 +40,11 @@ import functools
 from packaging import version
 from typing import Callable, Optional, List, Tuple
 import torch
-import torch.ao.quantization.fx._decomposed
+
+try:
+    import torch.ao.quantization.fx._decomposed
+except ImportError:
+    pass
 from aimet_torch.v2.utils import (
     _is_expandable,
     _ContextManager,
