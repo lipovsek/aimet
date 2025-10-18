@@ -36,7 +36,9 @@
 # =============================================================================
 """Main class for pattern match based graph searcher"""
 
-from typing import Callable, Optional
+from typing import Callable, Optional, List, Set
+from aimet_common.connected_graph.connectedgraph import ConnectedGraph
+from aimet_common.graph_pattern_matcher import PatternType
 from aimet_common.utils import AimetLogger
 from aimet_common.connected_graph.operation import Op
 
@@ -110,7 +112,9 @@ class GraphSearcher:
     It uses SlidingWindow to maintain the search window and PatternMatcher to match sub graph patterns.
     """
 
-    def __init__(self, conn_graph, patterns_with_callback):
+    def __init__(
+        self, conn_graph: ConnectedGraph, patterns_with_callback: List[PatternType]
+    ):
         """
         initializes params required for pattern matching
         :param patterns_with_callback: patterns with corresponding call back functions
@@ -124,11 +128,14 @@ class GraphSearcher:
             else:
                 self.type_to_op_dict[op.type] = [op]
 
+        self._already_matched: Set[Op] = set()
+
     # pylint: disable=too-many-nested-blocks
     def find_all_patterns_in_graph_apply_actions(
         self,
         ignore: Optional[Op] = None,
         op_pattern_to_reject: Callable[[Op], bool] = None,
+        disjoint: bool = False,
     ):
         """
         Find corresponding op sequences and apply actions.
@@ -136,6 +143,7 @@ class GraphSearcher:
         :param op_pattern_to_reject: Callable to perform additional checks on Op to reject pattern match.
             This is useful to express intent on patterns that should not be matched.
             Since GraphSearcher performs high level pattern match, this enables to provide override for aggressive rejection for a given op config.
+        :param disjoint: If True, ensures that matched patterns do not share any ops.
         """
 
         if ignore is None:
@@ -151,19 +159,29 @@ class GraphSearcher:
                     matched_ops = self._match_pattern(
                         op, pattern_type.pattern, ignore, op_pattern_to_reject
                     )
-                    if matched_ops:
-                        for matched_ops_list in matched_ops:
-                            pattern_type.action(pattern_type, matched_ops_list)
-                            logger.debug("found match: %s", matched_ops_list)
+                    if not matched_ops:
+                        continue
+                    for matched_ops_list in matched_ops:
+                        if disjoint and any(
+                            matched_op in self._already_matched
+                            for matched_op in matched_ops_list
+                        ):
+                            # This pattern has already been matched as part of a longer pattern
+                            continue
+                        else:
+                            self._already_matched |= set(matched_ops_list)
+
+                        pattern_type.action(pattern_type, matched_ops_list)
+                        logger.debug("found match: %s", matched_ops_list)
 
     # pylint: disable=too-many-branches, too-many-return-statements
     def _match_pattern(
         self,
-        op,
-        pattern,
-        ignored_ops,
-        op_pattern_to_reject: Callable[[Op], bool] = None,
-    ):
+        op: Op,
+        pattern: List[str],
+        ignored_ops: List[Op],
+        op_pattern_to_reject: Optional[Callable[[Op], bool]] = None,
+    ) -> Optional[List[List[Op]]]:
         if not pattern:
             return []
 

@@ -51,7 +51,7 @@ class GraphPass:
     """
 
     @abstractmethod
-    def match_pattern(self, op: Op, model: ModelProto):
+    def match_pattern(self, op: Op, model: ModelProto) -> List[Op]:
         """
         Pattern match and collect ops starting from given Op.
         """
@@ -126,7 +126,7 @@ class SupergroupGraphPass(GraphPass):
         self.disable_quantizers: List[str] = []
 
     @abstractmethod
-    def match_pattern(self, op: Op, model: ModelProto):
+    def match_pattern(self, op: Op, model: ModelProto) -> List[Op]:
         """
         Pattern match and collect ops starting from given Op.
         """

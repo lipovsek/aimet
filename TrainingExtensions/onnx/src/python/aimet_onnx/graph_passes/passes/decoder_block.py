@@ -38,15 +38,15 @@ class DecoderBlock(GraphPass):
             self.pattern_last_op = None
 
     # pylint: disable=too-many-branches, too-many-return-statements
-    def match_pattern(self, op: Op, model: ModelProto):
+    def match_pattern(self, op: Op, model: ModelProto) -> List[Op]:
         """
         Match RMSNorm pattern and collect ops to disable output quantizers
         """
         all_ops = match_rms_norm_pattern(op, model)
         if not all_ops:
-            return False
+            return []
 
         # Check if weights are present
         self.pattern_last_op = all_ops[0]
 
-        return True
+        return all_ops

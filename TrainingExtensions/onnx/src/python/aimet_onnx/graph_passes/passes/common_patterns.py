@@ -3,6 +3,7 @@
 
 # pylint: disable=missing-docstring
 
+from typing import List
 from aimet_common.connected_graph.operation import Op
 from aimet_onnx.utils import ModelProto
 
@@ -13,7 +14,7 @@ from aimet_onnx.graph_passes.utils import (
 )
 
 
-def match_rms_norm_pattern(op: Op, model: ModelProto):
+def match_rms_norm_pattern(op: Op, model: ModelProto) -> List[Op]:
     """Common pattern for RMSNormalization which can be re-used"""
     # Match Mul(x, x) or Pow(x, 2)
     match = match_pow_2_pattern(op, model)

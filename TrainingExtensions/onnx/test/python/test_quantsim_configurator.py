@@ -36,6 +36,9 @@
 # =============================================================================
 import json
 import os
+import numpy as np
+import onnx
+import torch
 import pytest
 import torch
 import onnx
@@ -186,48 +189,6 @@ class TestQuantSimConfig:
             providers=["CPUExecutionProvider"],
         )
         assert sim.qc_quantize_op_dict["input"].enabled == True
-
-    def test_parse_config_file_supergroups(self):
-        """Test that supergroup quantization parameters are set correctly when using json config file"""
-        model = models_for_tests.build_dummy_model()
-
-        quantsim_config = {
-            "defaults": {
-                "ops": {"is_output_quantized": "True", "is_symmetric": "False"},
-                "params": {"is_quantized": "False", "is_symmetric": "False"},
-            },
-            "params": {},
-            "op_type": {},
-            "supergroups": [
-                {"op_list": ["Conv", "Relu"]},
-                {"op_list": ["Relu", "MaxPool"]},
-            ],
-            "model_input": {},
-            "model_output": {},
-        }
-
-        if not os.path.exists("./data"):
-            os.makedirs("./data")
-        with open("./data/quantsim_config.json", "w") as f:
-            json.dump(quantsim_config, f)
-        sim = QuantizationSimModel(
-            model,
-            config_file="./data/quantsim_config.json",
-            providers=["CPUExecutionProvider"],
-        )
-
-        # 3 in conv output, 4 is relu output (even though it was not touched with Conv, relu pattern, it was disabled for
-        # relu maxpool pattern
-        for name in [
-            "3",
-            "4",
-        ]:
-            assert sim.qc_quantize_op_dict[name].enabled == False
-
-        assert sim.qc_quantize_op_dict["5"].enabled == False
-
-        if os.path.exists("./data/quantsim_config.json"):
-            os.remove("./data/quantsim_config.json")
 
     def test_parse_config_file_supergroups_pass_list(self):
         """
@@ -460,3 +421,132 @@ class TestQuantSimConfig:
         assert sim.qc_quantize_op_dict["input"].enabled
         assert sim.qc_quantize_op_dict["output"].enabled
         assert not sim.qc_quantize_op_dict["/MatMul_output_0"].enabled
+
+    def test_ambiguous_supergroup(self, tmp_path):
+        """
+        Given:
+          * model:       LayerNormalization ----------> Relu
+                 (decomposed into elementwise ops)
+          * config: Both LayerNormalization and Add-Relu are specified as supergroups
+        When: Create QuantizationSimModel
+        Then: supergroup_pass_list must take precedence over supergroups
+
+            LayerNormalization -> Q -> Relu -> Q
+        """
+        config = {
+            "defaults": {
+                "ops": {"is_output_quantized": "True", "is_symmetric": "False"},
+                "params": {"is_quantized": "True", "is_symmetric": "True"},
+            },
+            "params": {"bias": {"is_quantized": "False"}},
+            "op_type": {},
+            "supergroup_pass_list": ["LayerNormalization"],
+            "supergroups": [
+                {"op_list": ["Add", "Relu"]},
+            ],
+            "model_input": {"is_input_quantized": "True"},
+            "model_output": {},
+        }
+        with open(tmp_path / "quantsim_config.json", "w") as f:
+            json.dump(config, f)
+
+        model = torch.nn.Sequential(
+            torch.nn.LayerNorm((10, 10)),
+            torch.nn.ReLU(),
+        )
+        torch.onnx.export(
+            model,
+            torch.randn(10, 10),
+            tmp_path / "model.onnx",
+            input_names=["input"],
+            output_names=["output"],
+            opset_version=13,
+        )
+        model = onnx.load_model(tmp_path / "model.onnx")
+        sim = QuantizationSimModel(model, config_file=tmp_path / "quantsim_config.json")
+        sim.compute_encodings([{"input": np.random.randn(10, 10).astype(np.float32)}])
+
+        # LayerNormalization takes precedence over Add-Relu
+        expected_qdq = ("input", "0.weight", "/0/Add_1_output_0", "output")
+
+        for tensor_name, qtzr in sim.qc_quantize_op_dict.items():
+            if tensor_name in expected_qdq:
+                assert qtzr.enabled, (
+                    f"Quantizer for {tensor_name} is disabled but expected to be enabled"
+                )
+            else:
+                assert not qtzr.enabled, (
+                    f"Quantizer for {tensor_name} is enabled but expected to be disabled"
+                )
+
+        """
+        Given:
+          * model: Conv -> Add -> Relu
+          * config: Both Conv-Add and Add-Relu are specified as supergroups
+        When: Create QuantizationSimModel
+        Then: Whatever supergroup comes first in the config file must take precedence
+
+            Conv -> Add -> Q -> Relu -> Q
+        """
+        config = {
+            "defaults": {
+                "ops": {"is_output_quantized": "True", "is_symmetric": "False"},
+                "params": {"is_quantized": "True", "is_symmetric": "True"},
+            },
+            "params": {"bias": {"is_quantized": "False"}},
+            "op_type": {},
+            "supergroups": [
+                {"op_list": ["Conv", "Add"]},
+                {"op_list": ["Add", "Relu"]},
+            ],
+            "model_input": {"is_input_quantized": "True"},
+            "model_output": {},
+        }
+        with open(tmp_path / "quantsim_config.json", "w") as f:
+            json.dump(config, f)
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super(Model, self).__init__()
+                self.conv = torch.nn.Conv2d(3, 3, 3)
+                self.relu = torch.nn.ReLU()
+
+            def forward(self, x):
+                x = self.conv(x)
+                x = x + torch.ones_like(x)
+                x = self.relu(x)
+                return x
+
+        model = Model()
+        torch.onnx.export(
+            model,
+            torch.randn(1, 3, 10, 10),
+            tmp_path / "model.onnx",
+            input_names=["input"],
+            output_names=["output"],
+            opset_version=13,
+        )
+        model = onnx.load_model(tmp_path / "model.onnx")
+        sim = QuantizationSimModel(model, config_file=tmp_path / "quantsim_config.json")
+        sim.compute_encodings(
+            [{"input": np.random.randn(1, 3, 10, 10).astype(np.float32)}]
+        )
+
+        # Conv-Add takes precedence over Add-Relu
+        expected_qdq = (
+            "input",
+            "conv.weight",
+            "/Constant_output_0",  # second input to Add
+            "/Add_output_0",
+            "output",
+        )
+
+        for tensor_name, qtzr in sim.qc_quantize_op_dict.items():
+            if tensor_name in expected_qdq:
+                assert qtzr.enabled, (
+                    f"Quantizer for {tensor_name} is disabled but expected to be enabled"
+                )
+            else:
+                assert not qtzr.enabled, (
+                    f"Quantizer for {tensor_name} is enabled but expected to be disabled"
+                )

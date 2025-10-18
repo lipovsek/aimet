@@ -72,7 +72,7 @@ from aimet_common.onnx._utils import _is_grid_preserving_op
 from aimet_onnx.meta.connectedgraph import ConnectedGraph, CONSTANT_TYPE
 from aimet_onnx.utils import get_product_name_from_quantized_name
 from aimet_onnx.qc_quantize_op import OpMode, QcQuantizeOp
-from aimet_onnx.graph_passes.pass_registry import apply_graph_passes
+from aimet_onnx.graph_passes.pass_registry import apply_graph_passes, find_all_matches
 
 # pylint: disable=no-name-in-module, ungrouped-imports
 if version.parse(onnx.__version__) >= version.parse("1.14.0"):
@@ -337,6 +337,15 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         Set supergroup specific configurations (fourth level of specificity in configuration file)
         :param supergroups_configs: Configurations for supergroups
         """
+        matched_by_graph_pass = find_all_matches(
+            self._model.model,
+            self._conn_graph,
+            self._get_supergroup_pass_list(),
+        )
+        matched_by_graph_pass = set(
+            node_name for match in matched_by_graph_pass for node_name in match
+        )
+
         patterns_with_callbacks = []
         for supergroup_config in supergroups_configs:
             callback = SupergroupConfigCallback(self._model, self._op_to_quantizers)
@@ -347,10 +356,19 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
             for pattern in patterns:
                 patterns_with_callbacks.append(pattern)
 
+        def exclude_from_supergroup(op: NodeProto) -> bool:
+            return (
+                _check_if_conv3d_or_depthwise_conv(op)
+                # Don't apply "supergroups" config if the op will be handled by graph passes
+                # since "supergroup_pass_list" is a higher priority than "supergroups"
+                or op in matched_by_graph_pass
+            )
+
         if patterns_with_callbacks:
             graph_searcher = GraphSearcher(self._conn_graph, patterns_with_callbacks)
             graph_searcher.find_all_patterns_in_graph_apply_actions(
-                op_pattern_to_reject=_check_if_conv3d_or_depthwise_conv
+                op_pattern_to_reject=exclude_from_supergroup,
+                disjoint=True,
             )
 
     def _set_model_input_configs(self, model_input_configs: ConfigType):

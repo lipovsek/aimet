@@ -715,66 +715,6 @@ class TestQuantsimConfig:
                     SupportedKernelsAction.warn_on_error
                 )
 
-    def test_parse_config_file_supergroups(self):
-        """Test that supergroup quantization parameters are set correctly when using json config file"""
-        model = QuantSimTinyModel()
-        model.eval()
-
-        quantsim_config = {
-            "defaults": {
-                "ops": {"is_output_quantized": "True", "is_symmetric": "False"},
-                "params": {"is_quantized": "False", "is_symmetric": "False"},
-            },
-            "params": {},
-            "op_type": {"MaxPool": {"is_output_quantized": "False"}},
-            "supergroups": [
-                {"op_list": ["Conv", "Relu"]},
-                {"op_list": ["Relu", "AveragePool"]},
-                {"op_list": ["Conv", "Clip"]},
-            ],
-            "model_input": {},
-            "model_output": {},
-        }
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            with open(os.path.join(tmp_dir, "quantsim_config.json"), "w") as f:
-                json.dump(quantsim_config, f)
-            # Use in_place=True here for easy access to modules through model instance variables
-            sim = QuantizationSimModel(
-                model,
-                quant_scheme=QuantScheme.post_training_tf,
-                config_file=os.path.join(tmp_dir, "quantsim_config.json"),
-                in_place=True,
-                dummy_input=torch.rand(1, 3, 32, 32),
-            )
-
-            # Expected supergroups: (square bracket indicates a supergroup)
-            # in -> [conv2->bn2->relu2] -> [conv3->relu3->avgpool] -> [conv4] -> [fc] -> out
-
-            for _, module in sim.model.named_children():
-                assert isinstance(module, BaseQuantizationMixin)
-                # All input quantizers are disabled by config
-                assert module.input_quantizers[0] is None
-
-            # First supergroup
-            assert sim.model.conv1.output_quantizers[0] is None
-            assert sim.model.bn1.output_quantizers[0] is None
-            assert sim.model.relu1.output_quantizers[0] is not None
-            assert sim.model.maxpool.output_quantizers[0] is None
-
-            # Second supergroup
-            assert sim.model.conv2.output_quantizers[0] is None
-            assert sim.model.bn2.output_quantizers[0] is None
-            assert sim.model.relu2.output_quantizers[0] is not None
-
-            # Third supergroup
-            assert model.conv3.output_quantizers[0] is None
-            assert sim.model.relu3.output_quantizers[0] is None
-            assert sim.model.avgpool.output_quantizers[0] is not None
-
-            # Supergroups with only one operation
-            assert model.conv4.output_quantizers[0] is not None
-            assert model.fc.output_quantizers[0] is not None
-
     def test_parse_config_file_elementwise_ops(self):
         """Test that elementwise op quantizers are set as expected"""
         model = SingleResidual()

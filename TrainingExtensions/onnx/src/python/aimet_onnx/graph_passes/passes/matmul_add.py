@@ -30,12 +30,15 @@ class MatmulAdd(GraphPass):
         Match RMSNormalization pattern and collect ops to disable output quantizers
         """
         if op.type != "MatMul":
-            return False
+            return []
 
         if _get_matmul_add_bias_idx(op, model) is None:
-            return False
+            return []
 
-        return True
+        matmul_op: Op = op
+        add_op: Op = op.output_ops[0]
+
+        return [matmul_op, add_op]
 
     def apply_on_op(
         self, op: Op, model: ModelProto, op_quantizers: Dict[str, QcQuantizeOp]

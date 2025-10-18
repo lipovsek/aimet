@@ -721,7 +721,7 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
 
             # create graph searcher instance with connected graph and patterns to search
             graph_searcher = GraphSearcher(cg, patterns_with_callbacks)
-            graph_searcher.find_all_patterns_in_graph_apply_actions()
+            graph_searcher.find_all_patterns_in_graph_apply_actions(disjoint=True)
             return conv_bn_pairs
 
         conv_bn_pairs = find_scale_foldable_bns(self._conn_graph)
@@ -740,6 +740,7 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
             graph_searcher.find_all_patterns_in_graph_apply_actions(
                 ignore=foldable_bns,
                 op_pattern_to_reject=_check_if_conv3d_or_depthwise_conv,
+                disjoint=True,
             )
 
         def fuse_config(conv: Op, bn: Op):

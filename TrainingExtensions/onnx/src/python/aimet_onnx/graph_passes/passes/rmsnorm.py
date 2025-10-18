@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # pylint: disable=missing-module-docstring
 
+from typing import List
 from aimet_common.connected_graph.operation import Op
 from aimet_onnx.graph_passes.graph_pass import SupergroupGraphPass
 from aimet_onnx.graph_passes.pass_registry import register_pass
@@ -55,13 +56,13 @@ class RMSNormalization(SupergroupGraphPass):
     """
 
     # pylint: disable=too-many-branches, too-many-return-statements
-    def match_pattern(self, op: Op, model: ModelProto):
+    def match_pattern(self, op: Op, model: ModelProto) -> List[Op]:
         """
         Match RMSNormalization pattern and collect ops to disable output quantizers
         """
         all_ops = match_rms_norm_pattern(op, model)
         if not all_ops:
-            return False
+            return []
 
         # Check if weights are present
         elementwise_affine = False
@@ -74,4 +75,4 @@ class RMSNormalization(SupergroupGraphPass):
         self.disable_output_quantizers(all_ops[:-1])
         # Disable all constant quantizers except weights
         self.disable_const_quantizers(all_ops[:-1] if elementwise_affine else all_ops)
-        return True
+        return all_ops

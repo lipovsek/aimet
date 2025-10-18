@@ -41,6 +41,7 @@ from typing import Dict, List
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.qc_quantize_op import QcQuantizeOp
 from aimet_onnx.utils import ModelProto
+from ..meta.operations import Op
 
 
 class PassRegistry:
@@ -126,3 +127,33 @@ def apply_graph_passes(
             PASS_REGISTRY[p](model, connected_graph, op_to_quantizers)
         else:
             raise ValueError(f"Graph pass requested but not found: {p}")
+
+
+def find_all_matches(
+    model: ModelProto,
+    connected_graph: ConnectedGraph,
+    passes_to_run: List[str],
+) -> List[List[Op]]:
+    """
+    Runs list of graph passes on input ConnectedGraph
+
+    Args:
+        connected_graph (ConnectedGraph): Input graph to run graph passes on
+        passes_to_run (List[str]): List of graph passes to run.
+
+    Raises:
+        ValueError: If requested GraphPass does not exists.
+    """
+    matches = []
+
+    for p in passes_to_run:
+        for op in connected_graph.ordered_ops:
+            if p in PASS_REGISTRY:
+                graph_pass = PASS_REGISTRY[p]
+                match = graph_pass.match_pattern(op, model)
+                if match:
+                    matches.append(match)
+            else:
+                raise ValueError(f"Graph pass requested but not found: {p}")
+
+    return matches

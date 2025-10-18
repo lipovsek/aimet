@@ -83,7 +83,7 @@ class DummyTestGraphPass(SupergroupGraphPass):
         self.disable_quantizers = get_const_input_names(
             op_list=[op]
         ) + get_output_names(op_list=[op])
-        return True
+        return [op]
 
 
 def test_register_and_apply_graph_pass():

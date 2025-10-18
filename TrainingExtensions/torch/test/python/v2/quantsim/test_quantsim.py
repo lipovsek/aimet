@@ -2347,3 +2347,56 @@ def test_input_quantizer_enabling(model_factory):
                 q for q in onnx_model.graph.node if node.output[:1] == q.input[:1]
             )
             assert consumer.op_type == "QuantizeLinear"
+
+
+def test_ambiguous_supergroup(tmp_path):
+    """
+    Given:
+      * model: Conv -> Add -> Relu
+      * config: Both Conv-Add and Add-Relu are specified as supergroups
+    When: Create QuantizationSimModel
+    Then: Whatever supergroup comes first in the config file must take precedence
+
+        Conv -> Add -> Q -> Relu -> Q
+    """
+    config = {
+        "defaults": {
+            "ops": {"is_output_quantized": "True", "is_symmetric": "False"},
+            "params": {"is_quantized": "True", "is_symmetric": "True"},
+        },
+        "params": {"bias": {"is_quantized": "False"}},
+        "op_type": {},
+        "supergroups": [
+            {"op_list": ["Conv", "Add"]},
+            {"op_list": ["Add", "Relu"]},
+        ],
+        "model_input": {"is_input_quantized": "True"},
+        "model_output": {},
+    }
+    with open(tmp_path / "quantsim_config.json", "w") as f:
+        json.dump(config, f)
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super(Model, self).__init__()
+            self.conv = torch.nn.Conv2d(3, 3, 3)
+            self.add = custom.Add()
+            self.relu = torch.nn.ReLU()
+
+        def forward(self, x):
+            x = self.conv(x)
+            x = self.add(x, 1.0)
+            x = self.relu(x)
+            return x
+
+    model = Model()
+    sim = QuantizationSimModel(
+        model, torch.randn(1, 3, 10, 10), config_file=tmp_path / "quantsim_config.json"
+    )
+    sim.compute_encodings(lambda model: model(torch.randn(1, 3, 10, 10)))
+
+    print(sim.model)
+    assert sim.model.conv.input_quantizers[0]
+    assert not sim.model.conv.output_quantizers[0]
+    assert sim.model.add.output_quantizers[0]
+    assert sim.model.relu.output_quantizers[0]
