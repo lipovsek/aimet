@@ -1,0 +1,10 @@
+model_name: resnet50
+feature: adaround
+framework: onnx
+quant_scheme: tf_enhanced
+param_type: int8
+activation_type: int8
+config_file: htp_v79
+adaround_iters: 500
+device: Samsung Galaxy S24 (Family)
+qnn_options: "--target_runtime qnn_lib_aarch64_android"

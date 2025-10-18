@@ -1,0 +1,175 @@
+<!-- // Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause
+// pylint: disable=missing-module-docstring -->
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>{{ page_title or 'AIMET PTQ Report' }}</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --card: #f9f9f9;
+      --text: #000000;
+      --muted: #555555;
+      --accent: #2f81f7;
+      --border: #cccccc;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      line-height: 1.4;
+    }
+    .wrap { max-width: 100%; width: 100%; margin: 16px 0; padding: 0; }
+    h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px 12px; }
+    .subtitle { color: var(--muted); font-size: 12px; margin: 0 0 12px 12px; }
+
+    .controls {
+      display: flex; gap: 12px; align-items: center; font-size: 12px;
+      color: var(--muted); padding: 0 12px 8px 12px;
+    }
+    .controls label { display: inline-flex; align-items: center; gap: 6px; }
+    .controls input[type="text"] {
+      border: 1px solid var(--border); padding: 6px 8px; border-radius: 6px;
+      font-size: 12px; color: var(--text); background: #fff; min-width: 180px;
+    }
+
+    table { width: 100%; border-collapse: collapse; background: var(--card);
+      border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    thead th {
+      text-align: left; font-weight: 600; font-size: 12px; color: var(--muted);
+      background: #f0f0f0; padding: 10px 12px; border-bottom: 1px solid var(--border);
+      white-space: nowrap; position: sticky; top: 0; z-index: 1; user-select: none;
+    }
+    tbody td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; }
+    tbody tr:hover td { background: rgba(47, 129, 247, 0.06); }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .num { font-variant-numeric: tabular-nums; }
+
+    th.model, td.model { white-space: nowrap; }
+    th.runtime, td.runtime, th.memory, td.memory { white-space: nowrap; }
+
+    col.col-model   { width: 28ch; }
+    col.col-feature { width: 16ch; }
+    col.col-runtime { width: 14ch; }
+    col.col-memory  { width: 12ch; }
+
+    th.sortable { cursor: pointer; }
+    th.sortable .arrow { opacity: 0.4; margin-left: 6px; }
+    th.sortable.sorted-asc  .arrow::after { content: "▲"; opacity: 0.9; }
+    th.sortable.sorted-desc .arrow::after { content: "▼"; opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>{{ page_title or 'PTQ Evaluation Report' }}</h1>
+    {% if subtitle %}<div class="subtitle">{{ subtitle }}</div>{% endif %}
+
+    <div class="controls">
+      <label>Filter model:
+        <input type="text" id="filter-model" placeholder="e.g. resnet50">
+      </label>
+      <label>Filter feature:
+        <input type="text" id="filter-feature" placeholder="e.g. quantsim or lite_mp">
+      </label>
+    </div>
+
+    <table id="ptq-table">
+      <colgroup>
+        {% for key in ordered_keys %}
+          {% set norm = (key|replace(' ','_')|lower) %}
+          <col class="col-{{ norm }}">
+        {% endfor %}
+      </colgroup>
+
+      <thead>
+        <tr>
+          {% for key in ordered_keys %}
+            {% set norm = (key|replace(' ','_')|lower) %}
+            {% set is_sortable = (norm == 'model') or (norm == 'feature') %}
+            <th class="{{ norm }} {{ 'sortable' if is_sortable else '' }}"
+                data-key="{{ norm }}"
+                data-sortable="{{ '1' if is_sortable else '0' }}">
+              {% if norm == 'runtime' %}runtime (ms)
+              {% elif norm == 'memory' %}memory (MB)
+              {% else %}{{ key }}
+              {% endif %}
+              {% if is_sortable %}<span class="arrow"></span>{% endif %}
+            </th>
+          {% endfor %}
+        </tr>
+      </thead>
+
+      <tbody>
+        {% for row in results %}
+          <tr>
+            {% for key in ordered_keys %}
+              {% set val = row.get(key) %}
+              {% set norm = (key|replace(' ','_')|lower) %}
+              <td class="{{ norm }} {{ 'num' if (val is number) else '' }}">
+                {{ val | linkify }}
+              </td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    (function(){
+      const table    = document.getElementById('ptq-table');
+      const thead    = table.querySelector('thead');
+      const tbody    = table.querySelector('tbody');
+
+      // ---- Filtering ----
+      const fModel   = document.getElementById('filter-model');
+      const fFeature = document.getElementById('filter-feature');
+      function applyFilters() {
+        const m = (fModel.value   || "").toLowerCase();
+        const f = (fFeature.value || "").toLowerCase();
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        rows.forEach(row => {
+          const modelTxt   = (row.querySelector('td.model')?.innerText || "").toLowerCase();
+          const featureTxt = (row.querySelector('td.feature')?.innerText || "").toLowerCase();
+          const show = (!m || modelTxt.includes(m)) && (!f || featureTxt.includes(f));
+          row.style.display = show ? "" : "none";
+        });
+      }
+      fModel.addEventListener('input', applyFilters);
+      fFeature.addEventListener('input', applyFilters);
+
+      // ---- Sorting (model/feature) ----
+      const ths = Array.from(thead.querySelectorAll('th[data-sortable="1"]'));
+      let sortState = { key: null, dir: 1 };
+
+      function cellText(row, key) {
+        const td = row.querySelector('td.' + key);
+        return (td ? td.textContent.trim() : '');
+      }
+      function sortBy(key) {
+        const dir = (sortState.key === key) ? -sortState.dir : 1;
+        sortState = { key, dir };
+        ths.forEach(th => th.classList.remove('sorted-asc','sorted-desc'));
+        const active = ths.find(th => th.dataset.key === key);
+        if (active) active.classList.add(dir === 1 ? 'sorted-asc' : 'sorted-desc');
+        const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => r.style.display !== 'none');
+        rows.sort((a,b) => {
+          const A = cellText(a, key).toLowerCase();
+          const B = cellText(b, key).toLowerCase();
+          if (A < B) return -1 * dir;
+          if (A > B) return  1 * dir;
+          return 0;
+        });
+        rows.forEach(r => tbody.appendChild(r));
+      }
+      ths.forEach(th => th.addEventListener('click', () => sortBy(th.dataset.key)));
+    })();
+  </script>
+</body>
+</html>

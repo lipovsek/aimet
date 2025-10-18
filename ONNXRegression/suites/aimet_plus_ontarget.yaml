@@ -1,0 +1,5 @@
+suite_name: aimet_plus_ontarget
+description: Run AIMET features and then compile/profile/evaluate on target (QNN) via AI Hub.
+include:
+  - resnet50_adaround.yaml
+  - mobilenetv2_quantsim.yaml

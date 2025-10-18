@@ -1,0 +1,420 @@
+################################################################################
+# AIMET ONNX Regression - Nightly
+################################################################################
+# Tests AIMET quantization techniques on ONNX models from Qualcomm AI Hub
+#
+# Three testing modes:
+# 1. Suite: Run all configs in a suite file (e.g., aimet_only.yaml)
+# 2. Single Config: Run one specific model+feature (e.g., mobilenetv2_quantsim.yaml)
+# 3. Filtered: Run suite but filter by name (e.g., "quantsim", "mobilenet", "resnet")
+#
+# Workflow:
+# - Builds AIMET from source with ONNX Runtime 1.19.2 + CUDA 12.1
+# - Installs dependencies: qai-hub, qai-hub-models, pynvml, onnxruntime-gpu
+# - Runs tests on k8s-gpu runner with GPU access
+# - Uploads CSV/HTML/JSON reports as downloadable artifacts
+################################################################################
+
+name: ONNX Nightly
+
+on:
+  # 1️⃣ SCHEDULED: Run automatically every day at 6 AM UTC (like a cron job)
+  schedule:
+    - cron: '0 6 * * *'
+
+  # Manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      # What to run: full suite, single config, or filtered subset
+      run_mode:
+        description: 'What to run?'
+        required: true
+        type: choice
+        options:
+          - suite                    # All configs in suite
+          - single_config            # One specific config
+          - suite_with_filter        # Suite with name filter
+        default: 'suite'
+
+      # Suite selection (aimet_only = GPU only, aimet_plus_ontarget = GPU + on-device)
+      suite:
+        description: 'Suite (if mode=suite or suite_with_filter)'
+        required: false
+        type: choice
+        options:
+          - aimet_only              # GPU evaluation only
+          - aimet_plus_ontarget     # GPU + on-device via QNN
+        default: 'aimet_only'
+
+      # Specific config file for single_config mode
+      config_file:
+        description: 'Config file (if mode=single_config)'
+        required: false
+        type: choice
+        options:
+          - resnet50_quantsim.yaml
+          - resnet50_adaround.yaml
+          - densenet121_quantsim.yaml
+          - mobilenetv2_quantsim.yaml
+          - mobilenetv2_litemp.yaml
+          - efficientnet_b0_quantsim.yaml
+          - mobilenet_v3_small_quantsim.yaml
+          - mobilenet_v3_small_litemp.yaml
+        default: 'mobilenetv2_quantsim.yaml'
+
+      # Filter string for suite_with_filter mode (substring match on config names)
+      # Examples: "quantsim" (all QuantSim), "mobilenet" (all MobileNet variants)
+      filter:
+        description: 'Filter (if mode=suite_with_filter): quantsim, litemp, mobilenet, resnet'
+        required: false
+        type: string
+        default: ''
+
+
+################################################################################
+# JOBS
+################################################################################
+jobs:
+  # ===========================================================================
+  # JOB 1: Build AIMET
+  # ===========================================================================
+  # Compiles AIMET from source with ONNX + GPU support
+  # Outputs: onnx-gpu-wheel artifact containing the compiled .whl file
+  # ===========================================================================
+  build-aimet-onnx-gpu:
+    name: Build AIMET (ONNX + GPU)
+
+    # Reuses existing build workflow
+    uses: ./.github/workflows/build-wheels.yml
+
+    with:
+      # Build variant: ONNX Runtime 1.19.2 + CUDA 12.1 + Python 3.10
+      variants: >
+        {"include":[{
+          "id":"onnx-gpu",
+          "runs-on":"k8s-gpu",
+          "VER_PYTHON":"3.10",
+          "VER_ONNXRUNTIME":"1.19.2",
+          "VER_CUDA":"12.1.0",
+          "ENABLE_TESTS":"ON",
+          "PIP_INDEX":""
+        }]}
+      image-tag: latest
+
+    # Pass repository secrets to build workflow
+    secrets: inherit
+
+  # ===========================================================================
+  # JOB 2: Run Regression Tests
+  # ===========================================================================
+  # Downloads AIMET wheel, installs dependencies, runs tests based on mode
+  # Uploads reports as artifacts: test-reports-<run_id>
+  # ===========================================================================
+  onnx-gpu:
+    name: Run ONNX Regression (GPU)
+    needs: build-aimet-onnx-gpu
+    runs-on: k8s-gpu
+
+    # Container required by k8s-gpu runner
+    # Uses same image as build for consistency
+    container:
+      image: "${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-onnx-gpu:latest"
+      credentials:
+        username: ${{ secrets.DOCKER_LOGIN }}
+        password: ${{ secrets.DOCKER_CREDENTIALS }}
+      options: --gpus all    # Mount GPU into container
+
+    timeout-minutes: 720     # 12 hours max (on-target testing can be slow)
+
+    env:
+      # GPU configuration
+      CUDA_VISIBLE_DEVICES: "0"
+
+      # QAI Hub configuration
+      QAI_HUB_ACCEPT_LICENSE: "1"
+
+      # CRITICAL: Auto-accept git clones for models that need external repos
+      # Without this, models like mobilenet_v2 will prompt "Ok to clone? [Y/n]"
+      # and block the pipeline waiting for input
+      GIT_CLONE_PROTECTION_ACTIVE: "false"
+
+      # Additional git safety settings
+      GIT_TERMINAL_PROMPT: "0"  # Disable any git prompts
+
+      # Headless environment (prevent GUI-related errors)
+      MPLBACKEND: "Agg"
+      QT_QPA_PLATFORM: "offscreen"
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Setup: Get code, cache models, download AIMET wheel
+      # -----------------------------------------------------------------------
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Configure git to be non-interactive (prevents any prompts)
+      - name: Configure git for non-interactive mode
+        run: |
+          git config --global core.askPass ""
+          git config --global credential.helper ""
+          git config --global --add safe.directory '*'
+          echo "Git configured for non-interactive cloning"
+
+      # Cache downloaded models to speed up subsequent runs
+      # Key changes when ONNXRegression/ code changes
+      - name: Cache models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache
+            ~/.qai_hub_cache
+            ~/.cache/huggingface
+            ~/.cache/torch
+          key: aimet-cache-${{ runner.os }}-${{ hashFiles('ONNXRegression/**') }}
+          restore-keys: aimet-cache-${{ runner.os }}-
+
+      # Download AIMET wheel built in Job 1
+      - name: Download AIMET wheel
+        uses: actions/download-artifact@v3
+        with:
+          name: onnx-gpu-wheel    # Artifact name from build-wheels.yml
+          path: downloads
+
+      # -----------------------------------------------------------------------
+      # Install: Python environment + dependencies + AIMET
+      # -----------------------------------------------------------------------
+      - name: Install system dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y \
+            libgl1-mesa-glx \
+            libglib2.0-0 \
+            libsm6 \
+            libxext6 \
+            libxrender-dev \
+            libgomp1 \
+            git
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+
+      # Create Python virtual environment
+      - name: Setup Python
+        run: |
+          apt-get update -qq
+          apt-get install -y python3 python3-venv python3-pip
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install --upgrade pip wheel setuptools
+
+      # Install all Python dependencies
+      # - qai-hub/qai-hub-models: For loading models and on-device testing
+      # - onnxruntime-gpu: For GPU inference (version matches AIMET build)
+      # - pynvml: For GPU memory monitoring
+      - name: Install dependencies
+        run: |
+          . .venv/bin/activate
+          pip install qai-hub qai-hub-models
+          pip install onnxruntime-gpu==1.19.2
+          pip install pynvml
+
+      # Install AIMET from the wheel and verify
+      - name: Install AIMET
+        run: |
+          . .venv/bin/activate
+          pip install downloads/*.whl
+          python -c "import aimet_onnx; print('AIMET version:', aimet_onnx.__version__)"
+
+      # Configure AI Hub authentication for DEV environment
+      # Creates ~/.qai_hub/client.ini with DEV URLs
+      - name: Configure AI Hub
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.AIMET_BOT_AIHUB_DEV_TOKEN }}
+        run: |
+          # Create config directory
+          mkdir -p ~/.qai_hub
+
+          # Write configuration file for DEV environment
+          cat > ~/.qai_hub/client.ini << EOF
+          [api]
+          api_token = $QAI_HUB_API_TOKEN
+          api_url = https://dev.aihub.qualcomm.com
+          web_url = https://dev.aihub.qualcomm.com
+          verbose = True
+          EOF
+
+          echo "AI Hub configuration created:"
+          cat ~/.qai_hub/client.ini | grep -v api_token
+
+          # Verify configuration
+          . .venv/bin/activate
+          qai-hub list-devices | head -n 20 || echo "Warning: Could not verify AI Hub connection"
+
+      # -----------------------------------------------------------------------
+      # Run: Execute tests based on selected mode
+      # -----------------------------------------------------------------------
+
+      # Run tests based on mode:
+      # - suite: Runs all configs in ONNXRegression/suites/<suite>.yaml
+      # - single_config: Runs one specific config file
+      # - suite_with_filter: Runs suite but filters by name substring
+      - name: Run tests
+        run: |
+          . .venv/bin/activate
+
+          MODE="${{ github.event.inputs.run_mode }}"
+          MODE=${MODE:-suite}    # Default to suite for PR/scheduled runs
+
+          echo "=========================================="
+          echo "Run Mode: $MODE"
+          echo "=========================================="
+
+          case "$MODE" in
+            # MODE 1: Run full suite
+            # Example: aimet_only runs all configs in suites/aimet_only.yaml
+            suite)
+              SUITE="${{ github.event.inputs.suite }}"
+              SUITE=${SUITE:-aimet_only}
+              echo "Running suite: $SUITE"
+              python -m ONNXRegression.suite_runner --suite "$SUITE"
+              ;;
+
+            # MODE 2: Run single config
+            # Example: mobilenetv2_quantsim.yaml runs only that config
+            single_config)
+              CONFIG="${{ github.event.inputs.config_file }}"
+              echo "Running config: $CONFIG"
+              python -m ONNXRegression.runner "ONNXRegression/configs/$CONFIG"
+              ;;
+
+            # MODE 3: Run suite with filter
+            # Example: --filter quantsim runs only *_quantsim.yaml from suite
+            suite_with_filter)
+              SUITE="${{ github.event.inputs.suite }}"
+              SUITE=${SUITE:-aimet_only}
+              FILTER="${{ github.event.inputs.filter }}"
+              echo "Running suite: $SUITE with filter: $FILTER"
+              python -m ONNXRegression.suite_runner --suite "$SUITE" --filter "$FILTER"
+              ;;
+
+            *)
+              echo "ERROR: Unknown mode: $MODE"
+              exit 1
+              ;;
+          esac
+
+      # -----------------------------------------------------------------------
+      # Finish: Compare results and upload reports
+      # -----------------------------------------------------------------------
+
+      # Download previous baseline (only for suite runs, not single config)
+      - name: Download previous baseline
+        if: github.event.inputs.run_mode != 'single_config'
+        continue-on-error: true
+        uses: actions/download-artifact@v3
+        with:
+          name: baseline-${{ github.event.inputs.suite || 'aimet_only' }}
+          path: ONNXRegression/baselines/previous
+
+      # Move previous baseline to expected location
+      - name: Setup baseline for comparison
+        if: github.event.inputs.run_mode != 'single_config'
+        continue-on-error: true
+        run: |
+          SUITE="${{ github.event.inputs.suite }}"
+          SUITE=${SUITE:-aimet_only}
+
+          if [ -f "ONNXRegression/baselines/previous/latest.json" ]; then
+            cp ONNXRegression/baselines/previous/latest.json ONNXRegression/baselines/latest.json
+            echo "✓ Previous baseline loaded for suite: $SUITE"
+          else
+            echo "ℹ️  No previous baseline found for suite: $SUITE (first run)"
+          fi
+
+      # Compare results with baseline (only for suite runs)
+      - name: Compare with baseline and generate report
+        if: github.event.inputs.run_mode != 'single_config'
+        continue-on-error: true  # Don't fail workflow, just mark step
+        run: |
+          . .venv/bin/activate
+
+          # Get suite name
+          SUITE="${{ github.event.inputs.suite }}"
+          SUITE=${SUITE:-aimet_only}
+
+          echo "Comparing results for suite: $SUITE"
+
+          # Run comparison script with suite name
+          python ONNXRegression/baseline_comparison.py run \
+            --suite-name "$SUITE" \
+            --github-summary
+
+          # Capture exit code
+          COMPARISON_EXIT=$?
+
+          if [ $COMPARISON_EXIT -ne 0 ]; then
+            echo "⚠️  Regressions detected in suite: $SUITE"
+            echo "REGRESSIONS_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "✅ No regressions in suite: $SUITE"
+            echo "REGRESSIONS_FOUND=false" >> $GITHUB_ENV
+          fi
+
+      # Upload new baseline (only for successful suite runs)
+      # Note: Each suite has its own baseline artifact
+      - name: Upload baseline for next run
+        if: |
+          github.event.inputs.run_mode != 'single_config' &&
+          success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: baseline-${{ github.event.inputs.suite || 'aimet_only' }}
+          path: ONNXRegression/baselines/latest.json
+          retention-days: 30
+
+      # Upload generated reports (CSV, HTML, JSON)
+      # Note: Using v3 for GHES compatibility
+      # Artifacts available under "Artifacts" section in workflow run
+      - name: Upload reports
+        if: always()    # Upload even if tests failed
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-reports-${{ github.run_id }}
+          path: ONNXRegression/reports/**/*
+          retention-days: 7  # Keep for 1 week
+
+      # Show summary in GitHub Actions UI
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode:** ${{ github.event.inputs.run_mode || 'suite' }}" >> $GITHUB_STEP_SUMMARY
+
+          # Show what was run based on mode
+          if [ "${{ github.event.inputs.run_mode }}" = "single_config" ]; then
+            echo "**Config:** ${{ github.event.inputs.config_file }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "ℹ️  Single config mode - baseline comparison skipped" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ github.event.inputs.run_mode }}" = "suite_with_filter" ]; then
+            echo "**Suite:** ${{ github.event.inputs.suite }}" >> $GITHUB_STEP_SUMMARY
+            echo "**Filter:** ${{ github.event.inputs.filter }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Suite:** ${{ github.event.inputs.suite || 'aimet_only' }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📊 Reports uploaded as artifacts" >> $GITHUB_STEP_SUMMARY
+
+          # Show regression warning if detected
+          if [ "${REGRESSIONS_FOUND}" = "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️  **Regressions detected** - see comparison above" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # Clean up cached models to prevent disk space issues
+      - name: Clean up cache
+        if: always()
+        run: |
+          rm -rf ~/.cache ~/.qai_hub_cache ~/.cache/huggingface ~/.cache/torch || true
+          echo "✓ Cache cleared"
