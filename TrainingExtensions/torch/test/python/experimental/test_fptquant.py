@@ -6,6 +6,12 @@ import numpy as np
 import random
 import pytest
 import torch
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRMSNorm
+from transformers.models.llama import LlamaConfig
+from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer, Qwen2RMSNorm
+from transformers.models.qwen2 import Qwen2Config
+from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer, Qwen3RMSNorm
+from transformers.models.qwen3 import Qwen3Config
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
 from aimet_torch.experimental.fptquant.fptquant_transforms import (
     GroupedHadamardTransformOp,
@@ -18,6 +24,11 @@ from aimet_torch.experimental.fptquant.fptquant_local_transform_optimizer import
 )
 from aimet_torch.quantsim import QuantizationSimModel
 from aimet_torch.nn import QuantizationMixin
+from aimet_torch.experimental.fptquant.fptquant_config import (
+    Qwen3BlockInterface,
+    Qwen2BlockInterface,
+    LlamaBlockInterface,
+)
 
 
 class LinearModel(torch.nn.Module):
@@ -212,3 +223,33 @@ def test_separate_matrix_per_head():
         1 for _ in transform.named_parameters(remove_duplicate=True)
     )
     assert total_named_parameters == 8
+
+
+@pytest.mark.parametrize(
+    "decoder_cls, norm_cls, config_cls, block_interface_cls",
+    [
+        (LlamaDecoderLayer, LlamaRMSNorm, LlamaConfig, LlamaBlockInterface),
+        (Qwen2DecoderLayer, Qwen2RMSNorm, Qwen2Config, Qwen2BlockInterface),
+        (Qwen3DecoderLayer, Qwen3RMSNorm, Qwen3Config, Qwen3BlockInterface),
+    ],
+)
+def test_builtin_block_interface(
+    decoder_cls, norm_cls, config_cls, block_interface_cls
+):
+    config = config_cls(
+        hidden_size=32,
+        intermediate_size=32,
+        num_attention_heads=1,
+        num_hidden_layers=1,
+    )
+    block = decoder_cls(config=config, layer_idx=0)
+    block_interface = block_interface_cls(block)
+    assert isinstance(block_interface.q_proj, torch.nn.Linear)
+    assert isinstance(block_interface.k_proj, torch.nn.Linear)
+    assert isinstance(block_interface.v_proj, torch.nn.Linear)
+    assert isinstance(block_interface.o_proj, torch.nn.Linear)
+    assert isinstance(block_interface.up_proj, torch.nn.Linear)
+    assert isinstance(block_interface.down_proj, torch.nn.Linear)
+    assert isinstance(block_interface.gate_proj, torch.nn.Linear)
+    assert isinstance(block_interface.input_norm, norm_cls)
+    assert isinstance(block_interface.post_attention_norm, norm_cls)

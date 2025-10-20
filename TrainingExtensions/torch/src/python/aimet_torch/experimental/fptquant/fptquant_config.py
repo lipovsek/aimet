@@ -8,6 +8,11 @@ from typing import Type
 from transformers.models.llama.modeling_llama import LlamaModel, LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Model, Qwen2DecoderLayer
 
+try:
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3Model, Qwen3DecoderLayer
+except ImportError:
+    Qwen3Model = Qwen3DecoderLayer = None
+
 
 class BlockInterface:
     def __init__(self, block):
@@ -114,3 +119,17 @@ fptquant_model_config_dict = {
         block_type=Qwen2DecoderLayer, block_interface=Qwen2BlockInterface
     ),
 }
+
+if Qwen3Model is not None and Qwen3DecoderLayer is not None:
+    # Same as default, so don't need to do anything
+    class Qwen3BlockInterface(BlockInterface):
+        pass
+
+    fptquant_model_config_dict.update(
+        {
+            Qwen3Model: FPTQuantConfig(
+                block_type=Qwen3DecoderLayer,
+                block_interface=Qwen3BlockInterface,
+            )
+        }
+    )
