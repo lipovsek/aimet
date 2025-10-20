@@ -1802,3 +1802,17 @@ def test_fold_param_quantizers(device, requires_grad):
     assert isinstance(qlinear.bias, torch.Tensor)
     assert isinstance(qlinear.bias, torch.nn.Parameter)
     assert torch.equal(qlinear.bias, original_bias)
+
+
+def test_ignore():
+    class MyModule(torch.nn.Module):
+        def forward(self, x):
+            return x**2
+
+    QuantizationMixin.ignore(MyModule)
+
+    model = torch.nn.Sequential(MyModule())
+    sim = aimet_torch.QuantizationSimModel(
+        model, dummy_input=torch.randn(1, 3, 224, 224)
+    )
+    assert type(sim.model[0]) == MyModule

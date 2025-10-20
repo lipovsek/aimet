@@ -374,6 +374,26 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
         return super().from_module(module)
 
     @classmethod
+    def ignore(cls, module_cls):
+        """
+        Exempt given module type from quantization
+
+        Example:
+
+            >>> class MyModule(torch.nn.Module):
+                ...     def forward(self, x):
+                ...         return x ** 2
+            >>> QuantizationMixin.ignore(MyModule)
+            >>> model = torch.nn.Sequential(MyModule())
+            >>> sim = aimet_torch.QuantizationSimModel(model, torch.randn(10, 10))
+            >>> print(sim.model)
+            Sequential(
+              (0): MyModule()
+            )
+        """
+        super().ignore(module_cls)
+
+    @classmethod
     def implements(cls, module_cls):
         r"""
         Decorator for registering quantized definition of the given base class.

@@ -107,6 +107,8 @@ class UnknownModuleError(RuntimeError):
             f"Please register the quantized module definition of {module_cls} "
             f"using `@{mixin_cls.__name__}.implements({module_cls.__name__})` decorator.\n\n"
             f"For example:\n\n{code_example}\n\n"
+            "If you believe this module need not be quantized, please exclude it from quantization by calling "
+            f"`QuantizationMixin.ignore({module_cls.__name__})`.\n\n"
             f"For more details, please refer to the official API reference:\n{self.api_reference_url}"
         )
 
@@ -230,6 +232,8 @@ class BaseQuantizationMixin(abc.ABC):
 
     cls_to_qcls: dict
     qcls_to_cls: dict
+
+    _ignored_module_types = set()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -366,6 +370,16 @@ class BaseQuantizationMixin(abc.ABC):
         """
 
     @classmethod
+    def ignore(cls, module_cls):
+        """
+        Exempt given module type from quantization
+        """
+        if not issubclass(module_cls, torch.nn.Module):
+            raise RuntimeError
+
+        cls._ignored_module_types.add(module_cls)
+
+    @classmethod
     def implements(cls, module_cls):
         """
         Decorator for registering quantized definition of the given base class.
@@ -414,6 +428,8 @@ class BaseQuantizationMixin(abc.ABC):
         qtzn_module_cls = cls.cls_to_qcls.get(module_cls, None)
 
         if not qtzn_module_cls:
+            if module_cls in cls._ignored_module_types:
+                return module
             raise UnknownModuleError(module_cls, cls)
 
         qtzn_module = cls.__new__(qtzn_module_cls)

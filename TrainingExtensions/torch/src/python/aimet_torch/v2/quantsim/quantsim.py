@@ -185,6 +185,10 @@ def _convert_to_qmodel(model: torch.nn.Module):
                 f"using `@{e.mixin_cls.__name__}.implements()` decorator.",
                 "For example:",
                 *(e.generate_code_example() for e in exceptions.values()),
+                "If you believe these modules need not be quantized, "
+                "please exclude them from quantization by calling `QuantizationMixin.ignore` "
+                f"(for example, `QuantizationMixin.ignore({e.module_cls.__name__})`) "
+                "before creating QuantizationSimModel.",
                 f"For more details, please refer to the official API reference:\n{e.api_reference_url}",
             ]
         )
