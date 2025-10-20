@@ -49,6 +49,13 @@ except ImportError as exc:
         "sure that you have transformers installed in your environment."
     ) from exc
 
+from aimet_torch.onnx_utils import map_torch_types_to_onnx
+
+
+# Map Gemma3RMSNorm to ONNX RMSNormalization so that
+# quantsim config for RMSNormalization will be applied to Gemma3RMSNorm
+map_torch_types_to_onnx[modeling_gemma3.Gemma3RMSNorm] = ["RMSNormalization"]
+
 
 @QuantizationMixin.implements(modeling_gemma3.Gemma3RMSNorm)
 class QuantizedGemma3RMSNorm(QuantizationMixin, modeling_gemma3.Gemma3RMSNorm):

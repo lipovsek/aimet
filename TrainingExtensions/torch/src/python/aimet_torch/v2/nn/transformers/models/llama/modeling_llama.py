@@ -48,6 +48,13 @@ except ImportError as exc:
         "that you have transformers installed in your environment."
     ) from exc
 
+from aimet_torch.onnx_utils import map_torch_types_to_onnx
+
+
+# Map LlamaRMSNorm to ONNX RMSNormalization so that
+# quantsim config for RMSNormalization will be applied to LlamaRMSNorm
+map_torch_types_to_onnx[modeling_llama.LlamaRMSNorm] = ["RMSNormalization"]
+
 
 @QuantizationMixin.implements(modeling_llama.LlamaRMSNorm)
 class QuantizedLlamaRMSNorm(QuantizationMixin, modeling_llama.LlamaRMSNorm):

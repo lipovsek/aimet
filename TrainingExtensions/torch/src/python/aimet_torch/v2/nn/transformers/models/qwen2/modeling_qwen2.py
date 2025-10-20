@@ -48,6 +48,13 @@ except ImportError as exc:
         "that you have transformers installed in your environment."
     ) from exc
 
+from aimet_torch.onnx_utils import map_torch_types_to_onnx
+
+
+# Map Qwen2RMSNorm to ONNX RMSNormalization so that
+# quantsim config for RMSNormalization will be applied to Qwen2RMSNorm
+map_torch_types_to_onnx[modeling_qwen2.Qwen2RMSNorm] = ["RMSNormalization"]
+
 
 @QuantizationMixin.implements(modeling_qwen2.Qwen2RMSNorm)
 class QuantizedQwen2RMSNorm(QuantizationMixin, modeling_qwen2.Qwen2RMSNorm):

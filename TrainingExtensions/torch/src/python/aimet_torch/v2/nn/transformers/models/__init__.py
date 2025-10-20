@@ -41,3 +41,4 @@ from .llama import *
 from .gemma3 import *
 from .qwen2 import *
 from .phi3 import *
+from .mistral import *

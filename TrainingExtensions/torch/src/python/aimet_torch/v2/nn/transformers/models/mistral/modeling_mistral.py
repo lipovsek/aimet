@@ -48,6 +48,13 @@ except ImportError as exc:
         "that you have transformers installed in your environment."
     ) from exc
 
+from aimet_torch.onnx_utils import map_torch_types_to_onnx
+
+
+# Map MistralRMSNorm to ONNX RMSNormalization so that
+# quantsim config for RMSNormalization will be applied to MistralRMSNorm
+map_torch_types_to_onnx[modeling_mistral.MistralRMSNorm] = ["RMSNormalization"]
+
 
 @QuantizationMixin.implements(modeling_mistral.MistralRMSNorm)
 class QuantizedMistralRMSNorm(QuantizationMixin, modeling_mistral.MistralRMSNorm):
