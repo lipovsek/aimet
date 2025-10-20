@@ -1614,7 +1614,7 @@ def test_onnx_export(params):
 
     with tempfile.TemporaryDirectory() as tempdir:
         with open(os.path.join(tempdir, "qtzr.onnx"), "wb") as f:
-            torch.onnx.export(qdq, torch.randn(10, 10), f)
+            torch.onnx.export(qdq, torch.randn(10, 10), f, dynamo=False)
 
 
 def get_qtzn_grid(bitwidth, signed):

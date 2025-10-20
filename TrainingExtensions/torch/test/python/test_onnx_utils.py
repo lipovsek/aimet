@@ -777,7 +777,7 @@ class TestOnnxUtils:
         with tempfile.TemporaryDirectory() as tmp_dir:
             onnx_path = os.path.join(tmp_dir, "MyModel.onnx")
 
-            torch.onnx.export(model, dummy_input, onnx_path)
+            torch.onnx.export(model, dummy_input, onnx_path, dynamo=False)
             onnx_utils.OnnxSaver.set_node_names(onnx_path, model, dummy_input)
 
             onnx_model = onnx.load(onnx_path)
@@ -855,7 +855,7 @@ class TestOnnxUtils:
         with tempfile.TemporaryDirectory() as tmp_dir:
             onnx_path = os.path.join(tmp_dir, "MyModel.onnx")
 
-            torch.onnx.export(model, dummy_input, onnx_path)
+            torch.onnx.export(model, dummy_input, onnx_path, dynamo=False)
             onnx_utils.OnnxSaver.set_node_names(onnx_path, model, dummy_input)
 
             onnx_model = onnx.load(onnx_path)
@@ -908,7 +908,7 @@ class TestOnnxUtils:
         with tempfile.TemporaryDirectory() as tmp_dir:
             onnx_path = os.path.join(tmp_dir, "MyModel.onnx")
 
-            torch.onnx.export(model, dummy_input, onnx_path)
+            torch.onnx.export(model, dummy_input, onnx_path, dynamo=False)
             onnx_utils.OnnxSaver.set_node_names(onnx_path, model, dummy_input)
 
             onnx_model = onnx.load(onnx_path)
@@ -1000,7 +1000,7 @@ class TestOnnxUtils:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             original_model_path = f"{tmp_dir}/multiple_p_relu_model.onnx"
-            torch.onnx.export(model, dummy_input, original_model_path)
+            torch.onnx.export(model, dummy_input, original_model_path, dynamo=False)
 
             original_model = onnx.load(original_model_path)
             identity_node_outputs = {
@@ -1038,7 +1038,7 @@ class TestOnnxUtils:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             original_model_path = f"{tmp_dir}/multiple_p_relu_model.onnx"
-            torch.onnx.export(model, dummy_input, original_model_path)
+            torch.onnx.export(model, dummy_input, original_model_path, dynamo=False)
 
             original_model = onnx.load(original_model_path)
             restored_model = restore_onnx_graph_initializers(
@@ -1083,7 +1083,7 @@ class TestOnnxUtils:
         dummy_input = torch.randn(4, 1, 4, 4)
         with tempfile.TemporaryDirectory() as tmp_dir:
             original_model_path = f"{tmp_dir}/model.onnx"
-            torch.onnx.export(model, dummy_input, original_model_path)
+            torch.onnx.export(model, dummy_input, original_model_path, dynamo=False)
             original_model = onnx.load(original_model_path)
             for node in original_model.graph.node:
                 pytorch_name = get_pytorch_name_from_onnx_name(node.name)
@@ -1095,7 +1095,7 @@ class TestOnnxUtils:
         dummy_input = torch.randn(4, 1, 4, 4)
         with tempfile.TemporaryDirectory() as tmp_dir:
             original_model_path = f"{tmp_dir}/model.onnx"
-            torch.onnx.export(model, dummy_input, original_model_path)
+            torch.onnx.export(model, dummy_input, original_model_path, dynamo=False)
             original_model = onnx.load(original_model_path)
             for node in original_model.graph.node:
                 pytorch_name = get_pytorch_name_from_onnx_name(node.name)
@@ -1107,7 +1107,7 @@ class TestOnnxUtils:
         dummy_input = torch.randn(4, 1, 4, 4)
         with tempfile.TemporaryDirectory() as tmp_dir:
             original_model_path = f"{tmp_dir}/model.onnx"
-            torch.onnx.export(model, dummy_input, original_model_path)
+            torch.onnx.export(model, dummy_input, original_model_path, dynamo=False)
             original_model = onnx.load(original_model_path)
             for node in original_model.graph.node:
                 pytorch_name = get_pytorch_name_from_onnx_name(node.name)
@@ -1125,7 +1125,9 @@ class TestOnnxUtils:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             original_model_path = f"{tmp_dir}/reused_initializers.onnx"
-            torch.onnx.export(prepared_model, dummy_input, original_model_path)
+            torch.onnx.export(
+                prepared_model, dummy_input, original_model_path, dynamo=False
+            )
 
             original_model = onnx.load(original_model_path)
             identity_nodes = [
@@ -1219,6 +1221,7 @@ class TestOnnxUtils:
                 export_params=True,
                 input_names=["input"],
                 output_names=["output"],
+                dynamo=False,
             )
             model = onnx.load_model(os.path.join(tmp_dir, "model.onnx"))
 
@@ -1256,7 +1259,9 @@ class TestOnnxUtils:
         dummy_input = torch.randn(1, linear_size)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            torch.onnx.export(model, dummy_input, os.path.join(tmp_dir, "model.onnx"))
+            torch.onnx.export(
+                model, dummy_input, os.path.join(tmp_dir, "model.onnx"), dynamo=False
+            )
             onnx_model = onnx.load_model(os.path.join(tmp_dir, "model.onnx"))
 
         assert _onnx_model_size_larger_than_max_protobuf(onnx_model) is expected_return

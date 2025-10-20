@@ -2265,6 +2265,20 @@ class TestEncodingPropagation:
             out_2 = qsim_2.model(dummy_input)
             assert torch.allclose(out_1, out_2, atol=1e-7)
 
+    def test_dynamo_export(self, tmp_path):
+        model = test_models.BasicConv2d(kernel_size=3)
+        dummy_input = torch.rand(1, 64, 16, 16)
+        sim = QuantizationSimModel(model, dummy_input)
+        sim.compute_encodings(lambda model: model(dummy_input))
+
+        with pytest.raises(RuntimeError):
+            sim.export(
+                tmp_path,
+                "dynamo_export",
+                dummy_input,
+                onnx_export_args={"dynamo": True},
+            )
+
     def test_get_original_model(self):
         model = test_models.BasicConv2d(kernel_size=3)
         dummy_input = torch.rand(1, 64, 16, 16)

@@ -3651,7 +3651,9 @@ class TestQuantizationSimLearnedGrid:
             ]
         )
         dummy_input = (x, rois)
-        torch.onnx.export(roi_model, dummy_input, "./roi.onnx", opset_version=11)
+        torch.onnx.export(
+            roi_model, dummy_input, "./roi.onnx", opset_version=11, dynamo=False
+        )
         sim = QuantizationSimModel(
             roi_model,
             dummy_input=dummy_input,
