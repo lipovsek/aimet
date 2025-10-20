@@ -88,7 +88,7 @@ def export(
     Export :class:`QuantizationSimModel` to onnx model with
     onnx `QuantizeLinear`_ and `DequantizeLinear`_ embedded in the graph.
 
-    This function takes set of same arguments as `torch.onnx.export()`_
+    This function takes the same set of arguments as `torch.onnx.export()`_
 
     Args:
         model: The model to be exported

@@ -96,6 +96,7 @@ from aimet_torch.experimental.transforms.transform_ops import is_mergeable_trans
 
 __all__ = [
     "QuantizationSimModel",
+    "QuantizationSimModelOnnxExporter",
     "QuantParams",
     "ExportableQuantModule",
     "save_checkpoint",
@@ -395,11 +396,30 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
             module.to(device=device)
 
         # Class instantiation for supporting sim.onnx.export()
-        self.onnx = _QuantizationSimOnnxExport(self)
+        self._onnx_exporter = QuantizationSimModelOnnxExporter(self)
 
         if self._hw_version is not None:
             # Let input/output of HTP resize ops to share same encoding
             self._propagate_encodings()
+
+    @property
+    def onnx(self) -> "QuantizationSimModelOnnxExporter":
+        """
+        Returns :class:`QuantizationSimModelOnnxExporter <aimet_torch.quantsim.QuantizationSimModelOnnxExporter>`,
+        which exports QuantizationSimModel into ONNX model and JSON encoding.
+        The returned object can be used to call
+        :meth:`QuantizationSimModelOnnxExporter.export <aimet_torch.quantsim.QuantizationSimModelOnnxExporter.export>`,
+        which takes the same set of arguments as `torch.onnx.export()`.
+
+        For more details, see :meth:`QuantizationSimModelOnnxExporter.export <aimet_torch.quantsim.QuantizationSimModelOnnxExporter.export>`.
+
+        Example:
+
+            >>> sim.onnx.export(args=(x,), f="model.onnx",
+            ...                 input_names=["input"], output_names=["output"],
+            ...                 dynamo=False, export_int32_bias=True)
+        """
+        return self._onnx_exporter
 
     # pylint: disable=arguments-differ
     @overload
@@ -766,13 +786,12 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
         )
 
 
-class _QuantizationSimOnnxExport:
+class QuantizationSimModelOnnxExporter:
     """
     Helper class for exporting quantized models to ONNX format.
-    This class is used by the QuantizationSimModel.onnx.export() method.
     """
 
-    def __init__(self, sim):
+    def __init__(self, sim: QuantizationSimModel):
         self.sim = sim
 
     @torch.no_grad()
@@ -785,17 +804,31 @@ class _QuantizationSimOnnxExport:
         **kwargs,
     ):
         """
-        This method exports out the quant-sim model so it is ready to be run on-target and
-        takes the same arguments as torch.onnx.export()
+        Export QuantizationSimModel into ONNX model and JSON encoding.
+        This function takes the same set of arguments as `torch.onnx.export()`_.
 
-        Specifically, the following are saved:
+        Args:
+            args: Same as `torch.onnx.export()`
+            f: Same as `torch.onnx.export()`
+            export_int32_bias (bool, optional):
+                If true, generate and export int32 bias encoding on the fly (default: `True`)
+            **kwargs: Same as `torch.onnx.export()`
 
-        1. An equivalent model in ONNX format without any simulation ops
-        2. The quantization encodings are exported to a separate JSON-formatted file that can
-           then be imported by the on-target runtime (if desired)
+        .. _torch.onnx.export(): https://docs.pytorch.org/docs/stable/onnx_torchscript.html#torch.onnx.export
 
-        :param args: Dummy input to the model. Used to export model to ONNX format.
-        :param f: file object or path where to store exported ONNX mode
+        .. note::
+            Dynamo-based export (`dynamo=True`) is not supported yet
+
+        .. note::
+            See also :func:`aimet_torch.onnx.export`, an equivalent API that
+            exports a single ONNX graph with quantization encodings
+            embedded in QuantizeLinear and DequantizeLinear nodes
+
+        Example:
+
+            >>> sim.onnx.export(args=(x,), f="model.onnx",
+            ...                 input_names=["input"], output_names=["output"],
+            ...                 dynamo=False, export_int32_bias=True)
         """
         from aimet_torch.onnx import (
             _check_unsupported_args,

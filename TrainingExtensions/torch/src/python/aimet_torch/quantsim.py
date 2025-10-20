@@ -37,6 +37,7 @@
 # pylint: disable=missing-module-docstring, unused-import
 from .v2.quantsim import (
     QuantizationSimModel,
+    QuantizationSimModelOnnxExporter,
     QuantParams,
     ExportableQuantModule,
     save_checkpoint,
