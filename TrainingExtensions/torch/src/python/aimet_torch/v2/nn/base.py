@@ -233,6 +233,7 @@ class BaseQuantizationMixin(abc.ABC):
     cls_to_qcls: dict
     qcls_to_cls: dict
 
+    _ignore_unknown_modules: bool = False
     _ignored_module_types = set()
 
     def __init__(self, *args, **kwargs):
@@ -380,6 +381,13 @@ class BaseQuantizationMixin(abc.ABC):
         cls._ignored_module_types.add(module_cls)
 
     @classmethod
+    def ignore_unknown_modules(cls, ignore: bool = True):
+        """
+        Exempt all unkown module types from quantization
+        """
+        cls._ignore_unknown_modules = ignore
+
+    @classmethod
     def implements(cls, module_cls):
         """
         Decorator for registering quantized definition of the given base class.
@@ -428,7 +436,7 @@ class BaseQuantizationMixin(abc.ABC):
         qtzn_module_cls = cls.cls_to_qcls.get(module_cls, None)
 
         if not qtzn_module_cls:
-            if module_cls in cls._ignored_module_types:
+            if cls._ignore_unknown_modules or module_cls in cls._ignored_module_types:
                 return module
             raise UnknownModuleError(module_cls, cls)
 

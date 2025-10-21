@@ -381,8 +381,8 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
         Example:
 
             >>> class MyModule(torch.nn.Module):
-                ...     def forward(self, x):
-                ...         return x ** 2
+            ...     def forward(self, x):
+            ...         return x ** 2
             >>> QuantizationMixin.ignore(MyModule)
             >>> model = torch.nn.Sequential(MyModule())
             >>> sim = aimet_torch.QuantizationSimModel(model, torch.randn(10, 10))
@@ -392,6 +392,26 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
             )
         """
         super().ignore(module_cls)
+
+    @classmethod
+    def ignore_unknown_modules(cls, ignore: bool = True):
+        """
+        Exempt all unkown module types from quantization
+
+        Example:
+
+            >>> class MyModule(torch.nn.Module):
+            ...     def forward(self, x):
+            ...         return x ** 2
+            >>> QuantizationMixin.ignore_unknown_modules(True)
+            >>> model = torch.nn.Sequential(MyModule())
+            >>> sim = aimet_torch.QuantizationSimModel(model, torch.randn(10, 10))
+            >>> print(sim.model)
+            Sequential(
+              (0): MyModule()
+            )
+        """
+        super().ignore_unknown_modules(ignore)
 
     @classmethod
     def implements(cls, module_cls):

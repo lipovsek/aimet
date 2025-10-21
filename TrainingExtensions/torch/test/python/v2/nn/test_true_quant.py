@@ -1805,6 +1805,11 @@ def test_fold_param_quantizers(device, requires_grad):
 
 
 def test_ignore():
+    """
+    When: Call QuantizationMixin.ignore
+    Then: Unknown modules should be ignored during quantization
+    """
+
     class MyModule(torch.nn.Module):
         def forward(self, x):
             return x**2
@@ -1816,3 +1821,24 @@ def test_ignore():
         model, dummy_input=torch.randn(1, 3, 224, 224)
     )
     assert type(sim.model[0]) == MyModule
+
+    """
+    When: Call QuantizationMixin.ignore_unknown_modules
+    Then: Unknown modules should be ignored during quantization
+    """
+
+    class MyModule(torch.nn.Module):
+        def forward(self, x):
+            return x**2
+
+    orig = QuantizationMixin._ignore_unknown_modules
+    try:
+        QuantizationMixin.ignore_unknown_modules(True)
+
+        model = torch.nn.Sequential(MyModule())
+        sim = aimet_torch.QuantizationSimModel(
+            model, dummy_input=torch.randn(1, 3, 224, 224)
+        )
+        assert type(sim.model[0]) == MyModule
+    finally:
+        QuantizationMixin.ignore_unknown_modules(orig)

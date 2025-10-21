@@ -21,7 +21,7 @@ for :class:`torch.nn.Conv2d` or :class:`QuantizedSoftmax` for :class:`torch.nn.S
 
 .. autoclass:: QuantizationMixin
    :noindex:
-   :members: __quant_init__, forward, compute_encodings, ignore
+   :members: __quant_init__, forward, compute_encodings, ignore, ignore_unknown_modules
 
 Configuration
 -------------
