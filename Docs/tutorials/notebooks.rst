@@ -34,7 +34,7 @@ Following the tables, you’ll find step-by-step instructions on how to run thes
      - `Link <notebooks/torch/quantization/qat.ipynb>`_
    * - Quantization-aware training (QAT)
      - Not supported.
-     - `Link <notebooks/torch/quantization/qat_range_learning.ipynb>`_
+     - `Link <notebooks/torch/v2/qat.ipynb>`_
    * - Cross-layer equalization (CLE)
      - `Link <notebooks/onnx/quantization/cle.ipynb>`_
      - `Link <notebooks/torch/quantization/cle_bc.ipynb>`_
