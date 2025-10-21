@@ -645,11 +645,82 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
                 stack.enter_context(cls._update_parameters_by_attr(module))
         return stack
 
+    def qmodules(self):
+        """
+        Generator that yields all quantized modules
+
+        Example:
+
+            >>> for qmodule in sim.qmodules():
+            ...     print(qmodule)
+        """
+        yield from super().qmodules()
+
     def named_qmodules(self):
-        """Generator that yields all quantized modules in the model and their names"""
+        """
+        Generator that yields all quantized modules along with their names
+
+        Example:
+
+            >>> for name, qmodule in sim.named_qmodules():
+            ...     print(f"{name}: {type(qmodule)}")
+        """
         for name, module in self.model.named_modules():
             if isinstance(module, (BaseQuantizationMixin, _V2LazyQuantizeWrapper)):
                 yield name, module
+
+    def quantizers(self):
+        """
+        Generator that yields all quantizers
+
+        Example:
+
+            >>> for quantizer in sim.quantizers():
+            ...     print(quantizer)
+        """
+        yield from (module for _, module in self.named_quantizers())
+
+    def named_quantizers(self):
+        """
+        Generator that yields all quantizers along with their names
+
+        Example:
+
+            >>> for name, quantizer in sim.named_quantizers():
+            ...     print(f"{name}: {type(quantizer)}")
+        """
+        for name, module in self.model.named_modules():
+            if isinstance(module, QuantizerBase):
+                yield name, module
+
+    def quantizer_parameters(self):
+        """
+        Generator that yields all quantization parameters
+
+        Example:
+
+            >>> for param in sim.quantizer_parameters():
+            ...     print(param.size())
+        """
+        yield from (param for _, param in self.named_quantizer_parameters())
+
+    def named_quantizer_parameters(self):
+        """
+        Generator that yields all quantization parameters along with their names
+
+        Example:
+
+            >>> for name, param in sim.named_quantizer_parameters():
+            ...     print(f"{name}: {param.size()}")
+        """
+        memo = set()
+        for module_name, module in self.named_quantizers():
+            for param_name, param in module.named_parameters(recurse=False):
+                if param in memo:
+                    continue
+                memo.add(param)
+                full_name = f"{module_name}.{param_name}" if module_name else param_name
+                yield full_name, param
 
     @deprecated(f"Use {named_qmodules.__qualname__} instead.")
     def quant_wrappers(self):  # pylint: disable=missing-docstring

@@ -2288,6 +2288,112 @@ class TestEncodingPropagation:
         for name, param in original_model.named_parameters():
             assert type(param.detach()) == torch.Tensor, name
 
+    def test_iterators(self):
+        model = torch.nn.Sequential(
+            torch.nn.Conv2d(3, 3, 3),
+            torch.nn.ReLU(),
+            torch.nn.Softmax(),
+        )
+
+        x = torch.randn(1, 3, 224, 224)
+        sim = QuantizationSimModel(model, x)
+        # share output quantizer between conv and relu
+        sim.model[0].output_quantizers[0] = sim.model[1].output_quantizers[0]
+
+        """
+        sim.qmodules should return all quantized modules
+        """
+        assert list(sim.qmodules()) == [
+            sim.model[0],
+            sim.model[1],
+            sim.model[2],
+        ]
+
+        """
+        sim.named_qmodules should return all quantized modules
+        """
+        assert dict(sim.named_qmodules()) == {
+            "0": sim.model[0],
+            "1": sim.model[1],
+            "2": sim.model[2],
+        }
+
+        """
+        sim.quantizers should return all quantizers without duplication
+        """
+        qtzrs = list(sim.quantizers())
+        assert len(qtzrs) == 4
+        assert set(qtzrs) == {
+            sim.model[0].input_quantizers[0],
+            sim.model[0].param_quantizers["weight"],
+            sim.model[0].output_quantizers[0],
+            sim.model[2].output_quantizers[0],
+        }
+
+        """
+        sim.named_quantizers should return all quantizers without duplication
+        """
+        named_qtzrs = dict(sim.named_quantizers())
+        assert len(named_qtzrs) == 4
+        assert named_qtzrs == {
+            "0.input_quantizers.0": sim.model[0].input_quantizers[0],
+            "0.param_quantizers.weight": sim.model[0].param_quantizers["weight"],
+            "0.output_quantizers.0": sim.model[0].output_quantizers[0],
+            "2.output_quantizers.0": sim.model[2].output_quantizers[0],
+        }
+
+        """
+        sim.quantizer_parameters should return all qtzn parameters without duplication
+        """
+        q_params = list(sim.quantizer_parameters())
+        assert len(q_params) == 8
+        assert torch.all(q_params[0] == sim.model[0].input_quantizers[0].min)
+        assert torch.all(q_params[1] == sim.model[0].input_quantizers[0].max)
+        assert torch.all(q_params[2] == sim.model[0].param_quantizers["weight"].min)
+        assert torch.all(q_params[3] == sim.model[0].param_quantizers["weight"].max)
+        assert torch.all(q_params[4] == sim.model[0].output_quantizers[0].min)
+        assert torch.all(q_params[5] == sim.model[0].output_quantizers[0].max)
+        assert torch.all(q_params[6] == sim.model[2].output_quantizers[0].min)
+        assert torch.all(q_params[7] == sim.model[2].output_quantizers[0].max)
+
+        """
+        sim.named_quantizer_parameters should return all qtzn parameters without duplication
+        """
+        named_q_params = dict(sim.named_quantizer_parameters())
+        assert len(named_q_params) == 8
+        assert torch.all(
+            named_q_params["0.input_quantizers.0.min"]
+            == sim.model[0].input_quantizers[0].min
+        )
+        assert torch.all(
+            named_q_params["0.input_quantizers.0.max"]
+            == sim.model[0].input_quantizers[0].max
+        )
+        assert torch.all(
+            named_q_params["0.param_quantizers.weight.min"]
+            == sim.model[0].param_quantizers["weight"].min
+        )
+        assert torch.all(
+            named_q_params["0.param_quantizers.weight.max"]
+            == sim.model[0].param_quantizers["weight"].max
+        )
+        assert torch.all(
+            named_q_params["0.output_quantizers.0.min"]
+            == sim.model[0].output_quantizers[0].min
+        )
+        assert torch.all(
+            named_q_params["0.output_quantizers.0.max"]
+            == sim.model[0].output_quantizers[0].max
+        )
+        assert torch.all(
+            named_q_params["2.output_quantizers.0.min"]
+            == sim.model[2].output_quantizers[0].min
+        )
+        assert torch.all(
+            named_q_params["2.output_quantizers.0.max"]
+            == sim.model[2].output_quantizers[0].max
+        )
+
 
 class ReshapeConv(torch.nn.Module):
     def __init__(self, functional: bool):

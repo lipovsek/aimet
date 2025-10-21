@@ -262,7 +262,7 @@ class _QuantizationSimModelInterface(ABC):
         """Generator that yields all quantized modules in the model and their names"""
 
     def qmodules(self) -> Iterable[torch.nn.Module]:
-        """Generator that yields all quantized modules in the model"""
+        """Generator that yields all quantized modules"""
         yield from (module for _, module in self.named_qmodules())
 
 
