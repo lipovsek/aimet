@@ -141,6 +141,12 @@ class SeqMSE(QuantizationTechnique):
         seq_mse = SequentialMse(quantsim.model, quantsim, params, inputs)
         seq_mse.apply_seq_mse_algo()
 
+        def _forward(session, _):
+            for batch in tqdm(inputs, total=len(inputs), desc="Calibrating"):
+                session.run(None, batch)
+
+        quantsim.compute_encodings(_forward, tuple())
+
 
 @YAMLConfigParser.register_recipe
 class LPBQ_SeqMSE(QuantizationTechnique):
