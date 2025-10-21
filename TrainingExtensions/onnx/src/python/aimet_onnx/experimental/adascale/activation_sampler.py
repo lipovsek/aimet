@@ -33,34 +33,35 @@ class ActivationSampler:
         activation_name: str,
         model: ModelProto,
         providers: Optional[Sequence[str | Tuple[str, Dict[Any, Any]]]] = None,
+        path: str = None,
     ):
         """
         :param activation_name: tensor name of the module whose output we want to retrieve
         :param model: ONNX model
-        :param device: Device to use
-        :param user_onnx_libs: List of ONNX libraries to use
+        :param providers: List of providers to use
+        :path: path to store the onnx model
         :return: Input data to quant op, Output data from original op
         """
         self._model = model
         self._activation_name = activation_name
         self._sess, self._handle = self.create_session(
-            self._model, activation_name, providers
+            self._model, activation_name, providers, path
         )
 
+    @staticmethod
     def create_session(
-        self, model: onnx.ModelProto, activation: Union[str, List[str]], providers
+        model: onnx.ModelProto, activation: Union[str, List[str]], providers, path: str
     ):
         """
         Helper to create a session using both module's input and output tensor names
 
         :param model: ONNX ModelProto to create a session
         :param activation: activation to add a hook to
+        :param providers: List of providers to use
+        :path: path to store the onnx model
         """
         handle = add_hook_to_get_activation(model, activation)
-        sess = OrtInferenceSession(
-            model,
-            providers,
-        )
+        sess = OrtInferenceSession(model, providers, path=path)
         return sess, handle
 
     def restore_graph(self):

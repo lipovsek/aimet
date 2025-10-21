@@ -514,7 +514,9 @@ class QuantizedConv2d(torch.nn.Conv2d):
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # pylint: disable=redefined-builtin
         qdq = self.param_quantizers["weight"]
         w = qdq(self.weight) if qdq is not None else self.weight
-        return torch.nn.functional.conv2d(input, w, self.bias)
+        return torch.nn.functional.conv2d(
+            input, w, self.bias, self.stride, self.padding, self.dilation, self.groups
+        )
 
 
 def add_qlinear_layers(

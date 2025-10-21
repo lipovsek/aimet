@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import itertools
+import types
 import math
 from typing import Optional, Tuple, Callable, List
 import functools
 
 import torch
+import numpy as np
 
 
 def derive_symmetric_qmin_qmax(bitwidth: int) -> tuple[int, int]:
@@ -241,3 +243,17 @@ def get_encoding_shape_with_blocks(
         new_encoding_shape.append(1)
 
     return new_encoding_shape
+
+
+def convert_to_torch(obj):
+    if isinstance(obj, dict):
+        return {k: convert_to_torch(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return type(obj)(convert_to_torch(v) for v in obj)
+    elif isinstance(obj, types.GeneratorType):
+        return (convert_to_torch(v) for v in obj)
+    elif isinstance(obj, np.ndarray):
+        tensor = torch.from_numpy(obj)
+        return tensor.float() if np.issubdtype(obj.dtype, np.floating) else tensor
+    else:
+        return obj

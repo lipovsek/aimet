@@ -5,8 +5,12 @@ import os
 import copy
 import numpy as np
 import torch
-from onnx import numpy_helper
+from onnx import numpy_helper, load_model
+import tempfile
 import pytest
+from onnxruntime.quantization.onnx_model import ONNXModel
+
+from aimet_onnx import QuantizationSimModel
 from aimet_onnx.experimental.adascale.adascale_optimizer import (
     AdaScale,
     adascale_model_config_dict,
@@ -467,6 +471,88 @@ class TestAdascaleQuantizer:
         )
         assert torch.allclose(out_1, out_2)
 
+    def test_block_level_api(self):
+        model = ModelWithConsecutiveLinearBlocks().eval()
+        input_shape = (1, 3, 32, 64)
+        torch.random.manual_seed(1)
+        dummy_input = [torch.rand(input_shape), torch.rand(input_shape)]
+        weight_names = [
+            "onnx::MatMul_24",
+            "onnx::MatMul_25",
+            "onnx::MatMul_26",
+            "onnx::MatMul_27",
+        ]
+        with tempfile.TemporaryDirectory() as tempdir:
+            torch.onnx.export(
+                model,
+                dummy_input[0],
+                tempdir + "/model.onnx",
+                input_names=["input"],
+                output_names=["output"],
+            )
+            model_onnx = load_model(tempdir + "/model.onnx")
+            config_file = os.path.join(
+                os.path.dirname(__file__),
+                "../../../common/src/python/aimet_common/quantsim_config/htp_quantsim_config_v73_per_channel_linear.json",
+            )
+            sim = QuantizationSimModel(
+                model_onnx, [dummy_input], config_file=config_file
+            )
+            sim._compute_param_encodings(overwrite=False)
+            qt_input = []
+            for t in dummy_input:
+                qt_input.append(
+                    t * 0.3
+                )  # making quantized input different from fp input
+
+            original_weights = {}
+            for initializer in sim.model.model.graph.initializer:
+                if initializer.name in weight_names:
+                    weight_array = numpy_helper.to_array(initializer)
+                    original_weights[initializer.name] = weight_array.copy()
+
+            orig_enc = {}
+            for quantizer_name in weight_names:
+                orig_enc[quantizer_name] = sim.qc_quantize_op_dict[
+                    quantizer_name
+                ].get_encodings()
+
+            for i in range(len(model.blocks)):
+                block_input_output_names = [
+                    (["input"], ["/blocks.0/layer2/Add_output_0"]),
+                    (["/blocks.0/layer2/Add_output_0"], ["output"]),
+                ]
+                AdaScale.optimize_adascale_block(
+                    tempdir + "/model.onnx",
+                    sim,
+                    dummy_input,
+                    qt_input,
+                    block_input_output_names=block_input_output_names[i],
+                    beta_gamma_lr=1e-3,
+                    scales_lr=5e-4,
+                    num_iterations=100,
+                )
+
+            updated_weights = {}
+            for initializer in sim.model.model.graph.initializer:
+                if initializer.name in weight_names:
+                    weight_array = numpy_helper.to_array(initializer)
+                    updated_weights[initializer.name] = weight_array.copy()
+
+            for weight in weight_names:
+                assert not np.all(original_weights[weight] == updated_weights[weight])
+
+            for quantizer_name in weight_names:
+                updated_enc = sim.qc_quantize_op_dict[quantizer_name].get_encodings()
+                consolidated_delta_updated_enc = [
+                    updated_enc[i].delta for i in range(len(updated_enc))
+                ]
+                consolidated_delta_orig_enc = [
+                    orig_enc[quantizer_name][i].delta
+                    for i in range(len(orig_enc[quantizer_name]))
+                ]
+                assert consolidated_delta_updated_enc != consolidated_delta_orig_enc
+
 
 def test_adascale_e2e(monkeypatch, small_model: bool = True):
     path = os.path.abspath(os.path.join("../../../../GenAITests"))
@@ -562,7 +648,7 @@ def test_qwen_adascale_e2e_ppl(monkeypatch, small_model=False):
     from unittest.mock import patch
 
     with patch(
-        "aimet_onnx.experimental.adascale.adascale_optimizer._DEBUG_NUM_BLOCKS_TO_ADASCALE",
+        "aimet_onnx.experimental.adascale.adascale_optimizer._DEBUG_NUM_PARTIAL_ITERATIONS",
         new=2,
     ):
         path = os.path.abspath(os.path.join("../../../../GenAITests"))

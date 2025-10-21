@@ -80,9 +80,6 @@ def test_model_round_trip_with_qwen(monkeypatch):
     sim = Qwen_25_ONNX.instantiate_quantsim(
         "Qwen/Qwen2.5-0.5B", 32, 16, small_model=small_model
     )
-    initializer_name_to_index_map = {
-        init.name: idx for idx, init in enumerate(sim.model.model.graph.initializer)
-    }
     llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     if small_model:
         llm_config.num_hidden_layers = 2
@@ -168,9 +165,8 @@ def test_model_round_trip_with_qwen(monkeypatch):
         ################ Update torch weights to 1
         _update_torch_weights(pt_block, set_zeros=False)
         ################ copy_pt_weights_to_onnx copies updated wts to onnx from pt
-        copy_pt_weights_to_onnx(
-            pt_block, sim.model.model, param_map, initializer_name_to_index_map
-        )
+        copy_pt_weights_to_onnx(pt_block, sim.model.model, param_map)
+
         layers_to_check = set(param_map.values())
         ################ check if the onnx wts are updated for `layers of interest`
         _check_onnx_weights(sim.model.model, layers_to_check, are_zeros=False)
@@ -236,9 +232,6 @@ def test_model_with_conv():
         dynamo=False,
     )
     onnx_model = onnx.load(onnx_model_path)
-    initializer_name_to_index_map = {
-        init.name: idx for idx, init in enumerate(onnx_model.graph.initializer)
-    }
     pt_block, param_map = get_pt_block(onnx_model_path, (["input"], ["output"]))
     # forwardpass through onnx == forward pass through pt Block
     onnx_block_model_sess = ort.InferenceSession(
@@ -253,9 +246,7 @@ def test_model_with_conv():
     # update pt wts call copy wts
     _update_torch_weights(pt_block, set_zeros=False)
 
-    copy_pt_weights_to_onnx(
-        pt_block, onnx_model, param_map, initializer_name_to_index_map
-    )
+    copy_pt_weights_to_onnx(pt_block, onnx_model, param_map)
     layers_to_check = set(param_map.values())
     _check_onnx_weights(onnx_model, layers_to_check, are_zeros=False)
 
@@ -296,9 +287,6 @@ def test_model_with_ModelWithConsecutiveConvBlocks(
         dynamo=False,
     )
     onnx_model = onnx.load(onnx_model_path)
-    initializer_name_to_index_map = {
-        init.name: idx for idx, init in enumerate(onnx_model.graph.initializer)
-    }
 
     get_onnx_block_model = extract_model(
         onnx_model_path, "extracted.onnx", input_names, output_names
@@ -320,8 +308,6 @@ def test_model_with_ModelWithConsecutiveConvBlocks(
     # update pt wts call copy wts
     _update_torch_weights(pt_block, set_zeros=False)
 
-    copy_pt_weights_to_onnx(
-        pt_block, onnx_model, param_map, initializer_name_to_index_map
-    )
+    copy_pt_weights_to_onnx(pt_block, onnx_model, param_map)
     layers_to_check = set(param_map.values())
     _check_onnx_weights(onnx_model, layers_to_check, are_zeros=False)
