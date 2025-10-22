@@ -11,13 +11,19 @@ import os
 from onnx.utils import extract_model
 from onnx2torch import convert
 from aimet_onnx.experimental.adascale.onnx2torch_ext import *  # pylint: disable=wildcard-import, unused-wildcard-import
+from aimet_onnx.quantsim import QuantizationSimModel
 from onnx2torch.onnx_graph import OnnxGraph
 import tempfile
+from typing import Tuple, List, Dict, Collection
 
 filter_op = ["MatMul", "Conv"]
 
 
-def _get_onnx_subgraph(onnx_fp_model_path, block_input_output_names, block_model_path):
+def _get_onnx_subgraph(
+    onnx_fp_model_path: str,
+    block_input_output_names: Tuple[List[str], List[str]],
+    block_model_path: str,
+):
     """
     Given a onnx block end points get onnx subgraph
     """
@@ -38,7 +44,7 @@ def _get_onnx_subgraph(onnx_fp_model_path, block_input_output_names, block_model
         )
 
 
-def _get_onnx_block_info(onnx_subgraph):
+def _get_onnx_block_info(onnx_subgraph: onnx.ModelProto):
     """
     For an onnx subgraph get onnx param name from initializer list map
     """
@@ -60,9 +66,13 @@ def _get_onnx_block_info(onnx_subgraph):
     return node_name_to_onnx_param
 
 
-def get_pt_block(onnx_model_path: str, block_input_output_names: tuple):
+def get_pt_block(
+    onnx_model_path: str, block_input_output_names: Tuple[List[str], List[str]]
+):
     """
     Given a onnx block end points get a pytorch block
+    :param onnx_model_path: path of original onnx model
+    :param block_input_output_names: input/output names for block end points
     """
     with tempfile.TemporaryDirectory() as tempdir:
         onnx_block = _get_onnx_subgraph(
@@ -72,9 +82,16 @@ def get_pt_block(onnx_model_path: str, block_input_output_names: tuple):
         return convert(onnx_block), param_map
 
 
-def copy_pt_weights_to_onnx(pt_block, onnx_model, param_map):
+def copy_pt_weights_to_onnx(
+    pt_block: torch.fx.GraphModule,
+    onnx_model: onnx.ModelProto,
+    param_map: Collection[Dict[str, str]],
+):
     """
     Given a pt_block with adascale params computed, copy the params to onnx model
+    :param pt_block: pytorch block with adascale weight quantizers
+    :param onnx_model: onnx model before adascale
+    :param pt_weights_to_onnx_initializers: Mapping between PT weight names to ONNX initializers
     """
     initializer_name_to_index_map = {
         init.name: idx for idx, init in enumerate(onnx_model.graph.initializer)
@@ -118,7 +135,11 @@ def copy_pt_weights_to_onnx(pt_block, onnx_model, param_map):
             )
 
 
-def copy_pt_encodings_to_sim(pt_block, sim, pt_weights_to_onnx_initializers):
+def copy_pt_encodings_to_sim(
+    pt_block: torch.fx.GraphModule,
+    sim: QuantizationSimModel,
+    pt_weights_to_onnx_initializers: Collection[Dict[str, str]],
+):
     """
     Given the PT block with adascale params computed, copy the encodings to sim
     :param pt_block: pytorch block with adascale weight quantizers
