@@ -12,6 +12,7 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer, Qwen2RMS
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer, Qwen3RMSNorm
 from transformers.models.qwen3 import Qwen3Config
+from aimet_torch.experimental.transforms.transform_config import BlockInterface
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
 from aimet_torch.experimental.fptquant.fptquant_transforms import (
     GroupedHadamardTransformOp,
@@ -117,7 +118,7 @@ def test_insert_nonmergeable_down_project():
                 x = block(x)
             return x
 
-    class MyBlockInterface(fptquant_config.BlockInterface):
+    class MyBlockInterface(BlockInterface):
         def __init__(self, block):
             self.block = block
 

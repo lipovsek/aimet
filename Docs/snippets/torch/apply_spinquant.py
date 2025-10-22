@@ -3,7 +3,7 @@
 
 import torch
 from torch.utils.data import DataLoader
-from aimet_torch.experimental.spinquant import spinquant_optimizer, apply_spinquant
+from aimet_torch.experimental.spinquant import apply_spinquant
 from transformers import AutoTokenizer, AutoConfig
 from transformers import default_data_collator
 from transformers.models.llama import modeling_llama

@@ -11,12 +11,14 @@ from transformers import PretrainedConfig
 
 from aimet_torch.experimental.spinquant.hadamard_utils import get_hadamard_matrix
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
+from aimet_torch.experimental.transforms.transform_config import (
+    BlockInterface,
+    get_block_dtype,
+)
 
 from .fptquant_config import (
     fptquant_model_config_dict,
     FPTQuantConfig,
-    BlockInterface,
-    _get_block_dtype,
 )
 from .fptquant_transforms import (
     ScaledRotateTransformOp,
@@ -263,7 +265,7 @@ class FPTQuant:
         )
         transform = ScaledRotateTransformOp(
             head_dim, config.num_attention_heads, config.num_key_value_heads
-        ).to(device=device, dtype=_get_block_dtype(block))
+        ).to(device=device, dtype=get_block_dtype(block))
 
         block.q_proj.add_right_hand_transform(transform.get_inverted_op())
         block.k_proj.add_right_hand_transform(transform)
@@ -287,7 +289,7 @@ class FPTQuant:
         block: BlockInterface, config: PretrainedConfig, device: torch.device
     ):
         transform = ScalingTransformOp(config.intermediate_size).to(
-            device=device, dtype=_get_block_dtype(block)
+            device=device, dtype=get_block_dtype(block)
         )
 
         block.up_proj.add_right_hand_transform(transform)
@@ -318,7 +320,7 @@ class FPTQuant:
         block: BlockInterface, config: PretrainedConfig, device: torch.device
     ):
         transform = GroupedHadamardTransformOp(config.intermediate_size).to(
-            device=device, dtype=_get_block_dtype(block)
+            device=device, dtype=get_block_dtype(block)
         )
         block.down_proj.add_left_hand_transform(transform.get_inverted_op())
         block.down_proj.add_left_hand_transform(transform)

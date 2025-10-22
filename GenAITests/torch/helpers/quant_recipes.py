@@ -288,5 +288,5 @@ class SpinQuant(QuantizationTechnique):
             )
             quantsim.model.model.lm_head.weight = new_weight
 
-        apply_spinquant(quantsim.model)
+        apply_spinquant(model=quantsim.model.model)
         _compute_encodings(quantsim, generator, dataloader, num_iterations=40)

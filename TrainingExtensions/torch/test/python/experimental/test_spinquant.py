@@ -2,27 +2,17 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Test SpinQuant functions"""
 
-import contextlib
 import copy
-import math
 import pytest
 import torch
-from torch.nn import functional as F
 from transformers import PreTrainedModel, DynamicCache
 from transformers.models.llama.modeling_llama import (
     LlamaRMSNorm,
     LlamaForCausalLM,
     LlamaConfig,
 )
-from aimet_torch.experimental.spinquant import spinquant_optimizer
 from aimet_torch.experimental.spinquant.hadamard_utils import get_hadamard_matrix
-from aimet_torch.experimental.spinquant import apply_spinquant
-from aimet_torch.experimental.spinquant.spinquant_optimizer import (
-    _fuse_rmsnorm_into_linear,
-    _identify_and_fuse_rmsnorms_into_linears,
-    RMSNORM_LINEAR_PAIRS,
-    R1_FUSION_PAIRS,
-)
+from aimet_torch.experimental.spinquant.spinquant_optimizer import SpinQuant
 from aimet_torch.quantsim import QuantizationSimModel
 
 
@@ -75,24 +65,6 @@ class TorchExportableModuleWithCache(torch.nn.Module):
         return lm_logits, new_past_key_values.to_legacy_cache()
 
 
-@contextlib.contextmanager
-def _register_module_for_spinquant(
-    module, rmsnorm_linear_identifier, r1_fusion_identifier
-):
-    try:
-        spinquant_optimizer.SUPPORTED_MODULE_DICT[module] = {}
-        spinquant_optimizer.SUPPORTED_MODULE_DICT[module][RMSNORM_LINEAR_PAIRS] = (
-            rmsnorm_linear_identifier
-        )
-        spinquant_optimizer.SUPPORTED_MODULE_DICT[module][R1_FUSION_PAIRS] = (
-            r1_fusion_identifier
-        )
-        yield
-
-    finally:
-        del spinquant_optimizer.SUPPORTED_MODULE_DICT[module]
-
-
 class RMSNormWithLinear(torch.nn.Module):
     def __init__(self, bias):
         super(RMSNormWithLinear, self).__init__()
@@ -123,7 +95,7 @@ def test_fuse_rmsnorm_into_linear(bias):
     orig_q_weight = model.q.weight.clone()
     orig_k_weight = model.k.weight.clone()
     orig_v_weight = model.v.weight.clone()
-    _fuse_rmsnorm_into_linear(model.rmsnorm, [model.q, model.k, model.v])
+    SpinQuant._fuse_norm_layer_into_linears(model.rmsnorm, [model.q, model.k, model.v])
 
     new_q_out, new_k_out, new_v_out = model(dummy_input)
     assert torch.allclose(orig_q_out, new_q_out, atol=1e-6)
@@ -135,61 +107,6 @@ def test_fuse_rmsnorm_into_linear(bias):
     assert not torch.equal(orig_q_weight, model.q.weight)
     assert not torch.equal(orig_k_weight, model.k.weight)
     assert not torch.equal(orig_v_weight, model.v.weight)
-
-
-def test_identify_and_fuse_llama_model_rmsnorms():
-    torch.manual_seed(0)
-    with _register_module_for_spinquant(
-        RMSNormWithLinear, lambda m: [(m.rmsnorm, [m.q, m.k, m.v])], lambda _: []
-    ):
-        model = RMSNormWithLinear(bias=True)
-        with torch.no_grad():
-            for module in model.modules():
-                if isinstance(module, LlamaRMSNorm):
-                    module.weight.copy_(torch.randn(module.weight.shape))
-
-        dummy_input = torch.randn(10, 10)
-        orig_q_out, orig_k_out, orig_v_out = model(dummy_input)
-
-        orig_rmsnorm_weight = model.rmsnorm.weight.clone()
-
-        _identify_and_fuse_rmsnorms_into_linears(model)
-
-        new_q_out, new_k_out, new_v_out = model(dummy_input)
-        new_rmsnorm_weight = model.rmsnorm.weight.clone()
-
-        assert torch.allclose(orig_q_out, new_q_out, atol=1e-6)
-        assert torch.allclose(orig_k_out, new_k_out, atol=1e-6)
-        assert torch.allclose(orig_v_out, new_v_out, atol=1e-6)
-        assert not torch.equal(orig_rmsnorm_weight, new_rmsnorm_weight)
-
-
-def test_fuse_rmsnorm_fp_quantsim_equivalence():
-    torch.manual_seed(0)
-    with _register_module_for_spinquant(
-        RMSNormWithLinear, lambda m: [(m.rmsnorm, [m.q, m.k, m.v])], lambda _: []
-    ):
-        model = RMSNormWithLinear(bias=True)
-        with torch.no_grad():
-            for module in model.modules():
-                if isinstance(module, LlamaRMSNorm):
-                    module.weight.copy_(torch.randn(module.weight.shape))
-        model_2 = copy.deepcopy(model)
-        dummy_input = torch.randn(10, 10)
-
-        _identify_and_fuse_rmsnorms_into_linears(model)
-        qsim = QuantizationSimModel(model, dummy_input=dummy_input)
-        qsim.compute_encodings(lambda m: m(dummy_input))
-
-        qsim_2 = QuantizationSimModel(model_2, dummy_input=dummy_input)
-        _identify_and_fuse_rmsnorms_into_linears(qsim_2.model)
-        qsim_2.compute_encodings(lambda m: m(dummy_input))
-
-        qsim_out_q, qsim_out_k, qsim_out_v = qsim.model(dummy_input)
-        qsim_2_out_q, qsim_2_out_k, qsim_2_out_v = qsim_2.model(dummy_input)
-        assert torch.allclose(qsim_out_q, qsim_2_out_q, atol=1e-6)
-        assert torch.allclose(qsim_out_k, qsim_2_out_k, atol=1e-6)
-        assert torch.allclose(qsim_out_v, qsim_2_out_v, atol=1e-6)
 
 
 @pytest.mark.parametrize("tie_word_embeddings", [True, False])
@@ -204,9 +121,9 @@ def test_raise_error_on_tied_word_embeddings(tie_word_embeddings):
     model = LlamaForCausalLM(config=config)
     if tie_word_embeddings:
         with pytest.raises(RuntimeError):
-            apply_spinquant(model)
+            SpinQuant.apply_spinquant(model)
     else:
-        apply_spinquant(model)
+        SpinQuant.apply_spinquant(model)
 
 
 @pytest.mark.parametrize("hidden_size", [64, 192])
@@ -261,7 +178,7 @@ def test_apply_spinquant(hidden_size, use_bias):
     orig_out = model(input_ids=dummy_input)
     orig_q = model.model.layers[0].self_attn.q_proj.weight.clone()
     orig_embed_tokens = model.model.embed_tokens.weight.clone()
-    apply_spinquant(model)
+    SpinQuant.apply_spinquant(model)
     new_out = model(input_ids=dummy_input)
     new_embed_tokens = model.model.embed_tokens.weight.clone()
     new_q = model.model.layers[0].self_attn.q_proj.weight.clone()
@@ -298,20 +215,20 @@ def test_apply_spinquant_quantsim_equivalence():
     )
     dummy_input = torch.randint(0, 10, (1, 200))
     model = LlamaForCausalLM(config=config)
-    model = TorchExportableModuleWithCache(model)
+    traceable_model = TorchExportableModuleWithCache(model)
     for module in model.modules():
         if isinstance(module, torch.nn.Linear) and module.bias is not None:
             with torch.no_grad():
                 module.bias.copy_(torch.randn(module.bias.shape))
 
-    model_2 = copy.deepcopy(model)
+    traceable_model_2 = copy.deepcopy(traceable_model)
 
-    apply_spinquant(model)
-    qsim = QuantizationSimModel(model, dummy_input=dummy_input)
+    SpinQuant.apply_spinquant(model)
+    qsim = QuantizationSimModel(traceable_model, dummy_input=dummy_input)
     qsim.compute_encodings(lambda m: m(dummy_input))
 
-    qsim_2 = QuantizationSimModel(model_2, dummy_input=dummy_input)
-    apply_spinquant(qsim_2.model)
+    qsim_2 = QuantizationSimModel(traceable_model_2, dummy_input=dummy_input)
+    SpinQuant.apply_spinquant(qsim_2.model.model)
     qsim_2.compute_encodings(lambda m: m(dummy_input))
 
     qsim_out = qsim.model(input_ids=dummy_input)
