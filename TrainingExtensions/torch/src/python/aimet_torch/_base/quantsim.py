@@ -758,7 +758,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
             if closest_producer_wrapper:
                 target_quantizer = (
                     closest_producer_wrapper.output_quantizers[0]
-                    if closest_producer_wrapper.output_quantizers[0]
+                    if closest_producer_wrapper.output_quantizers[0].enabled
                     else closest_producer_wrapper.input_quantizers[0]
                 )
             else:

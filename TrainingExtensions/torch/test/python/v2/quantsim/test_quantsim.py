@@ -62,14 +62,14 @@ from aimet_torch.v2.quantization.affine import (
     QuantizeDequantize,
 )
 from aimet_torch.v2.experimental import propagate_output_encodings
-from aimet_torch.v2.nn import (
+from aimet_torch.nn import (
     BaseQuantizationMixin,
     QuantizationMixin,
     QuantizedConv2d,
     QuantizedLinear,
     QuantizedReLU,
 )
-import aimet_torch.v2.nn.modules.custom as custom
+import aimet_torch.nn.modules.custom as custom
 from ..models_ import test_models
 
 
@@ -1631,6 +1631,26 @@ class TestQuantsim:
         (conv_output_qtzr,) = sim.model.conv.output_quantizers
         (relu_output_qtzr,) = sim.model.relu.output_quantizers
         assert conv_output_qtzr is not relu_output_qtzr
+
+    def test_permute_mm_ecxeption(self):
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.mm = custom.MatMul()
+                self.permute = custom.Permute()
+
+            def forward(self, x, y):
+                y = self.permute(y, dims=(1, 0))
+                return self.mm(x, y)
+
+        model = Model()
+        input = (torch.randn(3, 3), torch.randn(3, 3))
+        sim = aimet_torch.QuantizationSimModel(
+            model, input, default_output_bw=16, config_file="htp_v81"
+        )
+        assert sim.model.permute.input_quantizers[0].symmetric
+        assert not sim.model.mm.input_quantizers[0].symmetric
+        assert not sim.model.mm.output_quantizers[0].symmetric
 
 
 class TestQuantsimUtilities:
