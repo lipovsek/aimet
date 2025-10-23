@@ -1,0 +1,40 @@
+# Nightly Profile - Daily Regression Testing
+#
+# Purpose: Fast daily regression to catch AIMET bugs early
+# Target Duration: 2-3 hours
+# When: Every night at 6 AM UTC (GitHub Actions schedule)
+# Focus: Host-only evaluation (skip QNN for speed)
+#
+# Philosophy:
+# - Quick feedback on AIMET functionality
+# - Reasonable accuracy validation (not exhaustive)
+# - No on-device testing
+# - Good balance of speed and coverage
+
+# NOTE: This file is merged on top of _defaults.yaml
+# Only values that differ from defaults are specified here
+
+# ==================== Reduced Sample Counts ====================
+# Cut samples in half for faster execution
+# Trade-off: Slightly less accurate measurements
+
+fp32_eval_samples: 100      # Default: 200 (50% reduction)
+quant_eval_samples: 100    # Default: 200 (50% reduction)
+calib_samples: 128          # Default: 256 (50% reduction)
+eval_samples: 128          # Default: 256 (50% reduction)
+
+# ==================== Performance Measurement ====================
+# Minimal profiling for speed
+metrics_samples: 32         # Default: 64 (50% reduction)
+metrics_runs: 1             # Default: 3 (single run sufficient)
+metrics_warmup: 0           # Default: 1 (skip warmup for speed)
+
+# ==================== Disable QNN On-Device Testing ====================
+
+qnn_options: null         # Disable QNN compilation
+qnn_eval_samples: 0       # Skip on-device evaluation
+
+# ==================== Validation Thresholds ====================
+# Same accuracy requirement as defaults
+# We still expect quantized models to be within 1% of FP32
+min_accuracy_threshold: 0.99

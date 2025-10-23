@@ -1,0 +1,85 @@
+# Nightly Regression Suite
+#
+# Purpose: Fast daily regression to catch AIMET bugs early
+# Target Duration: 2-3 hours
+# When: Every night at 6 AM UTC
+# Coverage: Tier-1 models with key quantization techniques
+#
+# Design Philosophy:
+# - Host-only (no on-device QNN evaluation)
+# - Detect regressions in AIMET core logic
+#
+# Weekly suite provides comprehensive testing with QNN
+
+# ==================== Suite Metadata ====================
+suite_name: nightly
+
+description: >
+  Fast daily regression to catch AIMET bugs early.
+  Runs on GPU only, no on-target testing.
+  Tests 4 tier-1 models with key quantization techniques.
+  Target completion time: 2-3 hours.
+
+# ==================== Runtime Profile ====================
+# Use nightly profile for fast execution:
+# - Reduced sample counts (128 vs 256)
+# - No QNN compilation or on-device testing
+# - Minimal performance profiling
+profile: nightly
+
+# ==================== Models to Test ====================
+# Tier-1 models: Most commonly used, highest priority
+# These represent a good cross-section of architectures:
+# - ResNet: Standard residual architecture
+# - MobileNetV2: Depthwise separable (mobile-optimized)
+# - EfficientNet: Compound scaling
+# - DenseNet: Dense connections
+
+models:
+  - models/resnet50.yaml
+  - models/mobilenetv2.yaml
+  - models/efficientnet_b0.yaml
+  - models/densenet121.yaml
+
+# ==================== Test Filter ====================
+# Only run these tests from each model
+# Focus on most important techniques:
+# - quantsim_int8: Standard INT8 baseline
+# - lite_mp_25: Mixed precision optimization
+
+# test_filter:
+#   - quantsim_int8
+#   - lite_mp_25
+
+# ==================== Validation Criteria ====================
+# Define pass/fail thresholds for regression detection
+
+accuracy_threshold:
+  min: 0.99  # Quantized accuracy must be within 1% of FP32
+
+# ==================== Notifications ====================
+# Alert team when regressions are detected
+
+# notify_on_failure: true
+# notify_channels:
+#   - "#aimet-regression"
+
+# ==================== Baseline Comparison ====================
+# Compare results against previous nightly run
+# Detect accuracy regressions between AIMET versions
+
+compare_to_baseline: true
+baseline_file: "baselines/nightly_latest.json"
+
+# ==================== Execution Notes ====================
+# To run manually:
+#   python ONNXRegression/suite_runner.py --suite nightly
+#
+# To run with filters:
+#   python ONNXRegression/suite_runner.py --suite nightly --filter-model resnet
+#   python ONNXRegression/suite_runner.py --suite nightly --filter-test quantsim_int8
+#
+# Output:
+#   - CSV report: ONNXRegression/reports/results_nightly.csv
+#   - HTML report: ONNXRegression/reports/results_nightly.html
+#   - Baseline: ONNXRegression/baselines/nightly_latest.json

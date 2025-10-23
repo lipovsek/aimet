@@ -3,21 +3,35 @@
 # pylint: disable=missing-module-docstring
 
 """
-ONNXRegression Pipeline Runner
+ONNXRegression Pipeline Runner - Single Test Execution
 
-This module orchestrates the complete AIMET quantization evaluation pipeline:
-1. Load model from QAI Hub Models
-2. Export to FP32 ONNX locally (torch.jit.trace + ONNX conversion)
-3. Apply AIMET quantization technique
-4. Evaluate accuracy at multiple stages
-5. Optionally run on-device evaluation via QNN (AI Hub)
-6. Generate comprehensive reports
+This module orchestrates the complete AIMET quantization evaluation pipeline
+for a single test configuration using the new hierarchical config system.
 
-Key Changes from Original:
-- FP32 ONNX export is done locally to reduce AI Hub API usage
-- AI Hub is only used for on-device QNN evaluation when specified
-- Models are still loaded from QAI Hub Models repository
+Usage:
+    # Run a test with profile
+    python runner.py --model resnet50 --test quantsim_int8 --profile nightly
 
+    # Run without profile (use defaults only)
+    python runner.py --model resnet50 --test quantsim_int8
+
+    # Dry run to preview configuration
+    python runner.py --model resnet50 --test quantsim_int8 --profile nightly --dry-run
+
+Pipeline Steps:
+1. Load configuration (merge defaults → profile → model → test)
+2. Load model from QAI Hub Models
+3. Export to FP32 ONNX locally (torch.jit.trace + ONNX conversion)
+4. Apply AIMET quantization technique (QuantSim, Lite-MP, or AdaRound)
+5. Evaluate accuracy at multiple stages
+6. Optionally run on-device evaluation via QNN (AI Hub)
+7. Generate comprehensive reports
+
+Key Design Decisions:
+- Local ONNX export to reduce AI Hub API usage
+- AI Hub only used for on-device QNN evaluation when specified
+- Models loaded from QAI Hub Models repository
+- Configuration merged from: defaults → profile → model → test
 """
 
 import os
@@ -25,8 +39,9 @@ import sys
 import yaml
 import onnx
 import torch
+import argparse
 from pathlib import Path
-from typing import Dict, List, Optional, Callable, Tuple, Any
+from typing import Dict, Any
 
 # ==================== External Imports ====================
 from qai_hub import Device
@@ -46,9 +61,12 @@ from ONNXRegression.features.quantsim_runner import run_quantsim
 from ONNXRegression.features.lite_mp_runner import run_lite_mp
 from ONNXRegression.features.adaround_runner import run_adaround
 
+# ==================== Config Loader ====================
+from ONNXRegression.config_loader import load_config, validate_config
+
 
 # Registry of available feature runners
-FEATURE_RUNNERS: Dict[str, Callable] = {
+FEATURE_RUNNERS = {
     "quantsim": run_quantsim,
     "lite_mp": run_lite_mp,
     "adaround": run_adaround,
@@ -99,9 +117,6 @@ def _export_torch_to_onnx_local(
     bypassing AI Hub compilation entirely. This reduces API usage while
     maintaining compatibility with AIMET.
 
-    The approach uses torch.jit.trace (same as AI Hub does internally) followed
-    by ONNX serialization, which handles QAI Hub models' preprocessing correctly.
-
     Args:
         model: QAI Hub model instance
         input_spec: Input specification dictionary
@@ -138,29 +153,24 @@ def _export_torch_to_onnx_local(
 
     # Handle input format for ONNX export
     # Critical: Use actual input names from input_spec (not generic names)
-    # This ensures QNN inference can match input names correctly
     if isinstance(sample_inputs, dict):
-        # Use the actual input names from the model's input_spec
         input_names = list(input_spec.keys())
         input_values = list(sample_inputs.values())
 
-        # For single-input models, extract the tensor from the list
-        # For multi-input models, keep as tuple for positional args
+        # For single-input models, extract the tensor
         if len(input_values) == 1:
             sample_inputs_for_export = input_values[0]
         else:
             sample_inputs_for_export = tuple(input_values)
     else:
-        # Non-dict inputs (already in tuple/tensor format)
+        # Non-dict inputs
         if isinstance(sample_inputs, tuple):
             sample_inputs_for_export = sample_inputs
-            # Try to get names from input_spec, fall back to generic
             if input_spec and isinstance(input_spec, dict):
                 input_names = list(input_spec.keys())
             else:
                 input_names = [f"input_{i}" for i in range(len(sample_inputs))]
         else:
-            # Single tensor - try to get name from input_spec
             sample_inputs_for_export = sample_inputs
             if input_spec and isinstance(input_spec, dict):
                 input_names = list(input_spec.keys())
@@ -171,9 +181,6 @@ def _export_torch_to_onnx_local(
     dynamic_axes = None
 
     # Export the traced model to ONNX
-    # Note: QNN requires static shapes, so we export with fixed batch size (typically 1)
-    # For some models, the export might fail on first attempt due to
-    # input format mismatch. We handle this gracefully.
     export_success = False
     export_error = None
 
@@ -185,7 +192,7 @@ def _export_torch_to_onnx_local(
                 str(fp32_path),
                 input_names=input_names,
                 output_names=["output"],
-                dynamic_axes=dynamic_axes,  # None for QNN (static shapes required)
+                dynamic_axes=dynamic_axes,
                 opset_version=13,
                 do_constant_folding=True,
                 export_params=True,
@@ -322,12 +329,12 @@ def _build_single_batch_loader(
 # ==================== Main Pipeline ====================
 
 
-def run_single_config(config_path: str) -> Dict[str, Any]:
+def run_single_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Execute the complete evaluation pipeline for a single configuration.
 
     This function orchestrates:
-    1. Load configuration and model
+    1. Load model from QAI Hub Models
     2. Export FP32 ONNX locally (no AI Hub)
     3. Apply AIMET quantization
     4. Evaluate accuracy at multiple stages
@@ -335,30 +342,21 @@ def run_single_config(config_path: str) -> Dict[str, Any]:
     6. Generate reports
 
     Args:
-        config_path: Path to YAML configuration file
+        config: Configuration dictionary (already merged)
 
     Returns:
         Dictionary with all evaluation results
 
     Raises:
         RuntimeError: If configuration is invalid or pipeline fails
-        FileNotFoundError: If config file doesn't exist
     """
-    # ============ Configuration Loading ============
-    print(f"\n{'=' * 60}")
-    print(f"Running: {config_path}")
-    print(f"{'=' * 60}")
-
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+    # Validate configuration
+    validate_config(config)
 
     # Extract configuration
     model_name = config.get("model_name")
-    if not model_name:
-        raise RuntimeError("'model_name' not specified in configuration")
-
     device_name = config.get("device", "Samsung Galaxy S24 (Family)")
-    feature_name = str(config.get("feature", "quantsim")).strip().lower()
+    feature_name = config.get("feature", "quantsim").strip().lower()
 
     if feature_name not in FEATURE_RUNNERS:
         raise RuntimeError(
@@ -366,9 +364,13 @@ def run_single_config(config_path: str) -> Dict[str, Any]:
             f"Supported: {list(FEATURE_RUNNERS.keys())}"
         )
 
+    print(f"\n{'=' * 60}")
+    print(f"Running Single Test")
+    print(f"{'=' * 60}")
     print(f"Model:    {model_name}")
     print(f"Feature:  {feature_name}")
     print(f"Device:   {device_name}")
+    print(f"{'=' * 60}\n")
 
     # ============ Step 1: Model Loading ============
     print(f"\n[Step 1] Loading model and dataset from QAI Hub Models...")
@@ -377,16 +379,13 @@ def run_single_config(config_path: str) -> Dict[str, Any]:
     print(f"Dataset: {dataset_name}")
 
     # ============ Step 2: FP32 Baseline ============
-    # Always use local export (no AI Hub compilation)
     print(f"\n[Step 2] Creating FP32 baseline via local ONNX export...")
     fp32_path = _export_torch_to_onnx_local(
         model, input_spec, ARTIFACTS_DIR, model_name
     )
 
     # Evaluate FP32 accuracy
-    fp32_eval_samples = int(
-        config.get("fp32_eval_samples", config.get("quant_eval_samples", 200))
-    )
+    fp32_eval_samples = int(config.get("fp32_eval_samples", 200))
     print(f"[Step 2] Evaluating FP32 accuracy with {fp32_eval_samples} samples...")
     fp32_acc = eval_onnx_model(
         fp32_path, model, dataset_name, num_samples=fp32_eval_samples
@@ -549,21 +548,114 @@ def run_single_config(config_path: str) -> Dict[str, Any]:
 
 # ==================== Entry Point ====================
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python ONNXRegression/runner.py <config_file.yaml>")
-        print("\nExample:")
-        print(
-            "  python ONNXRegression/runner.py ONNXRegression/configs/mobilenetv2_quantsim.yaml"
-        )
-        sys.exit(1)
+
+def main():
+    """
+    Main entry point for single test execution.
+
+    Parses command-line arguments, loads configuration using the new
+    hierarchical system, and executes the test pipeline.
+    """
+    parser = argparse.ArgumentParser(
+        description="Run a single AIMET quantization test (NEW CONFIG SYSTEM)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run with nightly profile (fast, no QNN)
+  python runner.py --model resnet50 --test quantsim_int8 --profile nightly
+
+  # Run without profile (use defaults)
+  python runner.py --model resnet50 --test quantsim_int8
+
+  # Dry run to preview configuration
+  python runner.py --model resnet50 --test quantsim_int8 --profile nightly --dry-run
+
+Available models:
+  resnet50, mobilenetv2, efficientnet_b0, densenet121
+  (see configs/models/ for full list)
+
+Available tests (per model):
+  quantsim_int8, quantsim_int8_int16, lite_mp_25, adaround_500
+  (see model YAML for available tests)
+
+Available profiles:
+  nightly (fast, no QNN)
+  (see configs/_profiles/ for full list)
+        """,
+    )
+
+    # Required arguments
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="Model name (e.g., resnet50, mobilenetv2). Corresponds to configs/models/<model>.yaml",
+    )
+
+    parser.add_argument(
+        "--test",
+        required=True,
+        help="Test name from model config (e.g., quantsim_int8, lite_mp_25)",
+    )
+
+    # Optional arguments
+    parser.add_argument(
+        "--profile",
+        help="Profile name (e.g., nightly, smoke). If not specified, uses defaults only.",
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show merged configuration without executing the test",
+    )
+
+    args = parser.parse_args()
 
     try:
-        result = run_single_config(sys.argv[1])
-        sys.exit(0)
+        # Load and merge configuration
+        print(f"Loading configuration...")
+        print(f"  Model: {args.model}")
+        print(f"  Test: {args.test}")
+        print(f"  Profile: {args.profile or '(none - using defaults)'}")
+
+        model_yaml = f"models/{args.model}.yaml"
+        config = load_config(model_yaml, args.test, args.profile)
+
+        # Dry run - show configuration and exit
+        if args.dry_run:
+            print(f"\n{'=' * 60}")
+            print("DRY RUN - Configuration Preview")
+            print(f"{'=' * 60}\n")
+
+            print("Merged configuration:")
+            for key, value in sorted(config.items()):
+                if not key.startswith("_"):
+                    print(f"  {key:30s}: {value}")
+
+            print(f"\n{'=' * 60}")
+            print("Would execute with this configuration")
+            print(f"{'=' * 60}")
+            return 0
+
+        # Execute test
+        result = run_single_config(config)
+        return 0
+
+    except FileNotFoundError as e:
+        print(f"\n❌ Configuration file not found: {e}")
+        return 1
+
+    except ValueError as e:
+        print(f"\n❌ Configuration error: {e}")
+        return 1
+
     except Exception as e:
-        print(f"\nERROR: Pipeline failed: {e}")
+        print(f"\n❌ Pipeline failed: {e}")
         import traceback
 
         traceback.print_exc()
-        sys.exit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

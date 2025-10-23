@@ -1,0 +1,32 @@
+# MobileNetV2 Model Configuration
+
+# ==================== Model Identification ====================
+model_name: mobilenet_v2
+
+# ==================== Test Definitions ====================
+tests:
+  # --------------------------------------------------------------------------
+  # Test 1: Standard INT8 Quantization
+  # --------------------------------------------------------------------------
+
+
+  - name: quantsim_int8
+    feature: quantsim
+    quant_scheme: tf_enhanced
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+
+  # --------------------------------------------------------------------------
+  # Test 2: Lite Mixed-Precision (25% FP16)
+  # --------------------------------------------------------------------------
+
+  - name: lite_mp_25
+    feature: lite_mp
+    quant_scheme: tf_enhanced
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+    lite_mp:
+      percent_flip: 25
+      override_precision: float16

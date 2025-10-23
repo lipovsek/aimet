@@ -168,8 +168,9 @@ def run_quantsim(
     print(f"[QuantSim] Exported to: {bundle_dir}")
 
     # ============ Prepare Results ============
+    technique_str = f"quantsim(W{param_type}/A{activation_type}, {quant_scheme})"
     stats = {
-        "techniques": "quantsim",
+        "techniques": technique_str,
         "runtime": runtime_str,
         "memory": memory_str,
     }

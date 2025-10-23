@@ -297,7 +297,7 @@ def run_adaround(
     # ============ Step 9: Prepare Results ============
     # Include iteration count in technique description for reproducibility
     stats = {
-        "techniques": f"quantsim + adaround({adaround_iters})",
+        "techniques": f"quantsim(W{param_type}/A{activation_type}, {quant_scheme}) + adaround({adaround_iters})",
         "runtime": runtime_str,
         "memory": memory_str,
     }

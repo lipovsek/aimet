@@ -5,351 +5,417 @@
 """
 Suite Runner for AIMET ONNX Regression
 
-This module enables batch execution of multiple model configurations as a suite.
-It supports:
-- Predefined suites (aimet_only, aimet_plus_ontarget)
-- Custom suite files
-- Configuration overrides applied to all tests
-- Filtering by model or feature name
-- Consolidated reporting
+This module executes a suite of AIMET quantization tests using the new
+hierarchical configuration system.
 
+Key Features:
+- Load suite definition (profile + models + test_filter)
+- Discover available tests from model configs
+- Filter tests by suite and/or command-line flags
+- Merge configs for each test (defaults → profile → model → test)
+- Execute tests and collect results
+- Generate consolidated reports
+
+Usage:
+    # Run full suite
+    python suite_runner.py --suite nightly
+
+    # Filter by model
+    python suite_runner.py --suite nightly --filter-model resnet
+
+    # Filter by test
+    python suite_runner.py --suite nightly --filter-test quantsim_int8
+
+    # Combine filters
+    python suite_runner.py --suite nightly --filter-model resnet --filter-test quantsim
+
+Design:
+- Suite files define: profile + models + test_filter
+- Config loader merges: defaults → profile → model → test
+- Each test runs with merged config via run_single_config()
+- Reports generated with suite-specific naming and filtering
 """
 
 import argparse
 import sys
-import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Any
 
 import yaml
 
-# Reuse the single-config pipeline
+# ==================== Internal Imports ====================
+from ONNXRegression.config_loader import load_config, list_tests, validate_config
 from ONNXRegression.runner import run_single_config
+from ONNXRegression.report.report_writer import write_csv, write_html
 
 
-def _load_suite(path: Path) -> Dict:
+def load_suite_file(suite_path: Path) -> Dict[str, Any]:
     """
     Load and validate a suite configuration file.
 
     Suite files define:
-    - include: List of config files to run
-    - overrides: Parameters to apply to all configs
-    - metadata: Suite name, description, etc.
+    - profile: Which runtime profile to use (e.g., nightly, smoke)
+    - models: List of model YAML files to test
+    - test_filter: Which tests to run from each model (empty = all)
+    - metadata: Suite name, description, notification settings
 
     Args:
-        path: Path to suite YAML file
+        suite_path: Path to suite YAML file
 
     Returns:
         Suite configuration dictionary
 
     Raises:
-        ValueError: If suite file is invalid
+        ValueError: If suite file is invalid or missing required fields
     """
-    with open(path, "r", encoding="utf-8") as f:
+    if not suite_path.exists():
+        raise FileNotFoundError(f"Suite file not found: {suite_path}")
+
+    with open(suite_path, "r", encoding="utf-8") as f:
         suite = yaml.safe_load(f)
 
-    if not isinstance(suite, dict) or "include" not in suite:
+    if not isinstance(suite, dict):
+        raise ValueError(f"Suite file must be a dictionary, got: {type(suite)}")
+
+    # Validate required fields
+    if "models" not in suite:
         raise ValueError(
-            f"Suite YAML must be a dictionary with an 'include' list. "
-            f"Got: {type(suite)}"
+            f"Suite missing 'models' list: {suite_path}\n"
+            f"Each suite must specify which models to test."
         )
 
-    # Set defaults
-    suite.setdefault("suite_name", path.stem)
+    if not isinstance(suite["models"], list):
+        raise ValueError(f"'models' must be a list in suite: {suite_path}")
+
+    # Set defaults for optional fields
+    suite.setdefault("suite_name", suite_path.stem)
     suite.setdefault("description", "")
-    suite.setdefault("overrides", {})
+    suite.setdefault("profile", None)  # Optional profile
+    suite.setdefault("test_filter", [])  # Empty = run all tests
 
     return suite
-
-
-def _apply_overrides_to_config_file(
-    cfg_path: Path, overrides: Dict, tmpdir: Path
-) -> Path:
-    """
-    Apply suite-level overrides to a configuration file.
-
-    Creates a modified copy of the config with overrides applied.
-    Setting an override value to None deletes that key from the config.
-
-    Args:
-        cfg_path: Original config file path
-        overrides: Dictionary of key-value overrides
-        tmpdir: Temporary directory for modified config
-
-    Returns:
-        Path to modified config file
-
-    Example:
-        Overrides: {"eval_samples": 100, "qnn_options": None}
-        Result: Sets eval_samples to 100, removes qnn_options entirely
-    """
-    # Load original config
-    with open(cfg_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-
-    if not isinstance(config, dict):
-        raise ValueError(f"Invalid config file at {cfg_path}")
-
-    # Apply overrides
-    for key, value in overrides.items():
-        if value is None:
-            # None means delete the key
-            if key in config:
-                del config[key]
-        else:
-            # Otherwise set/update the value
-            config[key] = value
-
-    # Save modified config to temp directory
-    out_path = tmpdir / cfg_path.name
-    with open(out_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(config, f, sort_keys=False)
-
-    return out_path
 
 
 def main():
     """
     Main entry point for suite execution.
 
-    Parses command-line arguments, loads configurations,
-    applies overrides, runs tests, and generates consolidated reports.
+    Flow:
+    1. Parse command-line arguments
+    2. Load suite file (get profile, models, test_filter)
+    3. For each model:
+       a. Discover available tests
+       b. Apply suite test_filter
+       c. Apply command-line filters
+       d. For each matching test:
+          - Merge configs via config_loader
+          - Execute test via run_single_config()
+    4. Generate consolidated reports
     """
     # ============ Argument Parsing ============
     parser = argparse.ArgumentParser(
-        description="Run a suite of AIMET ONNX regression tests",
+        description="Run a suite of AIMET ONNX regression tests (NEW CONFIG SYSTEM)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run predefined suite
-  python suite_runner.py --suite aimet_only
+  # Run nightly suite (fast, no QNN)
+  python suite_runner.py --suite nightly
 
-  # Run with filtering
-  python suite_runner.py --suite aimet_plus_ontarget --filter quantsim
+  # Filter by model name
+  python suite_runner.py --suite nightly --filter-model resnet
 
-  # Custom suite file
-  python suite_runner.py --suite-file my_tests.yaml
+  # Filter by test name
+  python suite_runner.py --suite nightly --filter-test quantsim_int8
 
-    """,
+  # Combine filters
+  python suite_runner.py --suite nightly --filter-model resnet --filter-test quantsim
+
+Suite files location: ONNXRegression/suites/
+Available suites: nightly (add smoke, weekly, release later)
+
+What happens:
+1. Load suite definition (profile + models + test_filter)
+2. Discover tests from each model config
+3. Apply filters (suite + command-line)
+4. Execute each test with merged config
+5. Generate consolidated CSV/HTML reports
+        """,
     )
 
     parser.add_argument(
         "--suite",
-        choices=["aimet_only", "aimet_plus_ontarget"],
-        default="aimet_only",
-        help="Predefined suite to run (default: aimet_only)",
+        required=True,
+        help="Suite name (e.g., 'nightly'). Loads from suites/<suite>.yaml",
     )
 
     parser.add_argument(
-        "--suite-file",
-        type=str,
-        default=None,
-        help="Path to custom suite YAML (overrides --suite)",
+        "--filter-model",
+        dest="filter_model",
+        help="Filter models by substring (e.g., 'resnet' matches resnet50)",
     )
 
     parser.add_argument(
-        "--configs-dir",
-        type=str,
-        default="ONNXRegression/configs",
-        help="Directory containing model config YAMLs",
+        "--filter-test",
+        dest="filter_test",
+        help="Filter tests by substring (e.g., 'quantsim' matches quantsim_int8)",
     )
 
     parser.add_argument(
-        "--filter",
-        type=str,
-        default=None,
-        help="Filter configs by substring (e.g., 'quantsim', 'resnet50')",
+        "--out-prefix",
+        dest="out_prefix",
+        help="Output file prefix (default: results_<suite_name>)",
     )
 
     parser.add_argument(
-        "--out-prefix", type=str, default=None, help="Prefix for output CSV/HTML files"
-    )
-
-    parser.add_argument(
-        "--key-order",
-        type=str,
-        default=None,
-        help="Comma-separated column order for reports",
-    )
-
-    parser.add_argument(
-        "--title", type=str, default=None, help="Custom title for HTML report"
-    )
-
-    parser.add_argument(
-        "--subtitle",
-        type=str,
-        default=None,
-        help="Subtitle for HTML report (e.g., device info, date)",
+        "--dry-run", action="store_true", help="Show test matrix without executing"
     )
 
     args = parser.parse_args()
 
-    # ============ Setup Directories ============
-    configs_dir = Path(args.configs_dir)
+    # ============ Setup Paths ============
     suites_dir = Path("ONNXRegression/suites")
     reports_dir = Path("ONNXRegression/reports")
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     # ============ Load Suite Configuration ============
-    if args.suite_file:
-        suite_path = Path(args.suite_file)
-    else:
-        suite_path = suites_dir / f"{args.suite}.yaml"
+    suite_path = suites_dir / f"{args.suite}.yaml"
+
+    if not suite_path.exists():
+        print(f"❌ Suite file not found: {suite_path}")
+        print(f"\n💡 Available suites in {suites_dir}:")
+        for suite_file in sorted(suites_dir.glob("*.yaml")):
+            print(f"  - {suite_file.stem}")
+        sys.exit(1)
 
     print(f"Loading suite: {suite_path}")
-    suite = _load_suite(suite_path)
 
-    suite_name = suite.get("suite_name", suite_path.stem)
+    try:
+        suite = load_suite_file(suite_path)
+    except (ValueError, FileNotFoundError) as e:
+        print(f"❌ Failed to load suite: {e}")
+        sys.exit(1)
+
+    suite_name = suite["suite_name"]
     description = suite.get("description", "")
-    overrides = suite.get("overrides", {})
-    include_list = suite["include"]
+    profile = suite.get("profile")
+    models = suite["models"]
+    test_filter = suite.get("test_filter", [])
 
+    print(f"\n{'=' * 60}")
+    print(f"Suite: {suite_name}")
     if description:
         print(f"Description: {description}")
+    print(f"Profile: {profile or '(none - using defaults)'}")
+    print(f"Models: {len(models)}")
+    print(f"Test Filter: {test_filter or '(all tests)'}")
+    if args.filter_model:
+        print(f"Model Filter (CLI): {args.filter_model}")
+    if args.filter_test:
+        print(f"Test Filter (CLI): {args.filter_test}")
+    print(f"{'=' * 60}\n")
 
-    if overrides:
-        print(f"Overrides: {overrides}")
+    # ============ Build Test Matrix ============
+    # For each model, expand into individual test configs
+    test_configs = []
 
-    # ============ Resolve Config Files ============
-    config_paths: List[Path] = []
-
-    for config_name in include_list:
-        # Handle absolute and relative paths
-        config_path = Path(config_name)
-        if not config_path.is_absolute():
-            config_path = configs_dir / config_name
-
-        # Check if file exists
-        if not config_path.exists():
-            print(f"[WARNING] Config not found: {config_path} (skipping)")
+    for model_yaml in models:
+        # Apply command-line model filter
+        if args.filter_model and args.filter_model not in model_yaml:
+            print(f"⏭️  Skipping {model_yaml} (filtered by --filter-model)")
             continue
 
-        # Apply filter if specified
-        if args.filter and args.filter not in config_path.name:
-            continue
+        try:
+            # Get list of available tests in this model
+            available_tests = list_tests(model_yaml)
 
-        config_paths.append(config_path)
+            print(f"\n📋 Model: {model_yaml}")
+            print(f"   Available tests: {available_tests}")
 
-    if not config_paths:
-        print("[ERROR] No configs matched criteria. Nothing to run.")
-        sys.exit(2)
-
-    print(f"\nFound {len(config_paths)} configs to run:")
-    for path in config_paths:
-        print(f"  - {path.name}")
-
-    # ============ Execute Suite ============
-    print(f"\n{'=' * 60}")
-    print(f"Starting suite: {suite_name}")
-    print(f"{'=' * 60}")
-
-    # Use temporary directory for modified configs
-    with tempfile.TemporaryDirectory() as tmpdir_str:
-        tmpdir = Path(tmpdir_str)
-        all_results = []
-
-        for idx, cfg_path in enumerate(config_paths, 1):
-            print(f"\n[{idx}/{len(config_paths)}] Processing: {cfg_path.name}")
-
-            # Apply overrides if any
-            if overrides:
-                cfg_to_run = _apply_overrides_to_config_file(
-                    cfg_path, overrides, tmpdir
-                )
+            # Apply suite test_filter (from suite YAML)
+            if test_filter:
+                # Suite specifies which tests to run
+                tests_to_run = [t for t in available_tests if t in test_filter]
+                print(f"   After suite filter: {tests_to_run}")
             else:
-                cfg_to_run = cfg_path
+                # No suite filter - run all tests
+                tests_to_run = available_tests
+                print(f"   Running all tests")
 
-            # Run the configuration
-            try:
-                result = run_single_config(str(cfg_to_run))
-                all_results.append(result)
-            except Exception as e:
-                print(f"[ERROR] Failed to run {cfg_path.name}: {e}")
-                # Continue with other configs
+            # Apply command-line test filter
+            if args.filter_test:
+                tests_to_run = [t for t in tests_to_run if args.filter_test in t]
+                print(f"   After CLI filter: {tests_to_run}")
+
+            if not tests_to_run:
+                print(f"   ⚠️  No tests match filters - skipping model")
                 continue
 
-        # ============ Generate Consolidated Reports ============
+            # For each matching test, load merged config
+            for test_name in tests_to_run:
+                try:
+                    # Merge configs: defaults → profile → model → test
+                    merged_config = load_config(model_yaml, test_name, profile)
+
+                    # Validate the merged config
+                    validate_config(merged_config)
+
+                    # Add to test matrix
+                    test_configs.append(
+                        {
+                            "model_yaml": model_yaml,
+                            "test_name": test_name,
+                            "config": merged_config,
+                        }
+                    )
+
+                except Exception as e:
+                    print(f"   ⚠️  Failed to load {test_name}: {e}")
+                    continue
+
+        except FileNotFoundError as e:
+            print(f"⚠️  Error loading model config: {e}")
+            continue
+        except Exception as e:
+            print(f"⚠️  Unexpected error processing {model_yaml}: {e}")
+            continue
+
+    if not test_configs:
+        print("\n❌ No tests to run after filtering!")
+        print("\n💡 Tips:")
+        print("  - Check that suite models exist in configs/models/")
+        print("  - Check that test_filter matches actual test names")
+        print("  - Try without filters to see all available tests")
+        sys.exit(2)
+
+    print(f"\n{'=' * 60}")
+    print(f"Total tests to run: {len(test_configs)}")
+    print(f"{'=' * 60}\n")
+
+    # ============ Dry Run (Preview) ============
+    if args.dry_run:
+        print("=" * 60)
+        print("DRY RUN - Test Matrix")
+        print("=" * 60)
+
+        for idx, test_info in enumerate(test_configs, 1):
+            config = test_info["config"]
+            print(f"\n{idx}. {config['model_name']}/{test_info['test_name']}")
+            print(f"   Feature: {config['feature']}")
+            print(
+                f"   Samples: calib={config.get('calib_samples')}, eval={config.get('eval_samples')}"
+            )
+            print(f"   QNN: {'Enabled' if config.get('qnn_options') else 'Disabled'}")
+
         print(f"\n{'=' * 60}")
-        print("Generating consolidated reports...")
+        print(f"Total: {len(test_configs)} tests")
+        print(f"Estimated time: ~{len(test_configs) * 20} minutes (20 min/test)")
         print(f"{'=' * 60}")
+        sys.exit(0)
 
-        from ONNXRegression.report.report_writer import write_csv, write_html
+    # ============ Execute Tests ============
+    all_results = []
 
-        # Determine output filenames
-        if args.out_prefix:
-            out_prefix = args.out_prefix
-        else:
-            out_prefix = f"results_{suite_name}"
+    for idx, test_info in enumerate(test_configs, 1):
+        model_yaml = test_info["model_yaml"]
+        test_name = test_info["test_name"]
+        config = test_info["config"]
 
-        csv_path = reports_dir / f"{out_prefix}.csv"
-        html_path = reports_dir / f"{out_prefix}.html"
-
-        # Parse column order if specified
-        key_order = None
-        if args.key_order:
-            key_order = [s.strip() for s in args.key_order.split(",")]
-
-        # Determine what to hide based on suite type
-        hide_prefixes = None
-        if suite_name == "aimet_only":
-            # Hide QNN-related columns for AIMET-only suite
-            hide_prefixes = [
-                "qnn_",  # qnn_latency, qnn_accuracy
-                "ai_hub_qnn",  # AI Hub QNN job URLs
-            ]
-
-        # Set report titles
-        default_titles = {
-            "aimet_only": "AIMET PTQ - Host Evaluation Only",
-            "aimet_plus_ontarget": "AIMET PTQ - Host + On-Device (QNN)",
-        }
-
-        page_title = args.title or default_titles.get(suite_name, "AIMET PTQ Report")
-
-        if args.subtitle:
-            subtitle = args.subtitle
-        else:
-            subtitle = f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-
-        # Write reports
-        write_csv(
-            all_results, str(csv_path), key_order=key_order, hide_prefixes=hide_prefixes
+        print(f"\n{'=' * 60}")
+        print(
+            f"Progress: [{idx}/{len(test_configs)}] ({idx / len(test_configs) * 100:.1f}%)"
         )
+        print(f"Test: {model_yaml} / {test_name}")
+        print(f"Estimated time remaining: ~{(len(test_configs) - idx) * 20} minutes")
+        print(f"{'=' * 60}\n")
 
-        write_html(
-            all_results,
-            str(html_path),
-            key_order=key_order,
-            hide_prefixes=hide_prefixes,
-            page_title=page_title,
-            subtitle=subtitle,
+        print(f"  Model: {config['model_name']}")
+        print(f"  Feature: {config['feature']}")
+        print(
+            f"  Samples: calib={config.get('calib_samples')}, eval={config.get('eval_samples')}"
         )
+        print(f"  QNN: {'Enabled' if config.get('qnn_options') else 'Disabled'}")
 
-        # ============ Summary ============
-        print(f"\n✅ Suite completed: {suite_name}")
-        print(f"Configs run: {len(all_results)}/{len(config_paths)}")
+        try:
+            # Run the test using the merged config
+            result = run_single_config(config)
+            all_results.append(result)
+            print(f"  ✅ Success")
 
-        if len(all_results) < len(config_paths):
-            failed_count = len(config_paths) - len(all_results)
-            print(f"⚠️  {failed_count} configs failed")
+        except Exception as e:
+            print(f"  ❌ Failed: {e}")
+            import traceback
 
-        print(f"\nReports generated:")
-        print(f"  CSV:  {csv_path}")
-        print(f"  HTML: {html_path}")
+            traceback.print_exc()
+            continue
 
-        # Show summary statistics if available
-        if all_results:
-            accuracies = [
-                r.get("AIMET Accuracy", 0)
-                for r in all_results
-                if r.get("AIMET Accuracy") is not None
-            ]
-            if accuracies:
-                avg_acc = sum(accuracies) / len(accuracies)
-                print(f"\nAverage AIMET Accuracy: {avg_acc:.2%}")
+    # ============ Generate Consolidated Reports ============
+    if not all_results:
+        print("\n❌ No successful test runs!")
+        sys.exit(1)
+
+    print(f"\n{'=' * 60}")
+    print("Generating consolidated reports...")
+    print(f"{'=' * 60}")
+
+    # Determine output filenames
+    out_prefix = args.out_prefix or f"results_{suite_name}"
+    csv_path = reports_dir / f"{out_prefix}.csv"
+    html_path = reports_dir / f"{out_prefix}.html"
+
+    # Determine what to hide based on profile
+    # For host-only profiles (nightly), hide QNN columns
+    hide_prefixes = None
+    if profile in ["nightly", "smoke"]:
+        # These profiles don't run QNN, so hide those columns
+        hide_prefixes = ["qnn_", "ai_hub_qnn"]
+
+    # Generate reports
+    page_title = f"AIMET Regression - {suite_name}"
+    subtitle = f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+    if profile:
+        subtitle += f" | Profile: {profile}"
+
+    write_csv(all_results, str(csv_path), hide_prefixes=hide_prefixes)
+    write_html(
+        all_results,
+        str(html_path),
+        hide_prefixes=hide_prefixes,
+        page_title=page_title,
+        subtitle=subtitle,
+    )
+
+    # ============ Summary ============
+    print(f"\n✅ Suite completed: {suite_name}")
+    print(f"Tests run: {len(all_results)}/{len(test_configs)}")
+
+    if len(all_results) < len(test_configs):
+        failed_count = len(test_configs) - len(all_results)
+        print(f"⚠️  {failed_count} tests failed")
+
+    print(f"\nReports generated:")
+    print(f"  CSV:  {csv_path}")
+    print(f"  HTML: {html_path}")
+
+    # Show summary statistics
+    if all_results:
+        accuracies = [
+            r.get("AIMET Accuracy", 0)
+            for r in all_results
+            if r.get("AIMET Accuracy") is not None
+        ]
+        if accuracies:
+            avg_acc = sum(accuracies) / len(accuracies)
+            min_acc = min(accuracies)
+            max_acc = max(accuracies)
+            print(f"\nAccuracy Summary:")
+            print(f"  Average: {avg_acc:.2%}")
+            print(f"  Min: {min_acc:.2%}")
+            print(f"  Max: {max_acc:.2%}")
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

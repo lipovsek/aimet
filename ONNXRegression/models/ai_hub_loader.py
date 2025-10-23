@@ -28,36 +28,7 @@ from typing import Tuple, Any, Optional, Union, List
 from qai_hub_models.datasets import DatasetSplit, get_dataset_from_name
 from qai_hub_models.utils.evaluate import get_deterministic_sample
 from qai_hub_models.utils.base_model import BaseModel
-
-
-# ==================== CI/CD Environment Setup ====================
-
-
-def _setup_noninteractive_mode():
-    """
-    Configure environment for non-interactive execution (CI/CD).
-
-    Some QAI Hub models (like mobilenet_v2, dla102x) require cloning external
-    GitHub repositories. In interactive mode, they prompt "Ok to clone? [Y/n]"
-    which blocks CI/CD pipelines. This function ensures auto-acceptance.
-
-    Should be called before importing any models.
-    """
-    # Auto-accept git clone prompts from qai_hub_models
-    if "GIT_CLONE_PROTECTION_ACTIVE" not in os.environ:
-        os.environ["GIT_CLONE_PROTECTION_ACTIVE"] = "false"
-
-    # Disable git terminal prompts
-    if "GIT_TERMINAL_PROMPT" not in os.environ:
-        os.environ["GIT_TERMINAL_PROMPT"] = "0"
-
-    # Headless mode for matplotlib, OpenCV, etc.
-    os.environ.setdefault("MPLBACKEND", "Agg")
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-
-# Apply non-interactive setup when this module is imported
-_setup_noninteractive_mode()
+from qai_hub_models.utils.testing import always_answer_prompts
 
 
 # ==================== Utility Functions ====================
@@ -278,45 +249,48 @@ def load_model_data(model_name: str) -> Tuple[BaseModel, Any, dict, Any]:
         - Dataset split is always VALIDATION for evaluation consistency
         - Dataloader uses deterministic sampling for reproducibility
         - Default to 100 samples for initial testing (can be overridden)
-        - Environment variables are set to auto-accept git clones (CI/CD)
+        - Git clone prompts are automatically accepted in CI/CD environments
     """
-    # ============ Step 1: Import Model Module ============
-    try:
-        module = importlib.import_module(f"qai_hub_models.models.{model_name}")
-    except ModuleNotFoundError as e:
-        raise ModuleNotFoundError(
-            f"Model '{model_name}' not found in qai_hub_models. "
-            f"Ensure the model name is correct and qai_hub_models is installed. "
-            f"Available models can be found at: https://github.com/quic/ai-hub-models"
-        ) from e
+    # Wrap the entire model loading process to auto-accept git clone prompts
+    # This is critical for CI/CD where interactive prompts would block execution
+    with always_answer_prompts(True):
+        # ============ Step 1: Import Model Module ============
+        try:
+            module = importlib.import_module(f"qai_hub_models.models.{model_name}")
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                f"Model '{model_name}' not found in qai_hub_models. "
+                f"Ensure the model name is correct and qai_hub_models is installed. "
+                f"Available models can be found at: https://github.com/quic/ai-hub-models"
+            ) from e
 
-    # ============ Step 2: Find Model Class ============
-    model_cls = _pick_model_cls(module)
+        # ============ Step 2: Find Model Class ============
+        model_cls = _pick_model_cls(module)
 
-    # ============ Step 3: Instantiate Model ============
-    # Load with pretrained weights (standard for evaluation)
-    model: BaseModel = model_cls.from_pretrained()
+        # ============ Step 3: Instantiate Model ============
+        # Load with pretrained weights (standard for evaluation)
+        model: BaseModel = model_cls.from_pretrained()
 
-    # ============ Step 4: Resolve Dataset ============
-    dataset_name = _resolve_dataset_name(model)
+        # ============ Step 4: Resolve Dataset ============
+        dataset_name = _resolve_dataset_name(model)
 
-    # Load the validation split of the dataset
-    # We use validation split for all evaluation to avoid training data leakage
-    dataset = get_dataset_from_name(
-        dataset_name,
-        DatasetSplit.VAL,  # Always use validation split for evaluation
-    )
+        # Load the validation split of the dataset
+        # We use validation split for all evaluation to avoid training data leakage
+        dataset = get_dataset_from_name(
+            dataset_name,
+            DatasetSplit.VAL,  # Always use validation split for evaluation
+        )
 
-    # ============ Step 5: Create Dataloader ============
-    # Deterministic sampling ensures reproducible results
-    dataloader = get_deterministic_sample(
-        dataset,
-        num_samples=100,  # Default sample size for initial testing
-        samples_per_job=100,  # Process all samples in one batch
-    )
+        # ============ Step 5: Create Dataloader ============
+        # Deterministic sampling ensures reproducible results
+        dataloader = get_deterministic_sample(
+            dataset,
+            num_samples=100,  # Default sample size for initial testing
+            samples_per_job=100,  # Process all samples in one batch
+        )
 
-    # ============ Step 6: Get Input Specification ============
-    # Input spec defines the expected input format (shape, dtype, etc.)
-    input_spec = model.get_input_spec()
+        # ============ Step 6: Get Input Specification ============
+        # Input spec defines the expected input format (shape, dtype, etc.)
+        input_spec = model.get_input_spec()
 
     return model, dataset, input_spec, dataloader

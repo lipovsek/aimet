@@ -1,6 +1,6 @@
-jinja2>=3.1.2
-tqdm
-numpy
-pyyaml
-nvidia-ml-py3
-timm
+qai-hub
+qai-hub-models
+onnxruntime-gpu==1.19.2
+aimet-onnx
+pynvml
+pytest

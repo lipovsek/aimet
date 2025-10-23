@@ -1,0 +1,88 @@
+# Base Configuration for AIMET ONNX Regression
+#
+# This file defines default settings inherited by all tests.
+# Override these values in:
+#   - Profiles (_profiles/*.yaml) for runtime scenarios
+#   - Model configs (models/*.yaml) for model-specific settings
+#   - Test configs (within model files) for test-specific settings
+#
+# Merge order (later overrides earlier):
+#   1. This file (_defaults.yaml)
+#   2. Profile (e.g., _profiles/nightly.yaml)
+#   3. Model config (e.g., models/resnet50.yaml)
+#   4. Test config (within model file)
+
+# ==================== Framework ====================
+framework: onnx
+
+# ==================== Device Configuration ====================
+# Target device for QNN compilation and on-device testing
+device: Samsung Galaxy S24 (Family)
+
+# QNN compilation options (passed to qnn-onnx-converter)
+# Common options:
+#   --target_runtime qnn_dlc: Use DLC runtime
+#   --target_runtime qnn_lib_aarch64_android: Native Android library
+qnn_options: "--target_runtime qnn_dlc"
+
+# ==================== Evaluation Sample Counts ====================
+# These control the accuracy vs. speed tradeoff
+# Higher counts = better accuracy measurement but slower execution
+
+# FP32 baseline evaluation samples (reference accuracy)
+fp32_eval_samples: 200
+
+# Post-quantization ONNX evaluation samples
+quant_eval_samples: 200
+
+# Calibration samples for computing quantization encodings
+# Used by: QuantSim, Lite-MP, AdaRound
+calib_samples: 256
+
+# Evaluation samples after calibration (final accuracy measurement)
+eval_samples: 256
+
+# On-device evaluation samples (via QNN on target hardware)
+# Most expensive - set to 0 to disable on-device testing
+qnn_eval_samples: 50
+
+# ==================== Performance Measurement ====================
+# Settings for runtime and memory profiling
+
+# Number of samples for performance measurement
+metrics_samples: 64
+
+# Number of timing runs to average (reduce variance)
+metrics_runs: 3
+
+# Number of warmup runs before timing (for kernel compilation)
+metrics_warmup: 1
+
+# ==================== Execution Settings ====================
+# Maximum time allowed per test (safety net for hung processes)
+timeout_minutes: 30
+
+# Retry settings for flaky operations (e.g., AI Hub API calls)
+max_retries: 3
+retry_delay_seconds: 60
+
+# ==================== Validation Thresholds ====================
+# Define pass/fail criteria for regression tests
+
+# Minimum acceptable accuracy (relative to FP32 baseline)
+# 0.99 = within 1% of FP32 is acceptable
+min_accuracy_threshold: 0.99
+
+# ==================== Reporting Settings ====================
+# Default column order in CSV/HTML reports
+report_key_order:
+  - Model
+  - Feature
+  - Techniques
+  - FP32_accuracy
+  - AIMET Accuracy
+  - ONNX Accuracy
+  - QNN Accuracy
+  - QNN Latency
+  - AIMET Runtime
+  - AIMET Memory

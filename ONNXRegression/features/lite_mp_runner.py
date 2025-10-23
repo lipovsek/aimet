@@ -292,7 +292,7 @@ def run_lite_mp(
     # ============ Step 9: Prepare Results ============
     # Format technique description for reporting
     precision_str = "float16" if override_sym is float16 else "int8"
-    technique_desc = f"quantsim + lite_mp({precision_str}, {percent_to_flip}%)"
+    technique_desc = f"quantsim(W{param_type}/A{activation_type}, {quant_scheme}) + lite_mp({precision_str}, {percent_to_flip}%)"
 
     stats = {
         "techniques": technique_desc,

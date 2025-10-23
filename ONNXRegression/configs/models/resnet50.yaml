@@ -1,0 +1,71 @@
+# ResNet50 Model Configuration
+
+# Each test inherits settings from:
+#   1. _defaults.yaml (base settings)
+#   2. Profile (e.g., nightly.yaml) if specified
+#   3. This file (model-level settings)
+#   4. Test-specific settings below
+
+# ==================== Model Identification ====================
+model_name: resnet50
+
+# ==================== Test Definitions ====================
+# Each test is a different quantization configuration
+# Suite files can filter which tests to run using test_filter
+
+tests:
+  # --------------------------------------------------------------------------
+  # Test 1: Standard INT8 Quantization
+  # --------------------------------------------------------------------------
+
+  - name: quantsim_int8
+    feature: quantsim
+    quant_scheme: tf_enhanced
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+
+  # --------------------------------------------------------------------------
+  # Test 2: INT8/INT16 Mixed Precision
+  # --------------------------------------------------------------------------
+
+  - name: quantsim_int8_int16
+    feature: quantsim
+    quant_scheme: tf
+    param_type: int8
+    activation_type: int16
+    config_file: htp_v81
+
+  # --------------------------------------------------------------------------
+  # Test 3: Lite Mixed-Precision (25% FP16)
+  # --------------------------------------------------------------------------
+
+  - name: lite_mp_25
+    feature: lite_mp
+    quant_scheme: tf_enhanced
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+    lite_mp:
+      percent_flip: 25
+      override_precision: float16
+
+  # --------------------------------------------------------------------------
+  # Test 4: AdaRound Optimization (500 iterations)
+  # --------------------------------------------------------------------------
+
+  - name: adaround_500
+    feature: adaround
+    quant_scheme: tf_enhanced
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+    adaround_iters: 500
+
+  # --------------------------------------------------------------------------
+  # Future tests can be added here:
+  # - name: quantsim_int4
+  # - name: cross_layer_equalization
+  # - name: batch_norm_folding
+  # etc.
+  # --------------------------------------------------------------------------
