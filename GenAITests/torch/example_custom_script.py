@@ -3,6 +3,7 @@
 
 """Example flattened script showcasing LPBQ on llama"""
 
+import os
 import argparse
 import itertools
 import torch
@@ -16,10 +17,6 @@ from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.nn.transformers.models.llama.modeling_llama import (
     QuantizedLlamaRMSNorm,
 )
-from aimet_torch.v2.quantsim.config_utils import (
-    set_grouped_blockwise_quantization_for_weights,
-)
-from aimet_torch.nn import QuantizedConv2d, QuantizedLinear
 from aimet_torch.utils import place_model, remove_all_quantizers
 
 from GenAITests.shared.models.base import LLM
@@ -43,7 +40,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip quantizing model",
     )
-
+    parser.add_argument(
+        "--export-path",
+        help="Path to export model. Export will be skipped if no path is provided.",
+        default=None,
+    )
     args = parser.parse_args()
 
     # Fetch specified model and tokenizer from huggingface
@@ -98,23 +99,6 @@ if __name__ == "__main__":
                 tokenizer, CONTEXT_LENGTH, "train"
             )
 
-            # Apply LPBQ
-            arg = lambda module: (
-                isinstance(module, (QuantizedConv2d, QuantizedLinear))
-                and module.param_quantizers["weight"]
-                and module.param_quantizers["weight"].bitwidth == 4
-            )
-
-            set_grouped_blockwise_quantization_for_weights(
-                sim=quantsim,
-                arg=arg,
-                bitwidth=4,
-                symmetric=True,
-                decompressed_bw=8,
-                block_size=64,
-                block_grouping=-1,
-            )
-
             num_iterations = 20
 
             def calibration_callback(model: torch.nn.Module):
@@ -129,3 +113,11 @@ if __name__ == "__main__":
 
         ppl_score = PPL.evaluate(generator, tokenizer, CONTEXT_LENGTH)
         print(f"PPL: {ppl_score}")
+
+        if args.export_path is not None:
+            os.makedirs(args.export_path, exist_ok=True)
+            quantsim.export(
+                path=args.export_path,
+                filename_prefix="model",
+                dummy_input=assembled_dummy_inputs,
+            )
