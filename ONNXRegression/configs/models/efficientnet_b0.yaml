@@ -6,12 +6,23 @@ model_name: efficientnet_b0
 # ==================== Test Definitions ====================
 tests:
   # --------------------------------------------------------------------------
-  # Test 1: Standard INT8 Quantization
+  # Test: Standard INT8 Quantization V79 config
   # --------------------------------------------------------------------------
 
-  - name: quantsim_int8
+  - name: quantsim_int8_v79
     feature: quantsim
-    quant_scheme: tf_enhanced
+    quant_scheme: tf
     param_type: int8
     activation_type: int8
     config_file: htp_v79
+
+  # --------------------------------------------------------------------------
+  # Test: Standard INT8 Quantization V69 config
+  # --------------------------------------------------------------------------
+
+  - name: quantsim_int8_v69
+    feature: quantsim
+    quant_scheme: tf
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v69
