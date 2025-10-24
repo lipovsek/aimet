@@ -558,7 +558,7 @@ def test_adascale_e2e(monkeypatch, small_model: bool = True):
     path = os.path.abspath(os.path.join("../../../../GenAITests"))
     monkeypatch.syspath_prepend(path)
     from transformers import AutoConfig
-    from GenAITests.onnx.models.qwen import Qwen_25_ONNX
+    from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
     import random
 
     context_length = 32
@@ -654,7 +654,7 @@ def test_qwen_adascale_e2e_ppl(monkeypatch, small_model=False):
         path = os.path.abspath(os.path.join("../../../../GenAITests"))
         monkeypatch.syspath_prepend(path)
         from transformers import AutoConfig
-        from GenAITests.onnx.models.qwen import Qwen_25_ONNX
+        from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
         from GenAITests.shared.models.generator import Generator
         from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
         from GenAITests.onnx.helpers.quant_recipes import _prefill_inputs

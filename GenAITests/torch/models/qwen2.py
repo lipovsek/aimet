@@ -13,7 +13,7 @@ from aimet_torch.v2.nn.transformers.models.qwen2.modeling_qwen2 import (
 
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.generator import Generator
-from GenAITests.shared.models.qwen import Qwen_25
+from GenAITests.shared.models.qwen2 import Qwen_25
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 

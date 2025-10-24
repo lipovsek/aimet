@@ -11,7 +11,7 @@ from aimet_onnx.experimental.adascale.find_blocks import (
 def test_get_decoder_blocks(monkeypatch):
     path = os.path.abspath(os.path.join("../../../../GenAITests"))
     monkeypatch.syspath_prepend(path)
-    from GenAITests.onnx.models.qwen import Qwen_25_ONNX
+    from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
 
     sim = Qwen_25_ONNX.instantiate_quantsim("Qwen/Qwen2-0.5B", 32, 16, small_model=True)
     end_points = get_decoder_blocks_end_points(sim)

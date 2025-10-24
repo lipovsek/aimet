@@ -5,6 +5,7 @@ import torch
 from transformers.models.llama import modeling_llama
 from transformers.models.phi3 import modeling_phi3
 from transformers.models.qwen2 import modeling_qwen2
+from transformers.models.qwen3 import modeling_qwen3
 from transformers.models.gemma3 import modeling_gemma3
 from transformers.models.mistral import modeling_mistral
 import aimet_torch
@@ -16,6 +17,7 @@ import aimet_torch
         modeling_llama.LlamaRMSNorm,
         modeling_phi3.Phi3RMSNorm,
         modeling_qwen2.Qwen2RMSNorm,
+        modeling_qwen3.Qwen3RMSNorm,
         modeling_gemma3.Gemma3RMSNorm,
         modeling_mistral.MistralRMSNorm,
     ],

@@ -42,3 +42,8 @@ from .gemma3 import *
 from .qwen2 import *
 from .phi3 import *
 from .mistral import *
+
+try:
+    from .qwen3 import *
+except ImportError:
+    pass

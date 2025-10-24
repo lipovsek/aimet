@@ -1,7 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Qwen-2.5 ONNX model class"""
+"""Qwen 3 ONNX model class"""
 
 import torch
 
@@ -9,7 +9,7 @@ from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel as QuantSimOnnx
 
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
-from GenAITests.shared.models.qwen import Qwen_25
+from GenAITests.shared.models.qwen3 import Qwen_3
 from GenAITests.shared.models.generator import Generator
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
@@ -27,7 +27,7 @@ from GenAITests.onnx.models.utils.quantsim_utils import (
 
 
 @YAMLConfigParser.register_model
-class Qwen_25_ONNX(Qwen_25):
+class Qwen_3_ONNX(Qwen_3):
     @classmethod
     def instantiate_quantsim(
         cls,

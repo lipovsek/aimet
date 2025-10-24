@@ -70,7 +70,7 @@ def _check_onnx_weights(model, layers_to_check: set = None, are_zeros: bool = Fa
 def test_model_round_trip_with_qwen(monkeypatch):
     path = os.path.abspath(os.path.join("../../../../GenAITests"))
     monkeypatch.syspath_prepend(path)
-    from GenAITests.onnx.models.qwen import Qwen_25_ONNX
+    from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
     from transformers import AutoConfig
 
     small_model = True
