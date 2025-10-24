@@ -6,8 +6,6 @@ from aimet_onnx.quantsim import QuantizationSimModel
 import onnx
 import tempfile
 
-import torch.nn.functional as F
-
 
 class TestDisableSupergroups:
     """
@@ -62,35 +60,44 @@ class TestDisableSupergroups:
         class Model(torch.nn.Module):
             def __init__(self):
                 super().__init__()
+                self.conv1 = torch.nn.Conv3d(3, 3, 1)
                 self.relu1 = torch.nn.ReLU()
+                self.conv2 = torch.nn.Conv3d(3, 3, 1)
+                self.relu2 = torch.nn.ReLU()
 
-            def forward(self, x, w):
-                w += 1
-                x1 = F.conv3d(x, w)
+            def forward(self, x):
+                x1 = self.conv1(x)
+                x2 = self.conv2(x)
                 x1 = self.relu1(x1)
-                return x1
+                x2 = self.relu2(x2)
+                return x1 + x2
 
         model = Model()
         with tempfile.NamedTemporaryFile(
             prefix="dynamic_conv3d", suffix=".onnx"
         ) as onnx_model_path:
+            dynamic_axes = {
+                "input": {0: "batch_size", 2: "height", 3: "width"},
+                "output": {0: "batch_size", 2: "output_height", 3: "output_width"},
+            }
             x = torch.randn((1, 3, 24, 24, 24))
-            w = torch.randn(3, 3, 3, 3, 3)
             torch.onnx.export(
                 model,
-                (x, w),
+                x,
                 onnx_model_path.name,
-                input_names=["input", "w"],
+                input_names=["input"],
                 output_names=["output"],
                 opset_version=16,
+                dynamic_axes=dynamic_axes,
                 dynamo=False,
             )
             onnx_model = onnx.load_model(onnx_model_path.name)
-
             sim = QuantizationSimModel(onnx_model)
 
-            assert sim.qc_quantize_op_dict["/Conv_output_0"].enabled
-            assert sim.qc_quantize_op_dict["output"].enabled
+            assert sim.qc_quantize_op_dict["/conv1/Conv_output_0"].enabled
+            assert sim.qc_quantize_op_dict["/relu1/Relu_output_0"].enabled
+            assert sim.qc_quantize_op_dict["/conv2/Conv_output_0"].enabled
+            assert sim.qc_quantize_op_dict["/relu2/Relu_output_0"].enabled
 
     def test_disable_conv_transpose3d_supergroup(self):
         class Model(torch.nn.Module):
@@ -123,7 +130,6 @@ class TestDisableSupergroups:
                 dynamo=False,
             )
             onnx_model = onnx.load_model(onnx_model_path.name)
-
             sim = QuantizationSimModel(onnx_model)
 
             assert sim.qc_quantize_op_dict["/conv1/ConvTranspose_output_0"].enabled

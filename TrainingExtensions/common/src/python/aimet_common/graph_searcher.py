@@ -50,15 +50,15 @@ def _check_if_conv3d(op: Op) -> bool:
     if op.type != "Conv" and op.type != "ConvTranspose":
         return False
 
-    if op.inputs[0].shape is None or len(op.inputs[0].shape) != 5:
-        return False
+    if op.inputs[0].shape is not None and len(op.inputs[0].shape) == 5:
+        return True
 
     # Additional check on weights shape if available.
-    if op.inputs[1].shape is not None and len(op.inputs[1].shape) != 5:
-        return False
+    if op.inputs[1].shape is not None and len(op.inputs[1].shape) == 5:
+        return True
 
-    # Conv3D
-    return True
+    # Not a conv3d op
+    return False
 
 
 # TODO: #5597: Remove Conv3d and Depthwise Conv supergroup once HTP support is added
@@ -83,6 +83,7 @@ def _check_if_depthwise_conv(op: Op) -> bool:
 
     # additional validation
     if weight_shape is not None and op.type == "Conv" and weight_shape[1] != 1:
+        # For Depthwise Conv, weight shape[1] should be 1
         return False
     elif (
         weight_shape is not None
@@ -91,6 +92,7 @@ def _check_if_depthwise_conv(op: Op) -> bool:
         and op.type == "ConvTranspose"
         and weight_shape[1] != op.outputs[0].shape[1] / groups
     ):
+        # For Depthwise Deconv, weight shape[1] should be output_channels / groups
         return False
 
     # Indeed depthwise Conv/Deconv
