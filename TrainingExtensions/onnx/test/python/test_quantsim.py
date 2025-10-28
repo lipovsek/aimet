@@ -5197,6 +5197,7 @@ def test_onnx_qdq_export_output_name_swapping():
         assert any(input == dq.output[0] for dq in dq_nodes)
 
 
+@pytest.mark.parametrize("export_data_movement_op_output_encodings", [False, True])
 @pytest.mark.parametrize("export_int32_bias_encodings", [False, True])
 @pytest.mark.parametrize("prequantize_constants", [False, True])
 @pytest.mark.parametrize(
@@ -5224,6 +5225,7 @@ def test_from_onnx_qdq(
     activation_type,
     prequantize_constants: bool,
     export_int32_bias_encodings: bool,
+    export_data_movement_op_output_encodings: bool,
 ):
     """
     Given: onnx QDQ model exported from aimet QuantizationSimModel
@@ -5242,6 +5244,8 @@ def test_from_onnx_qdq(
     inputs = {input_name: np.random.randn(*input_shape).astype(np.float32)}
 
     sim.compute_encodings([inputs])
+    if export_data_movement_op_output_encodings:
+        sim._insert_data_movement_op_output_quantizers()
     if export_int32_bias_encodings:
         sim._concretize_int32_bias_quantizers()
     qdq_model = sim.to_onnx_qdq(prequantize_constants=prequantize_constants)

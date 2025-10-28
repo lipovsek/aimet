@@ -37,6 +37,7 @@
 """Implementation for simulating models running on Quantized hardware"""
 
 # pylint: disable=wrong-import-order
+import copy
 from collections import defaultdict
 import contextlib
 import tempfile
@@ -491,6 +492,12 @@ class QuantizationSimModel:
 
         # Removes Q/DQ node from model and extract them into 2.0.0 json encoding
         encodings = _remove_onnx_qdq_nodes(model)
+        encodings = {enc["name"]: enc for enc in encodings}
+        producers = {
+            output: copy.copy(node)
+            for node in model.graph.node
+            for output in node.output
+        }
 
         # Create sim
         sim = QuantizationSimModel(model, **kwargs)
@@ -506,8 +513,44 @@ class QuantizationSimModel:
             for _, bias in [sim._get_weight_and_bias(op)]
             if bias is not None
         )
-        encoding_names = set(enc["name"] for enc in encodings)
-        excess_encodings = encoding_names - (quantizable_tensor_names | bias_names)
+        excess_encodings = encodings.keys() - (quantizable_tensor_names | bias_names)
+        shared_quantizers = {}
+
+        def _is_encoding_equal(enc1, enc2):
+            return enc1.keys() == enc2.keys() and all(
+                enc1[key] == enc2[key] for key in enc1 if key != "name"
+            )
+
+        for output_name in list(excess_encodings):
+            producer = producers.get(output_name)
+            input_name = producer.input[0] if producer and producer.input else None
+            input_encoding = encodings.get(input_name)
+            output_encoding = encodings.get(output_name)
+
+            while (
+                input_encoding is None
+                and producer
+                and _is_grid_preserving_op(producer.op_type)
+            ):
+                producer = producers.get(input_name)
+                input_name = producer.input[0] if producer and producer.input else None
+                input_encoding = encodings.get(input_name)
+
+            if (
+                producer
+                and _is_grid_preserving_op(producer.op_type)
+                and input_encoding
+                and output_encoding
+                and _is_encoding_equal(input_encoding, output_encoding)
+            ):
+                # `output_name` is an output of a grid-preserving op whose input has same encoding.
+                # Tie input/output quantizers to always keep input/output encodings identical.
+                excess_encodings.remove(output_name)
+                if output_name not in sim.qc_quantize_op_dict:
+                    sim._insert_quantizer(output_name, is_param=False)
+                shared_quantizers[output_name] = sim.qc_quantize_op_dict[input_name]
+
+        sim.set_quantizers(shared_quantizers)
 
         if excess_encodings:
             raise NotImplementedError(
@@ -516,7 +559,9 @@ class QuantizationSimModel:
             )
 
         lpbq_weights = {
-            enc["name"]: enc for enc in encodings if "per_channel_float_scale" in enc
+            name: enc
+            for name, enc in encodings.items()
+            if "per_channel_float_scale" in enc
         }
 
         def get_lpbq_params(op: Op):
@@ -538,7 +583,7 @@ class QuantizationSimModel:
             )
 
         # Load encodings to sim
-        for enc in encodings:
+        for enc in encodings.values():
             qtzr = sim.qc_quantize_op_dict[enc["name"]]
 
             if enc["name"] in bias_names and enc["output_dtype"] == "int32":
