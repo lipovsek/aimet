@@ -70,7 +70,6 @@ logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.ConnectedGraph)
 INPUT_INDEX = 0
 WEIGHT_INDEX = 1
 BIAS_INDEX = 2
-RECURRENT_WEIGHT_INDEX = 2
 RUNNING_MEAN_INDEX = 3
 RUNNING_VAR_INDEX = 4
 OPS_WITH_PARAMS = [
@@ -284,15 +283,17 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             :param my_op: Connected Graph Op
             """
             op = my_op.get_module()
-            weight_tensor = ParamUtils.get_param(self.model, op, WEIGHT_INDEX)
+            weight_tensor = ParamUtils.get_param(self.model, op, 1)
             if weight_tensor:
-                set_as_param(weight_tensor, my_op, "weight_x")
+                set_as_param(weight_tensor, my_op, "weight")
 
-            recurrent_weight_tensor = ParamUtils.get_param(
-                self.model, op, RECURRENT_WEIGHT_INDEX
-            )
+            recurrent_weight_tensor = ParamUtils.get_param(self.model, op, 2)
             if recurrent_weight_tensor:
                 set_as_param(recurrent_weight_tensor, my_op, "weight_r")
+
+            bias_tensor = ParamUtils.get_param(self.model, op, 3)
+            if bias_tensor:
+                set_as_param(bias_tensor, my_op, "bias")
 
         def create_batchnorm_params(my_op: Op):
             """Create products for fusedbatchnorm"""

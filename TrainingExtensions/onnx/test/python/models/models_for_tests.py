@@ -1129,11 +1129,15 @@ def build_lstm_gru_dummy_model():
     )
 
     lstm_node = helper.make_node(
-        "LSTM", ["input", "lstm_w", "lstm_r_w"], ["2"], "lstm", hidden_size=16
+        "LSTM",
+        ["input", "lstm_w", "lstm_r_w", "lstm_bias"],
+        ["2"],
+        "lstm",
+        hidden_size=16,
     )
     squeeze_node = helper.make_node("Squeeze", ["2", "axis"], ["3"], "squeeze")
     gru_node = helper.make_node(
-        "GRU", ["3", "gru_w", "gru_r_w"], ["output"], "gru", hidden_size=16
+        "GRU", ["3", "gru_w", "gru_r_w", "gru_bias"], ["output"], "gru", hidden_size=16
     )
 
     lstm_w_init = numpy_helper.from_array(
@@ -1142,6 +1146,9 @@ def build_lstm_gru_dummy_model():
     lstm_r_w_init = numpy_helper.from_array(
         np.random.rand(1, 64, 16).astype(np.float32), "lstm_r_w"
     )
+    lstm_bias_init = numpy_helper.from_array(
+        np.random.rand(1, 128).astype(np.float32), "lstm_bias"
+    )
     squeeze_axis_init = numpy_helper.from_array(np.array([1]).astype(np.int64), "axis")
     gru_w_init = numpy_helper.from_array(
         np.random.rand(1, 48, 16).astype(np.float32), "gru_w"
@@ -1149,13 +1156,24 @@ def build_lstm_gru_dummy_model():
     gru_r_w_init = numpy_helper.from_array(
         np.random.rand(1, 48, 16).astype(np.float32), "gru_r_w"
     )
+    gru_bias_init = numpy_helper.from_array(
+        np.random.rand(1, 96).astype(np.float32), "gru_bias"
+    )
 
     onnx_graph = helper.make_graph(
         [lstm_node, squeeze_node, gru_node],
         "dummy_graph",
         [input_info],
         [output_info],
-        [lstm_w_init, lstm_r_w_init, squeeze_axis_init, gru_w_init, gru_r_w_init],
+        [
+            lstm_w_init,
+            lstm_r_w_init,
+            lstm_bias_init,
+            squeeze_axis_init,
+            gru_w_init,
+            gru_r_w_init,
+            gru_bias_init,
+        ],
     )
 
     model = make_model(onnx_graph, opset_imports=[op])

@@ -557,17 +557,28 @@ class TestQuantSim:
                 else:
                     assert enc["enc_type"] == EncodingType.PER_TENSOR.name
 
-    @pytest.mark.skip(
-        reason="FIXME: LSTM with per-channel quantzation fails at QuantizationSimModel.__init__"
+    @pytest.mark.parametrize(
+        "config_file",
+        [
+            # FIXME: LSTM with per-channel quantzation fails at QuantizationSimModel.__init__
+            # "default_config_per_channel.json",
+            "default_config.json",
+        ],
     )
-    def test_lstm_gru(self):
+    def test_lstm_gru(self, config_file):
         """Test for LSTM and GRU dummy model"""
         model = build_lstm_gru_dummy_model()
         with tempfile.TemporaryDirectory() as tempdir:
-            sim = QuantizationSimModel(model, path=tempdir)
+            sim = QuantizationSimModel(model, path=tempdir, config_file=config_file)
 
-            for quantizer in sim.qc_quantize_op_dict:
-                sim.qc_quantize_op_dict[quantizer].enabled = True
+            assert sim.qc_quantize_op_dict["input"].enabled
+            assert sim.qc_quantize_op_dict["lstm_w"].enabled
+            assert sim.qc_quantize_op_dict["lstm_r_w"].enabled
+            assert not sim.qc_quantize_op_dict["lstm_bias"].enabled
+            assert sim.qc_quantize_op_dict["gru_w"].enabled
+            assert sim.qc_quantize_op_dict["gru_r_w"].enabled
+            assert not sim.qc_quantize_op_dict["gru_bias"].enabled
+            assert sim.qc_quantize_op_dict["output"].enabled
 
             def callback(session):
                 in_tensor = {"input": np.random.rand(1, 8, 64).astype(np.float32)}
@@ -575,12 +586,11 @@ class TestQuantSim:
 
             sim.compute_encodings(callback)
 
-            for name, qc_op in sim.get_qc_quantize_op().items():
-                assert qc_op.get_encodings()[0].bw == 8
-
-            for name, qc_op in sim.get_qc_quantize_op().items():
-                assert qc_op.is_initialized()
-                assert qc_op.op_mode == OpMode.quantizeDequantize
+            for _, qc_op in sim.get_qc_quantize_op().items():
+                if qc_op.enabled:
+                    assert qc_op.is_initialized()
+                    assert qc_op.get_encodings()[0].bw == 8
+                    assert qc_op.op_mode == OpMode.quantizeDequantize
 
             sim.export(tempdir, "quant_sim_model")
 
@@ -597,6 +607,12 @@ class TestQuantSim:
             }
             assert activation_names == {"2", "input", "output"}
             assert param_names == {"gru_r_w", "gru_w", "lstm_r_w", "lstm_w"}
+
+            sim._concretize_int32_bias_quantizers()
+            assert sim.qc_quantize_op_dict["lstm_bias"].enabled
+            assert sim.qc_quantize_op_dict["lstm_bias"].is_initialized()
+            assert sim.qc_quantize_op_dict["gru_bias"].enabled
+            assert sim.qc_quantize_op_dict["gru_bias"].is_initialized()
 
     def test_single_residual(self):
         model = single_residual_model().model

@@ -1558,6 +1558,9 @@ class QuantizationSimModel:
             "InstanceNormalization": self._get_statistical_bias_scale,
             "LayerNormalization": self._get_statistical_bias_scale,
             "GroupNormalization": self._get_statistical_bias_scale,
+            "LSTM": self._get_statistical_bias_scale,
+            "GRU": self._get_statistical_bias_scale,
+            "RNN": self._get_statistical_bias_scale,
         }
 
         ops_with_bias = {
