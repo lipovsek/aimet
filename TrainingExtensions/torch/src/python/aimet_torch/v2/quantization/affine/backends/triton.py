@@ -15,7 +15,7 @@ def quantize_per_tensor(
     qmin: tl.int32,
     qmax: tl.int32,
     output_ptr,
-    n_elements: tl.uint32,
+    n_elements: tl.uint64,
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
@@ -38,7 +38,7 @@ def quantize_dequantize_per_tensor(
     qmax: tl.int32,
     output_ptr,
     mask_ptr,
-    n_elements: tl.uint32,
+    n_elements: tl.uint64,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -71,15 +71,15 @@ def quantize_dequantize_per_tensor(
 def quantize_dequantize_per_tensor_backward(
     output_grad_ptr,
     input_ptr,
-    scale: tl.float32,
-    offset: tl.float32,
+    scale_ptr,
+    offset_ptr,
     mask_ptr,
     input_grad_ptr,
     scale_grad_ptr,
     offset_grad_ptr,
     qmin: tl.int32,
     qmax: tl.int32,
-    n_elements: tl.uint32,
+    n_elements: tl.uint64,
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
@@ -89,19 +89,25 @@ def quantize_dequantize_per_tensor_backward(
 
     output_grad = tl.load(output_grad_ptr + idx, mask=mask)
     grad_mask = tl.load(mask_ptr + idx, mask=mask)
-    input = tl.load(input_ptr + idx, mask=mask)
 
-    scaled = input / scale - offset
-    rounded = tl.floor(scaled + 0.5)
-    clamped = tl.clamp(rounded, qmin, qmax)
+    if input_grad_ptr is not None:
+        input_grad = output_grad * grad_mask
+        tl.store(input_grad_ptr + idx, input_grad, mask=mask)
 
-    input_grad = output_grad * grad_mask
-    scale_grad = (output_grad * (clamped - scaled * grad_mask)).sum()
-    offset_grad = (output_grad * scale * ~grad_mask).sum()
+    if scale_grad_ptr is not None:
+        input = tl.load(input_ptr + idx, mask=mask)
+        scale = tl.load(scale_ptr)
+        offset = tl.load(offset_ptr)
+        scaled = input / scale - offset
+        rounded = tl.floor(scaled + 0.5)
+        clamped = tl.clamp(rounded, qmin, qmax)
+        scale_grad = (output_grad * (clamped - scaled * grad_mask)).sum()
+        tl.atomic_add(scale_grad_ptr, scale_grad)
 
-    tl.store(input_grad_ptr + idx, input_grad, mask=mask)
-    tl.atomic_add(scale_grad_ptr, scale_grad)
-    tl.atomic_add(offset_grad_ptr, offset_grad)
+    if offset_grad_ptr is not None:
+        scale = tl.load(scale_ptr)
+        offset_grad = (output_grad * scale * ~grad_mask).sum()
+        tl.atomic_add(offset_grad_ptr, offset_grad)
 
 
 @triton.jit
@@ -110,7 +116,7 @@ def dequantize_per_tensor(
     scale: tl.float32,
     offset: tl.float32,
     output_ptr,
-    n_elements: tl.uint32,
+    n_elements: tl.uint64,
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
@@ -216,20 +222,29 @@ class TritonQuantizeDequantize(torch.autograd.Function):
             tensor.numel(),
             BLOCK_SIZE,
         )
-        ctx.save_for_backward(tensor, scale, offset, mask)
+        ctx.save_for_backward(
+            tensor if scale.requires_grad else None,
+            scale if scale.requires_grad or offset.requires_grad else None,
+            offset if scale.requires_grad else None,
+            mask,
+        )
         ctx.qmin = qmin
         ctx.qmax = qmax
+        ctx.tensor_requires_grad = tensor.requires_grad
+        ctx.scale_requires_grad = scale.requires_grad
+        ctx.offset_requires_grad = offset.requires_grad
         return output
 
     @staticmethod
     def backward(ctx, grad):
         input, scale, offset, mask = ctx.saved_tensors
-        input_grad = torch.empty_like(input, dtype=torch.float32)
-        scale_grad = torch.zeros(1, dtype=torch.float32, device=input.device)
-        offset_grad = torch.zeros(1, dtype=torch.float32, device=input.device)
+
+        input_grad = torch.empty_like(grad) if ctx.tensor_requires_grad else None
+        scale_grad = torch.zeros_like(scale) if ctx.scale_requires_grad else None
+        offset_grad = torch.zeros_like(scale) if ctx.offset_requires_grad else None
 
         BLOCK_SIZE = 1024
-        NUM_BLOCKS = input.numel() // BLOCK_SIZE + 1
+        NUM_BLOCKS = grad.numel() // BLOCK_SIZE + 1
 
         quantize_dequantize_per_tensor_backward[(NUM_BLOCKS,)](
             grad,
@@ -242,7 +257,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
             offset_grad,
             ctx.qmin,
             ctx.qmax,
-            input.numel(),
+            grad.numel(),
             BLOCK_SIZE,
         )
 
