@@ -1323,3 +1323,63 @@ def test_export_large_model(
 
     atol = sim.model[-1].output_quantizers[0].get_scale().item()
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
+
+
+def test_output_split(tmp_path):
+    """
+    Given:
+      Model with an output that is split into multiple consumers:
+
+      Op1 ------+-----------> (output)
+                |
+                +---> Op2 --> ...
+
+    When: Export to onnx QDQ
+    Then: Should export successfully as below
+
+      Op1 ---> QDQ ---------> (output)
+                |
+                +---> Op2 --> ...
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(10, 10)
+            self.softmax = torch.nn.Softmax()
+
+        def forward(self, x):
+            y = self.linear(x)
+            return y, self.softmax(y)
+
+    model = Model()
+    x = torch.randn(100, 10)
+    sim = aimet_torch.QuantizationSimModel(model, x, config_file="htp_v81")
+    sim.compute_encodings(lambda model: model(x))
+
+    aimet_torch.onnx.export(
+        sim.model,
+        x,
+        f=tmp_path / "model.onnx",
+        dynamo=False,
+        input_names=["input"],
+        output_names=["output1", "output2"],
+    )
+    onnx_model = onnx.load_model(tmp_path / "model.onnx")
+    onnx.checker.check_model(onnx_model)
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out1, out2) = sess.run(None, {"input": x.detach().numpy()})
+    with torch.no_grad():
+        expected_out1, expected_out2 = sim.model(x)
+
+    atol1 = sim.model.linear.output_quantizers[0].get_scale().item()
+    atol2 = sim.model.softmax.output_quantizers[0].get_scale().item()
+    assert torch.allclose(torch.from_numpy(out1), expected_out1, atol=atol1)
+    assert torch.allclose(torch.from_numpy(out2), expected_out2, atol=atol2)

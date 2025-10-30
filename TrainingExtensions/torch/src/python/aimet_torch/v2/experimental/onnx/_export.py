@@ -537,38 +537,65 @@ def remove_quantization_nodes_from_onnx_graph(
                 + "\n".join(msg)
             )
 
+    graph_outputs = set(output.name for output in model.graph.output)
     for node in qtzr_nodes:
         # Get quantizer name in torch model
         encoding = _get_encoding_from_onnx_node(model, node, base_dir)
+        producer = name_to_producer.get(node.input[0])
+        consumers = name_to_consumer.get(node.output[0], [])
 
-        # Connect next node to the prev node of quantizer node
-        if node.output[0] in name_to_consumer:
-            tensor_to_encoding_map[node.input[0]] = encoding
-            next_nodes = name_to_consumer[node.output[0]]
-            for next_node in next_nodes:
-                for input_index, input_name in enumerate(next_node.input):
-                    if input_name == node.output[0]:
-                        next_node.input.remove(input_name)
-                        next_node.input.insert(input_index, node.input[0])
-                        break
-                else:
-                    raise ValueError(
-                        f"Could not find input name {node.output[0]} from node {next_node.name}"
-                    )
-
-        # Connect prev node to the next node of quantizer node if above is not possible
-        elif node.input[0] in name_to_producer:
-            tensor_to_encoding_map[node.output[0]] = encoding
-            prev_node = name_to_producer[node.input[0]]
-            for output_index, output_name in enumerate(prev_node.output):
-                if output_name == node.input[0]:
-                    prev_node.output.remove(output_name)
-                    prev_node.output.insert(output_index, node.output[0])
-
-        else:
-            raise ValueError(
-                f"Cannot find prev node and next node for quantization node {node.name}"
+        if node.output[0] in graph_outputs and not producer:
+            # Edge case: This means the model was in form of:
+            #   (model_input) --> QDQ -> (model_output)
+            # or:
+            #   (constant) -----> QDQ -> (model_output)
+            #
+            # We can't preserve the I/O names in this case
+            raise RuntimeError(
+                f"Node {node.name} (op_type: {node.op_type}) can't be removed because "
+                "it's the only connection between the model's input and output."
             )
+
+        if node.output[0] in graph_outputs:
+            # DQ output is part of graph outputs.
+            # We should preserve DQ's output name to preserve the graph output name
+            #
+            # Before:
+            #                         +--> consumers
+            #   producer -----> QDQ --+--> (model_output)
+            #                         ↑
+            #                     qdq.output[0]
+            #                     (=new_name)
+            # After:
+            #                         +--> consumers
+            #   producer -------------+--> (model_output)
+            #                         ↑
+            #                     qdq.output[0]
+            #                     (=new_name)
+            new_name = node.output[0]
+        else:
+            # Before:
+            #   producer -----> Q -> DQ -----> consumers
+            #              ↑
+            #           q.input[0]
+            #          (=new_name)
+            # After:
+            #   producer --------------------> consumers
+            #              ↑
+            #           q.input[0]
+            #          (=new_name)
+            new_name = node.input[0]
+
+        tensor_to_encoding_map[new_name] = encoding
+
+        for consumer in consumers:
+            for i, inp in enumerate(consumer.input):
+                if inp == node.output[0]:
+                    consumer.input[i] = new_name
+        if producer:
+            for i, out in enumerate(producer.output):
+                if out == node.input[0]:
+                    producer.output[i] = new_name
 
     for node in qtzr_nodes:
         # Remove qdq node from graph
