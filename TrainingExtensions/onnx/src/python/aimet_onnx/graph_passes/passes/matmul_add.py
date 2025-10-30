@@ -79,6 +79,7 @@ class MatmulAdd(GraphPass):
         # Disable intermediate output quantization and bias quantization
         matmul_output_qtzr.enabled = False
         bias_qtzr.enabled = False
+        bias_qtzr.use_symmetric_encodings = True
 
         # Let bias quantizers follow the same granularity as weight quantizer
         bias_qtzr.tensor_quantizer_params = copy.deepcopy(

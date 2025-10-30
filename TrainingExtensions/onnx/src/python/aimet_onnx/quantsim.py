@@ -2133,7 +2133,13 @@ class QuantizationSimModel:
             "encodings": [],
             "float_types": [],
         }
-        param_names = set(self.param_names)
+
+        param_names = {
+            product.name
+            for op in self.connected_graph.get_all_ops().values()
+            for product, _ in op.parameters.values()
+            if self.qc_quantize_op_dict[product.name].bitwidth <= 32
+        }
 
         for aimet_node in aimet_qc_quantize_nodes:
             input_name = aimet_node.input[0]
@@ -2226,12 +2232,46 @@ class QuantizationSimModel:
             for product, _ in op.parameters.values()
             if self.qc_quantize_op_dict[product.name].bitwidth <= 32
         }
-        qdq_params = {
-            f"{product.name}_qdq": product
-            for op in self.connected_graph.get_all_ops().values()
-            for product, _ in op.parameters.values()
-            if self.qc_quantize_op_dict[product.name].bitwidth <= 32
+
+        # Find all the nodes that contribute to the computation of the parameters
+        # These will be added to the partial model used to compute the QDQed parameters
+        nodes_to_collect = [
+            node
+            for node in self.model.model.graph.node
+            if (node.op_type == "QcQuantizeOp" and node.input[0] in param_names)
+            or (node.op_type == "Constant" and node.output[0] in param_names)
+        ]
+
+        qdq_tensor_name_map: Dict[str, str] = {
+            node.input[0]: node.output[0]
+            for node in self.model.model.graph.node
+            if node.op_type == "QcQuantizeOp"
+            and self.qc_quantize_op_dict[node.input[0]]
+            and self.qc_quantize_op_dict[node.input[0]].enabled
         }
+
+        # Find all the tensors that are outputs to the partial model
+        # Essentially, these are the outputs of the nodes collected above
+        output_tensors = list[Tuple[str, int, List[int]]]()
+        for node in nodes_to_collect:
+            if node.op_type == "Constant":
+                continue  # Skip to prevent duplication with QcQuantizeOp
+            param_name = node.input[0]
+
+            # If the quantizer did not need to be collected, skip
+            if param_name not in qdq_tensor_name_map:
+                continue
+
+            qdq_param_name = qdq_tensor_name_map.get(param_name)
+            cg_product = self.connected_graph.get_product(param_name)
+            output_tensors.append(
+                (
+                    qdq_param_name,
+                    param_name,
+                    cg_product.tensor.data_type,
+                    cg_product.shape,
+                )
+            )
 
         partial_model = onnx.helper.make_model(
             ir_version=self.model.model.ir_version,
@@ -2240,25 +2280,15 @@ class QuantizationSimModel:
                 name="partial",
                 inputs=[],
                 outputs=[
-                    onnx.helper.make_tensor_value_info(
-                        qdq_param_name, p.tensor.data_type, shape=p.shape
-                    )
-                    for qdq_param_name, p in qdq_params.items()
+                    onnx.helper.make_tensor_value_info(tensor_name, data_type, shape)
+                    for tensor_name, _, data_type, shape in output_tensors
                 ],
                 initializer=[
                     init
                     for init in self.model.model.graph.initializer
                     if init.name in param_names
                 ],
-                nodes=[
-                    node
-                    for node in self.model.model.graph.node
-                    if any(inp in param_names for inp in node.input)
-                    or (
-                        node.op_type == "Constant"
-                        and any(out in param_names for out in node.output)
-                    )
-                ],
+                nodes=nodes_to_collect,
             ),
         )
 
@@ -2266,10 +2296,12 @@ class QuantizationSimModel:
             return {}
 
         sess = OrtInferenceSession(partial_model, ["CPUExecutionProvider"])
-        out = sess.run(list(qdq_params.keys()), {})
+        output_tensor_names = [tensor_name for tensor_name, _, _, _ in output_tensors]
+        output_param_names = [param_name for _, param_name, _, _ in output_tensors]
+        out = sess.run(output_tensor_names, {})
         return {
-            qdq_param_name: qdq_param
-            for qdq_param_name, qdq_param in zip(qdq_params.keys(), out)
+            tensor_name: tensor_value
+            for tensor_name, tensor_value in zip(output_param_names, out)
         }
 
     @staticmethod
@@ -2277,14 +2309,14 @@ class QuantizationSimModel:
         model: onnx.ModelProto, parameters: Dict[str, np.ndarray]
     ):
         initializers = [
-            (init, parameters.pop(f"{init.name}_qdq"))
+            (init, parameters.pop(init.name))
             for init in model.graph.initializer
-            if f"{init.name}_qdq" in parameters
+            if init.name in parameters
         ]
         constants = [
-            (node, parameters.pop(f"{node.output[0]}_qdq"))
+            (node, parameters.pop(node.output[0]))
             for node in model.graph.node
-            if node.op_type == "Constant" and f"{node.output[0]}_qdq" in parameters
+            if node.op_type == "Constant" and node.output[0] in parameters
         ]
 
         found = set(init.name for init, _ in initializers) | set(

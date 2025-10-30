@@ -3748,6 +3748,20 @@ class TestEncodingPropagation:
         ) * np.array(input_qtzr.export_encodings("2.0.0")["y_scale"])
         assert np.allclose(bias_scale, expected)
 
+        dummy_input = {"input": np.random.randn(10, 10).astype(np.float32)}
+        dummy_output = sim.session.run(None, dummy_input)
+
+        quantized_model = sim.to_onnx_qdq()
+        quantized_model_session = ort.InferenceSession(
+            quantized_model.SerializeToString(), providers=["CPUExecutionProvider"]
+        )
+        _ = quantized_model_session.run(
+            None, {"input": np.random.randn(10, 10).astype(np.float32)}
+        )
+
+        # Making sure that the qdq graph is runnable
+        qdq_output = quantized_model_session.run(None, dummy_input)
+
     @pytest.mark.parametrize(
         "per_channel, weight_encoding",
         [
