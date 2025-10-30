@@ -314,7 +314,44 @@ def _map_qmodule(modules, func):
 
 def remove_input_quantizers(modules):
     """
-    Removes input quantizers for the modules provided
+    Temporarily remove all input quantizers
+
+    Example:
+
+        >>> print(sim.model)
+        Sequential(
+          (0): QuantizedConv2d(
+            3, 3, kernel_size=(3, 3), stride=(1, 1)
+            (param_quantizers): ModuleDict(
+              (weight): QuantizeDequantize(shape=(3, 1, 1, 1), qmin=-128, qmax=127, symmetric=True)
+              (bias): None
+            )
+            (input_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+            (output_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+          )
+        )
+        >>> with remove_input_quantizers(sim.model):
+        ...     print(sim.model)
+        ...
+        Sequential(
+          (0): QuantizedConv2d(
+            3, 3, kernel_size=(3, 3), stride=(1, 1)
+            (param_quantizers): ModuleDict(
+              (weight): QuantizeDequantize(shape=(3, 1, 1, 1), qmin=-128, qmax=127, symmetric=True)
+              (bias): None
+            )
+            (input_quantizers): ModuleList(
+              (0): None
+            )
+            (output_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+          )
+        )
     """
     # pylint: disable=protected-access
     return _map_qmodule(modules, lambda qmodule: qmodule._remove_input_quantizers())
@@ -322,7 +359,44 @@ def remove_input_quantizers(modules):
 
 def remove_output_quantizers(modules):
     """
-    Removes output quantizers for the modules provided
+    Temporarily remove all output quantizers
+
+    Example:
+
+        >>> print(sim.model)
+        Sequential(
+          (0): QuantizedConv2d(
+            3, 3, kernel_size=(3, 3), stride=(1, 1)
+            (param_quantizers): ModuleDict(
+              (weight): QuantizeDequantize(shape=(3, 1, 1, 1), qmin=-128, qmax=127, symmetric=True)
+              (bias): None
+            )
+            (input_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+            (output_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+          )
+        )
+        >>> with remove_output_quantizers(sim.model):
+        ...     print(sim.model)
+        ...
+        Sequential(
+          (0): QuantizedConv2d(
+            3, 3, kernel_size=(3, 3), stride=(1, 1)
+            (param_quantizers): ModuleDict(
+              (weight): QuantizeDequantize(shape=(3, 1, 1, 1), qmin=-128, qmax=127, symmetric=True)
+              (bias): None
+            )
+            (input_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+            (output_quantizers): ModuleList(
+              (0): None
+            )
+          )
+        )
     """
     # pylint: disable=protected-access
     return _map_qmodule(modules, lambda qmodule: qmodule._remove_output_quantizers())
@@ -330,7 +404,44 @@ def remove_output_quantizers(modules):
 
 def remove_param_quantizers(modules):
     """
-    Removes parameter quantizers for the modules provided
+    Temporarily remove all parameter quantizers
+
+    Example:
+
+        >>> print(sim.model)
+        Sequential(
+          (0): QuantizedConv2d(
+            3, 3, kernel_size=(3, 3), stride=(1, 1)
+            (param_quantizers): ModuleDict(
+              (weight): QuantizeDequantize(shape=(3, 1, 1, 1), qmin=-128, qmax=127, symmetric=True)
+              (bias): None
+            )
+            (input_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+            (output_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+          )
+        )
+        >>> with remove_param_quantizers(sim.model):
+        ...     print(sim.model)
+        ...
+        Sequential(
+          (0): QuantizedConv2d(
+            3, 3, kernel_size=(3, 3), stride=(1, 1)
+            (param_quantizers): ModuleDict(
+              (weight): None
+              (bias): None
+            )
+            (input_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+            (output_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+          )
+        )
     """
     # pylint: disable=protected-access
     return _map_qmodule(modules, lambda qmodule: qmodule._remove_param_quantizers())
@@ -338,7 +449,44 @@ def remove_param_quantizers(modules):
 
 def remove_activation_quantizers(modules):
     """
-    Removes activation quantizers for the modules provided
+    Temporarily remove all input and output quantizers
+
+    Example:
+
+        >>> print(sim.model)
+        Sequential(
+          (0): QuantizedConv2d(
+            3, 3, kernel_size=(3, 3), stride=(1, 1)
+            (param_quantizers): ModuleDict(
+              (weight): QuantizeDequantize(shape=(3, 1, 1, 1), qmin=-128, qmax=127, symmetric=True)
+              (bias): None
+            )
+            (input_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+            (output_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+          )
+        )
+        >>> with remove_activation_quantizers(sim.model):
+        ...     print(sim.model)
+        ...
+        Sequential(
+          (0): QuantizedConv2d(
+            3, 3, kernel_size=(3, 3), stride=(1, 1)
+            (param_quantizers): ModuleDict(
+              (weight): QuantizeDequantize(shape=(3, 1, 1, 1), qmin=-128, qmax=127, symmetric=True)
+              (bias): None
+            )
+            (input_quantizers): ModuleList(
+              (0): None
+            )
+            (output_quantizers): ModuleList(
+              (0): None
+            )
+          )
+        )
     """
     if not isinstance(modules, torch.nn.Module):
         # Shallow copy in case modules is an iterator
@@ -355,7 +503,44 @@ def remove_activation_quantizers(modules):
 
 def remove_all_quantizers(modules):
     """
-    Removes all quantizers for the modules provided
+    Temporarily remove all quantizers
+
+    Example:
+
+        >>> print(sim.model)
+        Sequential(
+          (0): QuantizedConv2d(
+            3, 3, kernel_size=(3, 3), stride=(1, 1)
+            (param_quantizers): ModuleDict(
+              (weight): QuantizeDequantize(shape=(3, 1, 1, 1), qmin=-128, qmax=127, symmetric=True)
+              (bias): None
+            )
+            (input_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+            (output_quantizers): ModuleList(
+              (0): QuantizeDequantize(shape=(), qmin=0, qmax=255, symmetric=False)
+            )
+          )
+        )
+        >>> with remove_all_quantizers(sim.model):
+        ...     print(sim.model)
+        ...
+        Sequential(
+          (0): QuantizedConv2d(
+            3, 3, kernel_size=(3, 3), stride=(1, 1)
+            (param_quantizers): ModuleDict(
+              (weight): None
+              (bias): None
+            )
+            (input_quantizers): ModuleList(
+              (0): None
+            )
+            (output_quantizers): ModuleList(
+              (0): None
+            )
+          )
+        )
     """
     if not isinstance(modules, torch.nn.Module):
         # Shallow copy in case modules is an iterator

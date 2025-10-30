@@ -12,6 +12,7 @@ aimet_torch API
     aimet_torch.nn <nn>
     aimet_torch.quantization <quantization>
     aimet_torch.onnx <onnx>
+    aimet_torch.utils <utils>
     aimet_torch.adaround <adaround>
     aimet_torch.seq_mse <seq_mse>
     aimet_torch.experimental.adascale <adascale>
@@ -50,6 +51,7 @@ AIMET quantization for PyTorch models provides the following functionality.
 - :ref:`aimet_torch.nn <apiref-torch-nn>`
 - :ref:`aimet_torch.quantization <apiref-torch-quantization>`
 - :ref:`aimet_torch.onnx <apiref-torch-onnx>`
+- :ref:`aimet_torch.utils <apiref-torch-utils>`
 - :ref:`aimet_torch.adaround <apiref-torch-adaround>`
 - :ref:`aimet_torch.seq_mse <apiref-torch-seq-mse>`
 - :ref:`aimet_torch.experimental.adascale <apiref-torch-adascale>`
