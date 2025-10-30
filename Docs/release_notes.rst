@@ -6,6 +6,36 @@
 Release notes
 #############
 
+
+2.18.0
+======
+
+* New Features
+    * Torch
+        * Promoted aimet_torch.onnx.export and QuantizationSimModel.onnx.export as production APIs (`99160d2`_, `e026fd1`_)
+        * Added utility functions to exclude some or all unknown nn.Modules from quantization (`5a419f3`_, `501eebd`_)
+
+* Bug fixes and Improvements
+    * ONNX
+        * Fixed supergroup misidentification bug upon MatMul-MatMul-Add sequence (`ab63866`_)
+
+    * Torch
+        * Made compatible with PyTorch 1.13 (`47fae94`_)
+        * Made compatible with PyTorch 2.9 (`283ecc1`_)
+
+    * Common
+        * Set priority among supergroups (`6676a6c`_)
+
+.. _99160d2: https://github.com/quic/aimet/commit/99160d2
+.. _e026fd1: https://github.com/quic/aimet/commit/e026fd1
+.. _ab63866: https://github.com/quic/aimet/commit/ab63866
+.. _47fae94: https://github.com/quic/aimet/commit/47fae94
+.. _283ecc1: https://github.com/quic/aimet/commit/283ecc1
+.. _5a419f3: https://github.com/quic/aimet/commit/5a419f3
+.. _501eebd: https://github.com/quic/aimet/commit/501eebd
+.. _6676a6c: https://github.com/quic/aimet/commit/6676a6c
+
+
 2.17.0
 ======
 
