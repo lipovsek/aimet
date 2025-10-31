@@ -35,6 +35,7 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 
+from collections import defaultdict
 import contextlib
 import copy
 import itertools
@@ -5651,3 +5652,61 @@ def test_convert_version_with_external_weights(
     (out_2,) = sess_2.run(None, input)
 
     assert np.all(out_1 == out_2)
+
+
+def test_output_split(tmp_path: pathlib.Path):
+    """
+    Given:
+      Model with an output that is split into multiple consumers:
+      Op1 ------+-----------> (output)
+                |
+                +---> Op2 --> ...
+    When: Export to onnx QDQ
+    Then: Should export successfully as below
+      Op1 ---> QDQ ---------> (output)
+                |
+                +---> Op2 --> ...
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(10, 10)
+            self.softmax = torch.nn.Softmax()
+
+        def forward(self, x):
+            y = self.linear(x)
+            return y, self.softmax(y)
+
+    model = Model()
+    x = torch.randn(100, 10)
+    torch.onnx.export(
+        model,
+        x,
+        tmp_path / "model.onnx",
+        input_names=["input"],
+        output_names=["output_0", "output_1"],
+    )
+
+    model = onnx.load(tmp_path / "model.onnx")
+    sim = QuantizationSimModel(model)
+    sim.compute_encodings([{"input": x.numpy()}])
+    qdq_model = sim.to_onnx_qdq()
+
+    consumers = defaultdict(list)
+    for node in qdq_model.graph.node:
+        for input in node.input:
+            consumers[input].append(node)
+
+    gemm = next(node for node in qdq_model.graph.node if node.op_type == "Gemm")
+    (gemm_output_q,) = consumers[gemm.output[0]]
+    (gemm_output_dq,) = consumers[gemm_output_q.output[0]]
+
+    softmax = next(node for node in qdq_model.graph.node if node.op_type == "Softmax")
+    (softmax_output_q,) = consumers[softmax.output[0]]
+    (softmax_output_dq,) = consumers[softmax_output_q.output[0]]
+
+    assert (
+        gemm_output_dq.output[0] == softmax.input[0] == qdq_model.graph.output[0].name
+    )
+    assert softmax_output_dq.output[0] == qdq_model.graph.output[1].name
