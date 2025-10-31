@@ -20,6 +20,13 @@ def conv(**_):
     return torch.nn.Sequential(torch.nn.Conv2d(3, 3, 3))
 
 
+def conv_flatten(**_):
+    return torch.nn.Sequential(
+        torch.nn.Conv2d(3, 3, 3),
+        torch.nn.Flatten(),
+    )
+
+
 def conv_relu(**_):
     return torch.nn.Sequential(
         torch.nn.Conv2d(3, 3, 3),
@@ -48,6 +55,7 @@ def llama_rms_norm(**_):
     [
         conv,
         conv_relu,
+        conv_flatten,
         custom_rmsnorm,
         llama_rms_norm,
         resnet18,
@@ -66,7 +74,9 @@ def test_export(model_factory, tmp_path: Path):
 
     sim.compute_encodings(lambda model: model(x))
 
-    last_layer_name = [name for name, _ in model.named_modules()][-1]
+    last_layer_name = [name for name, _ in model.named_modules()][
+        -2 if model_factory == conv_flatten else -1
+    ]
     last_layer = sim.model.get_submodule(last_layer_name)
 
     """

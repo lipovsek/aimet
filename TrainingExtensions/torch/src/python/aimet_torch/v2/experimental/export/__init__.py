@@ -66,19 +66,48 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
     with _precompute_encodings(mod), torch.no_grad():
         ep = torch.export.export(mod, *args, **kwargs)
 
+    original_output_names = [
+        node.name for node in ep.graph.output_node().all_input_nodes
+    ]
+
     for node in ep.graph.nodes:
         if _is_qdq_op(node):
             _try_fold_scale_and_zp(node, ep)
 
+    # Encoding propagation to insert missing q/dq nodes
     for node in ep.graph.nodes:
         if _is_grid_preserving_op(node):
             _try_insert_output_qdq(ep, node)
 
+    # Encoding propagation to insert missing q/dq nodes
     for node in reversed(ep.graph.nodes):
         if _is_grid_preserving_op(node):
             _try_insert_input_qdq(ep, node)
 
     _remove_dangling_nodes(ep)
+
+    # Edge case: if any new QDQ nodes were added before the output nodes,
+    # we need to update the output names in the graph signature accordingly
+    # Example:
+    #                         (q/dq inserted by
+    #                       encoding propagation)
+    #         reshape -----------> q -------> dq -----------------> (output)
+    #           ↑                             ↑
+    #  ep.graph_signature is           ep.graph_signature should be
+    #  still pointing to this          updated to point to this dq node
+    #  as graph output                 as graph output
+    new_output_names = {
+        old_name: node.name
+        for old_name, node in zip(
+            original_output_names,
+            ep.graph.output_node().all_input_nodes,
+        )
+    }
+    for spec in ep.graph_signature.output_specs:
+        old_output_name = spec.arg.name
+        new_output_name = new_output_names.get(old_output_name, old_output_name)
+        spec.arg.name = new_output_name
+
     return ep
 
 
