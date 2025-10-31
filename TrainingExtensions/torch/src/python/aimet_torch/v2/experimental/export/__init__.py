@@ -248,6 +248,7 @@ def _is_grid_preserving_op(node: torch.fx.Node) -> bool:
     return name in (
         "aten::dropout",
         "aten::dropout_",
+        "aten::embedding",
         "aten::expand",
         "aten::gather",
         "aten::flatten",
