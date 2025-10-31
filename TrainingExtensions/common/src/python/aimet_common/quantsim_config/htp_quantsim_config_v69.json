@@ -124,6 +124,18 @@
     "If":
     {
       "is_output_quantized" : "False"
+    },
+    "RNN":
+    {
+      "per_channel_quantization": "False"
+    },
+    "GRU":
+    {
+      "per_channel_quantization": "False"
+    },
+    "LSTM":
+    {
+      "per_channel_quantization": "False"
     }
   },
 

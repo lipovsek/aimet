@@ -557,14 +557,7 @@ class TestQuantSim:
                 else:
                     assert enc["enc_type"] == EncodingType.PER_TENSOR.name
 
-    @pytest.mark.parametrize(
-        "config_file",
-        [
-            # FIXME: LSTM with per-channel quantzation fails at QuantizationSimModel.__init__
-            # "default_config_per_channel.json",
-            "default_config.json",
-        ],
-    )
+    @pytest.mark.parametrize("config_file", ["default", "htp_v81"])
     def test_lstm_gru(self, config_file):
         """Test for LSTM and GRU dummy model"""
         model = build_lstm_gru_dummy_model()

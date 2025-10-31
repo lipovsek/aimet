@@ -119,6 +119,18 @@
           "is_symmetric": "False"
         }
       }
+    },
+    "RNN":
+    {
+      "per_channel_quantization": "False"
+    },
+    "GRU":
+    {
+      "per_channel_quantization": "False"
+    },
+    "LSTM":
+    {
+      "per_channel_quantization": "False"
     }
   },
 
