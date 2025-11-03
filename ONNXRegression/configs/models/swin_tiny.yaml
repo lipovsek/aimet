@@ -1,0 +1,20 @@
+# swin-tiny Model Configuration
+
+# Each test inherits settings from:
+#   1. _defaults.yaml (base settings)
+#   2. Profile (e.g., nightly.yaml) if specified
+#   3. This file (model-level settings)
+#   4. Test-specific settings below
+
+# ==================== Model Identification ====================
+model_name: swin_tiny
+tests:
+  - name: lite_mp_25
+    feature: lite_mp
+    quant_scheme: tf
+    param_type: int8
+    activation_type: int16
+    config_file: htp_v81
+    lite_mp:
+      percent_flip: 25
+      override_precision: float16
