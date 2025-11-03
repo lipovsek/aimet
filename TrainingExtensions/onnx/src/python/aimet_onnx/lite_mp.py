@@ -9,7 +9,7 @@ from aimet_onnx import qtype, int16, float16, QuantizationSimModel
 def flip_layers_to_higher_precision(
     sim: QuantizationSimModel,
     layer_sensitivity_dict: Dict[str, float],
-    percent_to_flip: int = 10,
+    percent_to_flip: float = 10.0,
     override_precision: qtype = float16,
 ):
     """

@@ -15,7 +15,7 @@ from .models import models_for_tests
 
 
 class TestLiteMp:
-    @pytest.mark.parametrize("percent_flip", [30, 50, 80])
+    @pytest.mark.parametrize("percent_flip", [30, 50.2, 80])
     def test_flip_to_float(self, percent_flip):
         model = models_for_tests.single_residual_model().model
         fp_session = onnxruntime.InferenceSession(
@@ -28,15 +28,14 @@ class TestLiteMp:
         fp_count = sum(1 for op in q_ops if op.data_type == QuantizationDataType.float)
         assert fp_count == 0
 
-        with tempfile.TemporaryDirectory() as tempdir:
-            inputs = [make_dummy_input(model)]
-            psnr_eval_fn = make_psnr_eval_fn(fp_session, inputs)
-            layer_sensitivity_dict = analyze_per_layer_sensitivity(
-                sim, eval_fn=psnr_eval_fn
-            )
-            flip_layers_to_higher_precision(
-                sim, layer_sensitivity_dict, percent_flip, override_precision=float16
-            )
+        inputs = [make_dummy_input(model)]
+        psnr_eval_fn = make_psnr_eval_fn(fp_session, inputs)
+        layer_sensitivity_dict = analyze_per_layer_sensitivity(
+            sim, eval_fn=psnr_eval_fn
+        )
+        flip_layers_to_higher_precision(
+            sim, layer_sensitivity_dict, percent_flip, override_precision=float16
+        )
 
         new_int8_count = sum(1 for op in q_ops if op.bitwidth == 8 and op.enabled)
         assert new_int8_count < int8_count
@@ -44,7 +43,7 @@ class TestLiteMp:
 
         sim.compute_encodings(inputs=[make_dummy_input(model)])
 
-    @pytest.mark.parametrize("percent_flip", [30, 50, 80])
+    @pytest.mark.parametrize("percent_flip", [30.5, 50, 80])
     def test_flip_to_int16(self, percent_flip):
         model = models_for_tests.single_residual_model().model
         fp_session = onnxruntime.InferenceSession(
@@ -57,15 +56,14 @@ class TestLiteMp:
         fp_count = sum(1 for op in q_ops if op.data_type == QuantizationDataType.float)
         assert fp_count == 0
 
-        with tempfile.TemporaryDirectory() as tempdir:
-            inputs = [make_dummy_input(model)]
-            psnr_eval_fn = make_psnr_eval_fn(fp_session, inputs)
-            layer_sensitivity_dict = analyze_per_layer_sensitivity(
-                sim, eval_fn=psnr_eval_fn
-            )
-            flip_layers_to_higher_precision(
-                sim, layer_sensitivity_dict, percent_flip, override_precision=int16
-            )
+        inputs = [make_dummy_input(model)]
+        psnr_eval_fn = make_psnr_eval_fn(fp_session, inputs)
+        layer_sensitivity_dict = analyze_per_layer_sensitivity(
+            sim, eval_fn=psnr_eval_fn
+        )
+        flip_layers_to_higher_precision(
+            sim, layer_sensitivity_dict, percent_flip, override_precision=int16
+        )
 
         int16_count = sum(1 for op in q_ops if op.bitwidth == 16 and op.enabled)
         assert int16_count >= percent_flip / 100 * int8_count
