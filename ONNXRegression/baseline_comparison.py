@@ -8,20 +8,14 @@ Baseline Comparison and Reporting
 This script:
 1. Stores current results as baseline for next run
 2. Compares current results with previous baseline
-3. Generates GitHub-style markdown report
-4. Exits with error if regressions detected
+3. Validates quantization accuracy (FP32 vs AIMET)
+4. Validates QDQ export correctness (AIMET vs QDQ)
+5. Generates GitHub-style markdown report
 
 Usage:
-    # Store baseline
     python baseline_comparison.py store --results reports/results.csv
-
-    # Compare and report
     python baseline_comparison.py compare --results reports/results.csv --github-summary
-
-    # Both (typical workflow)
     python baseline_comparison.py run --results reports/results.csv --github-summary
-
-    # With suite name (auto-detects CSV)
     python baseline_comparison.py run --suite-name nightly --github-summary
 """
 
@@ -43,8 +37,79 @@ class TestResult:
     feature: str
     fp32_accuracy: float
     aimet_accuracy: float
-    onnx_accuracy: float
+    qdq_accuracy: float
     qnn_latency_ms: Optional[float] = None
+    techniques: Optional[str] = None
+
+
+@dataclass
+class QualityCheck:
+    """Quality validation for FP32 → AIMET quantization."""
+
+    model: str
+    feature: str
+    fp32_acc: float
+    aimet_acc: float
+    drop_abs: float
+    drop_pct: float
+
+    @property
+    def status_emoji(self) -> str:
+        """Get emoji based on quantization quality."""
+        abs_drop = abs(self.drop_abs)
+        if abs_drop < 0.01:
+            return "✅"
+        else:
+            return "⚠️"
+
+    @property
+    def is_acceptable(self) -> bool:
+        """Check if quantization quality is acceptable."""
+        return abs(self.drop_abs) < 0.01
+
+    @property
+    def formatted_drop(self) -> str:
+        """
+        Format accuracy as side-by-side percentages with difference.
+
+        Returns:
+            Formatted string like: "84.535% / 84.331% (-0.204%) ✅"
+            Shows FP32 accuracy / AIMET accuracy (difference) with status emoji
+        """
+        fp32_pct = self.fp32_acc * 100
+        aimet_pct = self.aimet_acc * 100
+        diff_pct = self.drop_abs * 100
+        return (
+            f"{fp32_pct:.3f}% / {aimet_pct:.3f}% ({diff_pct:+.3f}%) {self.status_emoji}"
+        )
+
+
+@dataclass
+class ExportValidation:
+    """Validation for AIMET → QDQ export correctness."""
+
+    model: str
+    feature: str
+    aimet_acc: float
+    qdq_acc: float
+    diff_abs: float
+    diff_pct: float
+
+    @property
+    def status_emoji(self) -> str:
+        """Get emoji based on export validation."""
+        abs_diff = abs(self.diff_abs)
+        if abs_diff < 0.005:
+            return "✅"
+        elif abs_diff < 0.01:
+            return "⚠️"
+        else:
+            return "❌"
+
+    @property
+    def is_valid(self) -> bool:
+        """Check if export is valid."""
+        return abs(self.diff_abs) < 0.005
 
 
 @dataclass
@@ -60,25 +125,116 @@ class Comparison:
 
     @property
     def is_regression(self) -> bool:
-        """Check if this is a regression (>1% drop)."""
+        """Check if this is a regression."""
         return self.diff < -0.01
 
     @property
     def is_improvement(self) -> bool:
-        """Check if this is an improvement (>1% gain)."""
+        """Check if this is an improvement."""
         return self.diff > 0.01
 
     @property
     def emoji(self) -> str:
         """Get emoji based on severity."""
         if self.diff < -0.05:
-            return "🔴"  # Major regression (>5%)
+            return "🔴"
         elif self.diff < -0.01:
-            return "⚠️"  # Minor regression (>1%)
+            return "⚠️"
         elif self.diff > 0.01:
-            return "✅"  # Improvement
+            return "✅"
         else:
-            return "➖"  # Stable
+            return "➖"
+
+    @property
+    def formatted_change(self) -> str:
+        """Format change with emoji."""
+        if abs(self.diff) < 0.001:
+            return "stable ✅"
+        return f"{self.diff:+.2f}% {self.emoji}"
+
+
+def validate_quantization_quality(result: TestResult) -> QualityCheck:
+    """
+    Validate FP32 → AIMET quantization quality.
+
+    Args:
+        result: Test result with FP32 and AIMET accuracies
+
+    Returns:
+        QualityCheck with drop metrics and status
+    """
+    drop_abs = result.aimet_accuracy - result.fp32_accuracy
+    drop_pct = (
+        (drop_abs / result.fp32_accuracy * 100) if result.fp32_accuracy > 0 else 0
+    )
+
+    return QualityCheck(
+        model=result.model,
+        feature=result.feature,
+        fp32_acc=result.fp32_accuracy,
+        aimet_acc=result.aimet_accuracy,
+        drop_abs=drop_abs,
+        drop_pct=drop_pct,
+    )
+
+
+def validate_qdq_export(result: TestResult) -> ExportValidation:
+    """
+    Validate AIMET → QDQ export correctness.
+
+    Args:
+        result: Test result with AIMET and QDQ accuracies
+
+    Returns:
+        ExportValidation with difference metrics and status
+    """
+    diff_abs = result.qdq_accuracy - result.aimet_accuracy
+    diff_pct = (
+        (diff_abs / result.aimet_accuracy * 100) if result.aimet_accuracy > 0 else 0
+    )
+
+    return ExportValidation(
+        model=result.model,
+        feature=result.feature,
+        aimet_acc=result.aimet_accuracy,
+        qdq_acc=result.qdq_accuracy,
+        diff_abs=diff_abs,
+        diff_pct=diff_pct,
+    )
+
+
+def compute_overall_status(
+    quality: QualityCheck,
+    export_val: ExportValidation,
+    baseline_comp: Optional[Comparison] = None,
+) -> str:
+    """
+    Compute overall test status based on all validations.
+
+    Args:
+        quality: Quantization quality check
+        export_val: QDQ export validation
+        baseline_comp: Optional baseline comparison
+
+    Returns:
+        Status emoji: ✅ PASS / ⚠️ WARNING / ❌ FAIL
+    """
+    if not quality.is_acceptable:
+        return "❌"
+
+    if not export_val.is_valid:
+        return "❌"
+
+    if baseline_comp and baseline_comp.diff < -0.05:
+        return "❌"
+
+    if quality.status_emoji == "⚠️" or export_val.status_emoji == "⚠️":
+        return "⚠️"
+
+    if baseline_comp and baseline_comp.is_regression:
+        return "⚠️"
+
+    return "✅"
 
 
 class BaselineManager:
@@ -91,10 +247,7 @@ class BaselineManager:
     ):
         self.results_csv = Path(results_csv)
         self.baselines_dir = Path(baselines_dir)
-
-        # Create baselines directory if it doesn't exist
         self.baselines_dir.mkdir(parents=True, exist_ok=True)
-
         self.baseline_file = self.baselines_dir / "latest.json"
 
     def load_current_results(self) -> Dict[str, TestResult]:
@@ -111,27 +264,30 @@ class BaselineManager:
             for row in reader:
                 key = f"{row['Model']}_{row['Feature']}"
 
-                # Parse values with fallbacks
                 def safe_float(value, default=0.0):
                     try:
                         return float(value or default)
                     except (ValueError, TypeError):
                         return default
 
-                # Parse QNN latency (remove " ms" suffix)
                 qnn_latency_str = row.get("QNN Latency", "")
                 if qnn_latency_str and qnn_latency_str != "None":
                     qnn_latency = safe_float(qnn_latency_str.replace(" ms", ""), None)
                 else:
                     qnn_latency = None
 
+                qdq_acc = safe_float(
+                    row.get("QDQ Accuracy") or row.get("ONNX Accuracy", 0)
+                )
+
                 results[key] = TestResult(
                     model=row["Model"],
                     feature=row["Feature"],
                     fp32_accuracy=safe_float(row.get("FP32_accuracy")),
                     aimet_accuracy=safe_float(row.get("AIMET Accuracy")),
-                    onnx_accuracy=safe_float(row.get("ONNX Accuracy")),
+                    qdq_accuracy=qdq_acc,
                     qnn_latency_ms=qnn_latency,
+                    techniques=row.get("Techniques", ""),
                 )
 
         print(f"✓ Loaded {len(results)} test results from CSV")
@@ -139,49 +295,35 @@ class BaselineManager:
 
     def save_baseline(self, results: Dict[str, TestResult]) -> None:
         """Save current results as baseline."""
-        if not results:
-            print("⚠️  No results to save as baseline")
-            return
-
-        baseline = {}
+        baseline_data = {}
         for key, result in results.items():
-            baseline[key] = {
+            baseline_data[key] = {
                 "model": result.model,
                 "feature": result.feature,
                 "fp32_accuracy": result.fp32_accuracy,
                 "aimet_accuracy": result.aimet_accuracy,
-                "onnx_accuracy": result.onnx_accuracy,
+                "qdq_accuracy": result.qdq_accuracy,
                 "qnn_latency_ms": result.qnn_latency_ms,
+                "techniques": result.techniques,
             }
 
-        # Ensure directory exists
-        self.baselines_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write baseline file
         with open(self.baseline_file, "w") as f:
-            json.dump(baseline, f, indent=2)
+            json.dump(baseline_data, f, indent=2)
 
         print(f"✓ Baseline saved to: {self.baseline_file}")
-        print(f"  Entries: {len(baseline)}")
-        print(f"  File size: {self.baseline_file.stat().st_size} bytes")
 
     def load_baseline(self) -> Dict[str, Dict]:
-        """Load previous baseline."""
+        """Load baseline results."""
         if not self.baseline_file.exists():
-            print(f"ℹ️  No baseline found at: {self.baseline_file}")
-            print(f"   This is expected for the first run")
             return {}
 
-        print(f"📂 Loading baseline from: {self.baseline_file}")
-
         with open(self.baseline_file, "r") as f:
-            baseline = json.load(f)
-
-        print(f"✓ Loaded baseline with {len(baseline)} entries")
-        return baseline
+            return json.load(f)
 
     def compare(
-        self, current: Dict[str, TestResult], baseline: Dict[str, Dict]
+        self,
+        current: Dict[str, TestResult],
+        baseline: Dict[str, Dict],
     ) -> Tuple[List[Comparison], List[Comparison], List[Comparison]]:
         """
         Compare current results with baseline.
@@ -195,21 +337,21 @@ class BaselineManager:
 
         for key, curr_result in current.items():
             if key not in baseline:
-                print(f"  ℹ️  New test: {key} (no baseline)")
                 continue
 
-            base_data = baseline[key]
-            aimet_diff = curr_result.aimet_accuracy - base_data["aimet_accuracy"]
+            base_acc = baseline[key]["aimet_accuracy"]
+            curr_acc = curr_result.aimet_accuracy
+
+            diff = curr_acc - base_acc
+            diff_pct = (diff / base_acc * 100) if base_acc > 0 else 0
 
             comp = Comparison(
                 model=curr_result.model,
                 feature=curr_result.feature,
-                baseline=base_data["aimet_accuracy"],
-                current=curr_result.aimet_accuracy,
-                diff=aimet_diff,
-                diff_pct=(aimet_diff / base_data["aimet_accuracy"] * 100)
-                if base_data["aimet_accuracy"] > 0
-                else 0,
+                baseline=base_acc,
+                current=curr_acc,
+                diff=diff,
+                diff_pct=diff_pct,
             )
 
             if comp.is_regression:
@@ -223,7 +365,7 @@ class BaselineManager:
 
 
 class ReportGenerator:
-    """Generate comparison reports."""
+    """Generate markdown reports for baseline comparison."""
 
     @staticmethod
     def generate_markdown(
@@ -233,71 +375,208 @@ class ReportGenerator:
         improvements: List[Comparison],
         unchanged: List[Comparison],
     ) -> str:
-        """Generate markdown report."""
+        """Generate markdown report with quality and export validations."""
         lines = []
 
         lines.append("## 📊 Results Comparison\n")
 
         if not baseline:
-            # First run - no comparison
-            lines.append("ℹ️  **First run** - no baseline to compare against\n")
-            lines.append("### Current Results\n")
-            lines.append("| Model | Feature | FP32 Acc | AIMET Acc | ONNX Acc |")
-            lines.append("|-------|---------|----------|-----------|----------|")
-            for key, data in sorted(current.items()):
-                lines.append(
-                    f"| {data.model} | {data.feature} | "
-                    f"{data.fp32_accuracy:.3f} | "
-                    f"{data.aimet_accuracy:.3f} | "
-                    f"{data.onnx_accuracy:.3f} |"
-                )
-        else:
-            # Comparison with baseline
-            total = len(regressions) + len(improvements) + len(unchanged)
+            lines.append("### ℹ️  First Run - No Baseline\n")
+            lines.append("Showing quantization accuracy checks:\n")
             lines.append(
-                f"**Tests:** {total} | "
-                f"✅ Passing: {len(unchanged)} | "
-                f"📈 Improved: {len(improvements)} | "
-                f"⚠️  Regressed: {len(regressions)}\n"
+                "| Model | Feature | Config | FP32 | AIMET | Accuracy (FP32/AIMET) | QDQ | Export Status |"
+            )
+            lines.append(
+                "|-------|---------|--------|------|-------|----------------------|-----|---------------|"
             )
 
-            # Regressions (most important!)
+            for result in current.values():
+                quality = validate_quantization_quality(result)
+                export_val = validate_qdq_export(result)
+                config = result.techniques or ""
+
+                fp32_pct = result.fp32_accuracy * 100
+                aimet_pct = result.aimet_accuracy * 100
+                qdq_pct = result.qdq_accuracy * 100
+
+                lines.append(
+                    f"| {result.model} | {result.feature} | {config} | "
+                    f"{fp32_pct:.3f}% | {aimet_pct:.3f}% | "
+                    f"{quality.formatted_drop} | {qdq_pct:.3f}% | "
+                    f"{export_val.status_emoji} |"
+                )
+
+            lines.append("")
+            lines.append(
+                "\n**Legend:**\n"
+                "- Config: Quantization techniques and parameters applied\n"
+                "- Accuracy (FP32/AIMET): Compares original vs quantized accuracy\n"
+                "  - ✅ Within 1% of FP32 | ⚠️ Over 1% drop from FP32\n"
+                "- Export Status: ✅ <0.5pp diff | ⚠️ 0.5-1pp diff | ❌ >1pp diff\n"
+            )
+
+        else:
+            # Calculate quality status counts
+            passed_count = 0
+            warning_count = 0
+            failed_count = 0
+
+            for result in current.values():
+                quality = validate_quantization_quality(result)
+                export_val = validate_qdq_export(result)
+
+                # Find if this result has a baseline comparison
+                key = f"{result.model}_{result.feature}"
+                baseline_comp = None
+                for comp in regressions + improvements + unchanged:
+                    if comp.model == result.model and comp.feature == result.feature:
+                        baseline_comp = comp
+                        break
+
+                overall_status = compute_overall_status(
+                    quality, export_val, baseline_comp
+                )
+
+                if overall_status == "✅":
+                    passed_count += 1
+                elif overall_status == "⚠️":
+                    warning_count += 1
+                elif overall_status == "❌":
+                    failed_count += 1
+
+            lines.append(
+                f"### Summary\n\n"
+                f"**Baseline Comparison** (vs previous run's AIMET accuracy):\n"
+                f"- ✅ Stable: {len(unchanged)}\n"
+                f"- 📈 Improvements: {len(improvements)}\n"
+                f"- ⚠️ Regressions: {len(regressions)}\n\n"
+                f"**Quantization Status** (AIMET quantization vs FP32 original):\n"
+                f"- ✅ Passed: {passed_count} tests (<1% loss)\n"
+                f"- ⚠️ Warnings: {warning_count} tests\n"
+                f"- ❌ Failed: {failed_count} tests (>1% loss)\n"
+            )
+
             if regressions:
-                lines.append("### ⚠️  Regressions Detected\n")
-                lines.append("| Model | Feature | Baseline | Current | Change |")
-                lines.append("|-------|---------|----------|---------|--------|")
+                lines.append("\n### ⚠️ Regressions\n")
+                lines.append(
+                    "**Legend:**\n"
+                    "- Config: Quantization techniques and parameters applied\n"
+                    "- Accuracy (FP32/AIMET): Compares original vs quantized accuracy\n"
+                    "  - ✅ Within 1% of FP32 | ⚠️ Over 1% drop from FP32\n"
+                    "- vs Baseline: Difference from previous run's AIMET accuracy\n"
+                    "- Status: Overall test result considering all validation checks\n\n"
+                )
+                lines.append(
+                    "| Model | Feature | Config | Baseline (AIMET) | Current (AIMET) | vs Baseline | Accuracy (FP32/AIMET) | Status |"
+                )
+                lines.append(
+                    "|-------|---------|--------|------------------|-----------------|-------------|----------------------|--------|"
+                )
                 for r in sorted(regressions, key=lambda x: x.diff):
+                    key = f"{r.model}_{r.feature}"
+                    curr_result = current.get(key)
+                    if curr_result:
+                        quality = validate_quantization_quality(curr_result)
+                        export_val = validate_qdq_export(curr_result)
+                        overall_status = compute_overall_status(quality, export_val, r)
+                        config = curr_result.techniques or ""
+                    else:
+                        quality = None
+                        overall_status = "⚠️"
+                        config = ""
+
+                    baseline_pct = r.baseline * 100
+                    current_pct = r.current * 100
+
                     lines.append(
-                        f"| {r.emoji} {r.model} | {r.feature} | "
-                        f"{r.baseline:.3f} | {r.current:.3f} | "
-                        f"**{r.diff:+.3f}** ({r.diff_pct:+.1f}%) |"
+                        f"| {r.emoji} {r.model} | {r.feature} | {config} | "
+                        f"{baseline_pct:.3f}% | {current_pct:.3f}% | "
+                        f"{r.diff:+.5f} ({r.diff_pct:+.1f}%) | "
+                        f"{quality.formatted_drop if quality else 'N/A'} | "
+                        f"{overall_status} |"
                     )
                 lines.append("")
 
-            # Improvements
             if improvements:
                 lines.append("### 📈 Improvements\n")
-                lines.append("| Model | Feature | Baseline | Current | Change |")
-                lines.append("|-------|---------|----------|---------|--------|")
+                lines.append(
+                    "**Legend:**\n"
+                    "- Config: Quantization techniques and parameters applied\n"
+                    "- Accuracy (FP32/AIMET): Compares original vs quantized accuracy\n"
+                    "  - ✅ Within 1% of FP32 | ⚠️ Over 1% drop from FP32\n"
+                    "- vs Baseline: Difference from previous run's AIMET accuracy\n"
+                    "- Status: Overall test result considering all validation checks\n\n"
+                )
+                lines.append(
+                    "| Model | Feature | Config | Baseline (AIMET) | Current (AIMET) | vs Baseline | Accuracy (FP32/AIMET) | Status |"
+                )
+                lines.append(
+                    "|-------|---------|--------|------------------|-----------------|-------------|----------------------|--------|"
+                )
                 for r in sorted(improvements, key=lambda x: x.diff, reverse=True):
+                    key = f"{r.model}_{r.feature}"
+                    curr_result = current.get(key)
+                    if curr_result:
+                        quality = validate_quantization_quality(curr_result)
+                        export_val = validate_qdq_export(curr_result)
+                        overall_status = compute_overall_status(quality, export_val, r)
+                        config = curr_result.techniques or ""
+                    else:
+                        quality = None
+                        overall_status = "✅"
+                        config = ""
+
+                    baseline_pct = r.baseline * 100
+                    current_pct = r.current * 100
+
                     lines.append(
-                        f"| {r.emoji} {r.model} | {r.feature} | "
-                        f"{r.baseline:.3f} | {r.current:.3f} | "
-                        f"{r.diff:+.3f} ({r.diff_pct:+.1f}%) |"
+                        f"| {r.emoji} {r.model} | {r.feature} | {config} | "
+                        f"{baseline_pct:.3f}% | {current_pct:.3f}% | "
+                        f"{r.diff:+.5f} ({r.diff_pct:+.1f}%) | "
+                        f"{quality.formatted_drop if quality else 'N/A'} | "
+                        f"{overall_status} |"
                     )
                 lines.append("")
 
-            # Unchanged (collapsed)
             if unchanged:
                 lines.append("<details>")
                 lines.append("<summary>✅ Stable Tests (click to expand)</summary>\n")
-                lines.append("| Model | Feature | Baseline | Current | Change |")
-                lines.append("|-------|---------|----------|---------|--------|")
+                lines.append(
+                    "**Legend:**\n"
+                    "- Config: Quantization techniques and parameters applied\n"
+                    "- Accuracy (FP32/AIMET): Compares original vs quantized accuracy\n"
+                    "  - ✅ Within 1% of FP32 | ⚠️ Over 1% drop from FP32\n"
+                    "- vs Baseline: Difference from previous run's AIMET accuracy\n"
+                    "- Status: Overall test result considering all validation checks\n\n"
+                )
+                lines.append(
+                    "| Model | Feature | Config | Baseline (AIMET) | Current (AIMET) | vs Baseline | Accuracy (FP32/AIMET) | Status |"
+                )
+                lines.append(
+                    "|-------|---------|--------|------------------|-----------------|-------------|----------------------|--------|"
+                )
                 for r in unchanged:
+                    key = f"{r.model}_{r.feature}"
+                    curr_result = current.get(key)
+                    if curr_result:
+                        quality = validate_quantization_quality(curr_result)
+                        export_val = validate_qdq_export(curr_result)
+                        overall_status = compute_overall_status(quality, export_val, r)
+                        config = curr_result.techniques or ""
+                    else:
+                        quality = None
+                        overall_status = "✅"
+                        config = ""
+
+                    baseline_pct = r.baseline * 100
+                    current_pct = r.current * 100
+
                     lines.append(
-                        f"| {r.model} | {r.feature} | "
-                        f"{r.baseline:.3f} | {r.current:.3f} | "
-                        f"{r.diff:+.3f} |"
+                        f"| {r.model} | {r.feature} | {config} | "
+                        f"{baseline_pct:.3f}% | {current_pct:.3f}% | "
+                        f"{r.diff:+.5f} | "
+                        f"{quality.formatted_drop if quality else 'N/A'} | "
+                        f"{overall_status} |"
                     )
                 lines.append("</details>\n")
 
@@ -323,20 +602,6 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare test results with baseline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Store baseline from specific CSV
-  python baseline_comparison.py store --results reports/results_nightly.csv
-
-  # Compare with baseline
-  python baseline_comparison.py compare --results reports/results_nightly.csv --github-summary
-
-  # Both store and compare (typical workflow)
-  python baseline_comparison.py run --suite-name nightly --github-summary
-
-  # Auto-detect CSV file
-  python baseline_comparison.py run --github-summary
-        """,
     )
 
     parser.add_argument(
@@ -348,43 +613,28 @@ Examples:
     parser.add_argument(
         "--results",
         default=None,
-        help="Path to results CSV (if not specified, auto-detects based on suite-name or finds latest)",
+        help="Path to results CSV",
     )
 
     parser.add_argument(
         "--suite-name",
         dest="suite_name",
         default=None,
-        help="Suite name (looks for results_<suite>.csv, e.g., 'nightly' finds results_nightly.csv)",
+        help="Suite name (looks for results_<suite>.csv)",
     )
 
     parser.add_argument(
         "--baselines-dir",
         dest="baselines_dir",
         default="ONNXRegression/baselines",
-        help="Directory for baseline files (default: ONNXRegression/baselines)",
+        help="Directory for baseline files",
     )
 
     parser.add_argument(
         "--github-summary",
         dest="github_summary",
         action="store_true",
-        help="Write report to GitHub step summary (for CI/CD)",
-    )
-
-    parser.add_argument(
-        "--fail-on-regression",
-        dest="fail_on_regression",
-        action="store_true",
-        default=True,
-        help="Exit with error code if regressions detected (default: True)",
-    )
-
-    parser.add_argument(
-        "--no-fail-on-regression",
-        dest="fail_on_regression",
-        action="store_false",
-        help="Don't exit with error even if regressions detected",
+        help="Write report to GitHub step summary",
     )
 
     args = parser.parse_args()
@@ -393,7 +643,6 @@ Examples:
     print("AIMET Baseline Comparison")
     print("=" * 60)
 
-    # ============ Auto-detect results file ============
     if not args.results:
         reports_dir = Path("ONNXRegression/reports")
 
@@ -402,18 +651,15 @@ Examples:
             return 1
 
         if args.suite_name:
-            # Look for suite-specific results
             results_file = reports_dir / f"results_{args.suite_name}.csv"
             if not results_file.exists():
                 print(f"❌ Results file not found: {results_file}")
-                print(f"   Expected file for suite '{args.suite_name}'")
                 print(f"\n💡 Available CSV files:")
                 for csv_file in sorted(reports_dir.glob("*.csv")):
                     print(f"   - {csv_file.name}")
                 return 1
             print(f"ℹ️  Using results for suite: {args.suite_name}")
         else:
-            # Auto-detect: look for any results_*.csv or results.csv
             csv_files = list(reports_dir.glob("results*.csv"))
 
             if not csv_files:
@@ -423,7 +669,6 @@ Examples:
                 results_file = csv_files[0]
                 print(f"ℹ️  Auto-detected results file: {results_file.name}")
             else:
-                # Multiple files - prefer results.csv, otherwise take most recent
                 if (reports_dir / "results.csv").exists():
                     results_file = reports_dir / "results.csv"
                 else:
@@ -432,25 +677,56 @@ Examples:
 
         args.results = str(results_file)
 
-    print(f"📁 Results CSV: {args.results}")
+    print(f"📄 Results CSV: {args.results}")
     print(f"📁 Baselines dir: {args.baselines_dir}")
     print()
 
-    # ============ Initialize manager ============
     manager = BaselineManager(args.results, args.baselines_dir)
 
-    # ============ Load current results ============
     current = manager.load_current_results()
     if not current:
         print("❌ No results to process")
         return 1
 
-    # ============ Action: Store baseline ============
+    print("\n--- Quantization Validation ---")
+    quality_issues = []
+    export_issues = []
+
+    for key, result in current.items():
+        quality = validate_quantization_quality(result)
+        export_val = validate_qdq_export(result)
+
+        if not quality.is_acceptable:
+            quality_issues.append(
+                f"{result.model}/{result.feature}: {quality.formatted_drop}"
+            )
+
+        if not export_val.is_valid:
+            export_issues.append(
+                f"{result.model}/{result.feature}: AIMET={export_val.aimet_acc:.4f}, "
+                f"QDQ={export_val.qdq_acc:.4f} (diff: {export_val.diff_abs:+.4f})"
+            )
+
+    if quality_issues:
+        print(f"⚠️  Quantization Issues ({len(quality_issues)}):")
+        for issue in quality_issues:
+            print(f"  - {issue}")
+        print("\n⚠️  FP32→AIMET quantization check detected issues")
+    else:
+        print("✅ All tests have acceptable quantization accuracy")
+
+    if export_issues:
+        print(f"\n⚠️  Export Validation Issues ({len(export_issues)}):")
+        for issue in export_issues:
+            print(f"  - {issue}")
+        print("\n⚠️  AIMET→QDQ export validation detected issues")
+    else:
+        print("✅ All QDQ exports validated successfully")
+
     if args.action in ["store", "run"]:
         print("\n--- Storing Baseline ---")
         manager.save_baseline(current)
 
-    # ============ Action: Compare ============
     if args.action in ["compare", "run"]:
         print("\n--- Comparing with Baseline ---")
         baseline = manager.load_baseline()
@@ -458,18 +734,15 @@ Examples:
         if baseline:
             regressions, improvements, unchanged = manager.compare(current, baseline)
 
-            # Generate report
             markdown = ReportGenerator.generate_markdown(
                 current, baseline, regressions, improvements, unchanged
             )
 
-            # Output
             if args.github_summary:
                 ReportGenerator.write_github_summary(markdown)
             else:
                 print("\n" + markdown)
 
-            # Summary
             print(f"\n{'=' * 60}")
             print(f"📊 Comparison Summary")
             print(f"{'=' * 60}")
@@ -478,16 +751,11 @@ Examples:
             print(f"⚠️  Regressions:  {len(regressions)}")
             print(f"{'=' * 60}")
 
-            # Exit with error if regressions found
-            if regressions and args.fail_on_regression:
-                print(f"\n❌ {len(regressions)} regression(s) detected!")
-                print(f"   Exiting with error code 1")
-                return 1
+            if regressions:
+                print(f"\n⚠️  {len(regressions)} regression(s) detected")
             else:
                 print(f"\n✅ All tests passed or within threshold!")
-                return 0
         else:
-            # No baseline - first run
             print("ℹ️  First run - no baseline to compare")
             markdown = ReportGenerator.generate_markdown(current, {}, [], [], [])
 
@@ -497,7 +765,6 @@ Examples:
                 print("\n" + markdown)
 
             print("\nℹ️  Baseline saved. Next run will compare against this baseline.")
-            return 0
 
     print("\n✅ Baseline operations completed successfully")
     return 0

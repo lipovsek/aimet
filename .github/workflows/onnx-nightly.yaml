@@ -29,7 +29,6 @@
 name: ONNX Nightly
 
 on:
-
   # Run every day at 6 AM UTC
   schedule:
     - cron: '0 6 * * *'
@@ -144,11 +143,10 @@ jobs:
 
     # Essential environment variables only
     env:
-      CUDA_VISIBLE_DEVICES: "0"          # Use first GPU
-      QAI_HUB_ACCEPT_LICENSE: "1"        # Auto-accept AI Hub license
-      PYTHONUNBUFFERED: "1"              # Show Python output immediately
-      MPLBACKEND: "Agg"                  # Headless matplotlib
-      QT_QPA_PLATFORM: "offscreen"       # Headless Qt
+      CUDA_VISIBLE_DEVICES: "0"
+      PYTHONUNBUFFERED: "1"
+      LANG: C.UTF-8            # ensure UTF-8 handling for emojis
+      LC_ALL: C.UTF-8
 
     steps:
       # ============================================================
@@ -188,7 +186,7 @@ jobs:
 
       - name: Setup Python environment
         run: |
-          # Install Python 3 (as in original workflow)
+          # Install Python 3
           apt-get update -qq
           apt-get install -y python3 python3-venv python3-pip
 
@@ -230,15 +228,17 @@ jobs:
 
       # ============================================================
       # Download previous baseline from artifacts
-      # Why not continue-on-error: We handle "not found" case internally
-      # This ensures we know exactly what happened (found/not found)
+      # FIXED: Made robust to handle missing baselines gracefully
       # ============================================================
 
       - name: Download baseline from previous runs
         if: github.event.inputs.run_mode != 'single_test'
+        continue-on-error: true  # Don't fail workflow if baseline not found
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set +e
+
           SUITE="${{ github.event.inputs.suite }}"
           SUITE=${SUITE:-nightly}
           ARTIFACT_NAME="baseline-$SUITE"
@@ -249,18 +249,61 @@ jobs:
 
           mkdir -p ONNXRegression/baselines/downloaded
 
+          # Get workflow file name
+          WORKFLOW_NAME="${{ github.workflow }}"
+
+          # Debug: Show what we extracted
+          echo "Workflow name from github.workflow: $WORKFLOW_NAME"
+          echo "Full workflow ref: ${{ github.workflow_ref }}"
+
+          # The workflow name should just be the display name
+          # But the API needs the filename, so we construct it
+          WORKFLOW_FILE="onnx-nightly.yaml"
+
+          echo "Looking for workflow file: $WORKFLOW_FILE"
+
           # Get list of recent successful workflow runs
           echo "Searching for recent successful runs..."
+          echo "API URL: https://github.qualcomm.com/api/v3/repos/${{ github.repository }}/actions/workflows/$WORKFLOW_FILE/runs?status=success&per_page=10"
+
           RUNS_JSON=$(curl -s -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://github.qualcomm.com/api/v3/repos/${{ github.repository }}/actions/workflows/onnx-nightly.yaml/runs?status=success&per_page=10")
+            "https://github.qualcomm.com/api/v3/repos/${{ github.repository }}/actions/workflows/$WORKFLOW_FILE/runs?status=success&per_page=10" 2>&1)
+
+          # Check if curl succeeded
+          if [ $? -ne 0 ]; then
+            echo "⚠️  Failed to query GitHub API"
+            echo "This is OK for first run or if workflow was renamed"
+            exit 0
+          fi
 
           # Extract run IDs (first 10)
           RUN_IDS=$(echo "$RUNS_JSON" | grep -o '"id": [0-9]*' | head -10 | cut -d' ' -f2)
 
+          # Filter out current run (we can't download artifacts from ourselves during execution)
+          CURRENT_RUN_ID="${{ github.run_id }}"
+          RUN_IDS=$(echo "$RUN_IDS" | grep -v "^$CURRENT_RUN_ID$")
+
+          # Debug: Show what we found
+          if [ -n "$RUN_IDS" ]; then
+            RUN_COUNT=$(echo "$RUN_IDS" | wc -w)
+            echo "✓ Found $RUN_COUNT previous successful runs (excluding current run $CURRENT_RUN_ID):"
+            echo "$RUN_IDS"
+          else
+            echo "⚠️  No previous run IDs found (excluding current run $CURRENT_RUN_ID)"
+            echo "API response preview (first 1000 chars):"
+            echo "$RUNS_JSON" | head -c 1000
+            echo ""
+          fi
+
           if [ -z "$RUN_IDS" ]; then
-            echo "ℹ️  No previous successful runs found"
-            echo "Baseline download completed"
+            echo "ℹ️ No previous successful runs found"
+            echo "   This is normal for:"
+            echo "   - First run of this workflow"
+            echo "   - Workflow was renamed"
+            echo "   - Previous runs were not successful"
+            echo ""
+            echo "✓ Baseline download completed (no baseline available)"
             exit 0
           fi
 
@@ -273,9 +316,27 @@ jobs:
             # Get artifacts for this run
             ARTIFACTS_JSON=$(curl -s -H "Authorization: token $GH_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
-              "https://github.qualcomm.com/api/v3/repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts")
+              "https://github.qualcomm.com/api/v3/repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" 2>&1)
+
+            if [ $? -ne 0 ]; then
+              echo "  ⚠️  Failed to get artifacts for run $RUN_ID, skipping..."
+              continue
+            fi
 
             # Find our baseline artifact ID
+            echo "  Looking for artifact named: $ARTIFACT_NAME"
+
+            # Debug: Show available artifacts
+            ARTIFACT_NAMES=$(echo "$ARTIFACTS_JSON" | grep -o '"name": "[^"]*"' | cut -d'"' -f4)
+            if [ -n "$ARTIFACT_NAMES" ]; then
+              echo "  Available artifacts:"
+              for name in $ARTIFACT_NAMES; do
+                echo "    - $name"
+              done
+            else
+              echo "  No artifacts found in run $RUN_ID"
+            fi
+
             ARTIFACT_ID=$(echo "$ARTIFACTS_JSON" | grep -B 5 "\"name\": \"$ARTIFACT_NAME\"" | grep '"id":' | head -1 | grep -o '[0-9]*')
 
             if [ -n "$ARTIFACT_ID" ]; then
@@ -286,14 +347,19 @@ jobs:
               curl -s -L -H "Authorization: token $GH_TOKEN" \
                 -H "Accept: application/vnd.github.v3+json" \
                 "https://github.qualcomm.com/api/v3/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
-                -o /tmp/baseline.zip
+                -o /tmp/baseline.zip 2>&1
+
+              if [ $? -ne 0 ]; then
+                echo "  ⚠️  Failed to download artifact, trying next run..."
+                continue
+              fi
 
               # Extract it
               if [ -f /tmp/baseline.zip ]; then
-                unzip -q /tmp/baseline.zip -d ONNXRegression/baselines/downloaded
+                unzip -q /tmp/baseline.zip -d ONNXRegression/baselines/downloaded 2>&1
 
                 if [ -f "ONNXRegression/baselines/downloaded/latest.json" ]; then
-                  FILE_SIZE=$(stat -c%s ONNXRegression/baselines/downloaded/latest.json 2>/dev/null || stat -f%z ONNXRegression/baselines/downloaded/latest.json 2>/dev/null)
+                  FILE_SIZE=$(stat -c%s ONNXRegression/baselines/downloaded/latest.json 2>/dev/null || stat -f%z ONNXRegression/baselines/downloaded/latest.json 2>/dev/null || echo "unknown")
                   echo "  ✓ Baseline downloaded successfully"
                   echo "    File: latest.json"
                   echo "    Size: $FILE_SIZE bytes"
@@ -310,14 +376,16 @@ jobs:
 
           if [ "$FOUND" = false ]; then
             echo ""
-            echo "ℹ️  No baseline artifact found in recent runs"
+            echo "ℹ️ No baseline artifact found in recent runs"
             echo "   This is normal for:"
             echo "   - First run of this suite"
             echo "   - Artifact expiration (30 days)"
+            echo "   - Workflow was recently renamed"
           fi
 
           echo ""
-          echo "Baseline download completed"
+          echo "✓ Baseline download completed"
+          exit 0
 
       - name: Setup baseline for comparison
         if: github.event.inputs.run_mode != 'single_test'
@@ -343,10 +411,11 @@ jobs:
 
             echo "HAS_BASELINE=true" >> $GITHUB_ENV
           else
-            echo "ℹ️  No previous baseline found"
+            echo "ℹ️ No previous baseline found"
             echo "This is either:"
             echo "  - First run of this suite"
             echo "  - Baseline artifact expired (>30 days old)"
+            echo "  - Workflow was renamed"
             echo ""
             echo "A new baseline will be created from this run's results."
 
@@ -430,6 +499,7 @@ jobs:
       # 2. GitHub Summary output:
       #    - First run: "ℹ️ First run - no baseline to compare"
       #    - Subsequent runs: Table showing regressions/improvements
+      #    - Includes FP32 vs AIMET quality checks
       #    - The Python script handles this automatically
       # ============================================================
 
@@ -466,13 +536,13 @@ jobs:
           # 2. Compares with previous baseline (if exists)
           #
           # --github-summary: Writes formatted report to GitHub Actions summary
+          #                   (includes FP32→AIMET quality validation)
           # --no-fail-on-regression: Don't fail the workflow on regressions (just report)
           python ONNXRegression/baseline_comparison.py run \
             --results "$RESULTS_CSV" \
             --suite-name "$SUITE" \
             --baselines-dir "ONNXRegression/baselines" \
-            --github-summary \
-            --no-fail-on-regression
+            --github-summary
 
           # Sanity check: baseline should always be created
           if [ ! -f "ONNXRegression/baselines/latest.json" ]; then
@@ -534,6 +604,7 @@ jobs:
             echo "**Suite:** $SUITE" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "ℹ️ **Baseline comparison results appear above this section**" >> $GITHUB_STEP_SUMMARY
+            echo "   *(Includes FP32→AIMET quality validation)*" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY

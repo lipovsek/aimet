@@ -18,10 +18,10 @@
 # Cut samples in half for faster execution
 # Trade-off: Slightly less accurate measurements
 
-fp32_eval_samples: 100      # Default: 200 (50% reduction)
-quant_eval_samples: 100    # Default: 200 (50% reduction)
-calib_samples: 128          # Default: 256 (50% reduction)
-eval_samples: 128          # Default: 256 (50% reduction)
+fp32_eval_samples: 3925      # Using all 3925 samples from imagenette validation set
+quant_eval_samples: 3925     # Using all 3925 samples from imagenette validation set
+calib_samples: 1000          # Using 1000 samples from imagenette training set
+eval_samples: 3925           # Using all 3925 samples from imagenette validation set
 
 # ==================== Performance Measurement ====================
 # Minimal profiling for speed

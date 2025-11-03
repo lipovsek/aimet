@@ -28,13 +28,28 @@ from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 from ONNXRegression.evaluation.metrics_utils import measure_inference_metrics
 from ONNXRegression.features._common import (
     build_quantsim,
-    export_aimet,
-    build_bundle,
+    export_aimet_bundle,
 )
 
 # Output directory for artifacts
 _ARTIFACTS_DIR = Path("./ONNXRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _extract_bitwidth(value) -> int:
+    """Extract numeric bitwidth from various formats (int8, "int8", 8, "8")."""
+    if value is None:
+        return 8
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    s = str(value).lower()
+    if "16" in s:
+        return 16
+    if "4" in s:
+        return 4
+    return 8
 
 
 def run_quantsim(
@@ -43,6 +58,7 @@ def run_quantsim(
     model: Any,
     dataset_name: str,
     config: Dict[str, Any],
+    export_dir: Optional[Path] = None,
 ) -> Tuple[str, float, Dict[str, str], str]:
     """
     Apply AIMET QuantSim to simulate INT8 quantization on an FP32 ONNX model.
@@ -79,6 +95,18 @@ def run_quantsim(
     """
     # ============ Extract Configuration ============
     model_name = config["model_name"]
+
+    # Use provided export_dir or extract from config (passed by runner.py)
+    if export_dir is None:
+        export_dir = config.get("_export_dir")
+        if export_dir:
+            export_dir = Path(export_dir)
+        else:
+            # Fallback to default location with model subdirectory
+            export_dir = Path("./ONNXRegression/artifacts") / model_name
+            export_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        export_dir = Path(export_dir)
 
     # Quantization parameters with defaults
     quant_scheme = str(config.get("quant_scheme", "tf_enhanced"))
@@ -159,20 +187,19 @@ def run_quantsim(
     # ============ Export AIMET Artifacts ============
     print(f"[QuantSim] Exporting QDQ ONNX and encodings...")
 
-    # Export QDQ ONNX model and encodings file
-    exported_onnx_path, enc_path = export_aimet(sim, _ARTIFACTS_DIR, model_name)
-
-    # Bundle ONNX + encodings for QNN compilation
-    bundle_dir = build_bundle(exported_onnx_path, enc_path, _ARTIFACTS_DIR, model_name)
+    # Export directly to .aimet bundle (Qualcomm AI Hub format)
+    bundle_dir = export_aimet_bundle(sim, export_dir, model_name)
 
     print(f"[QuantSim] Exported to: {bundle_dir}")
 
     # ============ Prepare Results ============
-    technique_str = f"quantsim(W{param_type}/A{activation_type}, {quant_scheme})"
+    param_bw = _extract_bitwidth(param_type)
+    act_bw = _extract_bitwidth(activation_type)
+    technique_str = f"quantsim(W{param_bw}A{act_bw}, {quant_scheme})"
     stats = {
         "techniques": technique_str,
         "runtime": runtime_str,
         "memory": memory_str,
     }
 
-    return str(exported_onnx_path), feature_acc, stats, str(bundle_dir)
+    return str(bundle_dir), feature_acc, stats, str(bundle_dir)

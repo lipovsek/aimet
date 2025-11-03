@@ -31,19 +31,33 @@ import onnxruntime as ort
 from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 
 # AIMET imports - these symbols are required objects, not strings
-from aimet_onnx import analyze_per_layer_sensitivity, float16, int8
+from aimet_onnx import analyze_per_layer_sensitivity, int4, int8, int16, float16
 from aimet_onnx.lite_mp import flip_layers_to_higher_precision
 
 from ONNXRegression.evaluation.metrics_utils import measure_inference_metrics
 from ONNXRegression.features._common import (
     build_quantsim,
-    export_aimet,
-    build_bundle,
+    export_aimet_bundle,
 )
 
-# Output directory for AIMET artifacts
 _ARTIFACTS_DIR = Path("./ONNXRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _extract_bitwidth(value) -> int:
+    """Extract numeric bitwidth from various formats (int8, "int8", 8, "8")."""
+    if value is None:
+        return 8
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    s = str(value).lower()
+    if "16" in s:
+        return 16
+    if "4" in s:
+        return 4
+    return 8
 
 
 def _resolve_override_precision(val: Any):
@@ -51,45 +65,49 @@ def _resolve_override_precision(val: Any):
     Convert configuration value to AIMET's required precision symbol.
 
     AIMET's flip_layers_to_higher_precision API requires specific symbol
-    objects (float16 or int8) rather than strings. This function handles
-    the conversion from various user-friendly input formats.
+    objects rather than strings. This function handles conversion from
+    various user-friendly input formats.
 
     Args:
         val: Input value which can be:
-            - AIMET symbol object (float16 or int8) - returned unchanged
-            - String "float16", "fp16", or "f16" → maps to float16 symbol
-            - String "int8", "i8", or "8" → maps to int8 symbol
+            - AIMET symbol object (int4, int8, int16, float16) - returned unchanged
+            - String variants: "int4"/"i4"/"4", "int8"/"i8"/"8",
+                              "int16"/"i16"/"16", "float16"/"fp16"/"f16"
 
     Returns:
-        AIMET precision symbol (aimet_onnx.float16 or aimet_onnx.int8)
+        AIMET precision symbol (aimet_onnx.int4/int8/int16/float16)
 
     Raises:
         TypeError: If the value cannot be mapped to a valid precision symbol
-
-    Note:
-        While int8 as override might seem counterintuitive (since base is int8),
-        it can be useful when base precision is int4 or for testing.
     """
     # Check if already a valid symbol
-    if val is float16 or val is int8:
+    if val is int4 or val is int8 or val is int16 or val is float16:
         return val
 
     # Parse string representations
     if isinstance(val, str):
         normalized = val.strip().lower()
 
-        # FP16 variants
-        if normalized in ("float16", "fp16", "f16", "16"):
-            return float16
+        # INT4 variants
+        if normalized in ("int4", "i4", "4"):
+            return int4
 
         # INT8 variants
         if normalized in ("int8", "i8", "8"):
             return int8
 
+        # INT16 variants
+        if normalized in ("int16", "i16", "16"):
+            return int16
+
+        # FP16 variants
+        if normalized in ("float16", "fp16", "f16"):
+            return float16
+
     # Invalid input
     raise TypeError(
-        f"override_precision must be aimet_onnx.float16 or aimet_onnx.int8 "
-        f"(or string 'float16'/'int8'). Got {type(val).__name__}: {val!r}"
+        f"override_precision must be one of: int4, int8, int16, float16 "
+        f"(or string 'int4'/'int8'/'int16'/'float16'). Got {type(val).__name__}: {val!r}"
     )
 
 
@@ -99,6 +117,7 @@ def run_lite_mp(
     model: Any,
     dataset_name: str,
     config: Dict[str, Any],
+    export_dir: Optional[Path] = None,
 ) -> Tuple[str, float, Dict[str, str], str]:
     """
     Apply Lite Mixed-Precision quantization to an FP32 ONNX model.
@@ -145,6 +164,18 @@ def run_lite_mp(
     # ============ Extract Configuration ============
     model_name = config["model_name"]
 
+    # Use provided export_dir or extract from config (passed by runner.py)
+    if export_dir is None:
+        export_dir = config.get("_export_dir")
+        if export_dir:
+            export_dir = Path(export_dir)
+        else:
+            # Fallback to default location with model subdirectory
+            export_dir = Path("./ONNXRegression/artifacts") / model_name
+            export_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        export_dir = Path(export_dir)
+
     # Base quantization parameters
     quant_scheme = str(config.get("quant_scheme", "tf_enhanced"))
     param_type = str(config.get("param_type", "int8"))
@@ -174,9 +205,17 @@ def run_lite_mp(
     # Check CUDA availability for acceleration
     use_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
 
+    # Get precision name for display
+    precision_display = {
+        int4: "INT4",
+        int8: "INT8",
+        int16: "INT16",
+        float16: "FP16",
+    }.get(override_sym, "UNKNOWN")
+
     print(f"[Lite-MP] Configuration:")
     print(f"  Base quantization: W{param_type}/A{activation_type}")
-    print(f"  Override precision: {'FP16' if override_sym is float16 else 'INT8'}")
+    print(f"  Override precision: {precision_display}")
     print(f"  Layers to flip: {percent_to_flip}%")
     print(f"  CUDA acceleration: {'Enabled' if use_cuda else 'Disabled'}")
 
@@ -234,7 +273,10 @@ def run_lite_mp(
     layer_sensitivity = analyze_per_layer_sensitivity(sim, eval_fn=accuracy_evaluator)
 
     # ============ Step 4: Apply Mixed Precision ============
-    precision_name = "FP16" if override_sym is float16 else "INT8"
+    precision_name = {int4: "INT4", int8: "INT8", int16: "INT16", float16: "FP16"}.get(
+        override_sym, "UNKNOWN"
+    )
+
     print(
         f"[Lite-MP] Promoting top {percent_to_flip}% sensitive layers to {precision_name}..."
     )
@@ -281,18 +323,20 @@ def run_lite_mp(
     # ============ Step 8: Export and Bundle ============
     print(f"[Lite-MP] Exporting mixed-precision model...")
 
-    # Export QDQ ONNX with mixed precision encodings
-    exported_onnx_path, enc_path = export_aimet(sim, _ARTIFACTS_DIR, model_name)
-
-    # Create bundle for QNN compilation
-    bundle_dir = build_bundle(exported_onnx_path, enc_path, _ARTIFACTS_DIR, model_name)
+    # Export directly to .aimet bundle (Qualcomm AI Hub format)
+    bundle_dir = export_aimet_bundle(sim, export_dir, model_name)
 
     print(f"[Lite-MP] Bundle created at: {bundle_dir}")
 
     # ============ Step 9: Prepare Results ============
-    # Format technique description for reporting
-    precision_str = "float16" if override_sym is float16 else "int8"
-    technique_desc = f"quantsim(W{param_type}/A{activation_type}, {quant_scheme}) + lite_mp({precision_str}, {percent_to_flip}%)"
+    param_bw = _extract_bitwidth(param_type)
+    act_bw = _extract_bitwidth(activation_type)
+
+    # Map precision symbol to string name
+    precision_map = {int4: "int4", int8: "int8", int16: "int16", float16: "float16"}
+    precision_str = precision_map.get(override_sym, "unknown")
+
+    technique_desc = f"quantsim(W{param_bw}A{act_bw}, {quant_scheme}) + lite_mp({precision_str}, {percent_to_flip}%)"
 
     stats = {
         "techniques": technique_desc,
@@ -300,4 +344,4 @@ def run_lite_mp(
         "memory": memory_str,
     }
 
-    return str(exported_onnx_path), feature_acc, stats, str(bundle_dir)
+    return str(bundle_dir), feature_acc, stats, str(bundle_dir)
