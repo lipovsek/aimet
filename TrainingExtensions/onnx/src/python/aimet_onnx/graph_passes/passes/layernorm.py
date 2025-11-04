@@ -126,7 +126,18 @@ class LayerNormalization(SupergroupGraphPass):
         # (x - E(x)) / Sqrt(Var(x) + ε) * γ
         match, div_mul_ops = check_consecutive_ops(div_1, ["Div", "Mul"])
         if match:
-            all_ops += div_mul_ops[1:]
+            _, mul = div_mul_ops  # pylint: disable=unbalanced-tuple-unpacking
+            all_ops.append(mul)
+            weight = mul.inputs[1] if mul.inputs[0].producer == div_1 else mul.inputs[0]
+
+            def set_symmetric(qtzr):
+                qtzr.use_symmetric_encodings = True
+
+            self._callbacks.append(
+                lambda name, qtzr: set_symmetric(qtzr)
+                if name == weight.name and qtzr and qtzr.bitwidth == 16
+                else None
+            )
         else:
             return all_ops
 

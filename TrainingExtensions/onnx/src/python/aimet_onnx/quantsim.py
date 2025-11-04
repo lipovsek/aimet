@@ -1068,6 +1068,12 @@ class QuantizationSimModel:
                             output_quantizer.use_symmetric_encodings
                         )
 
+            elif op.type == "LayerNormalization":
+                # HTP requires 16-bit layernorm weight to be symmetric
+                weight_qtzr = param_quantizers.get("weight", None)
+                if weight_qtzr:
+                    weight_qtzr.use_symmetric_encodings = weight_qtzr.bitwidth >= 16
+
             elif op.type == "MatMul":
                 # Apply exception rule only to dynamic matmuls
                 if op.inputs[1].name in self.param_names:

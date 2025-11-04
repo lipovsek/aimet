@@ -2540,3 +2540,29 @@ def test_ambiguous_supergroup(tmp_path):
     assert not sim.model.conv.output_quantizers[0]
     assert sim.model.add.output_quantizers[0]
     assert sim.model.relu.output_quantizers[0]
+
+
+def test_layernorm_exception_rule():
+    """
+    Given: HTP quantsim config
+    When: Set layernorm weight to int16
+    Then: Set layernorm weight should be symmetric
+    """
+    model = torch.nn.Sequential(
+        torch.nn.LayerNorm(normalized_shape=10, eps=1e-5, elementwise_affine=True)
+    )
+    input_data = torch.randn(2, 10)
+    sim = QuantizationSimModel(
+        model, input_data, default_param_bw=16, config_file="htp_v81"
+    )
+    assert sim.model[0].param_quantizers["weight"].symmetric
+
+    """
+    Given: HTP quantsim config
+    When: Set layernorm weight to int8
+    Then: Set layernorm weight should be asymmetric
+    """
+    sim = QuantizationSimModel(
+        model, input_data, default_param_bw=8, config_file="htp_v81"
+    )
+    assert not sim.model[0].param_quantizers["weight"].symmetric

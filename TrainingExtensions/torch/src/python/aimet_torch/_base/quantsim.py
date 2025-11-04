@@ -669,6 +669,11 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
                             output_quantizer.use_symmetric_encodings
                         )
 
+            elif isinstance(original_module, torch.nn.LayerNorm):
+                weight_qtzr = wrapper.param_quantizers.get("weight", None)
+                if weight_qtzr:
+                    weight_qtzr.use_symmetric_encodings = weight_qtzr.bitwidth >= 16
+
             elif isinstance(original_module, (MatMul, Outer)):
                 # Skip unused modules
                 if original_module not in self.connected_graph._module_to_op_dict:

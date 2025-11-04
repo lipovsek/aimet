@@ -1856,6 +1856,53 @@ class TestQuantSim:
                 assert groupnorm_bias_enc["bw"] == 16
                 assert groupnorm_bias_enc["is_sym"] is False
 
+    def test_layernorm_exception_rule(self):
+        """
+        Given: HTP quantsim config
+        When: Set layernorm weight to int16
+        Then: Set layernorm weight should be symmetric
+        """
+        model = layernorm_model()
+        sim = aimet_onnx.QuantizationSimModel(
+            model,
+            param_type=aimet_onnx.int16,
+            activation_type=aimet_onnx.int16,
+            config_file="htp_v81",
+        )
+        assert sim.qc_quantize_op_dict["layernorm.scale"].use_symmetric_encodings
+
+        model = test_models.layernorm_model()
+        sim = aimet_onnx.QuantizationSimModel(
+            model,
+            param_type=aimet_onnx.int16,
+            activation_type=aimet_onnx.int16,
+            config_file="htp_v81",
+        )
+        assert sim.qc_quantize_op_dict["layer_norm.weight"].use_symmetric_encodings
+
+        """
+        Given: HTP quantsim config
+        When: Set layernorm weight to int8
+        Then: Set layernorm weight should be asymmetric
+        """
+        model = layernorm_model()
+        sim = aimet_onnx.QuantizationSimModel(
+            model,
+            param_type=aimet_onnx.int8,
+            activation_type=aimet_onnx.int8,
+            config_file="htp_v81",
+        )
+        assert not sim.qc_quantize_op_dict["layernorm.scale"].use_symmetric_encodings
+
+        model = test_models.layernorm_model()
+        sim = aimet_onnx.QuantizationSimModel(
+            model,
+            param_type=aimet_onnx.int8,
+            activation_type=aimet_onnx.int8,
+            config_file="htp_v81",
+        )
+        assert not sim.qc_quantize_op_dict["layer_norm.weight"].use_symmetric_encodings
+
     def test_matmul_v73_lower_exception_rule(self):
         model = models_for_tests.model_with_exceptional_ops()
         quantsim_config = {

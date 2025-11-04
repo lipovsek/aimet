@@ -42,7 +42,7 @@ from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.qc_quantize_op import QcQuantizeOp
 from aimet_onnx.graph_passes.utils import get_const_input_names, get_output_names
 from aimet_onnx.utils import ModelProto
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 
 class GraphPass:
@@ -124,6 +124,7 @@ class SupergroupGraphPass(GraphPass):
         Collect quantizer names to disable quantization
         """
         self.disable_quantizers: List[str] = []
+        self._callbacks: List[Callable[[str, QcQuantizeOp], None]] = []
 
     @abstractmethod
     def match_pattern(self, op: Op, model: ModelProto) -> List[Op]:
@@ -174,3 +175,7 @@ class SupergroupGraphPass(GraphPass):
         for name in self.disable_quantizers:
             if name in op_quantizers:
                 op_quantizers[name].enabled = False
+
+        for name, qtzr in op_quantizers.items():
+            for callback in self._callbacks:
+                callback(name, qtzr)
