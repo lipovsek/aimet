@@ -1,0 +1,51 @@
+model:
+  name: Llama_32
+  sequence_length: 2048
+  context_length: 4096
+dataset:
+  name: Wikitext
+  split: train
+recipe:
+  name: RemoveQuantization
+metrics:
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  name: Llama_32
+  sequence_length: 2048
+  context_length: 4096
+dataset:
+  name: Wikitext
+  split: train
+recipe:
+  name: LPBQ
+metrics:
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  name: Llama_32
+  sequence_length: 2048
+  context_length: 4096
+dataset:
+  name: Wikitext
+  split: train
+recipe:
+  name: PCQ
+metrics:
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  name: Llama_32
+  sequence_length: 2048
+  context_length: 4096
+dataset:
+  name: Wikitext
+  split: train
+recipe:
+  name: SeqMSE
+metrics:
+  - name: TinyMMLU
+  - name: PPL

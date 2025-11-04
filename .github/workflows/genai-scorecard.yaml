@@ -1,0 +1,307 @@
+################################################################################
+# GenAI Scorecard
+################################################################################
+# Tests AIMET quantization techniques on GenAI models in both Torch and ONNX
+#
+# Two testing modes:
+# 1. Regression: Run all regression tests
+# 2. Ad-hoc: Run all tests in provided config file
+#
+# Workflow:
+# - Builds AIMET-ONNX, AIMET-Torch from source with CUDA 12.1
+# - Runs tests on morph-lsf74/75-gpulv runner with GPU access
+# - Uploads CSV/HTML/JSON reports as downloadable artifacts
+################################################################################
+
+name: GenAI Scorecard
+
+on:
+  # SCHEDULED: Run automatically every Friday at 6PM (like a cron job)
+  schedule:
+    - cron: '0 1 * * 6'   # Every Friday at 6PM PT (Saturday 01:00 UTC)
+
+  # @todo: remove. This is temporary, for development purposes
+  push:
+    branches:
+      - dev/ashvkuma/*genai*
+    paths:
+      - 'GenAITests/configs/torch_regression.yaml'
+      - 'GenAITests/configs/onnx_regression.yaml'
+      - '.github/workflows/genai-scorecard.yaml'
+
+  # Manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      # What to run: full suite, single config, or filtered subset
+      run_mode:
+        description: 'What to run?'
+        required: true
+        type: choice
+        options:
+          - regression        # All configs in suite
+          - ad_hoc            # One specific config
+        default: 'regression'
+      ad_hoc_config:
+        description: 'Config file to use (ad-hoc only)'
+        required: false
+      ad_hoc_variants:
+        description: 'Variants to test (ad-hoc only)'
+        required: false
+        type: choice
+        options:
+          - both
+          - torch
+          - onnx
+        default: 'both'
+
+
+################################################################################
+# JOBS
+################################################################################
+jobs:
+  # ===========================================================================
+  # JOB 1: Build AIMET ONNX
+  # ===========================================================================
+  # Compiles AIMET from source with ONNX + GPU support
+  # Outputs: onnx-gpu-wheel artifact containing the compiled .whl file
+  # ===========================================================================
+  build-aimet-onnx-gpu:
+    name: Build aimet_onnx
+
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.run_mode != 'ad_hoc' ||
+      github.event.inputs.ad_hoc_variants != 'torch'
+
+    # Reuses existing build workflow
+    uses: ./.github/workflows/build-wheels.yml
+
+    with:
+      # Build variant: ONNX Runtime 1.19.2 + CUDA 12.1 + Python 3.10
+      variants: >
+        {"include":[{
+          "id":"onnx-gpu",
+          "runs-on":"a100",
+          "VER_PYTHON":"3.10",
+          "VER_ONNXRUNTIME":"1.19.2",
+          "VER_CUDA":"12.1.1",
+          "ENABLE_TESTS":"OFF",
+          "PIP_INDEX":""
+        }]}
+      image-tag: latest
+
+    # Pass repository secrets to build workflow
+    secrets: inherit
+
+  # ===========================================================================
+  # JOB 2: Build AIMET Torch
+  # ===========================================================================
+  # Compiles AIMET from source with Torch + GPU support
+  # Outputs: torch-gpu-wheel artifact containing the compiled .whl file
+  # ===========================================================================
+  build-aimet-torch-gpu:
+    name: Build aimet_torch
+
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.run_mode != 'ad_hoc' ||
+      github.event.inputs.ad_hoc_variants != 'onnx'
+
+
+    # Reuses existing build workflow
+    uses: ./.github/workflows/build-wheels.yml
+
+    with:
+      variants: >
+        {"include":[{
+          "id":"torch-gpu",
+          "runs-on":"k8s-gpu",
+          "VER_PYTHON":"3.10",
+          "VER_TORCH":"2.*",
+          "VER_ONNXRUNTIME": "",
+          "VER_CUDA": "12.8",
+          "ENABLE_TESTS":"OFF",
+          "PIP_INDEX":""
+        }]}
+      image-tag: latest
+
+    # Pass repository secrets to build workflow
+    secrets: inherit
+
+  # ===========================================================================
+  # JOB 3: Run GenAI Tests
+  # ===========================================================================
+  # Downloads AIMET wheel, installs dependencies, runs tests based on mode
+  # Uploads reports as artifacts: test-reports-<run_id>
+  # ===========================================================================
+  test-gpu:
+    name: Run GenAI tests (${{ matrix.variant }})
+    needs: [build-aimet-onnx-gpu, build-aimet-torch-gpu]
+    runs-on: a100
+
+    # Even though this stage has a dependency on both builds, we may not actually require both to run successfully
+    # since there may be ONNX-only or Torch-only cases. In those cases, we can skip the unnecessary build and continue
+    # with this job anyway
+    if: |
+      !cancelled() &&
+      (needs.build-aimet-onnx-gpu.result == 'skipped' || needs.build-aimet-torch-gpu.result == 'success') &&
+      (needs.build-aimet-onnx-gpu.result == 'skipped' || needs.build-aimet-torch-gpu.result == 'success')
+
+    strategy:
+      matrix:
+        variant: ${{
+          fromJSON(
+            github.event.inputs.run_mode == 'ad_hoc'
+            && github.event.inputs.ad_hoc_variants != ''
+            && github.event.inputs.ad_hoc_variants != 'both'
+            && format('["{0}"]', github.event.inputs.ad_hoc_variants)
+            || '["onnx","torch"]'
+          ) }}
+
+    # Container required by morph-lsf74/75-gpulv runner
+    # Uses same image as build for consistency
+    container:
+      image: "${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-${{ matrix.variant }}-gpu:latest"
+      credentials:
+        username: ${{ secrets.DOCKER_LOGIN }}
+        password: ${{ secrets.DOCKER_CREDENTIALS }}
+      options: --gpus all
+
+    timeout-minutes: 720     # 12 hours max
+
+    env:
+      # GPU configuration
+      # @todo: change this, running on Ashvin's GPU for now
+      CUDA_VISIBLE_DEVICES: "1"
+
+      # CRITICAL: Auto-accept git clones for models that need external repos
+      # Without this, models like mobilenet_v2 will prompt "Ok to clone? [Y/n]"
+      # and block the pipeline waiting for input
+      GIT_CLONE_PROTECTION_ACTIVE: "false"
+
+      # Additional git safety settings
+      GIT_TERMINAL_PROMPT: "0"  # Disable any git prompts
+
+      # Headless environment (prevent GUI-related errors)
+      MPLBACKEND: "Agg"
+      QT_QPA_PLATFORM: "offscreen"
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Setup: Get code, cache models, download AIMET wheel
+      # -----------------------------------------------------------------------
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Configure git to be non-interactive (prevents any prompts)
+      - name: Configure git for non-interactive mode
+        run: |
+          git config --global core.askPass ""
+          git config --global credential.helper ""
+          git config --global --add safe.directory '*'
+          echo "Git configured for non-interactive cloning"
+
+      # Cache downloaded models to speed up subsequent runs
+      # Key changes when GenAITests/ code changes
+      - name: Cache models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache
+            ~/.cache/huggingface
+            ~/.cache/torch
+          key: aimet-cache-${{ runner.os }}-${{ hashFiles('GenAITests/**') }}
+          restore-keys: aimet-cache-${{ runner.os }}-
+
+      # Download AIMET wheel built in Job 1
+      - name: Download AIMET wheel
+        uses: actions/download-artifact@v3
+        with:
+          name: ${{ matrix.variant }}-gpu-wheel
+          path: downloads
+
+      # -----------------------------------------------------------------------
+      # Install: Python environment + dependencies + AIMET
+      # -----------------------------------------------------------------------
+      - name: Install system dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y \
+            libgl1-mesa-glx \
+            libglib2.0-0 \
+            libsm6 \
+            libxext6 \
+            libxrender-dev \
+            libgomp1 \
+            git
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+
+      # Create Python virtual environment
+      - name: Setup Python
+        run: |
+          apt-get update -qq
+          apt-get install -y python3 python3-venv python3-pip
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install --upgrade pip wheel setuptools
+
+      # Install all Python dependencies
+      # - onnxruntime-gpu: For GPU inference (version matches AIMET build)
+      # - transformers, tokenizers: For GenAI models
+      - name: Install dependencies
+        run: |
+          . .venv/bin/activate
+          pip install onnxruntime-gpu==1.19.2
+          pip install -U "huggingface_hub"
+          pip install -r GenAITests/requirements.txt
+
+      # Install AIMET from the wheel and verify
+      - name: Install AIMET
+        run: |
+          . .venv/bin/activate
+          pip install downloads/*.whl
+          python -c "import aimet_${{ matrix.variant }}; print('AIMET version:', aimet_${{ matrix.variant }}.__version__)"
+
+      # Set up config file based on run mode
+      - name: Prepare scorecard config file
+        run: |
+          if [ "${{ github.event.inputs.run_mode }}" = "ad_hoc" ] && [ -n "${{ github.event.inputs.ad_hoc_config }}" ]; then
+            echo "${{ github.event.inputs.ad_hoc_config }}" > GenAITests/scorecard_config.yaml
+            echo "Saved ad-hoc config to GenAITests/scorecard_config.yaml"
+          else
+            cp GenAITests/configs/${{ matrix.variant }}_regression.yaml GenAITests/scorecard_config.yaml
+            echo "Copied regression config to GenAITests/scorecard_config.yaml"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Run: Execute aimet tests
+      # -----------------------------------------------------------------------
+
+      # Run tests
+      - name: Run tests
+        run: |
+          . .venv/bin/activate
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+          export HF_HOME=/local/mnt2/workspace2/aimet_bot/huggingface
+          hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
+          pytest -s GenAITests/${{ matrix.variant }}/test_genai.py --config GenAITests/scorecard_config.yaml
+
+      # Upload generated reports (CSV, HTML, JSON)
+      # Note: Using v3 for GHES compatibility
+      # Artifacts available under "Artifacts" section in workflow run
+      - name: Upload reports
+        if: always()    # Upload even if tests failed
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-data-${{ matrix.variant }}-${{ github.run_id }}
+          path: genai_test_artifacts/profiling_data.json
+          retention-days: 7  # Keep for 1 week
+
+      # Clean up cached models to prevent disk space issues
+      - name: Clean up cache
+        if: always()
+        run: |
+          rm -rf ~/.cache ~/.cache/huggingface ~/.cache/torch || true
+          echo "✓ Cache cleared"
