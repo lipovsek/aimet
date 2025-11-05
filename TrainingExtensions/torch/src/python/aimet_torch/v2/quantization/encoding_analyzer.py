@@ -238,12 +238,14 @@ class _HistogramObserver(_Observer[_Histogram]):
             self.stats = new_stats_list
 
             # Compute histogram range limit based on the first input and the growth limit factor
-            input0_min = reduce(
-                input_tensor, shape=self.shape, reduce_op=torch.min
-            ).values
-            input0_max = reduce(
-                input_tensor, shape=self.shape, reduce_op=torch.max
-            ).values
+            input0_min = torch.tensor(
+                [hist.bin_edges[0] for hist in new_stats_list],
+                device=input_tensor.device,
+            )
+            input0_max = torch.tensor(
+                [hist.bin_edges[-1] for hist in new_stats_list],
+                device=input_tensor.device,
+            )
 
             input0_range = input0_max - input0_min
 
@@ -258,23 +260,20 @@ class _HistogramObserver(_Observer[_Histogram]):
             curr_input = hist_inputs[index]
             left_limit, right_limit = self._histogram_range_limit[index]
 
-            updated_min = new_stats.min.clamp(left_limit, curr_stats.min)
-            updated_max = new_stats.max.clamp(curr_stats.max, right_limit)
+            updated_min = new_stats.min.clamp(left_limit, curr_stats.bin_edges[0])
+            updated_max = new_stats.max.clamp(curr_stats.bin_edges[-1], right_limit)
 
             # if the current histogram can capture new_stats within in its range
             if updated_min == curr_stats.min and updated_max == curr_stats.max:
                 histogram_updates = curr_stats.histogram
             else:
                 dest_bin_width = (updated_max - updated_min) / self.num_bins
-                src_bin_width = (curr_stats.max - curr_stats.min) / self.num_bins
+                src_bin_width = curr_stats.bin_edges[1] - curr_stats.bin_edges[0]
                 histogram_updates = torch.zeros(
                     self.num_bins, device=input_tensor.device
                 )
 
-                src_bin_start = curr_stats.min + (
-                    src_bin_width
-                    * torch.arange(0, self.num_bins, device=input_tensor.device)
-                )
+                src_bin_start = curr_stats.bin_edges[:-1]
                 dest_bin_index = self._get_bin_num(
                     dest_bin_width, updated_min, src_bin_start
                 )

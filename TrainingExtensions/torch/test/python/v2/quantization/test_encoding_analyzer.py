@@ -1101,3 +1101,15 @@ class TestSqnrEncodingAnalyzer:
         )
         assert torch.equal(best_delta, torch.tensor([1 / 255.0, 2 / 255.0]).view(2, 1))
         assert torch.equal(best_offset, torch.tensor([-128, 0]).view(2, 1))
+
+    def test_merge_stats_with_zero_tensor(self):
+        encoding_analyzer = SqnrEncodingAnalyzer(
+            shape=(), gamma=1.0, asymmetric_delta_candidates=3
+        )
+        zeros_tensor = torch.zeros((10,))
+        data_tensor = torch.randn((1024,))
+        encoding_analyzer.update_stats(zeros_tensor)
+        encoding_analyzer.update_stats(data_tensor)
+        enc_min, enc_max = encoding_analyzer.compute_encodings(255, is_symmetric=False)
+        assert torch.allclose(enc_min, data_tensor.min(), rtol=1 / 255.0)
+        assert torch.allclose(enc_max, data_tensor.max(), rtol=1 / 255.0)
