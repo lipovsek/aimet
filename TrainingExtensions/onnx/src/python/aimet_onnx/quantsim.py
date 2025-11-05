@@ -1898,6 +1898,7 @@ class QuantizationSimModel:
         :param op_types_to_tie: List of onnx ops for which to tie quantizers
         """
         qtzr_to_name = {qtzr: name for name, qtzr in self.qc_quantize_op_dict.items()}
+        visited = set()
 
         for op in reversed(self.connected_graph.ordered_ops):
             if op.type not in op_types_to_tie:
@@ -1921,15 +1922,30 @@ class QuantizationSimModel:
                 raise RuntimeError(msg)
 
             src_qtzrs = {}
+            stack = [op]
 
-            for inp in op.inputs:
-                src_qtzr = self._get_enabled_quantizer(inp.name)
-                if src_qtzr:
-                    src_name = qtzr_to_name[src_qtzr]
-                else:
-                    src_name = inp.name
+            while stack:
+                op = stack.pop()
 
-                src_qtzrs[src_name] = src_qtzr
+                if op in visited:
+                    continue
+
+                visited.add(op)
+
+                for inp in op.inputs:
+                    src_qtzr = self._get_enabled_quantizer(inp.name)
+                    if src_qtzr:
+                        src_name = qtzr_to_name[src_qtzr]
+                    else:
+                        src_name = inp.name
+
+                    src_qtzrs[src_name] = src_qtzr
+
+                    if inp.producer and (
+                        inp.producer.type in op_types_to_tie
+                        or _is_grid_preserving_op(inp.producer.type)
+                    ):
+                        stack.append(inp.producer)
 
             src_min_max_ranges = set(
                 src_qtzr._encoding_min_max_fixed_vals  # pylint: disable=protected-access

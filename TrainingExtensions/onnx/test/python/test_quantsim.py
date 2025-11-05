@@ -3185,7 +3185,7 @@ class TestEncodingPropagation:
                 sim.qc_quantize_op_dict["output"].encodings[0],
             )
 
-    def test_concat_tree(self):
+    def test_concat_tree(self, tmp_path: pathlib.Path):
         """
         Given: model as below
 
@@ -3242,6 +3242,89 @@ class TestEncodingPropagation:
                         out_qtzr[0].encodings[0],
                         sim.qc_quantize_op_dict["output"].encodings[0],
                     )
+        """
+        Given:
+            Sigmoid -------+
+            Sigmoid -------+-> Transpose -> Concat -------+
+            Sigmoid -------+                              |
+                                             (...) -------+-> Concat -------> ...
+
+        When: Create quantsim with HTP config file
+        Then:
+            Sigmoid -> Q2 -+
+            Sigmoid -> Q3 -+-> Transpose -> Concat -> Q1 -+
+            Sigmoid -> Q4 -+                              |
+                                             (...) -> Q1 -+-> Concat -> Q1 -> ...
+
+        """
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super(Model, self).__init__()
+                self.sigmoid1 = torch.nn.Sigmoid()
+                self.sigmoid2 = torch.nn.Sigmoid()
+                self.sigmoid3 = torch.nn.Sigmoid()
+
+            def forward(self, x, y, z):
+                out = torch.cat(
+                    (
+                        torch.nn.functional.sigmoid(x),
+                        torch.nn.functional.sigmoid(y),
+                        torch.nn.functional.sigmoid(z),
+                    )
+                )
+                return torch.cat((x, out.transpose(0, 1)), dim=1)
+
+        model = Model()
+        inputs = (torch.randn(10, 10), torch.randn(10, 10), torch.randn(10, 10))
+        torch.onnx.export(
+            model,
+            inputs,
+            tmp_path / "concat_tree.onnx",
+            input_names=["input1", "input2", "input3"],
+            output_names=["output"],
+        )
+
+        with aimet_onnx.quantsim._apply_constraints(True):
+            sim = aimet_onnx.QuantizationSimModel(
+                onnx.load(tmp_path / "concat_tree.onnx"), config_file="htp_v81"
+            )
+
+        assert (
+            sim.qc_quantize_op_dict["input1"]
+            == sim.qc_quantize_op_dict["/Concat_output_0"]
+            == sim.qc_quantize_op_dict["output"]
+        )
+        assert (
+            sim.qc_quantize_op_dict["input1"]._encoding_min_max_fixed_vals
+            == sim.qc_quantize_op_dict["/Concat_output_0"]._encoding_min_max_fixed_vals
+            == sim.qc_quantize_op_dict["output"]._encoding_min_max_fixed_vals
+            == None
+        )
+
+        assert (
+            sim.qc_quantize_op_dict["/Sigmoid_output_0"]
+            is not sim.qc_quantize_op_dict["output"]
+        )
+        assert (
+            sim.qc_quantize_op_dict["/Sigmoid_1_output_0"]
+            is not sim.qc_quantize_op_dict["output"]
+        )
+        assert (
+            sim.qc_quantize_op_dict["/Sigmoid_2_output_0"]
+            is not sim.qc_quantize_op_dict["output"]
+        )
+
+        assert (
+            sim.qc_quantize_op_dict["/Sigmoid_output_0"]._encoding_min_max_fixed_vals
+            == sim.qc_quantize_op_dict[
+                "/Sigmoid_1_output_0"
+            ]._encoding_min_max_fixed_vals
+            == sim.qc_quantize_op_dict[
+                "/Sigmoid_2_output_0"
+            ]._encoding_min_max_fixed_vals
+            == (0.0, 1.0)
+        )
 
     @pytest.mark.parametrize("bitwidth", [8, 16])
     def test_encoding_constraints(self, bitwidth: int):
