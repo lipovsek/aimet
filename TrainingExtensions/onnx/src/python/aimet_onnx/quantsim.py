@@ -2064,6 +2064,8 @@ class QuantizationSimModel:
         """
         return self._to_onnx_qdq(prequantize_constants=prequantize_constants)
 
+    _export_data_movement_op_output_quantizers = True
+
     def _to_onnx_qdq(self, prequantize_constants: bool) -> onnx.ModelProto:
         try:
             invalid_bitwidth = next(
@@ -2133,7 +2135,11 @@ class QuantizationSimModel:
                 onnx_opset_version,
             )
 
-        with self._insert_data_movement_op_output_quantizers():
+        with (
+            self._insert_data_movement_op_output_quantizers()
+            if self._export_data_movement_op_output_quantizers
+            else contextlib.nullcontext()
+        ):
             model_copy = onnx.ModelProto()
             model_copy.CopyFrom(self.model.model)
 
