@@ -4393,7 +4393,6 @@ def test_to_onnx_qdq(
 
     (out_sim,) = sim.session.run(None, {"input": input})
 
-    sim._insert_data_movement_op_output_quantizers()
     onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=prequantize_constants)
 
     """
@@ -4405,20 +4404,18 @@ def test_to_onnx_qdq(
     """
     Then: Onnx QDQ model should contain as many DequantizeLinear as the number of of ENABLED QcQuantizers
     """
-    assert len(
-        [
-            node
-            for node in onnx_qdq_model.graph.node
-            if node.op_type == "DequantizeLinear"
-        ]
-    ) == len(
-        [
-            qtzr
-            for qtzr in sim.qc_quantize_op_dict.values()
+    dq_nodes = [
+        node for node in onnx_qdq_model.graph.node if node.op_type == "DequantizeLinear"
+    ]
+    with sim._insert_data_movement_op_output_quantizers():
+        expected_quantizers = {
+            name: qtzr
+            for name, qtzr in sim.qc_quantize_op_dict.items()
             if qtzr.enabled
             and (qtzr.data_type == QuantizationDataType.int or qtzr.bitwidth < 16)
-        ]
-    )
+        }
+
+    assert len(dq_nodes) == len(expected_quantizers)
 
     # NOTE: Should disable all ORT graph optimization to circumvent known bugs
     # in CPUExecutionProvider operator fusing.
@@ -4650,7 +4647,6 @@ def test_onnx_qdq_opset_compatibility(
       1. Onnx opset should be upgraded to minimum required opset if needed
       2. Should pass onnx checker
     """
-    sim._insert_data_movement_op_output_quantizers()
     onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=prequantize_constants)
     output_model_opset = onnx_qdq_model.opset_import[0].version
     assert output_model_opset == max(input_model_opset, minimum_required_opset)
@@ -4747,16 +4743,35 @@ def test_insert_data_movement_op_quantizers(model_factory):
     )
     inputs = {input_name: np.random.randn(*input_shape).astype(np.float32)}
     sim.compute_encodings(lambda session: session.run(None, inputs))
+    """
+    When: Call _insert_data_movement_op_quantizers()
+    Then: All temporarily added QcQuantizers should be removed/disabled
+    """
+    qc_quantizers_before = {
+        name: qtzr and qtzr.enabled for name, qtzr in sim.qc_quantize_op_dict.items()
+    }
+    nodes_before = [copy.deepcopy(node) for node in sim.model.model.graph.node]
+
+    with sim._insert_data_movement_op_output_quantizers():
+        pass
+
+    qc_quantizers_after = {
+        name: qtzr and qtzr.enabled for name, qtzr in sim.qc_quantize_op_dict.items()
+    }
+    nodes_after = [copy.deepcopy(node) for node in sim.model.model.graph.node]
+
+    assert qc_quantizers_before == qc_quantizers_after
+    assert nodes_before == nodes_after
+
     onnx_qdq_before = sim.to_onnx_qdq(prequantize_constants=False)
 
     """
-    When: Call _insert_data_movement_op_output_quantizers before to_onnx_qdq()
+    When: Call to_onnx_qdq()
     Then:
       1. All node outputs should fed into QuantizeLinear
       2. All node inputs should be an output of DequantizeLinear
       3. Model output should be EQUAL with/without data movement op output QDQ
     """
-    sim._insert_data_movement_op_output_quantizers()
     onnx_qdq_after = sim.to_onnx_qdq(prequantize_constants=False)
 
     q_nodes = [
@@ -4818,7 +4833,7 @@ def test_insert_data_movement_op_edge_case(model_factory):
           input -> Reshape +
                            +--> ...
     """
-    model = reshape_with_multiple_consumers()
+    model = model_factory()
     with patch("aimet_onnx.quantsim.op_outputs_to_ignore", []):
         sim = QuantizationSimModel(model)
 
@@ -4842,10 +4857,9 @@ def test_insert_data_movement_op_edge_case(model_factory):
     onnx_qdq_before = sim.to_onnx_qdq(prequantize_constants=False)
 
     """
-    When: Call _insert_data_movement_op_output_quantizers before to_onnx_qdq()
+    When: Call to_onnx_qdq()
     Then: Output encoding should NOT be reused for input quantization
     """
-    sim._insert_data_movement_op_output_quantizers()
     onnx_qdq_after = sim.to_onnx_qdq(prequantize_constants=False)
     assert onnx_qdq_before == onnx_qdq_after
 
@@ -4886,7 +4900,6 @@ def test_to_onnx_qdq_lpbq(seed: int, prequantize_constants: bool):
 
     (out_sim,) = sim.session.run(None, {"input": input})
 
-    sim._insert_data_movement_op_output_quantizers()
     onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=prequantize_constants)
 
     """
@@ -5252,7 +5265,6 @@ def test_onnx_qdq_export_output_name_swapping():
         assert any(input == dq.output[0] for dq in dq_nodes)
 
 
-@pytest.mark.parametrize("export_data_movement_op_output_encodings", [False, True])
 @pytest.mark.parametrize("export_int32_bias_encodings", [False, True])
 @pytest.mark.parametrize("prequantize_constants", [False, True])
 @pytest.mark.parametrize(
@@ -5280,7 +5292,6 @@ def test_from_onnx_qdq(
     activation_type,
     prequantize_constants: bool,
     export_int32_bias_encodings: bool,
-    export_data_movement_op_output_encodings: bool,
 ):
     """
     Given: onnx QDQ model exported from aimet QuantizationSimModel
@@ -5299,8 +5310,6 @@ def test_from_onnx_qdq(
     inputs = {input_name: np.random.randn(*input_shape).astype(np.float32)}
 
     sim.compute_encodings([inputs])
-    if export_data_movement_op_output_encodings:
-        sim._insert_data_movement_op_output_quantizers()
     if export_int32_bias_encodings:
         sim._concretize_int32_bias_quantizers()
     qdq_model = sim.to_onnx_qdq(prequantize_constants=prequantize_constants)
@@ -5392,7 +5401,6 @@ def test_from_onnx_qdq_lpbq(seed: int, prequantize_constants: bool):
     """
     sim.compute_encodings([{"input": input}])
 
-    sim._insert_data_movement_op_output_quantizers()
     onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=prequantize_constants)
 
     """

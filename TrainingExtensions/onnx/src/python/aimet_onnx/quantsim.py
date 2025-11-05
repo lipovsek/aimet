@@ -94,7 +94,7 @@ from aimet_common.quantsim import (
     _is_bias_out_of_int32_range,
     _get_adjusted_weight_scale,
 )
-from aimet_common.utils import save_json_yaml, AimetLogger, _red, deprecated
+from aimet_common.utils import save_json_yaml, AimetLogger, _red, deprecated, Handle
 from aimet_common.quant_utils import _convert_encoding_format_0_6_1_to_1_0_0
 from aimet_common.quantsim_config.quantsim_config import _config_file_aliases
 from aimet_common.connected_graph.product import Product
@@ -546,9 +546,7 @@ class QuantizationSimModel:
                 # `output_name` is an output of a grid-preserving op whose input has same encoding.
                 # Tie input/output quantizers to always keep input/output encodings identical.
                 excess_encodings.remove(output_name)
-                if output_name not in sim.qc_quantize_op_dict:
-                    sim._insert_quantizer(output_name, is_param=False)
-                shared_quantizers[output_name] = sim.qc_quantize_op_dict[input_name]
+                encodings.pop(output_name)
 
         sim.set_quantizers(shared_quantizers)
 
@@ -1344,8 +1342,7 @@ class QuantizationSimModel:
         sim_outputs = [out.name for out in self.model.graph().output]
         sim_nodes = list(self.model.nodes())
         try:
-            self.model = self.remove_quantizers(self.model)
-
+            self.remove_quantizers(self.model)
             yield
 
         finally:
@@ -1354,26 +1351,42 @@ class QuantizationSimModel:
             for output, name in zip(self.model.graph().output, sim_outputs):
                 output.name = name
 
-    @staticmethod
-    def remove_quantizers(model: Union[ONNXModel, ModelProto]):
+    @classmethod
+    def remove_quantizers(cls, model: Union[ONNXModel, ModelProto]):
         """
         Removes all QcQuantizeOp layers from model
         """
         if isinstance(model, ONNXModel):
-            QuantizationSimModel.remove_quantizers(model.model)
-            return model
+            model = model.model
 
-        original_nodes = [
-            node for node in model.graph.node if node.op_type != "QcQuantizeOp"
+        all_quantizers = set(
+            node.name for node in model.graph.node if node.op_type == "QcQuantizeOp"
+        )
+        return cls._remove_quantizers(model, all_quantizers)
+
+    @classmethod
+    def _remove_quantizers(
+        cls, model: ModelProto, to_be_removed: Iterable[str]
+    ) -> ModelProto:
+        to_be_removed = set(to_be_removed)
+
+        for node in model.graph.node:
+            if node.name in to_be_removed and node.op_type != "QcQuantizeOp":
+                raise RuntimeError(
+                    f"Node {node.name} is not a QcQuantizeOp, cannot be removed."
+                )
+
+        to_remain = [
+            node for node in model.graph.node if node.name not in to_be_removed
         ]
         tensor_name_map = {
             node.output[0]: node.input[0]
             for node in model.graph.node
-            if node.op_type == "QcQuantizeOp"
+            if node.name in to_be_removed
         }
 
         model.graph.ClearField("node")
-        model.graph.node.extend(original_nodes)
+        model.graph.node.extend(to_remain)
 
         for node in model.graph.node:
             for i, tensor in enumerate(node.input):
@@ -2120,57 +2133,58 @@ class QuantizationSimModel:
                 onnx_opset_version,
             )
 
-        model_copy = onnx.ModelProto()
-        model_copy.CopyFrom(self.model.model)
+        with self._insert_data_movement_op_output_quantizers():
+            model_copy = onnx.ModelProto()
+            model_copy.CopyFrom(self.model.model)
 
-        self._overwrite_parameters(model_copy, self._get_qdq_parameters())
+            self._overwrite_parameters(model_copy, self._get_qdq_parameters())
 
-        aimet_qc_quantize_nodes = [
-            node
-            for node in model_copy.graph.node
-            if node.op_type == "QcQuantizeOp"
-            and node.domain in ("aimet.customop.cpu", "aimet.customop.cuda")
-        ]
+            aimet_qc_quantize_nodes = [
+                node
+                for node in model_copy.graph.node
+                if node.op_type == "QcQuantizeOp"
+                and node.domain in ("aimet.customop.cpu", "aimet.customop.cuda")
+            ]
 
-        qdq_node_info = {
-            "input_names": [],
-            "output_names": [],
-            "node_name_prefixes": [],
-            "encodings": [],
-            "float_types": [],
-        }
+            qdq_node_info = {
+                "input_names": [],
+                "output_names": [],
+                "node_name_prefixes": [],
+                "encodings": [],
+                "float_types": [],
+            }
 
-        param_names = {
-            product.name
-            for op in self.connected_graph.get_all_ops().values()
-            for product, _ in op.parameters.values()
-            if self.qc_quantize_op_dict[product.name].bitwidth <= 32
-        }
+            param_names = {
+                product.name
+                for op in self.connected_graph.get_all_ops().values()
+                for product, _ in op.parameters.values()
+                if self.qc_quantize_op_dict[product.name].bitwidth <= 32
+            }
 
-        for aimet_node in aimet_qc_quantize_nodes:
-            input_name = aimet_node.input[0]
-            qtzr = self.qc_quantize_op_dict[input_name]
-            encodings = qtzr.export_encodings("2.0.0")
+            for aimet_node in aimet_qc_quantize_nodes:
+                input_name = aimet_node.input[0]
+                qtzr = self.qc_quantize_op_dict[input_name]
+                encodings = qtzr.export_encodings("2.0.0")
 
-            if encodings:
-                if input_name not in param_names:
-                    # Always cast activation encoding to unsigned encoding.
-                    # This takes care of edge case where qtzr could be a symmetric quantizer
-                    # for dynamic weight of Conv/ConvTranspose/Gemm/Matmul.
-                    # This is a workaround for QNN converter limitation
-                    encodings = _to_unsigned_encoding(encodings)
+                if encodings:
+                    if input_name not in param_names:
+                        # Always cast activation encoding to unsigned encoding.
+                        # This takes care of edge case where qtzr could be a symmetric quantizer
+                        # for dynamic weight of Conv/ConvTranspose/Gemm/Matmul.
+                        # This is a workaround for QNN converter limitation
+                        encodings = _to_unsigned_encoding(encodings)
 
-                # Affine quantizer
-                # Replace QcQuantizeOp with onnx::QuantizeLinear and DequantizeLinear
-                qdq_node_info["input_names"].append(aimet_node.input[0])
-                qdq_node_info["output_names"].append(aimet_node.output[0])
-                qdq_node_info["node_name_prefixes"].append(aimet_node.name)
-                qdq_node_info["encodings"].append(encodings)
-                qdq_node_info["float_types"].append(
-                    self.activation_dtypes[aimet_node.input[0]]
-                )
+                    # Affine quantizer
+                    # Replace QcQuantizeOp with onnx::QuantizeLinear and DequantizeLinear
+                    qdq_node_info["input_names"].append(aimet_node.input[0])
+                    qdq_node_info["output_names"].append(aimet_node.output[0])
+                    qdq_node_info["node_name_prefixes"].append(aimet_node.name)
+                    qdq_node_info["encodings"].append(encodings)
+                    qdq_node_info["float_types"].append(
+                        self.activation_dtypes[aimet_node.input[0]]
+                    )
 
-        self.remove_quantizers(model_copy)
+            self.remove_quantizers(model_copy)
 
         if onnx_opset_version < desired_onnx_opset_version:
             model_copy = _convert_version(model_copy, desired_onnx_opset_version)
@@ -2392,10 +2406,10 @@ class QuantizationSimModel:
 
             input_encoding = output_encoding = None
 
-            if input_qtzr:
+            if input_qtzr and input_qtzr.enabled:
                 input_encoding = input_qtzr.get_encodings()
 
-            if output_qtzr:
+            if output_qtzr and output_qtzr.enabled:
                 output_encoding = output_qtzr.get_encodings()
 
             if not input_encoding and not output_encoding:
@@ -2433,12 +2447,45 @@ class QuantizationSimModel:
                 input_qtzr.enabled = True
                 input_qtzr.load_encodings(output_encoding)
 
+        def cleanup():
+            # Remove all temporarily added data movement op output quantizers
+            for name in (
+                self.qc_quantize_op_dict.keys() - original_qc_quantize_op_dict.keys()
+            ):
+                self.qc_quantize_op_dict.pop(name)
+
+            for name, enabled in original_qc_quantize_op_dict.items():
+                qtzr = self.qc_quantize_op_dict[name]
+                if qtzr:
+                    qtzr.enabled = enabled
+
+            # Remove all temporarily added QcQuantizeOp nodes
+            qc_quantize_op_nodes = set(
+                node.name
+                for node in self.model.model.graph.node
+                if node.op_type == "QcQuantizeOp"
+            )
+            self._remove_quantizers(
+                self.model.model, qc_quantize_op_nodes - original_qc_quantize_op_nodes
+            )
+
+        original_qc_quantize_op_dict = {
+            key: qtzr.enabled for key, qtzr in self.qc_quantize_op_dict.items() if qtzr
+        }
+        original_qc_quantize_op_nodes = set(
+            node.name
+            for node in self.model.model.graph.node
+            if node.op_type == "QcQuantizeOp"
+        )
+
         for op in data_movement_ops:
             propogate_quantizer(op)
 
         # Repeat in reverse-DFS order
         for op in reversed(data_movement_ops):
             propogate_quantizer(op)
+
+        return Handle(cleanup)
 
     def _get_enabled_quantizer(self, tensor_name: str) -> Optional[QcQuantizeOp]:
         """
