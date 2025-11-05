@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 import itertools
 import numpy as np
+from tqdm import tqdm
 import onnx
 import onnxruntime
 import torch
@@ -500,7 +501,11 @@ class SequentialMse:
             # Store accumulated loss per dep_node across candidates
             total_loss = defaultdict(list)
 
-            for candidate_index in range(self.params.num_candidates):
+            for candidate_index in tqdm(
+                range(self.params.num_candidates),
+                desc="Candidates",
+                position=0,
+            ):
                 _set_candidates(candidate_index)
 
                 # Initialize per dep_node loss accumulator
