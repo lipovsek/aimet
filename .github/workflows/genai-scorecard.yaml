@@ -20,14 +20,10 @@ on:
   schedule:
     - cron: '0 1 * * 6'   # Every Friday at 6PM PT (Saturday 01:00 UTC)
 
-  # @todo: remove. This is temporary, for development purposes
   push:
-    branches:
-      - dev/ashvkuma/*genai*
     paths:
       - 'GenAITests/configs/torch_regression.yaml'
       - 'GenAITests/configs/onnx_regression.yaml'
-      - '.github/workflows/genai-scorecard.yaml'
 
   # Manual trigger from GitHub Actions UI
   workflow_dispatch:
@@ -41,8 +37,8 @@ on:
           - regression        # All configs in suite
           - ad_hoc            # One specific config
         default: 'regression'
-      ad_hoc_config:
-        description: 'Config file to use (ad-hoc only)'
+      ad_hoc_config_b64:
+        description: 'Config file to use converted to base64 (ad-hoc only). Can be generated via: cat <your config.yaml> | base64 -w 0'
         required: false
       ad_hoc_variants:
         description: 'Variants to test (ad-hoc only)'
@@ -144,8 +140,8 @@ jobs:
     # with this job anyway
     if: |
       !cancelled() &&
-      (needs.build-aimet-onnx-gpu.result == 'skipped' || needs.build-aimet-torch-gpu.result == 'success') &&
-      (needs.build-aimet-onnx-gpu.result == 'skipped' || needs.build-aimet-torch-gpu.result == 'success')
+      (needs.build-aimet-onnx-gpu.result == 'skipped' && needs.build-aimet-torch-gpu.result == 'success') ||
+      (needs.build-aimet-torch-gpu.result == 'skipped' && needs.build-aimet-onnx-gpu.result == 'success')
 
     strategy:
       matrix:
@@ -171,8 +167,7 @@ jobs:
 
     env:
       # GPU configuration
-      # @todo: change this, running on Ashvin's GPU for now
-      CUDA_VISIBLE_DEVICES: "1"
+      CUDA_VISIBLE_DEVICES: "6"
 
       # CRITICAL: Auto-accept git clones for models that need external repos
       # Without this, models like mobilenet_v2 will prompt "Ok to clone? [Y/n]"
@@ -267,12 +262,20 @@ jobs:
       # Set up config file based on run mode
       - name: Prepare scorecard config file
         run: |
-          if [ "${{ github.event.inputs.run_mode }}" = "ad_hoc" ] && [ -n "${{ github.event.inputs.ad_hoc_config }}" ]; then
-            echo "${{ github.event.inputs.ad_hoc_config }}" > GenAITests/scorecard_config.yaml
-            echo "Saved ad-hoc config to GenAITests/scorecard_config.yaml"
+          if [ "${{ github.event.inputs.run_mode }}" = "ad_hoc" ] && [ -n "${{ github.event.inputs.ad_hoc_config_b64 }}" ]; then
+            if ! echo "${{ github.event.inputs.ad_hoc_config_b64 }}" | base64 -d > GenAITests/scorecard_config.yaml 2>/dev/null; then
+              echo "Error: Failed to decode base64 config. Please ensure the input is valid base64."
+              exit 1
+            fi
+            if [ ! -s GenAITests/scorecard_config.yaml ]; then
+              echo "Error: Decoded config file is empty."
+              exit 1
+            fi
+            echo "Saved ad-hoc config (shown below) to GenAITests/scorecard_config.yaml"
+            cat GenAITests/scorecard_config.yaml
           else
             cp GenAITests/configs/${{ matrix.variant }}_regression.yaml GenAITests/scorecard_config.yaml
-            echo "Copied regression config to GenAITests/scorecard_config.yaml"
+            echo "Copied ${{ matrix.variant }} regression config to GenAITests/scorecard_config.yaml"
           fi
 
       # -----------------------------------------------------------------------
@@ -288,6 +291,20 @@ jobs:
           hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
           pytest -s GenAITests/${{ matrix.variant }}/test_genai.py --config GenAITests/scorecard_config.yaml
 
+      # (after reports are generated, before upload)
+      - name: Build file metadata string
+        id: file-metadata
+        run: |
+          COMMIT_TIMESTAMP=$(git show -s --format=%cd --date=format:%Y%m%d-%H%M%S ${{ github.sha }})
+          SAFE_REF_NAME=$(echo "${{ github.ref_name }}" | sed 's/[^a-zA-Z0-9._-]/_/g')
+          FILE_SUFFIX=${{ matrix.variant }}-${SAFE_REF_NAME}-${{ github.sha }}-${COMMIT_TIMESTAMP}-${{ github.run_id }}
+          echo "file_suffix=$FILE_SUFFIX" >> "$GITHUB_OUTPUT"
+
+      # Rename report using suffix
+      - name: Update report filename
+        run: |
+          mv genai_test_artifacts/profiling_data.json genai_test_artifacts/profiling_data-${{ steps.file-metadata.outputs.file_suffix }}.json
+
       # Upload generated reports (CSV, HTML, JSON)
       # Note: Using v3 for GHES compatibility
       # Artifacts available under "Artifacts" section in workflow run
@@ -295,9 +312,9 @@ jobs:
         if: always()    # Upload even if tests failed
         uses: actions/upload-artifact@v3
         with:
-          name: test-data-${{ matrix.variant }}-${{ github.run_id }}
-          path: genai_test_artifacts/profiling_data.json
-          retention-days: 7  # Keep for 1 week
+          name: test-data-${{ steps.file-metadata.outputs.file_suffix }}
+          path: genai_test_artifacts/profiling_data-${{ steps.file-metadata.outputs.file_suffix }}.json
+          retention-days: 30  # Keep for 1 week
 
       # Clean up cached models to prevent disk space issues
       - name: Clean up cache
