@@ -50,7 +50,6 @@ from tqdm import tqdm
 import onnx
 import onnxruntime
 import torch
-from onnx.utils import Extractor
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 
 from aimet_common.libpymo import TensorQuantizerOpMode
@@ -66,6 +65,7 @@ from aimet_onnx.utils import (
     OrtInferenceSession,
     get_torch_device,
     map_np_dtype_to_torch,
+    LazyExtractor,
 )
 from aimet_onnx.sequential_mse.dependency_graph import DependencyNode
 
@@ -148,7 +148,7 @@ class SequentialMse:
         with _add_value_info(sim.model.model):
             # For onnx < 1.18, must disable shape inference or it will fail due to custom ops
             with _disable_onnx_shape_inference():
-                self._extractor = Extractor(sim.model.model)
+                self._extractor = LazyExtractor(sim.model.model)
 
         self.dependency_graph = DependencyGraph(
             sim.connected_graph, data_loader, nodes_to_exclude
@@ -603,7 +603,7 @@ class SequentialMse:
 
     @staticmethod
     def _split_onnx_graph(
-        extractor: Extractor, input_names: List[str], output_names: List[str]
+        extractor: LazyExtractor, input_names: List[str], output_names: List[str]
     ) -> onnx.ModelProto:
         """
         Splits the onnx graph from input names to output names using extractor

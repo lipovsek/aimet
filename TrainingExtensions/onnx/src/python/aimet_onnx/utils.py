@@ -38,6 +38,7 @@
 
 import copy
 import itertools
+import math
 import platform
 import tempfile
 from pathlib import Path
@@ -49,6 +50,11 @@ import numpy as np
 import torch
 import onnx
 from onnx import helper, numpy_helper
+from onnx.utils import Extractor
+from onnx.external_data_helper import (
+    convert_model_to_external_data,
+    load_external_data_for_model,
+)
 from onnxruntime import SessionOptions, InferenceSession
 import shutil
 
@@ -75,6 +81,7 @@ else:
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
 
+ONE_B_PARAMS = 2**28
 
 OP_TYPES_WITH_PARAMS = [
     "Conv",
@@ -673,6 +680,86 @@ def build_session(
     return OrtInferenceSession(
         model, providers, session_options=sess_options, path=path
     )
+
+
+class LazyExtractor(Extractor):
+    """
+    Wrapper Extractor to handle models with external data
+
+    Wraps the original Extractor to keep data on disk during extraction and load weights on extracted model.
+    """
+
+    def __init__(self, model: onnx.ModelProto):
+        """
+        :param model: ONNX model to set up extractor for
+        """
+        self.model_dir: Optional[str] = None
+        self.model_with_no_data: Optional[onnx.ModelProto] = None
+        self.lazy_load_data: bool = False
+
+        for init in model.graph.initializer:
+            total_params = math.prod(init.dims)
+            # Having more than 1B parameters is a good enough heuristic for large models
+            # Goal is to avoid loading large models fully into memory
+            if total_params > ONE_B_PARAMS:
+                self.lazy_load_data = True
+                break
+
+        # If model is small enough, no need to lazy load data
+        if not self.lazy_load_data:
+            self.model_with_no_data = model
+            super().__init__(self.model_with_no_data)
+            return
+
+        # Initialize extractor to lazily load data from disk post extraction
+        self.model_dir = tempfile.mkdtemp()
+        model_path = os.path.join(self.model_dir, "model.onnx")
+
+        # Serialize weights to external data
+        convert_model_to_external_data(
+            model,
+            size_threshold=1024**2,
+            all_tensors_to_one_file=False,
+            location=self.model_dir,
+            convert_attribute=True,
+        )
+        onnx.save_model(model, model_path)
+
+        # Load model without external data for extraction
+        self.model_with_no_data = onnx.load_model(model_path, load_external_data=False)
+        super().__init__(self.model_with_no_data)
+
+    def extract_model(
+        self, input_names: List[str], output_names: List[str]
+    ) -> onnx.ModelProto:
+        """
+        Extracts a sub-model from the original model given input and output names.
+
+        :param input_names: input names of split graph
+        :param output_names: output names of split graph
+        :return: extracted model with external data loaded
+        """
+        # pylint: disable=protected-access
+        model = super().extract_model(input_names, output_names)
+        if self.lazy_load_data:
+            # Load external data for extracted model
+            load_external_data_for_model(model, self.model_dir)
+
+        return model
+
+    def __del__(self):
+        """
+        Clean up temp directory created to store model with external data
+        """
+        if self.model_dir is None:
+            return
+
+        try:
+            shutil.rmtree(self.model_dir)
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning(
+                "Error while cleaning up temp dir at %s: %s", self.model_dir, e
+            )
 
 
 class ModuleData:

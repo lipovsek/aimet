@@ -45,9 +45,14 @@ from packaging import version
 import pytest
 
 import aimet_onnx.utils as utils
-from aimet_onnx.utils import ParamUtils, disable_quantizers
+from aimet_onnx.utils import ParamUtils, disable_quantizers, LazyExtractor
 from aimet_onnx.adaround.utils import ModelData
 from aimet_onnx.quantsim import QuantizationSimModel
+from onnx import shape_inference
+from onnx.external_data_helper import (
+    convert_model_to_external_data,
+    load_external_data_for_model,
+)
 
 from .models import models_for_tests
 
@@ -335,3 +340,59 @@ class TestORTInferenceSession:
         # Ensure temp directory is deleted after session manager is deleted
         gc.collect()
         assert not os.path.exists(model_dir)
+
+
+class TestLazyExtractor:
+    @pytest.mark.parametrize("small_model", [True, False])
+    def test_extracts_model(self, small_model):
+        seed = 200
+        torch.manual_seed(seed)
+
+        with torch.no_grad(), tempfile.TemporaryDirectory() as tmpdir:
+            model_path = os.path.join(tmpdir, "model.onnx")
+
+            if small_model:
+                in_features = 128
+                out_features = 64
+            else:
+                in_features = 65536
+                out_features = 8194
+
+            model = torch.nn.Sequential(
+                torch.nn.Linear(in_features, out_features, bias=False),
+                torch.nn.Linear(out_features, out_features, bias=False),
+            )
+            torch.onnx.export(
+                model,
+                torch.randn(1, in_features),
+                model_path,
+                input_names=["input"],
+                output_names=["output"],
+                opset_version=18,
+                dynamo=False,
+            )
+
+            source_model = onnx.load_model(model_path, load_external_data=False)
+            inferred_model = shape_inference.infer_shapes(source_model)
+            load_external_data_for_model(inferred_model, os.path.dirname(model_path))
+
+            # Create LazyExtractor and extract subgraph
+            graph_extractor = LazyExtractor(inferred_model)
+            if small_model:
+                assert not graph_extractor.lazy_load_data
+            else:
+                assert graph_extractor.lazy_load_data
+
+            output_name = inferred_model.graph.node[0].output[0]
+            sub_model_1 = graph_extractor.extract_model(["input"], [output_name])
+            sub_model_2 = graph_extractor.extract_model([output_name], ["output"])
+
+            # Verify that weights are correctly loaded in extracted model
+            assert (
+                source_model.graph.initializer[0].float_data
+                == sub_model_1.graph.initializer[0].float_data
+            )
+            assert (
+                source_model.graph.initializer[1].float_data
+                == sub_model_2.graph.initializer[0].float_data
+            )
