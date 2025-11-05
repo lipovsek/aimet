@@ -125,7 +125,7 @@ class EncodingBase(abc.ABC):
         raise NotImplementedError
 
     @classmethod
-    def from_qnn_encoding_dict(cls, encoding_dict, version=None) -> "EncodingBase":
+    def _from_qnn_encoding_dict(cls, encoding_dict, version=None) -> "EncodingBase":
         """
         Create an encoding object from a QNN encoding dictionary
         """

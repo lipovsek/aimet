@@ -487,6 +487,43 @@ class AffineEncoding(EncodingBase, _GridMixin):
             f"Expected one of: {VALID_ENCODING_VERSIONS}"
         )
 
+    @classmethod
+    def _from_qnn_encoding_dict(cls, encoding_dict, version=None) -> "AffineEncoding":
+        if version is None:
+            version = (
+                "2.0.0"
+                if "y_scale" in encoding_dict or "per_block_int_scale" in encoding_dict
+                else "unknown"
+            )
+
+        if version != "2.0.0":
+            raise NotImplementedError(
+                f"Only 2.0.0 encodings are supported; got {version}"
+            )
+
+        if "per_block_int_scale" in encoding_dict or "axis" in encoding_dict:
+            raise NotImplementedError("Only per-tensor encodings are supported")
+
+        *unsigned, bw = encoding_dict["output_dtype"].split("int")
+        bw = int(bw)
+
+        if unsigned:
+            qmin = 0
+            qmax = 2**bw - 1
+        else:
+            qmin = -(2 ** (bw - 1))
+            qmax = 2 ** (bw - 1) - 1
+
+        return AffineEncoding(
+            scale=torch.tensor(encoding_dict["y_scale"], dtype=torch.float32),
+            offset=torch.tensor(
+                -encoding_dict.get("y_zero_point", 0.0), dtype=torch.float32
+            ),
+            qmin=qmin,
+            qmax=qmax,
+            symmetry="y_zero_point" in encoding_dict,
+        )
+
 
 class VectorEncoding(AffineEncoding):
     """

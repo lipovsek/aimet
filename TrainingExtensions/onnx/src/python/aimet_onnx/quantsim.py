@@ -86,6 +86,7 @@ from aimet_common.onnx._utils import (
     _add_onnx_qdq_nodes,
     _remove_onnx_qdq_nodes,
     _is_grid_preserving_op,
+    _derive_data_movement_op_encodings,
 )
 from aimet_common.quantsim import (
     extract_global_quantizer_args,
@@ -2165,62 +2166,72 @@ class QuantizationSimModel:
                 onnx_opset_version,
             )
 
-        with (
-            self._insert_data_movement_op_output_quantizers()
-            if self._export_data_movement_op_output_quantizers
-            else contextlib.nullcontext()
-        ):
-            model_copy = onnx.ModelProto()
-            model_copy.CopyFrom(self.model.model)
+        model_copy = onnx.ModelProto()
+        model_copy.CopyFrom(self.model.model)
 
-            self._overwrite_parameters(model_copy, self._get_qdq_parameters())
+        self._overwrite_parameters(model_copy, self._get_qdq_parameters())
 
-            aimet_qc_quantize_nodes = [
-                node
-                for node in model_copy.graph.node
-                if node.op_type == "QcQuantizeOp"
-                and node.domain in ("aimet.customop.cpu", "aimet.customop.cuda")
-            ]
+        aimet_qc_quantize_nodes = [
+            node
+            for node in model_copy.graph.node
+            if node.op_type == "QcQuantizeOp"
+            and node.domain in ("aimet.customop.cpu", "aimet.customop.cuda")
+        ]
 
-            qdq_node_info = {
-                "input_names": [],
-                "output_names": [],
-                "node_name_prefixes": [],
-                "encodings": [],
-                "float_types": [],
-            }
+        qdq_node_info = {
+            "input_names": [],
+            "output_names": [],
+            "node_name_prefixes": [],
+            "encodings": [],
+            "float_types": [],
+        }
 
-            param_names = {
-                product.name
-                for op in self.connected_graph.get_all_ops().values()
-                for product, _ in op.parameters.values()
-                if self.qc_quantize_op_dict[product.name].bitwidth <= 32
-            }
+        param_names = {
+            product.name
+            for op in self.connected_graph.get_all_ops().values()
+            for product, _ in op.parameters.values()
+            if self.qc_quantize_op_dict[product.name].bitwidth <= 32
+        }
 
-            for aimet_node in aimet_qc_quantize_nodes:
-                input_name = aimet_node.input[0]
-                qtzr = self.qc_quantize_op_dict[input_name]
-                encodings = qtzr.export_encodings("2.0.0")
+        for aimet_node in aimet_qc_quantize_nodes:
+            input_name = aimet_node.input[0]
+            qtzr = self.qc_quantize_op_dict[input_name]
+            encodings = qtzr.export_encodings("2.0.0")
 
-                if encodings:
-                    if input_name not in param_names:
-                        # Always cast activation encoding to unsigned encoding.
-                        # This takes care of edge case where qtzr could be a symmetric quantizer
-                        # for dynamic weight of Conv/ConvTranspose/Gemm/Matmul.
-                        # This is a workaround for QNN converter limitation
-                        encodings = _to_unsigned_encoding(encodings)
+            if encodings:
+                if input_name not in param_names:
+                    # Always cast activation encoding to unsigned encoding.
+                    # This takes care of edge case where qtzr could be a symmetric quantizer
+                    # for dynamic weight of Conv/ConvTranspose/Gemm/Matmul.
+                    # This is a workaround for QNN converter limitation
+                    encodings = _to_unsigned_encoding(encodings)
 
-                    # Affine quantizer
-                    # Replace QcQuantizeOp with onnx::QuantizeLinear and DequantizeLinear
-                    qdq_node_info["input_names"].append(aimet_node.input[0])
-                    qdq_node_info["output_names"].append(aimet_node.output[0])
-                    qdq_node_info["node_name_prefixes"].append(aimet_node.name)
-                    qdq_node_info["encodings"].append(encodings)
-                    qdq_node_info["float_types"].append(
-                        self.activation_dtypes[aimet_node.input[0]]
-                    )
+                # Affine quantizer
+                # Replace QcQuantizeOp with onnx::QuantizeLinear and DequantizeLinear
+                qdq_node_info["input_names"].append(aimet_node.input[0])
+                qdq_node_info["output_names"].append(aimet_node.output[0])
+                qdq_node_info["node_name_prefixes"].append(aimet_node.name)
+                qdq_node_info["encodings"].append(encodings)
+                qdq_node_info["float_types"].append(
+                    self.activation_dtypes[aimet_node.input[0]]
+                )
 
-            self.remove_quantizers(model_copy)
+        self.remove_quantizers(model_copy)
+
+        if self._export_data_movement_op_output_quantizers:
+            derived_encodings = _derive_data_movement_op_encodings(
+                model_copy,
+                dict(zip(qdq_node_info["input_names"], qdq_node_info["encodings"])),
+            )
+
+            for name, encoding in derived_encodings.items():
+                qdq_node_info["input_names"].append(name)
+                qdq_node_info["output_names"].append(name + "_qdq")
+                qdq_node_info["node_name_prefixes"].append(name)
+                qdq_node_info["encodings"].append(encoding)
+                qdq_node_info["float_types"].append(
+                    self.activation_dtypes.get(name, onnx.TensorProto.FLOAT)
+                )
 
         if onnx_opset_version < desired_onnx_opset_version:
             model_copy = _convert_version(model_copy, desired_onnx_opset_version)

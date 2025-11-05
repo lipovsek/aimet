@@ -60,7 +60,7 @@ import aimet_torch.v2.quantization as Q
 from aimet_torch.v2.quantsim.quantsim import QuantizationSimModel
 from aimet_torch.onnx import (
     _concretize_int32_bias_quantizers,
-    _derive_data_movement_op_encoding,
+    _derive_data_movement_op_encodings,
 )
 from torchvision.models import resnet18, mobilenet_v3_small
 from aimet_torch.v2.experimental.onnx._export import export as _export
@@ -979,7 +979,9 @@ def test_data_movement_op_encoding_generation():
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         full_path = os.path.join(tmpdir, "model.onnx")
-        with patch("aimet_torch.onnx._derive_data_movement_op_encoding", lambda *_: {}):
+        with patch(
+            "aimet_torch.onnx._derive_data_movement_op_encodings", lambda *_: {}
+        ):
             aimet_torch.onnx.export(
                 sim.model,
                 x,
@@ -1085,24 +1087,18 @@ def test_data_movement_op_encoding_generation_edge_case():
     onnx.checker.check_model(model, True)
 
     """
-    When: Call _derive_data_movement_op_encoding
+    When: Call _derive_data_movement_op_encodings
     Then: Output encodings should not be reused for input quantization
     """
-    new_encodings = _derive_data_movement_op_encoding(
+    new_encodings = _derive_data_movement_op_encodings(
         model,
         {
-            "reshape_output": (
-                Q.affine.AffineEncoding(
-                    torch.ones(()), torch.zeros(()), qmin=0, qmax=255, symmetry=False
-                ),
-                False,
-            ),
-            "split_output_0": (
-                Q.affine.AffineEncoding(
-                    torch.ones(()), torch.zeros(()), qmin=0, qmax=255, symmetry=False
-                ),
-                False,
-            ),
+            "reshape_output": Q.affine.AffineEncoding(
+                torch.ones(()), torch.zeros(()), qmin=0, qmax=255, symmetry=False
+            ).to_qnn_encoding_dict("2.0.0"),
+            "split_output_0": Q.affine.AffineEncoding(
+                torch.ones(()), torch.zeros(()), qmin=0, qmax=255, symmetry=False
+            ).to_qnn_encoding_dict("2.0.0"),
         },
     )
 

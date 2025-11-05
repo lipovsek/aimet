@@ -41,7 +41,7 @@
 from collections import deque, defaultdict
 import functools
 import itertools
-from typing import Iterable, Optional, Sequence, Dict, List, Union
+from typing import Iterable, Optional, Sequence, Dict, List, Union, Mapping
 
 import os
 import tempfile
@@ -1207,3 +1207,79 @@ def contains_tensor_type(model: ModelProto, tensor_type: int | List[int]):
                 return True
 
     return False
+
+
+def _derive_data_movement_op_encodings(
+    model: onnx.ModelProto,
+    encodings: Mapping[str, Mapping],
+) -> Dict[str, Dict]:
+    data_movement_ops = [
+        node for node in model.graph.node if _is_grid_preserving_op(node.op_type)
+    ]
+
+    new_encodings = {}
+    consumers: Mapping[str, List[onnx.NodeProto]] = defaultdict(list)
+
+    for node in model.graph.node:
+        for inp in node.input:
+            consumers[inp].append(node)
+
+    def derive_encoding(node: onnx.NodeProto):
+        derived_encodings = {}
+        input_names = node.input[:] if node.op_type == "Concat" else [node.input[0]]
+        output_names = node.output[:] if node.op_type == "Split" else [node.output[0]]
+
+        can_propagate_forward = len(input_names) == 1
+        can_propagate_backward = len(output_names) == 1
+
+        for input_name, output_name in itertools.product(input_names, output_names):
+            inp_encoding = encodings.get(input_name)
+            out_encoding = encodings.get(output_name)
+
+            if inp_encoding and out_encoding:
+                # Both input and output encoding already exists; skip
+                continue
+
+            # Only per-tensor encodings can be safely propagated through data movement ops
+            # because some data movement ops such as Reshape and Transpose can't reuse
+            # the same channel/block axes across inputs and outputs
+            if (
+                out_encoding
+                and out_encoding.get("axis") is None
+                and can_propagate_backward
+            ):
+                if len(consumers[input_name]) > 1 or len(node.output) > 1:
+                    # If input has more than one consumer or if there are more than one output,
+                    # it is NOT safe to reuse output encoding for input quantization
+                    continue
+                else:
+                    # Reuse output encoding for input quantization
+                    derived_encodings.update({input_name: out_encoding.copy()})
+                    continue
+
+            # Only per-tensor encodings can be safely propagated through data movement ops
+            # because some data movement ops such as Reshape and Transpose can't reuse
+            # the same channel/block axes across inputs and outputs
+            if (
+                inp_encoding
+                and inp_encoding.get("axis") is None
+                and can_propagate_forward
+            ):
+                # Reuse input encoding for output quantization
+                derived_encodings.update({output_name: inp_encoding.copy()})
+                continue
+
+        return derived_encodings
+
+    for node in data_movement_ops:
+        enc = derive_encoding(node)
+        new_encodings |= enc
+        encodings |= enc
+
+    # Repeat in reverse-DFS order
+    for node in reversed(data_movement_ops):
+        enc = derive_encoding(node)
+        new_encodings |= enc
+        encodings |= enc
+
+    return {key: enc for key, enc in new_encodings.items()}

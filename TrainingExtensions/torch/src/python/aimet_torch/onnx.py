@@ -36,13 +36,12 @@
 # =============================================================================
 """Defines onnx export API"""
 
-from collections import defaultdict
-import copy
 import contextlib
 import io
+from aimet_torch.v2.quantization.affine.encoding import AffineEncoding
 from packaging import version
 import traceback
-from typing import Any, List, Mapping, Tuple, Union
+from typing import Any, Mapping, Tuple, Union
 from pathlib import Path
 
 import numpy as np
@@ -52,8 +51,8 @@ from torch.onnx import _constants
 
 from aimet_common.onnx._utils import (
     _add_onnx_qdq_nodes,
-    _is_grid_preserving_op,
     _convert_version,
+    _derive_data_movement_op_encodings,
     contains_tensor_type,
 )
 
@@ -373,71 +372,19 @@ def _to_onnx(
             base_dir=base_dir,
         ).items()
     }
-    tensor_to_encoding_map |= _derive_data_movement_op_encoding(
-        onnx_model, tensor_to_encoding_map
+    derived_encodings = _derive_data_movement_op_encodings(
+        onnx_model,
+        {
+            name: enc.to_qnn_encoding_dict("2.0.0")
+            for name, (enc, _) in tensor_to_encoding_map.items()
+        },
     )
+    # pylint: disable=protected-access
+    tensor_to_encoding_map |= {
+        name: (AffineEncoding._from_qnn_encoding_dict(encoding, version="2.0.0"), False)
+        for name, encoding in derived_encodings.items()
+    }
     return onnx_model, tensor_to_encoding_map
-
-
-def _derive_data_movement_op_encoding(
-    model: onnx.ModelProto,
-    tensor_to_encoding_map: Mapping[str, Tuple[EncodingBase, bool]],
-) -> Mapping[str, Tuple[EncodingBase, bool]]:
-    data_movement_ops = [
-        node for node in model.graph.node if _is_grid_preserving_op(node.op_type)
-    ]
-
-    encodings = {name: enc for name, (enc, _) in tensor_to_encoding_map.items()}
-    new_encodings = {}
-    consumers: Mapping[str, List[onnx.NodeProto]] = defaultdict(list)
-
-    for node in model.graph.node:
-        for inp in node.input:
-            consumers[inp].append(node)
-
-    def derive_encoding(node: onnx.NodeProto):
-        input_name = node.input[0]
-        output_name = node.output[0]
-        inp_encoding = encodings.get(input_name)
-        out_encoding = encodings.get(output_name)
-
-        if inp_encoding and out_encoding:
-            # Both input and output encoding already exists; skip
-            return {}
-
-        # Only per-tensor encodings can be safely propagated through data movement ops
-        # because some data movement ops such as Reshape and Transpose can't reuse
-        # the same channel/block axes across inputs and outputs
-        if out_encoding and out_encoding.granularity == "pertensor":
-            if len(consumers[input_name]) > 1 or len(node.output) > 1:
-                # If input has more than one consumer or if there are more than one output,
-                # it is NOT safe to reuse output encoding for input quantization
-                return {}
-            else:
-                # Reuse output encoding for input quantization
-                return {input_name: copy.deepcopy(out_encoding)}
-
-        # Only per-tensor encodings can be safely propagated through data movement ops
-        # because some data movement ops such as Reshape and Transpose can't reuse
-        # the same channel/block axes across inputs and outputs
-        if inp_encoding and inp_encoding.granularity == "pertensor":
-            # Reuse input encoding for output quantization
-            return {output_name: copy.deepcopy(inp_encoding)}
-
-        return {}
-
-    for node in data_movement_ops:
-        enc = derive_encoding(node)
-        new_encodings |= enc
-        encodings |= enc
-
-    # Repeat in reverse-DFS order
-    for node in reversed(data_movement_ops):
-        enc = derive_encoding(node)
-        new_encodings |= enc
-        encodings |= enc
-
-    return {key: (enc, False) for key, enc in new_encodings.items()}
 
 
 @contextlib.contextmanager
