@@ -467,6 +467,9 @@ class QuantizationSimModel:
         if _tie_qtzrs:
             self._tie_quantizers_for_op_types(op_types_to_tie_qtzrs)
 
+        # Always tie RNN hidden state quantizers regardless of _tie_qtzrs flag
+        self._tie_rnn_hidden_state_quantizers()
+
         self.session = OrtInferenceSession(
             self.model.model,
             self.providers,
@@ -1815,6 +1818,16 @@ class QuantizationSimModel:
 
         :param quantizer_dict: Dictionary mapping tensor names to QcQuantizeOp objects
         """
+        self._set_quantizers(quantizer_dict, rebuild_session=True)
+
+    def _set_quantizers(
+        self, quantizer_dict: Dict[str, QcQuantizeOp], rebuild_session: bool
+    ):
+        """
+        Updates `self.qc_quantize_op_dict` with the entries in `quantizer_dict`
+
+        :param quantizer_dict: Dictionary mapping tensor names to QcQuantizeOp objects
+        """
 
         # Walk the graph and create a node input to op map, only for QcQuantizeOp nodes
         node_input_map = {}
@@ -1827,7 +1840,8 @@ class QuantizationSimModel:
         for tensor, quantizer in quantizer_dict.items():
             self._set_quantizer(tensor, node_input_map, quantizer)
 
-        self._rebuild_session()
+        if rebuild_session:
+            self._rebuild_session()
 
     def _set_quantizer(
         self, tensor_name: str, node_input_map: Dict, quantizer: QcQuantizeOp
@@ -2618,6 +2632,61 @@ class QuantizationSimModel:
             return [node for node in path if not is_disabled_quantizer(node)]
 
         return None
+
+    def _tie_rnn_hidden_state_quantizers(self):
+        """
+        Tie the hidden state and cell state (if applicable) quantizers of RNN/GRU/LSTM
+
+        * Y, Y_h, and initial_h share the same quantizer as they all represent "hidden state"
+        * Y_c, initial_c share the same quantizer as they all represent "cell state" (only appliable for LSTM)
+
+                X --> Q_x-+
+                W --> Q_w-+
+                R --> Q_r-+                   +--> Q_h --> Y
+                B --------+--> RNN/GRU/LSTM --+--> Q_h --> Y_h
+        initial_h --> Q_h-+                   +--> Q_c --> Y_c
+        initial_c --> Q_c-+
+        """
+        new_quantizers = {}
+
+        for node in self.model.model.graph.node:
+            if node.op_type not in ("LSTM", "GRU", "RNN"):
+                continue
+
+            Y = node.output[
+                0
+            ]  # Output; concatenation of all hidden states across all time stamps
+            Y_h = node.output[1]  # Hidden state of the last time stamp
+            initial_h = (
+                node.input[5] if len(node.input) >= 6 else None
+            )  # Initial hidden state
+
+            if Y_h:
+                new_quantizers[Y_h] = self.qc_quantize_op_dict[Y]
+
+            if initial_h:
+                path = self._get_path_to_effective_quantizer(initial_h)
+                if path:
+                    *_, qc_quantize_op_node = path
+                    initial_h = qc_quantize_op_node.input[0]
+                    new_quantizers[initial_h] = self.qc_quantize_op_dict[Y]
+
+            if node.op_type != "LSTM":
+                continue
+
+            Y_c = node.output[2]  # Cell state of the last time stamp
+            initial_c = (
+                node.input[6] if len(node.input) >= 7 else None
+            )  # Initial cell state
+
+            if Y_c and initial_c:
+                path = self._get_path_to_effective_quantizer(initial_c)
+                if path:
+                    *_, qc_quantize_op_node = path
+                    initial_c = qc_quantize_op_node.input[0]
+                    new_quantizers[initial_c] = self.qc_quantize_op_dict[Y_c]
+
+        self._set_quantizers(new_quantizers, rebuild_session=False)
 
 
 def _to_unsigned_encoding(encoding: dict) -> dict:

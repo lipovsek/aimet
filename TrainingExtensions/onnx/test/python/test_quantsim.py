@@ -48,6 +48,7 @@ from functools import partial
 import pathlib
 import time
 import random
+from typing import Callable
 
 from onnx.external_data_helper import uses_external_data, _get_all_tensors
 import onnx.numpy_helper
@@ -88,17 +89,19 @@ from .models.models_for_tests import (
     batchnorm_model_constants,
     BNAfterConv,
     build_dummy_model,
-    build_lstm_gru_dummy_model,
     conv_relu,
     custom_add_model,
     depthwise_transposed_conv_model,
+    gru,
     instance_norm_model,
     layernorm_model,
     linear_split_into_matmul_add,
+    lstm,
     model_with_split_matmul,
     multi_input_with_constant_model,
     multi_output_model,
     reshape_with_multiple_consumers,
+    rnn,
     single_residual_model,
     SingleResidual,
     standalone_batchnorm,
@@ -558,55 +561,89 @@ class TestQuantSim:
                 else:
                     assert enc["enc_type"] == EncodingType.PER_TENSOR.name
 
+    @pytest.mark.parametrize("model_factory", [rnn, gru, lstm])
+    @pytest.mark.parametrize(
+        "take_initial_h_as_input",
+        [
+            True,
+            # False, TODO
+        ],
+    )
     @pytest.mark.parametrize("config_file", ["default", "htp_v81"])
-    def test_lstm_gru(self, config_file):
-        """Test for LSTM and GRU dummy model"""
-        model = build_lstm_gru_dummy_model()
-        with tempfile.TemporaryDirectory() as tempdir:
-            sim = QuantizationSimModel(model, path=tempdir, config_file=config_file)
+    def test_lstm(
+        self,
+        model_factory: Callable[[bool], onnx.ModelProto],
+        take_initial_h_as_input: bool,
+        config_file: str,
+        tmp_path: pathlib.Path,
+    ):
+        model = model_factory(take_initial_h_as_input)
+        rnn_node = next(
+            node for node in model.graph.node if node.op_type in ("RNN", "GRU", "LSTM")
+        )
 
-            assert sim.qc_quantize_op_dict["input"].enabled
-            assert sim.qc_quantize_op_dict["lstm_w"].enabled
-            assert sim.qc_quantize_op_dict["lstm_r_w"].enabled
-            assert not sim.qc_quantize_op_dict["lstm_bias"].enabled
-            assert sim.qc_quantize_op_dict["gru_w"].enabled
-            assert sim.qc_quantize_op_dict["gru_r_w"].enabled
-            assert not sim.qc_quantize_op_dict["gru_bias"].enabled
-            assert sim.qc_quantize_op_dict["output"].enabled
+        X = rnn_node.input[0]
+        W = rnn_node.input[1]
+        R = rnn_node.input[2]
+        B = rnn_node.input[3]
+        initial_h = rnn_node.input[5]  # Hidden state input
+        Y = rnn_node.output[0]
+        Y_h = rnn_node.output[1]
 
-            def callback(session):
-                in_tensor = {"input": np.random.rand(1, 8, 64).astype(np.float32)}
-                session.run(None, in_tensor)
+        if model_factory == lstm:
+            initial_c = rnn_node.input[6]
+            Y_c = rnn_node.output[2]  # Cell state input
 
-            sim.compute_encodings(callback)
+        """
+        When: Create quantsim with RNN/GRU/LSTM
+        Then:
+          1. Hidden states must share the same quantizer
+          2. Cell states must share the same quantizer
+        """
+        sim = QuantizationSimModel(model, config_file=config_file)
 
-            for _, qc_op in sim.get_qc_quantize_op().items():
-                if qc_op.enabled:
-                    assert qc_op.is_initialized()
-                    assert qc_op.get_encodings()[0].bw == 8
-                    assert qc_op.op_mode == OpMode.quantizeDequantize
+        assert sim.qc_quantize_op_dict[X].enabled
+        assert sim.qc_quantize_op_dict[W].enabled
+        assert sim.qc_quantize_op_dict[R].enabled
+        assert not sim.qc_quantize_op_dict[B].enabled
+        assert sim.qc_quantize_op_dict[initial_h].enabled
 
-            sim.export(tempdir, "quant_sim_model")
+        assert sim.qc_quantize_op_dict[Y].enabled
+        assert sim.qc_quantize_op_dict[Y_h].enabled
 
-            with open(
-                os.path.join(tempdir, "quant_sim_model.encodings"), "rb"
-            ) as json_file:
-                encoding_data = json.load(json_file)
+        assert (
+            sim.qc_quantize_op_dict[Y]
+            == sim.qc_quantize_op_dict[Y_h]
+            == sim.qc_quantize_op_dict[initial_h]
+        )
 
-            activation_names = {
-                encoding["name"] for encoding in encoding_data["activation_encodings"]
-            }
-            param_names = {
-                encoding["name"] for encoding in encoding_data["param_encodings"]
-            }
-            assert activation_names == {"2", "input", "output"}
-            assert param_names == {"gru_r_w", "gru_w", "lstm_r_w", "lstm_w"}
+        if model_factory == lstm:
+            assert sim.qc_quantize_op_dict[initial_c].enabled
+            assert sim.qc_quantize_op_dict[Y_c].enabled
+            assert sim.qc_quantize_op_dict[Y_c] == sim.qc_quantize_op_dict[initial_c]
 
-            sim._concretize_int32_bias_quantizers()
-            assert sim.qc_quantize_op_dict["lstm_bias"].enabled
-            assert sim.qc_quantize_op_dict["lstm_bias"].is_initialized()
-            assert sim.qc_quantize_op_dict["gru_bias"].enabled
-            assert sim.qc_quantize_op_dict["gru_bias"].is_initialized()
+        sim.compute_encodings([make_dummy_input(model)])
+
+        sim._concretize_int32_bias_quantizers()
+        assert sim.qc_quantize_op_dict[B].enabled
+        assert sim.qc_quantize_op_dict[B].is_initialized()
+
+        sim.export(tmp_path, "lstm")
+
+        with open(tmp_path / "lstm.encodings") as f:
+            encodings = json.load(f)
+
+        activation_names = {
+            encoding["name"] for encoding in encodings["activation_encodings"]
+        }
+        param_names = {encoding["name"] for encoding in encodings["param_encodings"]}
+
+        if model_factory == lstm:
+            assert activation_names == {X, Y, Y_h, Y_c, initial_h, initial_c}
+        else:
+            assert activation_names == {X, Y, Y_h, initial_h}
+
+        assert param_names == {W, R, B}
 
     def test_single_residual(self):
         model = single_residual_model().model

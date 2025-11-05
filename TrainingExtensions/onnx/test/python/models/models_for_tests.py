@@ -1117,68 +1117,39 @@ def build_dummy_model():
     return model
 
 
-def build_lstm_gru_dummy_model():
-    op = OperatorSetIdProto()
-    op.version = 13
+def rnn(take_initial_h_as_input: bool = True):
+    return _rnn_factory(torch.nn.RNN, take_initial_h_as_input)
 
-    input_info = helper.make_tensor_value_info(
-        name="input", elem_type=TensorProto.FLOAT, shape=[1, 8, 64]
-    )
-    output_info = helper.make_tensor_value_info(
-        name="output", elem_type=TensorProto.FLOAT, shape=[1, 1, 8, 16]
-    )
 
-    lstm_node = helper.make_node(
-        "LSTM",
-        ["input", "lstm_w", "lstm_r_w", "lstm_bias"],
-        ["2"],
-        "lstm",
-        hidden_size=16,
-    )
-    squeeze_node = helper.make_node("Squeeze", ["2", "axis"], ["3"], "squeeze")
-    gru_node = helper.make_node(
-        "GRU", ["3", "gru_w", "gru_r_w", "gru_bias"], ["output"], "gru", hidden_size=16
+def gru(take_initial_h_as_input: bool = True):
+    return _rnn_factory(torch.nn.GRU, take_initial_h_as_input)
+
+
+def lstm(take_initial_h_as_input: bool = True):
+    return _rnn_factory(torch.nn.LSTM, take_initial_h_as_input)
+
+
+def _rnn_factory(cls, take_initial_h_as_input: bool = True):
+    model = cls(input_size=64, hidden_size=16, num_layers=1)
+    x = torch.randn(1, 8, 64)
+    hx = (
+        (torch.randn(1, 8, 16), torch.randn(1, 8, 16))
+        if issubclass(cls, torch.nn.LSTM)
+        else torch.randn(1, 8, 16)
     )
 
-    lstm_w_init = numpy_helper.from_array(
-        np.random.rand(1, 64, 64).astype(np.float32), "lstm_w"
-    )
-    lstm_r_w_init = numpy_helper.from_array(
-        np.random.rand(1, 64, 16).astype(np.float32), "lstm_r_w"
-    )
-    lstm_bias_init = numpy_helper.from_array(
-        np.random.rand(1, 128).astype(np.float32), "lstm_bias"
-    )
-    squeeze_axis_init = numpy_helper.from_array(np.array([1]).astype(np.int64), "axis")
-    gru_w_init = numpy_helper.from_array(
-        np.random.rand(1, 48, 16).astype(np.float32), "gru_w"
-    )
-    gru_r_w_init = numpy_helper.from_array(
-        np.random.rand(1, 48, 16).astype(np.float32), "gru_r_w"
-    )
-    gru_bias_init = numpy_helper.from_array(
-        np.random.rand(1, 96).astype(np.float32), "gru_bias"
-    )
-
-    onnx_graph = helper.make_graph(
-        [lstm_node, squeeze_node, gru_node],
-        "dummy_graph",
-        [input_info],
-        [output_info],
-        [
-            lstm_w_init,
-            lstm_r_w_init,
-            lstm_bias_init,
-            squeeze_axis_init,
-            gru_w_init,
-            gru_r_w_init,
-            gru_bias_init,
-        ],
-    )
-
-    model = make_model(onnx_graph, opset_imports=[op])
-
-    return model
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        f = os.path.join(tmp_dir, "model.onnx")
+        torch.onnx.export(
+            model,
+            (x, hx) if take_initial_h_as_input else (x,),
+            f,
+            input_names=["input", "h0"],
+            output_names=["output", "h", "c"]
+            if issubclass(cls, torch.nn.LSTM)
+            else ["output", "h"],
+        )
+        return onnx.load(f)
 
 
 def long_sequential_model(
