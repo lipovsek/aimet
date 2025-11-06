@@ -35,6 +35,7 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 
+import io
 import os
 import json
 import numpy as np
@@ -94,10 +95,11 @@ def get_model():
         device = torch.device("cuda:0")
         model.to(device)
 
+    buffer = io.BytesIO()
     torch.onnx.export(
         model,
         torch.rand(batch_size, 3, 32, 32).cuda(),
-        "./resnet18.onnx",
+        buffer,
         training=torch.onnx.TrainingMode.EVAL,
         input_names=["input"],
         output_names=["output"],
@@ -108,5 +110,6 @@ def get_model():
         dynamo=False,
     )
 
-    onnx_model = ONNXModel(load_model("./resnet18.onnx"))
+    buffer.seek(0)
+    onnx_model = ONNXModel(load_model(buffer))
     return onnx_model

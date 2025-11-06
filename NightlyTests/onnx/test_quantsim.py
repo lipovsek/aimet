@@ -35,6 +35,7 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 
+import io
 import os
 import numpy as np
 import pytest
@@ -86,55 +87,56 @@ class TestQuantizeAcceptance:
     @pytest.mark.parametrize("config_file", [None, get_path_for_per_channel_config()])
     @pytest.mark.cuda
     def test_quantized_accuracy(self, config_file):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            np.random.seed(0)
-            torch.manual_seed(0)
-            model = models.resnet18(pretrained=False, num_classes=10)
-            if torch.cuda.is_available():
-                device = torch.device("cuda:0")
-                model.to(device)
+        np.random.seed(0)
+        torch.manual_seed(0)
+        model = models.resnet18(pretrained=False, num_classes=10)
+        if torch.cuda.is_available():
+            device = torch.device("cuda:0")
+            model.to(device)
 
-            train_cifar10(model, 2)
-            train_loader, val_loader = get_cifar10_data_loaders(drop_last=False)
+        train_cifar10(model, 2)
+        train_loader, val_loader = get_cifar10_data_loaders(drop_last=False)
 
-            torch.onnx.export(
-                model,
-                torch.rand(batch_size, 3, 32, 32).cuda(),
-                os.path.join(tmp_dir, "resnet18.onnx"),
-                training=torch.onnx.TrainingMode.PRESERVE,
-                input_names=["input"],
-                output_names=["output"],
-                dynamic_axes={
-                    "input": {0: "batch_size"},
-                    "output": {0: "batch_size"},
-                },
-                opset_version=12,
-                dynamo=False,
-            )
+        buffer = io.BytesIO()
+        torch.onnx.export(
+            model,
+            torch.rand(batch_size, 3, 32, 32).cuda(),
+            buffer,
+            training=torch.onnx.TrainingMode.PRESERVE,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={
+                "input": {0: "batch_size"},
+                "output": {0: "batch_size"},
+            },
+            opset_version=12,
+            dynamo=False,
+        )
 
-            onnx_model = load_model(os.path.join(tmp_dir, "resnet18.onnx"))
-            dummy_input = make_dummy_input(onnx_model)
-            sim = QuantizationSimModel(
-                onnx_model,
-                dummy_input,
-                quant_scheme=QuantScheme.post_training_tf,
-                default_param_bw=8,
-                default_activation_bw=8,
-                providers=CUDA_PROVIDERS,
-                config_file=config_file,
-            )
+        buffer.seek(0)
+        onnx_model = load_model(buffer)
+        dummy_input = make_dummy_input(onnx_model)
+        sim = QuantizationSimModel(
+            onnx_model,
+            dummy_input,
+            quant_scheme=QuantScheme.post_training_tf,
+            default_param_bw=8,
+            default_activation_bw=8,
+            providers=CUDA_PROVIDERS,
+            config_file=config_file,
+        )
 
-            def onnx_callback(session, iters):
-                for i, batch in enumerate(train_loader):
-                    x = batch[0].detach().cpu().numpy()
-                    in_tensor = {"input": x}
-                    session.run(None, in_tensor)
-                    if i >= iters:
-                        break
+        def onnx_callback(session, iters):
+            for i, batch in enumerate(train_loader):
+                x = batch[0].detach().cpu().numpy()
+                in_tensor = {"input": x}
+                session.run(None, in_tensor)
+                if i >= iters:
+                    break
 
-            sim.compute_encodings(onnx_callback, 10)
-            onnx_qs_acc = model_eval_onnx(sim.session, val_loader)
-            assert onnx_qs_acc > 0.5
+        sim.compute_encodings(onnx_callback, 10)
+        onnx_qs_acc = model_eval_onnx(sim.session, val_loader)
+        assert onnx_qs_acc > 0.5
 
     def test_dummy(self):
         # pytest has a 'feature' that returns an error code when all tests for a given suite are not selected

@@ -73,7 +73,7 @@ from .models.test_models import single_residual_model
 from .models import models_for_tests
 from .models.test_models_onnx import model_with_multiple_inputs
 from .models.test_models_onnx import model_with_multiple_outputs
-
+from .utils import tmp_dir
 
 AimetLogger.set_level_for_all_areas(logging.DEBUG)
 
@@ -85,7 +85,11 @@ def seed():
 
 
 def _get_config_file(
-    is_symmetric: bool, strict_symmetric: bool, unsigned_symmetric: bool, pcq: bool
+    is_symmetric: bool,
+    strict_symmetric: bool,
+    unsigned_symmetric: bool,
+    pcq: bool,
+    dir_path: str,
 ) -> str:
     """Temporary fix until the config file can be read from beq_config directory"""
 
@@ -121,9 +125,7 @@ def _get_config_file(
         "model_output": {},
     }
 
-    if not os.path.exists("data"):
-        os.mkdir("data")
-    file_name = "./data/beq_per_channel_config.json"
+    file_name = os.path.join(dir_path, "beq_per_channel_config.json")
     with open(file_name, "w") as f:
         json.dump(beq_per_channel_config, f)
 
@@ -264,7 +266,9 @@ def test_min_max_for_candidate_selection(granularity, shape, channel_axis, block
         (31, False, False, np.array([19, 19, 19, 19, 19, 19, 19, 19, 19, 19])),
     ],
 )
-def test_apply_seq_mse_for_conv(loss_fn, param_bw, use_cuda, enable_pcq, best_indices):
+def test_apply_seq_mse_for_conv(
+    loss_fn, param_bw, use_cuda, enable_pcq, best_indices, tmp_dir
+):
     model = single_conv_layer_model()
     providers = ["CUDAExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
     sim = QuantizationSimModel(
@@ -278,6 +282,7 @@ def test_apply_seq_mse_for_conv(loss_fn, param_bw, use_cuda, enable_pcq, best_in
             strict_symmetric=False,
             unsigned_symmetric=False,
             pcq=enable_pcq,
+            dir_path=tmp_dir,
         ),
     )
     sim._compute_param_encodings(overwrite=False)
@@ -330,8 +335,9 @@ def test_apply_seq_mse_for_conv(loss_fn, param_bw, use_cuda, enable_pcq, best_in
 @pytest.mark.parametrize("param_bw", [2, 31])
 @pytest.mark.parametrize("loss_fn", ["mse", "l1", "sqnr"])
 @pytest.mark.parametrize("enable_pcq", [True, False])
-def test_static_apply_seq_mse(param_bw, loss_fn, enable_pcq):
+def test_static_apply_seq_mse(param_bw, loss_fn, enable_pcq, tmp_dir):
     model = single_conv_layer_model()
+    tmp_path = tmp_dir
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,
@@ -343,6 +349,7 @@ def test_static_apply_seq_mse(param_bw, loss_fn, enable_pcq):
             strict_symmetric=False,
             unsigned_symmetric=False,
             pcq=enable_pcq,
+            dir_path=tmp_path,
         ),
     )
     inputs = [make_dummy_input(model.model) for _ in range(10)]
@@ -357,8 +364,9 @@ def test_static_apply_seq_mse(param_bw, loss_fn, enable_pcq):
 @pytest.mark.parametrize("param_bw", [2, 31])
 @pytest.mark.parametrize("loss_fn", ["mse", "l1", "sqnr"])
 @pytest.mark.parametrize("enable_pcq", [True, False])
-def test_apply_seq_mse_for_split(param_bw, loss_fn, enable_pcq):
+def test_apply_seq_mse_for_split(param_bw, loss_fn, enable_pcq, tmp_dir):
     model = model_with_split()
+    tmp_path = tmp_dir
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,
@@ -370,6 +378,7 @@ def test_apply_seq_mse_for_split(param_bw, loss_fn, enable_pcq):
             strict_symmetric=False,
             unsigned_symmetric=False,
             pcq=enable_pcq,
+            dir_path=tmp_path,
         ),
     )
     inputs = [make_dummy_input(model.model) for _ in range(10)]
@@ -390,8 +399,9 @@ def test_apply_seq_mse_for_split(param_bw, loss_fn, enable_pcq):
     assert weight_quantizer_conv_3.is_encoding_frozen()
 
 
-def test_dependency_graph():
+def test_dependency_graph(tmp_dir):
     model = model_with_split()
+    tmp_path = tmp_dir
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,
@@ -403,6 +413,7 @@ def test_dependency_graph():
             strict_symmetric=False,
             unsigned_symmetric=False,
             pcq=True,
+            dir_path=tmp_path,
         ),
     )
     seq_params = SeqMseParams(num_batches=1)
@@ -437,8 +448,9 @@ def test_dependency_graph():
     ]
 
 
-def test_residual_model_dependency_graph():
+def test_residual_model_dependency_graph(tmp_dir):
     model = single_residual_model()
+    tmp_path = tmp_dir
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,
@@ -450,6 +462,7 @@ def test_residual_model_dependency_graph():
             strict_symmetric=False,
             unsigned_symmetric=False,
             pcq=True,
+            dir_path=tmp_path,
         ),
     )
     seq_params = SeqMseParams(num_batches=1)
@@ -496,8 +509,9 @@ def test_residual_model_dependency_graph():
 @pytest.mark.parametrize("param_bw", [2, 31])
 @pytest.mark.parametrize("loss_fn", ["mse", "l1", "sqnr"])
 @pytest.mark.parametrize("enable_pcq", [True, False])
-def test_apply_seq_mse_for_residual_model(param_bw, loss_fn, enable_pcq):
+def test_apply_seq_mse_for_residual_model(param_bw, loss_fn, enable_pcq, tmp_dir):
     model = single_residual_model()
+    tmp_path = tmp_dir
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,
@@ -509,6 +523,7 @@ def test_apply_seq_mse_for_residual_model(param_bw, loss_fn, enable_pcq):
             strict_symmetric=False,
             unsigned_symmetric=False,
             pcq=enable_pcq,
+            dir_path=tmp_path,
         ),
     )
     inputs = [make_dummy_input(model.model) for _ in range(10)]
@@ -532,8 +547,9 @@ def test_apply_seq_mse_for_residual_model(param_bw, loss_fn, enable_pcq):
             assert quantizer.is_encoding_frozen()
 
 
-def test_model_with_multiple_inputs_dependency_graph_utils():
+def test_model_with_multiple_inputs_dependency_graph_utils(tmp_dir):
     model = model_with_multiple_inputs()
+    tmp_path = tmp_dir
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,
@@ -545,6 +561,7 @@ def test_model_with_multiple_inputs_dependency_graph_utils():
             strict_symmetric=False,
             unsigned_symmetric=False,
             pcq=True,
+            dir_path=tmp_path,
         ),
     )
     seq_params = SeqMseParams(num_batches=1)
@@ -563,8 +580,9 @@ def test_model_with_multiple_inputs_dependency_graph_utils():
     ]
 
 
-def test_model_with_multiple_outputs_value_info():
+def test_model_with_multiple_outputs_value_info(tmp_dir):
     model = model_with_multiple_outputs()
+    tmp_path = tmp_dir
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,
@@ -576,6 +594,7 @@ def test_model_with_multiple_outputs_value_info():
             strict_symmetric=False,
             unsigned_symmetric=False,
             pcq=True,
+            dir_path=tmp_path,
         ),
     )
     apply_seq_mse(sim, [make_dummy_input(model) for _ in range(1)])
@@ -583,8 +602,9 @@ def test_model_with_multiple_outputs_value_info():
     assert sim.qc_quantize_op_dict["Conv2_W"].is_encoding_frozen()
 
 
-def test_concat_model():
+def test_concat_model(tmp_dir: str):
     model = models_for_tests.concat_model()
+    tmp_path = tmp_dir
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,
@@ -595,6 +615,7 @@ def test_concat_model():
             strict_symmetric=False,
             unsigned_symmetric=False,
             pcq=True,
+            dir_path=tmp_path,
         ),
     )
 

@@ -25,6 +25,7 @@ from aimet_onnx.experimental.adascale.quantizer import (
     get_adascale_trainable_params,
     replace_with_adascale_quantizers,
 )
+from .utils import add_genai_tests_path
 
 
 class ModelWithLinears(torch.nn.Module):
@@ -554,9 +555,7 @@ class TestAdascaleQuantizer:
                 assert consolidated_delta_updated_enc != consolidated_delta_orig_enc
 
 
-def test_adascale_e2e(monkeypatch, small_model: bool = True):
-    path = os.path.abspath(os.path.join("../../../../GenAITests"))
-    monkeypatch.syspath_prepend(path)
+def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     from transformers import AutoConfig
     from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
     import random
@@ -643,7 +642,7 @@ def test_adascale_e2e(monkeypatch, small_model: bool = True):
 
 
 @pytest.mark.skip(reason="Too long to run in CI")
-def test_qwen_adascale_e2e_ppl(monkeypatch, small_model=False):
+def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
     """AdaScale test pipeline for qwen model"""
     from unittest.mock import patch
 
@@ -651,8 +650,6 @@ def test_qwen_adascale_e2e_ppl(monkeypatch, small_model=False):
         "aimet_onnx.experimental.adascale.adascale_optimizer._DEBUG_NUM_PARTIAL_ITERATIONS",
         new=2,
     ):
-        path = os.path.abspath(os.path.join("../../../../GenAITests"))
-        monkeypatch.syspath_prepend(path)
         from transformers import AutoConfig
         from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
         from GenAITests.shared.models.generator import Generator

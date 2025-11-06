@@ -53,6 +53,7 @@ from aimet_onnx.adaround.utils import AdaroundSupportedModules, ModelData
 from aimet_onnx.utils import make_dummy_input, ParamUtils
 from .models import models_for_tests
 from .models.models_for_tests import conv_prelu_model
+from .utils import tmp_dir
 
 
 class TestAdaround:
@@ -152,7 +153,7 @@ class TestAdaround:
         "providers",
         (["CPUExecutionProvider"], ["CUDAExecutionProvider", "CPUExecutionProvider"]),
     )
-    def test_apply_adaround_for_custom_op(self, providers):
+    def test_apply_adaround_for_custom_op(self, providers, tmp_dir):
         if "CUDAExecutionProvider" in providers and not torch.cuda.is_available():
             pytest.skip("Cuda not available")
         from onnxruntime_extensions import get_library_path
@@ -167,6 +168,7 @@ class TestAdaround:
             param_type=aimet_onnx.int4,
             activation_type=aimet_onnx.int16,
             user_onnx_libs=[onnx_library],
+            path=tmp_dir,
         )
         model_data = ModelData(sim)
         orig_weight = torch.from_numpy(

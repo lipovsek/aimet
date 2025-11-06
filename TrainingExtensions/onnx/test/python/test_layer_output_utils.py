@@ -52,7 +52,7 @@ from .models.models_for_tests import (
     build_dummy_model_with_dynamic_input,
     model_with_ignore_ops,
 )
-
+from .utils import tmp_dir
 
 # Fetch appropriate execution providers depending on availability
 providers = ["CPUExecutionProvider"]
@@ -125,17 +125,14 @@ class TestLayerOutput:
         # Delete temp_dir
         shutil.rmtree(temp_dir_path, ignore_errors=False, onerror=None)
 
-    def test_get_quantsim_model_outputs(self):
+    def test_get_quantsim_model_outputs(self, tmp_dir):
         """Test whether outputs are generated for all the layers of a quantsim model"""
 
         # Get quantsim artifacts
         quantsim, output_names, input_dict = get_quantsim_artifacts()
 
-        temp_dir_path = os.path.dirname(os.path.abspath(__file__))
-        temp_dir_path = os.path.join(temp_dir_path, "temp_dir")
-
         # Obtain layer-outputs of quantsim model
-        layer_output = LayerOutput(quantsim.model.model, providers, temp_dir_path)
+        layer_output = LayerOutput(quantsim.model.model, providers, tmp_dir)
         output_name_to_output_val_dict = layer_output.get_outputs(input_dict)
 
         # Verify whether all outputs are generated and have sanitized names
@@ -145,15 +142,10 @@ class TestLayerOutput:
             )
 
         # Verify whether captured outputs are correct. This can only be checked for final output of the model
-        session = OrtInferenceSession(
-            quantsim.model.model, providers, path=temp_dir_path
-        )
+        session = OrtInferenceSession(quantsim.model.model, providers, path=tmp_dir)
         assert np.array_equal(
             session.run(None, input_dict)[0], output_name_to_output_val_dict["output"]
         )
-
-        # Delete temp_dir
-        shutil.rmtree(temp_dir_path, ignore_errors=False, onerror=None)
         pass
 
 
@@ -180,7 +172,7 @@ def get_dataset_artifacts():
 
 
 class TestLayerOutputUtil:
-    def test_generate_layer_outputs(self):
+    def test_generate_layer_outputs(self, tmp_dir):
         """Test whether input files and corresponding layer-output files are generated"""
 
         # Get quantsim artifacts
@@ -189,13 +181,10 @@ class TestLayerOutputUtil:
         # Get dataset artifacts
         dummy_dataset, dummy_data_loader, data_count = get_dataset_artifacts()
 
-        temp_dir_path = os.path.dirname(os.path.abspath(__file__))
-        temp_dir_path = os.path.join(temp_dir_path, "temp_dir")
-
         # Generate layer-outputs
         layer_out_dict_list = []
         layer_output_util = LayerOutputUtil(
-            model=quantsim.model.model, dir_path=temp_dir_path
+            model=quantsim.model.model, dir_path=tmp_dir
         )
         for input_batch in dummy_data_loader:
             for single_input in input_batch:
@@ -211,14 +200,14 @@ class TestLayerOutputUtil:
                 )
 
         # Verify number of inputs
-        assert data_count == len(os.listdir(os.path.join(temp_dir_path, "inputs")))
+        assert data_count == len(os.listdir(os.path.join(tmp_dir, "inputs")))
 
         # Verify number of layer-output folders
-        assert data_count == len(os.listdir(os.path.join(temp_dir_path, "outputs")))
+        assert data_count == len(os.listdir(os.path.join(tmp_dir, "outputs")))
 
         # Verify number of layer-outputs
         saved_layer_outputs = os.listdir(
-            os.path.join(temp_dir_path, "outputs", "layer_outputs_0")
+            os.path.join(tmp_dir, "outputs", "layer_outputs_0")
         )
         saved_layer_outputs = [i[: -len(".raw")] for i in saved_layer_outputs]
         for name in output_names:
@@ -226,12 +215,10 @@ class TestLayerOutputUtil:
 
         # Ensure generated layer-outputs can be correctly loaded for layer-output comparison
         saved_last_layer_output = np.fromfile(
-            os.path.join(temp_dir_path, "outputs", "layer_outputs_0", "output.raw"),
+            os.path.join(tmp_dir, "outputs", "layer_outputs_0", "output.raw"),
             dtype=np.float32,
         ).reshape((1, 10))
-        session = OrtInferenceSession(
-            quantsim.model.model, providers, path=temp_dir_path
-        )
+        session = OrtInferenceSession(quantsim.model.model, providers, path=tmp_dir)
         input_dict = {
             "input": np.expand_dims(dummy_dataset.__getitem__(0).numpy(), axis=0)
         }
@@ -243,7 +230,7 @@ class TestLayerOutputUtil:
 
             saved_conv_output = np.fromfile(
                 os.path.join(
-                    temp_dir_path,
+                    tmp_dir,
                     "outputs",
                     f"layer_outputs_{idx}",
                     "conv_output_3.raw",
@@ -252,32 +239,28 @@ class TestLayerOutputUtil:
             ).reshape(layer_out.shape)
             np.testing.assert_array_equal(layer_out, saved_conv_output)
 
-        # Delete temp_dir
-        shutil.rmtree(temp_dir_path, ignore_errors=False, onerror=None)
-
-    def test_generate_layeroutput_for_all_ops(self):
+    def test_generate_layeroutput_for_all_ops(self, tmp_dir):
         """Test to check if layer outputs for all ops are being generated on QuantiSim model"""
-        with tempfile.TemporaryDirectory() as tempdir:
-            model = model_with_ignore_ops(tempdir)
+        model = model_with_ignore_ops(tmp_dir)
 
-            input = np.random.rand(1, 3, 32, 32).astype(np.float32)
-            org_path = os.path.join(tempdir, "org")
-            lop = LayerOutputUtil(model, org_path)
-            lop.generate_layer_outputs(input)
+        input = np.random.rand(1, 3, 32, 32).astype(np.float32)
+        org_path = os.path.join(tmp_dir, "org")
+        lop = LayerOutputUtil(model, org_path)
+        lop.generate_layer_outputs(input)
 
-            sim = QuantizationSimModel(model)
+        sim = QuantizationSimModel(model)
 
-            sim_path = os.path.join(tempdir, "sim")
-            lop2 = LayerOutputUtil(sim.model.model, sim_path)
-            lop2.generate_layer_outputs(input)
+        sim_path = os.path.join(tmp_dir, "sim")
+        lop2 = LayerOutputUtil(sim.model.model, sim_path)
+        lop2.generate_layer_outputs(input)
 
-            json_file_name = "layer_output_name_order.json"
+        json_file_name = "layer_output_name_order.json"
 
-            with open(os.path.join(org_path, json_file_name), "r") as f:
-                org_op_list = json.load(f)["layer_output_names"]
+        with open(os.path.join(org_path, json_file_name), "r") as f:
+            org_op_list = json.load(f)["layer_output_names"]
 
-            with open(os.path.join(sim_path, json_file_name), "r") as f:
-                sim_op_list = json.load(f)["layer_output_names"]
+        with open(os.path.join(sim_path, json_file_name), "r") as f:
+            sim_op_list = json.load(f)["layer_output_names"]
 
-            assert len(org_op_list) == len(sim_op_list)
-            assert set(org_op_list) == set(sim_op_list)
+        assert len(org_op_list) == len(sim_op_list)
+        assert set(org_op_list) == set(sim_op_list)

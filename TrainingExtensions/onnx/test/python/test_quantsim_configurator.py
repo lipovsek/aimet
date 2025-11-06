@@ -47,6 +47,7 @@ from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.quantsim import QuantizationSimModel, QuantSimConfigurator
 from .models import models_for_tests
+from .utils import tmp_dir
 import tempfile
 
 
@@ -66,7 +67,7 @@ class TestQuantSimConfig:
         assert sim.qc_quantize_op_dict["5"].enabled == False  # Maxpool disabled
         assert sim.qc_quantize_op_dict["output"].enabled == True
 
-    def test_default_config(self):
+    def test_default_config(self, tmp_dir):
         model = models_for_tests.build_dummy_model()
 
         quantsim_config = {
@@ -80,20 +81,22 @@ class TestQuantSimConfig:
             "model_input": {},
             "model_output": {},
         }
-        if not os.path.exists("./data"):
-            os.makedirs("./data")
-        with open("./data/quantsim_config.json", "w") as f:
+        data_dir = os.path.join(tmp_dir, "data")
+        config_path = os.path.join(data_dir, "quantsim_config.json")
+        os.makedirs(data_dir, exist_ok=True)
+        with open(config_path, "w") as f:
             json.dump(quantsim_config, f)
+
         sim = QuantizationSimModel(
             model,
-            config_file="./data/quantsim_config.json",
+            config_file=config_path,
             providers=["CPUExecutionProvider"],
         )
         for name in ["3", "4", "output"]:
             assert sim.qc_quantize_op_dict[name].enabled == True
             assert sim.qc_quantize_op_dict[name].use_symmetric_encodings == False
 
-    def test_param_config(self):
+    def test_param_config(self, tmp_dir):
         model = models_for_tests.build_dummy_model()
 
         quantsim_config = {
@@ -109,13 +112,16 @@ class TestQuantSimConfig:
             "model_input": {},
             "model_output": {},
         }
-        if not os.path.exists("./data"):
-            os.makedirs("./data")
-        with open("./data/quantsim_config.json", "w") as f:
+        data_dir = os.path.join(tmp_dir, "data")
+        config_path = os.path.join(data_dir, "quantsim_config.json")
+        os.makedirs(data_dir, exist_ok=True)
+
+        with open(config_path, "w") as f:
             json.dump(quantsim_config, f)
+
         sim = QuantizationSimModel(
             model,
-            config_file="./data/quantsim_config.json",
+            config_file=config_path,
             providers=["CPUExecutionProvider"],
         )
         for name in ["conv_w", "fc_w"]:
@@ -126,7 +132,7 @@ class TestQuantSimConfig:
             assert sim.qc_quantize_op_dict[name].enabled == False
             assert sim.qc_quantize_op_dict[name].use_symmetric_encodings == True
 
-    def test_op_level_config_and_model_output(self):
+    def test_op_level_config_and_model_output(self, tmp_dir):
         model = models_for_tests.build_dummy_model()
 
         quantsim_config = {
@@ -150,13 +156,15 @@ class TestQuantSimConfig:
                 "is_output_quantized": "True",
             },
         }
-        if not os.path.exists("./data"):
-            os.makedirs("./data")
-        with open("./data/quantsim_config.json", "w") as f:
+        data_dir = os.path.join(tmp_dir, "data")
+        config_path = os.path.join(data_dir, "quantsim_config.json")
+        os.makedirs(data_dir, exist_ok=True)
+        with open(config_path, "w") as f:
             json.dump(quantsim_config, f)
+
         sim = QuantizationSimModel(
             model,
-            config_file="./data/quantsim_config.json",
+            config_file=config_path,
             providers=["CPUExecutionProvider"],
         )
 
@@ -167,7 +175,7 @@ class TestQuantSimConfig:
         assert sim.qc_quantize_op_dict["output"].enabled == True
         assert sim.qc_quantize_op_dict["5"].enabled == False  # Disable for Maxpool
 
-    def test_config_for_model_input(self):
+    def test_config_for_model_input(self, tmp_dir):
         model = models_for_tests.build_dummy_model()
 
         quantsim_config = {
@@ -179,18 +187,19 @@ class TestQuantSimConfig:
             "model_output": {},
         }
 
-        if not os.path.exists("./data"):
-            os.makedirs("./data")
-        with open("./data/quantsim_config.json", "w") as f:
+        data_dir = os.path.join(tmp_dir, "data")
+        config_path = os.path.join(data_dir, "quantsim_config.json")
+        os.makedirs(data_dir, exist_ok=True)
+        with open(config_path, "w") as f:
             json.dump(quantsim_config, f)
         sim = QuantizationSimModel(
             model,
-            config_file="./data/quantsim_config.json",
+            config_file=config_path,
             providers=["CPUExecutionProvider"],
         )
         assert sim.qc_quantize_op_dict["input"].enabled == True
 
-    def test_parse_config_file_supergroups_pass_list(self):
+    def test_parse_config_file_supergroups_pass_list(self, tmp_dir):
         """
         Test that supergroup pass list is set correctly in configuration file
         """
@@ -212,23 +221,23 @@ class TestQuantSimConfig:
             "model_output": {},
         }
 
-        with tempfile.NamedTemporaryFile(
-            prefix="quantsim_config", suffix=".json"
-        ) as config_file:
-            with open(config_file.name, "w") as f:
-                json.dump(quantsim_config, f)
+        data_dir = os.path.join(tmp_dir, "data")
+        config_path = os.path.join(data_dir, "quantsim_config.json")
+        os.makedirs(data_dir, exist_ok=True)
+        with open(config_path, "w") as f:
+            json.dump(quantsim_config, f)
 
-            qsim_config = QuantSimConfigurator(
-                model,
-                ConnectedGraph(model),
-                config_file=config_file.name,
-                param_type=qtype.int(8),
-                activation_type=qtype.int(8),
-            )
-            assert qsim_config._get_supergroup_pass_list() == ["LayerNormalization"]
+        qsim_config = QuantSimConfigurator(
+            model,
+            ConnectedGraph(model),
+            config_file=config_path,
+            param_type=qtype.int(8),
+            activation_type=qtype.int(8),
+        )
+        assert qsim_config._get_supergroup_pass_list() == ["LayerNormalization"]
 
     @pytest.mark.parametrize("strict, unsigned", ((True, False), (False, True)))
-    def test_parse_config_file_symmetric_modes(self, strict, unsigned):
+    def test_parse_config_file_symmetric_modes(self, strict, unsigned, tmp_dir):
         """Test that model output quantization parameters are set correctly when using json config file"""
         model = models_for_tests.build_dummy_model()
 
@@ -246,13 +255,15 @@ class TestQuantSimConfig:
             "model_input": {},
             "model_output": {},
         }
-        if not os.path.exists("./data"):
-            os.makedirs("./data")
-        with open("./data/quantsim_config.json", "w") as f:
+        data_dir = os.path.join(tmp_dir, "data")
+        config_path = os.path.join(data_dir, "quantsim_config.json")
+        os.makedirs(data_dir, exist_ok=True)
+        with open(config_path, "w") as f:
             json.dump(quantsim_config, f)
+
         sim = QuantizationSimModel(
             model,
-            config_file="./data/quantsim_config.json",
+            config_file=config_path,
             providers=["CPUExecutionProvider"],
         )
 
@@ -260,7 +271,7 @@ class TestQuantSimConfig:
             assert quantizer.use_strict_symmetric == strict
             assert quantizer.use_unsigned_symmetric == unsigned
 
-    def test_generate_and_apply_op_level_config(self):
+    def test_generate_and_apply_op_level_config(self, tmp_dir):
         model = models_for_tests.build_dummy_model()
 
         quantsim_config = {
@@ -285,19 +296,22 @@ class TestQuantSimConfig:
                 "is_output_quantized": "True",
             },
         }
-        if not os.path.exists("./data"):
-            os.makedirs("./data")
-        with open("./data/quantsim_config.json", "w") as f:
+
+        data_dir = os.path.join(tmp_dir, "data")
+        config_path = os.path.join(data_dir, "quantsim_config.json")
+        os.makedirs(data_dir, exist_ok=True)
+        with open(config_path, "w") as f:
             json.dump(quantsim_config, f)
+
         sim = QuantizationSimModel(
             model,
-            config_file="./data/quantsim_config.json",
+            config_file=config_path,
             providers=["CPUExecutionProvider"],
         )
         assert sim.qc_quantize_op_dict["conv_w"].quant_info.usePerChannelMode == True
         assert sim.qc_quantize_op_dict["fc_w"].quant_info.usePerChannelMode == False
 
-    def test_supported_kernels(self):
+    def test_supported_kernels(self, tmp_dir):
         """
         Tests the generated supported_kernels
         """
@@ -332,9 +346,14 @@ class TestQuantSimConfig:
             "model_output": {},
         }
 
-        with open("./data/quantsim_config.json", "w") as f:
+        data_dir = os.path.join(tmp_dir, "data")
+        config_path = os.path.join(data_dir, "quantsim_config.json")
+        os.makedirs(data_dir, exist_ok=True)
+
+        with open(config_path, "w") as f:
             json.dump(quantsim_config, f)
-        sim = QuantizationSimModel(model, config_file="./data/quantsim_config.json")
+
+        sim = QuantizationSimModel(model, config_file=config_path)
         op_to_supported_kernels = sim._op_to_supported_kernel
         for op_name in op_to_supported_kernels:
             assert len(op_to_supported_kernels[op_name]) == 1
@@ -357,7 +376,7 @@ class TestQuantSimConfig:
         assert len(supported_kernels_conv) == 1
         assert supported_kernels_conv == expected_supported_kernels
 
-    def test_matmul_perchannel_config(self, tmp_path):
+    def test_matmul_perchannel_config(self):
         model = models_for_tests.weight_matmul_model(in_features=10, out_features=20)
         sim = QuantizationSimModel(model, config_file=get_path_for_per_channel_config())
         assert not sim.qc_quantize_op_dict["weight"].quant_info.usePerChannelMode

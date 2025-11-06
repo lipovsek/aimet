@@ -6,11 +6,10 @@ from aimet_onnx.experimental.adascale.find_blocks import (
     get_decoder_blocks_end_points,
     get_conv_linear_layers_decoder_block,
 )
+from .utils import add_genai_tests_path
 
 
-def test_get_decoder_blocks(monkeypatch):
-    path = os.path.abspath(os.path.join("../../../../GenAITests"))
-    monkeypatch.syspath_prepend(path)
+def test_get_decoder_blocks(add_genai_tests_path):
     from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
 
     sim = Qwen_25_ONNX.instantiate_quantsim("Qwen/Qwen2-0.5B", 32, 16, small_model=True)

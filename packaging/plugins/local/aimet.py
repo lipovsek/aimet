@@ -215,6 +215,7 @@ def optional_dependencies() -> dict[str, list[str]]:
             "peft",
             "pylint<3",
             "pytest",
+            "pytest-xdist",
             "pytest-github-report",
             "pytorch-ignite",
             "safetensors",

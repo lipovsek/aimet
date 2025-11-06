@@ -43,6 +43,7 @@ import os
 import tempfile
 from pathlib import Path
 
+import io
 import onnx
 import torch.nn.functional as F
 from torch import nn as nn
@@ -1158,29 +1159,27 @@ def long_sequential_model(
     x = torch.randn(1, 3, 1, 1)
     model = LongSequentialModel()
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "model_long_sequential.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            training=training,
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=min(
-                opset_version, 20
-            ),  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-            dynamo=False,
-        )
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,
+        training=training,
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=min(opset_version, 20),  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+        dynamo=False,
+    )
 
-        model = load_model(save_path)
-        if opset_version > 20:
-            model = onnx.version_converter.convert_version(model, opset_version)
+    buffer.seek(0)
+    model = load_model(buffer)
+    if opset_version > 20:
+        model = onnx.version_converter.convert_version(model, opset_version)
 
-        model_onnx = ONNXModel(model)
+    model_onnx = ONNXModel(model)
     return model_onnx
 
 
@@ -1192,28 +1191,26 @@ def single_residual_model(
     x = torch.randn(1, 3, 32, 32).to(dtype)
     model = SingleResidualWithAvgPool().to(dtype)
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "model_single_residual.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            training=training,
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=min(
-                opset_version, 20
-            ),  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
+    buffer = io.BytesIO()
 
-        model = load_model(save_path)
-        if opset_version > 20:
-            model = onnx.version_converter.convert_version(model, opset_version)
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,
+        training=training,
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=min(opset_version, 20),  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = load_model(buffer)
+    if opset_version > 20:
+        model = onnx.version_converter.convert_version(model, opset_version)
 
-        model_onnx = ONNXModel(model)
+    model_onnx = ONNXModel(model)
     return model_onnx
 
 
@@ -1223,20 +1220,20 @@ def multi_input_model(opset_version=_DEFAULT_OPSET_VERSION):
         torch.rand(32, 1, 28, 28, requires_grad=True),
     )
     model = ModelWithTwoInputs()
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "model_multi_input.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input1", "input2"],  # the model's input names
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input1", "input2"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
@@ -1244,67 +1241,65 @@ def multi_output_model():
     model = MultipleOutputModel()
     sample_input = np.random.rand(128, 3, 32, 32).astype(np.float32)
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        onnx_filename = Path(tmp_dir, "dummy_model_multiple_outputs.onnx")
-        input_names = ["input"]
-        output_names = ["output_mul", "output_add"]
-        torch.onnx.export(
-            model,
-            torch.as_tensor(sample_input),
-            str(onnx_filename),
-            verbose=True,
-            input_names=input_names,
-            output_names=output_names,
-        )
+    buffer = io.BytesIO()
+    input_names = ["input"]
+    output_names = ["output_mul", "output_add"]
+    torch.onnx.export(
+        model,
+        torch.as_tensor(sample_input),
+        buffer,
+        verbose=True,
+        input_names=input_names,
+        output_names=output_names,
+    )
 
-        model = ONNXModel(load_model(onnx_filename))
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
 def transposed_conv_model(opset_version=_DEFAULT_OPSET_VERSION):
-    with tempfile.TemporaryDirectory() as save_dir:
-        x = torch.randn(10, 10, 4, 4, requires_grad=True)
-        model = TransposedConvModel()
-        save_path = os.path.join(save_dir, "model_transposed_conv.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=min(
-                opset_version, 20
-            ),  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
+    x = torch.randn(10, 10, 4, 4, requires_grad=True)
+    model = TransposedConvModel()
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=min(opset_version, 20),  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
 
-        model = load_model(save_path)
-        if opset_version > 20:
-            model = onnx.version_converter.convert_version(model, opset_version)
+    buffer.seek(0)
+    model = load_model(buffer)
+    if opset_version > 20:
+        model = onnx.version_converter.convert_version(model, opset_version)
 
-        model = ONNXModel(model)
+    model = ONNXModel(model)
     return model
 
 
 def depthwise_transposed_conv_model(opset_version=_DEFAULT_OPSET_VERSION):
-    with tempfile.TemporaryDirectory() as save_dir:
-        x = torch.randn(10, 10, 4, 4, requires_grad=True)
-        model = DepthwiseTransposedConvModel()
-        save_path = os.path.join(save_dir, "model_transposed_conv.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    buffer = io.BytesIO()
+    x = torch.randn(10, 10, 4, 4, requires_grad=True)
+    model = DepthwiseTransposedConvModel()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object)
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
@@ -1312,82 +1307,82 @@ def transposed_conv_model_without_bn(opset_version=_DEFAULT_OPSET_VERSION):
     x = torch.randn(10, 10, 4, 4, requires_grad=True)
     model = TransposedConvModelWithoutBN()
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "model_transposed_conv_without_bn.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object)
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
 def linear_split_into_matmul_add(opset_version=_DEFAULT_OPSET_VERSION):
-    with tempfile.TemporaryDirectory() as save_dir:
-        # 3D input will split the linear layer in MatMul + Add in ONNX graph.
-        dummy_input = torch.randn(1, 2, 4)
+    # 3D input will split the linear layer in MatMul + Add in ONNX graph.
+    dummy_input = torch.randn(1, 2, 4)
 
-        class LinearModel(torch.nn.Module):
-            def __init__(self):
-                super(LinearModel, self).__init__()
-                self.linear = torch.nn.Linear(4, 4)
+    class LinearModel(torch.nn.Module):
+        def __init__(self):
+            super(LinearModel, self).__init__()
+            self.linear = torch.nn.Linear(4, 4)
 
-            def forward(self, x):
-                x = self.linear(x)
-                return x
+        def forward(self, x):
+            x = self.linear(x)
+            return x
 
-        model = LinearModel().eval()
-        save_path = os.path.join(save_dir, "matmul_add.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            dummy_input,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    model = LinearModel().eval()
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        dummy_input,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object)
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
 def unfusable_matmul_add(opset_version=_DEFAULT_OPSET_VERSION):
-    with tempfile.TemporaryDirectory() as save_dir:
-        # 3D input will split the linear layer in MatMul + Add in ONNX graph.
-        dummy_input = torch.randn(1, 2, 4)
+    # 3D input will split the linear layer in MatMul + Add in ONNX graph.
+    dummy_input = torch.randn(1, 2, 4)
 
-        class MatmulAdd(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.weight = torch.nn.Parameter(torch.eye(4))
-                self.not_a_bias = torch.nn.Parameter(torch.zeros(2, 4))
+    class MatmulAdd(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.eye(4))
+            self.not_a_bias = torch.nn.Parameter(torch.zeros(2, 4))
 
-            def forward(self, x):
-                return x @ self.weight + self.not_a_bias
+        def forward(self, x):
+            return x @ self.weight + self.not_a_bias
 
-        model = MatmulAdd().eval()
-        save_path = os.path.join(save_dir, "matmul_add.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            dummy_input,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    model = MatmulAdd().eval()
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        dummy_input,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object)
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
@@ -1395,20 +1390,20 @@ def depthwise_conv_model(opset_version=_DEFAULT_OPSET_VERSION):
     x = torch.randn(1, 3, 224, 224, requires_grad=True)
     model = MockMobileNetV1()
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "model_mock_mobilenet.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object)
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
@@ -1416,20 +1411,20 @@ def depthwise_conv_model_with_relu6(opset_version=_DEFAULT_OPSET_VERSION):
     x = torch.randn(1, 3, 224, 224, requires_grad=True)
     model = MockMobileNetV11()
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "model_mock_mobilenet.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object)
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
@@ -1441,20 +1436,20 @@ def concat_model(opset_version=_DEFAULT_OPSET_VERSION):
     )
     model = ConcatModel()
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "concat_model.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input1", "input2", "input3"],  # the model's input names
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object)
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input1", "input2", "input3"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
@@ -1472,20 +1467,20 @@ def hierarchical_model(opset_version=_DEFAULT_OPSET_VERSION):
     )
     model = HierarchicalModel()
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "hierarchical_model.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object)
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
@@ -1918,20 +1913,20 @@ def _convert_to_onnx_no_fold(
     filename="temp_model.onnx",
     opset_version=_DEFAULT_OPSET_VERSION,
 ):
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, filename)
-        torch.onnx.export(
-            model.eval(),
-            dummy_input,
-            save_path,
-            training=torch.onnx.TrainingMode.PRESERVE,
-            export_params=True,
-            opset_version=opset_version,
-            do_constant_folding=False,
-            input_names=["input"],
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        model.eval(),
+        dummy_input,
+        buffer,
+        training=torch.onnx.TrainingMode.PRESERVE,
+        export_params=True,
+        opset_version=opset_version,
+        do_constant_folding=False,
+        input_names=["input"],
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
@@ -1941,20 +1936,20 @@ def _convert_to_onnx(
     filename="temp_model.onnx",
     opset_version=_DEFAULT_OPSET_VERSION,
 ):
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, filename)
-        torch.onnx.export(
-            model.eval(),
-            dummy_input,
-            save_path,
-            training=torch.onnx.TrainingMode.EVAL,
-            export_params=True,
-            opset_version=opset_version,
-            do_constant_folding=True,
-            input_names=["input"],
-            output_names=["output"],
-        )
-        model = ONNXModel(load_model(save_path))
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        model.eval(),
+        dummy_input,
+        buffer,
+        training=torch.onnx.TrainingMode.EVAL,
+        export_params=True,
+        opset_version=opset_version,
+        do_constant_folding=True,
+        input_names=["input"],
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
     return model
 
 
@@ -1966,22 +1961,21 @@ def my_model_with_bns(opset_version=_DEFAULT_OPSET_VERSION):
     input_shape = (2, 10, 24, 24)
     x = torch.randn(*input_shape, requires_grad=True)
 
+    buffer = io.BytesIO()
     # Export the model
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "./model_single_residual.onnx")
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,
-            # where to save the model (can be a file or file-like object),
-            training=torch.onnx.TrainingMode.TRAINING,
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=False,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model_onnx = ONNXModel(load_model(save_path))
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,
+        training=torch.onnx.TrainingMode.EVAL,  # whether to execute constant folding for optimization
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=False,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model_onnx = ONNXModel(load_model(buffer))
     return model_onnx
 
 
@@ -2003,21 +1997,21 @@ def elementwise_op_model(opset_version=_DEFAULT_OPSET_VERSION):
     x = torch.randn(*input_shape, requires_grad=True)
 
     # Export the model
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "./model_elementwise.onnx")
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,
-            # where to save the model (can be a file or file-like object),
-            training=torch.onnx.TrainingMode.EVAL,
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=False,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model_onnx = ONNXModel(load_model(save_path))
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,
+        # where to save the model (can be a file or file-like object),
+        training=torch.onnx.TrainingMode.EVAL,
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=False,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model_onnx = ONNXModel(load_model(buffer))
     return model_onnx
 
 
@@ -2050,22 +2044,22 @@ def multi_input_with_constant_model(opset_version=_DEFAULT_OPSET_VERSION):
     torch.manual_seed(10)
     model = MultiInputWithConstant().eval()
 
+    buffer = io.BytesIO()
     x = (torch.rand(1, 3, 32, 32), torch.rand(1, 3, 20, 20))
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "./model_with_constant.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object),
-            training=torch.onnx.TrainingMode.EVAL,
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=False,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model_onnx = ONNXModel(load_model(save_path))
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object)
+        training=torch.onnx.TrainingMode.EVAL,
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=False,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model_onnx = ONNXModel(load_model(buffer))
     return model_onnx
 
 
@@ -2146,22 +2140,21 @@ def simple_relu_model(opset_version=_DEFAULT_OPSET_VERSION):
     input_shape = (1, 3, 32, 32)
     x = torch.randn(*input_shape, requires_grad=True)
 
+    buffer = io.BytesIO()
     # Export the model
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "./simple_relu.onnx")
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,
-            # where to save the model (can be a file or file-like object),
-            training=torch.onnx.TrainingMode.TRAINING,
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=False,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
-        model_onnx = ONNXModel(load_model(save_path))
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object)
+        training=torch.onnx.TrainingMode.TRAINING,
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=False,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model_onnx = ONNXModel(load_model(buffer))
     return model_onnx
 
 
@@ -2177,28 +2170,24 @@ def instance_norm_model(opset_version=_DEFAULT_OPSET_VERSION):
     x = torch.randn(*input_shape, requires_grad=True)
 
     # Export the model
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "./model_instance_norm.onnx")
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,
-            # where to save the model (can be a file or file-like object),
-            training=torch.onnx.TrainingMode.TRAINING,
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=min(
-                opset_version, 20
-            ),  # the ONNX version to export the model to
-            do_constant_folding=False,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,
+        training=torch.onnx.TrainingMode.TRAINING,
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=min(opset_version, 20),  # the ONNX version to export the model to
+        do_constant_folding=False,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = load_model(buffer)
+    if opset_version > 20:
+        model = onnx.version_converter.convert_version(model, opset_version)
 
-        model = load_model(save_path)
-        if opset_version > 20:
-            model = onnx.version_converter.convert_version(model, opset_version)
-
-        model = ONNXModel(model)
+    model = ONNXModel(model)
     return model
 
 
@@ -2266,25 +2255,26 @@ def conv_relu_model(opset_version=_DEFAULT_OPSET_VERSION):
     model = ConvReluModel().eval()
     x = torch.randn((1, 3, 8, 8))
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "./conv_relu.onnx")
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object),
-            training=torch.onnx.TrainingMode.EVAL,
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=opset_version,  # the ONNX version to export the model to
-            do_constant_folding=False,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-            dynamic_axes={
-                "input": {0: "batch_size"},
-                "output": {0: "batch_size"},
-            },
-        )
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,  # where to save the model (can be a file or file-like object),
+        training=torch.onnx.TrainingMode.EVAL,
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=opset_version,  # the ONNX version to export the model to
+        do_constant_folding=False,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+        dynamic_axes={
+            "input": {0: "batch_size"},
+            "output": {0: "batch_size"},
+        },
+    )
 
-        model = load_model(save_path)
+    buffer.seek(0)
+    model = load_model(buffer)
     return model
 
 
@@ -2572,18 +2562,18 @@ def dynamic_matmul_model(batch_size):
 
     model = Model()
 
-    with tempfile.TemporaryDirectory() as tempdir:
-        fname = os.path.join(tempdir, "model.onnx")
-        torch.onnx.export(
-            model,
-            torch.randn(batch_size, 10),
-            fname,
-            input_names=["input"],
-            output_names=["output"],
-            do_constant_folding=False,
-        )
-        onnx_model = onnx.load(fname)
+    buffer = io.BytesIO()
 
+    torch.onnx.export(
+        model,
+        torch.randn(batch_size, 10),
+        buffer,
+        input_names=["input"],
+        output_names=["output"],
+        do_constant_folding=False,
+    )
+    buffer.seek(0)
+    onnx_model = onnx.load(buffer)
     return onnx_model
 
 
@@ -2601,18 +2591,17 @@ def simplifiable_model(batch_size=1):
 
     model = Model()
 
-    with tempfile.TemporaryDirectory() as tempdir:
-        fname = os.path.join(tempdir, "model.onnx")
-        torch.onnx.export(
-            model,
-            torch.randn(batch_size, 10),
-            fname,
-            input_names=["input"],
-            output_names=["output"],
-            do_constant_folding=False,
-        )
-        onnx_model = onnx.load(fname)
-
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        model,
+        torch.randn(batch_size, 10),
+        buffer,
+        input_names=["input"],
+        output_names=["output"],
+        do_constant_folding=False,
+    )
+    buffer.seek(0)
+    onnx_model = onnx.load(buffer)
     return onnx_model
 
 
@@ -3840,47 +3829,43 @@ def gather_concat_model():
 def mobilenetv2():
     x = torch.randn(1, 3, 32, 32, requires_grad=True)
     model = models.MobileNetV2().eval()
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "model_mobilenetv2.onnx")
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,
-            training=torch.onnx.TrainingMode.PRESERVE,
-            export_params=True,
-            do_constant_folding=False,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={
-                "input": {0: "batch_size"},
-                "output": {0: "batch_size"},
-            },
-        )
-        model = ONNXModel(load_model(save_path))
-        return model
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,
+        training=torch.onnx.TrainingMode.PRESERVE,
+        export_params=True,
+        do_constant_folding=False,
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={
+            "input": {0: "batch_size"},
+            "output": {0: "batch_size"},
+        },
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
+    return model
 
 
 def resnet18():
     x = torch.randn(1, 3, 32, 32, requires_grad=True)
     model = models.MobileNetV2().eval()
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "model_resnet18.onnx")
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,
-            training=torch.onnx.TrainingMode.PRESERVE,
-            export_params=True,
-            do_constant_folding=False,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={
-                "input": {0: "batch_size"},
-                "output": {0: "batch_size"},
-            },
-        )
-        model = ONNXModel(load_model(save_path))
-        return model
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,
+        training=torch.onnx.TrainingMode.PRESERVE,
+        export_params=True,
+        do_constant_folding=False,
+        input_names=["input"],
+        output_names=["output"],
+    )
+    buffer.seek(0)
+    model = ONNXModel(load_model(buffer))
+    return model
 
 
 def model_with_initializers_in_graph_input():
@@ -4322,28 +4307,26 @@ def conv_prelu_model(
     x = torch.randn(1, 3, 32, 32)
     model = ConvPrelu()
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        save_path = os.path.join(tmp_dir, "conv_prelu.onnx")
-        # Export the model
-        torch.onnx.export(
-            model,  # model being run
-            x,  # model input (or a tuple for multiple inputs)
-            save_path,  # where to save the model (can be a file or file-like object)
-            training=training,
-            export_params=True,  # store the trained parameter weights inside the model file
-            opset_version=min(
-                opset_version, 20
-            ),  # the ONNX version to export the model to
-            do_constant_folding=True,  # whether to execute constant folding for optimization
-            input_names=["input"],  # the model's input names
-            output_names=["output"],
-        )
+    buffer = io.BytesIO()
+    # Export the model
+    torch.onnx.export(
+        model,  # model being run
+        x,  # model input (or a tuple for multiple inputs)
+        buffer,
+        training=training,
+        export_params=True,  # store the trained parameter weights inside the model file
+        opset_version=min(opset_version, 20),  # the ONNX version to export the model to
+        do_constant_folding=True,  # whether to execute constant folding for optimization
+        input_names=["input"],  # the model's input names
+        output_names=["output"],
+    )
 
-        model = load_model(save_path)
-        if opset_version > 20:
-            model = onnx.version_converter.convert_version(model, opset_version)
+    buffer.seek(0)
+    model = load_model(buffer)
+    if opset_version > 20:
+        model = onnx.version_converter.convert_version(model, opset_version)
 
-        model_onnx = ONNXModel(model)
+    model_onnx = ONNXModel(model)
     return model_onnx
 
 

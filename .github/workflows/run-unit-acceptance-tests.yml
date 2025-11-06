@@ -3,41 +3,58 @@ name: Run Unit and Acceptance tests
 on:
   workflow_call:
     inputs:
-      variants:
-        required: true
+      env_name:
+        required: false
         type: string
-      force_run_unit_tests:
+        default: aimet-dev
+      ver_python:
+        required: false
+        type: string
+        default: "3.10"
+      ver_cuda:
+        required: false
+        type: string
+        default: ""
+      ver_torch:
+        required: false
+        type: string
+        default: ""
+      ver_onnxruntime:
+        required: false
+        type: string
+        default: ""
+      pip_index:
+        required: false
+        type: string
+        default: ""
+      run_unit_tests:
         required: false
         type: boolean
         default: false
-      force_run_acceptance_tests:
+      run_acceptance_tests:
+        required: false
+        type: boolean
+        default: false
+      runs_on:
+        required: true
+        type: string
+      include_windows_tests:
         required: false
         type: boolean
         default: false
 
 jobs:
-  test:
-    name: Run AIMET unit tests
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(inputs.variants) }}
-    runs-on: ${{ matrix.runs-on }}
+  test_on_linux:
+    name: Run AIMET unit and acceptance tests on Ubuntu
+    runs-on: ${{ inputs.runs_on }}
+    if: inputs.run_unit_tests || inputs.run_acceptance_tests
     env:
       pytest_github_report: true
       pytest_use_zeros: true
     container:
       image: "ubuntu:22.04"
     steps:
-      - name: Check if unit tests should be run
-        id: check_unit_tests
-        run: echo "status=${{ inputs.force_run_unit_tests || matrix.RUN_UNIT_TESTS == 'ON' }}" >> $GITHUB_OUTPUT
-      - name: Check if acceptance tests should be run
-        id: check_acceptance_tests
-        run: echo "status=${{ inputs.force_run_acceptance_tests || matrix.RUN_ACCEPTANCE_TESTS == 'ON' }}" >> $GITHUB_OUTPUT
-      - name: Check if any tests should be run
-        id: check_tests
-        run: echo "status=${{ steps.check_unit_tests.outputs.status || steps.check_acceptance_tests.outputs.status }}" >> $GITHUB_OUTPUT
-      - if: ${{ steps.check_tests.outputs.status == 'true' }}
+      - name: Install dependencies
         run: |
           apt update -qq
           apt install --no-install-recommends -y git curl g++ ca-certificates cmake make
@@ -48,38 +65,34 @@ jobs:
           echo "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt" >> $GITHUB_ENV
           echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> $GITHUB_ENV
           rm -rf download
-      - if: ${{ steps.check_tests.outputs.status == 'true' }}
-        uses: actions/checkout@v4
-      - if: ${{ steps.check_tests.outputs.status == 'true' }}
-        uses: actions/download-artifact@v3
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v3
         with:
-          name: "${{ matrix.id }}-wheel"
+          name: "${{ inputs.env_name }}-wheel"
           path: "downloads"
-      - if: ${{ steps.check_tests.outputs.status == 'true' }}
-        uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v3
         with:
-          name: "${{ matrix.id }}-tests"
+          name: "${{ inputs.env_name }}-tests"
           path: "downloads"
       - name: Create python virtual environment
-        if: ${{ matrix.id  != 'onnx-torch-cpu' }}
+        if: ${{ inputs.env_name  != 'onnx-torch-cpu' }}
         uses: ./.github/actions/setup-conda-env
         with:
-          ENV_NAME: ${{ matrix.id }}
-          VER_PYTHON: ${{ matrix.VER_PYTHON }}
-          VER_CUDA: ${{ matrix.VER_CUDA }}
-          VER_TORCH: ${{ matrix.VER_TORCH }}
-          VER_ONNXRUNTIME: ${{ matrix.VER_ONNXRUNTIME }}
+          ENV_NAME: ${{ inputs.env_name }}
+          VER_PYTHON: ${{ inputs.ver_python }}
+          VER_CUDA: ${{ inputs.ver_cuda }}
+          VER_TORCH: ${{ inputs.ver_torch }}
+          VER_ONNXRUNTIME: ${{ inputs.ver_onnxruntime }}
           PIP_INDEX: ${{ matrix.PIP_INDEX }}
       - name: Run pylint
-        if: ${{ steps.check_tests.outputs.status == 'true' }}
         run: |
-          CONDA_PYTHONPATH="./.conda/envs/${{ matrix.id }}/lib/python${{ matrix.VER_PYTHON }}/site-packages"
+          CONDA_PYTHONPATH="./.conda/envs/${{ inputs.env_name }}/lib/python${{ inputs.ver_python }}/site-packages"
           AIMET_PACKAGES=$(find $CONDA_PYTHONPATH -regex ".*/aimet_\(common\|torch\|onnx\)" | tr "\n" " ")
 
-          ./.conda/bin/conda run --live-stream --name "${{ matrix.id }}" \
+          ./.conda/bin/conda run --live-stream --name "${{ inputs.env_name }}" \
               python3 -m pylint --rcfile=.pylintrc $AIMET_PACKAGES
       - name: Run Unit tests
-        if: ${{ steps.check_unit_tests.outputs.status == 'true' }}
+        if: inputs.run_unit_tests
         run: |
           set -x
 
@@ -87,37 +100,78 @@ jobs:
               chmod +x $target
               # NOTE: Set LD_LIBRARY_PATH for dynamic linking with libpython3.so
               #       since ubuntu:22.04 docker image doesn't have built-in libpython3.so
-              LD_LIBRARY_PATH=".conda/envs/${{ matrix.id }}/lib" \
-                  ./.conda/bin/conda run --live-stream --name "${{ matrix.id }}" $target
+              LD_LIBRARY_PATH=".conda/envs/${{ inputs.env_name }}/lib" \
+                  ./.conda/bin/conda run --live-stream --name "${{ inputs.env_name }}" $target
           done
 
           PYTEST_TARGETS="./ModelOptimizations/DlQuantization/test"
           PYTEST_TARGETS="$PYTEST_TARGETS ./TrainingExtensions/common/test"
 
-          if [ "${{ matrix.VER_ONNXRUNTIME }}" != "" ] ; then
+          if [ "${{ inputs.ver_onnxruntime }}" != "" ] ; then
               PYTEST_TARGETS="$PYTEST_TARGETS ./TrainingExtensions/onnx/test"
-          elif [ "${{ matrix.VER_TORCH }}" != "" ] ; then
+          elif [ "${{ inputs.ver_torch }}" != "" ] ; then
               PYTEST_TARGETS="$PYTEST_TARGETS ./TrainingExtensions/torch/test"
           fi
           PYTEST_ARGS="not blah"
-          if [ "${{ matrix.VER_CUDA }}" = "" ] ; then
+          if [ "${{ inputs.ver_cuda }}" = "" ] ; then
               PYTEST_ARGS="not cuda"
           fi
-          ./.conda/bin/conda run --live-stream --name "${{ matrix.id }}" python3 -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
+          ./.conda/bin/conda run --live-stream --name "${{ inputs.env_name }}" python3 -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
       - name: Run Acceptance tests
-        if: ${{ steps.check_acceptance_tests.outputs.status == 'true' }}
+        if: inputs.run_acceptance_tests
         run: |
           set -x
           PYTEST_TARGETS=""
-          if [ "${{ matrix.VER_ONNXRUNTIME }}" != "" ] ; then
+          if [ "${{ inputs.ver_onnxruntime }}" != "" ] ; then
               PYTEST_TARGETS="$PYTEST_TARGETS ./NightlyTests/onnx"
-          elif [ "${{ matrix.VER_TORCH }}" != "" ] ; then
+          elif [ "${{ inputs.ver_torch }}" != "" ] ; then
               PYTEST_TARGETS="$PYTEST_TARGETS ./NightlyTests/torch"
-              ./.conda/bin/conda run --live-stream --name "${{ matrix.id }}" python3 -m pip install wget
-              ./.conda/bin/conda run --live-stream --name "${{ matrix.id }}" python3 ./NightlyTests/torch/dependencies.py ./NightlyTests/torch/resnet18_eval_scores.csv
+              ./.conda/bin/conda run --live-stream --name "${{ inputs.env_name }}" python3 -m pip install wget
+              ./.conda/bin/conda run --live-stream --name "${{ inputs.env_name }}" python3 ./NightlyTests/torch/dependencies.py ./NightlyTests/torch/resnet18_eval_scores.csv
           fi
           PYTEST_ARGS="not blah"
-          if [ "${{ matrix.VER_CUDA }}" = "" ] ; then
+          if [ "${{ inputs.ver_cuda }}" = "" ] ; then
               PYTEST_ARGS="not cuda"
           fi
-          ./.conda/bin/conda run --live-stream --name "${{ matrix.id }}" python3 -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
+          ./.conda/bin/conda run --live-stream --name "${{ inputs.env_name }}" python3 -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
+
+  test_on_windows:
+    name: Run AIMET unit and acceptance tests on Windows
+    runs-on: [self-hosted, Windows]
+    if: inputs.include_windows_tests && inputs.env_name == 'onnx-cpu' && (inputs.run_unit_tests || inputs.run_acceptance_tests)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download built wheels
+        uses: actions/download-artifact@v3
+        with:
+          name: "onnx-cpu-win-wheel"
+          path: "downloads"
+      - uses: ./.github/actions/setup-uv-env
+        with:
+          ENV_NAME: "onnx-cpu"
+          VER_PYTHON: "3.10"
+          PIP_INDEX: ""
+          VER_CUDA: ""
+
+      - name: Run Unit tests
+        if: inputs.run_unit_tests
+        run: |
+
+          # Activate uv environment
+          .\onnx-cpu\Scripts\activate
+
+          # Run tests
+          $pytest_args = "not cuda"
+          Invoke-Expression "pytest -m `"$pytest_args`" -n 8 .\\ModelOptimizations\\DlQuantization\\test"
+          Invoke-Expression "pytest -m `"$pytest_args`" -n 8 .\\TrainingExtensions\\common\\test\\python"
+          Invoke-Expression "pytest -m `"$pytest_args`" -n 8 .\\TrainingExtensions\\onnx\\test\\python"
+
+      - name: Run Acceptance tests
+        if: inputs.run_acceptance_tests
+        run: |
+          # Activate uv environment
+          .\onnx-cpu\Scripts\activate
+
+          # Run tests
+          $pytest_args = "not cuda"
+          Invoke-Expression "pytest -m `"$pytest_args`" .\\NightlyTests\\onnx -n 8"

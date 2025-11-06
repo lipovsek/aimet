@@ -34,6 +34,7 @@
 #
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
+import os
 from aimet_common.connected_graph.operation import Op
 from aimet_onnx.graph_passes.pass_registry import register_pass
 from aimet_onnx.graph_passes.graph_pass import SupergroupGraphPass
@@ -48,6 +49,7 @@ import pytest
 import tempfile
 
 from ..models.models_for_tests import build_dummy_model
+from ..utils import tmp_dir
 
 
 def _generate_quantsim_config(supergroup_pass_name: str, file_path: str) -> dict:
@@ -86,47 +88,42 @@ class DummyTestGraphPass(SupergroupGraphPass):
         return [op]
 
 
-def test_register_and_apply_graph_pass():
+def test_register_and_apply_graph_pass(tmp_dir):
     model = build_dummy_model()
     input_data = {"x": np.random.rand(1, 3, 32, 32).astype(np.float32)}
 
-    with tempfile.NamedTemporaryFile(
-        prefix="quantsim_config", suffix=".json"
-    ) as config_file:
-        _generate_quantsim_config("DummyTestGraphPass", config_file.name)
-        sim = QuantizationSimModel(
+    config_file = str(os.path.join(tmp_dir, "quantsim_config.json"))
+    _generate_quantsim_config("DummyTestGraphPass", config_file)
+    sim = QuantizationSimModel(
+        model,
+        input_data,
+        quant_scheme=QuantScheme.post_training_tf,
+        default_param_bw=8,
+        default_activation_bw=8,
+        config_file=config_file,
+    )
+
+    graph = ConnectedGraph(model)
+    disable_quantizers = set(
+        get_const_input_names(graph.ordered_ops) + get_output_names(graph.ordered_ops)
+    )
+    for name, quantizer in sim.qc_quantize_op_dict.items():
+        # Ensure quantizers are disabled if they are in disable_quantizers set
+        assert quantizer.enabled ^ (name in disable_quantizers)
+
+
+def test_error_on_unregistered_graph_pass(tmp_dir):
+    model = build_dummy_model()
+
+    with pytest.raises(ValueError, match="Graph pass requested but not found:"):
+        config_file = str(os.path.join(tmp_dir, "quantsim_config.json"))
+        _generate_quantsim_config("UnsupportedGraphPass", config_file)
+        input_data = {"x": np.random.rand(1, 3, 32, 32).astype(np.float32)}
+        _ = QuantizationSimModel(
             model,
             input_data,
             quant_scheme=QuantScheme.post_training_tf,
             default_param_bw=8,
             default_activation_bw=8,
-            config_file=config_file.name,
+            config_file=config_file,
         )
-
-        graph = ConnectedGraph(model)
-        disable_quantizers = set(
-            get_const_input_names(graph.ordered_ops)
-            + get_output_names(graph.ordered_ops)
-        )
-        for name, quantizer in sim.qc_quantize_op_dict.items():
-            # Ensure quantizers are disabled if they are in disable_quantizers set
-            assert quantizer.enabled ^ (name in disable_quantizers)
-
-
-def test_error_on_unregistered_graph_pass():
-    model = build_dummy_model()
-
-    with pytest.raises(ValueError, match="Graph pass requested but not found:"):
-        with tempfile.NamedTemporaryFile(
-            prefix="quantsim_config", suffix=".json"
-        ) as config_file:
-            _generate_quantsim_config("UnsupportedGraphPass", config_file.name)
-            input_data = {"x": np.random.rand(1, 3, 32, 32).astype(np.float32)}
-            _ = QuantizationSimModel(
-                model,
-                input_data,
-                quant_scheme=QuantScheme.post_training_tf,
-                default_param_bw=8,
-                default_activation_bw=8,
-                config_file=config_file.name,
-            )

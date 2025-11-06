@@ -38,7 +38,7 @@
 
 import os
 import json
-import unittest
+import pytest
 from unittest.mock import patch
 import jsonschema
 from aimet_common.quantsim_config.json_config_importer import (
@@ -54,16 +54,17 @@ from aimet_common.quantsim_config.quantsim_config import (
     QuantizationDataType,
 )
 from aimet_common.defs import qtype
+from .utils import tmp_dir
 
 
-class TestJsonConfigImporter(unittest.TestCase):
+class TestJsonConfigImporter:
     """Class containing unit tests for json config importer feature"""
 
     def test_validate_syntax(self):
         """Test syntactic validation for config files"""
         # No defaults
         quantsim_config = {}
-        with self.assertRaises(jsonschema.exceptions.ValidationError):
+        with pytest.raises(jsonschema.exceptions.ValidationError):
             _validate_syntax(quantsim_config)
 
         # Missing ops dict
@@ -75,7 +76,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {},
         }
-        with self.assertRaises(jsonschema.exceptions.ValidationError):
+        with pytest.raises(jsonschema.exceptions.ValidationError):
             _validate_syntax(quantsim_config)
 
         # Bad value for is_symmetric
@@ -94,7 +95,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {},
         }
-        with self.assertRaises(jsonschema.exceptions.ValidationError):
+        with pytest.raises(jsonschema.exceptions.ValidationError):
             _validate_syntax(quantsim_config)
 
         # Extra field in ops dict
@@ -114,7 +115,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {},
         }
-        with self.assertRaises(jsonschema.exceptions.ValidationError):
+        with pytest.raises(jsonschema.exceptions.ValidationError):
             _validate_syntax(quantsim_config)
 
         # Supergroups length less than 2
@@ -134,7 +135,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {},
         }
-        with self.assertRaises(jsonschema.exceptions.ValidationError):
+        with pytest.raises(jsonschema.exceptions.ValidationError):
             _validate_syntax(quantsim_config)
 
         # verify supported_kernels has at least one entry
@@ -146,7 +147,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {},
         }
-        with self.assertRaises(jsonschema.exceptions.ValidationError):
+        with pytest.raises(jsonschema.exceptions.ValidationError):
             _validate_syntax(quantsim_config)
 
         # verify param in supported_kernels has both bitwidth and dtype
@@ -167,7 +168,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {},
         }
-        with self.assertRaises(jsonschema.exceptions.ValidationError):
+        with pytest.raises(jsonschema.exceptions.ValidationError):
             _validate_syntax(quantsim_config)
 
         # verify param in supported_kernels has a valid bitwidth [4, 8, 16, 32]
@@ -188,7 +189,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {},
         }
-        with self.assertRaises(jsonschema.exceptions.ValidationError):
+        with pytest.raises(jsonschema.exceptions.ValidationError):
             _validate_syntax(quantsim_config)
 
     def test_validate_semantics(self):
@@ -204,7 +205,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {},
         }
-        with self.assertRaises(NotImplementedError):
+        with pytest.raises(NotImplementedError):
             _validate_semantics(quantsim_config)
 
         # Test that is_output_quantized = False setting in default ops is caught
@@ -216,7 +217,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {},
         }
-        with self.assertRaises(NotImplementedError):
+        with pytest.raises(NotImplementedError):
             _validate_semantics(quantsim_config)
 
         # Test that is_input_quantized = False setting in op_type is caught
@@ -228,7 +229,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {},
         }
-        with self.assertRaises(NotImplementedError):
+        with pytest.raises(NotImplementedError):
             _validate_semantics(quantsim_config)
 
         # Test that is_input_quantized setting = False in model_input is caught
@@ -240,7 +241,7 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {"is_input_quantized": False},
             "model_output": {},
         }
-        with self.assertRaises(NotImplementedError):
+        with pytest.raises(NotImplementedError):
             _validate_semantics(quantsim_config)
 
         # Test that is_output_quantized setting = False in model_output is caught
@@ -252,11 +253,11 @@ class TestJsonConfigImporter(unittest.TestCase):
             "model_input": {},
             "model_output": {"is_output_quantized": False},
         }
-        with self.assertRaises(NotImplementedError):
+        with pytest.raises(NotImplementedError):
             _validate_semantics(quantsim_config)
 
 
-class TestQuantSimConfig(unittest.TestCase):
+class TestQuantSimConfig:
     """Class containing unit tests for quantsim config feature"""
 
     def test_build_list_of_permutations(self):
@@ -271,17 +272,17 @@ class TestQuantSimConfig(unittest.TestCase):
         )
         op_list = ["onnx1", "onnx2", "onnx3"]
         all_permutations = _build_list_of_permutations(op_list, onnx_conn_graph_mapper)
-        self.assertEqual(24, len(all_permutations))
+        assert 24 == len(all_permutations)
         for permutation in all_permutations:
-            self.assertEqual(3, len(permutation))
+            assert 3 == len(permutation)
 
         # check that all permutations are different
         permutation_sets = [set(permutation) for permutation in all_permutations]
         for index, elem in enumerate(permutation_sets):
             for _, elem_2 in enumerate(permutation_sets[index + 1 :]):
-                self.assertNotEqual(elem, elem_2)
+                assert elem != elem_2
 
-    def test_get_strict_symmetric_flag(self):
+    def test_get_strict_symmetric_flag(self, tmp_dir):
         """test get_strict_symmetric_flag()"""
 
         # config with default strict symmetric flag.
@@ -296,19 +297,14 @@ class TestQuantSimConfig(unittest.TestCase):
             "model_input": {},
             "model_output": {"is_output_quantized": "True"},
         }
-        with open("./config.json", "w") as f:
+        config_path = os.path.join(tmp_dir, "config.json")
+        with open(config_path, "w") as f:
             json.dump(config, f)
 
-        try:
-            configs = JsonConfigImporter.import_json_config_file(
-                config_file="./config.json"
-            )
-            assert not configs[ConfigDictKeys.DEFAULTS].get(
-                ConfigDictKeys.STRICT_SYMMETRIC, False
-            )
-        finally:
-            if os.path.isfile("./config.json"):
-                os.remove("./config.json")
+        configs = JsonConfigImporter.import_json_config_file(config_file=config_path)
+        assert not configs[ConfigDictKeys.DEFAULTS].get(
+            ConfigDictKeys.STRICT_SYMMETRIC, False
+        )
 
         # not default case.
         config = {
@@ -319,21 +315,15 @@ class TestQuantSimConfig(unittest.TestCase):
             "model_input": {},
             "model_output": {"is_output_quantized": "True"},
         }
-        with open("./config.json", "w") as f:
+        with open(config_path, "w") as f:
             json.dump(config, f)
 
-        try:
-            configs = JsonConfigImporter.import_json_config_file(
-                config_file="./config.json"
-            )
-            assert configs[ConfigDictKeys.DEFAULTS].get(
-                ConfigDictKeys.STRICT_SYMMETRIC, False
-            )
-        finally:
-            if os.path.isfile("./config.json"):
-                os.remove("./config.json")
+        configs = JsonConfigImporter.import_json_config_file(config_file=config_path)
+        assert configs[ConfigDictKeys.DEFAULTS].get(
+            ConfigDictKeys.STRICT_SYMMETRIC, False
+        )
 
-    def test_get_unsigned_symmetric_flag(self):
+    def test_get_unsigned_symmetric_flag(self, tmp_dir):
         """test get_unsinged_symmetric_flag()"""
 
         # config with default unsigned symmetric flag.
@@ -348,19 +338,14 @@ class TestQuantSimConfig(unittest.TestCase):
             "model_input": {},
             "model_output": {"is_output_quantized": "True"},
         }
-        with open("./config.json", "w") as f:
+        config_path = os.path.join(tmp_dir, "config.json")
+        with open(config_path, "w") as f:
             json.dump(config, f)
 
-        try:
-            configs = JsonConfigImporter.import_json_config_file(
-                config_file="./config.json"
-            )
-            assert configs[ConfigDictKeys.DEFAULTS].get(
-                ConfigDictKeys.UNSIGNED_SYMMETRIC, True
-            )
-        finally:
-            if os.path.isfile("./config.json"):
-                os.remove("./config.json")
+        configs = JsonConfigImporter.import_json_config_file(config_file=config_path)
+        assert configs[ConfigDictKeys.DEFAULTS].get(
+            ConfigDictKeys.UNSIGNED_SYMMETRIC, True
+        )
 
         # not default case.
         config = {
@@ -371,25 +356,19 @@ class TestQuantSimConfig(unittest.TestCase):
             "model_input": {},
             "model_output": {"is_output_quantized": "True"},
         }
-        with open("./config.json", "w") as f:
+        with open(config_path, "w") as f:
             json.dump(config, f)
 
-        try:
-            configs = JsonConfigImporter.import_json_config_file(
-                config_file="./config.json"
-            )
-            assert not configs[ConfigDictKeys.DEFAULTS].get(
-                ConfigDictKeys.UNSIGNED_SYMMETRIC, True
-            )
-        finally:
-            if os.path.isfile("./config.json"):
-                os.remove("./config.json")
+        configs = JsonConfigImporter.import_json_config_file(config_file=config_path)
+        assert not configs[ConfigDictKeys.DEFAULTS].get(
+            ConfigDictKeys.UNSIGNED_SYMMETRIC, True
+        )
 
     @patch(
         "aimet_common.quantsim_config.quantsim_config.QuantSimConfigurator.__abstractmethods__",
         set(),
     )
-    def test_op_type_default_override_supported_kernel_lookup(self):
+    def test_op_type_default_override_supported_kernel_lookup(self, tmp_dir):
         # config with default unsigned symmetric flag.
         config = {
             "defaults": {
@@ -424,11 +403,12 @@ class TestQuantSimConfig(unittest.TestCase):
             "model_input": {},
             "model_output": {"is_output_quantized": "True"},
         }
-        with open("./config.json", "w") as f:
+        config_path = os.path.join(tmp_dir, "config.json")
+        with open(config_path, "w") as f:
             json.dump(config, f)
 
         qsim_config = QuantSimConfigurator(
-            config_file="./config.json",
+            config_file=config_path,
             param_type=qtype.int(8),
             activation_type=qtype.int(8),
         )
@@ -441,6 +421,3 @@ class TestQuantSimConfig(unittest.TestCase):
         assert not qsim_config._op_type_default_override_supported_kernel_lookup(
             "Type3", 16, QuantizationDataType.float
         )
-
-        if os.path.isfile("./config.json"):
-            os.remove("./config.json")

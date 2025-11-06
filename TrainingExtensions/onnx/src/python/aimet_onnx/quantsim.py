@@ -1148,6 +1148,9 @@ class QuantizationSimModel:
 
         :param filename_prefix: filename to save the onnx model
         """
+        if not self._path:
+            raise ValueError("Path not specified to save the model.")
+
         self.model.save_model_to_file(
             os.path.join(self._path, filename_prefix) + ".onnx"
         )

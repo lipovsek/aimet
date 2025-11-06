@@ -13,6 +13,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix: ${{ fromJSON(inputs.variants) }}
     runs-on: ${{ matrix.runs-on }}
     defaults:

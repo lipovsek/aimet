@@ -16,16 +16,13 @@ from onnx import numpy_helper
 import numpy as np
 from dataclasses import dataclass
 import copy
-from GenAITests.shared.models.generator import Generator
-from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
-from GenAITests.onnx.helpers.quant_recipes import _prefill_inputs
-from GenAITests.shared.helpers.datasets import Wikitext
 from aimet_common.utils import compute_psnr
 from aimet_onnx.experimental.adascale.find_blocks import (
     get_decoder_blocks_end_points,
 )
 from aimet_common.utils import AimetLogger
 import onnx
+from .utils import add_genai_tests_path, tmp_dir
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
@@ -67,9 +64,11 @@ def _check_onnx_weights(model, layers_to_check: set = None, are_zeros: bool = Fa
             assert (weight_array == 1.0).all()
 
 
-def test_model_round_trip_with_qwen(monkeypatch):
-    path = os.path.abspath(os.path.join("../../../../GenAITests"))
-    monkeypatch.syspath_prepend(path)
+def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
+    from GenAITests.shared.models.generator import Generator
+    from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
+    from GenAITests.onnx.helpers.quant_recipes import _prefill_inputs
+    from GenAITests.shared.helpers.datasets import Wikitext
     from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
     from transformers import AutoConfig
 
@@ -94,10 +93,9 @@ def test_model_round_trip_with_qwen(monkeypatch):
 
     inputs = _prefill_inputs(sim, generator, train_dataset, num_iterations=5)
     ################ fp32 onnx model
-    CHECKPOINT_DIR = "onnx_checkpoints_debugging"
-    CHECKPOINT_FP_DIR = "onnx_checkpoints_debugging/fp_model.onnx"
+    CHECKPOINT_DIR = str(os.path.join(tmp_dir, "onnx_checkpoints_debugging"))
+    CHECKPOINT_FP_DIR = str(os.path.join(CHECKPOINT_DIR, "fp_model.onnx"))
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    path = os.path.abspath(os.path.join("../../../../GenAITests"))
 
     # converter = ModelConverter(CHECKPOINT_DIR)
     fp32_model = copy.deepcopy(sim.model.model)
@@ -216,13 +214,12 @@ class ModelWithConsecutiveConvBlocks(torch.nn.Module):
         return x
 
 
-def test_model_with_conv():
+def test_model_with_conv(tmp_dir):
     # Instantiate and export the model
     model = SimpleConvModel()
     dummy_input = torch.randn(1, 3, 64, 64)  # Batch size 1, 3 channels, 64x64 image
-    onnx_model_basedir = "onnx_checkpoints"
-    os.makedirs(onnx_model_basedir, exist_ok=True)
-    onnx_model_path = os.path.join(onnx_model_basedir, "simple_conv_model.onnx")
+
+    onnx_model_path = os.path.join(tmp_dir, "simple_conv_model.onnx")
     torch.onnx.export(
         model,
         dummy_input,
@@ -267,16 +264,14 @@ def test_model_with_conv():
     ],
 )
 def test_model_with_ModelWithConsecutiveConvBlocks(
-    input_names, output_names, extracted_graph_inp_shape
+    input_names, output_names, extracted_graph_inp_shape, tmp_dir
 ):
     # Instantiate and export the model
     model = ModelWithConsecutiveConvBlocks()
     dummy_input = torch.randn(
         1, 64, 128, 128
     )  # Batch size 1, 64 channels, 128x128 image
-    onnx_model_basedir = "onnx_checkpoints"
-    os.makedirs(onnx_model_basedir, exist_ok=True)
-    onnx_model_path = os.path.join(onnx_model_basedir, "simple_conv_model.onnx")
+    onnx_model_path = os.path.join(tmp_dir, "simple_conv_model.onnx")
 
     torch.onnx.export(
         model,

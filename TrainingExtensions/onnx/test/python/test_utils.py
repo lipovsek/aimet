@@ -55,6 +55,7 @@ from onnx.external_data_helper import (
 )
 
 from .models import models_for_tests
+from .utils import tmp_dir
 
 
 class TestUtils:
@@ -344,12 +345,12 @@ class TestORTInferenceSession:
 
 class TestLazyExtractor:
     @pytest.mark.parametrize("small_model", [True, False])
-    def test_extracts_model(self, small_model):
+    def test_extracts_model(self, small_model, tmp_dir):
         seed = 200
         torch.manual_seed(seed)
 
-        with torch.no_grad(), tempfile.TemporaryDirectory() as tmpdir:
-            model_path = os.path.join(tmpdir, "model.onnx")
+        with torch.no_grad():
+            model_path = os.path.join(tmp_dir, "model.onnx")
 
             if small_model:
                 in_features = 128
