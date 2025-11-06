@@ -2566,3 +2566,40 @@ def test_layernorm_exception_rule():
         model, input_data, default_param_bw=8, config_file="htp_v81"
     )
     assert not sim.model[0].param_quantizers["weight"].symmetric
+
+
+@pytest.mark.parametrize(
+    "model_factory, dummy_input",
+    [
+        (test_models.ScatterNDModel, test_models.ScatterNDModel.dummy_input()),
+        (
+            test_models.ScatterNDModelWithConstantIndices,
+            test_models.ScatterNDModelWithConstantIndices.dummy_input(),
+        ),
+        (
+            test_models.ScatterNDModelWithConstantUpdates,
+            test_models.ScatterNDModelWithConstantUpdates.dummy_input(),
+        ),
+    ],
+)
+def test_scatternd_models(model_factory, dummy_input):
+    model = model_factory()
+    sim = QuantizationSimModel(model, dummy_input)
+    assert sim.model.linear.input_quantizers[0] is not None
+    assert sim.model.linear.output_quantizers[0] is not None
+    # Input[0] is quantized by linear output quantizer
+    assert sim.model.scatternd.input_quantizers[0] is None
+    assert sim.model.scatternd.input_quantizers[2] is not None
+    assert sim.model.scatternd.output_quantizers[0] is not None
+
+
+def test_model_with_constant_concat_inputs():
+    model = test_models.ConstantConcatModel()
+    sim = QuantizationSimModel(model, model.dummy_input())
+    graph = sim.connected_graph
+    assert len(graph.ordered_ops) == 2
+    concat_layer = graph.ordered_ops[-1]
+    assert concat_layer.inputs[0].is_const
+    assert concat_layer.inputs[2].is_const
+    assert not concat_layer.inputs[1].is_const
+    assert concat_layer.inputs[1].producer == graph.ordered_ops[0]

@@ -1464,3 +1464,81 @@ class ModelWithConsecutiveConv2dBlocks(torch.nn.Module):
             x = conv_block(x)
         x = self.softmax(x)
         return x
+
+
+class ScatterNDModel(torch.nn.Module):
+    def __init__(self):
+        super(ScatterNDModel, self).__init__()
+        self.linear = torch.nn.Linear(10, 10)
+        self.scatternd = aimet_modules.ScatterND()
+
+    def forward(self, data, indices, updates):
+        data = self.linear(data)
+        return self.scatternd(data, indices, updates)
+
+    @staticmethod
+    def dummy_input():
+        data = torch.randn([1, 900, 10]).to(torch.float32)
+        updates = torch.zeros([1, 900, 1, 1]).to(dtype=torch.float32)
+        indices = torch.zeros([1, 900, 1, 3], dtype=torch.int64)
+        return (data, indices, updates)
+
+
+class ScatterNDModelWithConstantIndices(torch.nn.Module):
+    def __init__(self):
+        super(ScatterNDModelWithConstantIndices, self).__init__()
+        self.linear = torch.nn.Linear(10, 10)
+        self.register_buffer("indices", torch.zeros([1, 900, 1, 3], dtype=torch.int64))
+        self.scatternd = aimet_modules.ScatterND()
+
+    def forward(self, data, updates):
+        data = self.linear(data)
+        return self.scatternd(data, self.indices, updates)
+
+    @staticmethod
+    def dummy_input():
+        data = torch.randn([1, 900, 10]).to(torch.float32)
+        updates = torch.zeros([1, 900, 1, 1]).to(dtype=torch.float32)
+        return (data, updates)
+
+
+class ScatterNDModelWithConstantUpdates(torch.nn.Module):
+    def __init__(self):
+        super(ScatterNDModelWithConstantUpdates, self).__init__()
+        self.linear = torch.nn.Linear(10, 10)
+        self.register_buffer(
+            "updates", torch.zeros([1, 900, 1, 1], dtype=torch.float32)
+        )
+        self.scatternd = aimet_modules.ScatterND()
+
+    def forward(self, data, indices):
+        data = self.linear(data)
+        return self.scatternd(data, indices, self.updates)
+
+    @staticmethod
+    def dummy_input():
+        indices = torch.zeros([1, 900, 1, 3], dtype=torch.int64)
+        data = torch.randn([1, 900, 10], dtype=torch.float32)
+        return (data, indices)
+
+
+class ConstantConcatModel(torch.nn.Module):
+    def __init__(self):
+        super(ConstantConcatModel, self).__init__()
+        self.concat = aimet_modules.Concat(axis=0)
+        self.register_buffer(
+            "const_tensor_0", torch.zeros([1, 10, 10], dtype=torch.float32)
+        )
+        self.register_buffer(
+            "const_tensor_1", torch.zeros([1, 10, 10], dtype=torch.float32)
+        )
+        self.linear = torch.nn.Linear(10, 10)
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = self.concat(self.const_tensor_0, x, self.const_tensor_1)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn([1, 10, 10], dtype=torch.float32),)

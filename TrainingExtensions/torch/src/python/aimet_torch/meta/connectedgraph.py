@@ -47,6 +47,7 @@ from collections import defaultdict
 from types import SimpleNamespace
 import inspect
 from itertools import islice
+import contextlib
 from typing import Tuple, Union, List, Dict, Type, Optional, Iterator
 import torch
 
@@ -71,6 +72,8 @@ from aimet_torch.utils import (
 )
 from aimet_torch import onnx_utils
 import aimet_torch.utils
+from aimet_torch.nn import BaseQuantizationMixin
+from aimet_torch.quantization.base import QuantizerBase
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.ConnectedGraph)
 
@@ -349,7 +352,8 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 model, model_input
             )
         )
-        trace = torch.jit.trace(model, model_input, **jit_trace_args)
+        with _add_passthrough_input_quantizers(model):
+            trace = torch.jit.trace(model, model_input, **jit_trace_args)
         self._parse_top_level_trace(trace, model)
         self._recover_input_output_structure()
         self._optimize_connected_graph()
@@ -668,8 +672,12 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         # pylint: disable=unnecessary-comprehension
         outputs = [output for output in node.outputs()]
 
+        module = node_name_to_module.get(input_name)
         # We don't want to further trace some custom implementation from aimet_modules
-        if input_name in node_name_to_subgraph_model and not isinstance(
+        if isinstance(module, tuple(SKIP_LIST_FOR_SUBGRAPH_TRACE)):
+            module_trace = module_to_jit_trace[module]
+            inputs = _parse_qmodule_input_ordering(module_trace, inputs)
+        elif input_name in node_name_to_subgraph_model and not isinstance(
             node_name_to_subgraph_model[input_name][0],
             tuple(SKIP_LIST_FOR_SUBGRAPH_TRACE),
         ):
@@ -1588,8 +1596,6 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         :param trace: torch.jit trace of the module
         :return: Boolean whether recursive parsing needed or not. If needed returns True, False otherwise.
         """
-        # pylint: disable=import-outside-toplevel, cyclic-import
-        from aimet_torch.v2.nn import BaseQuantizationMixin
 
         if isinstance(module, BaseQuantizationMixin):
             return self._is_recursive_parsing_needed(
@@ -1789,3 +1795,151 @@ def _get_module_tensor_shapes_entry(tensors: Union[torch.Tensor, List, Dict, Non
         type(tensors),
     )
     return None
+
+
+def _parse_qmodule_input_ordering(
+    module_trace: torch.jit.TracedModule, inputs: List[torch._C.Value]
+) -> List[torch._C.Value]:
+    """
+    Parse the input ordering for the given module trace and reorder the inputs accordingly.
+
+    :param module_trace: JIT trace of the module
+    :param inputs: List of input values to reorder
+    :return: Reordered list of input values
+    """
+    graph = module_trace.graph
+    graph_inputs = list(graph.inputs())
+    # Get a dict of all quantizer values in the graph mapped to their index in input_quantizers
+    quantizer_value_to_index = _get_all_input_quantizer_values(graph)
+
+    # For each forward call in the graph, get a list of the call inputs
+    forward_call_inputs = [
+        list(n.inputs())
+        for n in graph.nodes()
+        if n.kind() == "prim::CallMethod" and n.s("name") == "forward"
+    ]
+
+    # Build a list of (input_tensor, quantizer_index) tuples for all quantized inputs
+    input_index_list = [
+        (inp[1], quantizer_value_to_index[inp[0]])
+        for inp in forward_call_inputs
+        if inp[0] in quantizer_value_to_index and len(inp) > 1
+    ]
+
+    ordered_inputs = [None for _ in inputs]
+    for input_tensor, quantizer_index in input_index_list:
+        # Ignore quantized tensors that are not part of the graph inputs
+        if input_tensor not in graph_inputs:
+            continue
+        if ordered_inputs[quantizer_index + 1] is not None:
+            logger.debug(
+                "Duplicate usage for quantizer index %d found for module %s. "
+                "Input ordering may not be accurately captured.",
+                quantizer_index,
+                module_trace,
+            )
+            continue
+        graph_input_idx = graph_inputs.index(input_tensor)
+        # quantizer_index + 1 to account for self input at index 0
+        ordered_inputs[quantizer_index + 1] = inputs[graph_input_idx]
+
+    # For non-quantized inputs, fill in the remaining None slots in ordered_inputs in order
+    for inp in inputs:
+        if inp not in ordered_inputs:
+            hole = ordered_inputs.index(None)
+            ordered_inputs[hole] = inp
+
+    return ordered_inputs
+
+
+def _get_all_input_quantizer_values(graph: torch._C.Graph) -> Dict[torch._C.Value, int]:
+    """
+    Returns a dictionary of graph values corresponding to input quantizers mapped to their index in input_quantizers
+    """
+    self = list(graph.inputs())[0]
+    # Note: There will be a distinct value object each time input_quantizers is accessed
+    input_quantizers_values = {
+        n.output()
+        for n in graph.nodes()
+        if _gets_attribute(n, self, "input_quantizers")
+    }
+    # Get all nodes which retrieve an object from input_quantizers
+    get_quantizer_nodes = [
+        n
+        for n in graph.nodes()
+        if n.kind() == "prim::GetAttr"
+        and list(n.inputs())[0] in input_quantizers_values
+    ]
+    quantizer_value_to_index = {
+        n.output(): int(n.s("name")) for n in get_quantizer_nodes
+    }
+    return quantizer_value_to_index
+
+
+def _gets_attribute(
+    node: torch._C.Node, obj: torch._C.Value, attribute_name: str
+) -> bool:
+    """
+    Checks whether a given graph node returns obj.attribute_name
+    """
+    # Check if node is a GetAttr node
+    if not node.kind() == "prim::GetAttr":
+        return False
+    # Note: GetAttr nodes should always have a "name" attribute
+    if not "name" in node.attributeNames():
+        return False
+    node_inputs = list(node.inputs())
+    # Check if node is returning a value from the given object
+    if len(node_inputs) != 1 or node_inputs[0] != obj:
+        return False
+    return node.s("name") == attribute_name
+
+
+class _IdentityQuantizer(QuantizerBase):
+    """A pass-through quantizer module for use only during connected graph construction."""
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # pylint: disable=redefined-builtin
+        # Note: some operation must be performed here to be captured accurately in the trace
+        return input.to(input.dtype)
+
+    @contextlib.contextmanager
+    def compute_encodings(self):
+        raise NotImplementedError("_IdentityQuantizer cannot compute encodings.")
+
+    def get_legacy_encodings(self):
+        raise NotImplementedError("_IdentityQuantizer cannot contain encodings.")
+
+    def set_legacy_encodings(self, _):
+        raise NotImplementedError("_IdentityQuantizer cannot contain encodings.")
+
+    def get_encodings(self):
+        raise NotImplementedError("_IdentityQuantizer cannot contain encodings.")
+
+    @classmethod
+    def from_encodings(cls, _):
+        raise NotImplementedError(
+            "_IdentityQuantizer cannot be constructed from encodings."
+        )
+
+
+@contextlib.contextmanager
+def _add_passthrough_input_quantizers(model):
+    """Context manager to add _IdentityQuantizer to quantized layers for which we cannot trivially trace the subgraph"""
+
+    input_quantizer_map = {}
+
+    try:
+        for module in model.modules():
+            if isinstance(module, BaseQuantizationMixin) and isinstance(
+                module, tuple(SKIP_LIST_FOR_SUBGRAPH_TRACE)
+            ):
+                input_quantizer_map[module] = [q for q in module.input_quantizers]
+                for idx, _ in enumerate(module.input_quantizers):
+                    module.input_quantizers[idx] = _IdentityQuantizer()
+
+        yield
+
+    finally:
+        for module, input_quantizers in input_quantizer_map.items():
+            for idx, _ in enumerate(module.input_quantizers):
+                module.input_quantizers[idx] = input_quantizers[idx]
