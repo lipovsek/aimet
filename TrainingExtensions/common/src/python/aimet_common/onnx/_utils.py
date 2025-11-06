@@ -691,17 +691,20 @@ def _convert_version_with_external_weights(model, target_opset_version):
 def _convert_version(
     model: onnx.ModelProto, target_opset_version: int
 ) -> onnx.ModelProto:
-    try:
-        model = onnx.version_converter.convert_version(model, target_opset_version)
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # convert_version throws an exception on model > 2GB the observed exception was a
-        # RuntimeError exception about ir_version, but possible other exceptions could be
-        # triggered. leaving this very generic for now.
-        logger.warning(
-            "onnx.version_converter.convert_version failed with exception: %s. Retrying with external data",
-            str(e),
-        )
+    if any(uses_external_data(tensor) for tensor in _get_all_tensors(model)):
         model = _convert_version_with_external_weights(model, target_opset_version)
+    else:
+        try:
+            model = onnx.version_converter.convert_version(model, target_opset_version)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            # convert_version throws an exception on model > 2GB the observed exception was a
+            # RuntimeError exception about ir_version, but possible other exceptions could be
+            # triggered. leaving this very generic for now.
+            logger.warning(
+                "onnx.version_converter.convert_version failed with exception: %s. Retrying with external data",
+                str(e),
+            )
+            model = _convert_version_with_external_weights(model, target_opset_version)
 
     logger.info("The opset of the onnx model is updated to %s.", target_opset_version)
     return model

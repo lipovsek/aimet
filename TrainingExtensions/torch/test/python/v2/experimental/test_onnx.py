@@ -1251,9 +1251,6 @@ def test_export_large_model(
     prequantize_constants: bool,
     tmp_path: pathlib.Path,
 ):
-    if opset_version >= 21 and parse(torch.__version__) < parse("2.2.0"):
-        pytest.skip("Skipping temporarily to stabilize CI")
-
     """
     Given: model that exceeds 2GB
     """
@@ -1275,7 +1272,6 @@ def test_export_large_model(
             onnx_path,
             input_names=["input"],
             output_names=["output"],
-            opset_version=opset_version,
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
             dynamo=False,
         )
