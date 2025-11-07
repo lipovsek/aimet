@@ -6,6 +6,37 @@
 Release notes
 #############
 
+2.19.0
+======
+
+* New Features
+
+* Bug fixes and Improvements
+    * ONNX
+        * Make LiteMP API percentage float (`69f96ff`_)
+        * Set layernorm int16 weight to symmetric by default (`8560e13`_)
+        * Automatically insert data movement op output qdq during to_onnx_qdq (`15c8b9b`_)
+        * Create LazyExtractor to handle external data for onnx Extractor utils (`104e7e8`_)
+        * Tie input/output encodings across maximum Concat subgraph (`832ea91`_)
+        * Tie hidden state quantizers of RNN/GRU/LSTM (`c18fd05`_)
+
+    * Torch
+        * Fix histogram observer rebinning logic (`2c88364`_)
+        * Fix connectedgraph input ordering for non-trivial layer types (`2b7b548`_)
+
+    * Common
+        * Disable per-channel quantization of RNN/GRU/LSTM for all HTP backends (`df8b875`_)
+
+.. _df8b875: https://github.com/quic/aimet/commit/df8b87516dc894baf768377a037944fcdd60f0f6
+.. _69f96ff: https://github.com/quic/aimet/commit/69f96ff1af7c69603f325dbdf2a89cf6b22d57a7
+.. _8560e13: https://github.com/quic/aimet/commit/8560e136914216a1003bb2888b827daaae490991
+.. _15c8b9b: https://github.com/quic/aimet/commit/15c8b9b2672671fd3cff1c92267460340c40db48
+.. _2c88364: https://github.com/quic/aimet/commit/2c88364f75f893ec1f798afd7530436685aa5b7a
+.. _104e7e8: https://github.com/quic/aimet/commit/104e7e8284393ae383c31e0c2045ab06674fac35
+.. _832ea91: https://github.com/quic/aimet/commit/832ea917f48fd1fd70096827c3fca647d7621e2d
+.. _c18fd05: https://github.com/quic/aimet/commit/c18fd056674614b44c443679a5620ed5223303d0
+.. _2b7b548: https://github.com/quic/aimet/commit/2b7b54816b0f35db5bf09c107075d7b7285f871c
+
 
 2.18.0
 ======
