@@ -133,10 +133,6 @@
     {
       "is_output_quantized": "False"
     },
-    "Pad":
-    {
-      "is_output_quantized": "False"
-    },
     "Mean":
     {
       "is_output_quantized": "False"

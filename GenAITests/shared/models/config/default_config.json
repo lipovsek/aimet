@@ -134,10 +134,6 @@
     {
       "is_output_quantized": "False"
     },
-    "Pad":
-    {
-      "is_output_quantized": "False"
-    },
     "ReduceMax":
     {
       "is_output_quantized": "False"
