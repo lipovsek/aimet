@@ -140,8 +140,7 @@ jobs:
     # with this job anyway
     if: |
       !cancelled() &&
-      (needs.build-aimet-onnx-gpu.result == 'skipped' && needs.build-aimet-torch-gpu.result == 'success') ||
-      (needs.build-aimet-torch-gpu.result == 'skipped' && needs.build-aimet-onnx-gpu.result == 'success')
+      !(needs.build-aimet-onnx-gpu.result == 'skipped' && needs.build-aimet-torch-gpu.result == 'skipped')
 
     strategy:
       matrix:
