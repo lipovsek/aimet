@@ -1340,7 +1340,9 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             op_module = op.get_module()
             if op_module:
                 assert op_module in module_tensor_shapes_map
-                _, output_tensor_shapes = module_tensor_shapes_map[op_module]
+                input_tensor_shapes, output_tensor_shapes = module_tensor_shapes_map[
+                    op_module
+                ]
                 # Temporarily not handling dict types for output tensors.
                 if isinstance(output_tensor_shapes, Dict):
                     output_tensor_shapes = None
@@ -1350,6 +1352,10 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 op.output_shape = flattened_shapes[0]
                 op.dotted_name = self._module_to_name[op_module]
                 _fill_groups_info(op, op_module)
+
+                for inp, shape in zip(op.inputs, input_tensor_shapes):
+                    if inp.shape is None:
+                        inp.shape = shape
 
             if op.outputs:
                 if op.outputs[0].shape is None:

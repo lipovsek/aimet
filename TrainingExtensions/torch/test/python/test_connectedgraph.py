@@ -52,6 +52,7 @@ from aimet_common.connected_graph.connectedgraph_utils import (
     CG_SPLIT,
 )
 from .models import test_models
+from .v2.models_ import test_models as test_models_
 from aimet_common.connected_graph.product import Product
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch.meta.operation import Op
@@ -1390,3 +1391,18 @@ class TestConnectedGraphUtils(unittest.TestCase):
         assert len(cg.get_all_ops()) == 1
         assert cg.ordered_ops[0].inputs[0].is_model_input
         assert cg.ordered_ops[0].get_module() == model.rms_norm_0
+
+    def test_concat_model_with_constant_inputs(self):
+        model = test_models_.ConstantConcatModel()
+        dummy_input = model.dummy_input()
+        cg = ConnectedGraph(model, dummy_input)
+        assert len(cg.ordered_ops) == 2
+        concat_op = cg.ordered_ops[1]
+        assert concat_op.type == "Concat"
+        assert concat_op.inputs[0].is_const
+        assert not concat_op.inputs[1].is_const
+        assert concat_op.inputs[2].is_const
+        assert concat_op.inputs[0].shape == model.const_tensor_0.shape
+        assert concat_op.inputs[2].shape == model.const_tensor_1.shape
+        assert concat_op.inputs[1].shape == (1, 10, 10)
+        assert concat_op.inputs[1].producer is cg.ordered_ops[0]

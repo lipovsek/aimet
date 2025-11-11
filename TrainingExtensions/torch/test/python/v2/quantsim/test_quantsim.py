@@ -2603,3 +2603,9 @@ def test_model_with_constant_concat_inputs():
     assert concat_layer.inputs[2].is_const
     assert not concat_layer.inputs[1].is_const
     assert concat_layer.inputs[1].producer == graph.ordered_ops[0]
+
+    propagate_output_encodings(sim, custom.Concat)
+    assert sim.model.concat.output_quantizers[0] is sim.model.concat.input_quantizers[0]
+    assert (
+        sim.model.concat.output_quantizers[0] is sim.model.linear.output_quantizers[0]
+    )
