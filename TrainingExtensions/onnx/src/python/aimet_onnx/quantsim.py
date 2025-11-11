@@ -1331,6 +1331,17 @@ class QuantizationSimModel:
                 self.qc_quantize_op_dict.keys(), enc_version
             )
 
+            if self._export_data_movement_op_output_quantizers:
+                with self._remove_quantization_nodes():
+                    derived_encodings = _derive_data_movement_op_encodings(
+                        self.model.model,
+                        {enc["name"]: enc for enc in encodings},
+                    )
+
+                encodings.extend(
+                    {**enc, "name": name} for name, enc in derived_encodings.items()
+                )
+
             encodings_dict.update(
                 {
                     "encodings": encodings,

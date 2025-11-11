@@ -64,7 +64,10 @@ from onnxsim import simplify
 from aimet_common import quantsim
 from aimet_common import libpymo
 from aimet_common.defs import QuantScheme, QuantizationDataType, EncodingType, qtype
-from aimet_common.onnx._utils import _convert_version_with_external_weights
+from aimet_common.onnx._utils import (
+    _convert_version_with_external_weights,
+    _remove_onnx_qdq_nodes,
+)
 from aimet_common.quantsim_config.utils import (
     get_path_for_per_channel_config,
     get_path_for_per_tensor_config,
@@ -543,6 +546,61 @@ class TestQuantSim:
                 assert enc["enc_type"] == EncodingType.PER_CHANNEL.name
             else:
                 assert enc["enc_type"] == EncodingType.PER_TENSOR.name
+
+    def test_export_model_2_0_0(self, tmp_path: pathlib.Path):
+        """Test to export encodings and model in 1.0.0 format"""
+        model = build_dummy_model()
+        sim = QuantizationSimModel(model, config_file=get_path_for_per_channel_config())
+
+        sim.compute_encodings([make_dummy_input(model)])
+
+        with set_encoding_version("2.0.0"):
+            sim.export(tmp_path, "quant_sim_model")
+
+        with open(tmp_path / "quant_sim_model.encodings") as json_file:
+            encodings = json.load(json_file)
+
+        """
+        When: Export encoding with 2.0.0 format
+        Then: All enabled quantizers should be exported
+        """
+        assert encodings["version"] == "2.0.0"
+        encodings = encodings["encodings"]
+        assert sorted(e["name"] for e in encodings) == [
+            "4",
+            "5",
+            "6",
+            "conv_w",
+            "fc_w",
+            "input",
+            "output",
+        ]
+        # Exported encoding contains more entry than qc_quantize_op_dict since
+        # some grid-preserving op's input/output encodings are auto-generated
+        assert set(e["name"] for e in encodings) > {
+            name for name, qtzr in sim.qc_quantize_op_dict.items() if qtzr.enabled
+        }
+
+        # Cross-check with onnx QDQ.
+        expected_encodings = _remove_onnx_qdq_nodes(sim.to_onnx_qdq())
+        assert len(encodings) == len(expected_encodings)
+
+        encodings = sorted(encodings, key=lambda e: e["name"])
+        expected_encodings = sorted(expected_encodings, key=lambda e: e["name"])
+
+        for e1, e2 in zip(encodings, expected_encodings):
+            assert e1["name"] == e2["name"]
+            assert e1["output_dtype"] == e2["output_dtype"]
+            assert np.all(
+                np.array(e1["y_scale"], dtype=np.float32)
+                == np.array(e2["y_scale"], dtype=np.float32)
+            )
+            assert np.all(
+                np.array(e1.get("y_zero_point", 0), dtype=np.int64)
+                == np.array(e2.get("y_zero_point", 0), dtype=np.int64)
+            )
+            assert e1.get("axis") == e2.get("axis")
+            assert e1.get("block_size") == e2.get("block_size")
 
     @pytest.mark.parametrize("model_factory", [rnn, gru, lstm])
     @pytest.mark.parametrize(
