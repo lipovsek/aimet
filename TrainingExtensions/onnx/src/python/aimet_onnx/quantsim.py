@@ -384,6 +384,16 @@ class QuantizationSimModel:
         if isinstance(model, ModelProto):
             model = ONNXModel(model)
 
+        node_names = [node.name for node in model.model.graph.node]
+        if len(node_names) != len(set(node_names)):
+            counts = defaultdict(int)
+            for name in node_names:
+                counts[name] += 1
+            non_unique_names = [name for name, count in counts.items() if count > 1]
+            raise RuntimeError(
+                f"ONNX model contains nodes with non-unique names: {non_unique_names}"
+            )
+
         if isinstance(param_type, str):
             param_type = qtype.from_string(param_type)
 

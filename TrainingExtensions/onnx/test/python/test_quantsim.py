@@ -5842,3 +5842,17 @@ def test_output_split(tmp_path: pathlib.Path):
         gemm_output_dq.output[0] == softmax.input[0] == qdq_model.graph.output[0].name
     )
     assert softmax_output_dq.output[0] == qdq_model.graph.output[1].name
+
+
+def test_non_unique_node_names():
+    """
+    When: Create quantsim with a model with non-unique node names
+    Then: Throw runtime error
+    """
+    model = build_dummy_model()
+
+    for node in model.graph.node:
+        node.name = "non_unique_name"
+
+    with pytest.raises(RuntimeError):
+        _ = QuantizationSimModel(model)
