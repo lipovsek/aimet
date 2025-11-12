@@ -66,6 +66,7 @@ from aimet_common import libpymo
 from aimet_common.defs import QuantScheme, QuantizationDataType, EncodingType, qtype
 from aimet_common.onnx._utils import (
     _convert_version_with_external_weights,
+    _is_grid_preserving_op,
     _remove_onnx_qdq_nodes,
 )
 from aimet_common.quantsim_config.utils import (
@@ -118,6 +119,13 @@ from .models.models_for_tests import (
     unfusable_matmul_add,
 )
 from .utils import tmp_dir
+from .models.onnx_qdq_models import (
+    qdq_relu_cast_qdq,
+    qdq_relu_identity_qdq,
+    qdq_relu_transpose_qdq,
+    split_qdq,
+    concat_qdq,
+)
 
 CPU_PROVIDERS = ["CPUExecutionProvider"]
 CUDA_PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -5727,6 +5735,102 @@ def test_from_onnx_qdq_split_op():
         config_file="htp_v81",
     )
     _assert_sim_equal(sim, sim_2)
+
+
+@pytest.mark.parametrize(
+    "model_factory",
+    [
+        qdq_relu_cast_qdq,
+        qdq_relu_identity_qdq,
+        qdq_relu_transpose_qdq,
+        *(
+            partial(
+                split_qdq,
+                split_input_quantized=arg0,
+                mul_input_quantized=True,
+                mul_output_quantized=arg1,
+                reshape_input_quantized=True,
+                reshape_output_quantized=arg3,
+            )
+            for arg0, arg1, arg3 in itertools.product([True, False], repeat=3)
+        ),
+        *(
+            partial(
+                concat_qdq,
+                mul_input_quantized=arg0,
+                mul_output_quantized=arg1,
+                reshape_input_quantized=arg2,
+                reshape_output_quantized=arg3,
+                concat_output_quantized=arg4,
+            )
+            for arg0, arg1, arg2, arg3, arg4 in itertools.product(
+                [True, False], repeat=5
+            )
+        ),
+    ],
+)
+@pytest.mark.parametrize("tie_encodings", [False])
+def test_from_onnx_qdq_encoding_delegation(
+    model_factory: Callable[[], onnx.ModelProto],
+    tie_encodings: bool,
+):
+    """
+    Given: Model with output encodings delegatable to input quantizers
+    When: Create sim from onnx QDQ model
+    Then: Should be able to create sim without errors
+    """
+    qdq_model = model_factory()
+
+    with _apply_constraints(tie_encodings):
+        sim = QuantizationSimModel._from_onnx_qdq(model_factory())
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        qdq_model.SerializeToString(), sess_options=sess_options
+    )
+
+    sess_exported = ort.InferenceSession(
+        sim.to_onnx_qdq().SerializeToString(), sess_options=sess_options
+    )
+
+    for _ in range(10):
+        input = make_dummy_input(qdq_model)
+        out = sess_exported.run(None, input)
+        out_expected = sess.run(None, input)
+        for out_i, out_expected_i in zip(out, out_expected):
+            assert np.all(out_i == out_expected_i)
+
+
+@pytest.mark.parametrize(
+    "model_factory",
+    [
+        partial(
+            split_qdq,
+            split_input_quantized=arg0,
+            mul_input_quantized=arg1,
+            mul_output_quantized=arg2,
+            reshape_input_quantized=arg3,
+            reshape_output_quantized=arg4,
+        )
+        for arg0, arg2 in itertools.product([True, False], repeat=2)
+        for arg1, arg3, arg4 in [
+            (True, False, True),
+            (True, False, False),
+            (False, True, True),
+            (False, True, False),
+            (False, False, True),
+        ]
+    ],
+)
+def test_from_onnx_qdq_excess_encodings(model_factory: Callable[[], onnx.ModelProto]):
+    """
+    Given: Only one output of Split has quantization encoding
+    When: Create sim from onnx QDQ model
+    Then: Should raise NotImplementedError due to excess encodings
+    """
+    with pytest.raises(NotImplementedError):
+        _ = QuantizationSimModel._from_onnx_qdq(model_factory())
 
 
 def test_to_onnx_qdq_large_model(tmp_dir):

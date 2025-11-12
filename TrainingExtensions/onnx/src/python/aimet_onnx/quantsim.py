@@ -508,11 +508,12 @@ class QuantizationSimModel:
         # Removes Q/DQ node from model and extract them into 2.0.0 json encoding
         encodings = _remove_onnx_qdq_nodes(model)
         encodings = {enc["name"]: enc for enc in encodings}
-        producers = {
-            output: copy.copy(node)
-            for node in model.graph.node
-            for output in node.output
-        }
+        nodes = [copy.copy(node) for node in model.graph.node]
+        producers = {output: node for node in nodes for output in node.output}
+        consumers = defaultdict(list)
+        for node in nodes:
+            for input_name in node.input:
+                consumers[input_name].append(node)
 
         # Create sim
         sim = QuantizationSimModel(model, **kwargs)
@@ -529,7 +530,7 @@ class QuantizationSimModel:
             if bias is not None
         )
         excess_encodings = encodings.keys() - (quantizable_tensor_names | bias_names)
-        shared_quantizers = {}
+        delegatable = set()
 
         def _is_encoding_equal(enc1, enc2):
             return enc1.keys() == enc2.keys() and all(
@@ -538,38 +539,53 @@ class QuantizationSimModel:
 
         for output_name in list(excess_encodings):
             producer = producers.get(output_name)
-            input_name = producer.input[0] if producer and producer.input else None
-            input_encoding = encodings.get(input_name)
-            output_encoding = encodings.get(output_name)
+            output_encoding = encodings[output_name]
 
-            while (
-                input_encoding is None
-                and producer
-                and _is_grid_preserving_op(producer.op_type)
+            while producer and (
+                _is_grid_preserving_op(producer.op_type) or producer.op_type == "Cast"
             ):
+                # Delegate excess encoding to producer's input
+                #                                                      (excess encoding)
+                #   input_name                                            output_name
+                #       ↓                                                      ↓
+                # ... ----> producer -----> [ 0 or more grid-preserving ops ] -->
+                #      (grid-preserving)
+                input_name = producer.input[0]
+
+                if (
+                    sim.qc_quantize_op_dict.get(input_name)
+                    and sim.qc_quantize_op_dict[input_name].enabled
+                    and (
+                        input_name not in encodings
+                        or _is_encoding_equal(encodings[input_name], output_encoding)
+                    )
+                    and len(consumers[input_name]) == 1
+                    and all(
+                        _is_encoding_equal(
+                            encodings.get(other_output, {}), output_encoding
+                        )
+                        for other_output in producer.output
+                    )
+                ):
+                    encodings[input_name] = {
+                        **output_encoding,
+                        "name": input_name,
+                    }
+                    delegatable.add(output_name)
+
                 producer = producers.get(input_name)
-                input_name = producer.input[0] if producer and producer.input else None
-                input_encoding = encodings.get(input_name)
 
-            if (
-                producer
-                and _is_grid_preserving_op(producer.op_type)
-                and input_encoding
-                and output_encoding
-                and _is_encoding_equal(input_encoding, output_encoding)
-            ):
-                # `output_name` is an output of a grid-preserving op whose input has same encoding.
-                # Tie input/output quantizers to always keep input/output encodings identical.
-                excess_encodings.remove(output_name)
-                encodings.pop(output_name)
-
-        sim.set_quantizers(shared_quantizers)
+        excess_encodings -= delegatable
 
         if excess_encodings:
             raise NotImplementedError(
                 "Unexpected QuantizeLinear/DequantizeLinear nodes were found "
                 f"for the following tensors: {excess_encodings}"
             )
+
+        encodings = {
+            name: enc for name, enc in encodings.items() if name not in delegatable
+        }
 
         lpbq_weights = {
             name: enc
