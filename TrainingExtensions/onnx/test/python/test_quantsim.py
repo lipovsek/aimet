@@ -619,7 +619,7 @@ class TestQuantSim:
         ],
     )
     @pytest.mark.parametrize("config_file", ["default", "htp_v81"])
-    def test_lstm(
+    def test_rnn_gru_lstm(
         self,
         model_factory: Callable[[bool], onnx.ModelProto],
         take_initial_h_as_input: bool,
@@ -693,6 +693,125 @@ class TestQuantSim:
             assert activation_names == {X, Y, Y_h, initial_h}
 
         assert param_names == {W, R, B}
+
+    @pytest.mark.parametrize("num_layers", [1])
+    @pytest.mark.parametrize("bidirectional", [False, True])
+    def test_lstm(self, tmp_path: pathlib.Path, num_layers: int, bidirectional: bool):
+        seq_len = 3
+        batch_size = 5
+        input_size = 100
+        hidden_size = 200
+
+        lstm = torch.nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            bidirectional=bidirectional,
+        )
+
+        input = torch.randn(seq_len, batch_size, input_size)
+        h0 = torch.randn(
+            num_layers * (2 if bidirectional else 1), batch_size, hidden_size
+        )
+        c0 = torch.randn(
+            num_layers * (2 if bidirectional else 1), batch_size, hidden_size
+        )
+        inputs = (input, (h0, c0))
+        torch.onnx.export(
+            lstm,
+            inputs,
+            tmp_path / "lstm.onnx",
+            input_names=["input", "h0", "c0"],
+            output_names=["output", "hn", "cn"],
+        )
+        model = onnx.load(tmp_path / "lstm.onnx")
+
+        """
+        When: Call _disable_lstm_cell_state_quantizers
+        Then: LSTM cell quantizers should be disabled
+        """
+        sim = aimet_onnx.QuantizationSimModel(model)
+        assert sim.qc_quantize_op_dict["c0"].enabled
+        assert sim.qc_quantize_op_dict["cn"].enabled
+
+        sim._disable_lstm_cell_state_quantizers()
+        assert not sim.qc_quantize_op_dict["c0"].enabled
+        assert not sim.qc_quantize_op_dict["cn"].enabled
+
+        inputs = [
+            {
+                "input": input.numpy(),
+                "h0": h0.numpy(),
+                "c0": c0.numpy(),
+            }
+        ]
+        sim.compute_encodings(inputs)
+
+        """
+        When: Export to onnx QDQ
+        Then: Exported QDQ model should produce close-enough output with sim
+        """
+        qdq_model = sim.to_onnx_qdq()
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = (
+            ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        )
+        sess = ort.InferenceSession(
+            qdq_model.SerializeToString(),
+            providers=["CPUExecutionProvider"],
+            sess_options=sess_options,
+        )
+        output, hn, cn = sess.run(None, inputs[0])
+        output_, hn_, cn_ = sim.session.run(None, inputs[0])
+        assert np.allclose(
+            output,
+            output_,
+            atol=sim.qc_quantize_op_dict["/LSTM_output_0"].encodings[0].delta,
+        )
+        assert np.allclose(
+            hn, hn_, atol=sim.qc_quantize_op_dict["hn"].encodings[0].delta
+        )
+        assert np.allclose(cn, cn_)
+
+        """
+        When: Call _concretize_int32_lstm_cell_state_quantizers
+        Then: int32 LSTM cell quantizers should be instantiated with fixed scale 2**-20
+        """
+        sim._concretize_int32_lstm_cell_state_quantizers()
+        assert sim.qc_quantize_op_dict["c0"].enabled
+        assert sim.qc_quantize_op_dict["cn"].enabled
+
+        with pytest.raises(RuntimeError):
+            # LSTM with int32 cell state quantizers can't be exported to onnx QDQ
+            _ = sim.to_onnx_qdq()
+
+        sim._insert_data_movement_op_output_quantizers()
+        with set_encoding_version("2.0.0"):
+            sim.export(tmp_path, "lstm", export_model=False)
+
+        with open(tmp_path / "lstm.encodings") as f:
+            encodings = json.load(f)["encodings"]
+
+        weight_names = set(
+            product.name
+            for op in sim.connected_graph.get_all_ops().values()
+            for product, param_type in op.parameters.values()
+            if param_type in ("weight", "weight_r")
+        )
+        assert set(e["name"] for e in encodings) >= {
+            "input",
+            "h0",
+            "c0",
+            *weight_names,
+            "/LSTM_output_0",
+            "output",
+            "hn",
+            "cn",
+        }
+        c0 = next(e for e in encodings if e["name"] == "c0")
+        cn = next(e for e in encodings if e["name"] == "cn")
+        assert c0["y_scale"] == cn["y_scale"] == 2**-20
+        assert c0["output_dtype"] == cn["output_dtype"] == "int32"
 
     def test_single_residual(self):
         model = single_residual_model().model

@@ -1145,7 +1145,9 @@ def _rnn_factory(cls, take_initial_h_as_input: bool = True):
             model,
             (x, hx) if take_initial_h_as_input else (x,),
             f,
-            input_names=["input", "h0"],
+            input_names=["input", "h0", "c0"]
+            if issubclass(cls, torch.nn.LSTM)
+            else ["output", "h"],
             output_names=["output", "h", "c"]
             if issubclass(cls, torch.nn.LSTM)
             else ["output", "h"],

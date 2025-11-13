@@ -2156,6 +2156,20 @@ class QuantizationSimModel:
     _export_data_movement_op_output_quantizers = True
 
     def _to_onnx_qdq(self, prequantize_constants: bool) -> onnx.ModelProto:
+        lstm_int32_cell_states = [
+            name
+            for name, qtzr in self._lstm_cell_state_quantizers()
+            if qtzr.enabled and qtzr.bitwidth == 32
+        ]
+
+        if lstm_int32_cell_states:
+            raise RuntimeError(
+                f"Detected int32 LSTM cell states: {lstm_int32_cell_states}. "
+                f"{type(self).to_onnx_qdq.__qualname__} cannot export int32 encodings to ONNX QDQ format "
+                "because onnx:: QuantizeLinaar doesn't support int32 data type. "
+                f"Please try {type(self).export.__qualname__} instead."
+            )
+
         try:
             invalid_bitwidth = next(
                 qtzr.bitwidth
@@ -2756,6 +2770,65 @@ class QuantizationSimModel:
                     new_quantizers[initial_c] = self.qc_quantize_op_dict[Y_c]
 
         self._set_quantizers(new_quantizers, rebuild_session=False)
+
+    def _lstm_cell_state_quantizers(self) -> Iterable[Tuple[str, QcQuantizeOp]]:
+        for node in self.model.model.graph.node:
+            if node.op_type != "LSTM":
+                continue
+
+            Y_c = node.output[2]  # Cell state of the last time stamp
+            initial_c = (
+                node.input[6] if len(node.input) >= 7 else None
+            )  # Initial cell state
+
+            if Y_c:
+                Y_c_qtzr = self.qc_quantize_op_dict.get(Y_c)
+                if Y_c_qtzr:
+                    yield Y_c, Y_c_qtzr
+
+            if initial_c:
+                path = self._get_path_to_effective_quantizer(initial_c)
+                if path:
+                    *_, qc_quantize_op_node = path
+                    initial_c = qc_quantize_op_node.input[0]
+                    initial_c_qtzr = self.qc_quantize_op_dict.get(initial_c)
+                    if initial_c_qtzr:
+                        yield initial_c, initial_c_qtzr
+
+    def _disable_lstm_cell_state_quantizers(self):
+        """
+        Disable cell state quantizers of LSTM
+        """
+        for _, qtzr in self._lstm_cell_state_quantizers():
+            qtzr.enabled = False
+
+    def _concretize_int32_lstm_cell_state_quantizers(self, scale: float = 2**-20):
+        """
+        Create int32 cell state quantizers of LSTM
+        By default, use scale = 2**-20 to match LPAI's requirement
+        """
+        for _, qtzr in self._lstm_cell_state_quantizers():
+            if qtzr.data_type == QuantizationDataType.float:
+                # Float16 quantizers are not exported to onnx QDQ graph
+                continue
+
+            if qtzr and qtzr.enabled and qtzr.is_initialized():
+                # Edge case: LSTM cell state encoding already exists.
+                # Always honor the existing bias encoding
+                continue
+
+            encoding = libpymo.TfEncoding()
+            encoding.bw = 32
+            encoding.delta = scale
+            encoding.offset = -(2**31)
+            encoding.min = scale * -(2**31)
+            encoding.max = scale * (2**31 - 1)
+
+            qtzr.enabled = True
+            qtzr.use_symmetric_encodings = True
+            qtzr.bitwidth = 32
+            qtzr.enable_per_channel_quantization(False)
+            qtzr.load_encodings([encoding])
 
 
 def _to_unsigned_encoding(encoding: dict) -> dict:
