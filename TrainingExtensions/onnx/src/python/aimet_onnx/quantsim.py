@@ -342,6 +342,31 @@ def compute_encodings(sim: "QuantizationSimModel"):
         qc_op.op_mode = OpMode.quantizeDequantize
 
 
+def _fill_missing_node_names(model: onnx.ModelProto):
+    """
+    Fill missing node names in the ONNX model with unique names.
+
+    :param model: ONNX model
+    """
+    seen: Set[str] = set()
+    idx_factory = defaultdict(int)
+
+    for node in model.graph.node:
+        if node.name and node.name not in seen:
+            seen.add(node.name)
+            continue
+
+        new_name = f"/{node.op_type}"
+        i = idx_factory[node.op_type]
+        while new_name in seen:
+            i += 1
+            new_name = f"/{node.op_type}_{i}"
+
+        node.name = new_name
+        seen.add(new_name)
+        idx_factory[node.op_type] = i + 1
+
+
 # pylint: disable=missing-class-docstring, too-many-arguments, too-many-locals, too-many-instance-attributes
 class QuantizationSimModel:
     __doc__ = f"""
@@ -384,15 +409,7 @@ class QuantizationSimModel:
         if isinstance(model, ModelProto):
             model = ONNXModel(model)
 
-        node_names = [node.name for node in model.model.graph.node]
-        if len(node_names) != len(set(node_names)):
-            counts = defaultdict(int)
-            for name in node_names:
-                counts[name] += 1
-            non_unique_names = [name for name, count in counts.items() if count > 1]
-            raise RuntimeError(
-                f"ONNX model contains nodes with non-unique names: {non_unique_names}"
-            )
+        _fill_missing_node_names(model.model)
 
         if isinstance(param_type, str):
             param_type = qtype.from_string(param_type)

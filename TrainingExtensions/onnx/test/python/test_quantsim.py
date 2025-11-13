@@ -6009,12 +6009,15 @@ def test_output_split(tmp_path: pathlib.Path):
 def test_non_unique_node_names():
     """
     When: Create quantsim with a model with non-unique node names
-    Then: Throw runtime error
+    Then: Node names should be deduplicated
     """
     model = build_dummy_model()
 
     for node in model.graph.node:
         node.name = "non_unique_name"
 
-    with pytest.raises(RuntimeError):
-        _ = QuantizationSimModel(model)
+    sim = QuantizationSimModel(model)
+
+    assert len(set(node.name for node in sim.model.model.graph.node)) == len(
+        [node.name for node in sim.model.model.graph.node]
+    )

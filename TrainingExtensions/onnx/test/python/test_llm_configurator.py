@@ -2,7 +2,6 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 import json
-import pytest
 
 import torch
 
@@ -364,9 +363,6 @@ def apply_to_model(model_id, tmp_path):
 class TestLLMConfigurator:
     """Tests for applying quantsim configuration for LLMs"""
 
-    @pytest.mark.skip(
-        reason="Temporarily failing due to empty node names erased by onnx simplifier"
-    )
     def test_llm_configurator(self, tmp_path):
         apply_to_model("llama", tmp_path)
 
