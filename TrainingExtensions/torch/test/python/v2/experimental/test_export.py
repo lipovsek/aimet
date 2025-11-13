@@ -165,3 +165,43 @@ def test_export(model_factory, tmp_path: Path):
     )
     assert not (ep.state_dict.keys() - all_targets)
     assert not (ep.constants.keys() - all_targets)
+
+
+def test_shared_weight(tmp_path: Path):
+    """
+    Given: A model with shared weights
+    When: Export sim with aimet_torch.export.export
+    Then: The resulting ExportedProgram should contain duplicate weights,
+          each with its own encodings
+    """
+    model = torch.nn.Sequential(
+        torch.nn.Linear(20, 20),
+        torch.nn.Linear(20, 20),
+    )
+    # Share weights between the two linear layers
+    model[1].weight = model[0].weight
+    x = torch.randn(1, 20)
+    sim = aimet_torch.QuantizationSimModel(model, x, config_file="htp_v81")
+    sim.compute_encodings(lambda model: model(x))
+
+    ep = aimet_torch.experimental.export.export(sim.model, (x,))
+    path = tmp_path / "model.onnx"
+    torch.export.save(ep, path)
+    ep = torch.export.load(path)
+
+    sim_out = sim.model(x)
+    ep_out = ep.module()(x)
+
+    # Allow off-by-1 error
+    atol = sim.model[-1].output_quantizers[0].get_scale().item()
+    assert torch.allclose(sim_out, ep_out, atol=atol)
+
+    from torch.export.graph_signature import InputKind
+
+    weight_params = [
+        input_spec
+        for input_spec in ep.graph_signature.input_specs
+        if input_spec.kind == InputKind.PARAMETER and "weight" in input_spec.arg.name
+    ]
+    # There should be two separate weight parameters in exported model
+    assert len(weight_params) == 2

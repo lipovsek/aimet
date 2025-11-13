@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 # pylint: disable=protected-access
+import contextlib
 from typing import Any, Tuple, Optional
 from packaging.version import parse
 import torch
@@ -10,6 +11,7 @@ import torch.fx.node
 from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch._subclasses.fake_tensor import FakeTensorMode
 from ..onnx._export import _precompute_encodings
+from ...utils import patch_attr
 from ...nn import QuantizationMixin
 from ...quantization.affine import AffineQuantizerBase
 
@@ -63,7 +65,7 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
 
     # Pre-compute scale and offset to omit verbose
     # scale/offset derivation logic in the exported graph
-    with _precompute_encodings(mod), torch.no_grad():
+    with _duplicate_shared_weights(mod), _precompute_encodings(mod), torch.no_grad():
         ep = torch.export.export(mod, *args, **kwargs)
 
     original_output_names = [
@@ -109,6 +111,36 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
         spec.arg.name = new_output_name
 
     return ep
+
+
+@contextlib.contextmanager
+def _duplicate_shared_weights(mod: torch.nn.Module):
+    shared_params = {
+        name: param for name, param in mod.named_parameters(remove_duplicate=False)
+    }
+    for name, _ in mod.named_parameters(remove_duplicate=True):
+        shared_params.pop(name, None)
+
+    with contextlib.ExitStack() as stack:
+        for full_param_name, param in shared_params.items():
+            module_name, param_name = full_param_name.rsplit(".", 1)
+            qmodule = mod.get_submodule(module_name)
+
+            if not isinstance(qmodule, QuantizationMixin):
+                continue
+
+            if param_name not in qmodule.param_quantizers:
+                continue
+
+            param_qtzr = qmodule.param_quantizers[param_name]
+
+            if not param_qtzr or not param_qtzr.is_initialized():
+                continue
+
+            stack.enter_context(
+                patch_attr(qmodule, param_name, torch.nn.Parameter(param.clone()))
+            )
+        yield
 
 
 def _try_insert_output_qdq(ep: ExportedProgram, node: torch.fx.Node):
