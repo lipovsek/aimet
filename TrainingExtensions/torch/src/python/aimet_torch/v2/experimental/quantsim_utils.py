@@ -133,13 +133,6 @@ def _propagate_output_encodings(
             if not qmodule:
                 return
 
-            if isinstance(qmodule, custom.Concat):
-                # torch.concat is an input-variadic operation whose number of inputs
-                # can't be predicted statically.
-                # As a workaround, AIMET qconcat module has only one input quantizer
-                # that gets applied to all input tensors
-                i = 0
-
             if i < len(qmodule.input_quantizers):
                 qmodule.input_quantizers[i] = qtzr
             return

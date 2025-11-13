@@ -48,7 +48,6 @@ from aimet_common.defs import QuantizationDataType, QuantScheme
 from aimet_common.utils import AimetLogger
 from aimet_torch.onnx_utils import map_torch_types_to_onnx
 from aimet_torch.utils import get_param_channel_axis
-from aimet_torch.v2.nn.modules.custom import QuantizedConcat
 from aimet_torch.v2.quantization.base import QuantizerBase
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.nn import BaseQuantizationMixin
@@ -600,8 +599,6 @@ class MpHandler:
         # This check always returns idx=0 for those modules
         updated_child_module_idxs = []
         for child_module, input_idx in child_module_idxs:
-            if isinstance(child_module, QuantizedConcat):
-                input_idx = 0
             updated_child_module_idxs.append((child_module, input_idx))
         return updated_child_module_idxs
 

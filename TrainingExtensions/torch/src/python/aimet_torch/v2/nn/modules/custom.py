@@ -36,7 +36,6 @@
 # =============================================================================
 """Quantized definitions for custom modules of AIMET"""
 
-import copy
 from typing import Optional
 import torch
 from torch import Tensor
@@ -152,53 +151,15 @@ class QuantizedConcat(_DispatchMixin, QuantizationMixin, Concat):
 
     _builtin_torch_fn = torch.cat
 
-    # pylint: disable=attribute-defined-outside-init
-    def __quant_init__(self):
-        super().__quant_init__()
-        self._num_inputs = 1
-
-    def export_input_encodings(self, encoding_version: str):
-        """
-        Extends super().export to repeat input quantizer's encodings :attr:`self._num_inputs` times
-        """
-        input_encodings = super().export_input_encodings(encoding_version)
-        # Create separate encoding objects to avoid overriding of attributes added/updated later while exporting encodings
-        return [
-            copy.deepcopy(encoding) for encoding in input_encodings * self._num_inputs
-        ]
-
-    def import_input_encodings(
-        self,
-        encodings,
-        strict: bool,
-        partial: bool,
-        requires_grad: Optional[bool],
-        allow_overwrite: bool,
-    ):
-        """
-        Extends super().import_input_encodings to set `self._num_inputs` based on length of encodings.
-        """
-        self._num_inputs = len(encodings)
-        super().import_input_encodings(
-            encodings,
-            strict=strict,
-            partial=partial,
-            requires_grad=requires_grad,
-            allow_overwrite=allow_overwrite,
-        )
-
-    def forward(self, *x):  # pylint: disable=arguments-differ
-        """
-        Quantized forward impl for custom.Concat.
-        """
-        self._num_inputs = len(x)
-        return super().forward(*x)
-
     def _builtin_torch_fn_helper(self, fn: Callable[..., Tensor]):
         def cat(tensors, dim=0, *, out=None):
-            input_qtzr = self.input_quantizers[0]
+            input_quantizers = (
+                self.input_quantizers[idx] if idx < len(self.input_quantizers) else None
+                for idx, _ in enumerate(tensors)
+            )
             tensors = tuple(
-                _quantize_dequantize_if_applicable(x, input_qtzr) for x in tensors
+                _quantize_dequantize_if_applicable(x, quantizer)
+                for x, quantizer in zip(tensors, input_quantizers)
             )
             output = fn(tensors, dim=dim, out=out)
             return _quantize_dequantize_if_applicable(output, self.output_quantizers[0])
@@ -207,8 +168,14 @@ class QuantizedConcat(_DispatchMixin, QuantizationMixin, Concat):
 
     def _custom_kernel_helper(self, fn: Callable[..., QuantizedTensorBase]):
         def cat(tensors, dim=0, *, out=None):
-            input_qtzr = self.input_quantizers[0]
-            tensors = tuple(_quantize_if_applicable(x, input_qtzr) for x in tensors)
+            input_quantizers = (
+                self.input_quantizers[idx] if idx < len(self.input_quantizers) else None
+                for idx, _ in enumerate(tensors)
+            )
+            tensors = tuple(
+                _quantize_if_applicable(x, quantizer)
+                for x, quantizer in zip(tensors, input_quantizers)
+            )
             output_encodings = (
                 self.output_quantizers[0].get_encodings()
                 if self.output_quantizers[0]
@@ -217,6 +184,13 @@ class QuantizedConcat(_DispatchMixin, QuantizationMixin, Concat):
             return fn(tensors, dim=dim, out=out, output_encodings=output_encodings)
 
         return cat
+
+    @classmethod
+    def _supports_dynamic_input_count(cls) -> bool:
+        """
+        Returns true if the module takes a dynamic number of inputs
+        """
+        return True
 
 
 # @QuantizationMixin.implements(FloorDivide)

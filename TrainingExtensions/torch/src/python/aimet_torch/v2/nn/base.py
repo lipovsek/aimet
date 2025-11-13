@@ -921,6 +921,13 @@ class BaseQuantizationMixin(abc.ABC):
         """
         return True, None
 
+    @classmethod
+    def _supports_dynamic_input_count(cls) -> bool:
+        """
+        Returns true if the module takes a dynamic number of inputs
+        """
+        return False
+
 
 def _remove_quantizers(quantizers, keys):
     orig_quantizers = {key: quantizers[key] for key in keys}

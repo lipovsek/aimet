@@ -2008,7 +2008,8 @@ class TestEncodingPropagation:
         """
         propagate_output_encodings(sim, custom.Concat)
         assert sim.model.conv.output_quantizers[0] is sim.model.cat.output_quantizers[0]
-        assert sim.model.cat.input_quantizers[0] is sim.model.cat.output_quantizers[0]
+        assert sim.model.cat.input_quantizers[1] is sim.model.cat.output_quantizers[0]
+        assert sim.model.cat.input_quantizers[2] is sim.model.cat.output_quantizers[0]
 
     def test_functional(self):
         """
@@ -2595,7 +2596,9 @@ def test_scatternd_models(model_factory, dummy_input):
 
 def test_model_with_constant_concat_inputs():
     model = test_models.ConstantConcatModel()
-    sim = QuantizationSimModel(model, model.dummy_input())
+    sim = QuantizationSimModel(
+        model, model.dummy_input(), quant_scheme=QuantScheme.min_max
+    )
     graph = sim.connected_graph
     assert len(graph.ordered_ops) == 2
     concat_layer = graph.ordered_ops[-1]
@@ -2603,9 +2606,29 @@ def test_model_with_constant_concat_inputs():
     assert concat_layer.inputs[2].is_const
     assert not concat_layer.inputs[1].is_const
     assert concat_layer.inputs[1].producer == graph.ordered_ops[0]
+    assert len(sim.model.concat.input_quantizers) == 3
+    # Constant input:
+    assert sim.model.concat.input_quantizers[0] is not None
+    # Already quantized by linear output quantizer:
+    assert sim.model.concat.input_quantizers[1] is None
+    # Constant input:
+    assert sim.model.concat.input_quantizers[2] is not None
+    assert sim.model.concat.output_quantizers[0] is not None
+
+    (dummy_input,) = model.dummy_input()
+    sim.compute_encodings(lambda m: m(dummy_input))
+    linear_output_max = sim.model.linear.output_quantizers[0].get_max()
+    linear_output_min = sim.model.linear.output_quantizers[0].get_min()
+    # Linear output quantizer max should be the same as concat output quantizer max (concatted with 0)
+    assert linear_output_max == sim.model.concat.output_quantizers[0].get_max()
+    assert linear_output_min == sim.model.concat.output_quantizers[0].get_min()
+    assert linear_output_max != sim.model.concat.input_quantizers[0].get_max()
+    assert linear_output_min != sim.model.concat.input_quantizers[0].get_min()
 
     propagate_output_encodings(sim, custom.Concat)
     assert sim.model.concat.output_quantizers[0] is sim.model.concat.input_quantizers[0]
     assert (
         sim.model.concat.output_quantizers[0] is sim.model.linear.output_quantizers[0]
     )
+    assert sim.model.concat.input_quantizers[1] is None
+    assert sim.model.concat.output_quantizers[0] is sim.model.concat.input_quantizers[2]

@@ -998,54 +998,20 @@ class FakeQuantizedConcat(FakeQuantizationMixin, custom.Concat):
     Quantized class definition for custom.Concat.
     """
 
-    _num_inputs: int
-
-    def __quant_init__(self):
-        super().__quant_init__()
-        self._num_inputs = 1
-
-    def export_input_encodings(self, encoding_version: str):
-        """
-        Extends super().export to repeat input quantizer's encodings :attr:`self._num_inputs` times
-        """
-        input_encodings = super().export_input_encodings(encoding_version)
-        return input_encodings * self._num_inputs
-
-    def import_input_encodings(
-        self,
-        encodings,
-        strict: bool,
-        partial: bool,
-        requires_grad: Optional[bool],
-        allow_overwrite: bool,
-    ):
-        """
-        Extends super().import_input_encodings to set `self._num_inputs` based on length of encodings.
-        """
-        self._num_inputs = len(encodings)
-        super().import_input_encodings(
-            encodings,
-            strict=strict,
-            partial=partial,
-            requires_grad=requires_grad,
-            allow_overwrite=allow_overwrite,
-        )
-
     # pylint: disable=arguments-differ
     def forward(self, *x):
         """
         Quantized forward impl for custom.Concat.
         """
-        self._num_inputs = len(x)
+        input_quantizers = [
+            self.input_quantizers[idx] if idx < len(self.input_quantizers) else None
+            for idx in range(len(x))
+        ]
 
-        if self.input_quantizers[0]:
-            # Use same input quantizer for all the input tensors
-            quantize_fn = (
-                lambda inp: self.input_quantizers[0](inp)
-                if inp.is_floating_point()
-                else inp
-            )
-            x = tree_map(quantize_fn, x)
+        x = tuple(
+            quantizer(x) if x.is_floating_point() and quantizer else x
+            for x, quantizer in zip(x, input_quantizers)
+        )
 
         output = super().forward(*x)
 

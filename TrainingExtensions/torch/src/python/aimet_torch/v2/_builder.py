@@ -167,10 +167,15 @@ class _V2LazyQuantizeWrapper(LazyQuantizeWrapper):
         # For unused modules, quantsim assumes # inputs = # outputs = 1
         # If this is incorrect, propagate the configuration of the last input/output quantizers to the remaining
         # quantizer positions
-        for i, _ in list(enumerate(quantized_module.input_quantizers)):
-            q_idx = min(i, len(self.input_quantizers) - 1)
-            quantizer = self.input_quantizers[q_idx].realize()
-            quantized_module.input_quantizers[i] = quantizer
+        for i in range(
+            max(len(self.input_quantizers), len(quantized_module.input_quantizers))
+        ):
+            src_idx = min(i, len(self.input_quantizers) - 1)
+            quantizer = self.input_quantizers[src_idx].realize()
+            if i < len(quantized_module.input_quantizers):
+                quantized_module.input_quantizers[i] = quantizer
+            elif quantized_module._supports_dynamic_input_count():  # pylint: disable=protected-access
+                quantized_module.input_quantizers.append(quantizer)
 
         for i, _ in list(enumerate(quantized_module.output_quantizers)):
             q_idx = min(i, len(self.output_quantizers) - 1)
