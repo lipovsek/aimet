@@ -83,6 +83,9 @@ map_torch_types_to_onnx = {
     nn.AvgPool2d: ["AveragePool"],
     nn.BatchNorm1d: ["BatchNormalization"],
     nn.BatchNorm2d: ["BatchNormalization"],
+    nn.ConstantPad1d: ["Pad"],
+    nn.ConstantPad2d: ["Pad"],
+    nn.ConstantPad3d: ["Pad"],
     nn.ChannelShuffle: ["ChannelShuffle"],
     nn.Conv1d: ["Conv"],
     nn.Conv2d: ["Conv"],
@@ -115,6 +118,12 @@ map_torch_types_to_onnx = {
     nn.ReLU: ["Relu"],
     nn.ReLU6: ["Clip"],
     nn.RNN: ["RNN"],
+    nn.ReflectionPad1d: ["Pad"],
+    nn.ReflectionPad2d: ["Pad"],
+    nn.ReflectionPad3d: ["Pad"],
+    nn.ReplicationPad1d: ["Pad"],
+    nn.ReplicationPad2d: ["Pad"],
+    nn.ReplicationPad3d: ["Pad"],
     nn.Sigmoid: ["Sigmoid"],
     nn.Softmax: ["Softmax"],
     nn.Softplus: ["Softplus"],
@@ -122,6 +131,7 @@ map_torch_types_to_onnx = {
     nn.Upsample: ["Resize"],
     nn.UpsamplingBilinear2d: ["Resize"],
     nn.UpsamplingNearest2d: ["Resize"],
+    nn.ZeroPad2d: ["Pad"],
     torchvision.transforms.Resize: ["Resize"],
     torchvision.ops.RoIPool: ["MaxRoiPool"],
     aimet_modules.Add: ["Add"],
@@ -156,6 +166,10 @@ map_torch_types_to_onnx = {
     aimet_modules.NonMaxSuppression: ["NonMaxSuppression"],
     aimet_modules.RmsNorm: ["RMSNormalization"],
 }
+
+if version.parse(torch.__version__) >= version.parse("2.1.0"):
+    map_torch_types_to_onnx[nn.ZeroPad1d] = ["Pad"]
+    map_torch_types_to_onnx[nn.ZeroPad3d] = ["Pad"]
 
 # Maps pytorch functional op string names to corresponding onnx types.
 pytorch_functional_name_to_onnx_dict = {
