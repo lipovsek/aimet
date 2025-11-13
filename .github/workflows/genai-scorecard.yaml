@@ -162,7 +162,7 @@ jobs:
         password: ${{ secrets.DOCKER_CREDENTIALS }}
       options: --gpus all
 
-    timeout-minutes: 720     # 12 hours max
+    timeout-minutes: 10080     # 7 days (7 * 24 * 60)
 
     env:
       # GPU configuration
