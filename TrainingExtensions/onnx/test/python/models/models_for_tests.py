@@ -1118,43 +1118,6 @@ def build_dummy_model():
     return model
 
 
-def rnn(take_initial_h_as_input: bool = True):
-    return _rnn_factory(torch.nn.RNN, take_initial_h_as_input)
-
-
-def gru(take_initial_h_as_input: bool = True):
-    return _rnn_factory(torch.nn.GRU, take_initial_h_as_input)
-
-
-def lstm(take_initial_h_as_input: bool = True):
-    return _rnn_factory(torch.nn.LSTM, take_initial_h_as_input)
-
-
-def _rnn_factory(cls, take_initial_h_as_input: bool = True):
-    model = cls(input_size=64, hidden_size=16, num_layers=1)
-    x = torch.randn(1, 8, 64)
-    hx = (
-        (torch.randn(1, 8, 16), torch.randn(1, 8, 16))
-        if issubclass(cls, torch.nn.LSTM)
-        else torch.randn(1, 8, 16)
-    )
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        f = os.path.join(tmp_dir, "model.onnx")
-        torch.onnx.export(
-            model,
-            (x, hx) if take_initial_h_as_input else (x,),
-            f,
-            input_names=["input", "h0", "c0"]
-            if issubclass(cls, torch.nn.LSTM)
-            else ["output", "h"],
-            output_names=["output", "h", "c"]
-            if issubclass(cls, torch.nn.LSTM)
-            else ["output", "h"],
-        )
-        return onnx.load(f)
-
-
 def long_sequential_model(
     training=torch.onnx.TrainingMode.EVAL, opset_version=_DEFAULT_OPSET_VERSION
 ):

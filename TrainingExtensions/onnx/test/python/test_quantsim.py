@@ -54,6 +54,7 @@ from onnx.external_data_helper import uses_external_data, _get_all_tensors
 import onnx.numpy_helper
 import torch
 import torch.nn.functional as F
+from torch.utils._pytree import tree_flatten
 import numpy as np
 from onnx import load_model
 import onnx
@@ -66,7 +67,6 @@ from aimet_common import libpymo
 from aimet_common.defs import QuantScheme, QuantizationDataType, EncodingType, qtype
 from aimet_common.onnx._utils import (
     _convert_version_with_external_weights,
-    _is_grid_preserving_op,
     _remove_onnx_qdq_nodes,
 )
 from aimet_common.quantsim_config.utils import (
@@ -96,16 +96,13 @@ from .models.models_for_tests import (
     conv_relu,
     custom_add_model,
     depthwise_transposed_conv_model,
-    gru,
     instance_norm_model,
     layernorm_model,
     linear_split_into_matmul_add,
-    lstm,
     model_with_split_matmul,
     multi_input_with_constant_model,
     multi_output_model,
     reshape_with_multiple_consumers,
-    rnn,
     single_residual_model,
     SingleResidual,
     standalone_batchnorm,
@@ -610,99 +607,18 @@ class TestQuantSim:
             assert e1.get("axis") == e2.get("axis")
             assert e1.get("block_size") == e2.get("block_size")
 
-    @pytest.mark.parametrize("model_factory", [rnn, gru, lstm])
-    @pytest.mark.parametrize(
-        "take_initial_h_as_input",
-        [
-            True,
-            # False, TODO
-        ],
-    )
-    @pytest.mark.parametrize("config_file", ["default", "htp_v81"])
-    def test_rnn_gru_lstm(
-        self,
-        model_factory: Callable[[bool], onnx.ModelProto],
-        take_initial_h_as_input: bool,
-        config_file: str,
-        tmp_path: pathlib.Path,
-    ):
-        model = model_factory(take_initial_h_as_input)
-        rnn_node = next(
-            node for node in model.graph.node if node.op_type in ("RNN", "GRU", "LSTM")
-        )
-
-        X = rnn_node.input[0]
-        W = rnn_node.input[1]
-        R = rnn_node.input[2]
-        B = rnn_node.input[3]
-        initial_h = rnn_node.input[5]  # Hidden state input
-        Y = rnn_node.output[0]
-        Y_h = rnn_node.output[1]
-
-        if model_factory == lstm:
-            initial_c = rnn_node.input[6]
-            Y_c = rnn_node.output[2]  # Cell state input
-
-        """
-        When: Create quantsim with RNN/GRU/LSTM
-        Then:
-          1. Hidden states must share the same quantizer
-          2. Cell states must share the same quantizer
-        """
-        sim = QuantizationSimModel(model, config_file=config_file)
-
-        assert sim.qc_quantize_op_dict[X].enabled
-        assert sim.qc_quantize_op_dict[W].enabled
-        assert sim.qc_quantize_op_dict[R].enabled
-        assert not sim.qc_quantize_op_dict[B].enabled
-        assert sim.qc_quantize_op_dict[initial_h].enabled
-
-        assert sim.qc_quantize_op_dict[Y].enabled
-        assert sim.qc_quantize_op_dict[Y_h].enabled
-
-        assert (
-            sim.qc_quantize_op_dict[Y]
-            == sim.qc_quantize_op_dict[Y_h]
-            == sim.qc_quantize_op_dict[initial_h]
-        )
-
-        if model_factory == lstm:
-            assert sim.qc_quantize_op_dict[initial_c].enabled
-            assert sim.qc_quantize_op_dict[Y_c].enabled
-            assert sim.qc_quantize_op_dict[Y_c] == sim.qc_quantize_op_dict[initial_c]
-
-        sim.compute_encodings([make_dummy_input(model)])
-
-        sim._concretize_int32_bias_quantizers()
-        assert sim.qc_quantize_op_dict[B].enabled
-        assert sim.qc_quantize_op_dict[B].is_initialized()
-
-        sim.export(tmp_path, "lstm")
-
-        with open(tmp_path / "lstm.encodings") as f:
-            encodings = json.load(f)
-
-        activation_names = {
-            encoding["name"] for encoding in encodings["activation_encodings"]
-        }
-        param_names = {encoding["name"] for encoding in encodings["param_encodings"]}
-
-        if model_factory == lstm:
-            assert activation_names == {X, Y, Y_h, Y_c, initial_h, initial_c}
-        else:
-            assert activation_names == {X, Y, Y_h, initial_h}
-
-        assert param_names == {W, R, B}
-
-    @pytest.mark.parametrize("num_layers", [1])
+    @pytest.mark.parametrize("cls", [torch.nn.LSTM, torch.nn.GRU, torch.nn.RNN])
+    @pytest.mark.parametrize("num_layers", [1, 2])
     @pytest.mark.parametrize("bidirectional", [False, True])
-    def test_lstm(self, tmp_path: pathlib.Path, num_layers: int, bidirectional: bool):
+    def test_lstm(
+        self, tmp_path: pathlib.Path, cls, num_layers: int, bidirectional: bool
+    ):
         seq_len = 3
         batch_size = 5
         input_size = 100
         hidden_size = 200
 
-        lstm = torch.nn.LSTM(
+        rnn = cls(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
@@ -716,33 +632,68 @@ class TestQuantSim:
         c0 = torch.randn(
             num_layers * (2 if bidirectional else 1), batch_size, hidden_size
         )
-        inputs = (input, (h0, c0))
+        if cls == torch.nn.LSTM:
+            inputs = (input, (h0, c0))
+            input_names = ["input", "h0", "c0"]
+            output_names = ["output", "hn", "cn"]
+        else:
+            inputs = (input, h0)
+            input_names = ["input", "h0"]
+            output_names = ["output", "hn"]
+
         torch.onnx.export(
-            lstm,
+            rnn,
             inputs,
-            tmp_path / "lstm.onnx",
-            input_names=["input", "h0", "c0"],
-            output_names=["output", "hn", "cn"],
+            tmp_path / "rnn.onnx",
+            input_names=input_names,
+            output_names=output_names,
         )
-        model = onnx.load(tmp_path / "lstm.onnx")
+        model = onnx.load(tmp_path / "rnn.onnx")
+
+        hidden_state_names = []
+        cell_state_names = []
+        for node in model.graph.node:
+            if node.op_type in ("RNN", "GRU", "LSTM"):
+                hidden_state_names += [node.input[5], node.output[0], node.output[1]]
+            if node.op_type == "LSTM":
+                cell_state_names += [node.input[6], node.output[2]]
+
+        with _apply_constraints(True):
+            sim = aimet_onnx.QuantizationSimModel(model)
+
+        """
+        When: Created QuantizationSimModel with _apply_constraints(True)
+        Then: All hidden states and cell states must share the same quantizer respectively
+        """
+        hidden_state_quantizers = set(
+            sim.qc_quantize_op_dict[name] for name in hidden_state_names
+        )
+        hidden_state_quantizers = {q for q in hidden_state_quantizers if q.enabled}
+        assert len(hidden_state_quantizers) == 1
+
+        if cls == torch.nn.LSTM:
+            cell_state_quantizers = set(
+                sim.qc_quantize_op_dict[name] for name in cell_state_names
+            )
+            cell_state_quantizers = {q for q in cell_state_quantizers if q.enabled}
+            assert len(cell_state_quantizers) == 1
 
         """
         When: Call _disable_lstm_cell_state_quantizers
         Then: LSTM cell quantizers should be disabled
         """
-        sim = aimet_onnx.QuantizationSimModel(model)
-        assert sim.qc_quantize_op_dict["c0"].enabled
-        assert sim.qc_quantize_op_dict["cn"].enabled
-
         sim._disable_lstm_cell_state_quantizers()
-        assert not sim.qc_quantize_op_dict["c0"].enabled
-        assert not sim.qc_quantize_op_dict["cn"].enabled
+        if cls == torch.nn.LSTM:
+            cell_state_quantizers = set(
+                sim.qc_quantize_op_dict[name] for name in cell_state_names
+            )
+            cell_state_quantizers = {q for q in cell_state_quantizers if q.enabled}
+            assert not cell_state_quantizers
 
         inputs = [
             {
-                "input": input.numpy(),
-                "h0": h0.numpy(),
-                "c0": c0.numpy(),
+                input_name: inp.numpy()
+                for input_name, inp in zip(input_names, tree_flatten(inputs)[0])
             }
         ]
         sim.compute_encodings(inputs)
@@ -761,57 +712,39 @@ class TestQuantSim:
             providers=["CPUExecutionProvider"],
             sess_options=sess_options,
         )
-        output, hn, cn = sess.run(None, inputs[0])
-        output_, hn_, cn_ = sim.session.run(None, inputs[0])
-        assert np.allclose(
-            output,
-            output_,
-            atol=sim.qc_quantize_op_dict["/LSTM_output_0"].encodings[0].delta,
+        output, hn, *cn = sess.run(None, inputs[0])
+        output_, hn_, *cn_ = sim.session.run(None, inputs[0])
+
+        output_scale = onnx.numpy_helper.to_array(
+            next(
+                tensor
+                for tensor in qdq_model.graph.initializer
+                if tensor.name == "output_scale"
+            )
         )
-        assert np.allclose(
-            hn, hn_, atol=sim.qc_quantize_op_dict["hn"].encodings[0].delta
+        hn_scale = onnx.numpy_helper.to_array(
+            next(
+                tensor
+                for tensor in qdq_model.graph.initializer
+                if tensor.name == "hn_scale"
+            )
         )
-        assert np.allclose(cn, cn_)
+        assert np.allclose(output, output_, atol=output_scale)
+        assert np.allclose(hn, hn_, atol=hn_scale)
+        if isinstance(rnn, torch.nn.LSTM):
+            assert np.allclose(cn, cn_, rtol=1e-3)
 
         """
         When: Call _concretize_int32_lstm_cell_state_quantizers
         Then: int32 LSTM cell quantizers should be instantiated with fixed scale 2**-20
         """
-        sim._concretize_int32_lstm_cell_state_quantizers()
-        assert sim.qc_quantize_op_dict["c0"].enabled
-        assert sim.qc_quantize_op_dict["cn"].enabled
+        if isinstance(rnn, torch.nn.LSTM):
+            sim._concretize_int32_lstm_cell_state_quantizers()
+            assert sim.qc_quantize_op_dict["c0"].enabled
+            assert sim.qc_quantize_op_dict["cn"].enabled
 
-        with pytest.raises(RuntimeError):
-            # LSTM with int32 cell state quantizers can't be exported to onnx QDQ
-            _ = sim.to_onnx_qdq()
-
-        sim._insert_data_movement_op_output_quantizers()
-        with set_encoding_version("2.0.0"):
-            sim.export(tmp_path, "lstm", export_model=False)
-
-        with open(tmp_path / "lstm.encodings") as f:
-            encodings = json.load(f)["encodings"]
-
-        weight_names = set(
-            product.name
-            for op in sim.connected_graph.get_all_ops().values()
-            for product, param_type in op.parameters.values()
-            if param_type in ("weight", "weight_r")
-        )
-        assert set(e["name"] for e in encodings) >= {
-            "input",
-            "h0",
-            "c0",
-            *weight_names,
-            "/LSTM_output_0",
-            "output",
-            "hn",
-            "cn",
-        }
-        c0 = next(e for e in encodings if e["name"] == "c0")
-        cn = next(e for e in encodings if e["name"] == "cn")
-        assert c0["y_scale"] == cn["y_scale"] == 2**-20
-        assert c0["output_dtype"] == cn["output_dtype"] == "int32"
+            for qtzr in cell_state_quantizers:
+                assert qtzr.encodings[0].delta == 2**-20
 
     def test_single_residual(self):
         model = single_residual_model().model

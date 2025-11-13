@@ -2730,46 +2730,71 @@ class QuantizationSimModel:
         initial_h --> Q_h-+                   +--> Q_c --> Y_c
         initial_c --> Q_c-+
         """
-        new_quantizers = {}
+        to_be_replaced: Dict[QcQuantizeOp, QcQuantizeOp] = {}
 
         for node in self.model.model.graph.node:
             if node.op_type not in ("LSTM", "GRU", "RNN"):
                 continue
 
-            Y = node.output[
-                0
-            ]  # Output; concatenation of all hidden states across all time stamps
-            Y_h = node.output[1]  # Hidden state of the last time stamp
-            initial_h = (
-                node.input[5] if len(node.input) >= 6 else None
-            )  # Initial hidden state
+            X = node.input[0]
+            Y = node.output[0]
+            Y_h = node.output[1] if len(node.output) >= 2 else None
+            initial_h = node.input[5] if len(node.input) >= 6 else None
+
+            path = self._get_path_to_effective_quantizer(X)
+            if path:
+                *_, qc_quantize_op_node = path
+                X = qc_quantize_op_node.input[0]
+                to_be_replaced.update(
+                    {self.qc_quantize_op_dict[X]: self.qc_quantize_op_dict[Y]}
+                )
 
             if Y_h:
-                new_quantizers[Y_h] = self.qc_quantize_op_dict[Y]
+                to_be_replaced.update(
+                    {self.qc_quantize_op_dict[Y_h]: self.qc_quantize_op_dict[Y]}
+                )
 
             if initial_h:
                 path = self._get_path_to_effective_quantizer(initial_h)
                 if path:
                     *_, qc_quantize_op_node = path
                     initial_h = qc_quantize_op_node.input[0]
-                    new_quantizers[initial_h] = self.qc_quantize_op_dict[Y]
+                    to_be_replaced.update(
+                        {
+                            self.qc_quantize_op_dict[
+                                initial_h
+                            ]: self.qc_quantize_op_dict[Y]
+                        }
+                    )
 
             if node.op_type != "LSTM":
                 continue
 
-            Y_c = node.output[2]  # Cell state of the last time stamp
-            initial_c = (
-                node.input[6] if len(node.input) >= 7 else None
-            )  # Initial cell state
+            Y_c = node.output[2] if len(node.output) >= 3 else None
+            initial_c = node.input[6] if len(node.input) >= 7 else None
 
             if Y_c and initial_c:
                 path = self._get_path_to_effective_quantizer(initial_c)
                 if path:
                     *_, qc_quantize_op_node = path
                     initial_c = qc_quantize_op_node.input[0]
-                    new_quantizers[initial_c] = self.qc_quantize_op_dict[Y_c]
+                    to_be_replaced.update(
+                        {
+                            self.qc_quantize_op_dict[
+                                initial_c
+                            ]: self.qc_quantize_op_dict[Y_c]
+                        }
+                    )
 
-        self._set_quantizers(new_quantizers, rebuild_session=False)
+        # Replace all reference to the old quantizers with the new quantizers
+        new_qc_quantize_op_dict = self.qc_quantize_op_dict.copy()
+
+        for old_qtzr, new_qtzr in to_be_replaced.items():
+            for name, qtzr in new_qc_quantize_op_dict.items():
+                if qtzr == old_qtzr:
+                    new_qc_quantize_op_dict[name] = new_qtzr
+
+        self._set_quantizers(new_qc_quantize_op_dict, rebuild_session=False)
 
     def _lstm_cell_state_quantizers(self) -> Iterable[Tuple[str, QcQuantizeOp]]:
         for node in self.model.model.graph.node:
