@@ -89,7 +89,7 @@ This function can be called multiple times to set different LPBQ configuration f
                 bitwidth=4,
                 decompressed_bw=8,
                 block_size=64,
-                excluded_nodes = ['conv1', 'linear10']
+                nodes_to_exclude = ['conv1', 'linear10']
             )
 
             # Continue with calibration

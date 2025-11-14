@@ -40,7 +40,7 @@
 
 import copy
 import tempfile
-from typing import Dict, List, Collection
+from typing import Dict, List, Collection, Optional
 from tqdm import tqdm
 import numpy as np
 
@@ -72,7 +72,9 @@ class Adaround:
         sim: QuantizationSimModel,
         inputs: Collection[Dict[str, np.ndarray]],
         num_iterations: int = 10000,
-        node_names_to_optimize: List[str] = None,
+        nodes_to_include: Optional[List[str]] = None,
+        *,
+        node_names_to_optimize: Optional[List[str]] = None,
     ):
         """
         Optimizes the rounding direction of weights in the QuantizationSimModel to reduce quantization error.
@@ -85,9 +87,19 @@ class Adaround:
             inputs (Collection[Dict[str, np.ndarray]]): The set of input samples to use during optimization.
             num_iterations (int): Number of optimization steps to take for each layer. Recommended value is
                 10K for weight bitwidths >= 8-bits, 15K for weight bitwidths < 8 bits.
-            node_names_to_optimize: List of node names to optimize. If None, all the nodes(under supported types) will be optimized
+            nodes_to_include: List of node names to optimize. If None, all the nodes(under supported types) will be optimized
 
         """
+        if node_names_to_optimize is not None:
+            logger.warning(
+                "The argument 'node_names_to_optimize' is deprecated and will be removed in future releases. Use 'nodes_to_include' instead."
+            )
+            if nodes_to_include is not None:
+                raise ValueError(
+                    "Both 'nodes_to_include' and 'node_names_to_optimize' parameters cannot be set at the same time. Use only 'nodes_to_include'."
+                )
+            nodes_to_include = node_names_to_optimize
+
         # pylint: disable=too-many-locals, protected-access
         sim._compute_param_encodings(overwrite=False)
 
@@ -115,7 +127,7 @@ class Adaround:
                 name = module.name
                 module_info = model_data.module_to_info[name]
 
-                if node_names_to_optimize and module.name not in node_names_to_optimize:
+                if nodes_to_include and module.name not in nodes_to_include:
                     continue
 
                 if (

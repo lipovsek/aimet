@@ -338,7 +338,7 @@ class TestAdaround:
             mock_adaround_module,
         ):
             apply_adaround(
-                sim, inputs, num_iterations=5, node_names_to_optimize=whitelist_ops
+                sim, inputs, num_iterations=5, nodes_to_include=whitelist_ops
             )
 
             print([name for name in ops_processed])

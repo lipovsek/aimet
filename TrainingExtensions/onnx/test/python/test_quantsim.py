@@ -2337,7 +2337,7 @@ class TestQuantSim:
             True,
             block_size=7,
             strict=False,
-            excluded_nodes=excluded_ops,
+            nodes_to_exclude=excluded_ops,
         )
 
         weight_quantizer = sim.get_qc_quantize_op()["weight"]
@@ -2631,7 +2631,7 @@ class TestQuantSim:
             decompressed_bw,
             block_size,
             strict=False,
-            excluded_nodes=excluded_ops,
+            nodes_to_exclude=excluded_ops,
         )
 
         sim.compute_encodings(lambda session, _: session.run(None, dummy_input), None)
