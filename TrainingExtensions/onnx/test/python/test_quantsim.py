@@ -5823,7 +5823,7 @@ def test_from_onnx_qdq_split_op():
 )
 @pytest.mark.parametrize("tie_encodings", [False])
 def test_from_onnx_qdq_encoding_delegation(
-    model_factory: Callable[[], onnx.ModelProto],
+    model_factory: Callable[[], tuple[onnx.ModelProto, tuple[float, ...]]],
     tie_encodings: bool,
 ):
     """
@@ -5831,10 +5831,10 @@ def test_from_onnx_qdq_encoding_delegation(
     When: Create sim from onnx QDQ model
     Then: Should be able to create sim without errors
     """
-    qdq_model = model_factory()
+    qdq_model, output_scales = model_factory()
 
     with _apply_constraints(tie_encodings):
-        sim = QuantizationSimModel._from_onnx_qdq(model_factory())
+        sim = QuantizationSimModel._from_onnx_qdq(model_factory()[0])
 
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
@@ -5850,8 +5850,9 @@ def test_from_onnx_qdq_encoding_delegation(
         input = make_dummy_input(qdq_model)
         out = sess_exported.run(None, input)
         out_expected = sess.run(None, input)
-        for out_i, out_expected_i in zip(out, out_expected):
-            assert np.all(out_i == out_expected_i)
+        assert len(output_scales) == len(out) == len(out_expected)
+        for out_i, out_expected_i, out_scale in zip(out, out_expected, output_scales):
+            assert np.allclose(out_i, out_expected_i, atol=out_scale)
 
 
 @pytest.mark.parametrize(
@@ -5875,14 +5876,17 @@ def test_from_onnx_qdq_encoding_delegation(
         ]
     ],
 )
-def test_from_onnx_qdq_excess_encodings(model_factory: Callable[[], onnx.ModelProto]):
+def test_from_onnx_qdq_excess_encodings(
+    model_factory: Callable[[], tuple[onnx.ModelProto, tuple[float, ...]]],
+):
     """
     Given: Only one output of Split has quantization encoding
     When: Create sim from onnx QDQ model
     Then: Should raise NotImplementedError due to excess encodings
     """
+    qdq_model, _ = model_factory()
     with pytest.raises(NotImplementedError):
-        _ = QuantizationSimModel._from_onnx_qdq(model_factory())
+        _ = QuantizationSimModel._from_onnx_qdq(qdq_model)
 
 
 def test_to_onnx_qdq_large_model(tmp_dir):

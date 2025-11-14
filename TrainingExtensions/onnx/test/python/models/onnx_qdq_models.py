@@ -18,7 +18,8 @@ def _qdq_op1_op2_qdq(
     """
     (input) -> QDQ -> op1 -> op2 -> QDQ -> (output)
     """
-    return onnx.helper.make_model(
+    output_scale = 0.2
+    model = onnx.helper.make_model(
         ir_version=10,
         opset_imports=[onnx.helper.make_operatorsetid("", 13)],
         graph=onnx.helper.make_graph(
@@ -94,7 +95,7 @@ def _qdq_op1_op2_qdq(
                     name="output_scale",
                     data_type=onnx.TensorProto.FLOAT,
                     dims=[],
-                    vals=[0.2],
+                    vals=[output_scale],
                 ),
                 onnx.helper.make_tensor(
                     name="output_zero_point",
@@ -105,6 +106,8 @@ def _qdq_op1_op2_qdq(
             ],
         ),
     )
+
+    return model, (output_scale,)
 
 
 def qdq_relu_cast_qdq():
@@ -224,7 +227,7 @@ def split_qdq(
             output_names=["output1", "output2"],
             opset_version=13,
         )
-        return onnx.load(path)
+        return onnx.load(path), (mul_output_scale, reshape_output_scale)
 
 
 def concat_qdq(
@@ -314,4 +317,4 @@ def concat_qdq(
             output_names=["output"],
             opset_version=13,
         )
-        return onnx.load(path)
+        return onnx.load(path), (concat_output_scale,)
