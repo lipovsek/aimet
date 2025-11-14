@@ -36,9 +36,14 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 
+import time
 import pytest
 from unittest.mock import MagicMock
+from functools import partial
+import onnx
 import torch
+import torch.nn.functional as F
+import onnxruntime as ort
 import copy
 import json
 import numpy as np
@@ -55,15 +60,29 @@ from aimet_onnx.sequential_mse.dependency_graph import (
     SUPPORTED_MODULES,
 )
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
-from aimet_onnx.sequential_mse.seq_mse import SeqMseParams, _add_value_info
-from aimet_onnx.sequential_mse.seq_mse import SequentialMse
+from aimet_onnx.sequential_mse.seq_mse import (
+    SeqMseParams,
+    _add_value_info,
+    SequentialMse,
+    _temporarily_disable_block_grouping,
+)
+from aimet_onnx.sequential_mse.transform import (
+    modify_graph_with_grouped_conv,
+    modify_graph_with_grouped_linear,
+    prepare_linear_inputs,
+)
 from aimet_common.defs import QuantScheme
-from aimet_onnx.quantsim import QuantizationSimModel
+from aimet_onnx.quantsim import (
+    QuantizationSimModel,
+    set_blockwise_quantization_for_weights,
+    set_grouped_blockwise_quantization_for_weights,
+)
 from aimet_onnx.utils import make_dummy_input
 from aimet_onnx.qc_quantize_op import (
     QcQuantizeOp,
     OpMode,
     TensorQuantizerParams,
+    GroupedBlockQuantizeDequantize,
 )
 
 from .models.test_models import single_linear_layer_model
@@ -172,6 +191,116 @@ def _get_weight_param_name(cg_op):
     if len(param_names) == 1:
         return param_names[0]
     return None
+
+
+def _onnx_model_from_op(
+    op_type: str,
+    weight_tensor: np.ndarray,
+    input_shape: tuple,
+    output_shape: tuple,
+    num_nodes: int = 1,
+    **kwargs,
+):
+    """
+    Creates an ONNX model using the specified op_type.
+    """
+    input_tensor = onnx.helper.make_tensor_value_info(
+        "input", onnx.TensorProto.FLOAT, input_shape
+    )
+    output_tensors = []
+    initializers = []
+    nodes = []
+
+    for i in range(num_nodes):
+        weight_name = f"weight_{i}"
+        output_name = f"output_{i}"
+
+        # Create op_node
+        op_node = onnx.helper.make_node(
+            op_type,
+            inputs=["input", weight_name],
+            outputs=[output_name],
+            name=f"{op_type.lower()}_{i}",
+            **kwargs,
+        )
+        nodes.append(op_node)
+
+        # Weight tensor to ONNX initializer
+        weight_initializer = onnx.numpy_helper.from_array(
+            weight_tensor.copy(), name=weight_name
+        )
+        initializers.append(weight_initializer)
+
+        # Define output tensor metadata
+        output_tensor = onnx.helper.make_tensor_value_info(
+            output_name, onnx.TensorProto.FLOAT, output_shape
+        )
+        output_tensors.append(output_tensor)
+
+    graph = onnx.helper.make_graph(
+        nodes,
+        f"{op_type}_graph",
+        inputs=[input_tensor],
+        outputs=output_tensors,
+        initializer=initializers,
+    )
+
+    # Create and validate model
+    model = models_for_tests.make_model(graph)
+    onnx.checker.check_model(model)
+
+    return model
+
+
+def _torch_blockwise_conv2d(
+    x: torch.Tensor, w: torch.Tensor, block_size: int, **kwargs
+):
+    """
+    Perform block-wise 2D convolution operation using torch operations.
+
+    It splits the input and weight tensors into blocks along the input channel dimension and
+    applies the convolution to each block independently and stacks the results along a new dimension.
+    """
+    c_out, c_in, k_h, k_w = w.shape
+    num_blocks = c_in // block_size
+
+    # Reshape weight from (c_out, c_in, kh, kw) to (c_out, num_blocks, block_size, kh, kw)
+    # Transpose weights from (c_out, num_blocks, block_size, kh, kw) to (num_blocks, c_out, block_size, kh, kw)
+    # Reshape weight from (num_blocks, c_out, block_size, kh, kw) to (num_blocks * c_out, block_size, kh, kw)
+    w = w.reshape(c_out, num_blocks, block_size, k_h, k_w)
+    w = w.permute(1, 0, 2, 3, 4)
+    w = w.reshape(num_blocks * c_out, block_size, k_h, k_w)
+    kwargs["groups"] = kwargs.get("groups", 1) * num_blocks
+    y = F.conv2d(x, w, **kwargs)
+
+    return y
+
+
+def _torch_blockwise_linear(
+    x: torch.Tensor, w: torch.Tensor, block_size: int, **kwargs
+):
+    """
+    Perform block-wise linear transformation using torch operations.
+
+    It splits the input and weight tensors into blocks along the input channel dimension and
+    applies linear transformation to each block independently and stacks the results along a new dimension.
+    """
+    num_blocks = x.shape[0]
+    c_out, _ = w.shape
+
+    w = w.reshape(c_out, num_blocks, block_size).permute(1, 2, 0)
+    xw = torch.bmm(x, w)
+
+    return xw
+
+
+def _timed_run(fn, *args, runs=5):
+    times = []
+    for _ in range(runs):
+        start = time.time()
+        fn(*args)
+        times.append(time.time() - start)
+    return sum(times) / len(times)
 
 
 @pytest.mark.parametrize(
@@ -717,6 +846,400 @@ def test_nodes_to_exclude():
                 assert quantizer.is_encoding_frozen()
 
 
+def test_temporarily_disable_grouped_block_quantizers():
+    model = single_residual_model()
+    sim = QuantizationSimModel(
+        model=copy.deepcopy(model),
+        quant_scheme=QuantScheme.post_training_tf,
+        default_activation_bw=8,
+        default_param_bw=4,
+        providers=["CPUExecutionProvider"],
+    )
+    set_grouped_blockwise_quantization_for_weights(
+        sim, "Conv", 4, 8, block_size=2, strict=False
+    )
+
+    quantizers = [
+        sim.qc_quantize_op_dict[name]
+        for name in sim.param_names
+        if sim.qc_quantize_op_dict[name].enabled
+        and isinstance(sim.qc_quantize_op_dict[name], GroupedBlockQuantizeDequantize)
+    ]
+    assert len(quantizers) == 3
+
+    # -1 in LPBQ indicates that all the blocks in a dimension are grouped together
+    for quantizer in quantizers:
+        assert quantizer._block_grouping() == [1, -1, 1, 1]
+
+    """
+    When: _temporarily_disable_grouped_block_quantizers is called
+    Then: quantizer._block_grouping() returns all 1s during the context manager scope
+    """
+
+    with _temporarily_disable_block_grouping(sim):
+        for quantizer in quantizers:
+            assert quantizer._block_grouping() == [1, 1, 1, 1]
+
+    for quantizer in quantizers:
+        assert quantizer._block_grouping() == [1, -1, 1, 1]
+
+
+@pytest.mark.parametrize("loss_fn", ["mse"])
+@pytest.mark.parametrize(
+    "op_type, tensor_shape, output_shape, channel_axis, block_axis, block_size",
+    [
+        ("Conv", (32, 16, 5, 5), (2, 32, 6, 6), 1, 0, 0),
+        ("Gemm", (15, 30), (2, 30), 1, 0, 0),
+        ("MatMul", (15, 30), (2, 10, 30), 1, 0, 0),
+        (
+            "Conv",
+            (32, 16, 5, 5),
+            (2, 128, 6, 6),
+            0,
+            1,
+            4,
+        ),  # channel_axis, block_axis (0, 1)
+        ("Gemm", (30, 15), (5, 2, 30), 0, 1, 3),  # channel_axis, block_axis (0, 1)
+        ("Gemm", (15, 30), (5, 2, 30), 1, 0, 3),  # channel_axis, block_axis (1, 0)
+        ("MatMul", (15, 30), (5, 20, 30), 1, 0, 3),  # channel_axis, block_axis (1, 0)
+    ],
+)
+def test_compute_reconstruction_loss(
+    loss_fn, op_type, tensor_shape, output_shape, channel_axis, block_axis, block_size
+):
+    # Setup mocks
+    mock_dep_node = MagicMock()
+    mock_dep_node.cg_op.type = op_type
+
+    mock_dep_graph = MagicMock()
+    mock_dep_graph.get_param_name.return_value = "mock_weight"
+
+    mock_quantizer = MagicMock()
+    mock_quantizer.tensor_quantizer_params.tensor_shape = tensor_shape
+    mock_quantizer.quant_info.channelAxis = channel_axis
+    mock_quantizer.quant_info.blockAxis = block_axis
+    mock_quantizer.quant_info.blockSize = block_size
+
+    mock_sim = MagicMock()
+    mock_sim.qc_quantize_op_dict = {"mock_weight": mock_quantizer}
+
+    # Mock seq_mse object w/o calling the __init__
+    seq_mse = object.__new__(SequentialMse)
+    seq_mse.dependency_graph = mock_dep_graph
+    seq_mse.sim = mock_sim
+    seq_mse.params = MagicMock()
+    seq_mse.params.loss_fn = loss_fn
+
+    # Random outputs
+    sim_output = torch.from_numpy(np.random.randn(*output_shape).astype(np.float32))
+    float_output = torch.from_numpy(np.random.randn(*output_shape).astype(np.float32))
+
+    loss = seq_mse._compute_recon_loss(sim_output, float_output, mock_dep_node)
+    print(f"actual loss: {loss.shape}")
+
+    # block-wise quantization
+    if block_size > 0:
+        if op_type == "Conv":
+            c_out = tensor_shape[channel_axis]
+            num_blocks = output_shape[1] // c_out
+            expected_shape = (c_out, num_blocks)
+        elif op_type == "MatMul":
+            c_out, num_blocks = output_shape[-1], output_shape[0]
+            expected_shape = (num_blocks, c_out)
+        elif op_type == "Gemm":
+            c_out, num_blocks = output_shape[-1], output_shape[0]
+            if block_axis < channel_axis:
+                expected_shape = (num_blocks, c_out)
+            else:
+                expected_shape = (c_out, num_blocks)  # Handle transposed form of Gemm
+        else:
+            raise NotImplementedError
+
+    # per-tensor, per-channel quantization
+    else:
+        expected_shape = (output_shape[1] if op_type == "Conv" else output_shape[-1],)
+    assert loss.shape == expected_shape
+
+
+@pytest.mark.parametrize("bitwidth", [4, 8])
+@pytest.mark.parametrize("is_symmetric", [True, False])
+@pytest.mark.parametrize(
+    "granularity, tensor_shape, x_min, x_max, channel_axis, block_axis",
+    [
+        ("per_tensor", (4, 4), np.array([-1.0]), np.array([1.0]), 0, 0),
+        (
+            "per_channel",
+            (4, 4),
+            np.array([-1.0, -2.0, -3.0, -4.0]),
+            np.array([1.0, 2.0, 3.0, 4.0]),
+            0,
+            0,
+        ),
+        (
+            "per_channel",
+            (4, 4),
+            np.array([-1.0, -2.0, -3.0, -4.0]),
+            np.array([1.0, 2.0, 3.0, 4.0]),
+            1,
+            0,
+        ),
+        (
+            "per_block",
+            (4, 4),
+            np.array([[-1.0, -2.0], [-3.0, -4.0], [-5.0, -6.0], [-7.0, -8.0]]),
+            np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]),
+            0,
+            1,
+        ),
+        (
+            "per_block",
+            (4, 4),
+            np.array([[-1.0, -2.0, -3.0, -4.0], [-5.0, -6.0, -7.0, -8.0]]),
+            np.array([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]),
+            1,
+            0,
+        ),
+    ],
+)
+def test_compute_encoding_from_candidate(
+    bitwidth,
+    is_symmetric,
+    granularity,
+    tensor_shape,
+    x_min,
+    x_max,
+    channel_axis,
+    block_axis,
+):
+    # Setup mocks
+    mock_dep_graph = MagicMock()
+    mock_dep_graph.get_param_name.return_value = "mock_weight"
+
+    # Create quantizer
+    tensor_quantizer_params = TensorQuantizerParams(
+        tensor_shape, channel_axis, block_axis
+    )
+    quant_info = libquant_info.QcQuantizeInfo()
+    quantizer = QcQuantizeOp(
+        quant_info,
+        bitwidth=bitwidth,
+        op_mode=OpMode.updateStats,
+        quant_scheme=QuantScheme.post_training_tf,
+        tensor_quantizer_params=tensor_quantizer_params,
+        use_symmetric_encodings=is_symmetric,
+    )
+    if granularity == "per_channel":
+        quantizer.enable_per_channel_quantization()
+    elif granularity == "per_block":
+        block_size = 2
+        quantizer._enable_blockwise_quantization(block_size)
+
+    tensor = np.random.randn(*tensor_shape).astype(np.float32)
+    quantizer.reset_encoding_stats()
+    quantizer.update_encoding_stats(tensor)
+    quantizer.compute_encodings()
+
+    mock_sim = MagicMock()
+    mock_sim.qc_quantize_op_dict = {"mock_weight": quantizer}
+
+    # Mock seq_mse object w/o calling the __init__
+    seq_mse = object.__new__(SequentialMse)
+    seq_mse.dependency_graph = mock_dep_graph
+    seq_mse.sim = mock_sim
+
+    mock_dep_node = MagicMock()
+    seq_mse._compute_encoding_from_candidate(mock_dep_node, x_min, x_max)
+    encodings = quantizer.get_encodings()
+    enc_min = np.array([enc.min for enc in encodings])
+    enc_max = np.array([enc.max for enc in encodings])
+
+    if granularity == "per_tensor":
+        x_min, x_max = np.amin(x_min), np.amax(x_max)
+
+    print(f"x_min={x_min}, x_max={x_max}")
+    print(f"enc_min={enc_min}, enc_max={enc_max}")
+
+    assert np.allclose(
+        enc_min, x_min.flatten(), atol=(enc_max - enc_min) / (2**bitwidth - 1)
+    )
+    assert np.allclose(
+        enc_max, x_max.flatten(), atol=(enc_max - enc_min) / (2**bitwidth - 1)
+    )
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "swap_quantizer_func",
+    [
+        partial(
+            set_grouped_blockwise_quantization_for_weights,
+            op_types=("MatMul", "Conv", "Gemm"),
+            decompressed_bw=8,
+            strict=True,
+        ),
+        partial(
+            set_blockwise_quantization_for_weights,
+            op_types=("MatMul", "Conv", "Gemm"),
+            strict=True,
+            symmetric=True,
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "use_cuda, model_factory, block_size, channel_i_best_indices",
+    [
+        (
+            True,
+            single_conv_layer_model,
+            1,
+            {0: np.array([19, 19, 17, 17, 19])},
+        ),  # weights shape (10, 5, 5, 5) where c_in=5, block_axis=1
+        (
+            True,
+            single_linear_layer_model,
+            25,
+            {0: np.array([18, 18, 19, 18])},
+        ),  # weights shape (100, 100) where c_in=100, block_axis=0
+        (
+            False,
+            single_conv_layer_model,
+            1,
+            {0: np.array([19, 19, 17, 17, 19])},
+        ),  # weights shape (10, 5, 5, 5) where c_in=5, block_axis=1
+        (
+            False,
+            single_linear_layer_model,
+            25,
+            {0: np.array([18, 18, 19, 18])},
+        ),  # weights shape (100, 100) where c_in=100, block_axis=0
+    ],
+)
+def test_bq_lpbq_single_layer(
+    swap_quantizer_func, use_cuda, model_factory, block_size, channel_i_best_indices
+):
+    model = model_factory()
+    providers = ["CUDAExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
+    sim = QuantizationSimModel(
+        model=copy.deepcopy(model),
+        quant_scheme=QuantScheme.post_training_tf,
+        default_activation_bw=8,
+        default_param_bw=4,
+        providers=providers,
+    )
+
+    swap_quantizer_func(sim, bitwidth=4, block_size=block_size)
+    with _temporarily_disable_block_grouping(sim):
+        sim._compute_param_encodings(overwrite=False)
+
+    all_param_ops = []
+    for op in sim.connected_graph.ordered_ops:
+        param_name = _get_weight_param_name(op)
+        if param_name is not None:
+            all_param_ops.append(param_name)
+
+    assert len(all_param_ops) == 1
+
+    quantizer = sim.qc_quantize_op_dict[all_param_ops[0]]
+    assert not quantizer.is_encoding_frozen()
+
+    num_candidates = 20
+    seq_mse_params = SeqMseParams(num_batches=None, num_candidates=num_candidates)
+    seq_mse = SequentialMse(
+        None, sim, seq_mse_params, [make_dummy_input(model.model) for _ in range(3)]
+    )
+
+    dep_node = list(seq_mse.dependency_graph._name_to_node.values())[0]
+    _, init_max = seq_mse._get_min_and_max_for_candidate_selection(dep_node)
+
+    seq_mse.apply_seq_mse_algo()
+
+    # Encodings are frozen
+    assert quantizer.is_encoding_frozen()
+
+    ((channel_i, best_indices),) = channel_i_best_indices.items()
+
+    if model_factory == single_conv_layer_model:
+        channel_0_init_max = init_max[channel_i, :, 0, 0]
+    else:
+        channel_0_init_max = init_max[
+            :, channel_i
+        ]  # For MatMul, Gemm (untransposed) weights in shape (c_in, c_out)
+
+    """
+    When: Given best indices for output channel 0
+    Then: Expected max should be max_tensor / num_candidates * (indices + 1)
+    """
+
+    encodings = quantizer.get_encodings()
+    actual_max = np.array([enc.max for enc in encodings]).reshape(
+        quantizer._encoding_shape()
+    )
+    if model_factory == single_conv_layer_model:
+        channel_0_actual_max = actual_max[channel_i, :, 0, 0]
+    else:
+        channel_0_actual_max = actual_max[:, channel_i]
+
+    channel_0_expected_max = channel_0_init_max / num_candidates * (best_indices + 1)
+
+    print(
+        f"channel_0_actual_max={channel_0_actual_max}, channel_0_expected_max={channel_0_expected_max}"
+    )
+    assert np.allclose(channel_0_actual_max, channel_0_expected_max)
+
+
+@pytest.mark.parametrize(
+    "swap_quantizer_func",
+    [
+        partial(
+            set_grouped_blockwise_quantization_for_weights,
+            op_types=("MatMul", "Conv", "Gemm"),
+            decompressed_bw=8,
+            strict=True,
+        ),
+        partial(
+            set_blockwise_quantization_for_weights,
+            op_types=("MatMul", "Conv", "Gemm"),
+            strict=True,
+            symmetric=True,
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "model_factory, block_size",
+    [
+        (single_residual_model, 1),
+        (models_for_tests.concat_model, 1),
+        (models_for_tests.linear_split_into_matmul_add, 1),
+        (model_with_split, 1),
+    ],
+)
+def test_bq_lpbq_functional(swap_quantizer_func, model_factory, block_size):
+    model = model_factory()
+    sim = QuantizationSimModel(
+        model=copy.deepcopy(model),
+        quant_scheme=QuantScheme.post_training_tf,
+        default_activation_bw=8,
+        default_param_bw=4,
+        providers=["CPUExecutionProvider"],
+    )
+
+    """
+    When: strict=True and block_size=1
+    Then: Block quantization is enabled for all the supported Conv, Gemm and MatMul ops
+    """
+
+    swap_quantizer_func(sim, bitwidth=4, block_size=block_size)
+
+    inputs = [make_dummy_input(model.model) for _ in range(10)]
+    apply_seq_mse(sim, inputs[:1])
+
+    for conn_graph_op in sim.connected_graph.ordered_ops:
+        param_name = _get_weight_param_name(conn_graph_op)
+        if param_name is not None:
+            quantizer = sim.qc_quantize_op_dict[param_name]
+            assert quantizer.is_encoding_frozen()
+
+
 class TestDependencyGraph:
     @pytest.mark.parametrize(
         "model, cached_data",
@@ -812,3 +1335,414 @@ class TestDependencyGraph:
         assert "/fc/Gemm" in [
             node.cg_op.name for nodes in sorted_order.values() for node in nodes
         ]
+
+
+class TestBlockWiseReconLoss:
+    @pytest.mark.cuda
+    @pytest.mark.parametrize(
+        "use_cuda, weight_shape, input_shape, output_shape, block_size, block_axis, kwargs",
+        [
+            (
+                True,
+                (32, 16, 5, 5),
+                (2, 16, 10, 10),
+                (2, 32, 6, 6),
+                4,
+                1,
+                dict(groups=1),
+            ),  # Regular conv (groups=1)
+            (
+                False,
+                (32, 16, 5, 5),
+                (2, 16, 10, 10),
+                (2, 32, 6, 6),
+                4,
+                1,
+                dict(groups=1),
+            ),  # Regular conv (groups=1)
+            (
+                True,
+                (512, 256, 5, 5),
+                (1, 256, 10, 10),
+                (1, 512, 6, 6),
+                4,
+                1,
+                dict(groups=1),
+            ),  # Regular conv (groups=1)
+            (
+                False,
+                (512, 256, 5, 5),
+                (1, 256, 10, 10),
+                (1, 512, 6, 6),
+                4,
+                1,
+                dict(groups=1),
+            ),  # Regular conv (groups=1)
+        ],
+    )
+    def test_blockwise_conv(
+        self,
+        use_cuda,
+        weight_shape,
+        input_shape,
+        output_shape,
+        block_size,
+        block_axis,
+        kwargs,
+    ):
+        providers = ["CUDAExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
+        device = torch.device("cuda:0" if use_cuda else "cpu")
+
+        weight = np.random.randn(*weight_shape).astype(np.float32)
+        kwargs_for_onnx = kwargs.copy()
+        if "groups" in kwargs_for_onnx:
+            kwargs_for_onnx["group"] = kwargs_for_onnx.pop("groups")
+
+        onnx_model = _onnx_model_from_op(
+            "Conv", weight, input_shape, output_shape, **kwargs_for_onnx
+        )
+
+        dummy_input = np.random.randn(*input_shape).astype(np.float32)
+        session = ort.InferenceSession(
+            onnx_model.SerializeToString(), providers=providers
+        )
+        orig_graph_output = session.run(None, {"input": dummy_input})[0]
+
+        # In-place modify Conv with block-wise grouped Conv
+        modify_graph_with_grouped_conv(onnx_model, block_size, block_axis)
+        onnx.checker.check_model(onnx_model)
+
+        session = ort.InferenceSession(
+            onnx_model.SerializeToString(), providers=providers
+        )
+        modified_graph_output = session.run(None, {"input": dummy_input})[0]
+        c_out, c_in, k_h, k_w = weight_shape
+        N, _, h_out, w_out = modified_graph_output.shape
+
+        """
+        When: Replace conv node with block-wise grouped conv
+        Then: Aggregating across num_blocks should match the original conv output from ONNX graph
+        """
+
+        num_blocks = weight_shape[block_axis] // block_size
+        modified_graph_output = modified_graph_output.reshape(
+            N, num_blocks, c_out, h_out, w_out
+        )
+        aggregated_output = modified_graph_output.sum(1)
+        assert np.allclose(orig_graph_output, aggregated_output, atol=1e-1)
+
+        """
+        When: Replace conv node with grouped conv
+        Then: Graph output should be (N, c_out, num_blocks, h_out, w_out) and match torch output
+        """
+
+        def _onnx_blockwise_conv2d(session):
+            onnx_outputs = session.run(None, {"input": dummy_input})[0]
+            return onnx_outputs
+
+        onnx_outputs = _onnx_blockwise_conv2d(session)
+
+        # Using torch operations
+        torch_input = torch.from_numpy(dummy_input).to(device=device)
+        torch_weight = torch.from_numpy(weight).to(device=device)
+        torch_outputs = (
+            _torch_blockwise_conv2d(
+                torch_input, torch_weight, block_size=block_size, **kwargs
+            )
+            .cpu()
+            .numpy()
+        )
+
+        assert onnx_outputs.shape == torch_outputs.shape
+        assert np.allclose(onnx_outputs, torch_outputs, atol=1e-1)
+
+        # Performance test, this is not a fair comparison for PyTorch and ONNX
+        # but a practical sanity check to ensure ONNX inference isn't significantly slower than PyTorch
+        torch_avg_time = _timed_run(
+            lambda: _torch_blockwise_conv2d(
+                torch_input, torch_weight, block_size=block_size, **kwargs
+            )
+        )
+        onnx_avg_time = _timed_run(lambda: _onnx_blockwise_conv2d(session))
+        print(f"torch_avg_time: {torch_avg_time} onnx_avg_time: {onnx_avg_time}")
+
+        del session
+
+    @pytest.mark.cuda
+    @pytest.mark.parametrize(
+        "op_type, use_cuda, weight_shape, input_shape, output_shape, block_size, block_axis, kwargs",
+        [
+            (
+                "Gemm",
+                True,
+                (15, 30),
+                (2, 15),
+                (5, 2, 30),
+                3,
+                0,
+                dict(transA=0, transB=0),
+            ),
+            (
+                "Gemm",
+                False,
+                (15, 30),
+                (2, 15),
+                (5, 2, 30),
+                3,
+                0,
+                dict(transA=0, transB=0),
+            ),
+            (
+                "Gemm",
+                True,
+                (150, 300),
+                (1, 150),
+                (50, 1, 300),
+                3,
+                0,
+                dict(transA=0, transB=0),
+            ),
+            (
+                "Gemm",
+                False,
+                (150, 300),
+                (1, 150),
+                (50, 1, 300),
+                3,
+                0,
+                dict(transA=0, transB=0),
+            ),
+            (
+                "Gemm",
+                True,
+                (30, 15),
+                (2, 15),
+                (5, 2, 30),
+                3,
+                1,
+                dict(transA=0, transB=1),
+            ),  # weight shape: (c_out, c_in)
+            (
+                "Gemm",
+                False,
+                (30, 15),
+                (2, 15),
+                (5, 2, 30),
+                3,
+                1,
+                dict(transA=0, transB=1),
+            ),  # weight shape: (c_out, c_in)
+            (
+                "Gemm",
+                True,
+                (300, 150),
+                (1, 150),
+                (50, 1, 300),
+                3,
+                1,
+                dict(transA=0, transB=1),
+            ),  # weight shape: (c_out, c_in)
+            (
+                "Gemm",
+                False,
+                (300, 150),
+                (1, 150),
+                (50, 1, 300),
+                3,
+                1,
+                dict(transA=0, transB=1),
+            ),  # weight shape: (c_out, c_in)
+            (
+                "MatMul",
+                True,
+                (15, 30),
+                (20, 15),
+                (5, 20, 30),
+                3,
+                0,
+                dict(),
+            ),  # Matmul 3d input
+            (
+                "MatMul",
+                False,
+                (15, 30),
+                (20, 15),
+                (5, 20, 30),
+                3,
+                0,
+                dict(),
+            ),  # Matmul 3d input
+            (
+                "MatMul",
+                True,
+                (150, 300),
+                (10, 150),
+                (50, 10, 300),
+                3,
+                0,
+                dict(),
+            ),  # Matmul 3d input
+            (
+                "MatMul",
+                False,
+                (150, 300),
+                (10, 150),
+                (50, 10, 300),
+                3,
+                0,
+                dict(),
+            ),  # Matmul 3d input
+        ],
+    )
+    def test_blockwise_linear(
+        self,
+        op_type,
+        use_cuda,
+        weight_shape,
+        input_shape,
+        output_shape,
+        block_size,
+        block_axis,
+        kwargs,
+    ):
+        """
+        by default, the Gemm operator does not transpose the second input B
+        so passing untransposed weight tensor (c_in, c_out)
+        """
+        providers = ["CUDAExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
+        device = torch.device("cuda:0" if use_cuda else "cpu")
+
+        weight = np.random.randn(*weight_shape).astype(np.float32)
+        if op_type == "Gemm":
+            onnx_model = _onnx_model_from_op(
+                op_type, weight, input_shape, output_shape, **kwargs
+            )
+        elif op_type == "MatMul":
+            onnx_model = _onnx_model_from_op(op_type, weight, input_shape, output_shape)
+        else:
+            raise NotImplementedError
+
+        dummy_input = np.random.randn(*input_shape).astype(np.float32)
+        session = ort.InferenceSession(
+            onnx_model.SerializeToString(), providers=providers
+        )
+        orig_graph_output = session.run(None, {"input": dummy_input})[0]
+
+        # In-place modify Gemm/MatMul with block-wise batched MatMul
+        modify_graph_with_grouped_linear(onnx_model, block_size, block_axis)
+        onnx.checker.check_model(onnx_model)
+
+        session = ort.InferenceSession(
+            onnx_model.SerializeToString(), providers=providers
+        )
+
+        """
+        When: Replace Gemm/MatMul node with block-wise matmul
+        Then: Aggregating across num_blocks should match the original output from ONNX graph
+        """
+        prepared_inputs = prepare_linear_inputs({"input": [dummy_input]}, block_size)
+        prepared_inputs = {k: v[0] for k, v in prepared_inputs.items()}  # Flatten lists
+
+        onnx_outputs = session.run(None, prepared_inputs)[0]
+        aggregated_output = onnx_outputs.sum(0)
+        assert np.allclose(orig_graph_output, aggregated_output, atol=1e-1)
+
+        """
+        When: Replace Gemm/MatMul nodes with block-wise batched MatMul
+        Then: Graph output should be (N, c_out, num_blocks) and should match torch output
+        """
+
+        trans_b = kwargs.get("transB", 0)
+        weight = (
+            weight if trans_b == 1 else weight.transpose(1, 0)
+        )  # torch transpose it internally x @ W.T
+        torch_input = torch.from_numpy(prepared_inputs["input"]).to(device=device)
+        torch_weight = torch.from_numpy(weight).to(device=device)
+        torch_outputs = (
+            _torch_blockwise_linear(torch_input, torch_weight, block_size=block_size)
+            .cpu()
+            .numpy()
+        )
+        assert onnx_outputs.shape == torch_outputs.shape
+        assert onnx_outputs.shape[0] == weight_shape[block_axis] // block_size
+        assert np.allclose(onnx_outputs, torch_outputs, atol=1e-1)
+
+        del session
+
+    @pytest.mark.parametrize(
+        "op_type, weight_shape, input_shape, output_shape, block_size, block_axis, num_sha_ops, kwargs",
+        [
+            ("Conv", (32, 16, 5, 5), (2, 16, 10, 10), (2, 32, 6, 6), 4, 1, 32, dict()),
+            (
+                "Gemm",
+                (15, 30),
+                (5, 2, 3),
+                (5, 2, 30),
+                3,
+                0,
+                32,
+                dict(transA=0, transB=0),
+            ),
+            (
+                "Gemm",
+                (30, 15),
+                (5, 2, 3),
+                (5, 2, 30),
+                3,
+                1,
+                32,
+                dict(transA=0, transB=1),
+            ),
+            ("MatMul", (15, 30), (5, 20, 3), (5, 20, 30), 3, 0, 32, dict()),
+        ],
+    )
+    def test_parallel_sha_ops(
+        self,
+        op_type,
+        weight_shape,
+        input_shape,
+        output_shape,
+        block_size,
+        block_axis,
+        num_sha_ops,
+        kwargs,
+    ):
+        providers = ["CPUExecutionProvider"]
+        weight = np.random.randn(*weight_shape).astype(np.float32)
+        onnx_model = _onnx_model_from_op(
+            op_type, weight, input_shape, output_shape, num_sha_ops, **kwargs
+        )
+
+        dummy_input = np.random.randn(*input_shape).astype(np.float32)
+        if op_type == "Conv":
+            modify_graph_with_grouped_conv(onnx_model, block_size, block_axis)
+        elif op_type in ["Gemm", "MatMul"]:
+            modify_graph_with_grouped_linear(onnx_model, block_size, block_axis)
+        else:
+            raise NotImplementedError
+
+        """
+        When: Replace Gemm/MatMul nodes with block-wise batched MatMul or Conv with grouped Conv
+        Then: Graph output should be (N, c_out, num_blocks) or (N, c_out, num_blocks, h_out, w_out)
+        """
+        onnx.checker.check_model(onnx_model)
+
+        session = ort.InferenceSession(
+            onnx_model.SerializeToString(), providers=providers
+        )
+
+        onnx_outputs = session.run(None, {"input": dummy_input})
+
+        """
+        When: multiple SHA ops of same op_type at the same level (Share same inputs, has same replicated weights)
+        Then: Outputs should match
+        """
+        assert len(onnx_outputs) == num_sha_ops
+
+        for i, output in enumerate(onnx_outputs[1:], start=1):
+            assert output.shape == onnx_outputs[0].shape
+
+        for i, output in enumerate(onnx_outputs[1:], start=1):
+            assert np.allclose(onnx_outputs[0], output)
+
+        del session

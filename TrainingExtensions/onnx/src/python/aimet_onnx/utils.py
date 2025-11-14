@@ -889,3 +889,24 @@ def map_np_dtype_to_torch(np_dtype: np.dtype) -> torch.dtype:
         return dtype_map[np_dtype.type]
     except KeyError as exc:
         raise ValueError(f"Unsupported dtype: {np_dtype}") from exc
+
+
+def map_torch_dtype_to_np(torch_dtype: torch.dtype) -> np.dtype:
+    """
+    Maps a PyTorch dtype to the corresponding NumPy dtype.
+
+    :param torch_dtype: PyTorch dtype
+    :return: Corresponding NumPy dtype
+    """
+    dtype_map = {
+        torch.float16: np.float16,
+        torch.float32: np.float32,
+        torch.float64: np.float64,
+        torch.int32: np.int32,
+        torch.int64: np.int64,
+    }
+
+    try:
+        return dtype_map[torch_dtype]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported torch dtype: {torch_dtype}") from exc

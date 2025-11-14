@@ -1103,12 +1103,15 @@ class GroupedBlockQuantizeDequantize(QcQuantizeOp):
         self.enabled = True
 
     def load_encodings(self, encoding: List[libpymo.TfEncoding]):
-        encoding = lpbq_utils.compress_encoding_scales(
-            encoding,
-            self._encoding_shape(),
-            self._block_grouping(),
-            scale_bitwidth=self.decompressed_bw - self.bitwidth,
-        )
+        block_grouping = self._block_grouping()
+
+        if any(dim != 1 for dim in block_grouping):
+            encoding = lpbq_utils.compress_encoding_scales(
+                encoding,
+                self._encoding_shape(),
+                block_grouping,
+                scale_bitwidth=self.decompressed_bw - self.bitwidth,
+            )
         super().load_encodings(encoding)
 
     def _export_legacy_encodings(self) -> Union[List, None]:

@@ -55,6 +55,7 @@ from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from aimet_common.libpymo import TensorQuantizerOpMode
 from aimet_common.defs import QuantScheme
 from aimet_common.utils import AimetLogger, deprecated
+from aimet_onnx.qc_quantize_op import GroupedBlockQuantizeDequantize
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.sequential_mse.dependency_graph import (
     DependencyGraph,
@@ -68,6 +69,11 @@ from aimet_onnx.utils import (
     LazyExtractor,
 )
 from aimet_onnx.sequential_mse.dependency_graph import DependencyNode
+from aimet_onnx.sequential_mse.transform import (
+    modify_graph_with_grouped_conv,
+    modify_graph_with_grouped_linear,
+    prepare_linear_inputs,
+)
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SeqMse)
 
@@ -184,13 +190,14 @@ class SequentialMse:
         3) run the onnx graph and compute encoding using seq mse algorithm
         4) re-enable the quantizer disabled in first step
         """
-        self.sim._compute_param_encodings(overwrite=False)
+        with _temporarily_disable_block_grouping(self.sim):
+            self.sim._compute_param_encodings(overwrite=False)
 
-        with (
-            disable_quantizers(self.sim, self._get_quantizers_to_be_disabled()),
-            _remove_session(self.sim),
-        ):
-            self._topological_traversal()
+            with (
+                disable_quantizers(self.sim, self._get_quantizers_to_be_disabled()),
+                _remove_session(self.sim),
+            ):
+                self._topological_traversal()
 
     def _get_quantizers_to_be_disabled(self) -> List[str]:
         """
@@ -260,11 +267,19 @@ class SequentialMse:
         # pylint: disable=protected-access
 
         weight_name = self.dependency_graph.get_param_name(dependency_node)
+
+        # Retrieve the quantizer and its encodings
         quantizer = self.sim.qc_quantize_op_dict[weight_name]
         encodings = quantizer.get_encodings()
+        encoding_shape = quantizer._encoding_shape()
 
         min_tensor = np.array([enc.min for enc in encodings], dtype=np.float32)
         max_tensor = np.array([enc.max for enc in encodings], dtype=np.float32)
+
+        # Reshape if encoding_shape is not scalar
+        if encoding_shape:
+            min_tensor = min_tensor.reshape(encoding_shape)
+            max_tensor = max_tensor.reshape(encoding_shape)
 
         return min_tensor, max_tensor
 
@@ -304,33 +319,41 @@ class SequentialMse:
         :param x_min: min values
         :param x_max: max values
         """
-        cand = np.stack((x_min, x_max), axis=-1)
-
+        # Get the parameter name and corresponding quantizer
         weight_name = self.dependency_graph.get_param_name(dependency_node)
-        quantize_op = self.sim.qc_quantize_op_dict[weight_name]
-        quantize_op.reset_encoding_stats()
+        quantizer = self.sim.qc_quantize_op_dict[weight_name]
 
-        # pylint: disable=protected-access
-        quantizer_shape = quantize_op._encoding_shape()
-        num_encodings = np.prod(quantizer_shape)
+        # Extract quantization configuration
+        channel_axis = quantizer.quant_info.channelAxis
+        block_size = quantizer.quant_info.blockSize
 
-        if num_encodings != len(cand) and num_encodings != 1:
-            raise ValueError(
-                weight_name,
-                " should be per-tensor or number of "
-                "quantizer must match with number of channels",
-            )
+        if np.isscalar(x_min) and np.isscalar(x_max):
+            x_min = np.asarray([x_min], dtype=np.float32)
+            x_max = np.asarray([x_max], dtype=np.float32)
 
-        if quantizer_shape:
-            quantize_op.update_encoding_stats(
-                np.reshape(cand, (*quantizer_shape[0:-1], 2 * quantizer_shape[-1]))
-            )
+        # Stack x_min and x_max to form candidate tensor
+        if block_size > 0:
+            # For per-block quantization, always stack along axis=0 -> shape: (2, ...)
+            cand = np.stack((x_min, x_max), axis=0)
+
+        # For per-tensor/per-channel, stack based on channel axis
         else:
-            quantize_op.update_encoding_stats(cand)
+            if channel_axis == 0:
+                # Channels along axis 0 -> shape: (num_channels, 2)
+                cand = np.stack((x_min, x_max), axis=1)
+            elif channel_axis == 1:
+                # Channels along axis 1 -> shape: (2, num_channels)
+                cand = np.stack((x_min, x_max), axis=0)
+            else:
+                raise ValueError(f"Unsupported channel_axis: {channel_axis}")
 
-        quantize_op.compute_encodings()
+        # Reset and update encodings statistics with the candidate tensor
+        quantizer.reset_encoding_stats()
+        quantizer.update_encoding_stats(cand)
 
-        quantize_op.op_mode = TensorQuantizerOpMode.quantizeDequantize
+        # Compute final encodings and set QDQ mode
+        quantizer.compute_encodings()
+        quantizer.op_mode = TensorQuantizerOpMode.quantizeDequantize
 
     def _freeze_encodings(self, dependency_node: DependencyNode):
         """
@@ -377,23 +400,55 @@ class SequentialMse:
         xqwq = sim_outputs
         xqw = fp_outputs
 
+        loss_fn_map = {
+            "mse": torch.nn.functional.mse_loss,
+            "l1": torch.nn.functional.l1_loss,
+            "sqnr": SequentialMse.neg_sqnr,
+        }
+        if self.params.loss_fn not in loss_fn_map:
+            raise ValueError(f"Invalid loss function: {self.params.loss_fn}")
+
+        loss_fn = loss_fn_map[self.params.loss_fn]
+
+        weight_name = self.dependency_graph.get_param_name(dependency_node)
+        quantizer = self.sim.qc_quantize_op_dict[weight_name]
+
+        if quantizer is None:
+            raise KeyError(f"Quantizer not found for {weight_name}")
+
+        tensor_shape = quantizer.tensor_quantizer_params.tensor_shape
+        block_size = quantizer.quant_info.blockSize
+        channel_axis = quantizer.quant_info.channelAxis
+        block_axis = quantizer.quant_info.blockAxis
+
+        # Handle block-wise quantization
+        if block_size > 0:
+            if dependency_node.cg_op.type == "Conv":
+                loss = loss_fn(xqwq, xqw, reduction="none").sum(dim=(0, 2, 3))
+                loss = loss.reshape(tensor_shape[block_axis] // block_size, -1)
+                loss = loss.permute(1, 0)
+            elif dependency_node.cg_op.type in ["Gemm", "MatMul"]:
+                loss = loss_fn(xqwq, xqw, reduction="none").sum(dim=1)
+                if block_axis > channel_axis:
+                    loss = loss.permute(1, 0)  # For transposed form of Gemm
+            else:
+                raise NotImplementedError(
+                    f"Unsupported op type with block quantization: {dependency_node.cg_op.type}"
+                )
+            return loss
+
+        # Handle per-tensor and per-channel case
         if dependency_node.cg_op.type == "Conv":
-            # Permute to move output channel dimension to the end
+            # Permute to move channel dimension to the end
             xqwq = xqwq.transpose(1, xqwq.dim() - 1)
             xqw = xqw.transpose(1, xqw.dim() - 1)
 
-        if self.params.loss_fn == "mse":
-            loss_fn = torch.nn.functional.mse_loss
-        elif self.params.loss_fn == "l1":
-            loss_fn = torch.nn.functional.l1_loss
-        elif self.params.loss_fn == "sqnr":
-            loss_fn = SequentialMse.neg_sqnr
-        else:
-            raise ValueError(f"Invalid loss function: {self.params.loss_fn}")
-
+        # Flatten all dimensions except channel
         channel_dim = xqwq.shape[-1]
         xqwq = xqwq.reshape(-1, channel_dim)
         xqw = xqw.reshape(-1, channel_dim)
+
+        # Compute channel-wise loss
         loss = loss_fn(xqwq, xqw, reduction="none").sum(0)
         return loss
 
@@ -471,26 +526,21 @@ class SequentialMse:
         )
         sim_inputs = self.dependency_graph.get_sim_data(dep_nodes_to_parallelize)
 
-        # Create inference session for subgraph from float model
         subgraph_model = self._split_onnx_graph(
             self._extractor, subgraph_inp_names, subgraph_outs_names
+        )
+
+        # Transform graph for bq/lpbq quantizers
+        subgraph_model, sim_inputs = self._transform_graph_for_block_quantization(
+            subgraph_model, sim_inputs
         )
 
         dataset_len = len(next(iter(sim_inputs.values())))
         with self._create_session(subgraph_model) as session:
             # Pre-compute output shapes per batch
-            all_out_shapes = []
-            all_out_dtypes = []
-            for batch_idx in range(dataset_len):
-                input_batch = {
-                    name: data[batch_idx] for name, data in sim_inputs.items()
-                }
-                outputs = session.run(None, input_batch)
-                out_shapes = [out.shape for out in outputs]
-                out_dtype = [out.dtype for out in outputs]
-                all_out_shapes.append(out_shapes)
-                all_out_dtypes.append(out_dtype)
-                del outputs
+            all_out_shapes, all_out_dtypes = _infer_out_shapes_and_dtypes(
+                session, sim_inputs
+            )
 
             torch_device = get_torch_device(session)
             device_type = torch_device.type
@@ -720,6 +770,88 @@ class SequentialMse:
         finally:
             del session
 
+    def _transform_graph_for_block_quantization(
+        self, model: onnx.ModelProto, sim_inputs: Dict
+    ):
+        """
+        Identifies BQ/LPBQ quantizers in the given subgraph and modifies the graph
+        to compute block-wise reconstruction loss based on the detected quantization configurations.
+
+        NOTE: If no BQ/LPBQ quantizers are found, the model is returned unchanged.
+
+        Assumptions:
+         - If block-wise quantizer(s) are found, all of them should be block-wise quantizers.
+         - All block-wise quantizers in the subgraph must have the same `block_size` and `block_axis`.
+         - The subgraph must either contain Conv ops or Gemm/MatMul ops, but not both.
+         - With the above assumptions satisfied, graph transformation can be performed in a single pass
+          across all the relevant ops in the subgraph.
+
+        :param model: Model containing subgraph
+        :return: Modified model graph if BQ/LPBQ quantizer are found, else return model as-is.
+        """
+        param_names = set(self.sim.param_names)
+
+        quantizer_keys = [
+            node.input[0]
+            for node in model.graph.node
+            if node.op_type == "QcQuantizeOp" and node.input[0] in param_names
+        ]
+
+        # Filter only weight quantizers
+        quantizers = {
+            name: self.sim.qc_quantize_op_dict[name]
+            for name in quantizer_keys
+            if self.sim.qc_quantize_op_dict[name].enabled
+        }
+
+        bq_quantizers = [
+            quantizer
+            for quantizer in quantizers.values()
+            if quantizer.quant_info.blockSize > 0
+        ]
+
+        # Early exit if no block quantizers found
+        if not bq_quantizers:
+            return model, sim_inputs
+
+        # If some quantizers are block-wise and non block-wise raise an error
+        # Add support later
+        if len(quantizers) != len(bq_quantizers):
+            raise NotImplementedError(
+                f"Mixed usage of block-wise and non block-wise quantizers is not supported"
+            )
+
+        ref_block_size = bq_quantizers[0].quant_info.blockSize
+        ref_block_axis = bq_quantizers[0].quant_info.blockAxis
+
+        for quantizer in bq_quantizers[1:]:
+            q_info = quantizer.quant_info
+            if q_info.blockAxis != ref_block_axis or q_info.blockSize != ref_block_size:
+                raise RuntimeError(
+                    f"All block quantizers in the subgraph should have the same quantization configuration"
+                )
+
+        conv_ops = {"Conv"}
+        linear_ops = {"MatMul", "Gemm"}
+
+        op_types = {node.op_type for node in model.graph.node}
+        has_conv = bool(op_types.intersection(conv_ops))
+        has_linear = bool(op_types.intersection(linear_ops))
+
+        if has_conv and has_linear:
+            raise RuntimeError(f"Subgraph contains both Conv and linear ops.")
+
+        # Transform graph only for block quantization
+        if has_conv:
+            modify_graph_with_grouped_conv(model, ref_block_size, ref_block_axis)
+        elif has_linear:
+            sim_inputs = prepare_linear_inputs(sim_inputs, block_size=ref_block_size)
+            modify_graph_with_grouped_linear(model, ref_block_size, ref_block_axis)
+        else:
+            raise RuntimeError(f"Subgraph contains no conv or linear ops.")
+
+        return model, sim_inputs
+
 
 @contextmanager
 def _remove_session(sim: QuantizationSimModel):
@@ -797,3 +929,64 @@ def _add_value_info(model: onnx.ModelProto):
         # Restore original value info
         model.graph.ClearField("value_info")
         model.graph.value_info.extend(initial_value_info)
+
+
+@contextmanager
+def _temporarily_disable_block_grouping(sim: QuantizationSimModel):
+    """
+    Set all grouped block quantizers to regular block-wise quantization for the duration of the context manager.
+
+    NOTE: block grouping of 1 is equivalent to standard block-wise quantization, as each block has its own encodings.
+
+    :param sim: QuantizationSimModel object
+    """
+    quantizers = [
+        sim.qc_quantize_op_dict[name]
+        for name in sim.param_names
+        if sim.qc_quantize_op_dict[name].enabled
+        and isinstance(sim.qc_quantize_op_dict[name], GroupedBlockQuantizeDequantize)
+    ]
+
+    original_block_groupings = {
+        quantizer: quantizer._block_grouping for quantizer in quantizers
+    }
+
+    try:
+        for quantizer in quantizers:
+            quantizer._block_grouping = lambda q=quantizer: [
+                1 for _ in range(len(q._encoding_shape()))
+            ]
+        yield
+    finally:
+        for quantizer, original_block_grouping in original_block_groupings.items():
+            quantizer._block_grouping = original_block_grouping
+
+
+def _infer_out_shapes_and_dtypes(
+    session: OrtInferenceSession, data: Dict[str, List[torch.Tensor]]
+) -> Tuple[List, List]:
+    """
+
+    Infers output shapes and data types for each batch of inputs using the provided ONNX Runtime session.
+
+    This function runs the model on each batch of input tensors
+    and collects the output shapes and dtypes for later use in output buffer allocation.
+
+    TODO: Instead of running inference, just consider inspecting the graph for dynamic shapes.
+
+    :param session: ORT inference session.
+    :param data: Dictionary of input tensors.
+    :return: List of output shapes and dtypes per batch of inputs.
+    """
+    dataset_len = len(next(iter(data.values())))
+    all_out_shapes = []
+    all_out_dtypes = []
+
+    for batch_idx in range(dataset_len):
+        input_batch = {name: array_list[batch_idx] for name, array_list in data.items()}
+        outputs = session.run(None, input_batch)
+        all_out_shapes.append([out.shape for out in outputs])
+        all_out_dtypes.append([out.dtype for out in outputs])
+        del outputs
+
+    return all_out_shapes, all_out_dtypes
