@@ -40,6 +40,8 @@ jobs:
           AIMET_ONNX_SRC_CODE:              "TrainingExtensions/onnx/"
           DOC_SRC_CODE:                     "Docs/"
           EXAMPLES_SRC_CODE:                "Examples/"
+          GENAI_TEST_CODE:                  "GenAITests/"
+          ONNXREGRESSION_TEST_CODE:         "ONNXRegression/"
         shell: bash
         run: |
           set -x
@@ -59,6 +61,10 @@ jobs:
               : # Documentation change doesn't require running unit tests; only doc rebuild is needed
             elif [[ "$file" == "$EXAMPLES_SRC_CODE"* ]]; then
               : # Examples change doesn't require running unit tests; only doc rebuild is needed
+            elif [[ "$file" == $GENAI_TEST_CODE"* ]]; then
+              : # GenAI tests change doesn't require running unit tests
+            elif [[ "$file" == $ONNXREGRESSION_TEST_CODE"* ]]; then
+              : # ONNXRegression tests change doesn't require running unit tests
             else
               TORCH_TEST_REQUIRED='true'
               ONNX_TEST_REQUIRED='true'

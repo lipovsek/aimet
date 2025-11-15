@@ -3,3 +3,4 @@ tokenizers
 datasets
 peft
 pytest
+nvidia-ml-py

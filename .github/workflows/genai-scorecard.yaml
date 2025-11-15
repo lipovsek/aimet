@@ -303,6 +303,7 @@ jobs:
       - name: Update report filename
         run: |
           mv genai_test_artifacts/profiling_data.json genai_test_artifacts/profiling_data-${{ steps.file-metadata.outputs.file_suffix }}.json
+          mv genai_test_artifacts/profiling_data.csv genai_test_artifacts/profiling_data-${{ steps.file-metadata.outputs.file_suffix }}.csv
 
       # Upload generated reports (CSV, HTML, JSON)
       # Note: Using v3 for GHES compatibility
@@ -312,7 +313,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: test-data-${{ steps.file-metadata.outputs.file_suffix }}
-          path: genai_test_artifacts/profiling_data-${{ steps.file-metadata.outputs.file_suffix }}.json
+          path: genai_test_artifacts/profiling_data-${{ steps.file-metadata.outputs.file_suffix }}*
           retention-days: 30  # Keep for 1 week
 
       # Clean up cached models to prevent disk space issues

@@ -3,112 +3,46 @@
 
 """General utils for GenAI model testing"""
 
-import torch
-import threading
-import psutil
-import time
 import os
 import json
+import csv
 import collections
+import sys
+from dataclasses import dataclass
+
+# Import GPUMeter from ONNXRegression evaluation module
+sys.path.append(
+    os.path.join(
+        os.path.abspath(os.path.dirname(__file__)), "../../../ONNXRegression/evaluation"
+    )
+)
+from metrics_utils import GPUMeter
 
 
-def _format_bytes(rawbytes: int, unit: str = "GB") -> float:
-    """Helper function to format collected statistics to specified unit"""
-    if unit == "KB":
-        return rawbytes / 1024
-    if unit == "MB":
-        return rawbytes / (1024**2)
-    if unit == "GB":
-        return rawbytes / (1024**3)
+def convert_gpu_meter_to_dict(
+    profiler: GPUMeter, remove_finegrained: bool = False
+) -> dict[str, str]:
+    if profiler is None:
+        return {}
+    results = {
+        "elapsed_ms": profiler.elapsed_ms,
+        "cuda_starting_mb": profiler.cuda_first_mb,
+        "cuda_peak_mb": profiler.cuda_peak_mb,
+        "cuda_running_mb": profiler.cuda_running_mb if not remove_finegrained else None,
+        "cpu_starting_mb": profiler.cpu_first_mb,
+        "cpu_peak_mb": profiler.cpu_peak_mb,
+        "cpu_running_mb": profiler.cpu_running_mb if not remove_finegrained else None,
+    }
+    return {key: value for key, value in results.items() if value is not None}
 
-    raise ValueError("Unsupported byte unit")
 
+@dataclass
+class MetricResult:
+    """Dataclass to hold accuracy and profiling results from running a matric"""
 
-class ResourceProfiler:
-    """Context manager to monitor resource consumption"""
-
-    def __init__(
-        self, sampling_frequency: float = 1.0, disable_constant_sampling: bool = False
-    ):
-        self.cuda_memory_allocated = []
-        self.cuda_memory_reserved = []
-        self.cpu_memory_usage = []
-        self.disable_constant_sampling = disable_constant_sampling
-
-        if not self.disable_constant_sampling:
-            self._stop_event = threading.Event()
-            self.sampling_frequency = sampling_frequency
-
-    def _monitor_memory(self):
-        while not self._stop_event.is_set():
-            self.cuda_memory_allocated.append(torch.cuda.memory_allocated())
-            self.cuda_memory_reserved.append(torch.cuda.memory_reserved())
-            self.cpu_memory_usage.append(psutil.virtual_memory().used)
-            time.sleep(self.sampling_frequency)
-
-    def __enter__(self):
-        # pylint: disable=attribute-defined-outside-init
-        torch.cuda.reset_peak_memory_stats()
-        self.start_time = time.perf_counter()
-
-        if not self.disable_constant_sampling:
-            self.thread = threading.Thread(target=self._monitor_memory)
-            self.thread.start()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # pylint: disable=attribute-defined-outside-init
-        self.stop_time = time.perf_counter()
-
-        if not self.disable_constant_sampling:
-            self._stop_event.set()
-            self.thread.join()
-
-    def runtime(self) -> float:
-        """Report time spent inside context manager"""
-        return self.stop_time - self.start_time
-
-    def peak_ram_usage(self, unit: str = "GB") -> float:
-        """Report peak RAM usage inside context manager"""
-        return _format_bytes(max(self.cpu_memory_usage), unit)
-
-    def min_ram_usage(self, unit: str = "GB") -> float:
-        """Report min RAM usage inside context manager"""
-        return _format_bytes(min(self.cpu_memory_usage), unit)
-
-    def peak_cuda_usage(self, unit: str = "GB") -> float:
-        """Report peak CUDA usage inside context manager"""
-        return _format_bytes(torch.cuda.max_memory_allocated(), unit)
-
-    def min_cuda_usage(self, unit: str = "GB") -> float:
-        """Report min CUDA usage inside context manager"""
-        return _format_bytes(min(self.cuda_memory_allocated), unit)
-
-    def cuda_memory_usage(self, unit: str = "GB") -> tuple[float, ...]:
-        """Report raw CUDA usage data inside context manager"""
-        return tuple(_format_bytes(mem, unit) for mem in self.cuda_memory_allocated)
-
-    def ram_memory_usage(self, unit: str = "GB") -> tuple[float, ...]:
-        """Report raw RAM usage data inside context manager"""
-        return tuple(_format_bytes(mem, unit) for mem in self.cpu_memory_usage)
-
-    def as_dict(self, unit: str = "GB"):
-        """Report all collected stats as dict"""
-        if self.disable_constant_sampling:
-            return {
-                "runtime": self.runtime(),
-                "peak_cuda_usage": self.peak_cuda_usage(unit),
-            }
-
-        return {
-            "runtime": self.runtime(),
-            "peak_ram_usage": self.peak_ram_usage(unit),
-            "min_ram_usage": self.min_ram_usage(unit),
-            "peak_cuda_usage": self.peak_cuda_usage(unit),
-            "min_cuda_usage": self.min_cuda_usage(unit),
-            "cuda_memory_usage": self.cuda_memory_usage(unit),
-            "cpu_memory_usage": self.ram_memory_usage(unit),
-        }
+    metric_name: str
+    result: float
+    profiler: GPUMeter
 
 
 def recursive_update(d, u):
@@ -122,7 +56,115 @@ def recursive_update(d, u):
 
 
 def write_stats_to_disk(
-    filename, model_cls, model_params, quant_recipe_cls, quant_recipe_params, stats
+    output_folder: str,
+    filename: str,
+    model_family: str,
+    model_id: str,
+    model_modifiers: dict[str, str],
+    recipe_name: str,
+    recipe_modifiers: dict[str, str],
+    dataset_name: str,
+    dataset_modifiers: dict[str, str],
+    quantization_results: GPUMeter,
+    accuracy_results: list[MetricResult],
+):
+    _write_stats_to_json(
+        str(os.path.join(output_folder, filename + ".json")),
+        model_family,
+        model_id,
+        model_modifiers,
+        recipe_name,
+        recipe_modifiers,
+        dataset_name,
+        dataset_modifiers,
+        quantization_results,
+        accuracy_results,
+    )
+
+    _write_stats_to_csv(
+        str(os.path.join(output_folder, filename + ".csv")),
+        model_family,
+        model_id,
+        model_modifiers,
+        recipe_name,
+        recipe_modifiers,
+        dataset_name,
+        dataset_modifiers,
+        quantization_results,
+        accuracy_results,
+    )
+
+
+def _write_stats_to_csv(
+    filename: str,
+    model_cls: str,
+    model_id: str,
+    model_modifiers: dict[str, str],
+    recipe_name: str,
+    recipe_modifiers: dict[str, str],
+    dataset_name: str,
+    dataset_modifiers: dict[str, str],
+    quantization_results: GPUMeter,
+    accuracy_results: list[MetricResult],
+):
+    def dict_to_postgres_csv_json_field(d):
+        json_str = json.dumps(d, separators=(",", ":"))  # Compact JSON
+        escaped = json_str.replace('"', '""')
+        return f'"{escaped}"'
+
+    accuracy_table = {
+        result.metric_name: {"result": result.result}
+        | convert_gpu_meter_to_dict(result.profiler, remove_finegrained=True)
+        for result in accuracy_results
+    }
+
+    stats = [
+        model_cls,
+        model_id,
+        dict_to_postgres_csv_json_field(model_modifiers),
+        recipe_name,
+        dict_to_postgres_csv_json_field(recipe_modifiers),
+        dataset_name,
+        dict_to_postgres_csv_json_field(dataset_modifiers),
+        dict_to_postgres_csv_json_field(
+            convert_gpu_meter_to_dict(quantization_results, remove_finegrained=True)
+        ),
+        dict_to_postgres_csv_json_field(accuracy_table),
+    ]
+
+    if not os.path.exists(filename):
+        with open(filename, "w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(
+                [
+                    "model_family",
+                    "model_id",
+                    "model_modifiers",
+                    "quantization_recipe",
+                    "quantization_recipe_modifiers",
+                    "dataset_name",
+                    "dataset_modifiers",
+                    "quantization_results",
+                    "accuracy_results",
+                ]
+            )
+
+    with open(filename, "a", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(stats)
+
+
+def _write_stats_to_json(
+    filename: str,
+    model_family: str,
+    model_id: str,
+    model_modifiers: dict[str, str],
+    recipe_name: str,
+    recipe_modifiers: dict[str, str],
+    dataset_name: str,
+    dataset_modifiers: dict[str, str],
+    quantization_results: GPUMeter,
+    accuracy_results: list[MetricResult],
 ):
     """Helper function to write collected stats to disk, only overwriting newly collected fields"""
 
@@ -136,17 +178,28 @@ def write_stats_to_disk(
         data = {}
 
     quant_params_string_formatted = ", ".join(
-        [f"{key}={value}" for key, value in quant_recipe_params.items()]
+        [f"{key}={value}" for key, value in recipe_modifiers.items()]
     )
     model_params_string_formatted = ", ".join(
-        [f"{key}={value}" for key, value in model_params.items()]
+        [f"{key}={value}" for key, value in model_modifiers.items()]
+        + [f"model_id={model_id}"]
     )
+
+    stats = {
+        recipe_name + "+" + dataset_name: convert_gpu_meter_to_dict(
+            quantization_results
+        )
+    } | {
+        result.metric_name: {"result": result.result}
+        | convert_gpu_meter_to_dict(result.profiler)
+        for result in accuracy_results
+    }
 
     # Update the dictionary with x
     x = {f"{quant_params_string_formatted}": stats}
-    x = {f"{quant_recipe_cls.__name__}": x}
+    x = {recipe_name: x}
     x = {f"{model_params_string_formatted}": x}
-    x = {f"{model_cls.__name__}": x}
+    x = {model_family: x}
     recursive_update(data, x)
 
     # Write the updated dictionary back to the file

@@ -23,8 +23,9 @@ Key design decisions:
 from __future__ import annotations
 import time
 import threading
-from typing import Optional, Callable, Tuple, List, Any, TypeVar
-from functools import wraps
+import psutil
+import os
+from typing import Optional, Callable, Tuple, List, TypeVar, Union
 
 # ==================== Optional Dependencies ====================
 # These are not required but enhance functionality when available
@@ -145,11 +146,120 @@ def _current_device_index() -> Optional[int]:
     if not torch.cuda.is_available():
         return None
 
+    cuda_visible_devices = os.getenv("CUDA_VISIBLE_DEVICES", None)
+    if cuda_visible_devices is not None:
+        # If CUDA_VISIBLE_DEVICES is set, map visible indices to actual device indices
+        try:
+            cuda_visible_devices = list(map(int, cuda_visible_devices.split(",")))
+        except ValueError:
+            cuda_visible_devices = None
+
     try:
-        return torch.cuda.current_device()
+        current_device_index = torch.cuda.current_device()
     except Exception:
         # Default to device 0 if we can't determine current device
-        return 0
+        current_device_index = 0
+
+    if cuda_visible_devices is not None:
+        try:
+            return cuda_visible_devices[current_device_index]
+        except Exception:
+            return 0
+    else:
+        return current_device_index
+
+
+# ==================== CPU Memory Sampler ====================
+
+
+class _CPUPeakSampler:
+    """
+    Background thread that samples RAM usage to capture peak values.
+
+    RAM usage can spike during operations. To catch these peaks,
+    we sample memory usage in a background thread at regular intervals.
+
+    This class manages:
+    - Background sampling thread
+    - Thread-safe peak tracking
+
+    Attributes:
+        interval_ms: Sampling interval in milliseconds
+        first_mb: First observed memory usage (baseline)
+        peak_mb: Maximum observed memory usage
+        sampled_mb: List of all sampled memory usages (if enabled)
+    """
+
+    def __init__(
+        self, interval_ms: float = 10.0, capture_intermediate_data: bool = False
+    ):
+        """
+        Initialize the memory sampler.
+
+        Args:
+            interval_ms: How often to sample memory (default: 10ms)
+            capture_intermediate_data: Whether to store all profiling data collected, not just initial and peak usage
+        """
+        self.interval_ms = float(interval_ms)
+        self.capture_intermediate_data = capture_intermediate_data
+
+        # Thread management
+        self._stop_evt = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._inited_here = False
+
+        # Memory measurements
+        self.first_mb: Optional[float] = None
+        self.peak_mb: Optional[float] = None
+        self.sampled_mb: Optional[List[float]] = None
+
+    def start(self) -> "_CPUPeakSampler":
+        def _sampling_loop():
+            """Background thread that continuously samples RAM usage"""
+
+            try:
+                # Get process info for current process from psutil
+                proc = psutil.Process(os.getpid())
+
+                while not self._stop_evt.is_set():
+                    # Get current memory usage in MB
+                    used_mb = _bytes_to_mb(proc.memory_info().vms)
+
+                    # Only track intermediate data if requested
+                    if self.capture_intermediate_data:
+                        if self.sampled_mb is None:
+                            self.sampled_mb = []
+                        self.sampled_mb.append(used_mb)
+
+                    # Track first sample (baseline)
+                    if self.first_mb is None:
+                        self.first_mb = used_mb
+                        self.peak_mb = used_mb
+                    else:
+                        # Update peak if current usage is higher
+                        if used_mb > (self.peak_mb or 0.0):
+                            self.peak_mb = used_mb
+
+                    # Sleep before next sample
+                    time.sleep(self.interval_ms / 1000.0)
+
+            except Exception:
+                # Any error in sampling thread - just stop sampling
+                return
+
+        self._thread = threading.Thread(
+            target=_sampling_loop,
+            name="cpu-peak-sampler",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        if self._thread:
+            self._stop_evt.set()
+            self._thread.join(timeout=0.5)
+            self._thread = None
 
 
 # ==================== NVML Memory Sampler ====================
@@ -172,18 +282,26 @@ class _NVMLPeakSampler:
         interval_ms: Sampling interval in milliseconds
         first_mb: First observed memory usage (baseline)
         peak_mb: Maximum observed memory usage
+        sampled_mb: List of all sampled memory usages (if enabled)
     """
 
-    def __init__(self, device_index: Optional[int] = None, interval_ms: float = 10.0):
+    def __init__(
+        self,
+        device_index: Optional[int] = None,
+        interval_ms: float = 10.0,
+        capture_intermediate_data: bool = False,
+    ):
         """
         Initialize the memory sampler.
 
         Args:
             device_index: GPU device to monitor (None = auto-detect)
             interval_ms: How often to sample memory (default: 10ms)
+            capture_intermediate_data: Whether to store all profiling data collected, not just initial and peak usage
         """
         self.device_index = device_index
         self.interval_ms = float(interval_ms)
+        self.capture_intermediate_data = capture_intermediate_data
 
         # Thread management
         self._stop_evt = threading.Event()
@@ -193,6 +311,7 @@ class _NVMLPeakSampler:
         # Memory measurements
         self.first_mb: Optional[float] = None
         self.peak_mb: Optional[float] = None
+        self.sampled_mb: Optional[List[float]] = None
 
     def start(self) -> "_NVMLPeakSampler":
         """
@@ -237,6 +356,12 @@ class _NVMLPeakSampler:
                     # Get current memory usage
                     info = pynvml.nvmlDeviceGetMemoryInfo(handle)
                     used_mb = _bytes_to_mb(info.used)
+
+                    # Only track intermediate data if requested
+                    if self.capture_intermediate_data:
+                        if self.sampled_mb is None:
+                            self.sampled_mb = []
+                        self.sampled_mb.append(used_mb)
 
                     # Track first sample (baseline)
                     if self.first_mb is None:
@@ -317,6 +442,7 @@ class GPUMeter:
         sync_cuda: bool = True,
         device_index: Optional[int] = None,
         nvml_interval_ms: float = 10.0,
+        capture_intermediate_data: bool = False,
     ):
         """
         Initialize the GPU meter.
@@ -326,19 +452,26 @@ class GPUMeter:
                       (ensures we measure actual compute time, not just launch)
             device_index: GPU device to monitor (None = auto-detect)
             nvml_interval_ms: Memory sampling interval in milliseconds
+            capture_intermediate_data: Whether to store all profiling data collected, not just initial and peak usage
         """
         self.sync_cuda = bool(sync_cuda)
         self.device_index = device_index
-        self.nvml_interval_ms = float(nvml_interval_ms)
+        self.interval_ms = float(nvml_interval_ms)
+        self.capture_intermediate_data = capture_intermediate_data
 
         # Results (populated on exit)
         self.elapsed_ms: float = 0.0
-        self.first_mb: Optional[float] = None
-        self.peak_mb: Optional[float] = None
+        self.cuda_first_mb: Optional[float] = None
+        self.cuda_peak_mb: Optional[float] = None
+        self.cuda_running_mb: Optional[List[float]] = None
+        self.cpu_first_mb: Optional[float] = None
+        self.cpu_peak_mb: Optional[float] = None
+        self.cpu_running_mb: Optional[List[float]] = None
 
         # Internal state
         self._t0: Optional[float] = None
-        self._sampler: Optional[_NVMLPeakSampler] = None
+        self._nvml_sampler: Optional[_NVMLPeakSampler] = None
+        self._cpu_sampler: Optional[_CPUPeakSampler] = None
 
     def __enter__(self) -> "GPUMeter":
         """
@@ -352,8 +485,12 @@ class GPUMeter:
             _cuda_sync_if_needed()
 
         # Start memory sampling
-        self._sampler = _NVMLPeakSampler(
-            self.device_index, self.nvml_interval_ms
+        self._nvml_sampler = _NVMLPeakSampler(
+            self.device_index, self.interval_ms, self.capture_intermediate_data
+        ).start()
+
+        self._cpu_sampler = _CPUPeakSampler(
+            self.interval_ms, self.capture_intermediate_data
         ).start()
 
         # Start timer (after CUDA sync)
@@ -379,10 +516,46 @@ class GPUMeter:
         self.elapsed_ms = (t1 - (self._t0 or t1)) * 1000.0
 
         # Stop memory sampling and get results
-        if self._sampler:
-            self._sampler.stop()
-            self.first_mb = self._sampler.first_mb
-            self.peak_mb = self._sampler.peak_mb
+        if self._nvml_sampler:
+            self._nvml_sampler.stop()
+            self.cuda_first_mb = self._nvml_sampler.first_mb
+            self.cuda_peak_mb = self._nvml_sampler.peak_mb
+            self.cuda_running_mb = (
+                self._nvml_sampler.sampled_mb
+                if self.capture_intermediate_data
+                else None
+            )
+
+        if self._cpu_sampler:
+            self._cpu_sampler.stop()
+            self.cpu_first_mb = self._cpu_sampler.first_mb
+            self.cpu_peak_mb = self._cpu_sampler.peak_mb
+            self.cpu_running_mb = (
+                self._cpu_sampler.sampled_mb if self.capture_intermediate_data else None
+            )
+
+    def as_dict(
+        self, dump_intermediate_data=False
+    ) -> dict[str, Union[float, List[float]]]:
+        results = {
+            "elapsed_ms": self.elapsed_ms,
+            "cuda_starting_mb": self.cuda_first_mb,
+            "cuda_peak_mb": self.cuda_peak_mb,
+            "cpu_starting_mb": self.cpu_first_mb,
+            "cpu_peak_mb": self.cpu_peak_mb,
+        }
+
+        if dump_intermediate_data:
+            results |= {
+                "cuda_running_mb": self.cuda_running_mb
+                if dump_intermediate_data
+                else None,
+                "cpu_running_mb": self.cpu_running_mb
+                if dump_intermediate_data
+                else None,
+            }
+
+        return results
 
 
 # ==================== High-Level API ====================
@@ -456,8 +629,8 @@ def measure_inference_metrics(
         times_ms.append(meter.elapsed_ms)
 
         # Collect memory if available
-        if meter.peak_mb is not None:
-            peaks_mb.append(meter.peak_mb)
+        if meter.cuda_peak_mb is not None:
+            peaks_mb.append(meter.cuda_peak_mb)
 
     # ============ Calculate Results ============
     # Average time across runs
