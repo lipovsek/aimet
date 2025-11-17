@@ -16,10 +16,6 @@ import tqdm
 import tempfile
 import onnx
 
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
-from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
-from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
-
 from aimet_common.utils import AimetLogger  # pylint: disable=import-error
 from aimet_onnx.experimental.adascale.utils import convert_to_torch
 from aimet_onnx.utils import (
@@ -53,22 +49,15 @@ _DEBUG_NUM_PARTIAL_ITERATIONS = None
 
 @dataclass
 class AdaScaleModelConfig:
-    block_type: Type = None  # block types to use in a given model
     beta_gamma_lr: float = 1e-3  # lr for beta and gamma
     scales_lr: float = 5e-4  # lr for s2, s3, [s4]
 
 
 # mapping of model type and the corresponding adascale config
 adascale_model_config_dict = {
-    "LlamaModel": AdaScaleModelConfig(
-        block_type=LlamaDecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
-    ),
-    "Qwen2Model": AdaScaleModelConfig(
-        block_type=Qwen2DecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
-    ),
-    "MistralModel": AdaScaleModelConfig(
-        block_type=MistralDecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
-    ),
+    "LlamaModel": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
+    "Qwen2Model": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
+    "MistralModel": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
 }
 
 
