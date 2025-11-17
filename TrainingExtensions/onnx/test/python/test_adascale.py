@@ -8,7 +8,6 @@ import torch
 from onnx import numpy_helper, load_model
 import tempfile
 import pytest
-from onnxruntime.quantization.onnx_model import ONNXModel
 
 from aimet_onnx import QuantizationSimModel
 from aimet_onnx.experimental.adascale.adascale_optimizer import (
@@ -24,6 +23,7 @@ from aimet_onnx.experimental.adascale.quantizer import (
     WeightQdq,
     get_adascale_trainable_params,
     replace_with_adascale_quantizers,
+    QuantizedConv2d,
 )
 from .utils import add_genai_tests_path
 
@@ -85,6 +85,45 @@ class ModelWithConsecutiveConvBlocks(torch.nn.Module):
 
 
 class TestAdascaleQuantizer:
+    def test_quantized_conv2d(self):
+        x = torch.randn(1, 4, 32, 32)
+        module = torch.nn.Conv2d(
+            in_channels=4,
+            out_channels=8,
+            kernel_size=3,
+            padding=2,
+            dilation=2,
+            groups=2,
+        )
+        enc_shape = (module.weight.shape[0], 1, 1, 1)
+        qmodule = QuantizedConv2d(
+            module,
+            enc_shape=enc_shape,
+            bitwidth=4,
+            block_size=None,
+            zero_point_shift=None,
+        )
+        replace_with_adascale_quantizers(qmodule)
+        # Check to run the op and see if it runs without failures
+        out = qmodule(x)
+        attrs = [
+            "in_channels",
+            "out_channels",
+            "kernel_size",
+            "stride",
+            "padding",
+            "dilation",
+            "groups",
+            "bias",
+        ]
+        for attr in attrs:
+            val1 = getattr(module, attr)
+            val2 = getattr(qmodule, attr)
+            if isinstance(val1, torch.Tensor) and isinstance(val2, torch.Tensor):
+                assert torch.equal(val1, val2)
+            else:
+                assert val1 == val2
+
     def test_quantizer_backprop(self):
         class TwoLayerModel(torch.nn.Module):
             def __init__(self):

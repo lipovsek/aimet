@@ -480,17 +480,14 @@ class QuantizedConv2d(torch.nn.Conv2d):
         zero_point_shift=None,
         enc_shape=None,
     ):
-        assert original_module.groups == 1, "AdaScale: Grouped conv not supported yet"
-        assert original_module.stride == (1, 1), "AdaScale: Stride not supported yet"
-        assert original_module.dilation == (1, 1), (
-            "AdaScale: Dilation not supported yet"
-        )
-
         super().__init__(
             in_channels=original_module.in_channels,
             out_channels=original_module.out_channels,
             kernel_size=original_module.kernel_size,
             padding=original_module.padding,
+            dilation=original_module.dilation,
+            groups=original_module.groups,
+            stride=original_module.stride,
             bias=original_module.bias is not None,
             device=original_module.weight.device,
             dtype=original_module.weight.dtype,
