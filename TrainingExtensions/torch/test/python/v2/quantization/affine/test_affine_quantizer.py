@@ -58,6 +58,7 @@ from aimet_torch.v2.quantization.encoding_analyzer import (
     _get_minimum_scale,
 )
 from aimet_torch.v2.quantization.affine import (
+    AffineEncoding,
     AffineQuantizerBase,
     GroupedBlockQuantizeDequantize,
     MinMaxQuantizer,
@@ -2717,3 +2718,43 @@ def test_positive_scale(min_val, max_val):
     assert torch.all(qtzr.min.grad != 0)
     if abs(max_val - min_val) > _get_minimum_scale(qtzr.qmax - qtzr.qmin):
         assert torch.all(qtzr.max.grad != 0)
+
+
+def test_from_qnn_encoding_dict():
+    qnn_encoding_dict = {
+        "y_scale": 0.1,
+        "output_dtype": "int8",
+    }
+    e = AffineEncoding._from_qnn_encoding_dict(qnn_encoding_dict, version="2.0.0")
+    assert e.scale == 0.1
+    assert e.offset == 0
+    assert e.symmetry
+
+    qnn_encoding_dict = {
+        "y_scale": 0.1,
+        "output_dtype": "uint8",
+    }
+    e = AffineEncoding._from_qnn_encoding_dict(qnn_encoding_dict, version="2.0.0")
+    assert e.scale == 0.1
+    assert e.offset == 0
+    assert not e.symmetry
+
+    qnn_encoding_dict = {
+        "y_scale": 0.1,
+        "y_zero_point": 0,
+        "output_dtype": "int8",
+    }
+    e = AffineEncoding._from_qnn_encoding_dict(qnn_encoding_dict, version="2.0.0")
+    assert e.scale == 0.1
+    assert e.offset == 0
+    assert e.symmetry
+
+    qnn_encoding_dict = {
+        "y_scale": 0.1,
+        "y_zero_point": 128,
+        "output_dtype": "uint8",
+    }
+    e = AffineEncoding._from_qnn_encoding_dict(qnn_encoding_dict, version="2.0.0")
+    assert e.scale == 0.1
+    assert e.offset == -128
+    assert not e.symmetry

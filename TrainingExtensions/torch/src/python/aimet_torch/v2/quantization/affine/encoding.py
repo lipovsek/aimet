@@ -504,7 +504,7 @@ class AffineEncoding(EncodingBase, _GridMixin):
         if "per_block_int_scale" in encoding_dict or "axis" in encoding_dict:
             raise NotImplementedError("Only per-tensor encodings are supported")
 
-        *unsigned, bw = encoding_dict["output_dtype"].split("int")
+        unsigned, bw = encoding_dict["output_dtype"].split("int")
         bw = int(bw)
 
         if unsigned:
@@ -514,14 +514,16 @@ class AffineEncoding(EncodingBase, _GridMixin):
             qmin = -(2 ** (bw - 1))
             qmax = 2 ** (bw - 1) - 1
 
+        scale = encoding_dict["y_scale"]
+        offset = -encoding_dict.get("y_zero_point", 0)
+        symmetry = (not unsigned) and offset == 0
+
         return AffineEncoding(
-            scale=torch.tensor(encoding_dict["y_scale"], dtype=torch.float32),
-            offset=torch.tensor(
-                -encoding_dict.get("y_zero_point", 0.0), dtype=torch.float32
-            ),
+            scale=torch.tensor(scale, dtype=torch.float32),
+            offset=torch.tensor(offset, dtype=torch.float32),
             qmin=qmin,
             qmax=qmax,
-            symmetry="y_zero_point" in encoding_dict,
+            symmetry=symmetry,
         )
 
 
