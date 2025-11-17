@@ -361,8 +361,9 @@ def _torch_fake_quantize(
 
 @functools.lru_cache
 def _get_dtype(qmin: int, qmax: int) -> torch.dtype:
-    for bitwidth in (1, 2, 3, 4, 5, 6, 7, 8, 16, 32):
-        if 0 <= qmin < qmax < 2**bitwidth:
+    # torch.export only supports int8, int16, int32, uint8, and uint16
+    for bitwidth in (8, 16, 32):
+        if bitwidth != 32 and qmin == 0 and qmax == 2**bitwidth - 1:
             try:
                 return getattr(torch, f"uint{bitwidth}")
             except AttributeError:

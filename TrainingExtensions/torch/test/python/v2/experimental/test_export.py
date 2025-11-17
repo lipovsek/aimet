@@ -66,7 +66,7 @@ def test_export(model_factory, tmp_path: Path):
     model = model_factory(pretrained=False).requires_grad_(False).eval()
     model = prepare_model(model)
     x = torch.randn(1, 3, 224, 224)
-    sim = QuantizationSimModel(model, x, config_file="htp_v81")
+    sim = QuantizationSimModel(model, x, default_param_bw=4, config_file="htp_v81")
 
     with pytest.raises(RuntimeError):
         # Before computing encodings, export should raise error
