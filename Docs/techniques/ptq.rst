@@ -257,14 +257,14 @@ API
 
         **Top level APIs**
 
-        .. autoclass:: aimet_torch.quantsim.QuantizationSimModel
+        .. autoclass:: aimet_torch.QuantizationSimModel
             :members: compute_encodings, export, load_encodings
             :member-order: bysource
             :no-index:
 
         **Quant Scheme Enum**
 
-        .. autoclass:: aimet_common.defs.QuantScheme
+        .. autoclass:: aimet_torch.common.defs.QuantScheme
             :members:
             :noindex:
 
@@ -274,7 +274,7 @@ API
 
         **Top level APIs**
 
-        .. autoclass:: aimet_onnx.quantsim.QuantizationSimModel
+        .. autoclass:: aimet_onnx.QuantizationSimModel
             :members: compute_encodings, export
             :member-order: bysource
             :noindex:
@@ -289,6 +289,6 @@ API
 
         **Quant Scheme Enum**
 
-        .. autoclass:: aimet_common.defs.QuantScheme
+        .. autoclass:: aimet_onnx.common.defs.QuantScheme
             :members:
             :noindex:

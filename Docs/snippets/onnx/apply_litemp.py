@@ -139,7 +139,7 @@ print(f'fp32 accuracy: {fp_accuracy:.4f}')
 # End of FP32 evaluation
 
 # Create QuantSim object
-from aimet_common.defs import QuantScheme
+from aimet_onnx.common.defs import QuantScheme
 from aimet_onnx import int8, int16
 from aimet_onnx import QuantizationSimModel, compute_encodings
 

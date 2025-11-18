@@ -114,9 +114,6 @@ post-quantization tasks, which could benefit from knowledge of how the encoding 
 .. note::
     Encoding version 1.0.0 is only supported for ``aimet_torch`` and ``aimet_onnx``.
 
-.. note::
-    The default encoding version is ``0.6.1``. To export with ``1.0.0``, add ``from aimet_common import quantsim`` and ``quantsim.encoding_version = '1.0.0'`` prior to sim.export().
-
 Changes from 0.6.1:
 
 * Activation and parameter encodings are now no longer dictionaries mapping tensor names to encoding dictionaries, but instead are lists of encoding dictionaries where the tensor names are another entry in the encoding dictionary.

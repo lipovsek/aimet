@@ -17,5 +17,5 @@ aimet_onnx.quantsim
 
 **Quant Scheme Enum**
 
-.. autoclass:: aimet_common.defs.QuantScheme
+.. autoclass:: aimet_onnx.common.defs.QuantScheme
     :members:

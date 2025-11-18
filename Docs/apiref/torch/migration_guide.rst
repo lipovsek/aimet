@@ -113,7 +113,7 @@ floating point quantization could be enabled based on :class:`QuantizationDataTy
 .. code-block:: Python
 
     from aimet_torch.v1.tensor_quantizer import StaticGridPerChannelQuantizers
-    from aimet_common.defs import QuantizationDataType
+    from aimet_torch.common.defs import QuantizationDataType
 
     fp_quantizer = StaticGridPerChannelQuantizer(data_type = QuantizationDataType.float, ...)
     affine_quantizer = StaticGridPerChannelQuantizer(data_type = QuantizationDataType.int, ...)

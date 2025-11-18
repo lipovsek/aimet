@@ -9,7 +9,7 @@ aimet_torch.quant_analyzer
 
 **Top level APIs**
 
-.. autoclass:: aimet_common.utils.CallbackFunc
+.. autoclass:: aimet_torch.common.utils.CallbackFunc
 
 .. autoclass:: aimet_torch.quant_analyzer.QuantAnalyzer
 

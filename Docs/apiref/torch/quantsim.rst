@@ -15,5 +15,5 @@ aimet_torch.quantsim
 
 **Quant Scheme Enum**
 
-.. autoclass:: aimet_common.defs.QuantScheme
+.. autoclass:: aimet_torch.common.defs.QuantScheme
     :members:

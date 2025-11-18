@@ -28,7 +28,7 @@ Currently only two candidates are supported - ((8,int), (8,int)) & ((16,int), (8
 
 **CallbackFunc Definition**
 
-.. autoclass:: aimet_common.defs.CallbackFunc
+.. autoclass:: aimet_torch.common.defs.CallbackFunc
    :members:
 
 .. autoclass:: aimet_torch.amp.mixed_precision_algo.EvalCallbackFactory

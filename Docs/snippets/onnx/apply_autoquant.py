@@ -45,8 +45,8 @@ import onnx
 import onnxruntime as ort
 import onnxsim
 import torch
-from aimet_common.defs import QuantizationDataType
-from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
+from aimet_onnx.common.defs import QuantizationDataType
+from aimet_onnx.common.quantsim_config.utils import get_path_for_per_channel_config
 from aimet_onnx.adaround.adaround_weight import AdaroundParameters
 from aimet_onnx.auto_quant_v2 import AutoQuantWithAutoMixedPrecision
 from aimet_onnx.defs import DataLoader

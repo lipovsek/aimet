@@ -43,7 +43,7 @@ import numpy as np
 import onnx
 import onnxsim
 import torch
-from aimet_common.defs import QuantScheme
+from aimet_onnx.common.defs import QuantScheme
 import aimet_onnx
 from aimet_onnx.quantsim import QuantizationSimModel
 from torchvision import transforms

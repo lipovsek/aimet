@@ -164,7 +164,7 @@ auto_quant.set_adaround_params(adaround_params)
 # End of step 5
 
 # Step 6. (Optional) Set AMP params
-from aimet_common.defs import QuantizationDataType
+from aimet_torch.common.defs import QuantizationDataType
 
 W8A8 = (
     (8, QuantizationDataType.int),  # A: int8

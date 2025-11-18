@@ -24,7 +24,7 @@ aimet_onnx.mixed_precision
 
 **CallbackFunc Definition**
 
-.. autoclass:: aimet_common.defs.CallbackFunc
+.. autoclass:: aimet_onnx.common.defs.CallbackFunc
    :members:
 
 .. autoclass:: aimet_onnx.amp.mixed_precision_algo.EvalCallbackFactory

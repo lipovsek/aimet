@@ -103,7 +103,7 @@ data_loader = DataLoader(
 # End of [prepare-dataloader]
 
 # [create-sim]
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
 
 sim = QuantizationSimModel(

@@ -107,7 +107,7 @@ calibration_data_loader, eval_data_loader = get_calibration_and_eval_data_loader
 # End of setting up dataloader
 
 # Create QuantSim object
-from aimet_common.defs import QuantScheme
+from aimet_onnx.common.defs import QuantScheme
 import aimet_onnx
 from aimet_onnx import QuantizationSimModel
 

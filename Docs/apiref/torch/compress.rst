@@ -17,17 +17,17 @@ aimet_torch.compress
 
 **Greedy Selection Parameters**
 
-.. autoclass:: aimet_common.defs.GreedySelectionParameters
+.. autoclass:: aimet_torch.common.defs.GreedySelectionParameters
    :members:
    :noindex:
 
 **Configuration Definitions**
 
-.. autoclass:: aimet_common.defs.CostMetric
+.. autoclass:: aimet_torch.common.defs.CostMetric
    :members:
    :noindex:
 
-.. autoclass:: aimet_common.defs.CompressionScheme
+.. autoclass:: aimet_torch.common.defs.CompressionScheme
    :members:
    :noindex:
 

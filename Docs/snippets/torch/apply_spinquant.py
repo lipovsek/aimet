@@ -125,7 +125,7 @@ class LimitedBatchDataLoader:
 # End of [prepare-dataloader]
 
 # [create-sim]
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
 
 seq_length = 2048

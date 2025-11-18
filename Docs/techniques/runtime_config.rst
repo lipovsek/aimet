@@ -17,11 +17,6 @@ to simulate its quantization behavior.
 Runtime-specific configurations and settings are defined in a JSON configuration file. These settings
 are applied when the :class:`QuantizationSimModel` class is instantiated.
 
-.. note::
-
-    Start with the default configuration file ``aimet_common.quantsim_config.default_config_per_channel.json``.
-    In most cases, you won't need to make any changes to it.
-
 
 Configuration file structure
 ============================

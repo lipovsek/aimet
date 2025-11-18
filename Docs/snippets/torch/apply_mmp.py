@@ -39,7 +39,7 @@
 # [setup]
 import torch
 from torchvision.models import mobilenet_v2
-from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
+from aimet_torch.common.quantsim_config.utils import get_path_for_per_channel_config
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.mixed_precision import MixedPrecisionConfigurator
 
