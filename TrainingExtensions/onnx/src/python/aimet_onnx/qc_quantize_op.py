@@ -459,6 +459,24 @@ class QcQuantizeOp:
         libpymo_encodings = []
         scales = encoding_dict["scale"]
         offsets = encoding_dict["offset"]
+
+        if _should_permute_to_1_0_0_blockwise_ordering(self.tensor_quantizer_params):
+            num_channels = self._encoding_shape()[self.quant_info.channelAxis]
+            scales = (
+                np.array(scales)
+                .reshape(num_channels, -1)
+                .transpose((1, 0))
+                .flatten()
+                .tolist()
+            )
+            offsets = (
+                np.array(offsets)
+                .reshape(num_channels, -1)
+                .transpose((1, 0))
+                .flatten()
+                .tolist()
+            )
+
         for idx, scale in enumerate(scales):
             enc = libpymo.TfEncoding()
             enc.bw = encoding_dict["bw"]
@@ -693,10 +711,23 @@ class QcQuantizeOp:
         if self.data_type == QuantizationDataType.int:
             enc_dict["is_sym"] = self.use_symmetric_encodings
             encodings = self.get_encodings()
-            enc_dict["scale"] = [enc.delta for enc in encodings]
-            enc_dict["offset"] = [enc.offset for enc in encodings]
+            scale = np.array([enc.delta for enc in encodings]).reshape(
+                self._encoding_shape()
+            )
+            offset = np.array([enc.offset for enc in encodings]).reshape(
+                self._encoding_shape()
+            )
+
             if self.quant_info.blockSize > 0:
                 enc_dict["block_size"] = self.quant_info.blockSize
+                if _should_permute_to_1_0_0_blockwise_ordering(
+                    self.tensor_quantizer_params
+                ):
+                    scale = scale.transpose((1, 0))
+                    offset = offset.transpose((1, 0))
+
+            enc_dict["scale"] = scale.flatten().tolist()
+            enc_dict["offset"] = offset.flatten().tolist()
 
         return enc_dict
 
@@ -1062,18 +1093,26 @@ class GroupedBlockQuantizeDequantize(QcQuantizeOp):
         encoding_shape = self._encoding_shape()
         channel_axis = self.quant_info.channelAxis
         block_axis = self.quant_info.blockAxis
+        per_block_int_scales_np = np.array(encoding_dict["per_block_int_scale"])
+
+        if _should_permute_to_1_0_0_blockwise_ordering(self.tensor_quantizer_params):
+            per_block_int_scales_np = (
+                per_block_int_scales_np.reshape(encoding_shape[channel_axis], -1)
+                .transpose((1, 0))
+                .reshape(-1)
+            )
 
         if channel_axis < block_axis:
-            per_block_int_scales_np = np.array(
-                encoding_dict["per_block_int_scale"]
-            ).reshape(encoding_shape[channel_axis], -1)
+            per_block_int_scales_np = per_block_int_scales_np.reshape(
+                encoding_shape[channel_axis], -1
+            )
             per_channel_scales_np = np.array(encoding_dict["scale"]).reshape(
                 encoding_shape[channel_axis], 1
             )
         else:
-            per_block_int_scales_np = np.array(
-                encoding_dict["per_block_int_scale"]
-            ).reshape(-1, encoding_shape[channel_axis])
+            per_block_int_scales_np = per_block_int_scales_np.reshape(
+                -1, encoding_shape[channel_axis]
+            )
             per_channel_scales_np = np.array(encoding_dict["scale"]).reshape(
                 1, encoding_shape[channel_axis]
             )
@@ -1146,6 +1185,10 @@ class GroupedBlockQuantizeDequantize(QcQuantizeOp):
         per_block_int_scale, per_channel_scale = lpbq_utils.grouped_dynamic_quantize(
             scale, self._block_grouping(), decompressed_bw - compressed_bw
         )
+
+        if _should_permute_to_1_0_0_blockwise_ordering(self.tensor_quantizer_params):
+            per_block_int_scale = per_block_int_scale.transpose((1, 0))
+
         encodings["per_block_int_scale"] = (
             per_block_int_scale.astype(np.uint32).flatten().tolist()
         )
@@ -1353,3 +1396,22 @@ def _2_0_0_json_encoding_to_TfEncoding_list(
         tf_encoding.bw = bitwidth
 
     return tf_encodings
+
+
+def _should_permute_to_1_0_0_blockwise_ordering(
+    quantizer_params: TensorQuantizerParams | None,
+) -> bool:
+    """
+    For Gemm and MatMul operators where the tensor is ordered (in_channels, out_channels),
+    the 1.0.0 encoding format expects the encodings to be ordered in (out_channels, in_channels) order
+    when blockwise quantization is used.
+
+    This is a short-term fix to handle this until 1.0.0 format is deprecated.
+    """
+    if not quantizer_params:
+        return False
+    # Note: This is a hacky way of preventing permute for ConvTranspose encodings,
+    # since the quantizer is not aware of the operator type.
+    if len(quantizer_params.tensor_shape) != 2:
+        return False
+    return quantizer_params.channel_axis > quantizer_params.block_axis

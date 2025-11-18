@@ -2664,6 +2664,186 @@ class TestQuantSim:
                 assert enc["compressed_bw"] == bitwidth
                 assert enc["bw"] == decompressed_bw
 
+    @pytest.mark.parametrize("lpbq", (True, False))
+    @pytest.mark.parametrize(
+        "model",
+        (
+            models_for_tests.weight_gemm_model(32, 32, transposed_weight=True),
+            models_for_tests.weight_gemm_model(32, 32, transposed_weight=False),
+            models_for_tests.weight_matmul_model(32, 32),
+            models_for_tests.conv_model(
+                (16, 16, 3, 3), (1, 16, 8, 8), (1, 16, 6, 6), transpose=False
+            ),
+            models_for_tests.conv_model(
+                (16, 16, 3, 3), (1, 16, 8, 8), (1, 16, 10, 10), transpose=True
+            ),
+        ),
+    )
+    def test_bq_lpbq_1_0_0_export_import(self, tmp_dir, lpbq, model):
+        """
+        When: Import BQ/LPBQ weights for linear layer in 1.0.0 format
+        Then: Loaded sim output should match original sim output
+        """
+        sim = QuantizationSimModel(
+            copy.deepcopy(model), param_type="int8", activation_type="int16"
+        )
+        bq_layers = ("MatMul", "Gemm", "Conv", "ConvTranspose")
+        if lpbq:
+            set_grouped_blockwise_quantization_for_weights(
+                sim, bq_layers, 4, 8, block_size=4, strict=False
+            )
+        else:
+            set_blockwise_quantization_for_weights(
+                sim, bq_layers, 4, True, block_size=4, strict=False
+            )
+
+        dummy_input = make_dummy_input(model)
+        sim.compute_encodings([dummy_input])
+        output = sim.session.run(None, dummy_input)[0]
+
+        export_dir = tmp_dir + "/export_1.aimet"
+        os.makedirs(export_dir, exist_ok=True)
+        with set_encoding_version("1.0.0"):
+            sim.export(export_dir, "tmp_model")
+
+        sim_loaded = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type="int8",
+            activation_type="int16",
+        )
+
+        # Todo: Support configuring quantizers to LPBQ as necessary during load_encodings_to_sim
+        if lpbq:
+            set_grouped_blockwise_quantization_for_weights(
+                sim_loaded, bq_layers, 4, 8, block_size=4, strict=False
+            )
+
+        load_encodings_to_sim(
+            sim_loaded, os.path.join(export_dir, "tmp_model.encodings"), strict=False
+        )
+
+        output_loaded = sim_loaded.session.run(None, dummy_input)[0]
+
+        assert np.array_equal(output, output_loaded)
+
+    @pytest.mark.parametrize("lpbq", (True, False))
+    @pytest.mark.parametrize(
+        "model",
+        (
+            models_for_tests.weight_gemm_model(32, 32, transposed_weight=True),
+            models_for_tests.weight_gemm_model(32, 32, transposed_weight=False),
+            models_for_tests.weight_matmul_model(32, 32),
+        ),
+    )
+    def test_bq_lpbq_linear_layer_1_0_0_export(self, tmp_dir, lpbq, model):
+        """
+        When: Export BQ/LPBQ weights for linear layer in 1.0.0 format
+        Then: Scale values should always be ordered (channel_axis, block_axis) regardless of weight ordering
+        """
+        sim = QuantizationSimModel(
+            copy.deepcopy(model), param_type="int8", activation_type="int16"
+        )
+        bq_layers = ("MatMul", "Gemm")
+        if lpbq:
+            set_grouped_blockwise_quantization_for_weights(
+                sim, bq_layers, 4, 8, block_size=4, strict=False
+            )
+        else:
+            set_blockwise_quantization_for_weights(
+                sim, bq_layers, 4, True, block_size=4, strict=False
+            )
+
+        sim.compute_encodings([make_dummy_input(model)])
+        with set_encoding_version("1.0.0"):
+            sim.export(tmp_dir, "tmp_model")
+
+        with open(os.path.join(tmp_dir, "tmp_model.encodings")) as f:
+            encodings = json.load(f)
+
+        weight_quantizer = sim.qc_quantize_op_dict["weight"]
+        enc_shape = weight_quantizer._encoding_shape()
+        tensor_shape = weight_quantizer.tensor_quantizer_params.tensor_shape
+        channel_axis = weight_quantizer.quant_info.channelAxis
+
+        for enc in encodings["param_encodings"]:
+            if enc["name"] == "weight":
+                # Exported encoding for linear layers should always be viewed as (channel_axis, -1)
+                if lpbq:
+                    block_int_scale = np.array(enc["per_block_int_scale"]).reshape(
+                        tensor_shape[channel_axis], -1
+                    )
+                    channel_float_scale = np.array(enc["scale"]).reshape(
+                        tensor_shape[channel_axis], -1
+                    )
+                    exported_scale = np.array(block_int_scale) * np.array(
+                        channel_float_scale
+                    )
+                else:
+                    exported_scale = np.array(enc["scale"]).reshape(
+                        tensor_shape[channel_axis], -1
+                    )
+
+        quantizer_scale = np.array(
+            [enc.delta for enc in weight_quantizer.get_encodings()]
+        ).reshape(enc_shape)
+
+        # If channel_axis is 0, scales should match directly
+        # If channel_axis is 1, scales need to be transposed to match
+        if channel_axis == 0:
+            assert np.array_equal(exported_scale, quantizer_scale)
+        else:
+            assert np.array_equal(exported_scale.transpose((1, 0)), quantizer_scale)
+
+    @pytest.mark.parametrize("lpbq", (True, False))
+    def test_bq_lpbq_conv_transpose_layer_1_0_0_export(self, tmp_dir, lpbq):
+        """
+        When: Export BQ/LPBQ weights for convtranspose layer in 1.0.0 format
+        Then: Scale values should always be ordered (block_axis, channel_axis)
+        """
+        model = models_for_tests.conv_model(
+            (16, 16, 3, 3), (1, 16, 8, 8), (1, 16, 10, 10), transpose=True
+        )
+        sim = QuantizationSimModel(
+            copy.deepcopy(model), param_type="int8", activation_type="int16"
+        )
+        bq_layers = ("ConvTranspose",)
+        if lpbq:
+            set_grouped_blockwise_quantization_for_weights(
+                sim, bq_layers, 4, 8, block_size=4, strict=False
+            )
+        else:
+            set_blockwise_quantization_for_weights(
+                sim, bq_layers, 4, True, block_size=4, strict=False
+            )
+
+        sim.compute_encodings([make_dummy_input(model)])
+        with set_encoding_version("1.0.0"):
+            sim.export(tmp_dir, "tmp_model")
+
+        with open(os.path.join(tmp_dir, "tmp_model.encodings")) as f:
+            encodings = json.load(f)
+
+        weight_quantizer = sim.qc_quantize_op_dict["weight"]
+        enc_shape = weight_quantizer._encoding_shape()
+
+        for enc in encodings["param_encodings"]:
+            if enc["name"] == "weight":
+                if lpbq:
+                    block_int_scale = np.array(enc["per_block_int_scale"]).reshape(
+                        enc_shape
+                    )
+                    channel_float_scale = np.array(enc["scale"]).reshape(1, -1, 1, 1)
+                    exported_scale = np.array(block_int_scale) * np.array(
+                        channel_float_scale
+                    )
+                else:
+                    exported_scale = np.array(enc["scale"]).reshape(enc_shape)
+
+        quantizer_scale = np.array(
+            [enc.delta for enc in weight_quantizer.get_encodings()]
+        ).reshape(enc_shape)
+        assert np.array_equal(exported_scale, quantizer_scale)
+
     def test_lpbq_strict(self):
         model = models_for_tests.weight_matmul_model(in_features=16, out_features=32)
         sim = QuantizationSimModel(
