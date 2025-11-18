@@ -69,7 +69,7 @@ jobs:
           set -x
 
           # Build docker images if specified.
-          if ${{ inputs.build_docker_images }}; then
+          if [[ -n "${{ inputs.build_docker_images }}" ]]; then
             tag="$(git rev-parse --short HEAD)"
           else
             tag="latest"
