@@ -41,7 +41,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import torch
 
 # Import AIMET specific modules
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.utils import (
     StopForwardException,
     change_tensor_device_placement,

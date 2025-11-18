@@ -58,9 +58,9 @@ from onnx.external_data_helper import (
 from onnxruntime import SessionOptions, InferenceSession
 import shutil
 
-from aimet_common import libquant_info
-from aimet_common.utils import AimetLogger, compute_psnr, deprecated
-from aimet_common.onnx._utils import (  # pylint: disable=unused-import
+from aimet_onnx.common import libquant_info
+from aimet_onnx.common.utils import AimetLogger, compute_psnr, deprecated
+from aimet_onnx.common.onnx._utils import (  # pylint: disable=unused-import
     _ParamUtils,
     _get_node_attribute as get_node_attribute,
     contains_tensor_type,

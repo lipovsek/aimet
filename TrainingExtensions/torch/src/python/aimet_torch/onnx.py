@@ -49,7 +49,7 @@ import onnx
 import torch
 from torch.onnx import _constants
 
-from aimet_common.onnx._utils import (
+from aimet_torch.common.onnx._utils import (
     _add_onnx_qdq_nodes,
     _convert_version,
     _derive_data_movement_op_encodings,

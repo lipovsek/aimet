@@ -42,9 +42,9 @@ from tqdm import tqdm
 
 import onnxruntime as ort
 
-from aimet_common.defs import qtype, int8, int16
-from aimet_common.utils import AimetLogger
-from aimet_common.amp.utils import (
+from aimet_onnx.common.defs import qtype, int8, int16
+from aimet_onnx.common.utils import AimetLogger
+from aimet_onnx.common.amp.utils import (
     visualize_quantizer_group_sensitivity,
     visualize_pareto_curve,
     CANDIDATE_WITH_DTYPE,

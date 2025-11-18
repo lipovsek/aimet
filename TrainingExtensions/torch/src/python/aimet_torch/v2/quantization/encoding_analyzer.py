@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from typing import TypeVar, Generic, Tuple, Optional, List
 import itertools
 import torch
-from aimet_common.quantsim import _get_minimum_scale
+from aimet_torch.common.quantsim import _get_minimum_scale
 from aimet_torch.v2.utils import reduce, StatisticsNotFoundError, _is_expandable
 
 

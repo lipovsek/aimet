@@ -42,7 +42,7 @@ import numpy as np
 import torch
 
 # Import AIMET specific modules
-from aimet_common.defs import AdaroundConstants
+from aimet_torch.common.defs import AdaroundConstants
 
 
 class AdaroundHyperParameters:

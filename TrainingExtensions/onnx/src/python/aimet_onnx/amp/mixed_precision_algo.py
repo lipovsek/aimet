@@ -47,13 +47,13 @@ import json
 import numpy as np
 import onnxruntime as ort
 
-from aimet_common.utils import AimetLogger, save_json_yaml
-from aimet_common.defs import CallbackFunc, qtype
-from aimet_common.amp.mixed_precision_algo import (
+from aimet_onnx.common.utils import AimetLogger, save_json_yaml
+from aimet_onnx.common.defs import CallbackFunc, qtype
+from aimet_onnx.common.amp.mixed_precision_algo import (
     GreedyMixedPrecisionAlgo as MixedPrecisionAlgo,
 )
-from aimet_common.amp.quantizer_groups import reformat_supported_kernels
-from aimet_common.amp.utils import (
+from aimet_onnx.common.amp.quantizer_groups import reformat_supported_kernels
+from aimet_onnx.common.amp.utils import (
     sort_accuracy_list,
     CANDIDATE_WITH_DTYPE,
     ACCURACY_LIST,

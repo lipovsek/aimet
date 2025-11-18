@@ -70,9 +70,9 @@ import onnxruntime as ort
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from packaging import version
 
-from aimet_common import libpymo, quantsim
-from aimet_common import libquant_info
-from aimet_common.defs import (
+from aimet_onnx.common import libpymo, quantsim
+from aimet_onnx.common import libquant_info
+from aimet_onnx.common.defs import (
     QuantScheme,
     QuantizationDataType,
     qtype,
@@ -82,24 +82,30 @@ from aimet_common.defs import (
     EncodingType,
     _quant_scheme_aliases,
 )
-from aimet_common.onnx._utils import (
+from aimet_onnx.common.onnx._utils import (
     _add_onnx_qdq_nodes,
     _remove_onnx_qdq_nodes,
     _is_grid_preserving_op,
     _derive_data_movement_op_encodings,
 )
-from aimet_common.quantsim import (
+from aimet_onnx.common.quantsim import (
     extract_global_quantizer_args,
     VALID_ENCODING_VERSIONS,
     _INT32_MINIMUM_SCALE,
     _is_bias_out_of_int32_range,
     _get_adjusted_weight_scale,
 )
-from aimet_common.utils import save_json_yaml, AimetLogger, _red, deprecated, Handle
-from aimet_common.quant_utils import _convert_encoding_format_0_6_1_to_1_0_0
-from aimet_common.quantsim_config.quantsim_config import _config_file_aliases
-from aimet_common.connected_graph.product import Product
-from aimet_common.onnx._utils import _convert_version
+from aimet_onnx.common.utils import (
+    save_json_yaml,
+    AimetLogger,
+    _red,
+    deprecated,
+    Handle,
+)
+from aimet_onnx.common.quant_utils import _convert_encoding_format_0_6_1_to_1_0_0
+from aimet_onnx.common.quantsim_config.quantsim_config import _config_file_aliases
+from aimet_onnx.common.connected_graph.product import Product
+from aimet_onnx.common.onnx._utils import _convert_version
 from aimet_onnx import utils
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.meta.utils import (

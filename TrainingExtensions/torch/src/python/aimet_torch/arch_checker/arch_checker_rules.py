@@ -44,10 +44,10 @@ Pattern checks should follow :param connected_graph: :return list[ops]:
 from typing import List, Callable
 import torch
 
-from aimet_common.connected_graph.connectedgraph_utils import CG_SPLIT
-from aimet_common.graph_searcher import GraphSearcher
-from aimet_common.graph_pattern_matcher import PatternType
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.connected_graph.connectedgraph_utils import CG_SPLIT
+from aimet_torch.common.graph_searcher import GraphSearcher
+from aimet_torch.common.graph_pattern_matcher import PatternType
+from aimet_torch.common.utils import AimetLogger
 
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch.batch_norm_fold import find_standalone_batchnorm_ops

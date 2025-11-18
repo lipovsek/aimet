@@ -42,8 +42,8 @@ from typing import Union
 import torch
 
 # Import AIMET specific modules
-from aimet_common.utils import AimetLogger
-from aimet_common.defs import QuantScheme, QuantizationDataType
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.defs import QuantScheme, QuantizationDataType
 
 from aimet_torch import utils
 from aimet_torch.save_utils import SaveUtils

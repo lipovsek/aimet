@@ -43,9 +43,9 @@ from typing import Optional, Union, List
 import torch
 from torch.utils.data import DataLoader
 
-from aimet_common.utils import AimetLogger
-from aimet_common.defs import QuantScheme
-from aimet_common import libpymo
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.defs import QuantScheme
+from aimet_torch.common import libpymo
 
 from aimet_torch._base.seq_mse import SequentialMseBase, SeqMseParams
 from aimet_torch.v1.qc_quantize_op import QcQuantizeWrapper, QcQuantizeOpMode

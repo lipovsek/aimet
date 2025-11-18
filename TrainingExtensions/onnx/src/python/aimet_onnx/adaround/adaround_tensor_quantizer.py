@@ -39,7 +39,7 @@
 
 import torch
 
-from aimet_common.defs import AdaroundConstants
+from aimet_onnx.common.defs import AdaroundConstants
 
 
 class AdaroundTensorQuantizer:  # pylint: disable=too-many-instance-attributes

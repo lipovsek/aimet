@@ -6,7 +6,7 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper, TensorProto, TensorShapeProto
 
-from aimet_common.utils import AimetLogger
+from aimet_onnx.common.utils import AimetLogger
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SeqMse)
 

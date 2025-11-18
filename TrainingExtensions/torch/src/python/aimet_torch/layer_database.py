@@ -41,20 +41,20 @@ import copy
 from typing import Tuple, Union, List
 import torch
 
-from aimet_common.utils import AimetLogger
-import aimet_common.layer_database
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common import layer_database
 from aimet_torch import utils
 import aimet_torch._base.nn.modules.custom as aimet_modules
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Svd)
 
 
-class Layer(aimet_common.layer_database.Layer):
+class Layer(layer_database.Layer):
     """Holds attributes for a given layer"""
 
     def _set_type_specific_params(self, module):
         if isinstance(module, torch.nn.Conv2d):
-            params = aimet_common.layer_database.Conv2dTypeSpecificParams(
+            params = layer_database.Conv2dTypeSpecificParams(
                 module.stride, module.padding, module.groups
             )
             self.type_specific_params = params
@@ -111,7 +111,7 @@ class Layer(aimet_common.layer_database.Layer):
             )
             weight_shape = (1,)
 
-        aimet_common.layer_database.Layer.__init__(
+        layer_database.Layer.__init__(
             self, module, name, weight_shape, output_shape, input_shape
         )
 
@@ -119,7 +119,7 @@ class Layer(aimet_common.layer_database.Layer):
         self.parent_module = None
 
 
-class LayerDatabase(aimet_common.layer_database.LayerDatabase):
+class LayerDatabase(layer_database.LayerDatabase):
     """
     Stores, creates and updates the Layer database
     Also stores compressible layers to model optimization
@@ -140,7 +140,7 @@ class LayerDatabase(aimet_common.layer_database.LayerDatabase):
         :param dummy_input: Dummy input to the model. If the model has more than one input,
                             pass a tuple.
         """
-        aimet_common.layer_database.LayerDatabase.__init__(self, model)
+        layer_database.LayerDatabase.__init__(self, model)
         self._create_database(model, dummy_input)
 
     def __deepcopy__(self, memodict):

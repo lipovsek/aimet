@@ -39,7 +39,7 @@
 
 from typing import List, Tuple
 import torch
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.winnow.mask_propagation_winnower import MaskPropagationWinnower
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Winnow)

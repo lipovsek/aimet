@@ -44,16 +44,16 @@ import numpy as np
 import onnx
 from packaging import version
 
-from aimet_common.defs import QuantizationDataType, qtype
-from aimet_common.graph_searcher import (
+from aimet_onnx.common.defs import QuantizationDataType, qtype
+from aimet_onnx.common.graph_searcher import (
     GraphSearcher,
     _check_if_conv3d_or_depthwise_conv,
 )
-from aimet_common.connected_graph.connectedgraph_utils import (
+from aimet_onnx.common.connected_graph.connectedgraph_utils import (
     get_all_output_ops,
     _get_all_input_and_consumer,
 )
-from aimet_common.quantsim_config.json_config_importer import (
+from aimet_onnx.common.quantsim_config.json_config_importer import (
     ConfigDictKeys,
     ConfigType,
     OpType,
@@ -61,14 +61,14 @@ from aimet_common.quantsim_config.json_config_importer import (
     OpTypeType,
     SupergroupType,
 )
-from aimet_common.quantsim_config.quantsim_config import (
+from aimet_onnx.common.quantsim_config.quantsim_config import (
     QuantSimConfigurator as AimetCommonQuantSimConfigurator,
     get_setting_type,
     SupergroupConfigCallback as AimetCommonSupergroupConfigCallback,
     reformat_supported_kernels,
 )
-from aimet_common.utils import AimetLogger
-from aimet_common.onnx._utils import _is_grid_preserving_op
+from aimet_onnx.common.utils import AimetLogger
+from aimet_onnx.common.onnx._utils import _is_grid_preserving_op
 from aimet_onnx.meta.connectedgraph import ConnectedGraph, CONSTANT_TYPE
 from aimet_onnx.utils import get_product_name_from_quantized_name
 from aimet_onnx.qc_quantize_op import OpMode, QcQuantizeOp

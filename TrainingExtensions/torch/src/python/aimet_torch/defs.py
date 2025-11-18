@@ -42,7 +42,7 @@ from typing import List, Optional, Union
 
 import torch.utils.data
 
-from aimet_common.defs import GreedySelectionParameters, RankSelectScheme
+from aimet_torch.common.defs import GreedySelectionParameters, RankSelectScheme
 
 
 class ModuleCompRatioPair:

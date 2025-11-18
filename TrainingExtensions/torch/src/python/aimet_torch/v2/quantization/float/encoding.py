@@ -41,7 +41,7 @@ from typing import Union, List, Dict, Optional
 import torch
 from torch._C._nn import _parse_to as parse_to_args
 
-from aimet_common.defs import EncodingType
+from aimet_torch.common.defs import EncodingType
 from aimet_torch.v2.quantization.base import EncodingBase
 from ._finfo import _finfo
 

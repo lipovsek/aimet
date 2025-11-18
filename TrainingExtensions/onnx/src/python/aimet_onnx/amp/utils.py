@@ -40,8 +40,8 @@ from typing import List, Tuple, Dict, Any
 from collections import defaultdict
 
 # Import AIMET specific modules
-from aimet_common.amp.utils import CANDIDATE_WITH_DTYPE, get_effective_bitwidth
-from aimet_common.cost_calculator import CostCalculator
+from aimet_onnx.common.amp.utils import CANDIDATE_WITH_DTYPE, get_effective_bitwidth
+from aimet_onnx.common.cost_calculator import CostCalculator
 from aimet_onnx.meta.connectedgraph import ConnectedGraph, WEIGHT_INDEX
 from aimet_onnx.amp.quantizer_groups import QuantizerGroup
 from aimet_onnx import utils

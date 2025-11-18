@@ -44,16 +44,19 @@ from dataclasses import dataclass
 from typing import Union, List, Optional, Dict, Tuple
 import numpy as np
 
-from aimet_common import libpymo
-from aimet_common.defs import (
+from aimet_onnx.common import libpymo
+from aimet_onnx.common.defs import (
     QuantScheme,
     MAP_QUANT_SCHEME_TO_PYMO,
     QuantizationDataType,
     EncodingType,
 )
-from aimet_common import libquant_info
-from aimet_common.utils import deprecated
-from aimet_common.quantsim import calculate_delta_offset, create_encoding_from_min_max
+from aimet_onnx.common import libquant_info
+from aimet_onnx.common.utils import deprecated
+from aimet_onnx.common.quantsim import (
+    calculate_delta_offset,
+    create_encoding_from_min_max,
+)
 from aimet_onnx import lpbq_utils
 
 

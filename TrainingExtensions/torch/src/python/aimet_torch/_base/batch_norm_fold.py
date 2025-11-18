@@ -42,16 +42,16 @@ import torch
 import torch.nn
 from torch.nn.modules.batchnorm import BatchNorm1d, BatchNorm2d
 
-from aimet_common.batch_norm_fold import batch_norm_fold, expand_shape_to_4d
-from aimet_common.bias_correction import (
+from aimet_torch.common.batch_norm_fold import batch_norm_fold, expand_shape_to_4d
+from aimet_torch.common.bias_correction import (
     ConvBnPatternHandler,
     CONV_OP_TYPES,
     LINEAR_OP_TYPES,
     BN_OP_TYPES,
 )
-from aimet_common.graph_pattern_matcher import PatternType
-from aimet_common.graph_searcher import GraphSearcher
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.graph_pattern_matcher import PatternType
+from aimet_torch.common.graph_searcher import GraphSearcher
+from aimet_torch.common.utils import AimetLogger
 
 # pylint: disable=unused-import
 from aimet_torch.defs import PassThroughOp

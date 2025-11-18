@@ -72,8 +72,8 @@ except ImportError:
 
 from torchvision import datasets, transforms
 
-from aimet_common.utils import AimetLogger, Handle
-from aimet_common.utils import profile as _profile, _red
+from aimet_torch.common.utils import AimetLogger, Handle
+from aimet_torch.common.utils import profile as _profile, _red
 from .v2.utils import (  # pylint: disable=unused-import
     remove_all_quantizers,
     remove_activation_quantizers,

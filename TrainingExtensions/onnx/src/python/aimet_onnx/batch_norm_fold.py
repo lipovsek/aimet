@@ -43,12 +43,12 @@ from onnx import numpy_helper
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from packaging import version
 
-from aimet_common.batch_norm_fold import batch_norm_fold
-from aimet_common.bias_correction import ConvBnPatternHandler
-from aimet_common.graph_pattern_matcher import PatternType
-from aimet_common.graph_searcher import GraphSearcher
-from aimet_common.connected_graph.connectedgraph_utils import get_ordered_ops
-from aimet_common.utils import AimetLogger
+from aimet_onnx.common.batch_norm_fold import batch_norm_fold
+from aimet_onnx.common.bias_correction import ConvBnPatternHandler
+from aimet_onnx.common.graph_pattern_matcher import PatternType
+from aimet_onnx.common.graph_searcher import GraphSearcher
+from aimet_onnx.common.connected_graph.connectedgraph_utils import get_ordered_ops
+from aimet_onnx.common.utils import AimetLogger
 
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.meta.connectedgraph import (

@@ -42,9 +42,9 @@ from typing import List
 import torch
 import torch.nn
 
-from aimet_common.defs import LayerCompRatioPair
-from aimet_common.layer_database import LayerDatabase
-from aimet_common.layer_selector import LayerSelector
+from aimet_torch.common.defs import LayerCompRatioPair
+from aimet_torch.common.layer_database import LayerDatabase
+from aimet_torch.common.layer_selector import LayerSelector
 
 
 class ConvFcLayerSelector(LayerSelector):

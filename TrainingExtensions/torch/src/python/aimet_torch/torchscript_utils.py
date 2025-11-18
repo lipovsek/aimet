@@ -40,7 +40,7 @@
 from typing import List, Union, Dict, Tuple
 import torch
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.defs import OpToIOTensors
 from aimet_torch.utils import is_leaf_module, run_hook_for_layers_with_given_input
 from aimet_torch.meta.connectedgraph import ConnectedGraph

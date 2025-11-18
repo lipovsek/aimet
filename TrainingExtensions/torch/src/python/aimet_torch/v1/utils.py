@@ -41,13 +41,13 @@ from typing import Dict, Union
 import numpy as np
 import torch
 
-from aimet_common.utils import AimetLogger, log_with_error_and_assert_if_false
-from aimet_common.defs import (
+from aimet_torch.common.utils import AimetLogger, log_with_error_and_assert_if_false
+from aimet_torch.common.defs import (
     QuantScheme,
     QuantizationDataType,
     MAP_QUANT_SCHEME_TO_PYMO,
 )
-from aimet_common import libpymo
+from aimet_torch.common import libpymo
 from aimet_torch.v1.tensor_quantizer import (
     TensorQuantizer,
     StaticGridPerChannelQuantizer,

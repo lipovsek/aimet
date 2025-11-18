@@ -39,8 +39,8 @@
 from typing import List, Tuple, Sequence
 import numpy as np
 
-from aimet_common.quantsim import compute_min_max_given_delta_offset
-from aimet_common import libpymo
+from aimet_onnx.common.quantsim import compute_min_max_given_delta_offset
+from aimet_onnx.common import libpymo
 
 
 def _split_blocks(encoding: np.ndarray, block_grouping) -> np.ndarray:

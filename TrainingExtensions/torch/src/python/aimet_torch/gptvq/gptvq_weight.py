@@ -47,8 +47,8 @@ from typing import Union, Tuple, Optional, Dict, List, Set, Iterable
 import torch
 from torch import nn
 
-from aimet_common.defs import QuantScheme
-from aimet_common.utils import Spinner, AimetLogger
+from aimet_torch.common.defs import QuantScheme
+from aimet_torch.common.utils import Spinner, AimetLogger
 from aimet_torch import utils
 from aimet_torch.gptvq.defs import GPTVQSupportedModules, GPTVQParameters
 from aimet_torch.gptvq.gptvq_optimizer import GPTVQOptimizer

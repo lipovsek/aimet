@@ -62,17 +62,22 @@ if (SKBUILD)
     set_target_properties(PyModelOptimizations PROPERTIES
         INSTALL_RPATH "\$ORIGIN:\$ORIGIN/../../.."
         )
-    install(TARGETS PyModelOptimizations
-        DESTINATION aimet_common
-        )
+    if (ENABLE_TORCH)
+        install(TARGETS PyModelOptimizations
+                DESTINATION aimet_torch/common)
+    endif()
+    if (ENABLE_ONNX)
+        install(TARGETS PyModelOptimizations
+                DESTINATION aimet_onnx/common)
+    endif()
 else (SKBUILD)
     set_target_properties(PyModelOptimizations
           PROPERTIES
-             LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/aimet_common/"
+             LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/_aimet_common/"
           )
 
     install(TARGETS PyModelOptimizations
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/aimet_common
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/_aimet_common
     )
 
     add_custom_target(whl_prep_cp_common_PyModelOptimizations

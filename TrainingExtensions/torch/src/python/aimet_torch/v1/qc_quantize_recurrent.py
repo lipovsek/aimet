@@ -43,9 +43,13 @@ from collections import defaultdict
 from typing import Tuple, List, Union, Dict
 import torch
 from torch.nn.utils.rnn import PackedSequence, pad_packed_sequence, pack_padded_sequence
-from aimet_common import libpymo
-from aimet_common.defs import QuantScheme, QuantizationDataType, MAP_ROUND_MODE_TO_PYMO
-from aimet_common.utils import AimetLogger
+from aimet_torch.common import libpymo
+from aimet_torch.common.defs import (
+    QuantScheme,
+    QuantizationDataType,
+    MAP_ROUND_MODE_TO_PYMO,
+)
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.defs import OpToIOTensors
 from aimet_torch.v1.qc_quantize_op import QcQuantizeOpMode, tensor_quantizer_factory
 from aimet_torch.v1.tensor_quantizer import (

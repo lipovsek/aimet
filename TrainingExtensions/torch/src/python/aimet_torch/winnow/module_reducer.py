@@ -41,19 +41,21 @@
 
 from typing import List
 import torch
-from aimet_common.utils import AimetLogger, ModelApi
-from aimet_common.winnow.winnow_utils import (
+from aimet_torch.common.utils import AimetLogger, ModelApi
+from aimet_torch.common.winnow.winnow_utils import (
     get_zero_positions_in_binary_mask,
     get_conv_ops_for_api,
     get_indices_among_ones_of_overlapping_ones,
 )
-from aimet_common.winnow.module_reducer import ModuleReducer as AimetCommonModuleReducer
-from aimet_common.connected_graph.operation import Op as Operation
-from aimet_common.connected_graph.operation import (
+from aimet_torch.common.winnow.module_reducer import (
+    ModuleReducer as AimetCommonModuleReducer,
+)
+from aimet_torch.common.connected_graph.operation import Op as Operation
+from aimet_torch.common.connected_graph.operation import (
     determine_preceding_op_input_product_index_in_multi_input_op,
     determine_succeeding_op_output_product_index_in_multi_output_op,
 )
-from aimet_common.polyslice import PolySlice
+from aimet_torch.common.polyslice import PolySlice
 from aimet_torch.winnow.winnow_utils import UpsampleLayer, DownsampleLayer
 from aimet_torch.utils import is_leaf_module
 from aimet_torch.winnow.winnow_utils import (

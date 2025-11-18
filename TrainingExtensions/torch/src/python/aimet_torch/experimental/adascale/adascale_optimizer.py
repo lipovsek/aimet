@@ -54,7 +54,7 @@ from transformers.models.mistral.modeling_mistral import (
 )
 
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.nn import QuantizedLinear, compute_param_encodings, QuantizedConv2d
 from aimet_torch.v2.utils import (

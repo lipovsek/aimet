@@ -42,7 +42,7 @@ import numpy as np
 import torch
 
 # Import AIMET specific modules
-from aimet_common.defs import AdaroundConstants
+from aimet_onnx.common.defs import AdaroundConstants
 
 # AdaRound hyperparameters
 _REG_PARAM: float = 0.01  # Regularization parameter, trading off between rounding loss vs reconstruction loss

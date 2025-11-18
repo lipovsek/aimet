@@ -47,8 +47,11 @@ import numpy as np
 import onnx
 import torch
 
-from aimet_common.utils import AimetLogger
-from aimet_common.layer_output_utils import SaveInputOutput, save_layer_output_names
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.layer_output_utils import (
+    SaveInputOutput,
+    save_layer_output_names,
+)
 
 from aimet_torch._base.quantsim import _QuantizedModuleProtocol
 from aimet_torch import utils

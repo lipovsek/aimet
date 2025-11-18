@@ -48,8 +48,8 @@ import warnings
 import numpy as np
 import torch
 
-from aimet_common.utils import AimetLogger, _red
-from aimet_common.cross_layer_equalization import (
+from aimet_torch.common.utils import AimetLogger, _red
+from aimet_torch.common.cross_layer_equalization import (
     ClsLayerType,
     ClsSetInfo,
     ClsImpl,

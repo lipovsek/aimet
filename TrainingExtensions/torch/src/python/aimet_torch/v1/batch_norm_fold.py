@@ -42,8 +42,8 @@ import torch
 import torch.nn
 from torch.nn.modules.conv import _ConvTransposeNd
 
-from aimet_common import libpymo
-from aimet_common.utils import AimetLogger
+from aimet_torch.common import libpymo
+from aimet_torch.common.utils import AimetLogger
 
 from aimet_torch import utils
 from aimet_torch.v1.quantsim import QuantizationSimModel

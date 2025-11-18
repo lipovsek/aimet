@@ -45,15 +45,15 @@ import abc
 
 import torch
 
-from aimet_common.aimet_tensor_quantizer import AimetTensorQuantizer
-from aimet_common import libpymo
-from aimet_common.defs import (
+from aimet_torch.common.aimet_tensor_quantizer import AimetTensorQuantizer
+from aimet_torch.common import libpymo
+from aimet_torch.common.defs import (
     QuantScheme,
     QuantizationDataType,
     MAP_QUANT_SCHEME_TO_PYMO,
 )
-from aimet_common.quantsim import is_non_strict_symmetric
-from aimet_common.utils import AimetLogger, log_with_error_and_assert_if_false
+from aimet_torch.common.quantsim import is_non_strict_symmetric
+from aimet_torch.common.utils import AimetLogger, log_with_error_and_assert_if_false
 import aimet_torch.v1.quantsim_straight_through_grad as grad_fn
 from aimet_torch.v1.quantsim_straight_through_grad import IntermediateResult
 from aimet_torch.fp_quantization import fp8_quantizer, INIT_MAP

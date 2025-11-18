@@ -44,20 +44,20 @@ from typing import Any, Callable, Union, Tuple, List, Dict
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from aimet_common.utils import AimetLogger
-from aimet_common.defs import CallbackFunc
-from aimet_common.amp.mixed_precision_algo import (
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.defs import CallbackFunc
+from aimet_torch.common.amp.mixed_precision_algo import (
     GreedyMixedPrecisionAlgo as MixedPrecisionAlgo,
 )
-from aimet_common.amp.quantizer_groups import reformat_supported_kernels
-from aimet_common.amp.utils import (
+from aimet_torch.common.amp.quantizer_groups import reformat_supported_kernels
+from aimet_torch.common.amp.utils import (
     sort_accuracy_list,
     CANDIDATE_WITH_DTYPE,
     ACCURACY_LIST,
     disable_quantizers,
     enable_quantizers,
 )
-from aimet_common.amp.convert_ops_reduction import SamplingStrategy
+from aimet_torch.common.amp.convert_ops_reduction import SamplingStrategy
 from aimet_torch import utils
 from aimet_torch._base.amp import utils as mixed_precision_utils
 from aimet_torch._base.amp.convert_ops_reduction import ReduceConvertOps

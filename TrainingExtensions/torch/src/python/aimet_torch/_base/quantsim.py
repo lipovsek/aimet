@@ -67,30 +67,30 @@ import onnx
 from packaging import version
 from safetensors.numpy import save_file as save_safetensor_file
 
-from aimet_common.utils import (
+from aimet_torch.common.utils import (
     AimetLogger,
     save_json_yaml,
     log_with_error_and_assert_if_false,
     Handle,
 )
-from aimet_common.defs import (
+from aimet_torch.common.defs import (
     QuantScheme,
     QuantizationDataType,
     SupportedKernelsAction,
     QuantDtypeBwInfo,
 )
-from aimet_common.quantsim import (
+from aimet_torch.common.quantsim import (
     validate_quantsim_inputs,
     extract_global_quantizer_args,
     VALID_ENCODING_VERSIONS,
 )
-from aimet_common.quantsim_config.quantsim_config import (
+from aimet_torch.common.quantsim_config.quantsim_config import (
     _get_config_file,
     _config_file_aliases,
 )
-from aimet_common.quant_utils import get_conv_accum_bounds
-from aimet_common.utils import deprecated, _red
-from aimet_common import quantsim
+from aimet_torch.common.quant_utils import get_conv_accum_bounds
+from aimet_torch.common.utils import deprecated, _red
+from aimet_torch.common import quantsim
 
 from aimet_torch import torchscript_utils, utils, onnx_utils
 from aimet_torch.meta.connectedgraph import ConnectedGraph, Op
@@ -876,7 +876,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
             raise RuntimeError(
                 f"Encoding version {quantsim.encoding_version} is not supported when propagate_encodings is True. To continue using "
                 "propagate_encodings, fall back to encoding_version 0.6.1 by running the following:\n"
-                "from aimet_common import quantsim\n"
+                "from aimet_torch.common import quantsim\n"
                 'quantsim.encoding_version = "0.6.1"'
             )
 

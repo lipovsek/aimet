@@ -39,9 +39,9 @@
 # pylint: disable=protected-access, cyclic-import
 from typing import Dict
 
-from aimet_common import libpymo
-from aimet_common.defs import MAP_ROUND_MODE_TO_PYMO, MAP_QUANT_SCHEME_TO_PYMO
-from aimet_common.quantsim import recompute_grid_params
+from aimet_torch.common import libpymo
+from aimet_torch.common.defs import MAP_ROUND_MODE_TO_PYMO, MAP_QUANT_SCHEME_TO_PYMO
+from aimet_torch.common.quantsim import recompute_grid_params
 
 from aimet_torch._base.quantsim import (
     _QuantizationSimModelInterface,

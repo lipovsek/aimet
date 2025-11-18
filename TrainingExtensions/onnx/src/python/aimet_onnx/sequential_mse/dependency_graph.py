@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import onnx
 from onnxruntime.quantization.onnx_model import ONNXModel
-from aimet_common.utils import AimetLogger
+from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.connectedgraph import ConnectedGraph, WEIGHT_INDEX
 from aimet_onnx.utils import create_input_dict, ParamUtils
 from aimet_onnx.meta.operations import Op

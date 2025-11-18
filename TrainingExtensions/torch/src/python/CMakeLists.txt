@@ -40,6 +40,7 @@ if(SKBUILD)
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/aimet_torch
         DESTINATION .
         PATTERN "__pycache*" EXCLUDE
+        PATTERN "common" EXCLUDE
        )
 else()
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

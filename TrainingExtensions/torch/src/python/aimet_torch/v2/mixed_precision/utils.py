@@ -43,8 +43,8 @@ from typing import Dict, Type, List, Literal, Optional, Union
 
 import torch
 
-from aimet_common.defs import QuantizationDataType
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.defs import QuantizationDataType
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.v2.nn import BaseQuantizationMixin
 from aimet_torch.v2.quantization.float.quantizer import FloatQuantizeDequantize
 from aimet_torch.v2.cg_utils import ModuleProduct

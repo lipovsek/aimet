@@ -43,7 +43,7 @@ from typing import Tuple, Union
 import torch
 from torch import nn
 
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme
 from aimet_torch._base.adaround.adaround_wrapper import AdaroundWrapperBase
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.nn import BaseQuantizationMixin

@@ -15,7 +15,7 @@ import tqdm
 import tempfile
 import onnx
 
-from aimet_common.utils import AimetLogger  # pylint: disable=import-error
+from aimet_onnx.common.utils import AimetLogger  # pylint: disable=import-error
 from aimet_onnx.experimental.adascale.utils import convert_to_torch
 from aimet_onnx.utils import (
     get_torch_device,

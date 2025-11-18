@@ -52,9 +52,9 @@ import onnxruntime
 import torch
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 
-from aimet_common.libpymo import TensorQuantizerOpMode
-from aimet_common.defs import QuantScheme
-from aimet_common.utils import AimetLogger, deprecated
+from aimet_onnx.common.libpymo import TensorQuantizerOpMode
+from aimet_onnx.common.defs import QuantScheme
+from aimet_onnx.common.utils import AimetLogger, deprecated
 from aimet_onnx.qc_quantize_op import GroupedBlockQuantizeDequantize
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.sequential_mse.dependency_graph import (

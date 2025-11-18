@@ -41,8 +41,8 @@ from typing import Tuple, Union, List, Dict
 import torch
 
 # Import AIMET specific modules
-from aimet_common.connected_graph.connectedgraph_utils import CG_SPLIT
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.connected_graph.connectedgraph_utils import CG_SPLIT
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.meta.operation import Op
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch.utils import create_rand_tensors_given_shapes, get_device

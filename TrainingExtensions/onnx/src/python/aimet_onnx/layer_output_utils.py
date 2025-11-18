@@ -45,8 +45,11 @@ import onnxruntime as ort
 import onnx
 from packaging import version
 
-from aimet_common.utils import AimetLogger
-from aimet_common.layer_output_utils import SaveInputOutput, save_layer_output_names
+from aimet_onnx.common.utils import AimetLogger
+from aimet_onnx.common.layer_output_utils import (
+    SaveInputOutput,
+    save_layer_output_names,
+)
 
 from aimet_onnx.utils import (
     create_input_dict,

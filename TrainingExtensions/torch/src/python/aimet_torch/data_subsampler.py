@@ -47,8 +47,8 @@ import torch.utils.data
 import torch.nn
 
 # Import AIMET specific modules
-from aimet_common.utils import AimetLogger
-from aimet_common.input_match_search import InputMatchSearch
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.input_match_search import InputMatchSearch
 from aimet_torch import utils
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.ChannelPruning)

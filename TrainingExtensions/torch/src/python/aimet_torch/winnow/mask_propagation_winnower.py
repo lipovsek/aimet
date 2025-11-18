@@ -42,11 +42,11 @@
 import copy
 from typing import List, Tuple, Dict
 import torch
-from aimet_common.utils import AimetLogger, ModelApi
-from aimet_common.winnow.mask_propagation_winnower import (
+from aimet_torch.common.utils import AimetLogger, ModelApi
+from aimet_torch.common.winnow.mask_propagation_winnower import (
     MaskPropagationWinnower as AimetCommonMaskPropagationWinnower,
 )
-from aimet_common.winnow.mask_propagator import MaskPropagator
+from aimet_torch.common.winnow.mask_propagator import MaskPropagator
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch.utils import get_layer_name, has_hooks
 from aimet_torch.winnow.module_reducer import ModuleReducer

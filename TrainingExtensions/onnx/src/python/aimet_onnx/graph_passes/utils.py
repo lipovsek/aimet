@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # pylint: disable=missing-module-docstring
 
-from aimet_common.connected_graph.operation import Op, Product
+from aimet_onnx.common.connected_graph.operation import Op, Product
 from aimet_onnx.utils import ParamUtils, ModelProto
 
 from onnx import numpy_helper

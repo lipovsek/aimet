@@ -4,7 +4,7 @@
 # pylint: disable=missing-docstring
 
 from typing import List
-from aimet_common.connected_graph.operation import Op
+from aimet_onnx.common.connected_graph.operation import Op
 from aimet_onnx.utils import ModelProto
 
 from aimet_onnx.graph_passes.utils import (

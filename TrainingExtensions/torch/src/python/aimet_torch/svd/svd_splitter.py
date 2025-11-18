@@ -43,8 +43,8 @@ import math
 import numpy as np
 import torch
 
-from aimet_common.utils import AimetLogger
-from aimet_common.svd_pruner import SpatialSvdPruner, WeightSvdPruner
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.svd_pruner import SpatialSvdPruner, WeightSvdPruner
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Svd)
 

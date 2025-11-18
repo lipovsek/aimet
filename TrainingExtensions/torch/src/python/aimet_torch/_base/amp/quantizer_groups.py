@@ -43,11 +43,11 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 import torch
 
-from aimet_common.connected_graph.connectedgraph_utils import CG_SPLIT
-from aimet_common.connected_graph.operation import Op
-from aimet_common.utils import AimetLogger
-from aimet_common.amp.utils import CANDIDATE_WITH_DTYPE
-from aimet_common.amp.quantizer_groups import (
+from aimet_torch.common.connected_graph.connectedgraph_utils import CG_SPLIT
+from aimet_torch.common.connected_graph.operation import Op
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.amp.utils import CANDIDATE_WITH_DTYPE
+from aimet_torch.common.amp.quantizer_groups import (
     QuantizerGroupBase,
     get_supported_candidates_for_quantizers,
     compute_baseline_candidate_options,

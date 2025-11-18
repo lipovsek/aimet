@@ -52,8 +52,8 @@ from bokeh.models import Div
 # Need this import, please don't remove
 import hvplot.pandas  # pylint:disable=unused-import
 
-from aimet_common.plotting_utils import style
-from aimet_common import bokeh_plots
+from aimet_torch.common.plotting_utils import style
+from aimet_torch.common import bokeh_plots
 from aimet_torch.utils import get_device
 
 

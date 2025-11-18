@@ -47,9 +47,13 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from aimet_common import libpymo
-from aimet_common.utils import AimetLogger, Handle
-from aimet_common.defs import QuantScheme, QuantizationDataType, MAP_ROUND_MODE_TO_PYMO
+from aimet_torch.common import libpymo
+from aimet_torch.common.utils import AimetLogger, Handle
+from aimet_torch.common.defs import (
+    QuantScheme,
+    QuantizationDataType,
+    MAP_ROUND_MODE_TO_PYMO,
+)
 from aimet_torch.custom import custom_tensor_utils
 from aimet_torch import utils
 from aimet_torch.v1.tensor_quantizer import (

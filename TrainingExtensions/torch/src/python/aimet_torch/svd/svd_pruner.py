@@ -39,10 +39,10 @@
 
 import copy
 
-from aimet_common.utils import AimetLogger
-from aimet_common.defs import CostMetric
-from aimet_common import cost_calculator
-import aimet_common.svd_pruner
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.defs import CostMetric
+from aimet_torch.common import cost_calculator
+from aimet_torch.common import svd_pruner
 
 from aimet_torch.svd.svd_splitter import (
     SpatialSvdModuleSplitter,
@@ -53,7 +53,7 @@ from aimet_torch.layer_database import LayerDatabase, Layer
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Svd)
 
 
-class SpatialSvdPruner(aimet_common.svd_pruner.SpatialSvdPruner):
+class SpatialSvdPruner(svd_pruner.SpatialSvdPruner):
     """
     Pruner for Spatial-SVD method
     """
@@ -87,7 +87,7 @@ class SpatialSvdPruner(aimet_common.svd_pruner.SpatialSvdPruner):
         )
 
 
-class WeightSvdPruner(aimet_common.svd_pruner.WeightSvdPruner):
+class WeightSvdPruner(svd_pruner.WeightSvdPruner):
     """
     Pruner for Weight-SVD method using numpy.
     """

@@ -71,12 +71,12 @@ from aimet_torch.model_preparer import prepare_model
 from aimet_torch.model_validator.model_validator import ModelValidator
 from aimet_torch.amp.quantizer_groups import QuantizerGroup
 
-from aimet_common.auto_quant import Diagnostics
-from aimet_common.cache import Cache
-from aimet_common.defs import QuantScheme, CallbackFunc
-from aimet_common.utils import AimetLogger, Spinner
-from aimet_common.quantsim import validate_quantsim_inputs
-from aimet_common.amp.utils import AmpCandidate
+from aimet_torch.common.auto_quant import Diagnostics
+from aimet_torch.common.cache import Cache
+from aimet_torch.common.defs import QuantScheme, CallbackFunc
+from aimet_torch.common.utils import AimetLogger, Spinner
+from aimet_torch.common.quantsim import validate_quantsim_inputs
+from aimet_torch.common.amp.utils import AmpCandidate
 
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AutoQuant)

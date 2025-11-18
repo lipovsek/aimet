@@ -39,7 +39,7 @@
 import torch
 import numpy as np
 
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme
 
 
 NUM_MANTISSA_BITS = 3

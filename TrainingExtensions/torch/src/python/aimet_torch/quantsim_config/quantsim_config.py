@@ -42,17 +42,17 @@ from typing import Dict, List, Tuple, Set, Union
 import torch
 from torch.nn.modules import ConvTranspose2d
 
-from aimet_common.utils import AimetLogger, log_with_error_and_assert_if_false
-from aimet_common.graph_searcher import (
+from aimet_torch.common.utils import AimetLogger, log_with_error_and_assert_if_false
+from aimet_torch.common.graph_searcher import (
     GraphSearcher,
     _check_if_conv3d_or_depthwise_conv,
 )
-from aimet_common.graph_pattern_matcher import PatternType
-from aimet_common.connected_graph.operation import Op
-from aimet_common.defs import QuantizationDataType, QuantDtypeBwInfo, qtype
-from aimet_common.connected_graph.connectedgraph_utils import CG_SPLIT
-from aimet_common.connected_graph import connectedgraph_utils as cg_utils
-from aimet_common.quantsim_config.json_config_importer import (
+from aimet_torch.common.graph_pattern_matcher import PatternType
+from aimet_torch.common.connected_graph.operation import Op
+from aimet_torch.common.defs import QuantizationDataType, QuantDtypeBwInfo, qtype
+from aimet_torch.common.connected_graph.connectedgraph_utils import CG_SPLIT
+from aimet_torch.common.connected_graph import connectedgraph_utils as cg_utils
+from aimet_torch.common.quantsim_config.json_config_importer import (
     ConfigDictKeys,
     ConfigType,
     SupergroupType,
@@ -62,17 +62,17 @@ from aimet_common.quantsim_config.json_config_importer import (
     OpTypeType,
     ConfigDictType,
 )
-from aimet_common.quantsim_config.quantsim_config import (
+from aimet_torch.common.quantsim_config.quantsim_config import (
     QuantSimConfigurator as AimetCommonQuantSimConfigurator,
     get_all_ops_in_neighborhood,
     get_setting_type,
     ENFORCE_TARGET_DTYPE_BITWIDTH_CONFIG,
     reformat_supported_kernels,
 )
-from aimet_common.quantsim_config.quantsim_config import (
+from aimet_torch.common.quantsim_config.quantsim_config import (
     SupergroupConfigCallback as AimetCommonSupergroupConfigCallback,
 )
-from aimet_common.onnx._utils import _is_grid_preserving_op
+from aimet_torch.common.onnx._utils import _is_grid_preserving_op
 
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch.onnx_utils import (

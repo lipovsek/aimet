@@ -58,19 +58,26 @@ add_custom_target(whl_prep_ln_common DEPENDS
 message(STATUS "Package rename command: ${src_packaging_dir}/convert_wheel_format.sh ${CMAKE_BINARY_DIR}")
 add_custom_target(generate_deps
     COMMAND python3
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/python/aimet_common/_gen.py"
-            --output-dir ${CMAKE_BINARY_DIR}/artifacts/aimet_common
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/python/_aimet_common/_gen.py"
+            --output-dir ${CMAKE_BINARY_DIR}/artifacts/_aimet_common
             --build-dir ${CMAKE_BINARY_DIR}
 )
 if(SKBUILD)
-install(DIRECTORY ${CMAKE_BINARY_DIR}/artifacts/aimet_common/
-        DESTINATION aimet_common
-        FILES_MATCHING
-        PATTERN "_version.py"
-      )
+    if (ENABLE_TORCH)
+        install(DIRECTORY ${CMAKE_BINARY_DIR}/artifacts/_aimet_common/
+                DESTINATION aimet_torch/common
+                FILES_MATCHING
+                PATTERN "_version.py")
+    endif()
+    if (ENABLE_ONNX)
+        install(DIRECTORY ${CMAKE_BINARY_DIR}/artifacts/_aimet_common/
+                DESTINATION aimet_onnx/common
+                FILES_MATCHING
+                PATTERN "_version.py")
+    endif()
 else()
-install(DIRECTORY ${CMAKE_BINARY_DIR}/artifacts/aimet_common/
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/aimet_common
+install(DIRECTORY ${CMAKE_BINARY_DIR}/artifacts/_aimet_common/
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/_aimet_common
         FILES_MATCHING
         PATTERN "_version.py"
       )

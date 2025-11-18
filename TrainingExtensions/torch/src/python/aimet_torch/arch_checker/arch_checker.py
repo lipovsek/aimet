@@ -40,7 +40,7 @@
 from typing import Callable, Union, Tuple
 import torch
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch.arch_checker.arch_checker_rules import TorchActivations
 from aimet_torch.arch_checker.arch_checker_utils import (

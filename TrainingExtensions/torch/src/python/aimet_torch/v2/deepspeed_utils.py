@@ -41,7 +41,7 @@
 import contextlib
 import torch
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
 

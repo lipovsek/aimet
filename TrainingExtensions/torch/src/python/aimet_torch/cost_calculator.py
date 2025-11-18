@@ -42,7 +42,10 @@ import numpy as np
 
 import torch
 
-from aimet_common.cost_calculator import CostCalculator as GenericCostCalculator, Cost
+from aimet_torch.common.cost_calculator import (
+    CostCalculator as GenericCostCalculator,
+    Cost,
+)
 from aimet_torch.layer_database import Layer
 from aimet_torch._base.nn.modules.custom import Multiply
 

@@ -45,14 +45,14 @@ from abc import ABC, abstractmethod
 import torch
 from torch.utils.data import DataLoader
 
-from aimet_common.quant_analyzer import (
+from aimet_torch.common.quant_analyzer import (
     save_json,
     export_per_layer_sensitivity_analysis_plot,
     create_and_export_min_max_ranges_plot,
     export_per_layer_mse_plot,
 )
-from aimet_common.utils import AimetLogger
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.defs import QuantScheme
 from aimet_torch import utils
 from aimet_torch._base.quantsim import _QuantizationSimModelInterface
 

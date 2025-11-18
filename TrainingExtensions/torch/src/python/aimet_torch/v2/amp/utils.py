@@ -42,7 +42,7 @@ from typing import Union, Optional
 
 import torch
 
-from aimet_common.defs import QuantizationDataType
+from aimet_torch.common.defs import QuantizationDataType
 from aimet_torch.v2.quantization.affine import QuantizeDequantize
 from aimet_torch.v2.quantization.float import FloatQuantizeDequantize
 from aimet_torch.v2.quantsim import QuantizationSimModel

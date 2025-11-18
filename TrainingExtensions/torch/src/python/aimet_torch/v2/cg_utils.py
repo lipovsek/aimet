@@ -43,7 +43,7 @@ import functools
 
 import torch
 
-from aimet_common.connected_graph.connectedgraph_utils import CG_SPLIT
+from aimet_torch.common.connected_graph.connectedgraph_utils import CG_SPLIT
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch.meta.operation import Op as CG_Op
 from aimet_torch.v2.nn import BaseQuantizationMixin

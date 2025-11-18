@@ -43,7 +43,7 @@ from collections import namedtuple
 from typing import Tuple, List, Type, Optional, Generator
 import torch
 
-from aimet_common.quant_analyzer import export_stats_histogram_plot
+from aimet_torch.common.quant_analyzer import export_stats_histogram_plot
 from aimet_torch._base.quant_analyzer import QuantAnalyzerBase
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.nn.base import BaseQuantizationMixin

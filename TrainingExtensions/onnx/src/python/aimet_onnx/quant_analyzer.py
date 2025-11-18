@@ -51,9 +51,9 @@ import onnxruntime as ort
 from onnxruntime.quantization.onnx_model import ONNXModel
 from sklearn.metrics import mean_squared_error
 
-from aimet_common.utils import AimetLogger
-from aimet_common.defs import QuantScheme, qtype
-from aimet_common.quant_analyzer import (
+from aimet_onnx.common.utils import AimetLogger
+from aimet_onnx.common.defs import QuantScheme, qtype
+from aimet_onnx.common.quant_analyzer import (
     save_json,
     export_per_layer_sensitivity_analysis_plot,
     create_and_export_min_max_ranges_plot,

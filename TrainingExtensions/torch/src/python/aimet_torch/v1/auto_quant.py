@@ -69,9 +69,9 @@ from aimet_torch.amp.mixed_precision_algo import (
     _default_forward_fn,
 )
 
-from aimet_common.defs import QuantScheme, CallbackFunc, QuantizationDataType
-from aimet_common.utils import AimetLogger
-from aimet_common.amp.utils import (
+from aimet_torch.common.defs import QuantScheme, CallbackFunc, QuantizationDataType
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.amp.utils import (
     create_sensitivity_plot,
     create_pareto_curve,
     CANDIDATE_WITH_DTYPE,

@@ -62,7 +62,7 @@ if (SKBUILD)
             )
 
         install(TARGETS ${extension_name}
-            LIBRARY DESTINATION aimet_common
+            LIBRARY DESTINATION aimet_torch/common
             )
     endmacro()
 
@@ -123,8 +123,8 @@ else (SKBUILD)
     set(FILE_PATH_RESCALER "${CMAKE_BINARY_DIR}/artifacts/aimet_encoding_rescaler*.egg/AimetEncodingRescaler*.so")
 
     add_custom_target(BuildTorchExtensions ALL
-        COMMAND ${CMAKE_COMMAND} -E copy ${FILE_PATH_TENSOR_QUANT} ${CMAKE_BINARY_DIR}/artifacts/aimet_common
-        COMMAND ${CMAKE_COMMAND} -E copy ${FILE_PATH_RESCALER} ${CMAKE_BINARY_DIR}/artifacts/aimet_common)
+        COMMAND ${CMAKE_COMMAND} -E copy ${FILE_PATH_TENSOR_QUANT} ${CMAKE_BINARY_DIR}/artifacts/_aimet_common
+        COMMAND ${CMAKE_COMMAND} -E copy ${FILE_PATH_RESCALER} ${CMAKE_BINARY_DIR}/artifacts/_aimet_common)
 
     add_dependencies(TorchCppOps PyModelOptimizations)
     add_dependencies(BuildTorchExtensions TorchCppOps)
@@ -146,8 +146,8 @@ else (SKBUILD)
         endif()
     endif()
 
-    install(DIRECTORY ${CMAKE_BINARY_DIR}/artifacts/aimet_common/
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/aimet_common
+    install(DIRECTORY ${CMAKE_BINARY_DIR}/artifacts/_aimet_common/
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/_aimet_common
             FILES_MATCHING
             PATTERN "Aimet*.so"
           )

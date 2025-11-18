@@ -40,23 +40,23 @@
 from typing import Tuple, List
 import torch
 
-from aimet_common.defs import (
+from aimet_torch.common.defs import (
     CostMetric,
     RankSelectScheme,
     EvalFunction,
     LayerCompRatioPair,
 )
-from aimet_common.cost_calculator import (
+from aimet_torch.common.cost_calculator import (
     SpatialSvdCostCalculator,
     WeightSvdCostCalculator,
 )
-from aimet_common.comp_ratio_select import (
+from aimet_torch.common.comp_ratio_select import (
     GreedyCompRatioSelectAlgo,
     ManualCompRatioSelectAlgo,
 )
-from aimet_common.comp_ratio_rounder import RankRounder, ChannelRounder
-from aimet_common.compression_algo import CompressionAlgo
-from aimet_common.bokeh_plots import BokehServerSession
+from aimet_torch.common.comp_ratio_rounder import RankRounder, ChannelRounder
+from aimet_torch.common.compression_algo import CompressionAlgo
+from aimet_torch.common.bokeh_plots import BokehServerSession
 
 from aimet_torch.utils import create_rand_tensors_given_shapes, get_device
 from aimet_torch.defs import (

@@ -49,9 +49,9 @@ from onnx import numpy_helper
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from packaging import version
 
-from aimet_common.utils import AimetLogger
-from aimet_common.connected_graph.connectedgraph import get_ordered_ops
-from aimet_common.cross_layer_equalization import (
+from aimet_onnx.common.utils import AimetLogger
+from aimet_onnx.common.connected_graph.connectedgraph import get_ordered_ops
+from aimet_onnx.common.cross_layer_equalization import (
     GraphSearchUtils,
     CrossLayerScaling as CLS,
     ClsImpl,

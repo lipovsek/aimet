@@ -115,6 +115,8 @@ macro(whl_add_whl_action_target whl_name)
     endforeach()
 endmacro()
 
+add_subdirectory(common)
+
 if (ENABLE_TORCH)
     add_subdirectory(torch)
 endif(ENABLE_TORCH)
@@ -122,5 +124,3 @@ endif(ENABLE_TORCH)
 if (ENABLE_ONNX)
     add_subdirectory(onnx)
 endif(ENABLE_ONNX)
-
-add_subdirectory(common)

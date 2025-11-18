@@ -44,7 +44,7 @@ import warnings
 import torch
 from torch.utils.data import DataLoader
 
-from aimet_common.utils import AimetLogger, _red
+from aimet_torch.common.utils import AimetLogger, _red
 from aimet_torch._base.seq_mse import SequentialMseBase, SeqMseParams, SUPPORTED_MODULES
 from aimet_torch.v2.quantization.base import QuantizerBase
 from aimet_torch.v2.quantization.affine import (

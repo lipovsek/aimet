@@ -50,9 +50,25 @@ else()
         DESTINATION .
         PATTERN "__pycache*" EXCLUDE
         PATTERN "CMakeLists.txt" EXCLUDE
-        PATTERN "_version.pyi" EXCLUDE
-        PATTERN "_gen.py" EXCLUDE
-       )
+    )
+        if (ENABLE_TORCH)
+            install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/_aimet_common/
+                DESTINATION aimet_torch/common
+                PATTERN "__pycache*" EXCLUDE
+                PATTERN "CMakeLists.txt" EXCLUDE
+                PATTERN "_version.pyi" EXCLUDE
+                PATTERN "_gen.py" EXCLUDE
+               )
+        endif()
+        if (ENABLE_ONNX)
+            install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/_aimet_common/
+                DESTINATION aimet_onnx/common
+                PATTERN "__pycache*" EXCLUDE
+                PATTERN "CMakeLists.txt" EXCLUDE
+                PATTERN "_version.pyi" EXCLUDE
+                PATTERN "_gen.py" EXCLUDE
+               )
+        endif()
     else()
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         DESTINATION ${CMAKE_INSTALL_LIBDIR}

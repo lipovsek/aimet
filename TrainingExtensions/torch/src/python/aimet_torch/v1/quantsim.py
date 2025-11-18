@@ -44,8 +44,8 @@ import copy
 from typing import Tuple, List, Union, Dict, Callable, Optional, Any
 import torch
 
-from aimet_common.utils import AimetLogger
-from aimet_common.defs import QuantScheme, QuantizationDataType
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.defs import QuantScheme, QuantizationDataType
 
 from aimet_torch.v1.qc_quantize_op import (
     QcQuantizeStandAloneBase,

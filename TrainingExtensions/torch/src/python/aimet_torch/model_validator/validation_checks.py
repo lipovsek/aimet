@@ -40,7 +40,7 @@
 from typing import Tuple, Union, Set, List
 import torch
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch import utils
 from aimet_torch.meta import connectedgraph_utils
 from aimet_torch.meta.operation import Op

@@ -45,10 +45,10 @@ import networkx as nx
 import torch
 from torch import Tensor
 
-from aimet_common.utils import AimetLogger
-from aimet_common.defs import QuantizationDataType
-from aimet_common.amp.quantizer_groups import QuantizerGroupBase
-from aimet_common.amp.convert_ops_reduction import (
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.defs import QuantizationDataType
+from aimet_torch.common.amp.quantizer_groups import QuantizerGroupBase
+from aimet_torch.common.amp.convert_ops_reduction import (
     ReduceConvertOps as BaseReduceConvertOps,
 )
 

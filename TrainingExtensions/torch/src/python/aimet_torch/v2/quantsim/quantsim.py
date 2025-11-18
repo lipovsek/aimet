@@ -60,11 +60,11 @@ import os
 import torch
 import onnx
 
-from aimet_common import quantsim
-from aimet_common.defs import QuantScheme, QuantizationDataType
-from aimet_common.onnx._utils import _is_htp_interpolation_op
-from aimet_common.quantsim_config.quantsim_config import _config_file_aliases
-from aimet_common.utils import deprecated, _red
+from aimet_torch.common import quantsim
+from aimet_torch.common.defs import QuantScheme, QuantizationDataType
+from aimet_torch.common.onnx._utils import _is_htp_interpolation_op
+from aimet_torch.common.quantsim_config.quantsim_config import _config_file_aliases
+from aimet_torch.common.utils import deprecated, _red
 from aimet_torch._base.quantsim import (
     _QuantizationSimModelBase,
     logger,

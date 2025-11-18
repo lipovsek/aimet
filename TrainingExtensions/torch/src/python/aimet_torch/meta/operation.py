@@ -40,11 +40,11 @@
 from typing import Union
 import torch
 
-import aimet_common.connected_graph.operation
+from aimet_torch.common.connected_graph.operation import Op as _Op
 
 
-class Op(aimet_common.connected_graph.operation.Op):
-    """Subclass Op inherited from aimet_common.connected_graph.operation.Op"""
+class Op(_Op):
+    """Subclass Op inherited from aimet_torch.common.connected_graph.operation.Op"""
 
     def __init__(
         self,
@@ -69,7 +69,7 @@ class Op(aimet_common.connected_graph.operation.Op):
 
     def is_grid_preserving_op(self) -> bool:
         from .connectedgraph import ConnectedGraph
-        from aimet_common.onnx._utils import _is_grid_preserving_op
+        from aimet_torch.common.onnx._utils import _is_grid_preserving_op
         from ..onnx_utils import map_torch_types_to_onnx
         from ..nn import QuantizationMixin
 

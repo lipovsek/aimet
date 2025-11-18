@@ -38,12 +38,12 @@
 """ONNX Operation class and utilities"""
 
 from typing import Union
-import aimet_common.connected_graph.operation
+from aimet_onnx.common.connected_graph.operation import Op as _Op
 from aimet_onnx.meta.product import Product
 
 
-class Op(aimet_common.connected_graph.operation.Op):
-    """Subclass Op inherited from aimet_common.connected_graph.operation.Op"""
+class Op(_Op):
+    """Subclass Op inherited from aimet_onnx.common.connected_graph.operation.Op"""
 
     def __init__(
         self,

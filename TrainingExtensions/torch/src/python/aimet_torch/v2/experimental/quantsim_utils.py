@@ -40,8 +40,8 @@ from typing import overload, Callable, Sequence, Type
 import torch
 import copy
 
-from aimet_common.utils import AimetLogger
-from aimet_common.connected_graph.product import Product
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.connected_graph.product import Product
 from aimet_torch.meta.connectedgraph import Op
 from aimet_torch.v2.nn import BaseQuantizationMixin, custom
 from aimet_torch.v2.nn.true_quant import QuantizationMixin

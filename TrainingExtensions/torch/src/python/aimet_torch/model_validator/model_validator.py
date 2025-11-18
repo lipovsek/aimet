@@ -40,7 +40,7 @@
 from typing import Tuple, Union, Callable
 import torch
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 import aimet_torch.model_validator.validation_checks as val_checks
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)

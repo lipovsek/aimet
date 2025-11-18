@@ -40,8 +40,8 @@
 from typing import overload, Union, List, Tuple, Dict, get_args, Type, Optional, IO
 import torch
 
-from aimet_common.quantsim_config.json_config_importer import JsonConfigImporter
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.quantsim_config.json_config_importer import JsonConfigImporter
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.v2.utils import flatten_list
 from aimet_torch.v2.mixed_precision.utils import (
     UserRequest,

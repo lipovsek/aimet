@@ -40,13 +40,13 @@
 from typing import Union, Tuple
 import torch
 
-from aimet_common.defs import (
+from aimet_torch.common.defs import (
     CostMetric,
     CompressionScheme,
     EvalFunction,
     CompressionStats,
 )
-from aimet_common.bokeh_plots import BokehServerSession
+from aimet_torch.common.bokeh_plots import BokehServerSession
 
 from aimet_torch.defs import (
     SpatialSvdParameters,

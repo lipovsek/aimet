@@ -41,7 +41,7 @@ from typing import Optional, Tuple
 
 import torch
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.gptvq import utils as gptvq_utils
 from aimet_torch.gptvq.defs import GPTVQParameters, DAMPENING_PERCENTAGE, BLOCK_STRIDE
 from aimet_torch.gptvq.utils import (

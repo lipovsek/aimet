@@ -40,7 +40,7 @@ from typing import List, Tuple
 import torch
 from torch import nn
 
-from aimet_common.polyslice import PolySlice
+from aimet_torch.common.polyslice import PolySlice
 
 
 class DownsampleLayer(nn.Module):

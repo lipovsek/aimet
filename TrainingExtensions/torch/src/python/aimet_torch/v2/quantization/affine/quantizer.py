@@ -78,7 +78,7 @@ from aimet_torch.v2.quantization.affine.backends import (
 )
 from aimet_torch.v2.utils import ste_round
 from aimet_torch.v2.deepspeed_utils import SafeGatheredParameters
-from aimet_common.quantsim import _get_minimum_scale
+from aimet_torch.common.quantsim import _get_minimum_scale
 from ._utils import _GridMixin, _register_signature
 
 

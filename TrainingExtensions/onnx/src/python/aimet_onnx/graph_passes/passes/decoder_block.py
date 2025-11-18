@@ -3,7 +3,7 @@
 
 # pylint: disable=missing-module-docstring
 
-from aimet_common.connected_graph.operation import Op
+from aimet_onnx.common.connected_graph.operation import Op
 from aimet_onnx.graph_passes.graph_pass import GraphPass
 from aimet_onnx.graph_passes.passes.common_patterns import match_rms_norm_pattern
 from aimet_onnx.qc_quantize_op import QcQuantizeOp

@@ -11,7 +11,7 @@ from torch import nn
 
 from .transform_ops import TransformOp
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.v2.utils import patch_attr
 from aimet_torch.v2.nn import compute_param_encodings
 from aimet_torch.v2.nn.true_quant import QuantizationMixin

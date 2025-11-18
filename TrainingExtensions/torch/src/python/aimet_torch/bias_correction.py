@@ -45,16 +45,16 @@ import torch
 import torch.nn
 import numpy as np
 
-from aimet_common.graph_pattern_matcher import PatternType
-from aimet_common.graph_searcher import GraphSearcher
-from aimet_common.utils import AimetLogger
-from aimet_common.bias_correction import (
+from aimet_torch.common.graph_pattern_matcher import PatternType
+from aimet_torch.common.graph_searcher import GraphSearcher
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.bias_correction import (
     ConvBnInfoType,
     ConvBnPatternHandler,
     analytical_bias_correction,
     empirical_bias_correction,
 )
-from aimet_common.defs import ActivationType
+from aimet_torch.common.defs import ActivationType
 
 from aimet_torch import utils
 from aimet_torch.quantsim import QuantizationSimModel

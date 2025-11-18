@@ -49,7 +49,7 @@ from aimet_common.model_module import ModelModule
 
 
 @patch(
-    "aimet_common.connected_graph.connectedgraph.ConnectedGraph.__abstractmethods__",
+    f"{ConnectedGraph.__module__}.ConnectedGraph.__abstractmethods__",
     set(),
 )
 def test_serialize_ops():
@@ -100,7 +100,7 @@ def test_serialize_ops():
 
 
 @patch(
-    "aimet_common.connected_graph.connectedgraph.ConnectedGraph.__abstractmethods__",
+    f"{ConnectedGraph.__module__}.ConnectedGraph.__abstractmethods__",
     set(),
 )
 def test_serialize_products():
@@ -138,7 +138,7 @@ def test_serialize_products():
 
 
 @patch(
-    "aimet_common.connected_graph.connectedgraph.ConnectedGraph.__abstractmethods__",
+    f"{ConnectedGraph.__module__}.ConnectedGraph.__abstractmethods__",
     set(),
 )
 def test_export_connected_graph():

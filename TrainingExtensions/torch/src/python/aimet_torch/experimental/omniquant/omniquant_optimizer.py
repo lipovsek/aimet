@@ -57,7 +57,7 @@ from aimet_torch.utils import disable_all_quantizers
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.nn.true_quant import QuantizationMixin
 from aimet_torch.v2.nn import compute_param_encodings
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from .decoder_processor import get_transformer_processor
 
 from ._utils import (

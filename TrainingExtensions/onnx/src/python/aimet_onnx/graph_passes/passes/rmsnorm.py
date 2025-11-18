@@ -3,7 +3,7 @@
 # pylint: disable=missing-module-docstring
 
 from typing import List
-from aimet_common.connected_graph.operation import Op
+from aimet_onnx.common.connected_graph.operation import Op
 from aimet_onnx.graph_passes.graph_pass import SupergroupGraphPass
 from aimet_onnx.graph_passes.pass_registry import register_pass
 from aimet_onnx.graph_passes.passes.common_patterns import match_rms_norm_pattern

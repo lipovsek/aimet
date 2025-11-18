@@ -53,7 +53,7 @@ import yaml
 from onnx import GraphProto
 from packaging import version
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 import aimet_torch.utils
 import aimet_torch._base.nn.modules.custom as aimet_modules
 from aimet_torch.defs import OpToIOTensors

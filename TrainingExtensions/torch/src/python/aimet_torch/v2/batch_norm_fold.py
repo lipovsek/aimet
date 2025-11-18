@@ -47,7 +47,7 @@ from aimet_torch._base.batch_norm_fold import (
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.nn.base import BaseQuantizationMixin
 from torch.nn.modules.conv import _ConvTransposeNd
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 
 __all__ = [
     "fold_all_batch_norms",

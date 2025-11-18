@@ -50,7 +50,7 @@ import torch
 from torch.nn import functional
 from torch.utils.data import DataLoader
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 
 from aimet_torch.utils import (
     CachedDataset,

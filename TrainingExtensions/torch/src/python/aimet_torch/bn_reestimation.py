@@ -45,7 +45,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch.nn.modules.batchnorm import _BatchNorm
 from aimet_torch.utils import in_eval_mode, in_train_mode
-from aimet_common.utils import Handle
+from aimet_torch.common.utils import Handle
 
 
 def _get_active_bn_modules(model: torch.nn.Module) -> Iterable[_BatchNorm]:

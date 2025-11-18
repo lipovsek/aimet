@@ -42,7 +42,7 @@ import torch
 from torch.utils.data import Dataset
 
 # Import AIMET specific modules
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.utils import (
     CachedDataset,
     ModuleData,

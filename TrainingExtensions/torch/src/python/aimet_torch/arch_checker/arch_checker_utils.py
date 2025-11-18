@@ -51,16 +51,16 @@ from aimet_torch.arch_checker.arch_checker_rules import (
     PATTERN_CHECK_LIST,
 )
 
-import aimet_common.connected_graph.operation
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.connected_graph.operation import Op
+from aimet_torch.common.utils import AimetLogger
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
 
 
 # pylint: disable=too-few-public-methods
-class OpStructure(aimet_common.connected_graph.operation.Op):
+class OpStructure(Op):
     """
-    Subclass OpStructure inherited from aimet_common.connected_graph.operation.Op.
+    Subclass OpStructure inherited from aimet_torch.common.connected_graph.operation.Op.
     Used to mark a structure of Ops.
     """
 

@@ -43,8 +43,8 @@ import math
 import torch
 from torch._C._nn import _parse_to as parse_to_args
 
-from aimet_common.defs import EncodingType
-from aimet_common.quantsim import VALID_ENCODING_VERSIONS
+from aimet_torch.common.defs import EncodingType
+from aimet_torch.common.quantsim import VALID_ENCODING_VERSIONS
 from aimet_torch.v2.utils import docstring
 from aimet_torch.v2.quantization.base import EncodingBase
 from aimet_torch.v2.quantization.affine.backends import (

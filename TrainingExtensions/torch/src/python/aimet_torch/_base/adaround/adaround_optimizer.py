@@ -47,7 +47,7 @@ from torch.utils.data import Dataset, Subset
 import torch.distributed as dist
 
 # Import AIMET specific modules
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch import utils
 from aimet_torch._base.quantsim import _QuantizedModuleProtocol
 from aimet_torch._base.adaround.activation_sampler import ActivationSampler

@@ -49,7 +49,7 @@ from torch import nn
 from torch.utils._pytree import tree_map
 
 from packaging import version
-from aimet_common.utils import deprecated
+from aimet_torch.common.utils import deprecated
 from aimet_torch.v2.quantization.base import EncodingBase
 from aimet_torch.v2.quantization.encoding_analyzer import EncodingAnalyzer
 

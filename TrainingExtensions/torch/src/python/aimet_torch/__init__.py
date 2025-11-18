@@ -37,7 +37,7 @@
 # pylint: disable=missing-module-docstring
 
 try:
-    from aimet_common import _version
+    from aimet_torch.common import _version
 
     __version__ = _version.__version__
 except ImportError:

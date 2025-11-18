@@ -44,10 +44,10 @@ import torch
 import numpy as np
 
 # Import AIMET specific modules
-from aimet_common.defs import CostMetric, LayerCompRatioPair
-from aimet_common.cost_calculator import CostCalculator, Cost
-from aimet_common.pruner import Pruner
-from aimet_common.channel_pruner import select_channels_to_prune
+from aimet_torch.common.defs import CostMetric, LayerCompRatioPair
+from aimet_torch.common.cost_calculator import CostCalculator, Cost
+from aimet_torch.common.pruner import Pruner
+from aimet_torch.common.channel_pruner import select_channels_to_prune
 from aimet_torch.layer_database import LayerDatabase, Layer
 from aimet_torch.data_subsampler import DataSubSampler
 from aimet_torch.channel_pruning.weight_reconstruction import WeightReconstructor

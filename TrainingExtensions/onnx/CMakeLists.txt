@@ -79,17 +79,16 @@ if (SKBUILD)
         )
 
     install(TARGETS OnnxCppOps
-        DESTINATION aimet_common
-        )
+            DESTINATION aimet_onnx/common)
 
 else (SKBUILD)
     set_target_properties(OnnxCppOps PROPERTIES
         OUTPUT_NAME "aimet_onnxrt_ops"
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/aimet_common"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/_aimet_common"
         )
 
 install(TARGETS OnnxCppOps
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/aimet_common
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/_aimet_common
         )
 
 endif (SKBUILD)
@@ -117,19 +116,17 @@ if (SKBUILD)
         )
 
     install(TARGETS quant_info
-            DESTINATION aimet_common
-            )
-
+            DESTINATION aimet_onnx/common)
 else (SKBUILD)
 
 set_target_properties(quant_info
         PROPERTIES
         OUTPUT_NAME "quant_info"
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/aimet_common/"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/_aimet_common/"
         )
 
 install(TARGETS quant_info
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/aimet_common
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/python/_aimet_common
         )
 
 # ----

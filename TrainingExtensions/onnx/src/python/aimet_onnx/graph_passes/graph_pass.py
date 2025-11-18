@@ -37,7 +37,7 @@
 # pylint: disable=missing-module-docstring
 
 from abc import abstractmethod
-from aimet_common.connected_graph.operation import Op
+from aimet_onnx.common.connected_graph.operation import Op
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.qc_quantize_op import QcQuantizeOp
 from aimet_onnx.graph_passes.utils import get_const_input_names, get_output_names

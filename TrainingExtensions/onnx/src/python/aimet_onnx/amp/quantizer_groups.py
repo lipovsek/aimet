@@ -42,16 +42,16 @@ from typing import Dict, Tuple, List
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from aimet_common.connected_graph.operation import Op
+from aimet_onnx.common.connected_graph.operation import Op
 
-from aimet_common.amp.utils import CANDIDATE_WITH_DTYPE
+from aimet_onnx.common.amp.utils import CANDIDATE_WITH_DTYPE
 
-from aimet_common.amp.quantizer_groups import (
+from aimet_onnx.common.amp.quantizer_groups import (
     QuantizerGroupBase,
     get_supported_candidates_for_quantizers,
     compute_baseline_candidate_options,
 )
-from aimet_common.utils import AimetLogger
+from aimet_onnx.common.utils import AimetLogger
 
 from aimet_onnx.meta.connectedgraph import ConnectedGraph, Product
 from aimet_onnx.quantsim import QuantizationSimModel

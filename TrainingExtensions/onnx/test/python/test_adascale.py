@@ -531,12 +531,10 @@ class TestAdascaleQuantizer:
                 output_names=["output"],
             )
             model_onnx = load_model(tempdir + "/model.onnx")
-            config_file = os.path.join(
-                os.path.dirname(__file__),
-                "../../../common/src/python/aimet_common/quantsim_config/htp_quantsim_config_v73_per_channel_linear.json",
-            )
             sim = QuantizationSimModel(
-                model_onnx, [dummy_input], config_file=config_file
+                model_onnx,
+                [dummy_input],
+                config_file="htp_quantsim_config_v73_per_channel_linear.json",
             )
             sim._compute_param_encodings(overwrite=False)
             qt_input = []

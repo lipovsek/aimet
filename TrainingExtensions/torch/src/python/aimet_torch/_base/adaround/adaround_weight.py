@@ -47,8 +47,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 # Import AIMET specific modules
-from aimet_common.utils import AimetLogger, convert_configs_values_to_bool
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.utils import AimetLogger, convert_configs_values_to_bool
+from aimet_torch.common.defs import QuantScheme
 
 from aimet_torch import utils
 from aimet_torch.meta import connectedgraph_utils

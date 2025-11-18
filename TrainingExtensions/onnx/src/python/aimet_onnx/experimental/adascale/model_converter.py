@@ -1,7 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from aimet_common.utils import AimetLogger
+from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.experimental.adascale.quantizer import QuantizedLinear, QuantizedConv2d
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)

@@ -41,7 +41,7 @@ import sysconfig
 import platform
 
 import torch as _torch
-from aimet_common import _version
+from aimet_torch.common import _version
 
 
 def _is_torch_compatible(current: str, required: str):

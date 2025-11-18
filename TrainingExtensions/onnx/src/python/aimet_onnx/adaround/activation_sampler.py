@@ -44,7 +44,7 @@ import onnxruntime as ort
 import onnx
 from packaging import version
 
-from aimet_common.utils import AimetLogger
+from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.utils import (
     add_hook_to_get_activation,

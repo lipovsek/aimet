@@ -40,8 +40,8 @@ import json
 import os
 from typing import Dict, List, Tuple
 
-from aimet_common.utils import AimetLogger
-from aimet_common.defs import QuantizationDataType, EncodingType
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.defs import QuantizationDataType, EncodingType
 from aimet_torch.utils import is_vector_encoding
 
 

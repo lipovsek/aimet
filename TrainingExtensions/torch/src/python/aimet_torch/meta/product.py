@@ -38,7 +38,7 @@
 
 from typing import Optional
 
-from aimet_common.connected_graph.product import Product as _Product
+from aimet_torch.common.connected_graph.product import Product as _Product
 from .operation import Op
 
 

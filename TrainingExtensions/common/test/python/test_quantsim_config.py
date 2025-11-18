@@ -365,7 +365,7 @@ class TestQuantSimConfig:
         )
 
     @patch(
-        "aimet_common.quantsim_config.quantsim_config.QuantSimConfigurator.__abstractmethods__",
+        f"{QuantSimConfigurator.__module__}.QuantSimConfigurator.__abstractmethods__",
         set(),
     )
     def test_op_type_default_override_supported_kernel_lookup(self, tmp_dir):

@@ -144,8 +144,14 @@ if (ENABLE_TESTS)
 endif()
 
 if (SKBUILD)
-    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/DlQuantization
-            DESTINATION aimet_common/x86_64-linux-gnu/include)
+    if (ENABLE_TORCH)
+        install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/DlQuantization
+                DESTINATION aimet_torch/common/x86_64-linux-gnu/include)
+    endif()
+    if (ENABLE_ONNX)
+        install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/DlQuantization
+                DESTINATION aimet_onnx/common/x86_64-linux-gnu/include)
+    endif()
 else (SKBUILD)
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/DlQuantization
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/x86_64-linux-gnu/include)

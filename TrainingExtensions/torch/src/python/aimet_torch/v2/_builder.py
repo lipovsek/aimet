@@ -41,7 +41,7 @@ from typing import Sequence
 import numpy as np
 import torch
 
-from aimet_common.defs import QuantScheme, QuantizationDataType
+from aimet_torch.common.defs import QuantScheme, QuantizationDataType
 from aimet_torch.quantsim_config.builder import LazyQuantizeWrapper, LazyQuantizer
 import aimet_torch.fp_quantization as v1_fp_quantization
 from aimet_torch.v2.quantization.float import FloatQuantizeDequantize

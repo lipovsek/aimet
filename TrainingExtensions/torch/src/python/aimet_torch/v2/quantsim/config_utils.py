@@ -38,7 +38,7 @@
 
 from typing import overload, Callable, List, Optional, Tuple, Type, Union
 import torch
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.v2.quantsim.quantsim import QuantizationSimModel
 from aimet_torch.v2.quantization.affine import (
     QuantizeDequantize,

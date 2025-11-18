@@ -40,8 +40,8 @@
 from typing import Any, Callable, Union, Tuple, List
 import torch
 
-from aimet_common.utils import AimetLogger
-from aimet_common.amp.utils import (
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.amp.utils import (
     visualize_quantizer_group_sensitivity,
     visualize_pareto_curve,
     CANDIDATE_WITH_DTYPE as TORCH_CANDIDATE,

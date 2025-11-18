@@ -38,14 +38,14 @@
 
 from typing import TYPE_CHECKING
 from onnx import TensorProto
-import aimet_common.connected_graph.product
+from aimet_onnx.common.connected_graph.product import Product as _Product
 
 if TYPE_CHECKING:
     from aimet_onnx.meta.operations import Op
 
 
-class Product(aimet_common.connected_graph.product.Product):
-    """Subclass Product inherited from aimet_common.connected_graph.operation.Product"""
+class Product(_Product):
+    """Subclass Product inherited from aimet_onnx.common.connected_graph.operation.Product"""
 
     def __init__(self, name, shape):
         super().__init__(name, shape)

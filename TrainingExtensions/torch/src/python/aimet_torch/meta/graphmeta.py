@@ -39,7 +39,7 @@
 """For meta-data collected on a computational graph for PyTorch."""
 
 from collections import OrderedDict
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Winnow)

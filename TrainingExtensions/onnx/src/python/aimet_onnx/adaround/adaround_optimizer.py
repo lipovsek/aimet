@@ -49,7 +49,7 @@ from torch.utils.data import Dataset
 from packaging import version
 
 # Import AIMET specific modules
-from aimet_common.utils import AimetLogger
+from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.adaround.activation_sampler import ActivationSampler
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.adaround.utils import (

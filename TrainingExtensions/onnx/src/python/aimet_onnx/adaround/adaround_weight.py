@@ -45,7 +45,7 @@ from tqdm import tqdm
 import numpy as np
 
 # Import AIMET specific modules
-from aimet_common.utils import AimetLogger
+from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.adaround.adaround_tensor_quantizer import AdaroundTensorQuantizer
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.meta.utils import get_module_act_func_pair

@@ -40,8 +40,12 @@ from abc import ABC, abstractmethod
 from typing import Optional, Tuple, Type
 import torch
 
-from aimet_common.defs import QuantScheme, QuantizationDataType, MAP_ROUND_MODE_TO_PYMO
-from aimet_common.utils import AimetLogger, log_with_error_and_assert_if_false
+from aimet_torch.common.defs import (
+    QuantScheme,
+    QuantizationDataType,
+    MAP_ROUND_MODE_TO_PYMO,
+)
+from aimet_torch.common.utils import AimetLogger, log_with_error_and_assert_if_false
 from aimet_torch.utils import is_leaf_module, get_param_channel_axis
 
 

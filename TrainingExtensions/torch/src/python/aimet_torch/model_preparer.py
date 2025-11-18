@@ -135,7 +135,7 @@ import re
 from typing import Any, Optional, Dict, Union, List, Callable, Tuple
 import torch
 import torch.fx
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.utils import in_eval_mode
 from aimet_torch.utils import replace_modules
 import aimet_torch._base.nn.modules.custom as aimet_modules

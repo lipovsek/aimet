@@ -51,15 +51,15 @@ import contextlib
 from typing import Tuple, Union, List, Dict, Type, Optional, Iterator
 import torch
 
-from aimet_common.connected_graph.connectedgraph_utils import CG_SPLIT
-from aimet_common.connected_graph.connectedgraph import (
+from aimet_torch.common.connected_graph.connectedgraph_utils import CG_SPLIT
+from aimet_torch.common.connected_graph.connectedgraph import (
     ConnectedGraph as AimetCommonConnectedGraph,
 )
-from aimet_common.connected_graph.operation import (
+from aimet_torch.common.connected_graph.operation import (
     determine_preceding_op_input_product_index_in_multi_input_op,
 )
-from aimet_common.model_module import PytorchModelModule
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.model_module import PytorchModelModule
+from aimet_torch.common.utils import AimetLogger
 import aimet_torch._base.nn.modules.custom as aimet_modules
 from .operation import Op
 from .product import Product
