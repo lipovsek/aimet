@@ -1961,12 +1961,12 @@ class QuantizationSimModel:
             for input_name in node.input:
                 node_input_map[input_name] = node
 
+        if "Concat" in op_types_to_tie:
+            self._propagate_output_encodings({"Concat"}, node_input_map)
+
         self._propagate_input_encodings(
             {x for x in op_types_to_tie if x != "Concat"}, node_input_map
         )
-
-        if "Concat" in op_types_to_tie:
-            self._propagate_output_encodings({"Concat"}, node_input_map)
 
     def _propagate_output_encodings(
         self, op_types_to_tie: Set[str], node_input_map: Dict

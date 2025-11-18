@@ -3707,6 +3707,104 @@ class TestEncodingPropagation:
                             sim.qc_quantize_op_dict["output"].encodings[0],
                         )
 
+    def test_resize_concat(self, tmp_path: pathlib.Path):
+        """
+        Given:
+            [input1] -------> Resize -> q1 -+
+                                            |-> Concat ------> [output]
+            [input2] -----------------------+
+
+        When: Create quantsim with tie_encodings=True
+        Then:
+            [input1] -> q1 -> Resize -> q1 -+
+                                            |-> Concat -> q2 -> [output]
+            [input2] -> q2 -----------------+
+        """
+
+        class Model(torch.nn.Module):
+            def forward(self, x, y):
+                x = torch.nn.functional.interpolate(x, size=(50, 50), mode="bilinear")
+                return torch.cat((x, y), dim=1)
+
+        model = Model()
+        inputs = (torch.randn(1, 3, 24, 24), torch.randn(1, 3, 50, 50))
+
+        torch.onnx.export(
+            model,
+            inputs,
+            tmp_path / "resize_concat.onnx",
+            input_names=["input_1", "input_2"],
+            output_names=["output"],
+        )
+        onnx_model = onnx.load(tmp_path / "resize_concat.onnx")
+
+        with _apply_constraints(True):
+            sim = QuantizationSimModel(onnx_model, config_file="htp_v81")
+            sim.compute_encodings([make_dummy_input(onnx_model)])
+
+        assert (
+            sim.qc_quantize_op_dict["/Resize_output_0"]
+            is sim.qc_quantize_op_dict["input_1"]
+        )
+        assert sim.qc_quantize_op_dict["output"] is sim.qc_quantize_op_dict["input_2"]
+        assert (
+            sim.qc_quantize_op_dict["output"]
+            is not sim.qc_quantize_op_dict["/Resize_output_0"]
+        )
+
+        """
+        Given:
+                           +---> Conv -------+
+            [input] -------|                 |-> Concat -------> [output]
+                           +-> Resize -------+
+
+        When: Create quantsim with tie_encodings=True
+        Then:
+                           +---> Conv -> q4 -+
+            [input] -> q1 -|                 |-> Concat -> q4 -> [output]
+                           +-> Resize -> q1 -+
+        """
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = torch.nn.Conv2d(3, 3, 3)
+
+            def forward(self, input):
+                x1 = self.conv(input)
+                x2 = torch.nn.functional.interpolate(
+                    input, size=(x1.shape[2], x1.shape[3]), mode="bilinear"
+                )
+                return torch.cat((x1, x2), dim=1)
+
+        model = Model()
+        inputs = (torch.randn(1, 3, 24, 24),)
+        torch.onnx.export(
+            model,
+            inputs,
+            tmp_path / "conv_resize_concat.onnx",
+            input_names=["input"],
+            output_names=["output"],
+        )
+        onnx_model = onnx.load(tmp_path / "conv_resize_concat.onnx")
+
+        with _apply_constraints(True):
+            sim = QuantizationSimModel(onnx_model, config_file="htp_v81")
+            sim.compute_encodings([make_dummy_input(onnx_model)])
+
+        assert (
+            sim.qc_quantize_op_dict["/Resize_output_0"]
+            is sim.qc_quantize_op_dict["input"]
+        )
+        assert (
+            sim.qc_quantize_op_dict["/conv/Conv_output_0"]
+            is sim.qc_quantize_op_dict["output"]
+        )
+        assert (
+            sim.qc_quantize_op_dict["output"]
+            is not sim.qc_quantize_op_dict["/Resize_output_0"]
+        )
+
     def test_integer_concat(self):
         """
         When: Model contains unquantizable layers with op_type in quantsim.op_types_to_tie_qtzrs
