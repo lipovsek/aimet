@@ -3250,9 +3250,9 @@ class TestEncodingPropagation:
         """
         Given: model as below
 
-                   +-> q_in1 -> conv1 ---> relu1 -> q_out1 ------v
-          [input] -+                                          concat -> q_out2 -> [output]
-                   +-> q_in2 -> reshape -> permute --------------^
+                         +--> conv1 ---> relu1 -----> q3 -------------v
+          [input] -> q1 -+                                           concat -> q4 -> [output]
+                         +--> Mul ---> q2 ---> transpose -> permute --^
         """
 
         class Model(torch.nn.Module):
@@ -3262,7 +3262,8 @@ class TestEncodingPropagation:
                 self.relu1 = torch.nn.ReLU()
 
             def forward(self, x):
-                x1 = x2 = x
+                x1 = x
+                x2 = x * 2
                 x1 = self.conv1(x1)
                 x1 = self.relu1(x1)
                 x2 = torch.reshape(x2, (-1, 24, 24, 3))
@@ -3272,11 +3273,10 @@ class TestEncodingPropagation:
         """
         When: _apply_constraints(True)
 
-        Then: q_out1 and q_in2 are replaced with q_out3 as below
-
-                   +-> q_in1 -> conv1 ---> relu1 -----> **q_out2**- --------v
-          [input] -+                                                     concat -> q_out2 -> [output]
-                   +-> **q_out2** -> reshape -> transpose -> permute -------^
+        Then:
+                         +--> conv1 ---> relu1 -----> **q4**- --------v
+          [input] -> q1 -+                                           concat -> q4 -> [output]
+                         +--> Mul -> **q4** -> transpose -> permute --^
         """
         pt_model = Model().eval()
         dummy_input = torch.randn(1, 3, 24, 24)
@@ -3286,13 +3286,14 @@ class TestEncodingPropagation:
             sim = QuantizationSimModel(model)
             sim.compute_encodings([dummy_input])
 
-            assert _compare_encodings(
-                sim.qc_quantize_op_dict["/relu1/Relu_output_0"].encodings[0],
-                sim.qc_quantize_op_dict["output"].encodings[0],
+            assert (
+                sim.qc_quantize_op_dict["/relu1/Relu_output_0"]
+                == sim.qc_quantize_op_dict["/Mul_output_0"]
+                == sim.qc_quantize_op_dict["output"]
             )
-            assert _compare_encodings(
-                sim.qc_quantize_op_dict["input"].encodings[0],
-                sim.qc_quantize_op_dict["output"].encodings[0],
+            assert (
+                sim.qc_quantize_op_dict["input"]
+                is not sim.qc_quantize_op_dict["output"]
             )
 
     def test_concat_tree(self, tmp_path: pathlib.Path):
@@ -3354,27 +3355,20 @@ class TestEncodingPropagation:
                     )
         """
         Given:
-            Sigmoid -------+
-            Sigmoid -------+-> Transpose -> Concat -------+
-            Sigmoid -------+                              |
-                                             (...) -------+-> Concat -------> ...
+            x ---> Sigmoid -------+
+            y ---> Sigmoid -------+-> Concat -> Transpose -------+
+            z -+-> Sigmoid -------+                              |
+               +-------------------------------------------------+-> Concat ------->
 
         When: Create quantsim with HTP config file
         Then:
-            Sigmoid -> Q2 -+
-            Sigmoid -> Q3 -+-> Transpose -> Concat -> Q1 -+
-            Sigmoid -> Q4 -+                              |
-                                             (...) -> Q1 -+-> Concat -> Q1 -> ...
-
+            x -> q1 ---> Sigmoid -> q4 -+
+            y -> q2 ---> Sigmoid -> q5 -+-> Concat -> q7 -> Transpose -+
+            z -> q3 -+-> Sigmoid -> q6 -+                              |
+                     +-------------------------------------------------+-> Concat -> q7 ->
         """
 
         class Model(torch.nn.Module):
-            def __init__(self):
-                super(Model, self).__init__()
-                self.sigmoid1 = torch.nn.Sigmoid()
-                self.sigmoid2 = torch.nn.Sigmoid()
-                self.sigmoid3 = torch.nn.Sigmoid()
-
             def forward(self, x, y, z):
                 out = torch.cat(
                     (
@@ -3383,7 +3377,7 @@ class TestEncodingPropagation:
                         torch.nn.functional.sigmoid(z),
                     )
                 )
-                return torch.cat((x, out.transpose(0, 1)), dim=1)
+                return torch.cat((z, out.transpose(0, 1)), dim=1)
 
         model = Model()
         inputs = (torch.randn(10, 10), torch.randn(10, 10), torch.randn(10, 10))
@@ -3391,7 +3385,7 @@ class TestEncodingPropagation:
             model,
             inputs,
             tmp_path / "concat_tree.onnx",
-            input_names=["input1", "input2", "input3"],
+            input_names=["x", "y", "z"],
             output_names=["output"],
         )
 
@@ -3401,12 +3395,12 @@ class TestEncodingPropagation:
             )
 
         assert (
-            sim.qc_quantize_op_dict["input1"]
-            == sim.qc_quantize_op_dict["/Concat_output_0"]
-            == sim.qc_quantize_op_dict["output"]
+            sim.qc_quantize_op_dict["/Concat_output_0"]
+            is sim.qc_quantize_op_dict["output"]
         )
+
         assert (
-            sim.qc_quantize_op_dict["input1"]._encoding_min_max_fixed_vals
+            sim.qc_quantize_op_dict["z"]._encoding_min_max_fixed_vals
             == sim.qc_quantize_op_dict["/Concat_output_0"]._encoding_min_max_fixed_vals
             == sim.qc_quantize_op_dict["output"]._encoding_min_max_fixed_vals
             == None

@@ -2018,6 +2018,9 @@ class QuantizationSimModel:
                     else:
                         src_name = inp.name
 
+                    if len(self.connected_graph.get_product(src_name).consumers) > 1:
+                        continue
+
                     src_qtzrs[src_name] = src_qtzr
 
                     if inp.producer and (
