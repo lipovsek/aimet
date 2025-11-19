@@ -18,7 +18,7 @@ def _qdq_op1_op2_qdq(
     """
     (input) -> QDQ -> op1 -> op2 -> QDQ -> (output)
     """
-    output_scale = 0.2
+    input_scale = output_scale = 0.1
     model = onnx.helper.make_model(
         ir_version=10,
         opset_imports=[onnx.helper.make_operatorsetid("", 13)],
@@ -83,7 +83,7 @@ def _qdq_op1_op2_qdq(
                     name="input_scale",
                     data_type=onnx.TensorProto.FLOAT,
                     dims=[],
-                    vals=[0.1],
+                    vals=[input_scale],
                 ),
                 onnx.helper.make_tensor(
                     name="input_zero_point",
@@ -316,3 +316,134 @@ def concat_qdq(
             opset_version=13,
         )
         return onnx.load(path), (concat_output_scale,)
+
+
+def transpose_multi_consumer():
+    scale = 0.01
+    sigmoid_output_scale = 1 / 255
+
+    class Model(torch.nn.Module):
+        def forward(self, x):
+            x = x.transpose(0, 1)
+            x = torch.fake_quantize_per_tensor_affine(
+                x, scale=scale, zero_point=128, quant_min=0, quant_max=255
+            )
+            out1 = x[:, 0::2]
+            out1 = torch.fake_quantize_per_tensor_affine(
+                out1, scale=scale, zero_point=128, quant_min=0, quant_max=255
+            )
+            out2 = x[:, 1::2]
+            out2 = torch.fake_quantize_per_tensor_affine(
+                out2, scale=scale, zero_point=128, quant_min=0, quant_max=255
+            )
+            out3 = torch.nn.functional.sigmoid(x)
+            out3 = torch.fake_quantize_per_tensor_affine(
+                out3,
+                scale=sigmoid_output_scale,
+                zero_point=128,
+                quant_min=0,
+                quant_max=255,
+            )
+            return out1, out2, out3
+
+    model = Model()
+    dummy_input = torch.randn(100, 100)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = os.path.join(tmp_dir, "transpose_multi_consumer.onnx")
+        torch.onnx.export(
+            model,
+            (dummy_input,),
+            path,
+            input_names=["input"],
+            output_names=["output1", "output2", "output3"],
+            opset_version=13,
+        )
+        return onnx.load(path), (scale, scale, sigmoid_output_scale)
+
+
+def identity_tree():
+    model = onnx.helper.make_model(
+        ir_version=10,
+        opset_imports=[onnx.helper.make_operatorsetid("", 13)],
+        graph=onnx.helper.make_graph(
+            name="identity_tree_graph",
+            inputs=[
+                onnx.helper.make_tensor_value_info(
+                    "input", onnx.TensorProto.FLOAT, shape=[1, 3, 224, 224]
+                )
+            ],
+            outputs=[
+                onnx.helper.make_tensor_value_info(
+                    "output1", onnx.TensorProto.FLOAT, shape=[1, 3, 224, 224]
+                ),
+                onnx.helper.make_tensor_value_info(
+                    "output2", onnx.TensorProto.FLOAT, shape=[1, 3, 224, 224]
+                ),
+            ],
+            nodes=[
+                onnx.helper.make_node(
+                    "QuantizeLinear",
+                    inputs=["input", "scale", "zero_point"],
+                    outputs=["input_q"],
+                    name="input_q",
+                ),
+                onnx.helper.make_node(
+                    "DequantizeLinear",
+                    inputs=["input_q", "scale", "zero_point"],
+                    outputs=["input_dq"],
+                    name="input_dq",
+                ),
+                onnx.helper.make_node(
+                    "Identity",
+                    inputs=["input_dq"],
+                    outputs=["id1_out"],
+                    name="id1",
+                ),
+                onnx.helper.make_node(
+                    "Identity",
+                    inputs=["input_dq"],
+                    outputs=["id2_out"],
+                    name="id2",
+                ),
+                onnx.helper.make_node(
+                    "QuantizeLinear",
+                    inputs=["id1_out", "scale", "zero_point"],
+                    outputs=["id1_out_q"],
+                    name="id1_out_q",
+                ),
+                onnx.helper.make_node(
+                    "DequantizeLinear",
+                    inputs=["id1_out_q", "scale", "zero_point"],
+                    outputs=["output1"],
+                    name="id1_out_dq",
+                ),
+                onnx.helper.make_node(
+                    "QuantizeLinear",
+                    inputs=["id2_out", "scale", "zero_point"],
+                    outputs=["id2_out_q"],
+                    name="id2_out_q",
+                ),
+                onnx.helper.make_node(
+                    "DequantizeLinear",
+                    inputs=["id2_out_q", "scale", "zero_point"],
+                    outputs=["output2"],
+                    name="id2_out_dq",
+                ),
+            ],
+            initializer=[
+                onnx.helper.make_tensor(
+                    name="scale",
+                    data_type=onnx.TensorProto.FLOAT,
+                    dims=[],
+                    vals=[0.1],
+                ),
+                onnx.helper.make_tensor(
+                    name="zero_point",
+                    data_type=onnx.TensorProto.UINT8,
+                    dims=[],
+                    vals=[128],
+                ),
+            ],
+        ),
+    )
+    return model, (0.1, 0.1)

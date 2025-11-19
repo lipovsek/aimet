@@ -560,7 +560,7 @@ class QuantizationSimModel:
                 enc1[key] == enc2[key] for key in enc1 if key != "name"
             )
 
-        for output_name in list(excess_encodings):
+        for output_name in excess_encodings:
             producer = producers.get(output_name)
             output_encoding = encodings[output_name]
 
@@ -579,15 +579,22 @@ class QuantizationSimModel:
                     sim.qc_quantize_op_dict.get(input_name)
                     and sim.qc_quantize_op_dict[input_name].enabled
                     and (
-                        input_name not in encodings
-                        or _is_encoding_equal(encodings[input_name], output_encoding)
-                    )
-                    and len(consumers[input_name]) == 1
-                    and all(
-                        _is_encoding_equal(
-                            encodings.get(other_output, {}), output_encoding
+                        (
+                            input_name not in encodings
+                            and len(consumers[input_name]) == 1
+                            and all(
+                                _is_encoding_equal(
+                                    encodings.get(other_output, {}), output_encoding
+                                )
+                                for other_output in producer.output
+                            )
                         )
-                        for other_output in producer.output
+                        or (
+                            input_name in encodings
+                            and _is_encoding_equal(
+                                encodings[input_name], output_encoding
+                            )
+                        )
                     )
                 ):
                     encodings[input_name] = {
