@@ -51,8 +51,12 @@ from aimet_torch.utils import get_param_channel_axis
 from aimet_torch.v2.quantization.base import QuantizerBase
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.nn import BaseQuantizationMixin
-from aimet_torch.v2.quantization.float.quantizer import FloatQuantizeDequantize
-from aimet_torch.v2._builder import _V2LazyQuantizer
+from aimet_torch.v2.quantization.affine import QuantizeDequantize
+from aimet_torch.v2.quantization.float import FloatQuantizeDequantize
+from aimet_torch.v2.quantization.encoding_analyzer import (
+    MinMaxEncodingAnalyzer,
+    TfEnhancedEncodingAnalyzer,
+)
 
 from aimet_torch.v2.utils import flatten_list, has_no_quantizers
 from aimet_torch.v2.cg_utils import ConnectedGraphTraverser
@@ -386,7 +390,6 @@ class MpHandler:
         candidate: Precision,
         quant_scheme: QuantScheme,
         symm: bool,
-        round_mode: str = "nearest",
         tensor_shape: tuple = None,
         ch_axis: int = None,
     ):
@@ -396,44 +399,52 @@ class MpHandler:
         :param candidate: mixed precision candidate
         """
         if candidate.data_type == QuantizationDataType.float:
+            if candidate.bitwidth == 16:
+                exponent_bits = 5
+                mantissa_bits = 10
+            elif candidate.bitwidth == 8:
+                exponent_bits = 4
+                mantissa_bits = 3
+            else:
+                raise RuntimeError(
+                    "FP16 and FP8 are the only supported float quantization types. "
+                    f"Got bitwidth={candidate.bitwidth}."
+                )
+
             if not isinstance(quantizer, FloatQuantizeDequantize):
                 # convert to float QDQ
-                quantizer = _V2LazyQuantizer(
-                    candidate.bitwidth,
-                    round_mode,
-                    quant_scheme,
-                    symm,
-                    enabled_by_default=True,
-                    data_type=QuantizationDataType.float,
-                    input_shape=tensor_shape,
-                    ch_axis=ch_axis,
-                ).realize()
+                quantizer = FloatQuantizeDequantize(exponent_bits, mantissa_bits)
 
-            if candidate.bitwidth == 16:
-                quantizer.exponent_bits = 5
-                quantizer.mantissa_bits = 10
-            elif candidate.bitwidth == 8:
-                quantizer.exponent_bits = 4
-                quantizer.mantissa_bits = 3
-            else:
-                assert False, (
-                    "FP16 and FP8 are the only supported float quantization types."
-                )
+            quantizer.exponent_bits = exponent_bits
+            quantizer.mantissa_bits = mantissa_bits
         else:
-            if isinstance(quantizer, FloatQuantizeDequantize):
+            scale_shape = tuple()
+            if tensor_shape is not None and ch_axis is not None:
+                ch_axis = len(tensor_shape) + ch_axis if ch_axis < 0 else ch_axis
+                scale_shape = tuple(
+                    dim if axis == ch_axis else 1
+                    for axis, dim in enumerate(tensor_shape)
+                )
+
+            encoding_analyzer_cls = (
+                MinMaxEncodingAnalyzer
+                if quant_scheme == QuantScheme.post_training_tf
+                else TfEnhancedEncodingAnalyzer
+            )
+            encoding_analyzer = encoding_analyzer_cls(shape=scale_shape)
+
+            if not isinstance(quantizer, QuantizeDequantize):
                 # convert to int QDQ
-                quantizer = _V2LazyQuantizer(
-                    candidate.bitwidth,
-                    round_mode,
-                    quant_scheme,
-                    symm,
-                    enabled_by_default=True,
-                    data_type=QuantizationDataType.int,
-                    input_shape=tensor_shape,
-                    ch_axis=ch_axis,
-                ).realize()
+                quantizer = QuantizeDequantize(
+                    shape=scale_shape,
+                    bitwidth=candidate.bitwidth,
+                    symmetric=symm,
+                    encoding_analyzer=encoding_analyzer,
+                )
 
             quantizer.bitwidth = candidate.bitwidth
+            if not isinstance(quantizer.encoding_analyzer, encoding_analyzer_cls):
+                quantizer.encoding_analyzer = encoding_analyzer
 
         return quantizer
 
@@ -699,7 +710,6 @@ class MpHandler:
                             request.input_candidates[idx],
                             self._sim._quant_scheme,
                             False,
-                            self._sim._rounding_mode,
                         )
 
             if request.param_candidate:
@@ -732,7 +742,6 @@ class MpHandler:
                                     module_type,
                                     self._get_param_is_symm_fields.get("defaults"),
                                 ),
-                                self._sim._rounding_mode,
                                 tensor_shape=tuple(module.__getattr__(param_key).shape),  # pylint: disable=unnecessary-dunder-call
                                 ch_axis=ch_axis,
                             )
@@ -748,7 +757,6 @@ class MpHandler:
                                 request.output_candidates[idx],
                                 self._sim._quant_scheme,
                                 False,
-                                self._sim._rounding_mode,
                             )
                         )
 
