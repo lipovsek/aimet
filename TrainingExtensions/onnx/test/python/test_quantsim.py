@@ -6089,16 +6089,16 @@ def test_from_onnx_qdq_split_op():
             partial(
                 concat_qdq,
                 mul_input_quantized=arg0,
-                mul_output_quantized=False,
-                reshape_input_quantized=arg1,
-                reshape_output_quantized=arg2,
+                mul_output_quantized=arg1,
+                reshape_input_quantized=arg2,
+                reshape_output_quantized=arg3,
                 concat_output_quantized=True,
             )
-            for arg0, arg1, arg2 in itertools.product([True, False], repeat=3)
+            for arg0, arg1, arg2, arg3 in itertools.product([True, False], repeat=4)
         ),
     ],
 )
-@pytest.mark.parametrize("tie_encodings", [False])
+@pytest.mark.parametrize("tie_encodings", [False, True])
 def test_from_onnx_qdq_encoding_delegation(
     model_factory: Callable[[], tuple[onnx.ModelProto, tuple[float, ...]]],
     tie_encodings: bool,
@@ -6168,7 +6168,7 @@ def test_from_onnx_qdq_encoding_delegation(
         ),
     ],
 )
-@pytest.mark.parametrize("tie_encodings", [False])
+@pytest.mark.parametrize("tie_encodings", [False, True])
 def test_from_onnx_qdq_excess_encodings(
     model_factory: Callable[[], tuple[onnx.ModelProto, tuple[float, ...]]],
     tie_encodings: bool,

@@ -37,9 +37,8 @@
 """Custom QcQuantizeOp to quantize weights and activations using ONNXRuntime"""
 
 # pylint: disable=too-many-lines
-from __future__ import (
-    annotations,
-)  # Needed to typehint private class _EncodingMismatchInfo
+from __future__ import annotations
+import copy
 from dataclasses import dataclass
 from typing import Union, List, Optional, Dict, Tuple
 import numpy as np
@@ -117,6 +116,28 @@ class QcQuantizeOp:
         self.data_type = QuantizationDataType.int
         self.tensor_quantizer_params = tensor_quantizer_params
         self._encoding_min_max_fixed_vals = None
+
+    def _copy(self) -> QcQuantizeOp:
+        # pylint: disable=protected-access
+        quant_info = libquant_info.QcQuantizeInfo()
+        quant_info.tensorQuantizerRef = self.quant_info.tensorQuantizerRef
+        quant_info.opMode = self.quant_info.opMode
+        quant_info.useSymmetricEncoding = self.quant_info.useSymmetricEncoding
+        quant_info.enabled = self.quant_info.enabled
+        quant_info.isIntDataType = self.quant_info.isIntDataType
+        quant_info.usePerChannelMode = self.quant_info.usePerChannelMode
+        quant_info.channelAxis = self.quant_info.channelAxis
+        quant_info.blockAxis = self.quant_info.blockAxis
+        quant_info.blockSize = self.quant_info.blockSize
+        quant_info.name = self.quant_info.name
+        tensor_quantizer_params = copy.deepcopy(self.tensor_quantizer_params)
+
+        qc_quantize_op = copy.copy(self)
+        qc_quantize_op.quant_info = quant_info
+        qc_quantize_op.tensor_quantizer_params = tensor_quantizer_params
+        qc_quantize_op._tensor_quantizer = qc_quantize_op._build_tensor_quantizer()
+
+        return qc_quantize_op
 
     def is_encoding_frozen(self) -> bool:
         """Returns is_encoding_frozen var"""

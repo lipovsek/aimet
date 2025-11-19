@@ -617,6 +617,14 @@ class QuantizationSimModel:
             name: enc for name, enc in encodings.items() if name not in delegatable
         }
 
+        # Make sure each encoding is associated with only one quantizer
+        sim.set_quantizers(
+            {
+                name: qtzr._copy() if name in encodings else qtzr
+                for name, qtzr in sim.qc_quantize_op_dict.items()
+            }
+        )
+
         lpbq_weights = {
             name: enc
             for name, enc in encodings.items()
