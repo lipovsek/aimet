@@ -70,6 +70,7 @@ __all__ = [
     "optimize_module",
 ]
 
+_GPU_ALLOCATION_MARGIN = 0.8
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SeqMse)
 
 
@@ -433,6 +434,10 @@ class SequentialMse(SequentialMseBase):
         # Compute block-wise reconstruction loss using batched matrix multiplication
         out_channels, in_channels = w.shape
         num_blocks = in_channels // block_size
+        N = x.reshape(-1, in_channels).shape[0]
+        dtype_size = (
+            torch.finfo(x.dtype).bits // 8
+        )  # bytes per element (i.e. float32 = 4)
 
         # Reshape and permute x and w
         x = x.reshape(-1, num_blocks, block_size).permute(1, 0, 2)
@@ -440,13 +445,24 @@ class SequentialMse(SequentialMseBase):
         xq = xq.reshape(-1, num_blocks, block_size).permute(1, 0, 2)
         wq = wq.reshape(out_channels, num_blocks, block_size).permute(1, 2, 0)
 
-        try:
-            # Block-wise batched matmul
-            xw = torch.bmm(x, w)  # (NUM_BLK, N, Cout)
-            xqwq = torch.bmm(xq, wq)  # (NUM_BLK, N, Cout)
+        def _sequential_impl():
+            """Compute outputs and loss sequentially block-by-block (slow, less memory usage)"""
+            block_losses = []
+            for xb, wb, xqb, wqb in zip(x, w, xq, wq):
+                xqwq = torch.matmul(xqb, wqb)  # (N, C_out)
+                xw = torch.matmul(xb, wb)  # (N, C_out)
+                block_losses.append(cls.compute_recon_loss(xqwq, xw, params))
+
+            return torch.stack(block_losses, dim=-1)  # (C_out, NUM_BLK)
+
+        def _vectorized_impl() -> torch.Tensor:
+            """Compute outputs and loss for all blocks at once (fast, high memory usage)"""
+            xw = torch.bmm(x, w)  # (NUM_BLK, N, C_out)
+            xqwq = torch.bmm(xq, wq)  # (NUM_BLK, N, C_out)
+
             # Restore batch dimension
-            xw = xw.permute(1, 2, 0)  # (N, Cout, NUM_BLK)
-            xqwq = xqwq.permute(1, 2, 0)  # (N, Cout, NUM_BLK)
+            xw = xw.permute(1, 2, 0)  # (N, C_out, NUM_BLK)
+            xqwq = xqwq.permute(1, 2, 0)  # (N, C_out, NUM_BLK)
 
             loss_fn = params.get_loss_fn()
             return (
@@ -455,19 +471,33 @@ class SequentialMse(SequentialMseBase):
                 .view(out_channels, num_blocks)
             )
 
-        except RuntimeError as e:
-            if x.device.type == "cuda" and "CUDA out of memory" in str(e):
-                torch.cuda.empty_cache()
+        # CPU fallback using batched matmul (vectorized helper)
+        if x.device.type == "cpu":
+            return _vectorized_impl()
 
-                # Sequential fallback: compute per-block loss directly
-                block_losses = []
-                for xb, wb, xqb, wqb in zip(x, w, xq, wq):
-                    xqwq = torch.matmul(xqb, wqb)  # (N, Cout)
-                    xw = torch.matmul(xb, wb)  # (N, Cout)
-                    block_losses.append(cls.compute_recon_loss(xqwq, xw, params))
-                return torch.stack(block_losses, dim=-1)  # (Cout, NUM_BLK)
-            else:
-                raise e  # Not CUDA related error
+        # Dynamic memory estimate for batched matmul using torch.bmm
+        output_size = num_blocks * N * out_channels * dtype_size
+        total_dynamic = output_size * 2  # For both xq and xqwq
+
+        # Check available GPU memory to decide between vectorized or sequential implementation
+        avail_mem = torch.cuda.mem_get_info(x.device)[0] - torch.cuda.memory_reserved(
+            x.device
+        )
+
+        if total_dynamic < _GPU_ALLOCATION_MARGIN * avail_mem:
+            try:
+                return _vectorized_impl()
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                return _sequential_impl()
+            except RuntimeError as e:
+                if x.device.type == "cuda" and "CUDA out of memory" in str(e):
+                    torch.cuda.empty_cache()
+                    return _sequential_impl()
+                else:
+                    raise  # Not CUDA related error
+        else:
+            return _sequential_impl()
 
     @classmethod
     def _compute_conv_loss(
