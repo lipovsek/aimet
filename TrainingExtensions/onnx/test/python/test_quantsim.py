@@ -48,6 +48,7 @@ from functools import partial
 import pathlib
 import time
 import random
+import sys
 from typing import Callable
 
 from onnx.external_data_helper import uses_external_data, _get_all_tensors
@@ -5181,6 +5182,8 @@ def test_onnx_qdq_opset_compatibility(
     """
     # Allow off-by-1 error
     atol = sim.qc_quantize_op_dict["output"].get_encodings()[0].delta
+    if sys.platform != "linux":
+        atol *= 2  # Windows tends to have larger numerical differences
     rtol = 1e-3
     sess = ort.InferenceSession(
         onnx_qdq_model.SerializeToString(), sess_options=sess_options

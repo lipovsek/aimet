@@ -217,7 +217,6 @@ def split_qdq(
     dummy_input = torch.randn(1, 6, 224, 224)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_dir = "."
         path = os.path.join(tmp_dir, "split_qdq.onnx")
         torch.onnx.export(
             model,
@@ -307,7 +306,6 @@ def concat_qdq(
     )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_dir = "."
         path = os.path.join(tmp_dir, "concat_qdq.onnx")
         torch.onnx.export(
             model,
