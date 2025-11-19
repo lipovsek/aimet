@@ -52,7 +52,6 @@ import onnx
 from onnx import helper, numpy_helper
 from onnx.utils import Extractor
 from onnx.external_data_helper import (
-    convert_model_to_external_data,
     load_external_data_for_model,
 )
 from onnxruntime import SessionOptions, InferenceSession
@@ -715,15 +714,16 @@ class LazyExtractor(Extractor):
         self.model_dir = tempfile.mkdtemp()
         model_path = os.path.join(self.model_dir, "model.onnx")
 
-        # Serialize weights to external data
-        convert_model_to_external_data(
+        # Writes the .onnx file and external weight files to disk and
+        # the same model object is restored with weights embedded so that it is fully self-contained again.
+        save_model_with_external_weights(
             model,
+            model_path,
+            location=Path(model_path).name + ".data",
             size_threshold=1024**2,
             all_tensors_to_one_file=False,
-            location=self.model_dir,
             convert_attribute=True,
         )
-        onnx.save_model(model, model_path)
 
         # Load model without external data for extraction
         self.model_with_no_data = onnx.load_model(model_path, load_external_data=False)
