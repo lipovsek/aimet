@@ -63,9 +63,18 @@ tests:
     adaround_iters: 500
 
   # --------------------------------------------------------------------------
-  # Future tests can be added here:
-  # - name: quantsim_int4
-  # - name: cross_layer_equalization
-  # - name: batch_norm_folding
-  # etc.
+  # Test 5: Automatic Mixed-Precision (INT8 + FP16, Fast)
   # --------------------------------------------------------------------------
+  # Uses AIMET's automatic mixed precision with SQNR-based Phase 1 pruning
+  # for fast candidate elimination, followed by accuracy-based Phase 2 selection
+
+  - name: amp_int8_fp16_fast
+    feature: mixed_precision
+    candidates: int8_fp16
+    enable_sqnr_pruning: true
+    phase1_samples: 64
+    phase2_samples: 256
+    allowed_accuracy_drop: 0.01
+    config_file: htp_v79
+    calib_samples: 256
+    eval_samples: 256

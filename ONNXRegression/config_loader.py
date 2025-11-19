@@ -260,7 +260,7 @@ def validate_config(config: Dict[str, Any]) -> None:
         )
 
     # Validate feature is supported
-    supported_features = ["quantsim", "lite_mp", "adaround"]
+    supported_features = ["quantsim", "lite_mp", "adaround", "mixed_precision"]
     if config["feature"] not in supported_features:
         raise ValueError(
             f"Unsupported feature: {config['feature']}\n"

@@ -44,6 +44,7 @@ from ONNXRegression.report.report_writer import write_csv, write_html
 from ONNXRegression.features.quantsim_runner import run_quantsim
 from ONNXRegression.features.lite_mp_runner import run_lite_mp
 from ONNXRegression.features.adaround_runner import run_adaround
+from ONNXRegression.features.mixed_precision_runner import run_mixed_precision
 from ONNXRegression.config_loader import load_config, validate_config
 from ONNXRegression.baseline_comparison import (
     validate_quantization_quality,
@@ -56,6 +57,7 @@ FEATURE_RUNNERS = {
     "quantsim": run_quantsim,
     "lite_mp": run_lite_mp,
     "adaround": run_adaround,
+    "mixed_precision": run_mixed_precision,
 }
 
 os.environ.setdefault("TORCH_HOME", "./torch_cache")
