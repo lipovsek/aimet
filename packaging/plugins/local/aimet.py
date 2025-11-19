@@ -218,7 +218,7 @@ def optional_dependencies() -> dict[str, list[str]]:
             "pytest-xdist",
             "pytest-github-report",
             "pytorch-ignite",
-            "safetensors",
+            "safetensors<=0.5.3",
             "torchvision",
             "transformers<4.52.2",
             "accelerate<1.10.0",
