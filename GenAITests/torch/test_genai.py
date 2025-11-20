@@ -68,7 +68,7 @@ def test_llm_quantization(test_parameters):
             capture_intermediate_data=profiler_capture_intermediate_data,
         ) as quantization_profiler:
             train_dataset = dataset_cls.load_encoded_dataset(
-                tokenizer, sequence_length, **dataset_kwargs
+                tokenizer, context_length, **dataset_kwargs
             )
             recipe_cls.apply(quantsim, generator, train_dataset, **recipe_kwargs)
 

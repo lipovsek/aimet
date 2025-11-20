@@ -51,7 +51,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from aimet_torch.v2.utils import default_forward_fn, patch_attr
-from aimet_torch.utils import change_tensor_device_placement
+from aimet_torch.utils import change_tensor_device_placement, nested_map, get_device
 from aimet_torch import QuantizationSimModel, utils
 
 logger = utils.AimetLogger.get_area_logger(utils.AimetLogger.LogAreas.Utils)
@@ -61,7 +61,9 @@ def change_tensor_and_cache_device_placement(inputs, device, cache_movement_fn=N
     """This function moves all tensors and huggingface Cache objects to the provided device"""
 
     # Move all tensors to the provided device
-    moved_inputs = change_tensor_device_placement(inputs, device)
+    moved_inputs = nested_map(
+        inputs, lambda x: x.to(device=device) if isinstance(x, torch.Tensor) else x
+    )
     # At this point everything except the Cache objects should be placed on the correct device
 
     # Helper function to find Cache objects in the provided inputs
@@ -299,7 +301,10 @@ class BlockwiseSampler:
 
         hook = self.blocks[0].register_forward_pre_hook(hook_fn, with_kwargs=True)
         try:
-            self.forward_fn(self.sim.model, sample)
+            placed_sample = change_tensor_and_cache_device_placement(
+                inputs=sample, device=get_device(self.sim.model)
+            )
+            self.forward_fn(self.sim.model, placed_sample)
         except StopForwardExceptionWithInput as e:
             # pylint: disable=used-before-assignment
             hook.remove()

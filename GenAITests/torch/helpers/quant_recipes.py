@@ -6,26 +6,54 @@
 from abc import ABC, abstractmethod
 import itertools
 from tqdm import tqdm
-from copy import deepcopy
-import functools
 import torch
-from torch.utils.data import DataLoader, Subset, Dataset
+from torch.utils.data import DataLoader, Dataset
 
 from aimet_torch.experimental.adascale.adascale_optimizer import apply_adascale
 from aimet_torch.experimental.spinquant.spinquant_optimizer import apply_spinquant
-from aimet_torch.quantization.affine import QuantizeDequantize
 from aimet_torch.v2.nn.true_quant import QuantizedConv2d, QuantizedLinear
 from aimet_torch.v2.quantsim.config_utils import (
     set_grouped_blockwise_quantization_for_weights,
 )
-from aimet_torch.v2.utils import remove_all_quantizers, patch_attr
+from aimet_torch.v2.utils import remove_all_quantizers
 from aimet_torch import QuantizationSimModel
-from aimet_torch.utils import place_model
-from aimet_torch.v2.seq_mse import apply_seq_mse, SeqMseParams
+from aimet_torch.utils import change_tensor_device_placement
+from aimet_torch.v2.seq_mse import apply_seq_mse
 from aimet_torch.experimental.omniquant import apply_omniquant
 
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.generator import Generator
+
+
+def _prefill_inputs(
+    generator: Generator,
+    dataloader: DataLoader,
+    num_iterations: int = None,
+    device: torch.device = None,
+):
+    inputs = []
+    if num_iterations is not None:
+        dataloader = itertools.islice(dataloader, num_iterations)
+
+    with remove_all_quantizers(generator.model):
+        for sample in tqdm(
+            dataloader,
+            total=num_iterations if num_iterations else len(dataloader),
+            desc="Pre-filling calibration data",
+        ):
+            inputs.extend(
+                change_tensor_device_placement(
+                    list(
+                        generator.prefill(
+                            sample["input_ids"].to(device=generator.device),
+                            sample["attention_mask"].to(device=generator.device),
+                        )
+                    ),
+                    device=device if device else generator.device,
+                )
+            )
+
+    return inputs
 
 
 def _compute_encodings(
@@ -138,13 +166,8 @@ class SeqMSE(QuantizationTechnique):
     def apply(
         quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
     ):
-        def callback(model, inputs):
-            with patch_attr(generator, "model", model):
-                generator(**inputs)
-
-        sliced_dataloader = itertools.islice(dataloader, 20)
         apply_seq_mse(
-            quantsim, sliced_dataloader, num_candidates=20, forward_fn=callback
+            quantsim, _prefill_inputs(generator, dataloader, 20), num_candidates=20
         )
         _compute_encodings(quantsim, generator, dataloader, num_iterations=20)
 
@@ -190,24 +213,10 @@ class AdaScale(QuantizationTechnique):
         num_batches: int = 20,
         num_iterations: int = 1500,
     ):
-        def collate_fn(sample):
-            return {
-                "input_ids": sample[0]["input_ids"],
-                "attention_mask": sample[0]["attention_mask"],
-            }
-
         apply_adascale(
             quantsim,
-            DataLoader(
-                Subset(dataloader, range(num_batches)),
-                batch_size=1,
-                collate_fn=collate_fn,
-                shuffle=False,
-            ),
-            lambda model, inputs: generator(
-                inputs["input_ids"].to(device=generator.device), use_cache=False
-            ),
-            num_iterations,
+            _prefill_inputs(generator, dataloader, 20, torch.device("cpu")),
+            num_iterations=num_iterations,
         )
 
         _compute_encodings(quantsim, generator, dataloader, num_iterations=20)
@@ -266,16 +275,6 @@ class SpinQuant(QuantizationTechnique):
     def apply(
         quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
     ):
-        # Set linear layers to 8 bit to more easily observe effects of SpinQuant
-        for quant_module in quantsim.qmodules():
-            if isinstance(quant_module, torch.nn.Linear):
-                quant_module.param_quantizers["weight"] = QuantizeDequantize(
-                    quant_module.param_quantizers["weight"].shape,
-                    bitwidth=8,
-                    symmetric=True,
-                )
-                quant_module.param_quantizers["weight"].to(quant_module.weight.device)
-
         # Untie embed_tokens and lm_head if needed
         if (
             quantsim.model.model.model.embed_tokens.weight
@@ -289,4 +288,4 @@ class SpinQuant(QuantizationTechnique):
             quantsim.model.model.lm_head.weight = new_weight
 
         apply_spinquant(model=quantsim.model.model)
-        _compute_encodings(quantsim, generator, dataloader, num_iterations=40)
+        _compute_encodings(quantsim, generator, dataloader, num_iterations=20)

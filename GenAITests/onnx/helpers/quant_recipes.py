@@ -73,7 +73,7 @@ class RemoveQuantization(QuantizationTechnique):
     def apply(
         quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
     ):
-        quantsim.model = quantsim.remove_quantizers(quantsim.model)
+        quantsim.model.model = quantsim.remove_quantizers(quantsim.model.model)
         quantsim._rebuild_session()
 
 
