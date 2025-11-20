@@ -273,10 +273,7 @@ class StridedSlice(torch.nn.Module):
         Forward-pass routine for StridedSlice op
         """
         tensor, slice_ranges = args
-        slice_params = []
-        for slice_range in slice_ranges:
-            slice_params.append(slice(*slice_range))
-        return tensor[slice_params]
+        return tensor[tuple(slice(*slice_range) for slice_range in slice_ranges)]
 
 
 class ChannelShuffle(torch.nn.Module):
