@@ -272,14 +272,22 @@ autosummary_generate = True
 # contains a list of modules to be mocked up which are not available during docs build time
 autodoc_mock_imports = []
 
-# _aimet_common
-autodoc_mock_imports.append("_aimet_common.libpymo")
-
 # aimet_torch
-autodoc_mock_imports.extend(["_aimet_common.aimet_tensor_quantizer", "_aimet_common.AimetTensorQuantizer"])
+autodoc_mock_imports.extend(
+    [
+        "aimet_torch.common.aimet_tensor_quantizer",
+        "aimet_torch.common.AimetTensorQuantizer",
+        "aimet_torch.common.libpymo",
+    ]
+)
 
 # aimet_onnx
-autodoc_mock_imports.extend(["_aimet_common.libquant_info"])
+autodoc_mock_imports.extend(
+    [
+        "aimet_onnx.common.libpymo",
+        "aimet_onnx.common.libquant_info",
+    ]
+)
 
 from pygments.lexers.diff import DiffLexer
 from sphinx.highlighting import lexers
