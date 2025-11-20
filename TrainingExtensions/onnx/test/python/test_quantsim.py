@@ -3987,6 +3987,71 @@ class TestEncodingPropagation:
             sim.qc_quantize_op_dict["output"]
             is not sim.qc_quantize_op_dict["/Resize_output_0"]
         )
+        """
+        Given:
+            [x] ------------------+
+                                  |-> Concat --------> [out1]
+                       +----------+
+                       |
+            [y] -------+-> Resize -------+
+                                         |-> Concat -> [out2]
+            [z] -------------------------+
+
+        When: Create quantsim with tie_encodings=True
+        Then:
+            [x] -> q1 ------------+
+                                  |-> Concat -> q1 -> [out1]
+                       +----------+
+                       |
+            [y] -> q2 -+-> Resize -> q2 -+
+                                         |-> Concat -> q3 -> [out2]
+            [z] -> q3 -------------------+
+        """
+
+        class Model(torch.nn.Module):
+            def forward(self, x, y, z):
+                out1 = torch.cat([x, y], dim=1)
+                y_resized = torch.nn.functional.interpolate(
+                    y, size=(64, 64), mode="nearest"
+                )
+                out2 = torch.cat([y_resized, z], dim=1)
+                return out1, out2
+
+        model = Model()
+        dummy_input = (
+            torch.randn(1, 3, 32, 32),
+            torch.randn(1, 3, 32, 32),
+            torch.randn(1, 3, 64, 64),
+        )
+        torch.onnx.export(
+            model,
+            dummy_input,
+            tmp_path / "concat_resize.onnx",
+            input_names=["x", "y", "z"],
+            output_names=["out1", "out2"],
+        )
+
+        with aimet_onnx.quantsim._apply_constraints(True):
+            sim = aimet_onnx.QuantizationSimModel(
+                onnx.load(tmp_path / "concat_resize.onnx")
+            )
+
+        sim.compute_encodings(
+            [
+                {
+                    "x": dummy_input[0].numpy(),
+                    "y": dummy_input[1].numpy(),
+                    "z": dummy_input[2].numpy(),
+                }
+            ]
+        )
+
+        assert sim.qc_quantize_op_dict["x"] is sim.qc_quantize_op_dict["out1"]
+        assert (
+            sim.qc_quantize_op_dict["y"] is sim.qc_quantize_op_dict["/Resize_output_0"]
+        )
+        assert sim.qc_quantize_op_dict["y"] is not sim.qc_quantize_op_dict["out2"]
+        assert sim.qc_quantize_op_dict["z"] is sim.qc_quantize_op_dict["out2"]
 
     def test_integer_concat(self):
         """
