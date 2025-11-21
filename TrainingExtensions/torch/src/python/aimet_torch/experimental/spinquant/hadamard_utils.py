@@ -12,10 +12,10 @@ import torch
 
 SUPPORTED_FACTORS = {
     12: get_had12,  # Qwen2.5-1.5B (hidden_size=1536), Llama3.2-3B (hidden_size=3072), Phi-3-mini-4k (hidden_size=3072)
-    20: get_had20,  # Qwen3 (hidden_size=2560)
+    20: get_had20,  # Qwen3 (hidden_size=2560), Qwen2.5-VL ViT (hidden_size=1280)
     28: get_had28,  # Qwen2/2.5-7B (hidden_size=3584)
 }
-# Powers of two: Llama3.2-1B, phi-1.5 (hidden_size=2048)
+# Powers of two: Llama3.2-1B, phi-1.5 (hidden_size=2048), qwen2.5VL language model (hidden_size=2048)
 
 
 def is_power_of_two(n: int) -> bool:
