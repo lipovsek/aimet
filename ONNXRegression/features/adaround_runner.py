@@ -315,7 +315,7 @@ def run_adaround(
     print(f"[AdaRound] Exporting optimized model...")
 
     # Export directly to .aimet bundle (Qualcomm AI Hub format)
-    bundle_dir = export_aimet_bundle(sim, export_dir, model_name)
+    qdq_path, bundle_dir = export_aimet_bundle(sim, export_dir, model_name)
 
     print(f"[AdaRound] Bundle created at: {bundle_dir}")
 
@@ -328,4 +328,4 @@ def run_adaround(
         "memory": memory_str,
     }
 
-    return str(bundle_dir), feature_acc, stats, str(bundle_dir)
+    return qdq_path, feature_acc, stats, str(bundle_dir)

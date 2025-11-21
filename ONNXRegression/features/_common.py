@@ -12,7 +12,7 @@ duplication.
 Key Components:
 1. ORT Provider Management - Explicit provider selection without silent fallback
 2. AIMET QuantSim Construction - Reliable model building using in-memory ModelProto
-3. AIMET Bundle Export - Direct export to Qualcomm AI Hub .aimet bundle format
+3. AIMET Bundle Export - Dual export for validation and AI Hub deployment
 4. Cleanup Utilities - Temporary file management
 
 Design Philosophy:
@@ -24,7 +24,7 @@ Design Philosophy:
 Technical Notes:
 - QuantSim uses in-memory ModelProto to avoid temporary file issues seen in
   some AIMET/ORT version combinations
-- Bundle structure follows Qualcomm AI Hub specifications for AIMET models
+- Dual export: QDQ model for validation, clean bundle for AI Hub
 - Provider selection is explicit to prevent performance surprises
 - QDQ validation ensures proper quantization export
 
@@ -252,97 +252,81 @@ def build_quantsim(
 
 def export_aimet_bundle(
     sim: QuantizationSimModel, export_dir: Union[str, Path], model_name: str
-) -> Path:
+) -> Tuple[Path, Path]:
     """
-    Export AIMET QuantSim to QDQ ONNX format for Qualcomm AI Hub.
+    Export AIMET QuantSim with dual output format.
 
-    This function exports the quantized model using AIMET's to_onnx_qdq() API, creating:
-    1. QDQ ONNX model with QuantizeLinear/DequantizeLinear operators
-    2. Encodings JSON file with quantization parameters (scale/zero-point)
+    This function creates two artifacts:
+    1. QDQ ONNX model (outside bundle) - for local validation
+    2. AIMET bundle (ONNX + encodings) - for Qualcomm AI Hub QNN compilation
 
-    The export uses AIMET's native QDQ conversion which replaces QcQuantizeOp nodes
-    with standard QuantizeLinear/DequantizeLinear operators, making it compatible with
-    QNN compilation on Qualcomm hardware.
-
-    Bundle structure created:
-        <export_dir>/<model_name>.aimet/
-        |-- <model_name>.onnx          (QDQ-quantized ONNX model)
-        +-- <model_name>.encodings     (quantization parameters JSON)
+    Export structure:
+        <export_dir>/
+        ├── <model_name>_qdq.onnx          (QDQ model for validation)
+        └── <model_name>.aimet/            (AIMET bundle for AI Hub)
+            ├── <model_name>.onnx          (AIMET format)
+            └── <model_name>.encodings     (Quantization parameters)
 
     Args:
         sim: QuantizationSimModel after compute_encodings() has been called
-        export_dir: Parent directory for the .aimet bundle
-        model_name: Model name used for bundle and file naming
+        export_dir: Parent directory for exports
+        model_name: Model name used for file naming
 
     Returns:
-        Path to created .aimet bundle directory
+        Tuple of (qdq_path, bundle_dir):
+            - qdq_path: Path to QDQ ONNX model (for validation)
+            - bundle_dir: Path to AIMET bundle directory (for AI Hub)
 
     Raises:
-        RuntimeError: If export fails, files are missing, or QDQ validation fails
+        RuntimeError: If export fails, files are missing, or validation fails
 
     Example:
         >>> sim = build_quantsim(...)
         >>> sim.compute_encodings(...)
-        >>> bundle = export_aimet_bundle(sim, "artifacts/resnet50", "resnet50")
-        >>> # Creates: artifacts/resnet50/resnet50.aimet/resnet50.onnx
-        >>> #          artifacts/resnet50/resnet50.aimet/resnet50.encodings
+        >>> qdq_path, bundle_dir = export_aimet_bundle(sim, "artifacts", "resnet50")
+        >>> # Creates: artifacts/resnet50_qdq.onnx (QDQ for validation)
+        >>> #          artifacts/resnet50.aimet/resnet50.onnx (AIMET format)
+        >>> #          artifacts/resnet50.aimet/resnet50.encodings
 
     Technical Notes:
-        - Uses sim.to_onnx_qdq() to convert QcQuantizeOp to QuantizeLinear/DequantizeLinear
-        - Uses sim.export() to save encodings file
-        - QDQ nodes are inserted at quantization boundaries
-        - Encodings file is JSON format with per-layer quantization params
-        - Export will fail immediately if QuantSim is not properly calibrated
-
-    Reference:
-        AIMET ONNX API: https://quic.github.io/aimet-pages/releases/latest/apiref/onnx/quantsim.html
+        - QDQ model (with QuantizeLinear/DequantizeLinear ops) used for validation
+        - AIMET format (quantized model + encodings) used for QNN compilation
+        - Bundle structure matches Qualcomm AI Hub requirements
     """
     export_dir = Path(export_dir)
+    export_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create .aimet bundle directory
+    print(f"[AIMET] Exporting QDQ model and AIMET bundle")
+
+    qdq_model = sim.to_onnx_qdq(prequantize_constants=False)
+    qdq_path = export_dir / f"{model_name}_qdq.onnx"
+    onnx.save(qdq_model, str(qdq_path))
+    print(f"[AIMET] Saved QDQ model for validation: {qdq_path}")
+
     bundle_dir = export_dir / f"{model_name}.aimet"
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[AIMET] Exporting QDQ ONNX model to: {bundle_dir}")
-    print(f"[AIMET] Converting QcQuantizeOp to QuantizeLinear/DequantizeLinear...")
-
-    # ============================================================
-    # Step 1: Convert to QDQ format using to_onnx_qdq()
-    # ============================================================
-    # This replaces all QcQuantizeOp nodes with standard ONNX
-    # QuantizeLinear/DequantizeLinear operators
-    qdq_model = sim.to_onnx_qdq(prequantize_constants=False)
-
-    # Save the QDQ model
-    onnx_path = bundle_dir / f"{model_name}.onnx"
-    onnx.save(qdq_model, str(onnx_path))
-    print(f"[AIMET] Saved QDQ ONNX model: {onnx_path}")
-
-    # ============================================================
-    # Step 2: Export encodings using sim.export()
-    # ============================================================
-    # The export() method signature: export(path, filename_prefix, export_model=True)
-    # We set export_model=False since we already saved the QDQ model above
     sim.export(
         path=str(bundle_dir),
         filename_prefix=model_name,
-        export_model=False,  # Don't export model again, only encodings
+        export_model=True,
     )
-    print(f"[AIMET] Exported encodings file")
+    print(f"[AIMET] Exported AIMET bundle: {bundle_dir}")
 
-    print(f"[AIMET] Export completed, validating outputs...")
+    print(f"[AIMET] Validating exports...")
 
-    # ============================================================
-    # Validate ONNX file exists
-    # ============================================================
-    if not onnx_path.exists():
-        # List actual contents for debugging
+    if not qdq_path.exists():
+        raise RuntimeError(
+            f"QDQ export failed: {qdq_path}\nQDQ model needed for validation."
+        )
+
+    bundle_onnx = bundle_dir / f"{model_name}.onnx"
+    if not bundle_onnx.exists():
         actual_files = list(bundle_dir.glob("*"))
         raise RuntimeError(
-            f"AIMET export failed: ONNX file not created\n"
-            f"Expected: {onnx_path}\n"
-            f"Bundle directory contents: {actual_files}\n"
-            f"This indicates QDQ conversion failed."
+            f"AIMET bundle export failed: ONNX file not created\n"
+            f"Expected: {bundle_onnx}\n"
+            f"Bundle contents: {actual_files}"
         )
 
     # ============================================================
@@ -359,53 +343,36 @@ def export_aimet_bundle(
     if not enc_path:
         actual_files = list(bundle_dir.glob("*"))
         raise RuntimeError(
-            f"AIMET export failed: Encodings file not created\n"
-            f"Expected: {model_name}.encodings or {model_name}.encodings.json\n"
-            f"Bundle directory contents: {actual_files}\n"
-            f"This indicates QuantSim was not properly calibrated."
+            f"AIMET bundle export failed: Encodings file not created\n"
+            f"Expected: {model_name}.encodings\n"
+            f"Bundle contents: {actual_files}"
         )
 
-    # ============================================================
-    # CRITICAL: Validate this is actually a QDQ graph
-    # ============================================================
-    # Verify that the exported ONNX contains QuantizeLinear and
-    # DequantizeLinear operators. Without these, the model is not
-    # properly quantized and will fail QNN compilation.
-    print(f"[AIMET] Validating QDQ graph structure...")
+    print(f"[AIMET] Validating QDQ model...")
 
-    model_proto = onnx.load(str(onnx_path))
-
-    # Count QDQ operators in the graph
+    model_proto = onnx.load(str(qdq_path))
     quantize_ops = [
         node for node in model_proto.graph.node if node.op_type == "QuantizeLinear"
     ]
     dequantize_ops = [
         node for node in model_proto.graph.node if node.op_type == "DequantizeLinear"
     ]
-
     total_qdq_ops = len(quantize_ops) + len(dequantize_ops)
 
     if total_qdq_ops == 0:
         raise RuntimeError(
-            f"QDQ validation failed: No QuantizeLinear/DequantizeLinear operators found!\n"
-            f"ONNX path: {onnx_path}\n"
-            f"Total nodes: {len(model_proto.graph.node)}\n"
-            f"This indicates to_onnx_qdq() failed or returned an FP32 model.\n"
-            f"Possible causes:\n"
-            f"  1. compute_encodings() was not called before export\n"
-            f"  2. QuantSim was created with incorrect parameters\n"
-            f"  3. AIMET version mismatch\n"
+            f"QDQ validation failed: No quantization operators found\n"
+            f"Model may not be properly quantized"
         )
 
-    # Success! Print detailed validation info
-    print(f"[AIMET] ✅ QDQ validation passed:")
-    print(f"  QuantizeLinear ops:   {len(quantize_ops)}")
-    print(f"  DequantizeLinear ops: {len(dequantize_ops)}")
-    print(f"  Total QDQ ops:        {total_qdq_ops}")
-    print(f"  ONNX file size:       {onnx_path.stat().st_size / 1024 / 1024:.2f} MB")
-    print(f"  Encodings file:       {enc_path.name}")
+    print(f"[AIMET] ✅ Export validation passed:")
+    print(
+        f"  QDQ model: {qdq_path.name} ({len(quantize_ops)}Q + {len(dequantize_ops)}DQ ops)"
+    )
+    print(f"  Bundle ONNX: {bundle_onnx.name}")
+    print(f"  Bundle encodings: {enc_path.name}")
 
-    return bundle_dir
+    return qdq_path, bundle_dir
 
 
 # ==================== Cleanup Utilities ====================
@@ -436,16 +403,11 @@ def clean_dir(dir_path: Union[str, Path], pattern: str) -> None:
     """
     base_path = Path(dir_path)
 
-    # Find all matching paths
     for path in glob(str(base_path / pattern)):
         try:
             if os.path.isdir(path):
-                # Remove directory tree
                 shutil.rmtree(path, ignore_errors=True)
             elif os.path.isfile(path):
-                # Remove single file
                 os.remove(path)
-            # Ignore symlinks and other special files
         except (OSError, PermissionError):
-            # Silently ignore errors - cleanup is best-effort
             pass

@@ -304,7 +304,6 @@ def run_single_config(config: Dict[str, Any]) -> Dict[str, Any]:
         raise RuntimeError(f"{feature_name} did not return a bundle directory")
 
     aimet_bundle_path = Path(aimet_bundle_dir)
-    aimet_onnx_path = aimet_bundle_path / f"{model_name}.onnx"
 
     if not aimet_onnx_path.exists():
         raise FileNotFoundError(
