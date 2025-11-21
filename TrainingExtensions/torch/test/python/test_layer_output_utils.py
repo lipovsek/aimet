@@ -103,7 +103,6 @@ def get_quantsim_artifacts(_QuantizationSimModel, model_and_input=None):
         model=model,
         quant_scheme="tf_enhanced",
         dummy_input=dummy_input,
-        rounding_mode="nearest",
         default_output_bw=8,
         default_param_bw=8,
         in_place=False,

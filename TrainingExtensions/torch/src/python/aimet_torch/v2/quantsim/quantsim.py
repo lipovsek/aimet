@@ -233,10 +233,6 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
         )
 
     .. warning::
-       `rounding_mode` parameter is deprecated.
-       Passing `rounding_mode` will throw runtime error in >=1.35.
-
-    .. warning::
        The default value of `quant_scheme` has changed
        from `QuantScheme.post_training_tf_enhanced` to `QuantScheme.training_range_learning_with_tf_init`
        since 2.0.0, and will be deprecated in the longer term.
@@ -248,7 +244,6 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
             already placed on the appropriate devices to run forward pass of the model.
         quant_scheme (QuantScheme, optional): Quantization scheme that indicates
             how to observe and calibrate the quantization encodings (Default: `QuantScheme.post_training_tf_enhanced`)
-        rounding_mode: Deprecated
         default_output_bw (int, optional): Default bitwidth (4-31) to use for quantizing all layer inputs and outputs
             unless otherwise specified in the config file. (Default: 8)
         default_param_bw (int, optional): Default bitwidth (4-31) to use for quantizing all layer parameters
@@ -270,7 +265,6 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
         model: torch.nn.Module,
         dummy_input: Union[torch.Tensor, Sequence[torch.Tensor]],
         quant_scheme: Union[str, QuantScheme] = None,  # NOTE: Planned to be deprecated
-        rounding_mode: Optional[str] = None,  # NOTE: Planned to be deprecated
         default_output_bw: int = 8,
         default_param_bw: int = 8,
         in_place: bool = False,
@@ -288,19 +282,6 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
             )
             warnings.warn(msg, DeprecationWarning, stacklevel=2)
             quant_scheme = new_default
-
-        if rounding_mode:
-            if rounding_mode == "nearest":
-                warnings.warn(
-                    _red(
-                        "Passing rounding_mode='nearest' is no longer needed "
-                        "and will be deprecated soon in the later versions."
-                    ),
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-            else:
-                raise TypeError("'rounding_mode' parameter is no longer supported.")
 
         qmodules = {
             name: module
@@ -354,7 +335,6 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
                 model,
                 dummy_input,
                 quant_scheme,
-                rounding_mode="nearest",
                 default_output_bw=default_output_bw,
                 default_param_bw=default_param_bw,
                 in_place=in_place,
@@ -770,7 +750,7 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
             module_to_quantize,
             self._default_param_bw,
             self._default_output_bw,
-            self._rounding_mode,
+            "nearest",
             self._quant_scheme,
             num_inputs=num_in_tensors,
             num_outputs=num_out_tensors,

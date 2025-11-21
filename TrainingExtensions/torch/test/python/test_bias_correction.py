@@ -148,7 +148,6 @@ class TestTrainingExtensionBnFold:
         quantsim = qsim.QuantizationSimModel(
             model=model,
             quant_scheme=params.quant_scheme,
-            rounding_mode=params.round_mode,
             default_output_bw=params.act_bw,
             default_param_bw=params.weight_bw,
             in_place=False,

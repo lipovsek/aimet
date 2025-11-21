@@ -319,7 +319,6 @@ def correct_bias(
     q = QuantizationSimModel(
         model=model,
         quant_scheme=quant_params.quant_scheme,
-        rounding_mode=quant_params.round_mode,
         default_output_bw=quant_params.act_bw,
         default_param_bw=quant_params.weight_bw,
         in_place=True,

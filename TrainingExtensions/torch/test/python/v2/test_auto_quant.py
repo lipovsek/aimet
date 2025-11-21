@@ -617,15 +617,6 @@ class TestAutoQuant:
                 output_bw=64,
             )
 
-        with pytest.raises(ValueError):
-            AutoQuant(
-                cpu_model,
-                dummy_input,
-                unlabeled_data_loader,
-                lambda: None,
-                rounding_mode="stochastic",
-            )
-
         auto_quant = AutoQuant(
             cpu_model, dummy_input, unlabeled_data_loader, lambda: None
         )

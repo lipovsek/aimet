@@ -108,12 +108,6 @@ class AutoQuant(AutoQuantBase):  # pylint: disable=too-many-instance-attributes
         """returns AdaRound"""
         return Adaround
 
-    @functools.wraps(AutoQuantBase.__init__)
-    def __init__(self, *args, rounding_mode: str = "nearest", **kwargs):
-        if rounding_mode == "stochastic":
-            raise ValueError("Stochastic rounding mode is not supported.")
-        super().__init__(*args, **kwargs)
-
     @staticmethod
     def _get_quantsim(model, dummy_input, **kwargs):
         return QuantizationSimModel(model, dummy_input, **kwargs)
@@ -237,7 +231,6 @@ class AutoQuantWithAutoMixedPrecision:
         param_bw: int = 8,
         output_bw: int = 8,
         quant_scheme: QuantScheme = QuantScheme.post_training_tf_enhanced,
-        rounding_mode: str = "nearest",
         config_file: str = None,
         results_dir: str = "/tmp",
         cache_id: str = None,
@@ -252,7 +245,6 @@ class AutoQuantWithAutoMixedPrecision:
         :param param_bw: Parameter bitwidth
         :param output_bw: Output bitwidth
         :param quant_scheme: Quantization scheme
-        :param rounding_mode: Rounding mode
         :param config_file: Path to configuration file for model quantizers
         :param results_dir: Directory to save the results of PTQ techniques
         :param cache_id: ID associated with cache results
@@ -267,7 +259,7 @@ class AutoQuantWithAutoMixedPrecision:
             param_bw,
             output_bw,
             quant_scheme,
-            rounding_mode,
+            "nearest",
             config_file,
             results_dir,
             cache_id,

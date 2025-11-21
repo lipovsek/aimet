@@ -1116,6 +1116,9 @@ class AutoQuantBase(abc.ABC):  # pylint: disable=too-many-instance-attributes
             "default_param_bw": (param_bw or self._quantsim_params["param_bw"]),
             "config_file": (config_file or self._quantsim_params["config_file"]),
         }
+        if kwargs["rounding_mode"] == "nearest":
+            kwargs.pop("rounding_mode")
+
         sim = self._get_quantsim(model, self.dummy_input, **kwargs)
 
         default_quant_scheme = self._quantsim_params.get("quant_scheme")
