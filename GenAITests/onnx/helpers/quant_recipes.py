@@ -22,6 +22,26 @@ from GenAITests.shared.models.generator import Generator
 from GenAITests.onnx.models.utils.torch_onnx_interface import kwargs_to_dict
 
 
+def _get_lm_head_node_names(quantsim: QuantizationSimModel) -> list[str]:
+    lm_head_node_names = []
+    vocab_size = (
+        quantsim.model.model.graph.output[0].type.tensor_type.shape.dim[-1].dim_value
+    )
+    node_input_map = {
+        node.input[1]: node
+        for node in quantsim.model.model.graph.node
+        if node.op_type in ("Gemm", "MatMul", "Conv")
+    }
+    for weight in quantsim.model.model.graph.initializer:
+        if vocab_size in weight.dims:
+            for suffix in ("", "_updated", "_qdq"):
+                candidate_name = weight.name + suffix if suffix else weight.name
+                if candidate_name in node_input_map:
+                    node = node_input_map[candidate_name]
+                    lm_head_node_names.append(node.name)
+    return lm_head_node_names
+
+
 def _prefill_inputs(
     quantsim: QuantizationSimModel,
     generator: Generator,
@@ -116,6 +136,7 @@ class LPBQ(QuantizationTechnique):
             bitwidth=4,
             decompressed_bw=8,
             block_size=64,
+            nodes_to_exclude=_get_lm_head_node_names(quantsim),
         )
 
         def _forward(session, _):
@@ -138,7 +159,13 @@ class SeqMSE(QuantizationTechnique):
 
         print("Starting Sequential MSE...")
         params = SeqMseParams(num_batches=num_iterations)
-        seq_mse = SequentialMse(quantsim.model, quantsim, params, inputs)
+        seq_mse = SequentialMse(
+            model=quantsim.model,
+            sim=quantsim,
+            params=params,
+            data_loader=inputs,
+            nodes_to_exclude=_get_lm_head_node_names(quantsim),
+        )
         seq_mse.apply_seq_mse_algo()
 
         def _forward(session, _):
@@ -163,5 +190,6 @@ class LPBQ_SeqMSE(QuantizationTechnique):
             bitwidth=4,
             decompressed_bw=8,
             block_size=64,
+            nodes_to_exclude=_get_lm_head_node_names(quantsim),
         )
         SeqMSE.apply(quantsim, generator, dataloader, num_iterations)
