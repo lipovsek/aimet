@@ -702,6 +702,24 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
                 full_name = f"{module_name}.{param_name}" if module_name else param_name
                 yield full_name, param
 
+    def quantizer_state_dict(self):
+        """
+        Returns light-weight state dict that only consists of quantizer states.
+
+        Example:
+
+            >>> state_dict = sim.quantizer_state_dict()
+            >>> sim2 = QuantizationSimModel(...)
+            >>> sim2.model.load_state_dict(state_dict, strict=False)
+            >>> assert torch.equal(sim.model(x), sim2.model(x))
+        """
+        state_dict = {}
+
+        for name, qtzr in self.named_quantizers():
+            state_dict.update(qtzr.state_dict(prefix=f"{name}." if name else ""))
+
+        return state_dict
+
     @deprecated(f"Use {named_qmodules.__qualname__} instead.")
     def quant_wrappers(self):  # pylint: disable=missing-docstring
         return self.named_qmodules()

@@ -2415,6 +2415,21 @@ class TestEncodingPropagation:
             == sim.model[2].output_quantizers[0].max
         )
 
+        """
+        sim.quantizer_state_dict should return state_dict of all quantizers
+        """
+        sim = QuantizationSimModel(model, x)
+        sim.compute_encodings(lambda model: model(x))
+        out = sim.model(x)
+
+        state_dict = sim.quantizer_state_dict()
+
+        sim2 = QuantizationSimModel(model, x)
+        sim2.model.load_state_dict(state_dict, strict=False)
+        assert all(qtzr.is_initialized() for qtzr in sim2.quantizers())
+        out2 = sim2.model(x)
+        assert torch.equal(out, out2)
+
 
 class ReshapeConv(torch.nn.Module):
     def __init__(self, functional: bool):
