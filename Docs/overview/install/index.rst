@@ -190,6 +190,6 @@ For most users, the recommended way to install AIMET is by using the pre-built p
 However, if you prefer to work with the latest source code or plan to contribute to AIMET development, you’ll need to build it from source.
 To do so, follow the steps outlined for building the latest AIMET codebase manually, see :ref:`Build AIMET from source <build-from-source>`.
 
-.. |torch_whl_suffix| replace:: \-py38-none-any.whl
+.. |torch_whl_suffix| replace:: \-py310-none-any.whl
 .. |whl_suffix| replace:: \-cp310-cp310-manylinux_2_34_x86_64.whl
 .. |download_url| replace:: \https://github.com/quic/aimet/releases/download/

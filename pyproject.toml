@@ -10,7 +10,7 @@ authors = [
     { name = "Qualcomm Innovation Center, Inc.", email = "aimet.os@quicinc.com" },
 ]
 name = "aimet"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dynamic = ["name", "dependencies", "version", "optional-dependencies", "description"]
 license = {text = "BSD-3-Clause"}
 readme = "README.md"
