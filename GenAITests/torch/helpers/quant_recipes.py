@@ -289,3 +289,30 @@ class SpinQuant(QuantizationTechnique):
 
         apply_spinquant(model=quantsim.model.model)
         _compute_encodings(quantsim, generator, dataloader, num_iterations=20)
+
+
+@YAMLConfigParser.register_recipe
+class SpinQuant_AdaScale(QuantizationTechnique):
+    @staticmethod
+    @torch.no_grad()
+    def apply(
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: Dataset,
+        num_batches: int = 20,
+        num_iterations: int = 1500,
+    ):
+        # Untie embed_tokens and lm_head if needed
+        if (
+            quantsim.model.model.model.embed_tokens.weight
+            is quantsim.model.model.lm_head.weight
+        ):
+            old_weight = quantsim.model.model.lm_head.weight
+            new_weight = torch.nn.Parameter(
+                old_weight.data.clone().detach().to(old_weight.device),
+                requires_grad=True,
+            )
+            quantsim.model.model.lm_head.weight = new_weight
+
+        apply_spinquant(model=quantsim.model.model)
+        AdaScale.apply(quantsim, generator, dataloader, num_batches, num_iterations)
