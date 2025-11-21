@@ -639,6 +639,7 @@ class TestQuantSim:
         )
         self._test_lstm(lstm)
 
+    @torch.no_grad()
     @pytest.mark.parametrize("cls", [torch.nn.LSTM, torch.nn.GRU, torch.nn.RNN])
     @pytest.mark.parametrize("num_layers", [1, 2])
     @pytest.mark.parametrize("bidirectional", [False, True])
@@ -705,7 +706,9 @@ class TestQuantSim:
                     cell_state_names.append(node.output[2])
 
         with _apply_constraints(True):
-            sim = aimet_onnx.QuantizationSimModel(model)
+            sim = aimet_onnx.QuantizationSimModel(
+                model, config_file="enpu_quantsim_config_v6.json"
+            )
 
         """
         When: Created QuantizationSimModel with _apply_constraints(True)

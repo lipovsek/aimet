@@ -379,46 +379,47 @@ def layernorm_model(dim=32, elementwise_affine=True, bias=True, include_add_ops=
     return model
 
 
+class RMSNorm(nn.Module):
+    def __init__(
+        self,
+        dim,
+        elementwise_affine=True,
+        mul_for_pow=False,
+        mul_rsqrt_pattern="mul_rsqrt",
+    ):
+        super().__init__()
+        self.weight = torch.randn(dim) if elementwise_affine else None
+        self.variance_epsilon = 0.003
+        self.mul_for_pow = mul_for_pow
+        self.mul_rsqrt_pattern = mul_rsqrt_pattern
+
+    def forward(self, x):
+        if self.mul_for_pow:
+            variance = (x * x).mean(-1, keepdim=True)
+        else:
+            variance = x.pow(2).mean(-1, keepdim=True)
+
+        if self.mul_rsqrt_pattern == "mul_rsqrt":
+            x = x * torch.rsqrt(variance + self.variance_epsilon)
+        elif self.mul_rsqrt_pattern == "div_sqrt":
+            x = x / torch.sqrt(variance + self.variance_epsilon)
+        elif self.mul_rsqrt_pattern == "mul_reciprocal_sqrt":
+            sqrt = 1 / torch.sqrt(variance + self.variance_epsilon)
+            x = x * sqrt
+        else:
+            raise RuntimeError("Mul RSqrt pattern not specified.")
+
+        if self.weight is not None:
+            return x * self.weight
+        return x
+
+
 def rmsnorm_model(
     dim: int = 32,
     elementwise_affine: bool = True,
     mul_for_pow: bool = False,
     mul_rsqrt_pattern: str = "mul_rsqrt",
 ):
-    class RMSNorm(nn.Module):
-        def __init__(
-            self,
-            dim,
-            elementwise_affine=True,
-            mul_for_pow=False,
-            mul_rsqrt_pattern="mul_rsqrt",
-        ):
-            super().__init__()
-            self.weight = torch.randn(dim) if elementwise_affine else None
-            self.variance_epsilon = 0.003
-            self.mul_for_pow = mul_for_pow
-            self.mul_rsqrt_pattern = mul_rsqrt_pattern
-
-        def forward(self, x):
-            if self.mul_for_pow:
-                variance = (x * x).mean(-1, keepdim=True)
-            else:
-                variance = x.pow(2).mean(-1, keepdim=True)
-
-            if self.mul_rsqrt_pattern == "mul_rsqrt":
-                x = x * torch.rsqrt(variance + self.variance_epsilon)
-            elif self.mul_rsqrt_pattern == "div_sqrt":
-                x = x / torch.sqrt(variance + self.variance_epsilon)
-            elif self.mul_rsqrt_pattern == "mul_reciprocal_sqrt":
-                sqrt = 1 / torch.sqrt(variance + self.variance_epsilon)
-                x = x * sqrt
-            else:
-                raise RuntimeError("Mul RSqrt pattern not specified.")
-
-            if self.weight is not None:
-                return x * self.weight
-            return x
-
     torch.manual_seed(10)
     model = RMSNorm(
         dim=dim,
