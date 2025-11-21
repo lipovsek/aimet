@@ -47,6 +47,7 @@ import json
 import numpy as np
 import onnxruntime as ort
 
+from aimet_onnx.common import quantsim
 from aimet_onnx.common.utils import AimetLogger, save_json_yaml
 from aimet_onnx.common.defs import CallbackFunc, qtype
 from aimet_onnx.common.amp.mixed_precision_algo import (
@@ -483,7 +484,7 @@ class GreedyMixedPrecisionAlgo(MixedPrecisionAlgo):
             os.makedirs(results_dir)
         path = os.path.join(results_dir, "encodings_with_param.encodings")
         # pylint: disable=protected-access
-        self._sim._export_encodings(path)
+        self._sim._export_encodings(path, quantsim.encoding_version)
 
     def _export_activation_encodings(self, path: str):
         """
@@ -496,7 +497,7 @@ class GreedyMixedPrecisionAlgo(MixedPrecisionAlgo):
             os.makedirs(results_dir)
         path = os.path.join(results_dir, "encodings_with_act.encodings")
         # pylint: disable=protected-access
-        self._sim._export_encodings(path)
+        self._sim._export_encodings(path, quantsim.encoding_version)
 
     def _load_param_encodings(self, path: str):
         """

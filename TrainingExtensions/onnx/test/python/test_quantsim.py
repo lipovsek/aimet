@@ -225,16 +225,6 @@ class DummyModel(SingleResidual):
         return x
 
 
-@contextlib.contextmanager
-def set_encoding_version(version):
-    old_version = quantsim.encoding_version
-    quantsim.encoding_version = version
-
-    yield
-
-    quantsim.encoding_version = old_version
-
-
 class TestQuantSim:
     """Tests for QuantizationSimModel"""
 
@@ -517,8 +507,7 @@ class TestQuantSim:
         sim = QuantizationSimModel(model, config_file=get_path_for_per_channel_config())
 
         sim.compute_encodings([make_dummy_input(model)])
-        with set_encoding_version("1.0.0"):
-            sim.export(tmp_dir, "quant_sim_model")
+        sim.export(tmp_dir, "quant_sim_model", encoding_version="1.0.0")
 
         with open(
             os.path.join(tmp_dir, "quant_sim_model.encodings"), "rb"
@@ -562,8 +551,7 @@ class TestQuantSim:
 
         sim.compute_encodings([make_dummy_input(model)])
 
-        with set_encoding_version("2.0.0"):
-            sim.export(tmp_path, "quant_sim_model")
+        sim.export(tmp_path, "quant_sim_model", encoding_version="2.0.0")
 
         with open(tmp_path / "quant_sim_model.encodings") as json_file:
             encodings = json.load(json_file)
@@ -1501,8 +1489,8 @@ class TestQuantSim:
 
         sim.compute_encodings([dummy_input])
         out1 = sim.session.run(None, dummy_input)
-        with tempfile.TemporaryDirectory() as tempdir, set_encoding_version("1.0.0"):
-            sim.export(tempdir, "export")
+        with tempfile.TemporaryDirectory() as tempdir:
+            sim.export(tempdir, "export", encoding_version="1.0.0")
 
             sim_2 = QuantizationSimModel(
                 model_2, param_type="int16", activation_type="int16"
@@ -1513,7 +1501,7 @@ class TestQuantSim:
                 sim_2, os.path.join(tempdir, "export.encodings"), strict=True
             )
             out2 = sim_2.session.run(None, dummy_input)
-            sim_2.export(tempdir, "export_2")
+            sim_2.export(tempdir, "export_2", encoding_version="1.0.0")
             with open(os.path.join(tempdir, "export.encodings"), "rb") as f1:
                 encodings_1 = json.load(f1)
             with open(os.path.join(tempdir, "export_2.encodings"), "rb") as f2:
@@ -1575,8 +1563,8 @@ class TestQuantSim:
 
         sim.compute_encodings([dummy_input])
         out1 = sim.session.run(None, dummy_input)
-        with tempfile.TemporaryDirectory() as tempdir, set_encoding_version("1.0.0"):
-            sim.export(tempdir, "export")
+        with tempfile.TemporaryDirectory() as tempdir:
+            sim.export(tempdir, "export", encoding_version="1.0.0")
 
             sim2 = QuantizationSimModel(model_2)
             swap_quantizer_func(sim=sim2, bitwidth=4, block_size=4)
@@ -1586,7 +1574,7 @@ class TestQuantSim:
             )
             out2 = sim2.session.run(None, dummy_input)
 
-            sim2.export(tempdir, "export_2")
+            sim2.export(tempdir, "export_2", encoding_version="1.0.0")
             with open(os.path.join(tempdir, "export.encodings"), "rb") as f1:
                 encodings_1 = json.load(f1)
             with open(os.path.join(tempdir, "export_2.encodings"), "rb") as f2:
@@ -1624,8 +1612,8 @@ class TestQuantSim:
 
         sim.compute_encodings([dummy_input])
         out1 = sim.session.run(None, dummy_input)
-        with tempfile.TemporaryDirectory() as tempdir, set_encoding_version("1.0.0"):
-            sim.export(tempdir, "export")
+        with tempfile.TemporaryDirectory() as tempdir:
+            sim.export(tempdir, "export", encoding_version="1.0.0")
 
             sim_2 = QuantizationSimModel(
                 model_2, param_type="int16", activation_type="int16"
@@ -1655,7 +1643,7 @@ class TestQuantSim:
                     sim_2, os.path.join(tempdir, "export.encodings"), strict=strict
                 )
                 out2 = sim_2.session.run(None, dummy_input)
-                sim_2.export(tempdir, "export_2")
+                sim_2.export(tempdir, "export_2", encoding_version="1.0.0")
                 with open(os.path.join(tempdir, "export.encodings"), "rb") as f1:
                     encodings_1 = json.load(f1)
                 with open(os.path.join(tempdir, "export_2.encodings"), "rb") as f2:
@@ -2644,8 +2632,7 @@ class TestQuantSim:
             else:
                 assert quantizer.quant_info.blockSize == 0
 
-        with set_encoding_version("1.0.0"):
-            sim.export(tmp_dir, "tmp_model")
+        sim.export(tmp_dir, "tmp_model", encoding_version="1.0.0")
 
         with open(os.path.join(tmp_dir, "tmp_model.encodings")) as f:
             encodings = json.load(f)
@@ -2706,8 +2693,7 @@ class TestQuantSim:
             else:
                 assert quantizer.quant_info.blockSize == 0
 
-        with set_encoding_version("1.0.0"):
-            sim.export(tmp_dir, "tmp_model")
+        sim.export(tmp_dir, "tmp_model", encoding_version="1.0.0")
 
         with open(os.path.join(tmp_dir, "tmp_model.encodings")) as f:
             encodings = json.load(f)
@@ -2762,8 +2748,7 @@ class TestQuantSim:
 
         export_dir = tmp_dir + "/export_1.aimet"
         os.makedirs(export_dir, exist_ok=True)
-        with set_encoding_version("1.0.0"):
-            sim.export(export_dir, "tmp_model")
+        sim.export(export_dir, "tmp_model", encoding_version="1.0.0")
 
         sim_loaded = QuantizationSimModel(
             copy.deepcopy(model),
@@ -2813,8 +2798,7 @@ class TestQuantSim:
             )
 
         sim.compute_encodings([make_dummy_input(model)])
-        with set_encoding_version("1.0.0"):
-            sim.export(tmp_dir, "tmp_model")
+        sim.export(tmp_dir, "tmp_model", encoding_version="1.0.0")
 
         with open(os.path.join(tmp_dir, "tmp_model.encodings")) as f:
             encodings = json.load(f)
@@ -2876,8 +2860,7 @@ class TestQuantSim:
             )
 
         sim.compute_encodings([make_dummy_input(model)])
-        with set_encoding_version("1.0.0"):
-            sim.export(tmp_dir, "tmp_model")
+        sim.export(tmp_dir, "tmp_model", encoding_version="1.0.0")
 
         with open(os.path.join(tmp_dir, "tmp_model.encodings")) as f:
             encodings = json.load(f)

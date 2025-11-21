@@ -81,16 +81,6 @@ def seed(request):
     torch.manual_seed(seed)
 
 
-@contextlib.contextmanager
-def set_encoding_version(version):
-    try:
-        old_version = quantsim_common.encoding_version
-        quantsim_common.encoding_version = version
-        yield
-    finally:
-        quantsim_common.encoding_version = old_version
-
-
 @pytest.mark.parametrize(
     "qtzr_cls", [Q.affine.Quantize, Q.affine.QuantizeDequantize, Q.affine.Dequantize]
 )
@@ -471,16 +461,16 @@ def test_quantsim_export_resnet18(
         onnx_path = os.path.join(dirname, "torchvision_model.onnx")
         encodings_path = os.path.join(dirname, "torchvision_model.encodings")
 
-        with set_encoding_version(encoding_version):
-            sim.onnx.export(
-                x,
-                onnx_path,
-                input_names=["input"],
-                output_names=["output"],
-                dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-                export_int32_bias=export_int32_bias,
-                dynamo=False,
-            )
+        sim.onnx.export(
+            x,
+            onnx_path,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+            export_int32_bias=export_int32_bias,
+            dynamo=False,
+            encoding_version=encoding_version,
+        )
 
         """
         Then: The saved onnx model should pass onnx model checker
@@ -1266,15 +1256,15 @@ def test_export_large_model(
     When: Export encoding with sim.onnx.export
     Then: All encoding should be exported correctly
     """
-    with set_encoding_version("2.0.0"):
-        sim.onnx.export(
-            x,
-            onnx_path,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-            dynamo=False,
-        )
+    sim.onnx.export(
+        x,
+        onnx_path,
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        dynamo=False,
+        encoding_version="2.0.0",
+    )
 
     with open(os.path.join(tmp_path, "qdq_model.encodings")) as f:
         encodings = json.load(f)["encodings"]

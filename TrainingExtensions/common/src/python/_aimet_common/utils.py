@@ -606,3 +606,15 @@ def compute_psnr(
     # Compute PSNR and clip to ensure numerical stability
     psnr = 20 * np.log10(data_range / noise)
     return float(np.clip(psnr, -max_psnr, max_psnr))
+
+
+def docstring(doc: str):
+    """
+    Helper function to attach docstring
+    """
+
+    def decorator(fn_or_cls: Callable):
+        fn_or_cls.__doc__ = doc
+        return fn_or_cls
+
+    return decorator

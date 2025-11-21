@@ -273,18 +273,6 @@ def flatten_nn_module_list(module):
     return list(flat_iter(module))
 
 
-def docstring(doc: str):
-    """
-    Helper function to attach docstring
-    """
-
-    def decorator(fn_or_cls: Callable):
-        fn_or_cls.__doc__ = doc
-        return fn_or_cls
-
-    return decorator
-
-
 def _map_qmodule(modules, func):
     # pylint: disable=import-outside-toplevel
     # pylint: disable=protected-access, cyclic-import

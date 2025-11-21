@@ -101,6 +101,7 @@ from aimet_onnx.common.utils import (
     _red,
     deprecated,
     Handle,
+    docstring,
 )
 from aimet_onnx.common.quant_utils import _convert_encoding_format_0_6_1_to_1_0_0
 from aimet_onnx.common.quantsim_config.quantsim_config import _config_file_aliases
@@ -1365,24 +1366,23 @@ class QuantizationSimModel:
             encoding["name"] = name
         return list(encoding_dict.values())
 
-    def _export_encodings(self, encoding_file_path):
+    def _export_encodings(self, encoding_file_path, encoding_version: str):
         """
         Export encodings to json file
 
         :param encoding_file_path: path to save the encoding file
         """
-        enc_version = quantsim.encoding_version
-        if enc_version not in VALID_ENCODING_VERSIONS:
+        if encoding_version not in VALID_ENCODING_VERSIONS:
             raise NotImplementedError(
-                f"Encoding version {enc_version} not in set of valid encoding "
+                f"Encoding version {encoding_version} not in set of valid encoding "
                 f"versions {VALID_ENCODING_VERSIONS}."
             )
 
-        encodings_dict = {"version": enc_version}
+        encodings_dict = {"version": encoding_version}
 
-        if quantsim.encoding_version >= "2.0.0":
+        if encoding_version >= "2.0.0":
             encodings = self._get_encodings(
-                self.qc_quantize_op_dict.keys(), enc_version
+                self.qc_quantize_op_dict.keys(), encoding_version
             )
 
             if self._export_data_movement_op_output_quantizers:
@@ -1402,9 +1402,9 @@ class QuantizationSimModel:
                 }
             )
         else:
-            param_encodings = self._get_encodings(self.param_names, enc_version)
+            param_encodings = self._get_encodings(self.param_names, encoding_version)
             activation_encodings = self._get_encodings(
-                self.activation_names, enc_version
+                self.activation_names, encoding_version
             )
 
             encodings_dict.update(
@@ -1810,22 +1810,50 @@ class QuantizationSimModel:
 
         return weight, bias
 
-    def export(self, path: str, filename_prefix: str, export_model: bool = True):
-        """
-        Compute encodings and export to files
+    @docstring(
+        f"""
+    Compute encodings and export to files
 
-        :param path: dir to save encoding files
-        :param filename_prefix: filename to save encoding files
-        :param export_model: If True, then ONNX model is exported. When False, only encodings are exported.
-        """
-        if quantsim.encoding_version == "0.6.1":
+    Args:
+        path: dir to save encoding files
+        filename_prefix: filename to save encoding files
+        export_model (bool, optional):
+            If True, then ONNX model is exported. When False, only encodings are exported.
+        encoding_version (str, optional):
+            Version of the encoding format to use. (default: {quantsim.encoding_version})
+            Supported versions are: {sorted(list(quantsim.VALID_ENCODING_VERSIONS))}
+
+    Example:
+
+        >>> sim.export(path=".", filename_prefix="model", encoding_version="2.0.0")
+    """
+    )
+    def export(
+        self,
+        path: str,
+        filename_prefix: str,
+        export_model: bool = True,
+        *,
+        encoding_version: Optional[str] = None,
+    ):
+        encoding_version = encoding_version or quantsim.encoding_version
+
+        if encoding_version not in quantsim.VALID_ENCODING_VERSIONS:
+            raise ValueError(
+                f"Unsupported encoding_version '{encoding_version}'. "
+                f"Supported versions are: {quantsim.VALID_ENCODING_VERSIONS}"
+            )
+
+        if encoding_version == "0.6.1":
             msg = _red(
                 "Encoding version 0.6.1 was deprecated in favor of 1.0.0 since aimet-onnx==2.1. "
                 "If your code depends on parsing the exported encodings file, ensure that it is "
                 "updated to be able to parse 1.0.0 format"
             )
             warnings.warn(msg, DeprecationWarning, stacklevel=2)
-        self._export_encodings(os.path.join(path, filename_prefix) + ".encodings")
+        self._export_encodings(
+            os.path.join(path, filename_prefix) + ".encodings", encoding_version
+        )
 
         if export_model:
             with self._remove_quantization_nodes():

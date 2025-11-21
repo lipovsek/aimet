@@ -64,7 +64,7 @@ from aimet_torch.common import quantsim
 from aimet_torch.common.defs import QuantScheme, QuantizationDataType
 from aimet_torch.common.onnx._utils import _is_htp_interpolation_op
 from aimet_torch.common.quantsim_config.quantsim_config import _config_file_aliases
-from aimet_torch.common.utils import deprecated, _red
+from aimet_torch.common.utils import deprecated, _red, docstring
 from aimet_torch._base.quantsim import (
     _QuantizationSimModelBase,
     logger,
@@ -867,42 +867,57 @@ class QuantizationSimModelOnnxExporter:
     def __init__(self, sim: QuantizationSimModel):
         self.sim = sim
 
+    @docstring(
+        f"""
+    Export QuantizationSimModel into ONNX model and JSON encoding.
+    This function takes the same set of arguments as `torch.onnx.export()`_.
+
+    Args:
+        args: Same as `torch.onnx.export()`
+        f: Same as `torch.onnx.export()`
+        encoding_version (str, optional):
+            Version of the encoding format to use. (default: {quantsim.encoding_version})
+            Supported versions are: {sorted(list(quantsim.VALID_ENCODING_VERSIONS))}
+        export_int32_bias (bool, optional):
+            If true, generate and export int32 bias encoding on the fly (default: `True`)
+        **kwargs: Same as `torch.onnx.export()`
+
+    .. _torch.onnx.export(): https://docs.pytorch.org/docs/stable/onnx_torchscript.html#torch.onnx.export
+
+    .. note::
+        Dynamo-based export (`dynamo=True`) is not supported yet
+
+    .. note::
+        See also :func:`aimet_torch.onnx.export`, an equivalent API that
+        exports a single ONNX graph with quantization encodings
+        embedded in QuantizeLinear and DequantizeLinear nodes
+
+    Example:
+
+        >>> sim.onnx.export(args=(x,), f="model.onnx",
+        ...                 input_names=["input"], output_names=["output"],
+        ...                 dynamo=False, export_int32_bias=True,
+        ...                 encoding_version="2.0.0")
+    """
+    )
     @torch.no_grad()
     def export(
         self,
         args: Union[Tuple[Any, ...], torch.Tensor],
         f: Union[str, io.BytesIO],
         *,
+        encoding_version: Optional[str] = None,
         export_int32_bias: bool = True,
         **kwargs,
     ):
-        """
-        Export QuantizationSimModel into ONNX model and JSON encoding.
-        This function takes the same set of arguments as `torch.onnx.export()`_.
+        encoding_version = encoding_version or quantsim.encoding_version
 
-        Args:
-            args: Same as `torch.onnx.export()`
-            f: Same as `torch.onnx.export()`
-            export_int32_bias (bool, optional):
-                If true, generate and export int32 bias encoding on the fly (default: `True`)
-            **kwargs: Same as `torch.onnx.export()`
+        if encoding_version not in quantsim.VALID_ENCODING_VERSIONS:
+            raise ValueError(
+                f"Unsupported encoding_version '{encoding_version}'. "
+                f"Supported versions are: {quantsim.VALID_ENCODING_VERSIONS}"
+            )
 
-        .. _torch.onnx.export(): https://docs.pytorch.org/docs/stable/onnx_torchscript.html#torch.onnx.export
-
-        .. note::
-            Dynamo-based export (`dynamo=True`) is not supported yet
-
-        .. note::
-            See also :func:`aimet_torch.onnx.export`, an equivalent API that
-            exports a single ONNX graph with quantization encodings
-            embedded in QuantizeLinear and DequantizeLinear nodes
-
-        Example:
-
-            >>> sim.onnx.export(args=(x,), f="model.onnx",
-            ...                 input_names=["input"], output_names=["output"],
-            ...                 dynamo=False, export_int32_bias=True)
-        """
         from aimet_torch.onnx import (
             _check_unsupported_args,
             _concretize_int32_bias_quantizers,
@@ -942,7 +957,7 @@ class QuantizationSimModelOnnxExporter:
             f,
             save_as_external_data=_onnx_model_size_larger_than_max_protobuf(onnx_model),
         )
-        encodings_dict = self._to_json(tensor_to_encoding_map)
+        encodings_dict = self._to_json(tensor_to_encoding_map, encoding_version)
 
         # export weight encodings to output json file
         onnx_file_path = f if isinstance(f, str) else f.name
@@ -950,18 +965,22 @@ class QuantizationSimModelOnnxExporter:
         with open(encoding_file_path, "w", encoding="utf-8") as encoding_file:
             json.dump(encodings_dict, encoding_file, indent=2)
 
-    def _to_json(self, tensor_to_encoding_map: Mapping[str, Tuple[EncodingBase, bool]]):
+    def _to_json(
+        self,
+        tensor_to_encoding_map: Mapping[str, Tuple[EncodingBase, bool]],
+        encoding_version: str,
+    ):
         qnn_encodings = {
-            name: (encoding.to_qnn_encoding_dict(quantsim.encoding_version), is_param)
+            name: (encoding.to_qnn_encoding_dict(encoding_version), is_param)
             for name, (encoding, is_param) in tensor_to_encoding_map.items()
         }
 
         encodings_dict: Mapping[str, Any]
         encodings_dict = {
-            "version": quantsim.encoding_version,
+            "version": encoding_version,
         }
 
-        if quantsim.encoding_version >= "2.0.0":
+        if encoding_version >= "2.0.0":
             encodings_dict.update(
                 {
                     "encodings": [
@@ -972,7 +991,7 @@ class QuantizationSimModelOnnxExporter:
                 }
             )
         else:
-            if quantsim.encoding_version >= "1.0.0":
+            if encoding_version >= "1.0.0":
                 param_encodings = [
                     {"name": name, **qnn_encoding}
                     for name, (qnn_encoding, is_param) in qnn_encodings.items()

@@ -43,9 +43,6 @@ import unittest.mock
 import numpy as np
 import os
 import shutil
-import torch
-from packaging import version
-import onnx
 
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.amp.mixed_precision_algo import (
@@ -64,7 +61,6 @@ from aimet_onnx.mixed_precision import (
 from aimet_common.defs import (
     QuantizationDataType,
     CallbackFunc,
-    qtype,
     int8,
     int16,
     float16,

@@ -54,11 +54,11 @@ import functools
 import torch
 from torch import nn
 
+from aimet_torch.common.utils import docstring
 from aimet_torch.v2.utils import (
     patch_attr,
     _is_expandable,
     StatisticsNotFoundError,
-    docstring,
     _torch_compiler_is_exporting,
 )
 from aimet_torch.v2.quantization.encoding_analyzer import (
