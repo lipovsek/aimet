@@ -223,7 +223,7 @@ class _CPUPeakSampler:
 
                 while not self._stop_evt.is_set():
                     # Get current memory usage in MB
-                    used_mb = _bytes_to_mb(proc.memory_info().vms)
+                    used_mb = _bytes_to_mb(proc.memory_info().rss)
 
                     # Only track intermediate data if requested
                     if self.capture_intermediate_data:
