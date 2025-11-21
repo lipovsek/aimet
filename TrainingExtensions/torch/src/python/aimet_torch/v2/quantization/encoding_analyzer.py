@@ -151,7 +151,7 @@ class _HistogramObserver(_Observer[_Histogram]):
             growth_limit = float("inf")
 
         if growth_limit < 1.0:
-            raise RuntimeError
+            raise RuntimeError(f"Growth limit must be at least 1.0. Got {growth_limit}")
 
         self.growth_limit = growth_limit
         self._histogram_range_limit = None
@@ -965,3 +965,16 @@ class TfEnhancedEncodingAnalyzer(SqnrEncodingAnalyzer):
             gamma=self._V1_GAMMA,
             histogram_growth_limit=self._V1_HISTOGRAM_MAX_GROWTH_RATE,
         )
+
+    @classmethod
+    def set_growth_limit(cls, growth_limit: float):
+        """
+        Sets the histogram growth limit factor for v1 tf-enhanced encoding analyzer
+
+        Args:
+            growth_limit (float): Growth limit factor to set
+        """
+        if growth_limit < 1.0:
+            raise RuntimeError(f"Growth limit must be at least 1.0. Got {growth_limit}")
+
+        cls._V1_HISTOGRAM_MAX_GROWTH_RATE = growth_limit
