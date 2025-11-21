@@ -95,6 +95,9 @@ def export(
         f: Same as `torch.onnx.export()`
         export_int32_bias (bool, optional):
             If true, generate and export int32 bias encoding on the fly (default: `True`)
+        prequantize_constants (bool):
+            If True, weights will be represented as quantized weight followed by DequantizeLinear nodes.
+            If False, weights will be represented as float tensors followed by QuantizeLinear and DequantizeLinear nodes.
         **kwargs: Same as `torch.onnx.export()`
 
 
@@ -126,6 +129,9 @@ def export(
         >>> torch.nn.functional.cosine_similarity(torch.from_numpy(onnx_output), sim.model(x))
         tensor([1.0000, 0.9999, 1.0000,  ..., 1.0000, 1.0000, 1.0000],
                grad_fn=<AliasBackward0>)
+
+    .. image:: ../../images/conv_qdq.onnx.svg
+        :align: center
     """
     if isinstance(model, QuantizationSimModel):
         model = model.model

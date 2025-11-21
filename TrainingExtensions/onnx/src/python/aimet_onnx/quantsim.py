@@ -2200,8 +2200,12 @@ class QuantizationSimModel:
             10
 
         Args:
-            prequantize_constants (bool): If True, output model will contain quantized values for constant tensors.
-                If False, the model will contain floating point data and Q -> DQ nodes.
+            prequantize_constants (bool):
+                If True, weights will be represented as quantized weight followed by DequantizeLinear nodes.
+                If False, weights will be represented as float tensors followed by QuantizeLinear and DequantizeLinear nodes.
+
+        .. image:: ../../images/conv_qdq.onnx.svg
+            :align: center
         """
         return self._to_onnx_qdq(prequantize_constants=prequantize_constants)
 
