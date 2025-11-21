@@ -610,6 +610,47 @@ class TestQuantSim:
             assert e1.get("axis") == e2.get("axis")
             assert e1.get("block_size") == e2.get("block_size")
 
+    def test_lstm_no_optional_outputs(self):
+        """
+        LSTM without optional input/outputs
+        """
+        lstm = onnx.helper.make_model(
+            ir_version=10,
+            opset_imports=[onnx.helper.make_opsetid("", 13)],
+            graph=onnx.helper.make_graph(
+                nodes=[
+                    onnx.helper.make_node(
+                        "LSTM",
+                        inputs=["input", "W", "R", "B"],
+                        outputs=["output"],
+                        hidden_size=4,
+                        name="lstm_node",
+                    )
+                ],
+                name="lstm_model",
+                inputs=[
+                    onnx.helper.make_tensor_value_info(
+                        "input", onnx.TensorProto.FLOAT, [1, 1, 3]
+                    ),
+                    onnx.helper.make_tensor_value_info(
+                        "W", onnx.TensorProto.FLOAT, [1, 12, 4]
+                    ),
+                    onnx.helper.make_tensor_value_info(
+                        "R", onnx.TensorProto.FLOAT, [1, 12, 4]
+                    ),
+                    onnx.helper.make_tensor_value_info(
+                        "B", onnx.TensorProto.FLOAT, [1, 32]
+                    ),
+                ],
+                outputs=[
+                    onnx.helper.make_tensor_value_info(
+                        "output", onnx.TensorProto.FLOAT, [1, 1, 4]
+                    )
+                ],
+            ),
+        )
+        self._test_lstm(lstm)
+
     @pytest.mark.parametrize("cls", [torch.nn.LSTM, torch.nn.GRU, torch.nn.RNN])
     @pytest.mark.parametrize("num_layers", [1, 2])
     @pytest.mark.parametrize("bidirectional", [False, True])
@@ -652,14 +693,28 @@ class TestQuantSim:
             output_names=output_names,
         )
         model = onnx.load(tmp_path / "rnn.onnx")
+        self._test_lstm(model)
 
+    def _test_lstm(self, model: onnx.ModelProto):
+        op_type = next(
+            node.op_type
+            for node in model.graph.node
+            if node.op_type in ("RNN", "GRU", "LSTM")
+        )
         hidden_state_names = []
         cell_state_names = []
         for node in model.graph.node:
             if node.op_type in ("RNN", "GRU", "LSTM"):
-                hidden_state_names += [node.input[5], node.output[0], node.output[1]]
+                if len(node.input) > 5:
+                    hidden_state_names.append(node.input[5])
+                hidden_state_names.append(node.output[0])
+                if len(node.output) > 1:
+                    hidden_state_names.append(node.output[1])
             if node.op_type == "LSTM":
-                cell_state_names += [node.input[6], node.output[2]]
+                if len(node.input) > 6:
+                    cell_state_names.append(node.input[6])
+                if len(node.output) > 2:
+                    cell_state_names.append(node.output[2])
 
         with _apply_constraints(True):
             sim = aimet_onnx.QuantizationSimModel(model)
@@ -674,31 +729,26 @@ class TestQuantSim:
         hidden_state_quantizers = {q for q in hidden_state_quantizers if q.enabled}
         assert len(hidden_state_quantizers) == 1
 
-        if cls == torch.nn.LSTM:
+        if op_type == "LSTM":
             cell_state_quantizers = set(
                 sim.qc_quantize_op_dict[name] for name in cell_state_names
             )
             cell_state_quantizers = {q for q in cell_state_quantizers if q.enabled}
-            assert len(cell_state_quantizers) == 1
+            assert len(cell_state_quantizers) == (1 if cell_state_names else 0)
 
         """
         When: Call _disable_lstm_cell_state_quantizers
         Then: LSTM cell quantizers should be disabled
         """
         sim._disable_lstm_cell_state_quantizers()
-        if cls == torch.nn.LSTM:
+        if op_type == "LSTM":
             cell_state_quantizers = set(
                 sim.qc_quantize_op_dict[name] for name in cell_state_names
             )
             cell_state_quantizers = {q for q in cell_state_quantizers if q.enabled}
             assert not cell_state_quantizers
 
-        inputs = [
-            {
-                input_name: inp.numpy()
-                for input_name, inp in zip(input_names, tree_flatten(inputs)[0])
-            }
-        ]
+        inputs = [make_dummy_input(model)]
         sim.compute_encodings(inputs)
 
         """
@@ -715,8 +765,8 @@ class TestQuantSim:
             providers=["CPUExecutionProvider"],
             sess_options=sess_options,
         )
-        output, hn, *cn = sess.run(None, inputs[0])
-        output_, hn_, *cn_ = sim.session.run(None, inputs[0])
+        output, *hncn = sess.run(None, inputs[0])
+        output_, *hncn_ = sim.session.run(None, inputs[0])
 
         output_scale = onnx.numpy_helper.to_array(
             next(
@@ -725,23 +775,29 @@ class TestQuantSim:
                 if tensor.name == "output_scale"
             )
         )
-        hn_scale = onnx.numpy_helper.to_array(
-            next(
-                tensor
-                for tensor in qdq_model.graph.initializer
-                if tensor.name == "hn_scale"
-            )
-        )
         assert np.allclose(output, output_, atol=output_scale)
-        assert np.allclose(hn, hn_, atol=hn_scale)
-        if isinstance(rnn, torch.nn.LSTM):
+
+        if hncn:
+            hn_scale = onnx.numpy_helper.to_array(
+                next(
+                    tensor
+                    for tensor in qdq_model.graph.initializer
+                    if tensor.name == "hn_scale"
+                )
+            )
+            hn, *_ = hncn
+            hn_, *_ = hncn_
+            assert np.allclose(hn, hn_, atol=hn_scale)
+
+        if len(hncn) > 1:
+            _, cn = hncn
+            _, cn_ = hncn_
             assert np.allclose(cn, cn_, rtol=1e-3)
 
-        """
-        When: Call _concretize_int32_lstm_cell_state_quantizers
-        Then: int32 LSTM cell quantizers should be instantiated with fixed scale 2**-20
-        """
-        if isinstance(rnn, torch.nn.LSTM):
+            """
+            When: Call _concretize_int32_lstm_cell_state_quantizers
+            Then: int32 LSTM cell quantizers should be instantiated with fixed scale 2**-20
+            """
             sim._concretize_int32_lstm_cell_state_quantizers()
             assert sim.qc_quantize_op_dict["c0"].enabled
             assert sim.qc_quantize_op_dict["cn"].enabled

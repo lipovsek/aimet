@@ -2825,10 +2825,11 @@ class QuantizationSimModel:
             if node.op_type != "LSTM":
                 continue
 
-            Y_c = node.output[2]  # Cell state of the last time stamp
-            initial_c = (
-                node.input[6] if len(node.input) >= 7 else None
-            )  # Initial cell state
+            # Cell state of the last time stamp
+            Y_c = node.output[2] if len(node.output) >= 3 else None
+
+            # Initial cell state
+            initial_c = node.input[6] if len(node.input) >= 7 else None
 
             if Y_c:
                 Y_c_qtzr = self.qc_quantize_op_dict.get(Y_c)
