@@ -56,7 +56,7 @@ from onnx.external_data_helper import (
 )
 from onnxruntime import SessionOptions, InferenceSession
 import shutil
-
+from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from aimet_onnx.common import libquant_info
 from aimet_onnx.common.utils import AimetLogger, compute_psnr, deprecated
 from aimet_onnx.common.onnx._utils import (  # pylint: disable=unused-import
@@ -910,3 +910,63 @@ def map_torch_dtype_to_np(torch_dtype: torch.dtype) -> np.dtype:
         return dtype_map[torch_dtype]
     except KeyError as exc:
         raise ValueError(f"Unsupported torch dtype: {torch_dtype}") from exc
+
+
+@contextmanager
+def _remove_initializer_data(model: onnx.ModelProto):
+    # Hacky way to get around onnx.shape_inference.infer_shapes call as it doesn't work for model >2GB
+    raw_data = {}
+
+    try:
+        # Store and clear raw_data from initializers
+        for initializer in model.graph.initializer:
+            if initializer.HasField("raw_data"):
+                raw_data[initializer.name] = initializer.raw_data
+                initializer.ClearField("raw_data")
+
+        yield
+
+    finally:
+        for initializer in model.graph.initializer:
+            if initializer.name in raw_data:
+                initializer.raw_data = raw_data[initializer.name]
+
+
+@contextmanager
+def add_value_info(model: onnx.ModelProto):
+    """
+    Context manager to add value_info to model graph by performing shape inference.
+    :param model: ONNX ModelProto
+    """
+    initial_value_info = model.graph.value_info
+
+    # Remove weight data to allow shape inference (fails for models > 2GB)
+    with _remove_initializer_data(model):
+        model_copy = onnx.ModelProto()
+        model_copy.CopyFrom(model)
+
+    # Replace quantizers with Identity ops to allow shape inference
+    for node in model_copy.graph.node:
+        if node.op_type != "QcQuantizeOp":
+            continue
+
+        node.op_type = "Identity"
+        node.ClearField("attribute")
+        node.ClearField("domain")
+
+    # Model must be topologically sorted prior to shape inference
+    ONNXModel(model_copy).topological_sort()
+    inferred_model = onnx.shape_inference.infer_shapes(model_copy)
+
+    value_info = inferred_model.graph.value_info
+    del model_copy, inferred_model
+
+    try:
+        # Update model's value info
+        model.graph.ClearField("value_info")
+        model.graph.value_info.extend(value_info)
+        yield
+    finally:
+        # Restore original value info
+        model.graph.ClearField("value_info")
+        model.graph.value_info.extend(initial_value_info)

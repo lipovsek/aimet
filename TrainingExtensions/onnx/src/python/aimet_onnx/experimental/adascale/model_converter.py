@@ -7,36 +7,30 @@ from aimet_onnx.experimental.adascale.quantizer import QuantizedLinear, Quantize
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 import onnx
 from onnx import numpy_helper
-import os
-from onnx.utils import extract_model
+from onnx.utils import Extractor
 from onnx2torch import convert
 from aimet_onnx.experimental.adascale.onnx2torch_ext import *  # pylint: disable=wildcard-import, unused-wildcard-import
+from aimet_onnx.utils import add_value_info
 from aimet_onnx.quantsim import QuantizationSimModel
 from onnx2torch.onnx_graph import OnnxGraph
-import tempfile
 from typing import Tuple, List, Dict, Collection
 
 filter_op = ["MatMul", "Conv"]
 
 
 def _get_onnx_subgraph(
-    onnx_fp_model_path: str,
+    extractor: Extractor,
     block_input_output_names: Tuple[List[str], List[str]],
-    block_model_path: str,
 ):
     """
     Given a onnx block end points get onnx subgraph
     """
-    block_model_path = os.path.join(block_model_path, "block_fp32.onnx")
     block_input_names, block_output_names = block_input_output_names
     try:
-        extract_model(
-            onnx_fp_model_path,
-            block_model_path,
+        block_fp32_model = extractor.extract_model(
             block_input_names,
             block_output_names,
         )
-        block_fp32_model = onnx.load(block_model_path)
         return block_fp32_model
     except Exception:
         raise RuntimeError(  # pylint: disable=raise-missing-from
@@ -67,17 +61,18 @@ def _get_onnx_block_info(onnx_subgraph: onnx.ModelProto):
 
 
 def get_pt_block(
-    onnx_model_path: str, block_input_output_names: Tuple[List[str], List[str]]
+    model: onnx.ModelProto, block_input_output_names: Tuple[List[str], List[str]]
 ):
     """
     Given a onnx block end points get a pytorch block
-    :param onnx_model_path: path of original onnx model
+    :param model: onnx.ModelProto
     :param block_input_output_names: input/output names for block end points
     """
-    with tempfile.TemporaryDirectory() as tempdir:
-        onnx_block = _get_onnx_subgraph(
-            onnx_model_path, block_input_output_names, tempdir
-        )
+    # As of onnx 1.18, value info must be populated prior to instantiating Extractor
+    with add_value_info(model):
+        extractor = Extractor(model)
+        onnx_block = _get_onnx_subgraph(extractor, block_input_output_names)
+        onnx_block = QuantizationSimModel.remove_quantizers(onnx_block)
         param_map = _get_onnx_block_info(onnx_block)
         return convert(onnx_block), param_map
 

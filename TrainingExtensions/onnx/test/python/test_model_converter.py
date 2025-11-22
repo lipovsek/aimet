@@ -92,6 +92,7 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
     )
 
     inputs = _prefill_inputs(sim, generator, train_dataset, num_iterations=5)
+
     ################ fp32 onnx model
     CHECKPOINT_DIR = str(os.path.join(tmp_dir, "onnx_checkpoints_debugging"))
     CHECKPOINT_FP_DIR = str(os.path.join(CHECKPOINT_DIR, "fp_model.onnx"))
@@ -131,7 +132,7 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
         )
         block_output_names = [block_end.inputs[0].name]
         block_input_output_names = (block_input_names, block_output_names)
-        pt_block, param_map = get_pt_block(fp_model_path, block_input_output_names)
+        pt_block, param_map = get_pt_block(sim.model.model, block_input_output_names)
         ################ run forward pass 1 through onnx block
         block_model_path = os.path.join(CHECKPOINT_DIR, "block_fp32.onnx")
         extract_model(
@@ -229,7 +230,7 @@ def test_model_with_conv(tmp_dir):
         dynamo=False,
     )
     onnx_model = onnx.load(onnx_model_path)
-    pt_block, param_map = get_pt_block(onnx_model_path, (["input"], ["output"]))
+    pt_block, param_map = get_pt_block(onnx_model, (["input"], ["output"]))
     # forwardpass through onnx == forward pass through pt Block
     onnx_block_model_sess = ort.InferenceSession(
         onnx_model_path, providers=["CPUExecutionProvider"]
@@ -286,7 +287,7 @@ def test_model_with_ModelWithConsecutiveConvBlocks(
     get_onnx_block_model = extract_model(
         onnx_model_path, "extracted.onnx", input_names, output_names
     )
-    pt_block, param_map = get_pt_block(onnx_model_path, (input_names, output_names))
+    pt_block, param_map = get_pt_block(onnx_model, (input_names, output_names))
 
     # forwardpass through onnx == forward pass through pt Block
     onnx_block_model_sess = ort.InferenceSession(

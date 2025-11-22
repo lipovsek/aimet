@@ -561,7 +561,6 @@ class TestAdascaleQuantizer:
                     (["/blocks.0/layer2/Add_output_0"], ["output"]),
                 ]
                 AdaScale.optimize_adascale_block(
-                    tempdir + "/model.onnx",
                     sim,
                     dummy_input,
                     qt_input,
@@ -625,7 +624,7 @@ def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
             "min": float(np.min(weight_array)),
             "max": float(np.max(weight_array)),
         }
-    adascale_model_config_dict["Qwen2Model"].model_config = llm_config
+    adascale_model_config_dict["qwen2"].model_config = llm_config
 
     inputs = {
         "input_ids": np.random.randint(0, 100, size=(1, 16), dtype=np.int32),
@@ -648,7 +647,7 @@ def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     AdaScale.apply_adascale(
         sim,
         [inputs],
-        adascale_model_config_dict["Qwen2Model"],
+        adascale_model_config_dict["qwen2"],
         num_iterations=2,
     )
 
@@ -720,7 +719,9 @@ def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
 
         inputs = _prefill_inputs(sim, generator, train_dataset, num_iterations=20)
 
-        adascale_model_config_dict["Qwen2Model"].model_config = llm_config
+        adascale_model_config_dict[
+            generator.config.model_type
+        ].model_config = llm_config
 
         for name in sim.activation_names:
             sim.qc_quantize_op_dict[name].enabled = False
@@ -734,7 +735,7 @@ def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
         AdaScale.apply_adascale(
             sim,
             inputs,
-            adascale_model_config_dict["Qwen2Model"],
+            adascale_model_config_dict[generator.config.model_type],
             num_iterations=1500,
         )
 

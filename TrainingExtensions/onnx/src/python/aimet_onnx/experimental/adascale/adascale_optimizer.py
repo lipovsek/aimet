@@ -5,15 +5,12 @@
 
 import contextlib
 from typing import Collection, Dict, List, Tuple
-
-import os
 import copy
 from dataclasses import dataclass
 import numpy as np
 import torch
 import tqdm
 import tempfile
-import onnx
 
 from aimet_onnx.common.utils import AimetLogger  # pylint: disable=import-error
 from aimet_onnx.experimental.adascale.utils import convert_to_torch
@@ -54,9 +51,9 @@ class AdaScaleModelConfig:
 
 # mapping of model type and the corresponding adascale config
 adascale_model_config_dict = {
-    "LlamaModel": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
-    "Qwen2Model": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
-    "MistralModel": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
+    "llama": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
+    "qwen2": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
+    "mistral": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
 }
 
 
@@ -121,12 +118,6 @@ class AdaScale:
             with tempfile.TemporaryDirectory() as tempdir:
                 fp32_model = copy.deepcopy(sim.model.model)
                 fp32_model = QuantizationSimModel.remove_quantizers(fp32_model)
-                fp32_model_path = os.path.join(tempdir, "fp_model.onnx")
-                onnx.save_model(
-                    fp32_model,
-                    fp32_model_path,
-                    save_as_external_data=True,
-                )
 
                 for idx in range(len(blocks_end_points)):
                     if (
@@ -191,7 +182,6 @@ class AdaScale:
                     )
 
                     AdaScale.optimize_adascale_block(
-                        fp32_model_path,
                         sim,
                         fp_input_list,
                         qsim_input_list,
@@ -217,7 +207,6 @@ class AdaScale:
 
     @staticmethod
     def optimize_adascale_block(
-        fp32_model_path: str,
         sim: QuantizationSimModel,
         fp_inputs: List[torch.Tensor],
         quantized_inputs: List[torch.Tensor],
@@ -248,9 +237,8 @@ class AdaScale:
         - sim would be updated in place with adascaled weights
 
         """
-
         pytorch_block, pt_weights_to_onnx_initializers = get_pt_block(
-            fp32_model_path, block_input_output_names
+            sim.model.model, block_input_output_names
         )
         pytorch_block.requires_grad_(False)
 

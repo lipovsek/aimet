@@ -16,6 +16,10 @@ from aimet_onnx.quantsim import (
     set_grouped_blockwise_quantization_for_weights,
 )
 from aimet_onnx.sequential_mse.seq_mse import SeqMseParams, SequentialMse
+from aimet_onnx.experimental.adascale.adascale_optimizer import (
+    AdaScale,
+    adascale_model_config_dict,
+)
 
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.generator import Generator
@@ -193,3 +197,30 @@ class LPBQ_SeqMSE(QuantizationTechnique):
             nodes_to_exclude=_get_lm_head_node_names(quantsim),
         )
         SeqMSE.apply(quantsim, generator, dataloader, num_iterations)
+
+
+@YAMLConfigParser.register_recipe
+class Adascale(QuantizationTechnique):
+    """Apply AdaScale to model"""
+
+    @staticmethod
+    def apply(
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        num_iterations: int = 1500,
+    ):
+        inputs = _prefill_inputs(quantsim, generator, dataloader, num_iterations=20)
+        AdaScale.apply_adascale(
+            quantsim,
+            inputs,
+            adascale_model_config_dict[generator.config.model_type],
+            num_iterations,
+        )
+
+        # check generator config
+        def _forward(session, _):
+            for batch in tqdm(inputs, total=len(inputs), desc="Calibrating"):
+                session.run(None, batch)
+
+        quantsim.compute_encodings(_forward, tuple())
