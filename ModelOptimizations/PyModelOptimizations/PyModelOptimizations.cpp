@@ -95,10 +95,6 @@ PYBIND11_MODULE(_libpymo, m)
         .def_readwrite("offset", &DlQuantization::TfEncoding::offset)
         .def_readwrite("bw", &DlQuantization::TfEncoding::bw);
 
-    // Factory func
-    py::class_<IQuantizer<float>>(m, "Quantizer");
-    m.def("GetQuantizationInstance", &GetQuantizerInstance<float>);
-
     py::class_<IQuantizationEncodingAnalyzer<float>>(m, "QuantizationEncodingAnalyzer");
     m.def("GetQuantizationEncodingAnalyzerInstance", &getEncodingAnalyzerInstance<float>);
 

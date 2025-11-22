@@ -37,8 +37,6 @@
 add_library(MoDlQuantization STATIC
 
       src/IQuantizationAlgorithm.hpp
-      src/MainQuantizationClass.cpp
-      src/MainQuantizationClass.hpp
       src/spec_functions.hpp
       src/spec_functions.cpp
       src/math_functions.cpp
@@ -46,10 +44,6 @@ add_library(MoDlQuantization STATIC
       src/quantization_utils.cpp
       src/quantization_utils.hpp
       src/QuantizerFactory.cpp
-      src/TfEnhancedQuantizer.cpp
-      src/TfEnhancedQuantizer.hpp
-      src/TfQuantizer.cpp
-      src/TfQuantizer.hpp
       src/trim_functions.cpp
       src/trim_functions.hpp
       src/tensor_utils.cpp
@@ -76,7 +70,6 @@ add_library(MoDlQuantization STATIC
       src/EncodingAnalyzerForPython.cpp
       src/TensorQuantizationSimForPython.cpp
       src/TensorQuantizer.cpp
-      src/GraphQuantizer.cpp
       src/Fp16Quantization.cpp
 
       include/DlQuantization/IQuantizer.hpp
@@ -87,7 +80,6 @@ add_library(MoDlQuantization STATIC
       include/DlQuantization/EncodingAnalyzerForPython.h
       include/DlQuantization/TensorQuantizationSimForPython.h
       include/DlQuantization/TensorQuantizer.h
-      include/DlQuantization/GraphQuantizer.h
       include/DlQuantization/Fp16Quantization.hpp
       include/DlQuantization/EncodingRescale.hpp
       )

@@ -40,14 +40,10 @@ include_directories(BEFORE
 
 add_executable(MoDlQuantizationTest
       test_quantization_lib.hpp
-      test_quantization_lib_tf_enhanced_cpugpu.cpp
-      test_quantization_lib_tf_cpu.cpp
-      test_quantization_lib_tf_cpugpu.cpp
       TestTfEnhancedEncodingAnalyzer.cpp
       TestTfEncodingAnalyzer.cpp
       TestTensorQuantizationSim.cpp
       TestTensorQuantizer.cpp
-      TestGraphQuantizer.cpp
       TestUtilities.cpp
       TestPercentileEncodingAnalyzer.cpp
       TestMinMaxEncodingAnalyzer.cpp

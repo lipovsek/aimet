@@ -46,7 +46,6 @@
 #include "DlQuantization/Quantization.hpp"
 #include "DlQuantization/QuantizerFactory.hpp"
 #include "EntropyEncodingAnalyzer.h"
-#include "MainQuantizationClass.hpp"
 #include "MinMaxEncodingAnalyzer.h"
 #include "MseEncodingAnalyzer.h"
 #include "PercentileEncodingAnalyzer.h"
@@ -57,21 +56,6 @@
 
 namespace DlQuantization
 {
-template <typename DTYPE>
-IQuantizer<DTYPE>* GetQuantizerInstance(const std::vector<std::string>& layer_names, ComputationMode mode_cpu_gpu,
-                                        const std::vector<int>& bw_activations, QuantizationMode quantization_mode)
-{
-    IQuantizer<DTYPE>* instance =
-        new MainQuantizationClass<DTYPE>(layer_names, mode_cpu_gpu, bw_activations, quantization_mode);
-
-    return instance;
-}
-
-std::unique_ptr<GraphQuantizer> getGraphQuantizerInstance(const std::vector<std::string>& tensorNames,
-                                                          ComputationMode modeCpuGpu, QuantizationMode quantMode)
-{
-    return std::unique_ptr<GraphQuantizer>(new GraphQuantizer(tensorNames, modeCpuGpu, quantMode));
-}
 
 template <typename DTYPE>
 std::unique_ptr<IQuantizationEncodingAnalyzer<DTYPE>> getEncodingAnalyzerInstance(QuantizationMode quantization_mode)
@@ -113,16 +97,6 @@ std::unique_ptr<ITensorQuantizationSim<DTYPE>> getTensorQuantizationSim()
 {
     return std::unique_ptr<ITensorQuantizationSim<DTYPE>>(new TensorQuantizationSim<DTYPE>());
 }
-
-
-// Explicit instantiations
-template IQuantizer<double>* GetQuantizerInstance(const std::vector<std::string>& layer_names,
-                                                  ComputationMode mode_cpu_gpu, const std::vector<int>& bw_activations,
-                                                  QuantizationMode quantization_mode);
-
-template IQuantizer<float>* GetQuantizerInstance(const std::vector<std::string>& layer_names,
-                                                 ComputationMode mode_cpu_gpu, const std::vector<int>& bw_activations,
-                                                 QuantizationMode quantization_mode);
 
 template std::unique_ptr<IQuantizationEncodingAnalyzer<float>>
 getEncodingAnalyzerInstance(QuantizationMode quantization_mode);

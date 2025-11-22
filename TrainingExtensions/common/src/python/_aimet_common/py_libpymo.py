@@ -66,7 +66,6 @@ libpymo_classes = [
 libpymo_functions = [
     "str_to_dtype",
     "str_to_rank",
-    "GetQuantizationInstance",
     "GetQuantizationEncodingAnalyzerInstance",
     "PtrToInt64",
     "getScaleFactor",
