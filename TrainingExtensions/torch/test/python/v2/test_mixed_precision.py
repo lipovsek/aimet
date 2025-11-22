@@ -71,7 +71,7 @@ from aimet_torch.amp.mixed_precision_algo import (
     _compute_sqnr,
 )
 from aimet_torch.mixed_precision import choose_mixed_precision
-from aimet_torch.amp.quantizer_groups import QuantizerGroup
+from aimet_torch.amp.quantizer_groups import QuantizerGroup, find_quantizer_group
 from aimet_torch.v2.nn import BaseQuantizationMixin
 from aimet_torch.nn.modules import custom
 from aimet_torch.v2.amp.utils import _mock_v1_quantizers
@@ -1858,6 +1858,7 @@ def test_pyfloat_input(results_dir):
 @pytest.mark.parametrize(
     "model, dummy_input",
     [
+        (test_models.BranchModel(), test_models.BranchModel.dummy_input()),
         (test_models.SingleResidual(), test_models.SingleResidual.dummy_input()),
         (
             test_models.ModelWithMultiInputOps(),
@@ -1960,3 +1961,118 @@ def test_choose_mixed_precision(tmp_path, model, dummy_input, config_file):
     assert eval_phase_2(sim.model, None) >= 0.75
     # Number of unique quantizers should not change (sharing should be preserved)
     assert len(get_all_quantizers(sim.model)) == num_unique_quantizers
+
+
+@pytest.mark.parametrize(
+    "model, dummy_input",
+    [
+        (test_models.BranchModel(), test_models.BranchModel.dummy_input()),
+        (test_models.ReshapeInputModel(), test_models.ReshapeInputModel.dummy_input()),
+        (test_models.ReshapeConvModel(), test_models.ReshapeConvModel.dummy_input()),
+        (
+            test_models.BranchDataMovementConvModel(),
+            test_models.BranchDataMovementConvModel.dummy_input(),
+        ),
+        (test_models.SingleResidual(), test_models.SingleResidual.dummy_input()),
+        (
+            test_models.ModelWithMultiInputOps(),
+            test_models.ModelWithMultiInputOps.dummy_input(),
+        ),
+        (
+            test_models.ModelWithReluAfterSplit(),
+            test_models.ModelWithReluAfterSplit.dummy_input(),
+        ),
+        (
+            test_models.ModelWithFunctionalReLU(),
+            test_models.ModelWithFunctionalReLU.dummy_input(),
+        ),
+        (
+            test_models.ModelWithSeveralDataMovementOps(),
+            test_models.ModelWithSeveralDataMovementOps.dummy_input(),
+        ),
+        (
+            test_models.ModelWithTwoInputs(),
+            test_models.ModelWithTwoInputs.dummy_input(),
+        ),
+        (test_models.TupleOutputModel(), test_models.TupleOutputModel.dummy_input()),
+        (
+            test_models.ModelWithTwoInputsTwoOutputs(),
+            test_models.ModelWithTwoInputsTwoOutputs.dummy_input(),
+        ),
+        (
+            test_models.NestedSequentialModel(),
+            test_models.NestedSequentialModel.dummy_input(),
+        ),
+        (
+            test_models.NestedModelWithOverlappingNames(),
+            test_models.NestedModelWithOverlappingNames.dummy_input(),
+        ),
+    ],
+)
+def test_quantizer_group_completeness(model, dummy_input):
+    sim = QuantizationSimModel(model, dummy_input)
+
+    with _mock_v1_quantizers(sim):
+        quantizer_mapping, quantizer_groups = find_quantizer_group(sim)
+
+        sim_quantizers = {
+            q
+            for layer in sim.qmodules()
+            for q in itertools.chain(
+                layer.input_quantizers,
+                layer.output_quantizers,
+                layer.param_quantizers.values(),
+            )
+            if q.enabled
+        }
+        quantizer_group_quantizers = [
+            q
+            for group in quantizer_groups
+            for q in group.get_active_quantizers(quantizer_mapping)
+        ]
+
+    # Check that there are no missing quantizers
+    assert set(quantizer_group_quantizers) == sim_quantizers
+    # Check that there are no duplicate quantizers
+    assert len(quantizer_group_quantizers) == len(sim_quantizers)
+
+
+def test_quantizer_groups_math_invariant_input():
+    model = test_models.ReshapeConvModel()
+    dummy_input = model.dummy_input()
+    sim = QuantizationSimModel(model, dummy_input)
+    with _mock_v1_quantizers(sim):
+        _, quantizer_groups = find_quantizer_group(sim)
+        assert len(quantizer_groups) == 2
+
+
+def test_quantizer_groups_branch_model():
+    model = test_models.BranchDataMovementConvModel()
+    dummy_input = model.dummy_input()
+    sim = QuantizationSimModel(model, dummy_input)
+    with _mock_v1_quantizers(sim):
+        quantizer_mapping, quantizer_groups = find_quantizer_group(sim)
+        grouped_quantizers = [
+            qg.get_active_quantizers(quantizer_mapping) for qg in quantizer_groups
+        ]
+        # Check that param quantizers are correctly grouped together with the shared add output quantizer
+        conv1_weight_quantizer = sim.model.conv1.param_quantizers["weight"]
+        conv1_weight_quantizer_group = [
+            group for group in grouped_quantizers if conv1_weight_quantizer in group
+        ]
+        assert len(conv1_weight_quantizer_group) == 1
+        (conv1_weight_quantizer_group,) = conv1_weight_quantizer_group
+        assert (
+            sim.model.conv2.param_quantizers["weight"] in conv1_weight_quantizer_group
+        )
+        assert sim.model.add.output_quantizers[0] in conv1_weight_quantizer_group
+        # Check that all other quantizers are in their own groups
+        for q in itertools.chain(
+            sim.model.conv1.output_quantizers,
+            sim.model.conv2.output_quantizers,
+            sim.model.add.input_quantizers,
+        ):
+            q_groups = [group for group in grouped_quantizers if q in group]
+            assert len(q_groups) == 1
+            (q_group,) = q_groups
+            assert len(q_group) == 1

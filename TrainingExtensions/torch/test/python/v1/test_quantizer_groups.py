@@ -69,11 +69,11 @@ class TestQuantizerGroups:
         assert len(op_groups) == 11
         # Check if there is one parent and one child
         for parent, child in op_groups.items():
-            assert not isinstance(parent, tuple)
-            assert len(child) == 1
-        assert "input_ops" in op_groups
-        assert op_groups["input_ops"] == ["SmallMnist.conv1"]
-        assert op_groups["output_ops"] == ["SmallMnist.log_softmax"]
+            if not child:
+                assert parent == "SmallMnist.log_softmax"
+            else:
+                assert len(child) == 1
+        assert op_groups[()] == ["SmallMnist.conv1"]
         assert "SmallMnist.conv1" in op_groups
         assert "SmallMnist.relu2" in op_groups["SmallMnist.conv2_drop"]
 
@@ -85,7 +85,7 @@ class TestQuantizerGroups:
         )
         connected_graph = ConnectedGraph(model, inp_tensor_list)
         op_groups = find_op_groups(connected_graph)
-        assert len(op_groups) == 3
+        assert len(op_groups) == 4
         assert len(op_groups["ModelWithOneSplit.conv1"]) == 2
 
     def test_single_residual_network(self):
@@ -102,7 +102,7 @@ class TestQuantizerGroups:
             op for op in connected_graph.get_all_ops().values() if op.type == "Add"
         ][0]
         for _, child in op_groups.items():
-            if tuple(child)[0] == add_op.name:
+            if add_op.name in tuple(child):
                 count += 1
         assert count == 2
         assert op_groups["SingleResidual.relu1"] == [
@@ -128,7 +128,7 @@ class TestQuantizerGroups:
             op for op in conn_graph.get_all_ops().values() if op.type == "Concat"
         ][0]
         for _, child in op_groups.items():
-            if tuple(child)[0] == concat_op.name:
+            if concat_op.name in tuple(child):
                 count += 1
 
         assert count == 3

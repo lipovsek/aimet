@@ -1695,6 +1695,89 @@ class RoPE(nn.Module):
         return x
 
 
+class BranchModel(nn.Module):
+    def __init__(self):
+        super(BranchModel, self).__init__()
+        self.softmax = nn.Softmax(dim=-1)
+        self.add = aimet_modules.Add()
+        self.register_buffer(
+            "constant", torch.randn([1, 3, 32, 32], dtype=torch.float32)
+        )
+        self.conv = nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        x = self.softmax(x)
+        y = self.add(x, self.constant)
+        z = self.conv(x)
+        return y, z
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(1, 3, 32, 32),)
+
+
+class ReshapeInputModel(nn.Module):
+    def __init__(self):
+        super(ReshapeInputModel, self).__init__()
+        self.reshape = aimet_modules.Reshape()
+        self.add = aimet_modules.Add()
+        self.register_buffer(
+            "constant", torch.ones([1, 3, 32, 32], dtype=torch.float32)
+        )
+        self.conv = nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        x = self.reshape(x, [1, 3, 32, 32])
+        x = self.add(x, self.constant)
+        x = self.conv(x)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(3, 32, 32),)
+
+
+class ReshapeConvModel(nn.Module):
+    def __init__(self):
+        super(ReshapeConvModel, self).__init__()
+        self.reshape = aimet_modules.Reshape()
+        self.conv = nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        x = self.reshape(x, [1, 3, 32, 32])
+        x = self.conv(x)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(3, 32, 32),)
+
+
+class BranchDataMovementConvModel(nn.Module):
+    def __init__(self):
+        super(BranchDataMovementConvModel, self).__init__()
+        self.add = aimet_modules.Add()
+        self.register_buffer("constant", torch.ones([3, 32, 32], dtype=torch.float32))
+        self.reshape0 = aimet_modules.Reshape()
+        self.reshape1 = aimet_modules.Reshape()
+        self.reshape2 = aimet_modules.Reshape()
+        self.conv1 = nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(3, 8, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        x = self.add(x, self.constant)
+        x0 = self.reshape0(x, [1, 3, 32, 32])
+        x1 = self.reshape1(x, [1, 3, 32, 32])
+        x2 = self.reshape2(x, [1, 3, 32, 32])
+        conv1_out = self.conv1(x1)
+        conv2_out = self.conv2(x2)
+        return x0, conv1_out, conv2_out
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(3, 32, 32),)
+
+
 class SingleHeadAttention(nn.Module):
     def __init__(self, config):
         super().__init__()

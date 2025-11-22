@@ -261,6 +261,9 @@ def find_output_quantizer_groups(
         for consumer in consumers:
             if consumer.type in ops_not_to_traverse:
                 continue
+            # Only propagate through math invariant ops if the first input is from the current op
+            if consumer.type in ops_to_skip and consumer.inputs[0] not in op.outputs:
+                continue
             dotted_name = op.dotted_name
             if op.dotted_name in map_for_skipped_ops:
                 dotted_name = map_for_skipped_ops[op.dotted_name]
@@ -272,9 +275,6 @@ def find_output_quantizer_groups(
             # If there is a one to one connection between quantizers
             else:
                 parent_child_op_groups[dotted_name].append(consumer.dotted_name)
-    else:
-        if op.dotted_name in map_for_skipped_ops:
-            parent_child_op_groups[map_for_skipped_ops[op.dotted_name]] = []
 
 
 def find_op_groups(graph: ConnectedGraph) -> Dict:
@@ -288,16 +288,15 @@ def find_op_groups(graph: ConnectedGraph) -> Dict:
     parent_child_op_groups = defaultdict(list)
     map_for_skipped_ops = {}
 
-    for op in graph.ordered_ops:
-        # Add 1st op as child
-        if not op.input_ops:
-            parent_child_op_groups["input_ops"].append(op.dotted_name)
-        # Add output op as child to put output of model as a quantizer group
-        if not op.outputs:
-            parent_child_op_groups["output_ops"].append(op.dotted_name)
     for op in graph.get_all_ops().values():
-        if op.type in ops_to_skip or op.type in ops_not_to_traverse:
+        if op.type in ops_not_to_traverse:
             continue
+        # Use empty tuple() for input op parent
+        if not op.input_ops and op.type not in ops_to_skip:
+            parent_child_op_groups[tuple()].append(op.dotted_name)
+        if op.type in ops_to_skip and op.input_ops:
+            continue
+        parent_child_op_groups[op.dotted_name] = []
         find_output_quantizer_groups(op, parent_child_op_groups, map_for_skipped_ops)
 
     return parent_child_op_groups
@@ -378,139 +377,123 @@ def find_quantizer_group(
 
     quantizer_groups = []
 
+    def _add_quantizer_group(
+        activation_quantizers=tuple(),
+        parameter_quantizers=tuple(),
+        supported_kernel_ops=tuple(),
+    ):
+        """
+        Helper function to add a QuantizerGroup
+
+        :param activation_quantizers: Tuple of activation quantizer names
+        :param parameter_quantizers: Tuple of parameter quantizer names
+        :param supported_kernel_ops: Tuple of supported kernel op names
+        """
+        if not activation_quantizers and not parameter_quantizers:
+            return
+        input_quantizers = tuple(
+            q for q in activation_quantizers if "input_quantizer_idx_" in q
+        )
+        output_quantizers = tuple(
+            q for q in activation_quantizers if q not in input_quantizers
+        )
+        supported_kernel_ops = tuple(
+            name for name in supported_kernel_ops if name is not None
+        )
+        quantizer_group = QuantizerGroup(
+            input_quantizers=input_quantizers,
+            output_quantizers=output_quantizers,
+            parameter_quantizers=parameter_quantizers,
+            supported_kernel_ops=supported_kernel_ops,
+        )
+        if quantizer_group not in quantizer_groups:
+            quantizer_groups.append(quantizer_group)
+            logger.debug("\n Quantizer Group added: %s", quantizer_group)
+
     parent_child_op_groups = find_op_groups(connected_graph)
 
     module_name_to_module_dict = get_module_name_to_module_dict(sim)
 
-    if "input_ops" in parent_child_op_groups:
-        for child in parent_child_op_groups["input_ops"]:
-            # Add one quantizer group for each input and it's weight param
-            input_quantizers, parameter_quantizers = get_input_and_param_quantizers(
-                child, module_name_to_module_dict
-            )
-            if input_quantizers or parameter_quantizers:
-                child_module_name, _ = find_wrapper_module(
-                    child, module_name_to_module_dict
-                )
-                supported_kernel_ops = []
-                if child_module_name is not None:
-                    supported_kernel_ops.append(child_module_name)
-
-                if parameter_quantizers:
-                    if len(input_quantizers) > 1:
-                        # Unexpected case of having multiple inputs with a parameter. Leave these out of quantizer group selection.
-                        debug_str = (
-                            f"Skipping unsupported case of multiple inputs with params detected for input op "
-                            f"{child}."
-                        )
-                        logger.debug(debug_str)
-                        continue
-                    quantizer_group = QuantizerGroup(
-                        input_quantizers=input_quantizers,
-                        parameter_quantizers=parameter_quantizers,
-                        supported_kernel_ops=tuple(supported_kernel_ops),
-                    )
-                    quantizer_groups.append(quantizer_group)
-                    logger.debug("\n Quantizer Group Added: %s", quantizer_group)
-                else:
-                    # Create a quantizer group for each input_quantizer
-                    for input_quantizer in input_quantizers:
-                        quantizer_group = QuantizerGroup(
-                            input_quantizers=(input_quantizer,),
-                            parameter_quantizers=(),
-                            supported_kernel_ops=tuple(supported_kernel_ops),
-                        )
-                        quantizer_groups.append(quantizer_group)
-                        logger.debug("\n Quantizer Group Added: %s", quantizer_group)
-
     # Based on which quantizers are enabled, create a list of quantizer_groups
     for parents, children in parent_child_op_groups.items():
-        input_quantizers = ()
-        output_quantizers = ()
-        parameter_quantizers = ()
-        if parents in ["input_ops", "output_ops"]:
-            continue
         if not isinstance(parents, tuple):
             parents = [parents]
+
+        shared_quantizers = ()
         for parent in parents:
             module_name, module = find_wrapper_module(
                 parent, module_name_to_module_dict
             )
             if module is not None:
-                for output_quantizer in module.output_quantizers:
-                    if output_quantizer.enabled:
-                        output_quantizers += (module_name,)
+                parent_quantizers = [
+                    module_name for q in module.output_quantizers if q.enabled
+                ]
+                # If parent op is math invariant, can use its input quantizer as a shared quantizer
+                if (
+                    not parent_quantizers
+                    and connected_graph.get_op_from_module_name(parent).type
+                    in ops_to_skip
+                ):
+                    parent_quantizers, _ = get_input_and_param_quantizers(
+                        parent, module_name_to_module_dict
+                    )
+                shared_quantizers += tuple(parent_quantizers)
 
-        supported_kernel_ops = []
+        param_quantizer_dict = {}
+        input_quantizer_dict = {}
         for child in children:
-            input_q, param_q = get_input_and_param_quantizers(
-                child, module_name_to_module_dict
-            )
-            input_quantizers += input_q
-            parameter_quantizers += param_q
             child_module_name, _ = find_wrapper_module(
                 child, module_name_to_module_dict
             )
-            if child_module_name is not None:
-                supported_kernel_ops.append(child_module_name)
+            input_q, param_q = get_input_and_param_quantizers(
+                child, module_name_to_module_dict
+            )
+            if param_q:
+                param_quantizer_dict[child_module_name] = param_q
+            input_quantizer_dict[child_module_name] = input_q
 
-        # Don't add quantizer group if it is empty
-        if input_quantizers or output_quantizers or parameter_quantizers:
+        if shared_quantizers:
+            # All consumers ops must be considered regardless of whether they have param quantizers
+            supported_kernel_ops = tuple(input_quantizer_dict.keys())
+            # Add input quantizers from child layers (usually will be none)
+            for name in param_quantizer_dict.keys():
+                shared_quantizers += input_quantizer_dict.pop(name)
+            # Param quantizers include all child parameter quantizers
+            parameter_quantizers = tuple(
+                itertools.chain.from_iterable(param_quantizer_dict.values())
+            )
+            # If there are param quantizers, group them with all input/output quantizers
             if parameter_quantizers:
-                if len(input_quantizers) + len(output_quantizers) > 1:
-                    # Unexpected case of having multiple inputs with a parameter. Leave these out of quantizer group selection.
-                    debug_str = (
-                        f"Skipping unsupported case of multiple inputs with params detected for parents "
-                        f"{parents} and children {children}."
-                    )
-                    logger.debug(debug_str)
-                    continue
-                quantizer_group = QuantizerGroup(
-                    input_quantizers=input_quantizers,
-                    output_quantizers=output_quantizers,
+                _add_quantizer_group(
+                    activation_quantizers=shared_quantizers,
                     parameter_quantizers=parameter_quantizers,
-                    supported_kernel_ops=tuple(supported_kernel_ops),
+                    supported_kernel_ops=supported_kernel_ops,
                 )
-                quantizer_groups.append(quantizer_group)
-                logger.debug("\n Quantizer Group added: %s", quantizer_group)
+            # Otherwise, group all input and output quantizers separately
             else:
                 # Create a quantizer group for each input and output quantizer
-                for quantizer in input_quantizers:
-                    quantizer_group = QuantizerGroup(
-                        input_quantizers=(quantizer,),
-                        output_quantizers=(),
-                        parameter_quantizers=(),
-                        supported_kernel_ops=tuple(supported_kernel_ops),
+                for quantizer in shared_quantizers:
+                    _add_quantizer_group(
+                        activation_quantizers=(quantizer,),
+                        supported_kernel_ops=supported_kernel_ops,
                     )
-                    quantizer_groups.append(quantizer_group)
-                    logger.debug("\n Quantizer Group added: %s", quantizer_group)
-                for quantizer in output_quantizers:
-                    quantizer_group = QuantizerGroup(
-                        input_quantizers=(),
-                        output_quantizers=(quantizer,),
-                        parameter_quantizers=(),
-                        supported_kernel_ops=tuple(supported_kernel_ops),
-                    )
-                    quantizer_groups.append(quantizer_group)
-                    logger.debug("\n Quantizer Group added: %s", quantizer_group)
+        else:
+            # If no shared quantizers, group param quantizers only with their own layer input quantizers
+            for child_name, param_q in param_quantizer_dict.items():
+                input_q = input_quantizer_dict.pop(child_name)
+                _add_quantizer_group(
+                    activation_quantizers=input_q,
+                    parameter_quantizers=param_q,
+                    supported_kernel_ops=(child_name,),
+                )
 
-    if "output_ops" in parent_child_op_groups:
-        for parent in parent_child_op_groups["output_ops"]:
-            # Add one quantizer group for each input and it's weight param
-            module_name, module = find_wrapper_module(
-                parent, module_name_to_module_dict
-            )
-            if module is not None:
-                for output_quantizer in module.output_quantizers:
-                    if output_quantizer.enabled:
-                        # Using empty supported kernel ops so that model output quantizers are able to consider all
-                        # default candidates
-                        quantizer_group = QuantizerGroup(
-                            output_quantizers=(module_name,),
-                            supported_kernel_ops=tuple(),
-                        )
-                        quantizer_groups.append(quantizer_group)
-                        logger.debug("\n Quantizer Group added: %s", quantizer_group)
+        # Add remaining input quantizers to their own groups
+        for child_name, input_q in input_quantizer_dict.items():
+            for quantizer in input_q:
+                _add_quantizer_group(
+                    activation_quantizers=(quantizer,),
+                    supported_kernel_ops=(child_name,),
+                )
 
     return module_name_to_module_dict, quantizer_groups
 
