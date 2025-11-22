@@ -6,6 +6,62 @@
 Release notes
 #############
 
+2.20.0
+======
+
+* Bug fixes and Improvements
+    * Common
+        * Update supported python version to >=3.10 (`2bc8c94`_)
+        * Repackage aimet_common as alias to aimet_onnx.common or aimet_torch.common (`074e85f`_)
+        * Remove Pad op from data movement ops (`21cddb6`_)
+
+    * ONNX
+        * Export data movement op output encoding in sim.export by default (`550c029`_)
+        * Assign generic node names if node name is missing or duplicate (`273dd82`_)
+        * Add PyTorch Pad modules to nn.Module -> onnx op mapping (`7e5342b`_)
+        * Add LSTM cell state int32 quantization mechanism for LPAI (`3a8659b`_)
+        * Support stacked RNN/GRU/LSTM (`552ad83`_)
+        * Make exclude/include node argument naming consistent (`ec22d86`_)
+        * Implement LPBQ support in aimet-onnx SeqMSE (`495567f`_)
+        * Add support for dilation, grouping, stride to Quantized Conv (`f94f3e2`_)
+        * Remove block type from adascale config  (`b55b058`_)
+        * Skip tying concat encoding if input has multiple consumers (`3136828`_)
+        * Tie quantizers upstream first and downstream later (`59aac3e`_)
+        * Fix ValidationError in LazyExtractor when external files are missing or inconsistent (`a8f32fc`_)
+        * Align torch and onnx GenAI recipes (`7d4659d`_)
+
+    * Torch
+        * Use separate input quantizer for each concat input (`755c54a`_)
+        * Add predict and fallback later approach for batched matmul in aimet-torch seq mse (`8874173`_)
+        * Refactored MMP to not use rounding mode (`fd7e40d`_)
+        * Use tuple for strided slice indexing (`4ddbd66`_)
+        * Fix symmetry bug in _from_qnn_encoding_dict (`35602ea`_)
+        * Align onnx 1.0.0 BQ encoding export ordering with QAIRT expectation (`0182b7a`_)
+
+.. _21cddb6: https://github.com/quic/aimet/commit/21cddb68889e3d01843de8744e8493f6daa3db28
+.. _550c029: https://github.com/quic/aimet/commit/550c0291d074626e555db6b6a5fa3239f333787e
+.. _273dd82: https://github.com/quic/aimet/commit/273dd8202489205ff39d20d52a227053ee6cd2e6
+.. _7e5342b: https://github.com/quic/aimet/commit/7e5342bcf60e6e51467ebf791ab96ac9eadbca65
+.. _3a8659b: https://github.com/quic/aimet/commit/3a8659b3b97b7d923d2f32b44b55fae48b7f6ac2
+.. _755c54a: https://github.com/quic/aimet/commit/755c54ad7f716f39f7088f995f37f25deedb3520
+.. _552ad83: https://github.com/quic/aimet/commit/552ad83f861502f99765358d83ccda252f8a40fa
+.. _ec22d86: https://github.com/quic/aimet/commit/ec22d8682ba076eb6e09b29a96cd3aab827e8e2b
+.. _495567f: https://github.com/quic/aimet/commit/495567f3bf05d447e76580a1b30aa5aa86ce6c0b
+.. _35602ea: https://github.com/quic/aimet/commit/35602eac649576812078a2d93b73d8f319dd25bf
+.. _f94f3e2: https://github.com/quic/aimet/commit/f94f3e22d89f71d6dbced1cfa1393dc83c19f1b4
+.. _b55b058: https://github.com/quic/aimet/commit/b55b058445fe552986e0ddae5f837570aebae69c
+.. _074e85f: https://github.com/quic/aimet/commit/074e85fd15b92c2b65b03059374a5272f07bdeb5
+.. _3136828: https://github.com/quic/aimet/commit/3136828f051ff4f1032b9fc8fec2c31e979dc67c
+.. _59aac3e: https://github.com/quic/aimet/commit/59aac3e4a65c295d6f25d6fb5cb53b7c0441774f
+.. _0182b7a: https://github.com/quic/aimet/commit/0182b7aea8a62647269893a9291fd83cd8959f2c
+.. _8874173: https://github.com/quic/aimet/commit/887417350d00f8a505c6c3c1754868cfcdd552f7
+.. _a8f32fc: https://github.com/quic/aimet/commit/a8f32fce6188564a4cec2db63085d40b26056534
+.. _fd7e40d: https://github.com/quic/aimet/commit/fd7e40dbf43660bfb733ff50fe72ea889f2d8c09
+.. _7d4659d: https://github.com/quic/aimet/commit/7d4659dae2541e6a72c6cea5cba3f6dc676601eb
+.. _4ddbd66: https://github.com/quic/aimet/commit/4ddbd66aac7e75183cfa219a6da60bb576f0e0e8
+.. _2bc8c94: https://github.com/quic/aimet/commit/2bc8c94fcced5ceff790f2c8a0b8347ee42f0be1
+
+
 2.19.0
 ======
 
