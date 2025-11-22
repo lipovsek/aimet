@@ -425,10 +425,6 @@ class AffineEncoding(EncodingBase, _GridMixin):
             return encoding_dict
 
         if encoding_version == "2.0.0":
-            if self._zero_point_shift != 0.0:
-                raise RuntimeError(
-                    "Nonzero quant shift not supported in AffineEncoding to_qnn_encoding_dict"
-                )
             output_dtype = self._get_export_dtype()
 
             y_scale = self.scale
@@ -437,6 +433,9 @@ class AffineEncoding(EncodingBase, _GridMixin):
                 y_zero_point = torch.full_like(y_scale, centroid, dtype=torch.int32)
             else:
                 y_zero_point = -self.offset.to(torch.int32)
+
+            if self.zero_point_shift:
+                y_zero_point = y_zero_point - self.zero_point_shift
 
             channel_axis = None
             block_axis = None

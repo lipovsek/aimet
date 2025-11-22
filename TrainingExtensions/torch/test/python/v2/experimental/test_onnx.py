@@ -38,7 +38,6 @@ import copy
 import os
 import json
 import pathlib
-from packaging.version import parse
 import onnxruntime as ort
 import pytest
 import contextlib
@@ -1369,3 +1368,71 @@ def test_output_split(tmp_path):
     atol2 = sim.model.softmax.output_quantizers[0].get_scale().item()
     assert torch.allclose(torch.from_numpy(out1), expected_out1, atol=atol1)
     assert torch.allclose(torch.from_numpy(out2), expected_out2, atol=atol2)
+
+
+@pytest.mark.parametrize("zero_point_shift", [0.0, 0.5])
+def test_quantsim_export_int2(tmp_path: pathlib.Path, zero_point_shift: float):
+    """
+    When: Export quantized model with int2 weights using sim.onnx.export
+    Then: The exported weight encoding's y_zero_point should be equal to -zero_point_shift
+    """
+    model = torch.nn.Sequential(torch.nn.Conv2d(3, 3, 3))
+    x = torch.randn(1, 3, 32, 32)
+    sim = QuantizationSimModel(model, x, default_param_bw=2)
+    sim.model[0].param_quantizers["weight"].zero_point_shift = zero_point_shift
+    sim.compute_encodings(lambda model: model(x))
+
+    sim.onnx.export(
+        x,
+        tmp_path / "int2_conv.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        encoding_version="2.0.0",
+    )
+
+    with open(tmp_path / "int2_conv.encodings") as f:
+        encodings = json.load(f)["encodings"]
+
+    weight_encoding = next(e for e in encodings if e["name"] == "0.weight")
+    y_zero_point = weight_encoding.get("y_zero_point", 0)
+    assert np.all(np.array(y_zero_point) == -zero_point_shift)
+
+    if zero_point_shift == 0.0:
+        return
+
+    """
+    When: Export model with absorbed zero_point_shift using aimet_torch.onnx.export
+    Then:
+      1. The exported weight tensor should only consist of {-3, -1, 1, 3}
+      2. The exported onnx model should produce same output as sim
+    """
+    out = sim.model(x)
+    aimet_torch.onnx._absorb_zero_point_shift(sim.model)
+    out2 = sim.model(x)
+    assert torch.equal(out, out2)
+
+    weight_qtzr = sim.model[0].param_quantizers["weight"]
+    weight = sim.model[0].weight
+    w_int4 = weight_qtzr(weight).quantize()
+
+    assert torch.all((w_int4 == -3) | (w_int4 == -1) | (w_int4 == 1) | (w_int4 == 3))
+
+    aimet_torch.onnx.export(
+        sim.model,
+        x,
+        tmp_path / "int2_conv_qdq.onnx",
+        opset_version=21,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        prequantize_constants=True,
+    )
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        tmp_path / "int2_conv_qdq.onnx", sess_options=sess_options
+    )
+    (out_onnx,) = sess.run(None, {"input": x.numpy()})
+    atol = sim.model[0].output_quantizers[0].get_scale().item()
+    assert torch.allclose(torch.from_numpy(out_onnx), out2, atol=atol)

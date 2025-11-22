@@ -960,7 +960,7 @@ class QuantizationSimModelOnnxExporter:
         encodings_dict = self._to_json(tensor_to_encoding_map, encoding_version)
 
         # export weight encodings to output json file
-        onnx_file_path = f if isinstance(f, str) else f.name
+        onnx_file_path = str(f)
         encoding_file_path = os.path.splitext(onnx_file_path)[0] + ".encodings"
         with open(encoding_file_path, "w", encoding="utf-8") as encoding_file:
             json.dump(encodings_dict, encoding_file, indent=2)

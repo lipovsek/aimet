@@ -118,7 +118,13 @@ def _quantize_dequantize_template(
 ) -> onnxscript.OnnxFunction:
     @onnxscript.script(aimet_opset, default_opset=opset)
     def quantize_dequantize(
-        tensor, scale, offset, qmin: int, qmax: int, block_size: Sequence[int]
+        tensor,
+        scale,
+        offset,
+        qmin: int,
+        qmax: int,
+        block_size: Sequence[int],
+        zero_point_shift: float,
     ):
         """Onnxscript implementation of affine quantize-dequantize"""
         # Upscale scale/offset by the factor of block_size
@@ -132,7 +138,7 @@ def _quantize_dequantize_template(
             offset, roi=None, scales=None, sizes=upscaled_shape, mode="nearest"
         )
 
-        x_round = opset.Round(tensor / scale) - offset
+        x_round = opset.Round(tensor / scale - zero_point_shift) - offset
         x_int = opset.Clip(x_round, qmin, qmax)
         x_dq = (x_int + offset) * scale
         return opset.Reshape(x_dq, opset.Shape(tensor))
@@ -361,11 +367,6 @@ def quantize_dequantize_symbolic(
     # Unsqueeze scale, offset if scalars.
     # This is necessary because ONNX Resize operator requires non-scalar input tensors
 
-    if zero_point_shift != 0.0:
-        raise RuntimeError(
-            "torch.onnx.export not supported for nonzero zero_point_shift"
-        )
-
     if not _is_torch_2:
         # torch <2 passes torch._C.Graph object instead of GraphContext.
         # Temporarily wrap torch._C.Graph with GraphContext
@@ -416,6 +417,7 @@ def quantize_dequantize_symbolic(
             qmin_i=qmin,
             qmax_i=qmax,
             block_size_i=block_size,
+            zero_point_shift_f=zero_point_shift,
         ).setType(tensor.type())
 
     opset = (
@@ -442,6 +444,7 @@ def quantize_dequantize_symbolic(
         qmin_i=qmin,
         qmax_i=qmax,
         block_size_i=block_size,
+        zero_point_shift_f=zero_point_shift,
     ).setType(tensor.type())
 
 
@@ -652,7 +655,7 @@ def _get_encoding_from_onnx_node(
     assert quant_node.op_type in ONNX_QUANTIZER_OP_TYPES
 
     scale, offset = None, None
-    qmin, qmax, block_size = None, None, None
+    qmin, qmax, block_size, zero_point_shift = None, None, None, None
     scale_name, offset_name = quant_node.input[1], quant_node.input[2]
 
     for attr in quant_node.attribute:
@@ -664,6 +667,8 @@ def _get_encoding_from_onnx_node(
             block_size = attr.ints
             if block_size == [1]:
                 block_size = None
+        if attr.name == "zero_point_shift":
+            zero_point_shift = attr.f
 
         scale = torch.tensor(
             _get_tensor_from_constant_name(onnx_model, scale_name, base_dir)
@@ -683,7 +688,13 @@ def _get_encoding_from_onnx_node(
     symmetry = bool(torch.all(offset == -centroid))
 
     encoding = AffineEncoding(
-        scale, offset, qmin, qmax, symmetry=symmetry, block_size=block_size
+        scale,
+        offset,
+        qmin,
+        qmax,
+        symmetry=symmetry,
+        block_size=block_size,
+        zero_point_shift=zero_point_shift,
     )
 
     try:

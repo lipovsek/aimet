@@ -612,3 +612,42 @@ def _restore_model_output_names(
             new_name = _new_names.get(old_name, None)
             if new_name is not None:
                 node.output[i] = new_name
+
+
+@torch.no_grad()
+def _absorb_zero_point_shift(model: torch.nn.Module):
+    """
+    Absorb zero point shift to weights by promoting bitwidth from 2 to 4.
+
+    NOTE: This function is only meant for internal testing purpose.
+    """
+    # pylint: disable=redefined-builtin
+    for qmodule in model.modules():
+        if not isinstance(qmodule, QuantizationMixin):
+            continue
+
+        for param_name, qtzr in qmodule.param_quantizers.items():
+            if not isinstance(qtzr, AffineQuantizerBase):
+                continue
+
+            if not qtzr.is_initialized():
+                continue
+
+            if qtzr.zero_point_shift != 0.5:
+                continue
+
+            if not qtzr.symmetric:
+                continue
+
+            weight = getattr(qmodule, param_name)
+            weight_qdq = qtzr(weight).dequantize()
+            weight.copy_(weight_qdq)
+
+            # weight_qdq ∈ {-1.5 * s,  -0.5 * s,  0.5 * s,  1.5 * s  }
+            #            = {  -3 * s/2,  -1 * s/2,  1 * s/2,  3 * s/2}
+            new_scale = qtzr.get_scale() / 2
+            qtzr.bitwidth *= 2
+            qtzr.zero_point_shift = 0.0
+            min = new_scale * qtzr.qmin
+            max = new_scale * qtzr.qmax
+            qtzr.set_range(min, max)
