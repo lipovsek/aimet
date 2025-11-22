@@ -567,15 +567,31 @@ def _is_float_output(op_type: str) -> bool:
     Returns True if op_type can return float output
     """
     schema = _all_op_schemas[op_type]
-    type_str = schema.outputs[0].type_str
-    type_constraint = next(
-        type_constraint
-        for type_constraint in schema.type_constraints
-        if type_constraint.type_param_str == type_str
-    )
+    output = schema.outputs[0]
+    return _is_float(schema, output)
+
+
+def _is_float(
+    schema: onnx.defs.OpSchema, tensor_spec: onnx.defs.OpSchema.FormalParameter
+) -> bool:
+    type_str = tensor_spec.type_str
+    try:
+        type_constraint = next(
+            type_constraint
+            for type_constraint in schema.type_constraints
+            if type_constraint.type_param_str == type_str
+        )
+    except StopIteration:
+        type_constraint = None
+
+    if type_constraint:
+        allowed_type_strs = type_constraint.allowed_type_strs
+    else:
+        allowed_type_strs = [type_str]
+
     return any(
         t in ("tensor(float)", "tensor(double)", "tensor(float16)")
-        for t in type_constraint.allowed_type_strs
+        for t in allowed_type_strs
     )
 
 
