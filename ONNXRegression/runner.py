@@ -28,6 +28,7 @@ import sys
 import onnx
 import torch
 import argparse
+import contextlib
 from pathlib import Path
 from typing import Dict, Any
 
@@ -80,6 +81,21 @@ def _resolve_device(device_name: str) -> Device:
         )
 
 
+@contextlib.contextmanager
+def _disable_torch_mha_fastpath():
+    """
+    Context manager to temporarily disable torch MHA fastpath.
+
+    This is needed to export some transformer models.
+    """
+    original_setting = torch.backends.mha.get_fastpath_enabled()
+    try:
+        torch.backends.mha.set_fastpath_enabled(False)
+        yield
+    finally:
+        torch.backends.mha.set_fastpath_enabled(original_setting)
+
+
 def _export_torch_to_onnx_local(
     model: Any, input_spec: Dict, out_dir: Path, model_name: str
 ) -> Path:
@@ -94,13 +110,10 @@ def _export_torch_to_onnx_local(
 
     sample_inputs = make_torch_inputs(input_spec)
 
-    print(f"[INFO] Tracing model with sample inputs...")
-    with torch.no_grad():
-        traced = torch.jit.trace(torch_model, sample_inputs, check_trace=False)
-
+    # Convert traced model to ONNX
     fp32_path = out_dir / f"{model_name}_fp32.onnx"
 
-    print(f"[INFO] Converting traced model to ONNX...")
+    print(f"[INFO] Converting model to ONNX...")
 
     if isinstance(sample_inputs, dict):
         input_names = list(input_spec.keys())
@@ -111,6 +124,9 @@ def _export_torch_to_onnx_local(
         else:
             sample_inputs_for_export = tuple(input_values)
     else:
+        # Non-dict inputs
+        if isinstance(sample_inputs, list):
+            sample_inputs = tuple(sample_inputs)
         if isinstance(sample_inputs, tuple):
             sample_inputs_for_export = sample_inputs
             if input_spec and isinstance(input_spec, dict):
@@ -128,16 +144,16 @@ def _export_torch_to_onnx_local(
     export_success = False
     export_error = None
 
-    with torch.no_grad():
+    with torch.no_grad(), _disable_torch_mha_fastpath():
         try:
             torch.onnx.export(
-                traced,
+                torch_model,
                 sample_inputs_for_export,
                 str(fp32_path),
                 input_names=input_names,
                 output_names=["output"],
                 dynamic_axes=dynamic_axes,
-                opset_version=13,
+                opset_version=17,
                 do_constant_folding=True,
                 export_params=True,
             )
@@ -150,13 +166,13 @@ def _export_torch_to_onnx_local(
                 )
                 try:
                     torch.onnx.export(
-                        traced,
+                        torch_model,
                         (sample_inputs_for_export,),
                         str(fp32_path),
                         input_names=input_names,
                         output_names=["output"],
                         dynamic_axes=dynamic_axes,
-                        opset_version=13,
+                        opset_version=17,
                         do_constant_folding=True,
                         export_params=True,
                     )
@@ -169,7 +185,7 @@ def _export_torch_to_onnx_local(
             f"Failed to export ONNX model: {export_error}\n"
             f"Input format: {type(sample_inputs_for_export)}\n"
             f"Input names: {input_names}"
-        )
+        ) from export_error
 
     print(f"[INFO] FP32 ONNX saved to: {fp32_path}")
 

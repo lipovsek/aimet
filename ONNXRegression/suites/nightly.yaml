@@ -41,6 +41,7 @@ models:
   - models/efficientnet_b0.yaml
   - models/densenet121.yaml
   - models/mobilenet_v3_large.yaml
+  - models/vit.yaml
 
 # ==================== Test Filter ====================
 # Only run these tests from each model

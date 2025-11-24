@@ -1,0 +1,17 @@
+# vit Model Configuration
+
+# ==================== Model Identification ====================
+model_name: vit
+
+# ==================== Test Definitions ====================
+tests:
+  # --------------------------------------------------------------------------
+  # Test 1: W8A8 + Lite-MP (10% FP16)
+  # --------------------------------------------------------------------------
+
+  - name: lite_mp_10
+    feature: lite_mp
+    quant_scheme: tf
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
