@@ -166,9 +166,8 @@ class SeqMSE(QuantizationTechnique):
     def apply(
         quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
     ):
-        apply_seq_mse(
-            quantsim, _prefill_inputs(generator, dataloader, 20), num_candidates=20
-        )
+        inputs = _prefill_inputs(generator, dataloader, 20, torch.device("cpu"))
+        apply_seq_mse(quantsim, inputs, num_candidates=20)
         _compute_encodings(quantsim, generator, dataloader, num_iterations=20)
 
 
@@ -213,9 +212,10 @@ class AdaScale(QuantizationTechnique):
         num_batches: int = 20,
         num_iterations: int = 1500,
     ):
+        inputs = _prefill_inputs(generator, dataloader, 20, torch.device("cpu"))
         apply_adascale(
             quantsim,
-            _prefill_inputs(generator, dataloader, 20, torch.device("cpu")),
+            inputs,
             num_iterations=num_iterations,
         )
 
