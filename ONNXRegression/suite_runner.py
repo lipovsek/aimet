@@ -338,7 +338,8 @@ What happens:
 
         try:
             # Run the test using the merged config
-            result = run_single_config(config)
+            # Skip individual reports
+            result = run_single_config(config, skip_reports=True)
             all_results.append(result)
             print(f"  ✅ Success")
 

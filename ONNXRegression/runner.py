@@ -262,8 +262,17 @@ def _build_single_batch_loader(
     return [(batch_inputs, batch_labels)]
 
 
-def run_single_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute the complete evaluation pipeline for a single configuration."""
+def run_single_config(
+    config: Dict[str, Any], skip_reports: bool = False
+) -> Dict[str, Any]:
+    """Execute the complete evaluation pipeline for a single configuration.
+    Args:
+        config: Test configuration
+        skip_reports: If True, skip generating CSV/HTML reports (when called from suite)
+
+    Returns:
+        Dictionary with test results
+    """
     validate_config(config)
 
     model_name = config.get("model_name")
@@ -530,14 +539,17 @@ def run_single_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
     print(f"\n[Step 6] Generating reports...")
 
-    csv_path = str(REPORTS_DIR / "results.csv")
-    html_path = str(REPORTS_DIR / "results.html")
+    if not skip_reports:
+        csv_path = str(REPORTS_DIR / "results.csv")
+        html_path = str(REPORTS_DIR / "results.html")
 
-    write_csv([result], csv_path)
-    write_html([result], html_path)
+        write_csv([result], csv_path)
+        write_html([result], html_path)
 
-    print(f"[Step 6] CSV:  {csv_path}")
-    print(f"[Step 6] HTML: {html_path}")
+        print(f"[Step 6] CSV:  {csv_path}")
+        print(f"[Step 6] HTML: {html_path}")
+    else:
+        print(f"[Step 6] Skipping individual reports (suite mode)")
 
     print(f"\n{'=' * 60}")
     print("Pipeline completed successfully!")

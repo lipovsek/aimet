@@ -42,6 +42,7 @@ models:
   - models/densenet121.yaml
   - models/mobilenet_v3_large.yaml
   - models/vit.yaml
+  - models/swin_tiny.yaml
 
 # ==================== Test Filter ====================
 # Only run these tests from each model
@@ -50,7 +51,7 @@ models:
 # - lite_mp_25: Mixed precision optimization
 
 # test_filter:
-#   - quantsim_int8
+# - quantsim_int8
 #   - lite_mp_25
 
 # ==================== Validation Criteria ====================
