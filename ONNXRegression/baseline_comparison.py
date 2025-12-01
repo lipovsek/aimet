@@ -57,7 +57,7 @@ class QualityCheck:
     def status_emoji(self) -> str:
         """Get emoji based on quantization quality."""
         abs_drop = abs(self.drop_abs)
-        if abs_drop < 0.01:
+        if abs_drop < 1.0:  # Less than 1 percentage point
             return "✅"
         else:
             return "⚠️"
@@ -65,7 +65,7 @@ class QualityCheck:
     @property
     def is_acceptable(self) -> bool:
         """Check if quantization quality is acceptable."""
-        return abs(self.drop_abs) < 0.01
+        return abs(self.drop_abs) < 1.0  # Less than 1 percentage point
 
     @property
     def formatted_drop(self) -> str:
@@ -75,13 +75,12 @@ class QualityCheck:
         Returns:
             Formatted string like: "84.535% / 84.331% (-0.204%) ✅"
             Shows FP32 accuracy / AIMET accuracy (difference) with status emoji
+
+        Note: Accuracy values are already in percentage format (0-100 range),
+              so we display them directly without multiplying by 100.
         """
-        fp32_pct = self.fp32_acc * 100
-        aimet_pct = self.aimet_acc * 100
-        diff_pct = self.drop_abs * 100
-        return (
-            f"{fp32_pct:.3f}% / {aimet_pct:.3f}% ({diff_pct:+.3f}%) {self.status_emoji}"
-        )
+
+        return f"{self.fp32_acc:.3f}% / {self.aimet_acc:.3f}% ({self.drop_abs:+.3f}%) {self.status_emoji}"
 
 
 @dataclass
@@ -99,9 +98,9 @@ class ExportValidation:
     def status_emoji(self) -> str:
         """Get emoji based on export validation."""
         abs_diff = abs(self.diff_abs)
-        if abs_diff < 0.005:
+        if abs_diff < 0.5:  # Less than 0.5 percentage points
             return "✅"
-        elif abs_diff < 0.01:
+        elif abs_diff < 1.0:  # Less than 1 percentage point
             return "⚠️"
         else:
             return "❌"
@@ -109,7 +108,7 @@ class ExportValidation:
     @property
     def is_valid(self) -> bool:
         """Check if export is valid."""
-        return abs(self.diff_abs) < 0.005
+        return abs(self.diff_abs) < 0.5  # Less than 0.5 percentage points
 
 
 @dataclass
@@ -126,21 +125,21 @@ class Comparison:
     @property
     def is_regression(self) -> bool:
         """Check if this is a regression."""
-        return self.diff < -0.01
+        return self.diff < -1.0  # More than 1 percentage point drop
 
     @property
     def is_improvement(self) -> bool:
         """Check if this is an improvement."""
-        return self.diff > 0.01
+        return self.diff > 1.0  # More than 1 percentage point gain
 
     @property
     def emoji(self) -> str:
         """Get emoji based on severity."""
-        if self.diff < -0.05:
+        if self.diff < -5.0:
             return "🔴"
-        elif self.diff < -0.01:
+        elif self.diff < -1.0:
             return "⚠️"
-        elif self.diff > 0.01:
+        elif self.diff > 1.0:
             return "✅"
         else:
             return "➖"
@@ -148,7 +147,7 @@ class Comparison:
     @property
     def formatted_change(self) -> str:
         """Format change with emoji."""
-        if abs(self.diff) < 0.001:
+        if abs(self.diff) < 0.1:
             return "stable ✅"
         return f"{self.diff:+.2f}% {self.emoji}"
 
@@ -158,12 +157,15 @@ def validate_quantization_quality(result: TestResult) -> QualityCheck:
     Validate FP32 → AIMET quantization quality.
 
     Args:
-        result: Test result with FP32 and AIMET accuracies
+        result: Test result with FP32 and AIMET accuracies (in percentage format 0-100)
 
     Returns:
         QualityCheck with drop metrics and status
     """
+    # Values are already percentages, so difference is in percentage points
     drop_abs = result.aimet_accuracy - result.fp32_accuracy
+
+    # Calculate percentage change (e.g., 2% drop from 80% = -2.5% change)
     drop_pct = (
         (drop_abs / result.fp32_accuracy * 100) if result.fp32_accuracy > 0 else 0
     )
@@ -183,12 +185,15 @@ def validate_qdq_export(result: TestResult) -> ExportValidation:
     Validate AIMET → QDQ export correctness.
 
     Args:
-        result: Test result with AIMET and QDQ accuracies
+        result: Test result with AIMET and QDQ accuracies (in percentage format 0-100)
 
     Returns:
         ExportValidation with difference metrics and status
     """
+    # Values are already percentages, so difference is in percentage points
     diff_abs = result.qdq_accuracy - result.aimet_accuracy
+
+    # Calculate percentage change
     diff_pct = (
         (diff_abs / result.aimet_accuracy * 100) if result.aimet_accuracy > 0 else 0
     )
@@ -225,7 +230,7 @@ def compute_overall_status(
     if not export_val.is_valid:
         return "❌"
 
-    if baseline_comp and baseline_comp.diff < -0.05:
+    if baseline_comp and baseline_comp.diff < -5.0:
         return "❌"
 
     if quality.status_emoji == "⚠️" or export_val.status_emoji == "⚠️":
@@ -342,6 +347,7 @@ class BaselineManager:
             base_acc = baseline[key]["aimet_accuracy"]
             curr_acc = curr_result.aimet_accuracy
 
+            # Values are already percentages, so diff is in percentage points
             diff = curr_acc - base_acc
             diff_pct = (diff / base_acc * 100) if base_acc > 0 else 0
 
@@ -395,14 +401,11 @@ class ReportGenerator:
                 export_val = validate_qdq_export(result)
                 config = result.techniques or ""
 
-                fp32_pct = result.fp32_accuracy * 100
-                aimet_pct = result.aimet_accuracy * 100
-                qdq_pct = result.qdq_accuracy * 100
-
+                # Values are already percentages, display directly
                 lines.append(
                     f"| {result.model} | {result.feature} | {config} | "
-                    f"{fp32_pct:.3f}% | {aimet_pct:.3f}% | "
-                    f"{quality.formatted_drop} | {qdq_pct:.3f}% | "
+                    f"{result.fp32_accuracy:.3f}% | {result.aimet_accuracy:.3f}% | "
+                    f"{quality.formatted_drop} | {result.qdq_accuracy:.3f}% | "
                     f"{export_val.status_emoji} |"
                 )
 
@@ -485,12 +488,10 @@ class ReportGenerator:
                         overall_status = "⚠️"
                         config = ""
 
-                    baseline_pct = r.baseline * 100
-                    current_pct = r.current * 100
-
+                    # Values are already percentages, display directly
                     lines.append(
                         f"| {r.emoji} {r.model} | {r.feature} | {config} | "
-                        f"{baseline_pct:.3f}% | {current_pct:.3f}% | "
+                        f"{r.baseline:.3f}% | {r.current:.3f}% | "
                         f"{r.diff:+.5f} ({r.diff_pct:+.1f}%) | "
                         f"{quality.formatted_drop if quality else 'N/A'} | "
                         f"{overall_status} |"
@@ -526,12 +527,10 @@ class ReportGenerator:
                         overall_status = "✅"
                         config = ""
 
-                    baseline_pct = r.baseline * 100
-                    current_pct = r.current * 100
-
+                    # Values are already percentages, display directly
                     lines.append(
                         f"| {r.emoji} {r.model} | {r.feature} | {config} | "
-                        f"{baseline_pct:.3f}% | {current_pct:.3f}% | "
+                        f"{r.baseline:.3f}% | {r.current:.3f}% | "
                         f"{r.diff:+.5f} ({r.diff_pct:+.1f}%) | "
                         f"{quality.formatted_drop if quality else 'N/A'} | "
                         f"{overall_status} |"
@@ -568,12 +567,10 @@ class ReportGenerator:
                         overall_status = "✅"
                         config = ""
 
-                    baseline_pct = r.baseline * 100
-                    current_pct = r.current * 100
-
+                    # Values are already percentages, display directly
                     lines.append(
                         f"| {r.model} | {r.feature} | {config} | "
-                        f"{baseline_pct:.3f}% | {current_pct:.3f}% | "
+                        f"{r.baseline:.3f}% | {r.current:.3f}% | "
                         f"{r.diff:+.5f} | "
                         f"{quality.formatted_drop if quality else 'N/A'} | "
                         f"{overall_status} |"
