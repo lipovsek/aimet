@@ -391,7 +391,7 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
               (0): MyModule()
             )
         """
-        super().ignore(module_cls)
+        return super().ignore(module_cls)
 
     @classmethod
     def ignore_unknown_modules(cls, ignore: bool = True):

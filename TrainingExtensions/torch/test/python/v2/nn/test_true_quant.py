@@ -1842,3 +1842,35 @@ def test_ignore():
         assert type(sim.model[0]) == MyModule
     finally:
         QuantizationMixin.ignore_unknown_modules(orig)
+
+    """
+    When: Ignored layer is followed by quantized layer
+    Then: The following layer's input quantizer should be enabled
+    """
+
+    @QuantizationMixin.ignore
+    class Preprocessing(torch.nn.Module):
+        """
+        Preprocessing layer that is NOT intended to run on NPU
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.register_buffer(
+                "mean",
+                torch.tensor([0.485, 0.456, 0.406]).view(1, -1, 1, 1),
+            )
+            self.register_buffer(
+                "stdev",
+                torch.tensor([0.229, 0.224, 0.225]).view(1, -1, 1, 1),
+            )
+
+        def forward(self, x):
+            return (x - self.mean) / self.stdev
+
+    model = torch.nn.Sequential(
+        Preprocessing(),
+        torch.nn.Linear(10, 10),
+    )
+    sim = aimet_torch.QuantizationSimModel(model, torch.randn(10, 10))
+    assert isinstance(sim.model[1].input_quantizers[0], QuantizeDequantize)

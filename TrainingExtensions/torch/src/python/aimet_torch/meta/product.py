@@ -39,7 +39,10 @@
 from typing import Optional
 
 from aimet_torch.common.connected_graph.product import Product as _Product
+from ..nn import QuantizationMixin
 from .operation import Op
+
+_V2 = True
 
 
 class Product(_Product):
@@ -54,7 +57,22 @@ class Product(_Product):
             # Model inputs and non-param constants are not quantized yet
             return False
 
-        if producer.get_module():
+        producer_module = producer.get_module()
+        if producer_module:
+            if _V2:
+                # If the producer is a quantized layer, assume the output
+                # must have been quantized by the previous layer.
+                # This doesn't cover all cases, but it's a reasonable assumption
+                # for a short-term fix.
+                return isinstance(producer_module, QuantizationMixin) or (
+                    producer.is_grid_preserving_op()
+                    and (
+                        producer.inputs[0].is_quantized()
+                        or producer.inputs[0].is_model_input
+                        or producer.inputs[0].is_const
+                    )
+                )
+
             # Producer is nn.Module. This product will have been quantized by
             # the output quantizer of producer
             return True

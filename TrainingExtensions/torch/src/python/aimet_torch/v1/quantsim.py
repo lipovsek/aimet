@@ -115,6 +115,16 @@ quantized_modules = (
 class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missing-class-docstring
     __doc__ = _QuantizationSimModelBase.__doc__
 
+    def __init__(self, *args, **kwargs):
+        from aimet_torch.meta import product
+
+        v2 = product._V2
+        try:
+            product._V2 = False
+            super().__init__(*args, **kwargs)
+        finally:
+            product._V2 = v2
+
     # pylint: disable=too-many-arguments, too-many-locals, too-many-public-methods
     _quantized_modules = quantized_modules
 

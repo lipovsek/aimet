@@ -379,6 +379,7 @@ class BaseQuantizationMixin(abc.ABC):
             raise RuntimeError
 
         cls._ignored_module_types.add(module_cls)
+        return module_cls
 
     @classmethod
     def ignore_unknown_modules(cls, ignore: bool = True):
