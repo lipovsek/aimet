@@ -1716,77 +1716,100 @@ class QuantizationSimModel:
             if op.type in switcher
         }
 
-        for op, (weight, bias) in ops_with_bias.items():
-            if bias is None:
-                continue
+        original_bias_quantizers = {
+            bias.name: self.qc_quantize_op_dict[bias.name]
+            for _, (_, bias) in ops_with_bias.items()
+            if bias and bias.name in self.qc_quantize_op_dict
+        }
 
-            bias_qtzr = self.qc_quantize_op_dict.get(bias.name)
+        def cleanup():
+            for name, bias_qtzr in original_bias_quantizers.items():
+                self.qc_quantize_op_dict[name] = bias_qtzr
 
-            weight_qtzr = self.qc_quantize_op_dict.get(weight.name)
-            encoding_type = weight_qtzr._encoding_type().name
+        try:
+            for op, (weight, bias) in ops_with_bias.items():
+                if bias is None:
+                    continue
 
-            if bias_qtzr.data_type == QuantizationDataType.float:
-                # Float16 quantizers are not exported to onnx QDQ graph
-                continue
+                if bias.name not in self.qc_quantize_op_dict:
+                    continue
 
-            if bias_qtzr and bias_qtzr.enabled and bias_qtzr.is_initialized():
-                # Edge case: bias encoding already exists.
-                # Always honor the existing bias encoding
-                continue
+                bias_qtzr = self.qc_quantize_op_dict[bias.name]
 
-            if not (
-                weight_qtzr
-                and weight_qtzr.enabled
-                and weight_qtzr.data_type == QuantizationDataType.int
-                and weight_qtzr.is_initialized()
-            ):
-                # Weight quantizer wasn't created, enabled, or initialized.
-                # Since weight_scale isn't available, exclude bias from quantization.
-                continue
+                weight_qtzr = self.qc_quantize_op_dict.get(weight.name)
+                encoding_type = weight_qtzr._encoding_type().name
 
-            input_qtzr = self._get_enabled_quantizer(op.inputs[0].name)
-            if not (
-                input_qtzr
-                and input_qtzr.enabled
-                and input_qtzr.data_type == QuantizationDataType.int
-                and input_qtzr.is_initialized()
-            ):
-                # Input quantizer wasn't created, enabled, or initialized.
-                # Since input_scale isn't available, exclude bias from quantization.
-                continue
+                if bias_qtzr.data_type == QuantizationDataType.float:
+                    # Float16 quantizers are not exported to onnx QDQ graph
+                    continue
 
-            if encoding_type == EncodingType.PER_TENSOR.name:
-                bias_qtzr.enable_per_channel_quantization(False)
-            elif encoding_type in [
-                EncodingType.PER_CHANNEL.name,
-                EncodingType.LPBQ.name,
-                EncodingType.PER_BLOCK.name,
-            ]:
-                bias_qtzr.enable_per_channel_quantization()
-            else:
-                raise RuntimeError(
-                    f"Unknown encoding type {encoding_type}, cannot concretize bias quantizers."
-                )
+                if bias_qtzr and bias_qtzr.enabled and bias_qtzr.is_initialized():
+                    # Edge case: bias encoding already exists.
+                    # Always honor the existing bias encoding
+                    continue
 
-            if weight is None:
-                # Edge case: Op has no weight. Fall back to statistical bias scale
-                get_bias_scale = self._get_statistical_bias_scale
-            else:
-                get_bias_scale = switcher.get(op.type, self._get_statistical_bias_scale)
+                if not (
+                    weight_qtzr
+                    and weight_qtzr.enabled
+                    and weight_qtzr.data_type == QuantizationDataType.int
+                    and weight_qtzr.is_initialized()
+                ):
+                    # Weight quantizer wasn't created, enabled, or initialized.
+                    # Since weight_scale isn't available, exclude bias from quantization.
+                    continue
 
-            bias_scale = get_bias_scale(op)
+                input_qtzr = self._get_enabled_quantizer(op.inputs[0].name)
+                if not (
+                    input_qtzr
+                    and input_qtzr.enabled
+                    and input_qtzr.data_type == QuantizationDataType.int
+                    and input_qtzr.is_initialized()
+                ):
+                    # Input quantizer wasn't created, enabled, or initialized.
+                    # Since input_scale isn't available, exclude bias from quantization.
+                    continue
 
-            encodings = [libpymo.TfEncoding() for _ in range(bias_scale.size)]
+                bias_qtzr = bias_qtzr._copy()
+                self.qc_quantize_op_dict[bias.name] = bias_qtzr
 
-            for enc, scale in zip(encodings, bias_scale.flatten()):
-                enc.bw = 32
-                enc.delta = scale
-                enc.offset = -(2**31)
-                enc.min = scale * -(2**31)
-                enc.max = scale * (2**31 - 1)
+                if encoding_type == EncodingType.PER_TENSOR.name:
+                    bias_qtzr.enable_per_channel_quantization(False)
+                elif encoding_type in [
+                    EncodingType.PER_CHANNEL.name,
+                    EncodingType.LPBQ.name,
+                    EncodingType.PER_BLOCK.name,
+                ]:
+                    bias_qtzr.enable_per_channel_quantization()
+                else:
+                    raise RuntimeError(
+                        f"Unknown encoding type {encoding_type}, cannot concretize bias quantizers."
+                    )
 
-            bias_qtzr.load_encodings(encodings)
-            bias_qtzr.enabled = True
+                if weight is None:
+                    # Edge case: Op has no weight. Fall back to statistical bias scale
+                    get_bias_scale = self._get_statistical_bias_scale
+                else:
+                    get_bias_scale = switcher.get(
+                        op.type, self._get_statistical_bias_scale
+                    )
+
+                bias_scale = get_bias_scale(op)
+
+                encodings = [libpymo.TfEncoding() for _ in range(bias_scale.size)]
+
+                for enc, scale in zip(encodings, bias_scale.flatten()):
+                    enc.bw = 32
+                    enc.delta = scale
+                    enc.offset = -(2**31)
+                    enc.min = scale * -(2**31)
+                    enc.max = scale * (2**31 - 1)
+
+                bias_qtzr.load_encodings(encodings)
+                bias_qtzr.enabled = True
+            return Handle(cleanup)
+        except:  # pylint disable=bare-except
+            cleanup()
+            raise
 
     def _get_weight_and_bias(
         self, op: Op
@@ -1819,6 +1842,8 @@ class QuantizationSimModel:
         filename_prefix: filename to save encoding files
         export_model (bool, optional):
             If True, then ONNX model is exported. When False, only encodings are exported.
+        export_int32_bias (bool, optional):
+            If true, generate and export int32 bias encoding on the fly (default: `True`)
         encoding_version (str, optional):
             Version of the encoding format to use. (default: {quantsim.encoding_version})
             Supported versions are: {sorted(list(quantsim.VALID_ENCODING_VERSIONS))}
@@ -1834,6 +1859,7 @@ class QuantizationSimModel:
         filename_prefix: str,
         export_model: bool = True,
         *,
+        export_int32_bias: bool = False,
         encoding_version: Optional[str] = None,
     ):
         encoding_version = encoding_version or quantsim.encoding_version
@@ -1851,9 +1877,15 @@ class QuantizationSimModel:
                 "updated to be able to parse 1.0.0 format"
             )
             warnings.warn(msg, DeprecationWarning, stacklevel=2)
-        self._export_encodings(
-            os.path.join(path, filename_prefix) + ".encodings", encoding_version
-        )
+
+        with (
+            self._concretize_int32_bias_quantizers()
+            if export_int32_bias
+            else contextlib.nullcontext()
+        ):
+            self._export_encodings(
+                os.path.join(path, filename_prefix) + ".encodings", encoding_version
+            )
 
         if export_model:
             with self._remove_quantization_nodes():
@@ -2184,7 +2216,12 @@ class QuantizationSimModel:
 
                 self._set_quantizer(out.name, node_input_map, input_qtzr)
 
-    def to_onnx_qdq(self, *, prequantize_constants: bool = False) -> onnx.ModelProto:
+    def to_onnx_qdq(
+        self,
+        *,
+        export_int32_bias: bool = False,
+        prequantize_constants: bool = False,
+    ) -> onnx.ModelProto:
         """
         Return a copy of ModelProto with all QcQuantizeOp nodes replaced with
         QuantizeLinear and/or DequantizeLinear.
@@ -2200,6 +2237,8 @@ class QuantizationSimModel:
             10
 
         Args:
+            export_int32_bias (bool, optional):
+                If true, generate and export int32 bias encoding on the fly (default: `True`)
             prequantize_constants (bool):
                 If True, weights will be represented as quantized weight followed by DequantizeLinear nodes.
                 If False, weights will be represented as float tensors followed by QuantizeLinear and DequantizeLinear nodes.
@@ -2207,7 +2246,12 @@ class QuantizationSimModel:
         .. image:: ../../images/conv_qdq.onnx.svg
             :align: center
         """
-        return self._to_onnx_qdq(prequantize_constants=prequantize_constants)
+        with (
+            self._concretize_int32_bias_quantizers()
+            if export_int32_bias
+            else contextlib.nullcontext()
+        ):
+            return self._to_onnx_qdq(prequantize_constants=prequantize_constants)
 
     _export_data_movement_op_output_quantizers = True
 

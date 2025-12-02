@@ -4376,18 +4376,23 @@ class TestEncodingPropagation:
                 None, {"input": np.random.randn(10, 10).astype(np.float32)}
             )
 
-        sim._concretize_int32_bias_quantizers()
-        assert bias_qtzr.enabled
-        bias_scale = (np.array(bias_qtzr.export_encodings("2.0.0")["y_scale"]),)
-        expected = np.array(
-            weight_qtzr.export_encodings("2.0.0")["y_scale"]
-        ) * np.array(input_qtzr.export_encodings("2.0.0")["y_scale"])
-        assert np.allclose(bias_scale, expected)
+        with sim._concretize_int32_bias_quantizers():
+            bias_qtzr = sim.qc_quantize_op_dict[f"add.bias"]
+            assert bias_qtzr.enabled
+            bias_scale = (np.array(bias_qtzr.export_encodings("2.0.0")["y_scale"]),)
+            expected = np.array(
+                weight_qtzr.export_encodings("2.0.0")["y_scale"]
+            ) * np.array(input_qtzr.export_encodings("2.0.0")["y_scale"])
+            assert np.allclose(bias_scale, expected)
 
-        dummy_input = {"input": np.random.randn(10, 10).astype(np.float32)}
-        dummy_output = sim.session.run(None, dummy_input)
+            dummy_input = {"input": np.random.randn(10, 10).astype(np.float32)}
+            dummy_output = sim.session.run(None, dummy_input)
 
-        quantized_model = sim.to_onnx_qdq()
+        # Bias quantizer should be disabled after context manager
+        bias_qtzr = sim.qc_quantize_op_dict[f"add.bias"]
+        assert not bias_qtzr.enabled
+
+        quantized_model = sim.to_onnx_qdq(export_int32_bias=True)
         quantized_model_session = ort.InferenceSession(
             quantized_model.SerializeToString(), providers=["CPUExecutionProvider"]
         )
@@ -4682,11 +4687,10 @@ class TestEncodingPropagation:
             }
 
         """
-        When: Call _adjust_weight_scales_for_int32_bias() and _concretize_int32_bias_quantizers() before export
+        When: Call _adjust_weight_scales_for_int32_bias() and before export
         """
         sim._adjust_weight_scales_for_int32_bias()
-        sim._concretize_int32_bias_quantizers()
-        sim.export(tmp_dir, "after_weight_adj")
+        sim.export(tmp_dir, "after_weight_adj", export_int32_bias=True)
 
         with open(os.path.join(tmp_dir, "after_weight_adj.encodings")) as f:
             encodings = json.load(f)
@@ -4760,7 +4764,7 @@ def test_bias_export(model_factory, input_shape, block_size, lpbq, enable_mp, tm
     input = np.random.randn(*input_shape).astype(np.float32)
 
     """
-    When: Call _concretize_int32_bias_quantizers() before export
+    When: Call export with export_int32_bias=True
     """
     sim = QuantizationSimModel(model, quant_scheme=QuantScheme.post_training_tf)
 
@@ -4800,8 +4804,7 @@ def test_bias_export(model_factory, input_shape, block_size, lpbq, enable_mp, tm
             weight_qtzr.enabled = False
 
     sim.compute_encodings(lambda sess: sess.run(None, {"input": input}))
-    sim._concretize_int32_bias_quantizers()
-    sim.export(tmp_dir, "model")
+    sim.export(tmp_dir, "model", export_int32_bias=True)
 
     with open(os.path.join(tmp_dir, "model.encodings")) as f:
         encodings = json.load(f)
@@ -4984,13 +4987,15 @@ def test_to_onnx_qdq(
     sim.compute_encodings([{"input": input}])
 
     if export_int32_bias_encodings:
-        sim._concretize_int32_bias_quantizers()
         # FIXME: Need extra tolerance due to numerical instability of AIMET int32 bias qdq.
         tolerance += 1
 
     (out_sim,) = sim.session.run(None, {"input": input})
 
-    onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=prequantize_constants)
+    onnx_qdq_model = sim.to_onnx_qdq(
+        export_int32_bias=export_int32_bias_encodings,
+        prequantize_constants=prequantize_constants,
+    )
 
     """
     Then: Exported model should preserve the original I/O names
@@ -5004,7 +5009,14 @@ def test_to_onnx_qdq(
     dq_nodes = [
         node for node in onnx_qdq_model.graph.node if node.op_type == "DequantizeLinear"
     ]
-    with sim._insert_data_movement_op_output_quantizers():
+    with (
+        sim._insert_data_movement_op_output_quantizers(),
+        (
+            sim._concretize_int32_bias_quantizers()
+            if export_int32_bias_encodings
+            else contextlib.nullcontext()
+        ),
+    ):
         expected_quantizers = {
             name: qtzr
             for name, qtzr in sim.qc_quantize_op_dict.items()
@@ -5129,13 +5141,13 @@ def test_fp16_qdq_export(
     sim.compute_encodings([input])
 
     if export_int32_bias_encodings:
-        sim._concretize_int32_bias_quantizers()
         # FIXME: Need extra tolerance due to numerical instability of AIMET int32 bias qdq.
         tolerance += 1
 
     (out_sim,) = sim.session.run(None, input)
 
     onnx_qdq_model = sim.to_onnx_qdq(
+        export_int32_bias=export_int32_bias_encodings,
         prequantize_constants=prequantize_constants,
     )
 
@@ -5908,48 +5920,49 @@ def test_from_onnx_qdq(
     inputs = {input_name: np.random.randn(*input_shape).astype(np.float32)}
 
     sim.compute_encodings([inputs])
-    if export_int32_bias_encodings:
-        sim._concretize_int32_bias_quantizers()
-    qdq_model = sim.to_onnx_qdq(prequantize_constants=prequantize_constants)
+    output_scale = sim.qc_quantize_op_dict["output"].get_encodings()[0].delta
+
+    qdq_model = sim.to_onnx_qdq(
+        export_int32_bias=export_int32_bias_encodings,
+        prequantize_constants=prequantize_constants,
+    )
 
     """
     When: Create sim from onnx QDQ model
     Then: The new sim should be in same state as the original sim
     """
     sim_2 = QuantizationSimModel._from_onnx_qdq(
-        sim.to_onnx_qdq(prequantize_constants=prequantize_constants),
+        sim.to_onnx_qdq(
+            export_int32_bias=export_int32_bias_encodings,
+            prequantize_constants=prequantize_constants,
+        ),
         config_file="htp_v81",
     )
-    if export_int32_bias_encodings:
-        sim_2._concretize_int32_bias_quantizers()
     _assert_sim_equal(sim, sim_2)
-    assert np.allclose(
-        sim.session.run(None, inputs),
-        sim_2.session.run(None, inputs),
-    )
+    (out,) = sim.session.run(None, inputs)
+    (out2,) = sim_2.session.run(None, inputs)
+    assert np.allclose(out, out2, atol=output_scale)
 
     """
     When: Call compute_encodings with new sim
     Then: All states of the new sim should remain unchanged
     """
-    sim_2 = QuantizationSimModel._from_onnx_qdq(
-        sim.to_onnx_qdq(prequantize_constants=prequantize_constants),
-        config_file="htp_v81",
-    )
     sim_2.compute_encodings([{key: val * 2 for key, val in inputs.items()}])
-    if export_int32_bias_encodings:
-        sim_2._concretize_int32_bias_quantizers()
     _assert_sim_equal(sim, sim_2)
     assert np.allclose(
         sim.session.run(None, inputs),
         sim_2.session.run(None, inputs),
+        atol=output_scale,
     )
 
     """
     When: Export onnx QDQ from the new sim
     Then: The new onnx QDQ model should be in same state as the original onnx QDQ
     """
-    qdq_model_2 = sim_2.to_onnx_qdq(prequantize_constants=prequantize_constants)
+    qdq_model_2 = sim_2.to_onnx_qdq(
+        export_int32_bias=export_int32_bias_encodings,
+        prequantize_constants=prequantize_constants,
+    )
     assert qdq_model.graph.input == qdq_model_2.graph.input
     assert qdq_model.graph.output == qdq_model_2.graph.output
 
