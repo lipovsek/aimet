@@ -115,7 +115,8 @@ __device__ void quantizeToFxpDevice(const DTYPE* in, DTYPE* out,
                                     RoundingMode rounding_mode, int seed)
 {
     // Saturate
-    *out = clamp(*in, encoding_min, encoding_max);
+    *out = std::isnan(*in) ? encoding_min : *in;
+    *out = clamp(*out, encoding_min, encoding_max);
     // Scale and add offset to get something in the range [0,2^bw-1]
     *out = *out / encoding_delta - encoding_offset;
     // Round

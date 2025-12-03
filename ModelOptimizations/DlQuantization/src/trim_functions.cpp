@@ -142,7 +142,8 @@ template <typename DTYPE>
 inline void quantizeValueCpu(const DTYPE* in, DTYPE* out, DTYPE encoding_min, DTYPE encoding_max, DTYPE encoding_delta,
                              DTYPE encoding_offset, RoundingMode rounding_mode)
 {
-    *out = fmax(fmin(*in, encoding_max), encoding_min);
+    *out = std::isnan(*in) ? encoding_min : *in;
+    *out = fmax(fmin(*out, encoding_max), encoding_min);
     // Scale and add offset to get something in the range [0,2^bw-1]
     *out = *out / encoding_delta - encoding_offset;
 

@@ -5339,6 +5339,76 @@ def test_onnx_qdq_opset_compatibility(
     assert np.allclose(out_sim, out_onnx_qdq, atol=atol, rtol=rtol)
 
 
+def test_nan_handling_alignment_with_onnxruntime():
+    """
+    When: Quantizer gets NaN input tensor
+    Then: Output should match that of equivalent onnx QDQ graph
+    """
+    model = onnx.helper.make_model(
+        onnx.helper.make_graph(
+            name="nan_model",
+            inputs=[
+                onnx.helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, [2])
+            ],
+            outputs=[
+                onnx.helper.make_tensor_value_info(
+                    "output", onnx.TensorProto.FLOAT, [2]
+                )
+            ],
+            initializer=[
+                onnx.helper.make_tensor(
+                    name="scale",
+                    data_type=onnx.TensorProto.FLOAT,
+                    dims=[1],
+                    vals=np.array([0.1], dtype=np.float32),
+                ),
+                onnx.helper.make_tensor(
+                    name="zero_point",
+                    data_type=onnx.TensorProto.INT8,
+                    dims=[1],
+                    vals=np.array([-10], dtype=np.int8),
+                ),
+            ],
+            nodes=[
+                onnx.helper.make_node(
+                    "Identity",
+                    inputs=["input"],
+                    outputs=["output_updated"],
+                    name="placeholder",
+                ),
+                onnx.helper.make_node(
+                    "QuantizeLinear",
+                    inputs=["output_updated", "scale", "zero_point"],
+                    outputs=["quantized"],
+                    name="quantize",
+                ),
+                onnx.helper.make_node(
+                    "DequantizeLinear",
+                    inputs=["quantized", "scale", "zero_point"],
+                    outputs=["output"],
+                    name="dequantize",
+                ),
+            ],
+        ),
+        opset_imports=[onnx.helper.make_opsetid("", 18)],
+        ir_version=11,
+    )
+    onnx.checker.check_model(model)
+    providers = (
+        ["CUDAExecutionProvider"]
+        if "CUDAExecutionProvider" in ort.get_available_providers()
+        else ["CPUExecutionProvider"]
+    )
+    sim = QuantizationSimModel._from_onnx_qdq(copy.deepcopy(model), providers=providers)
+
+    nan_tensor = np.array([-np.nan, np.nan], dtype=np.float32)
+    sim_out = sim.session.run(None, {"input": nan_tensor})[0]
+    ort_sess = ort.InferenceSession(model.SerializeToString())
+    ort_out = ort_sess.run(None, {"input": nan_tensor})[0]
+
+    assert np.all(sim_out == ort_out)
+
+
 @pytest.mark.parametrize(
     "model_factory",
     [
