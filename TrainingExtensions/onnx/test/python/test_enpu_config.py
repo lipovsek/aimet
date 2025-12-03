@@ -61,6 +61,7 @@ class TestEnpuV6Config:
             input_names=["input"],
             output_names=["output"],
             opset_version=13,
+            dynamo=False,
         )
         onnx_model = onnx.load(tmp_path / "model.onnx")
         weight_name = next(
@@ -110,6 +111,7 @@ class TestEnpuV6Config:
             input_names=["input"],
             output_names=["output"],
             opset_version=13,
+            dynamo=False,
         )
         sim = aimet_onnx.QuantizationSimModel(
             onnx.load(tmp_path / "model.onnx"),
@@ -273,6 +275,7 @@ class TestEnpuV6Config:
             output_names=["output"],
             opset_version=opset_version,
             do_constant_folding=False,
+            dynamo=False,
         )
         onnx_model = onnx.load(tmp_path / "model.onnx")
 

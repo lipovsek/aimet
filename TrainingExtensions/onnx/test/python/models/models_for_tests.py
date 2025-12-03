@@ -1169,6 +1169,7 @@ def single_residual_model(
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = load_model(buffer)
@@ -1196,6 +1197,7 @@ def multi_input_model(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input1", "input2"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1216,6 +1218,7 @@ def multi_output_model():
         verbose=True,
         input_names=input_names,
         output_names=output_names,
+        dynamo=False,
     )
 
     buffer.seek(0)
@@ -1237,6 +1240,7 @@ def transposed_conv_model(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
 
     buffer.seek(0)
@@ -1262,6 +1266,7 @@ def depthwise_transposed_conv_model(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1283,6 +1288,7 @@ def transposed_conv_model_without_bn(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1314,6 +1320,7 @@ def linear_split_into_matmul_add(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1345,6 +1352,7 @@ def unfusable_matmul_add(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1366,6 +1374,7 @@ def depthwise_conv_model(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1387,6 +1396,7 @@ def depthwise_conv_model_with_relu6(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1412,6 +1422,7 @@ def concat_model(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input1", "input2", "input3"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1443,6 +1454,7 @@ def hierarchical_model(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1889,6 +1901,7 @@ def _convert_to_onnx_no_fold(
         do_constant_folding=False,
         input_names=["input"],
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1912,6 +1925,7 @@ def _convert_to_onnx(
         do_constant_folding=True,
         input_names=["input"],
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -1938,6 +1952,7 @@ def my_model_with_bns(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=False,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model_onnx = ONNXModel(load_model(buffer))
@@ -1974,6 +1989,7 @@ def elementwise_op_model(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=False,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model_onnx = ONNXModel(load_model(buffer))
@@ -2022,6 +2038,7 @@ def multi_input_with_constant_model(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=False,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model_onnx = ONNXModel(load_model(buffer))
@@ -2117,6 +2134,7 @@ def simple_relu_model(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=False,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model_onnx = ONNXModel(load_model(buffer))
@@ -2146,6 +2164,7 @@ def instance_norm_model(opset_version=_DEFAULT_OPSET_VERSION):
         do_constant_folding=False,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = load_model(buffer)
@@ -2236,6 +2255,7 @@ def conv_relu_model(opset_version=_DEFAULT_OPSET_VERSION):
             "input": {0: "batch_size"},
             "output": {0: "batch_size"},
         },
+        dynamo=False,
     )
 
     buffer.seek(0)
@@ -2536,6 +2556,7 @@ def dynamic_matmul_model(batch_size):
         input_names=["input"],
         output_names=["output"],
         do_constant_folding=False,
+        dynamo=False,
     )
     buffer.seek(0)
     onnx_model = onnx.load(buffer)
@@ -2564,6 +2585,7 @@ def simplifiable_model(batch_size=1):
         input_names=["input"],
         output_names=["output"],
         do_constant_folding=False,
+        dynamo=False,
     )
     buffer.seek(0)
     onnx_model = onnx.load(buffer)
@@ -3592,6 +3614,7 @@ def squeezenet1_0(tmpdir):
         do_constant_folding=False,
         input_names=["input"],
         output_names=["output"],
+        dynamo=False,
     )
     model = onnx.load(filepath)
     return ONNXModel(model)
@@ -3811,6 +3834,7 @@ def mobilenetv2():
             "input": {0: "batch_size"},
             "output": {0: "batch_size"},
         },
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -3830,6 +3854,7 @@ def resnet18():
         do_constant_folding=False,
         input_names=["input"],
         output_names=["output"],
+        dynamo=False,
     )
     buffer.seek(0)
     model = ONNXModel(load_model(buffer))
@@ -4029,7 +4054,7 @@ def model_with_ignore_ops(tmpdir):
     model.eval()
     input_tensor = torch.randn(1, 3, 32, 32)
     model_file_path = os.path.join(tmpdir, "custom_model.onnx")
-    torch.onnx.export(model, input_tensor, model_file_path)
+    torch.onnx.export(model, input_tensor, model_file_path, dynamo=False)
 
     return onnx.load(model_file_path)
 
@@ -4287,6 +4312,7 @@ def conv_prelu_model(
         do_constant_folding=True,  # whether to execute constant folding for optimization
         input_names=["input"],  # the model's input names
         output_names=["output"],
+        dynamo=False,
     )
 
     buffer.seek(0)

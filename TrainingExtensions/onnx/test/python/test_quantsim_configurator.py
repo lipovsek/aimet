@@ -434,6 +434,7 @@ class TestQuantSimConfig:
             input_names=["input"],
             output_names=["output"],
             opset_version=13,
+            dynamo=False,
         )
         model = onnx.load(tmp_path / "residual.onnx")
         sim = QuantizationSimModel(model, config_file=tmp_path / "config.json")
@@ -480,6 +481,7 @@ class TestQuantSimConfig:
             input_names=["input"],
             output_names=["output"],
             opset_version=13,
+            dynamo=False,
         )
         model = onnx.load_model(tmp_path / "model.onnx")
         sim = QuantizationSimModel(model, config_file=tmp_path / "quantsim_config.json")
@@ -544,6 +546,7 @@ class TestQuantSimConfig:
             input_names=["input"],
             output_names=["output"],
             opset_version=13,
+            dynamo=False,
         )
         model = onnx.load_model(tmp_path / "model.onnx")
         sim = QuantizationSimModel(model, config_file=tmp_path / "quantsim_config.json")

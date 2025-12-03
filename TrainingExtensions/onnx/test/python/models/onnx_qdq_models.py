@@ -225,6 +225,7 @@ def split_qdq(
             input_names=["input"],
             output_names=["output1", "output2"],
             opset_version=13,
+            dynamo=False,
         )
         return onnx.load(path), (mul_output_scale, reshape_output_scale)
 
@@ -314,6 +315,7 @@ def concat_qdq(
             input_names=["input1", "input2"],
             output_names=["output"],
             opset_version=13,
+            dynamo=False,
         )
         return onnx.load(path), (concat_output_scale,)
 
@@ -357,6 +359,7 @@ def transpose_multi_consumer():
             input_names=["input"],
             output_names=["output1", "output2", "output3"],
             opset_version=13,
+            dynamo=False,
         )
         return onnx.load(path), (scale, scale, sigmoid_output_scale)
 

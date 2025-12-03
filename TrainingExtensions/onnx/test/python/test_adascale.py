@@ -529,6 +529,7 @@ class TestAdascaleQuantizer:
                 tempdir + "/model.onnx",
                 input_names=["input"],
                 output_names=["output"],
+                dynamo=False,
             )
             model_onnx = load_model(tempdir + "/model.onnx")
             sim = QuantizationSimModel(

@@ -270,6 +270,7 @@ class TestQuantSim:
                 "input": {0: "batch_size"},
                 "output": {0: "batch_size"},
             },
+            dynamo=False,
         )
         onnx_model = load_model(os.path.join(tmp_dir, "dummy_model.onnx"))
         dummy_input = make_dummy_input(onnx_model)
@@ -680,6 +681,7 @@ class TestQuantSim:
             tmp_path / "rnn.onnx",
             input_names=input_names,
             output_names=output_names,
+            dynamo=False,
         )
         model = onnx.load(tmp_path / "rnn.onnx")
         self._test_lstm(model)
@@ -3632,6 +3634,7 @@ class TestEncodingPropagation:
             tmp_path / "concat_tree.onnx",
             input_names=["x", "y", "z"],
             output_names=["output"],
+            dynamo=False,
         )
 
         with aimet_onnx.quantsim._apply_constraints(True):
@@ -3980,6 +3983,7 @@ class TestEncodingPropagation:
             tmp_path / "resize_concat.onnx",
             input_names=["input_1", "input_2"],
             output_names=["output"],
+            dynamo=False,
         )
         onnx_model = onnx.load(tmp_path / "resize_concat.onnx")
 
@@ -4030,6 +4034,7 @@ class TestEncodingPropagation:
             tmp_path / "conv_resize_concat.onnx",
             input_names=["input"],
             output_names=["output"],
+            dynamo=False,
         )
         onnx_model = onnx.load(tmp_path / "conv_resize_concat.onnx")
 
@@ -4091,6 +4096,7 @@ class TestEncodingPropagation:
             tmp_path / "concat_resize.onnx",
             input_names=["x", "y", "z"],
             output_names=["out1", "out2"],
+            dynamo=False,
         )
 
         with aimet_onnx.quantsim._apply_constraints(True):
@@ -6494,6 +6500,7 @@ def test_output_split(tmp_path: pathlib.Path):
         tmp_path / "model.onnx",
         input_names=["input"],
         output_names=["output_0", "output_1"],
+        dynamo=False,
     )
 
     model = onnx.load(tmp_path / "model.onnx")
