@@ -1325,12 +1325,16 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         :param product_name: Name of the product to create.
         :param shape: Shape of the product to create.
         """
-        if product_name not in self._products:
+        product = self._products.get(product_name, None)
+
+        if product is None:
             product = Product(product_name, shape)
             product.is_parm = True
+            self._products[product_name] = product
+
+        if product.is_parm:
             product.add_consumer(op)
             op.add_input(product)
-            self._products[product_name] = product
 
     def _fill_op_and_product_properties(self, module_tensor_shapes_map):
         """

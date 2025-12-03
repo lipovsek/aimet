@@ -2647,3 +2647,14 @@ def test_model_with_constant_concat_inputs():
     )
     assert sim.model.concat.input_quantizers[1] is None
     assert sim.model.concat.output_quantizers[0] is sim.model.concat.input_quantizers[2]
+
+
+def test_reused_conv():
+    """
+    When: Model contains reused Conv
+    Then: Quantsim should be created without error
+    """
+    conv = torch.nn.Conv2d(3, 3, 3)
+    model = torch.nn.Sequential(conv, conv)  # conv1 is used multiple times
+    sim = aimet_torch.QuantizationSimModel(model, torch.randn(1, 3, 10, 10))
+    assert sim.model[0].param_quantizers["weight"].shape == (3, 1, 1, 1)
