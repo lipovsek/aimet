@@ -3,8 +3,6 @@
 
 """Utils for building GenAI models"""
 
-from typing import Optional, Dict, Any, Tuple
-
 import torch
 from transformers import PreTrainedModel, DynamicCache
 
