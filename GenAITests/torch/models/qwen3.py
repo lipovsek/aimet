@@ -5,7 +5,7 @@
 
 import torch
 
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.nn.transformers.models.qwen3.modeling_qwen3 import (
     QuantizedQwen3RMSNorm,
