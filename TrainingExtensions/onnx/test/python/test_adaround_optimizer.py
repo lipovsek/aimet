@@ -42,7 +42,7 @@ import torch
 import numpy as np
 from onnx import numpy_helper
 
-from aimet_common import libpymo
+from aimet_onnx.common import libpymo
 from aimet_onnx.adaround.adaround_tensor_quantizer import AdaroundTensorQuantizer
 from aimet_onnx.adaround.adaround_optimizer import AdaroundOptimizer
 from aimet_onnx.quantsim import QuantizationSimModel

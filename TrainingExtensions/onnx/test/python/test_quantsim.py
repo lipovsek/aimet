@@ -63,14 +63,19 @@ import onnxruntime as ort
 import pytest
 from onnxsim import simplify
 
-from aimet_common import quantsim
-from aimet_common import libpymo
-from aimet_common.defs import QuantScheme, QuantizationDataType, EncodingType, qtype
-from aimet_common.onnx._utils import (
+from aimet_onnx.common import quantsim
+from aimet_onnx.common import libpymo
+from aimet_onnx.common.defs import (
+    QuantScheme,
+    QuantizationDataType,
+    EncodingType,
+    qtype,
+)
+from aimet_onnx.common.onnx._utils import (
     _convert_version_with_external_weights,
     _remove_onnx_qdq_nodes,
 )
-from aimet_common.quantsim_config.utils import (
+from aimet_onnx.common.quantsim_config.utils import (
     get_path_for_per_channel_config,
     get_path_for_per_tensor_config,
 )

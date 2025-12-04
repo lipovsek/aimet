@@ -41,7 +41,10 @@ from typing import Callable
 
 import numpy as np
 
-from aimet_common.cache import Cache, SerializationProtocolBase
+try:
+    from aimet_onnx.common.cache import Cache, SerializationProtocolBase
+except ImportError:
+    from aimet_torch.common.cache import Cache, SerializationProtocolBase
 
 
 SEED = 18452

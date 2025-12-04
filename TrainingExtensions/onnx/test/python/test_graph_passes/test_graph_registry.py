@@ -35,7 +35,7 @@
 #  @@-COPYRIGHT-END-@@
 # =============================================================================
 import os
-from aimet_common.connected_graph.operation import Op
+from aimet_onnx.common.connected_graph.operation import Op
 from aimet_onnx.graph_passes.pass_registry import register_pass
 from aimet_onnx.graph_passes.graph_pass import SupergroupGraphPass
 from aimet_onnx.graph_passes.utils import get_const_input_names, get_output_names

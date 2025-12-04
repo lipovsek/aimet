@@ -41,7 +41,7 @@ import pytest
 import onnx
 import torch
 
-from aimet_common.defs import QuantizationDataType
+from aimet_onnx.common.defs import QuantizationDataType
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.amp.quantizer_groups import find_quantizer_group, QuantizerGroup
 from aimet_onnx.meta.connectedgraph import ConnectedGraph

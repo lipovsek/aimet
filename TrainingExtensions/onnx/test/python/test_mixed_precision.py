@@ -58,19 +58,19 @@ from aimet_onnx.mixed_precision import (
     apply_amp,
 )
 
-from aimet_common.defs import (
+from aimet_onnx.common.defs import (
     QuantizationDataType,
     CallbackFunc,
     int8,
     int16,
     float16,
 )
-from aimet_common.amp.mixed_precision_algo import (
+from aimet_onnx.common.amp.mixed_precision_algo import (
     interpolation_search,
     brute_force_search,
     binary_search,
 )
-from aimet_common.amp.utils import calculate_starting_bit_ops, AMPSearchAlgo
+from aimet_onnx.common.amp.utils import calculate_starting_bit_ops, AMPSearchAlgo
 
 from .models.test_models import single_residual_model
 from .models import models_for_tests

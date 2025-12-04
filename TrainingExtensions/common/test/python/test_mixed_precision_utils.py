@@ -39,14 +39,24 @@ import os
 from unittest.mock import MagicMock
 import pytest
 
-from aimet_common.amp.utils import (
-    visualize_quantizer_group_sensitivity,
-    visualize_pareto_curve,
-    create_sensitivity_plot,
-    _candidate_to_str,
-    candidate_cost,
-)
-from aimet_common.defs import QuantizationDataType
+try:
+    from aimet_onnx.common.amp.utils import (
+        visualize_quantizer_group_sensitivity,
+        visualize_pareto_curve,
+        create_sensitivity_plot,
+        _candidate_to_str,
+        candidate_cost,
+    )
+    from aimet_onnx.common.defs import QuantizationDataType
+except ImportError:
+    from aimet_torch.common.amp.utils import (
+        visualize_quantizer_group_sensitivity,
+        visualize_pareto_curve,
+        create_sensitivity_plot,
+        _candidate_to_str,
+        candidate_cost,
+    )
+    from aimet_torch.common.defs import QuantizationDataType
 
 
 @pytest.fixture(scope="session", autouse=True)

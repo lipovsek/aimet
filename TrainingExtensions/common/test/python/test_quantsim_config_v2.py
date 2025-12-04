@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 import yaml
 import pytest
-from aimet_common.quantsim_config.v2.parser import Qtype, OpConfig
+
+try:
+    from aimet_onnx.common.quantsim_config.v2.parser import Qtype, OpConfig
+except ImportError:
+    from aimet_torch.common.quantsim_config.v2.parser import Qtype, OpConfig
 
 
 def test_qtype_str_parsing():

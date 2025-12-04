@@ -40,12 +40,21 @@ import numpy as np
 try:
     import onnx
     import onnxruntime as ort
-    from aimet_common.onnx.opset10 import (
-        QuantizeLinear,
-        DequantizeLinear,
-        pack_int8_to_int4x2,
-        unpack_int4x2_to_int8,
-    )
+
+    try:
+        from aimet_onnx.common.onnx.opset10 import (
+            QuantizeLinear,
+            DequantizeLinear,
+            pack_int8_to_int4x2,
+            unpack_int4x2_to_int8,
+        )
+    except ImportError:
+        from aimet_torch.common.onnx.opset10 import (
+            QuantizeLinear,
+            DequantizeLinear,
+            pack_int8_to_int4x2,
+            unpack_int4x2_to_int8,
+        )
 except ImportError:
     pass
 else:

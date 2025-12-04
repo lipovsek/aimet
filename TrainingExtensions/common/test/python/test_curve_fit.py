@@ -37,7 +37,11 @@
 
 import unittest
 from matplotlib import pyplot as plt
-from aimet_common.curve_fit import MonotonicIncreasingCurveFit
+
+try:
+    from aimet_onnx.common.curve_fit import MonotonicIncreasingCurveFit
+except ImportError:
+    from aimet_torch.common.curve_fit import MonotonicIncreasingCurveFit
 
 
 class TestCommonCurveFit(unittest.TestCase):

@@ -36,7 +36,11 @@
 # =============================================================================
 
 import pytest
-from aimet_common.defs import qtype, QTYPE_ALIASES
+
+try:
+    from aimet_onnx.common.defs import qtype, QTYPE_ALIASES
+except ImportError:
+    from aimet_torch.common.defs import qtype, QTYPE_ALIASES
 
 
 def test_qtypes():

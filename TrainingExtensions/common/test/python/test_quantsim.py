@@ -38,13 +38,22 @@
 import pytest
 import numpy as np
 
-from aimet_common.quantsim import (
-    calculate_delta_offset,
-    compute_min_max_given_delta_offset,
-    _is_bias_out_of_int32_range,
-    _get_adjusted_weight_scale,
-)
-from aimet_common import libpymo
+try:
+    from aimet_onnx.common.quantsim import (
+        calculate_delta_offset,
+        compute_min_max_given_delta_offset,
+        _is_bias_out_of_int32_range,
+        _get_adjusted_weight_scale,
+    )
+    from aimet_onnx.common import libpymo
+except ImportError:
+    from aimet_torch.common.quantsim import (
+        calculate_delta_offset,
+        compute_min_max_given_delta_offset,
+        _is_bias_out_of_int32_range,
+        _get_adjusted_weight_scale,
+    )
+    from aimet_torch.common import libpymo
 
 
 class TestCommonQuantSim:

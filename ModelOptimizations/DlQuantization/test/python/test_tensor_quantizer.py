@@ -37,7 +37,11 @@
 
 import unittest
 import numpy as np
-import aimet_common.libpymo as libpymo
+
+try:
+    import aimet_onnx.common.libpymo as libpymo
+except ImportError:
+    import aimet_torch.common.libpymo as libpymo
 
 
 class TestTensorQuantizer(unittest.TestCase):

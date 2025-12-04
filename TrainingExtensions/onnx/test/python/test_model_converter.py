@@ -16,11 +16,11 @@ from onnx import numpy_helper
 import numpy as np
 from dataclasses import dataclass
 import copy
-from aimet_common.utils import compute_psnr
+from aimet_onnx.common.utils import compute_psnr
 from aimet_onnx.experimental.adascale.find_blocks import (
     get_decoder_blocks_end_points,
 )
-from aimet_common.utils import AimetLogger
+from aimet_onnx.common.utils import AimetLogger
 import onnx
 from .utils import add_genai_tests_path, tmp_dir
 

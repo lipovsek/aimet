@@ -40,8 +40,13 @@ import os
 import tempfile
 import numpy as np
 import pytest
-from aimet_common.utils import profile, AimetLogger, compute_psnr
-from aimet_common import utils
+
+try:
+    from aimet_onnx.common.utils import profile, AimetLogger, compute_psnr
+    from aimet_onnx.common import utils
+except ImportError:
+    from aimet_torch.common.utils import profile, AimetLogger, compute_psnr
+    from aimet_torch.common import utils
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
 

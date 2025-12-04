@@ -41,7 +41,17 @@ import numpy as np
 try:
     import onnx
     import onnxruntime as ort
-    from aimet_common.onnx.opset13 import QuantizeLinear, DequantizeLinear
+
+    try:
+        from aimet_onnx.common.onnx.opset13 import (
+            QuantizeLinear,
+            DequantizeLinear,
+        )
+    except ImportError:
+        from aimet_torch.common.onnx.opset13 import (
+            QuantizeLinear,
+            DequantizeLinear,
+        )
 except ImportError:
     pass
 else:

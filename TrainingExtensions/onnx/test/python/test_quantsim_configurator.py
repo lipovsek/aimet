@@ -42,8 +42,8 @@ import torch
 import pytest
 import torch
 import onnx
-from aimet_common.defs import QuantizationDataType, qtype
-from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
+from aimet_onnx.common.defs import QuantizationDataType, qtype
+from aimet_onnx.common.quantsim_config.utils import get_path_for_per_channel_config
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.quantsim import QuantizationSimModel, QuantSimConfigurator
 from .models import models_for_tests

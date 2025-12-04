@@ -45,8 +45,8 @@ import numpy as np
 import torch
 import onnxruntime as ort
 
-from aimet_common.utils import CallbackFunc
-from aimet_common.defs import QuantScheme
+from aimet_onnx.common.utils import CallbackFunc
+from aimet_onnx.common.defs import QuantScheme
 from aimet_onnx.batch_norm_fold import fold_all_batch_norms_to_weight
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.quant_analyzer import QuantAnalyzer

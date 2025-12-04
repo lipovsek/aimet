@@ -41,19 +41,36 @@ import json
 import pytest
 from unittest.mock import patch
 import jsonschema
-from aimet_common.quantsim_config.json_config_importer import (
-    _validate_syntax,
-    _validate_semantics,
-    JsonConfigImporter,
-    ConfigDictKeys,
-)
-from aimet_common.quantsim_config.quantsim_config import (
-    _build_list_of_permutations,
-    OnnxConnectedGraphTypeMapper,
-    QuantSimConfigurator,
-    QuantizationDataType,
-)
-from aimet_common.defs import qtype
+
+try:
+    from aimet_onnx.common.quantsim_config.json_config_importer import (
+        _validate_syntax,
+        _validate_semantics,
+        JsonConfigImporter,
+        ConfigDictKeys,
+    )
+    from aimet_onnx.common.quantsim_config.quantsim_config import (
+        _build_list_of_permutations,
+        OnnxConnectedGraphTypeMapper,
+        QuantSimConfigurator,
+        QuantizationDataType,
+    )
+    from aimet_onnx.common.defs import qtype
+except ImportError:
+    from aimet_torch.common.quantsim_config.json_config_importer import (
+        _validate_syntax,
+        _validate_semantics,
+        JsonConfigImporter,
+        ConfigDictKeys,
+    )
+    from aimet_torch.common.quantsim_config.quantsim_config import (
+        _build_list_of_permutations,
+        OnnxConnectedGraphTypeMapper,
+        QuantSimConfigurator,
+        QuantizationDataType,
+    )
+    from aimet_torch.common.defs import qtype
+
 from .utils import tmp_dir
 
 

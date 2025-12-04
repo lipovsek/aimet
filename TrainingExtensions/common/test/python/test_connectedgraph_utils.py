@@ -37,15 +37,22 @@
 """This file contains unit tests for testing connected graph utils."""
 
 import json
-import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-from aimet_common.connected_graph.connectedgraph import ConnectedGraph
-from aimet_common.connected_graph.operation import Op
-from aimet_common.connected_graph.product import Product
-from aimet_common.connected_graph import connectedgraph_utils
-from aimet_common.model_module import ModelModule
+
+try:
+    from aimet_onnx.common.connected_graph.connectedgraph import ConnectedGraph
+    from aimet_onnx.common.connected_graph.operation import Op
+    from aimet_onnx.common.connected_graph.product import Product
+    from aimet_onnx.common.connected_graph import connectedgraph_utils
+    from aimet_onnx.common.model_module import ModelModule
+except ImportError:
+    from aimet_torch.common.connected_graph.connectedgraph import ConnectedGraph
+    from aimet_torch.common.connected_graph.operation import Op
+    from aimet_torch.common.connected_graph.product import Product
+    from aimet_torch.common.connected_graph import connectedgraph_utils
+    from aimet_torch.common.model_module import ModelModule
 
 
 @patch(

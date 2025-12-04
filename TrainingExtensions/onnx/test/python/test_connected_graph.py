@@ -39,7 +39,7 @@ import itertools
 import pytest
 from unittest.mock import MagicMock, patch
 import torch
-from aimet_common.connected_graph.connectedgraph_utils import (
+from aimet_onnx.common.connected_graph.connectedgraph_utils import (
     get_all_input_ops,
     get_all_ops_with_constant_inputs,
 )

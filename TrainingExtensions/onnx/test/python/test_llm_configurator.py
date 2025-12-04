@@ -7,7 +7,7 @@ import torch
 
 from aimet_onnx.utils import make_dummy_input
 
-from aimet_common.defs import QuantScheme
+from aimet_onnx.common.defs import QuantScheme
 from aimet_onnx.quantsim import QuantizationSimModel as QuantSimOnnx
 
 from aimet_onnx.experimental.llm_configurator.llm_configurator import (
@@ -20,7 +20,7 @@ import onnx
 import onnxsim
 import os
 
-from aimet_common.onnx._utils import _is_grid_preserving_op
+from aimet_onnx.common.onnx._utils import _is_grid_preserving_op
 from aimet_onnx.qc_quantize_op import QcQuantizeOp
 
 from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaConfig

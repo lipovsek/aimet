@@ -52,8 +52,8 @@ import itertools
 from onnx.utils import Extractor
 import logging
 
-from aimet_common import libquant_info
-from aimet_common.utils import AimetLogger
+from aimet_onnx.common import libquant_info
+from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx import apply_seq_mse
 from aimet_onnx.sequential_mse.dependency_graph import (
     DependencyGraph,
@@ -71,7 +71,7 @@ from aimet_onnx.sequential_mse.transform import (
     modify_graph_with_grouped_linear,
     prepare_linear_inputs,
 )
-from aimet_common.defs import QuantScheme
+from aimet_onnx.common.defs import QuantScheme
 from aimet_onnx.quantsim import (
     QuantizationSimModel,
     set_blockwise_quantization_for_weights,

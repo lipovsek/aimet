@@ -57,7 +57,7 @@ from onnx import helper, numpy_helper, OperatorSetIdProto, TensorProto, load_mod
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from onnxruntime_extensions import PyOp, onnx_op
 
-from aimet_common import libquant_info
+from aimet_onnx.common import libquant_info
 from .mobilenet import MockMobileNetV1, MockMobileNetV11
 
 _DEFAULT_OPSET_VERSION = 13

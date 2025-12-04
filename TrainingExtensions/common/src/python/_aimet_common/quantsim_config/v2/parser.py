@@ -6,7 +6,7 @@ import re
 import functools
 import itertools
 import onnx
-from aimet_common.onnx._utils import _is_float
+from ...onnx._utils import _is_float
 
 
 @dataclass(frozen=True)

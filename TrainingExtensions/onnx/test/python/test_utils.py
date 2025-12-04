@@ -269,7 +269,7 @@ class TestUtils:
     def test_custom_opset_version_upgrade(self):
         model = models_for_tests.build_dummy_model()
 
-        from aimet_common.onnx._utils import _convert_version_with_external_weights
+        from aimet_onnx.common.onnx._utils import _convert_version_with_external_weights
 
         upgraded_model = _convert_version_with_external_weights(model, 21)
 

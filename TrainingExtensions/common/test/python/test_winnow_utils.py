@@ -37,10 +37,17 @@
 """This file contains unit tests for testing the utilities in winnow_utils.py."""
 
 import unittest
-from aimet_common.winnow.winnow_utils import (
-    get_indices_among_ones_of_overlapping_ones,
-    update_winnowed_channels,
-)
+
+try:
+    from aimet_onnx.common.winnow.winnow_utils import (
+        get_indices_among_ones_of_overlapping_ones,
+        update_winnowed_channels,
+    )
+except ImportError:
+    from aimet_torch.common.winnow.winnow_utils import (
+        get_indices_among_ones_of_overlapping_ones,
+        update_winnowed_channels,
+    )
 
 
 class TestWinnowUtils(unittest.TestCase):

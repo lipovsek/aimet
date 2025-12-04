@@ -5,7 +5,7 @@ import pytest
 import tempfile
 import onnxruntime
 
-from aimet_common.defs import QuantizationDataType
+from aimet_onnx.common.defs import QuantizationDataType
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx import analyze_per_layer_sensitivity
 from aimet_onnx import int8, int16, float16

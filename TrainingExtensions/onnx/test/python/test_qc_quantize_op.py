@@ -44,8 +44,8 @@ from onnx import helper, numpy_helper, OperatorSetIdProto, TensorProto
 import os
 import platform
 import pytest
-from aimet_common import libpymo
-from aimet_common.defs import (
+from aimet_onnx.common import libpymo
+from aimet_onnx.common.defs import (
     QuantScheme,
     MAP_QUANT_SCHEME_TO_PYMO,
     MAP_ROUND_MODE_TO_PYMO,
@@ -58,8 +58,8 @@ from aimet_onnx.qc_quantize_op import (
     TensorQuantizerParams,
     GroupedBlockQuantizeDequantize,
 )
-from aimet_common import libquant_info
-from aimet_common.quantsim import calculate_delta_offset
+from aimet_onnx.common import libquant_info
+from aimet_onnx.common.quantsim import calculate_delta_offset
 from aimet_onnx import lpbq_utils
 
 

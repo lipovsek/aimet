@@ -42,7 +42,7 @@ import torch
 from onnxruntime import SessionOptions, GraphOptimizationLevel, InferenceSession
 from onnx import numpy_helper
 
-from aimet_common.cross_layer_equalization import GraphSearchUtils
+from aimet_onnx.common.cross_layer_equalization import GraphSearchUtils
 from aimet_onnx.utils import make_dummy_input
 from aimet_onnx.meta.connectedgraph import ConnectedGraph, WEIGHT_INDEX
 from aimet_onnx.cross_layer_equalization import (
