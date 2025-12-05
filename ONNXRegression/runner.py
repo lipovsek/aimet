@@ -156,6 +156,7 @@ def _export_torch_to_onnx_local(
                 opset_version=17,
                 do_constant_folding=True,
                 export_params=True,
+                dynamo=False,
             )
             export_success = True
         except Exception as e:
@@ -175,6 +176,7 @@ def _export_torch_to_onnx_local(
                         opset_version=17,
                         do_constant_folding=True,
                         export_params=True,
+                        dynamo=False,
                     )
                     export_success = True
                 except Exception as e2:
