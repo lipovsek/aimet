@@ -6,6 +6,29 @@
 Release notes
 #############
 
+2.21.0
+======
+
+* Bug fixes and Improvements
+    
+    * ONNX
+        * Fix IndexError when Conv or Linear layers are reused in the model (`65c4b3b`_)
+        * Add optional argument `export_int32_bias` to aimet-onnx export (`3b8e0f0`_)
+        * Unpin PyTorch version in aimet-onnx (`d99b6c4`_)
+        * Align NaN handling with ORT CPU Execution Provider (`e4c49eb`_)
+        * Fix quantization axis handling for transposed MatMul operations (`6ca06d6`_)
+    
+    * PyTorch
+        * Fix quantization logic to enable input quantizers for layers following ignored layers (`80fb4fe`_)
+
+.. _65c4b3b: https://github.com/quic/aimet/commit/65c4b3b9f58cbeddfb41f79db42e79a80d6427df
+.. _3b8e0f0: https://github.com/quic/aimet/commit/3b8e0f03f7701003377a65cf5d782143f627db2b
+.. _d99b6c4: https://github.com/quic/aimet/commit/d99b6c4a9e54f0f05e2ac2b72487058d7c19fcdc
+.. _e4c49eb: https://github.com/quic/aimet/commit/e4c49eb6c5e1b5c666221313981b8fab44f19ea8
+.. _6ca06d6: https://github.com/quic/aimet/commit/6ca06d60b82b59bf2f30e90663d8cfdb3777da91
+.. _80fb4fe: https://github.com/quic/aimet/commit/80fb4fef91bf81bb5a7356645295168ca1ccef88
+
+
 2.20.0
 ======
 
