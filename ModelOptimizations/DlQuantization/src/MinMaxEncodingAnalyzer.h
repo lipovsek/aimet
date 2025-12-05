@@ -54,7 +54,7 @@ public:
     void resetStats() override;
 
     Encodings computeEncoding(uint8_t bw, bool useSymmetricEncodings, bool useStrictSymmetric,
-                              bool useUnsignedSymmetric) const override;
+                              bool useUnsignedSymmetric, double zeroPointShift = 0.0) const override;
 
     static constexpr DTYPE MIN_RANGE = 0.01;
 

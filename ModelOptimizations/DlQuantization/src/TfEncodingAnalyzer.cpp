@@ -105,7 +105,8 @@ TfEncoding TfEncodingAnalyzer<DTYPE>::computeEncoding(uint8_t bw, bool useSymmet
     newMax      = std::max(newMax, newMin + MIN_RANGE);
     encoding.bw = bw;
 
-    return getComputedEncodings(bw, newMin, newMax, useSymmetricEncodings, useStrictSymmetric, useUnsignedSymmetric);
+    return getComputedEncodings(bw, newMin, newMax, useSymmetricEncodings, useStrictSymmetric, useUnsignedSymmetric,
+                                0.0);
 }
 
 

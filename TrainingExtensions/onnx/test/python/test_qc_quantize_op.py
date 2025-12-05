@@ -2471,3 +2471,44 @@ def test_lpbq_encoding_schema_2_0_0(
     y_scale = per_block_int_scale * per_channel_float_scale
     atol = y_scale.max(axis=block_axis, keepdims=True)  # Allow off-by-one error
     assert np.allclose(ort_out, aimet_out, atol=atol)
+
+
+def test_quantizer_with_zero_point_shift():
+    input_shape = (3, 20)
+    channel_axis = 0
+    bitwidth = 2
+    zero_point_shift = 0.5
+
+    tensor_quantizer = create_tensor_quantizer(
+        input_shape,
+        bitwidth,
+        channel_axis,
+        quant_scheme=QuantScheme.post_training_tf,
+    )
+    tensor_quantizer.setZeroPointShift(zero_point_shift)
+    assert tensor_quantizer.getZeroPointShift() == zero_point_shift
+
+    exp_max = np.array([1.5, 1, 0.5]).astype(np.float32).reshape(3, 1)
+    exp_delta = (2 * exp_max) / (2**bitwidth - 1)
+
+    input_tensor = np.random.randn(*input_shape).astype(np.float32) * 5
+    # Clip observed tensor to control the min/max range
+    clipped_tensor = np.clip(input_tensor, -exp_max, exp_max)
+    tensor_quantizer.updateStats(clipped_tensor)
+    enc = tensor_quantizer.computeEncodings(True)
+    tensor_quantizer.setEncodings(enc)
+
+    for enc, expected_max in zip(enc, exp_max.flatten().tolist()):
+        assert enc.max == expected_max
+        assert enc.min == -expected_max
+        assert enc.delta == (enc.max - enc.min) / (2**bitwidth - 1)
+        assert enc.offset == -(2 ** (bitwidth - 1)) + zero_point_shift
+
+    # Quantized un-clipped tensor
+    qdq_tensor = tensor_quantizer.quantizeDequantize(input_tensor)
+    assert not np.any(qdq_tensor == 0)
+
+    exp_qdq_tensor = (
+        np.round(clipped_tensor / exp_delta - zero_point_shift) + zero_point_shift
+    ) * exp_delta
+    assert np.allclose(qdq_tensor, exp_qdq_tensor)

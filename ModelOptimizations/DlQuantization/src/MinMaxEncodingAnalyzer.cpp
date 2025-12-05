@@ -79,7 +79,8 @@ void MinMaxEncodingAnalyzer<DTYPE>::updateStatsContiguous(const DTYPE* tensor, c
 
 template <typename DTYPE>
 Encodings MinMaxEncodingAnalyzer<DTYPE>::computeEncoding(uint8_t bw, bool useSymmetricEncodings,
-                                                         bool useStrictSymmetric, bool useUnsignedSymmetric) const
+                                                         bool useStrictSymmetric, bool useUnsignedSymmetric,
+                                                         double zeroPointShift) const
 {
     // If symmetric encodings are requested then strictSymmetric and unsignedSymmetric are exclusive modes
     if (useSymmetricEncodings)
@@ -97,9 +98,9 @@ Encodings MinMaxEncodingAnalyzer<DTYPE>::computeEncoding(uint8_t bw, bool useSym
         // When the min and max are too close together, nudge the maximum to meet the
         // minimum range requirement
         // This also handles the case where min==max==0 to avoid division by zero
-        newMax = std::max(newMax, newMin + MIN_RANGE);
-        encodings[idx] =
-            getComputedEncodings(bw, newMin, newMax, useSymmetricEncodings, useStrictSymmetric, useUnsignedSymmetric);
+        newMax         = std::max(newMax, newMin + MIN_RANGE);
+        encodings[idx] = getComputedEncodings(bw, newMin, newMax, useSymmetricEncodings, useStrictSymmetric,
+                                              useUnsignedSymmetric, zeroPointShift);
     }
 
     return encodings;

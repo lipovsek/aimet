@@ -154,8 +154,8 @@ void TensorQuantizer::computeEncodingFromData(uint8_t bw, const float* data, siz
         // To avoid duplication use update stats since internal functions rely on this->_stats
         _encodingAnalyzer->updateStats(data, count, cpuGpuMode);
 
-        encoding =
-            _encodingAnalyzer->computeEncoding(bw, useSymmetricEncodings, useStrictSymmetric, useUnsignedSymmetric);
+        encoding = _encodingAnalyzer->computeEncoding(bw, useSymmetricEncodings, useStrictSymmetric,
+                                                      useUnsignedSymmetric);
     }
     else
     {
@@ -353,7 +353,8 @@ BlockTensorQuantizer::BlockTensorQuantizer(TensorDims shape, int bitwidth, Quant
     _useUnsignedSymmetric(false),
     _symmetric(false),
     _validStats(false),
-    _shape(shape)
+    _shape(shape),
+    _zeroPointShift(0.0)
 {
     _encodings.resize(getNumel(shape));
     _encodingAnalyzer = getBlockEncodingAnalyzerInstance<float>(quantScheme, shape);
@@ -361,8 +362,8 @@ BlockTensorQuantizer::BlockTensorQuantizer(TensorDims shape, int bitwidth, Quant
 
 void BlockTensorQuantizer::resetEncodingStats()
 {
-    _validStats       = false;
-    isEncodingValid   = false;
+    _validStats     = false;
+    isEncodingValid = false;
     _encodingAnalyzer->resetStats();
 }
 
@@ -455,7 +456,8 @@ Encodings BlockTensorQuantizer::computeEncodings(bool useSymmetricEncodings) con
     {
         throw std::runtime_error("Cannot compute encodings before updating stats");
     }
-    return _encodingAnalyzer->computeEncoding(bitwidth, useSymmetricEncodings, _useStrictSymmetric, _useUnsignedSymmetric);
+    return _encodingAnalyzer->computeEncoding(bitwidth, useSymmetricEncodings, _useStrictSymmetric,
+                                              _useUnsignedSymmetric, _zeroPointShift);
 }
 
 void BlockTensorQuantizer::setEncodings(const Encodings& encodings)

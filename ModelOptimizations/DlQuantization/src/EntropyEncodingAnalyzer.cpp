@@ -153,7 +153,8 @@ TfEncoding EntropyEncodingAnalyzer<DTYPE>::computeEncoding(uint8_t bw, bool useS
 
     assert(aMin <= aMax && "min must not be bigger than max");
 
-    return getComputedEncodings(bw, aMin, aMax, useSymmetricEncodings, useStrictSymmetric, useUnsignedSymmetric);
+    return getComputedEncodings(bw, aMin, aMax, useSymmetricEncodings, useStrictSymmetric, useUnsignedSymmetric,
+                                0.0);
 }
 
 template <typename DTYPE>

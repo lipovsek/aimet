@@ -60,7 +60,7 @@ public:
     void resetStats() override;
 
     std::vector<TfEncoding> computeEncoding(uint8_t bw, bool useSymmetricEncodings, bool useStrictSymmetric,
-                                            bool useUnsignedSymmetric) const override;
+                                            bool useUnsignedSymmetric, double zeroPointShift = 0.0) const override;
 
     std::vector<std::vector<std::tuple<double, double>>> getStatsHistogram() const override;
 

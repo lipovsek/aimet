@@ -165,7 +165,7 @@ public:
      *                          still preserving the zero-point to be absolute 0.
      */
     virtual std::vector<TfEncoding> computeEncoding(uint8_t bw, bool useSymmetricEncodings, bool useStrictSymmetric,
-                                                    bool useUnsignedSymmetric) const = 0;
+                                                    bool useUnsignedSymmetric, double zeroPointShift) const = 0;
 
     /**
      * @brief Returns a list of histograms that each represents a PDF of tensor values seen by this encoding analyzer for

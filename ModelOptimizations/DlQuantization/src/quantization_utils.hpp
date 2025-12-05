@@ -51,7 +51,7 @@ namespace DlQuantization
 static constexpr double EPSILON = 1e-5;
 
 TfEncoding getComputedEncodings(uint8_t bw, double min, double max, bool useSymmetricEncodings, bool useStrictSymmetric,
-                                bool useUnsignedSymmetric);
+                                bool useUnsignedSymmetric, double zeroPointShift);
 
 // ensures min - max is not too close, by checking that max - min > epsilon
 void gateMinMax(double& encodingMin, double& encodingMax);

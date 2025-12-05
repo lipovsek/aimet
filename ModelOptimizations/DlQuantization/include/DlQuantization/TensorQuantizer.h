@@ -381,6 +381,16 @@ public:
         return _encodings;
     }
 
+    double getZeroPointShift() const
+    {
+        return _zeroPointShift;
+    }
+
+    void setZeroPointShift(double zeroPointShift)
+    {
+        _zeroPointShift = zeroPointShift;
+    }
+
     void setEncodings(const Encodings& encodings);
 
     bool isEncodingValid;
@@ -392,6 +402,7 @@ private:
     bool _useUnsignedSymmetric;   // TODO: Remove
     bool _symmetric;
     bool _validStats;   // TODO: Move to EncodingAnalyzer
+    double _zeroPointShift;
     Encodings _encodings;
     std::unique_ptr<IBlockEncodingAnalyzer<float>> _encodingAnalyzer;
     TensorDims _shape;

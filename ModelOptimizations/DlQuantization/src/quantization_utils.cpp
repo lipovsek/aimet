@@ -57,7 +57,7 @@ namespace DlQuantization
 using namespace std;
 
 TfEncoding getComputedEncodings(uint8_t bw, double min, double max, bool useSymmetricEncodings, bool useStrictSymmetric,
-                                bool useUnsignedSymmetric)
+                                bool useUnsignedSymmetric, double zeroPointShift)
 {
     TfEncoding encoding;
 
@@ -78,21 +78,36 @@ TfEncoding getComputedEncodings(uint8_t bw, double min, double max, bool useSymm
     // Unsigned symmetric is not applicable if min < 0
     useUnsignedSymmetric = useUnsignedSymmetric && (min >= 0.0);
 
+    if (zeroPointShift != 0.0)
+    {
+        if (!useSymmetricEncodings)
+        {
+            throw std::runtime_error("zero_point_shift is only supported when useSymmetricEncodings is set to true");
+        }
+        if (useUnsignedSymmetric)
+        {
+            throw std::runtime_error("zero_point_shift is only supported when useUnsignedSymmetric is set to false");
+        }
+        if (useStrictSymmetric)
+        {
+            throw std::runtime_error("zero_point_shift is only supported when useStrictSymmetric is set to false");
+        }
+    }
+
     if (useSymmetricEncodings && !useUnsignedSymmetric)
     {
-        unsigned int numPositiveSteps = std::floor(numSteps / 2);
-        unsigned int numNegativeSteps = numSteps - numPositiveSteps;
+        double numPositiveSteps = std::floor(numSteps / 2) + zeroPointShift;
+        double numNegativeSteps = numSteps - numPositiveSteps;
 
         // For low-bit quantization, using math.floor to compute num_pos_steps can result in a wasted bin on the negative side given a symmetrically distributed weight.
         // Using math.ceil instead trades off having some clipping error in return for being able to use all bins.
         // Checking for numSteps = 3 to account for strict symmetric grid.
-        unsigned int additionalStepForCalibration = 0;
-        if (numSteps == 3)
+        if (numSteps == 3 && (zeroPointShift == 0.0))
         {
-            additionalStepForCalibration += 1;
+            numPositiveSteps = numNegativeSteps;
         }
-        encoding.delta = std::max(max / (numPositiveSteps + additionalStepForCalibration), - min / numNegativeSteps);
-        encoding.offset = -static_cast<double>(numNegativeSteps);
+        encoding.delta  = std::max(max / numPositiveSteps, -min / numNegativeSteps);
+        encoding.offset = -numNegativeSteps;
     }
     else
     {
@@ -196,7 +211,7 @@ void computeDeltaAndOffsetFromMinMax(uint8_t bw, TfEncoding& encoding, bool useS
     // Compute delta and offset, which may also adjust min and max
     // Note min, max is retained
     encoding     = getComputedEncodings(bw, encoding.min, encoding.max, useSymmetricEncodings, useStrictSymmetric,
-                                        useUnsignedSymmetric);
+                                        useUnsignedSymmetric, 0.0);
     encoding.min = origEncoding.min;
     encoding.max = origEncoding.max;
 }

@@ -133,7 +133,8 @@ TfEncoding MseEncodingAnalyzer<DTYPE>::computeEncoding(uint8_t bw, bool useSymme
 
     assert(aMin <= aMax && "min must not be bigger than max");
 
-    return getComputedEncodings(bw, aMin, aMax, useSymmetricEncodings, useStrictSymmetric, useUnsignedSymmetric);
+    return getComputedEncodings(bw, aMin, aMax, useSymmetricEncodings, useStrictSymmetric, useUnsignedSymmetric,
+                                0.0);
 }
 
 template <typename DTYPE>
@@ -253,7 +254,7 @@ DTYPE MseEncodingAnalyzer<DTYPE>::_computeMSECost(uint8_t bw, std::vector<std::p
 {
     // Compute the scale and offset based on the min and max provided
     TfEncoding encoding = getComputedEncodings(bw, candidateMin, candidateMax, useSymmetricEncodings,
-                                               useStrictSymmetric, useUnsignedSymmetric);
+                                               useStrictSymmetric, useUnsignedSymmetric, 0.0);
     // Apply Fake quantization on the bin centers and compute MSE cost
     DTYPE weightedSquareErr = 0;
     for (int i = 0; i < binCentersPdf.size(); i++)

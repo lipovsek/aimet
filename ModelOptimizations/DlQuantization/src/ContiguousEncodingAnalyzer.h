@@ -62,7 +62,7 @@ public:
                      IAllocator* allocator = nullptr, void* stream = nullptr) override;
 
     virtual std::vector<TfEncoding> computeEncoding(uint8_t bw, bool useSymmetricEncodings, bool useStrictSymmetric,
-                                                    bool useUnsignedSymmetric) const = 0;
+                                                    bool useUnsignedSymmetric, double zeroPointShift) const = 0;
 
     virtual std::vector<std::vector<std::tuple<double, double>>> getStatsHistogram() const = 0;
 

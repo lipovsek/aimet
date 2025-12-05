@@ -80,10 +80,14 @@ void EncodingAnalyzerWrapper<DTYPE>::resetStats()
 }
 
 template <typename DTYPE>
-std::vector<TfEncoding> EncodingAnalyzerWrapper<DTYPE>::computeEncoding(uint8_t bw, bool useSymmetricEncodings,
-                                                                        bool useStrictSymmetric,
-                                                                        bool useUnsignedSymmetric) const
+std::vector<TfEncoding>
+EncodingAnalyzerWrapper<DTYPE>::computeEncoding(uint8_t bw, bool useSymmetricEncodings, bool useStrictSymmetric,
+                                                bool useUnsignedSymmetric, double zeroPointShift) const
 {
+    if (zeroPointShift != 0.0)
+    {
+        throw std::runtime_error("Non-zero zeroPointShift is only supported for min-max quant scheme.");
+    }
     std::vector<TfEncoding> encodings(_encodingAnalyzers.size());
     for (size_t idx = 0; idx < encodings.size(); idx++)
     {

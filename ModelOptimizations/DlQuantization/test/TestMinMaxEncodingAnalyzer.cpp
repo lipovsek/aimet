@@ -127,3 +127,40 @@ TYPED_TEST(TestMinMaxEncodingAnalyzer, UpdateBlockStatsAsymmetric)
         EXPECT_NEAR(enc.offset, enc.min / enc.delta, 0.001);
     }
 }
+
+TYPED_TEST(TestMinMaxEncodingAnalyzer, ComputeEncodingsWithZeroPointShift)
+{
+    if (!CheckRunTest<TypeParam>())
+        return;
+
+    typedef typename TypeParam::dataType DataType;
+
+    TensorDims inputShape = {2, 2};
+    MinMaxEncodingAnalyzer<DataType> analyzer({2, 1});
+
+    int bitwidth = 2;
+    bool symmetric = true;
+    int numElements = 12;
+
+    DataType in[numElements] = {
+        -5.4f, 10.f,   -5.f, 3.5f,
+    };
+
+    Blob<TypeParam> inputBlob(in, numElements);
+    analyzer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, TypeParam::modeCpuGpu);
+    auto encodings = analyzer.computeEncoding(bitwidth, symmetric, false, false, 0.5);
+
+    DataType expectedMax[2] = {10.f, 5.f};
+    DataType expectedMin[2] = {-10.f, -5.f};
+    for (size_t i = 0; i < 2; i++)
+    {
+        auto enc = encodings[i];
+        EXPECT_NEAR(enc.max, expectedMax[i], enc.delta);
+        EXPECT_NEAR(enc.min, expectedMin[i], enc.delta);
+        EXPECT_NEAR(enc.delta, (enc.max - enc.min) / 3, 0.001);
+        EXPECT_EQ(enc.offset, -1.5f);
+    }
+
+    EXPECT_THROW(analyzer.computeEncoding(bitwidth, false, false, false, 0.5), std::runtime_error);
+    EXPECT_THROW(analyzer.computeEncoding(bitwidth, true, true, false, 0.5), std::runtime_error);
+}
