@@ -6617,3 +6617,45 @@ def test_non_unique_node_names():
     assert len(set(node.name for node in sim.model.model.graph.node)) == len(
         [node.name for node in sim.model.model.graph.node]
     )
+
+
+@pytest.mark.parametrize(
+    "do_constant_folding, out_channels",
+    [(True, 8), (False, 8)],
+)
+def test_matmul_with_transposed_weight(do_constant_folding, out_channels):
+    """
+    When: MatMul weights can be either (I, O) or (O, I)
+    Then: Channel and block axis should correspond the output and input channels of Linear
+    """
+    # 3D input will split the linear layer in MatMul + Add in ONNX graph.
+    dummy_input = torch.randn(1, 2, 4)
+
+    class LinearModel(torch.nn.Module):
+        def __init__(self):
+            super(LinearModel, self).__init__()
+            self.linear = torch.nn.Linear(4, out_channels)
+
+        def forward(self, x):
+            x = self.linear(x)
+            return x
+
+    pt_model = LinearModel().eval()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model_path = os.path.join(tmpdir, "model.onnx")
+        torch.onnx.export(
+            pt_model,
+            dummy_input,
+            model_path,
+            do_constant_folding=do_constant_folding,
+            input_names=["input"],
+            output_names=["output"],
+            dynamo=False,
+        )
+        onnx_model = onnx.load_model(model_path)
+        sim = QuantizationSimModel(onnx_model)
+        for param_name in sim.param_names:
+            qtzr = sim.qc_quantize_op_dict[param_name]
+            tensor_shape = qtzr.tensor_quantizer_params.tensor_shape
+            channel_axis = qtzr.tensor_quantizer_params.channel_axis
+            assert tensor_shape[channel_axis] == out_channels

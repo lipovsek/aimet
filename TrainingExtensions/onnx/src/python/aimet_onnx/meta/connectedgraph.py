@@ -272,7 +272,10 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             :param my_op: Connected Graph Op
             """
             op = my_op.get_module()
-            weight_tensor, _ = retrieve_constant_input(op, self.model, WEIGHT_INDEX)
+            weight_tensor, transposed = retrieve_constant_input(
+                op, self.model, WEIGHT_INDEX
+            )
+            my_op.transposed_params = transposed
             if weight_tensor:
                 set_as_param(weight_tensor, my_op, "weight")
 

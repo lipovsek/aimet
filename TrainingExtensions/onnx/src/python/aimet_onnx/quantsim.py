@@ -960,6 +960,8 @@ class QuantizationSimModel:
                 return 0, 1
             return 1, 0
         if op.type in ["MatMul"]:
+            if op.transposed_params:
+                return -2, -1
             return -1, -2
 
         return None, None
