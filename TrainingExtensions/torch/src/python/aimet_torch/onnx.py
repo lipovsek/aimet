@@ -289,7 +289,9 @@ def _check_opset_version(kwargs):
 
 
 def _check_unsupported_args(kwargs):
-    dynamo = kwargs.get("dynamo", False)
+    dynamo = kwargs.get(
+        "dynamo", version.parse(torch.__version__) >= version.parse("2.9.0")
+    )
 
     if dynamo:
         msg = "dynamo=True is not supported yet."

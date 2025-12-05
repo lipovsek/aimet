@@ -49,6 +49,7 @@ from onnx import helper, TensorProto
 import tempfile
 from unittest.mock import patch
 from ..models_ import test_models
+from packaging import version
 
 from aimet_common.quantsim_config.utils import (
     get_path_for_per_channel_config,
@@ -1436,3 +1437,14 @@ def test_quantsim_export_int2(tmp_path: pathlib.Path, zero_point_shift: float):
     (out_onnx,) = sess.run(None, {"input": x.numpy()})
     atol = sim.model[0].output_quantizers[0].get_scale().item()
     assert torch.allclose(torch.from_numpy(out_onnx), out2, atol=atol)
+
+
+def test_dynamo_error(tmp_path):
+    with (
+        pytest.raises(NotImplementedError)
+        if version.parse(torch.__version__) >= version.parse("2.9.0")
+        else contextlib.nullcontext()
+    ):
+        aimet_torch.onnx.export(
+            torch.nn.Linear(3, 3), torch.randn(1, 3), f=tmp_path / "model.onnx"
+        )
