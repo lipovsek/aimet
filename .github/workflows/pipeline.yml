@@ -35,7 +35,6 @@ jobs:
         id: select
         env:
           ALL_CHANGED_FILES: ${{ steps.diff.outputs.changed_files }}
-          AIMET_COMMON_ONNX_UTILS_SRC_CODE: "TrainingExtensions/common/src/python/aimet_common/onnx/"
           AIMET_TORCH_SRC_CODE:             "TrainingExtensions/torch/"
           AIMET_ONNX_SRC_CODE:              "TrainingExtensions/onnx/"
           DOC_SRC_CODE:                     "Docs/"
@@ -50,10 +49,7 @@ jobs:
           ONNX_TEST_REQUIRED='false'
 
           for file in ${ALL_CHANGED_FILES}; do
-            if [[ "$file" == "$AIMET_COMMON_ONNX_UTILS_SRC_CODE"* ]]; then
-              TORCH_TEST_REQUIRED='true'
-              ONNX_TEST_REQUIRED='true'
-            elif [[ "$file" == "$AIMET_TORCH_SRC_CODE"* ]]; then
+            if [[ "$file" == "$AIMET_TORCH_SRC_CODE"* ]]; then
               TORCH_TEST_REQUIRED='true'
             elif [[ "$file" == "$AIMET_ONNX_SRC_CODE"* ]]; then
               ONNX_TEST_REQUIRED='true'
