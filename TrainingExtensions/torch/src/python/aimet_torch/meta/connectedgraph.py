@@ -1220,9 +1220,17 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 # Input products don't have the #x in their name so we can directly take the product name
                 producer_name = product.name
             for consumer in product.consumers:
-                new_product = Product(
-                    f"{producer_name}_to_{consumer.name}", shape=product.shape
-                )
+                new_product_name = f"{producer_name}_to_{consumer.name}"
+                i = 0
+                # Product name can be duplicate if the same product
+                # is fed into the same consumer multiple times, such as in Concat(x, x).
+                # Add a suffix to make the product name unique in this case.
+                while new_product_name in new_product_dict:
+                    i += 1
+                    new_product_name = f"{producer_name}_to_{consumer.name}_{i}"
+
+                new_product = Product(new_product_name, shape=product.shape)
+
                 new_product.producer = product.producer
                 new_product.is_model_input = product.is_model_input
                 new_product.is_const = product.is_const

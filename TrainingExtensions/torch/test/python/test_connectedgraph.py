@@ -36,14 +36,14 @@
 # =============================================================================
 """This file contains unit tests for testing ConnectedGraph module for PyTorch."""
 
-import copy
-
 import pytest
-import unittest.mock
+import unittest
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
+import aimet_torch
+from aimet_torch.v2.experimental import propagate_output_encodings
+from aimet_torch.nn.modules import custom
 import aimet_torch.utils
 from aimet_common.connected_graph.connectedgraph_utils import (
     get_all_input_ops,
@@ -1406,3 +1406,33 @@ class TestConnectedGraphUtils(unittest.TestCase):
         assert concat_op.inputs[2].shape == model.const_tensor_1.shape
         assert concat_op.inputs[1].shape == (1, 10, 10)
         assert concat_op.inputs[1].producer is cg.ordered_ops[0]
+
+    def test_concat_same_tensor(self):
+        """
+        Given: Concat same tensor back to back
+        When: Create quantsim
+        Then: All op's input/output should be captured without duplicated names
+        """
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super(Model, self).__init__()
+                self.add = custom.Add()
+                self.concat = custom.Concat()
+
+            def forward(self, x, y):
+                out = self.add(x, y)
+                return self.concat(out, out)
+
+        model = Model()
+        sim = aimet_torch.QuantizationSimModel(
+            model, (torch.randn(10), torch.randn(10))
+        )
+
+        all_products = set(sim.connected_graph.get_all_products().values())
+        for op in sim.connected_graph.get_all_ops().values():
+            assert set(op.inputs) <= all_products
+            assert set(op.outputs) <= all_products
+
+        # propagate_output_encodings should work normally
+        propagate_output_encodings(sim, custom.Concat)
