@@ -477,6 +477,12 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
             with aimet_nn.compute_encodings(self.model):
                 _ = forward_pass_callback(*args)
 
+    @deprecated(
+        """
+Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information, see"
+  - https://quic.github.io/aimet-pages/releases/latest/apiref/torch/quantsim.html#aimet_torch.QuantizationSimModel.onnx"
+  - https://quic.github.io/aimet-pages/releases/latest/apiref/torch/onnx.html#aimet_torch.onnx.export""".strip()
+    )
     def export(
         self,
         path: str,
@@ -485,6 +491,16 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
         *args,
         **kwargs,
     ):
+        if quantsim.encoding_version not in ("0.6.1", "1.0.0"):
+            msg = "QuantizationSimModel.export only supports encoding version 0.6.1 and 1.0.0."
+            if quantsim.encoding_version == "2.0.0":
+                msg += (
+                    " To export 2.0.0 encoding, please use sim.onnx.export() instead."
+                    " For more information on the new export API, see"
+                    " https://quic.github.io/aimet-pages/releases/latest/apiref/torch/quantsim.html#aimet_torch.QuantizationSimModel.onnx"
+                )
+            raise RuntimeError(msg)
+
         if isinstance(dummy_input, torch.Tensor):
             dummy_input = (dummy_input,)
 
