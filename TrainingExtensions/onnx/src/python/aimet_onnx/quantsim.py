@@ -416,6 +416,19 @@ class QuantizationSimModel:
         if isinstance(model, ModelProto):
             model = ONNXModel(model)
 
+        if any(node.op_type == "QcQuantizeOp" for node in model.nodes()):
+            raise RuntimeError(
+                "Model already contains QcQuantizeOp nodes. Reload the original model to instantiate QuantizationSimModel."
+            )
+
+        if any(
+            node.op_type in {"QuantizeLinear", "DequantizeLinear"}
+            for node in model.nodes()
+        ):
+            raise RuntimeError(
+                "Model contains QuantizeLinear/DequantizeLinear nodes. Use `QuantizationSimModel.from_onnx_qdq()` to create sim from ONNX QDQ model."
+            )
+
         _fill_missing_node_names(model.model)
 
         if isinstance(param_type, str):

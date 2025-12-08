@@ -5956,6 +5956,27 @@ def test_onnx_qdq_export_output_name_swapping():
         assert any(input == dq.output[0] for dq in dq_nodes)
 
 
+@pytest.mark.parametrize(
+    "model",
+    (
+        models_for_tests.single_residual_model(),  # ONNXModel
+        models_for_tests.weight_matmul_model(),  # ModelProto
+    ),
+)
+def test_quantsim_init_errors_with_quantized_models(model):
+    sim = QuantizationSimModel(model)
+
+    with pytest.raises(RuntimeError):
+        QuantizationSimModel(sim.model.model)
+
+    sim.compute_encodings([make_dummy_input(sim.model.model)])
+
+    qdq_model = sim.to_onnx_qdq()
+
+    with pytest.raises(RuntimeError):
+        QuantizationSimModel(qdq_model)
+
+
 @pytest.mark.parametrize("export_int32_bias_encodings", [False, True])
 @pytest.mark.parametrize("prequantize_constants", [False, True])
 @pytest.mark.parametrize(
