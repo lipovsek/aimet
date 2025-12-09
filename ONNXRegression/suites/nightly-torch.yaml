@@ -1,0 +1,23 @@
+# Nightly Regression Suite - AIMET Torch
+
+suite_name: nightly-torch
+
+description: >
+  Fast daily regression to test AIMET Torch quantization.
+  Runs on GPU only, no on-target testing.
+  Tests tier-1 models with AIMET Torch QuantSim.
+  Target completion time: 2-3 hours.
+
+profile: nightly
+
+framework: torch
+
+models:
+  - models/resnet50.yaml
+  - models/mobilenetv2.yaml
+  - models/efficientnet_b0.yaml
+  - models/densenet121.yaml
+  - models/mobilenet_v3_large.yaml
+
+compare_to_baseline: true
+baseline_file: "baselines/nightly-torch_latest.json"

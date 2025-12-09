@@ -11,7 +11,14 @@ tests:
 
   - name: lite_mp_10
     feature: lite_mp
-    quant_scheme: tf
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+
+  - name: quantsim_int8_v79
+    feature: quantsim
+    quant_scheme: min_max
     param_type: int8
     activation_type: int8
     config_file: htp_v79

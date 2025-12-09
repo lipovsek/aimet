@@ -268,8 +268,8 @@ def validate_config(config: Dict[str, Any]) -> None:
         )
 
     # Validate framework
-    if config["framework"] != "onnx":
+    if config["framework"] not in ["onnx", "torch"]:
         raise ValueError(
             f"Unsupported framework: {config['framework']}\n"
-            f"This tool only supports ONNX"
+            f"This tool only supports ONNX and Torch frameworks."
         )

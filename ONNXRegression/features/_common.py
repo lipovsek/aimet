@@ -242,7 +242,7 @@ def build_quantsim(
         quant_scheme=scheme,
         default_param_bw=param_bw,
         default_activation_bw=activation_bw,
-        config_file=config_file,
+        config_file=str(config_file),
         use_cuda=bool(use_cuda),
     )
 

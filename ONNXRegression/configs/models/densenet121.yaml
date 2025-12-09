@@ -11,7 +11,7 @@ tests:
 
   - name: quantsim_int8
     feature: quantsim
-    quant_scheme: tf_enhanced
+    quant_scheme: min_max
     param_type: int8
     activation_type: int8
     config_file: htp_v79

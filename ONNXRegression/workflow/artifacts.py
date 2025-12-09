@@ -41,7 +41,7 @@ class WorkflowConfig:
         return cls(
             token=os.environ["GITHUB_TOKEN"],
             repo=os.environ["GITHUB_REPOSITORY"],
-            workflow_file="onnx-nightly.yaml",
+            workflow_file=os.environ.get("WORKFLOW_FILE", "onnx-nightly.yaml"),
             current_branch=os.environ["GITHUB_REF_NAME"],
             current_run_id=os.environ["GITHUB_RUN_ID"],
             suite=os.environ.get("INPUT_SUITE", "nightly"),

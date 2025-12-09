@@ -6,21 +6,27 @@
 ONNXRegression Pipeline Runner - Single Test Execution
 
 This module orchestrates the complete AIMET quantization evaluation pipeline
-for a single test configuration using the new hierarchical config system.
+for a single test configuration using the hierarchical config system.
+
+Supports both ONNX and Torch frameworks:
+- ONNX: Export FP32 ONNX → AIMET ONNX QuantSim → QDQ ONNX
+- Torch: PyTorch model → AIMET Torch QuantSim → QDQ ONNX
+
+Pipeline Steps:
+1. Load configuration (merge defaults → profile → model → test)
+2. Load model from QAI Hub Models
+3. Framework-specific FP32 baseline and AIMET quantization:
+   - ONNX: Export to ONNX → FP32 eval → AIMET ONNX quantization
+   - Torch: FP32 eval (PyTorch) → AIMET Torch quantization
+4. Validate quantization quality (FP32 → AIMET)
+5. Evaluate QDQ ONNX model and validate export (AIMET → QDQ)
+6. Optionally run on-device evaluation via QNN (AI Hub)
+7. Generate comprehensive reports
 
 Usage:
     python runner.py --model resnet50 --test quantsim_int8 --profile nightly
     python runner.py --model resnet50 --test quantsim_int8
     python runner.py --model resnet50 --test quantsim_int8 --profile nightly --dry-run
-
-Pipeline Steps:
-1. Load configuration (merge defaults → profile → model → test)
-2. Load model from QAI Hub Models
-3. Export to FP32 ONNX locally (torch.jit.trace + ONNX conversion)
-4. Apply AIMET quantization technique (QuantSim, Lite-MP, or AdaRound)
-5. Evaluate accuracy at multiple stages
-6. Optionally run on-device evaluation via QNN (AI Hub)
-7. Generate comprehensive reports
 """
 
 import os
@@ -37,29 +43,20 @@ from qai_hub_models.utils.input_spec import make_torch_inputs
 
 from ONNXRegression.models.ai_hub_loader import load_model_data
 from ONNXRegression.evaluation.eval_onnx import resolve_dataset_name, eval_onnx_model
+from ONNXRegression.evaluation.eval_torch import eval_pytorch_model
 from ONNXRegression.evaluation.eval_qnn import (
     compile_and_profile_aimet_bundle,
     eval_qnn_accuracy,
 )
+from ONNXRegression.features.torch.utils import ensure_device_patch
+
 from ONNXRegression.report.report_writer import write_csv, write_html
-from ONNXRegression.features.quantsim_runner import run_quantsim
-from ONNXRegression.features.lite_mp_runner import run_lite_mp
-from ONNXRegression.features.adaround_runner import run_adaround
-from ONNXRegression.features.mixed_precision_runner import run_mixed_precision
 from ONNXRegression.config_loader import load_config, validate_config
 from ONNXRegression.baseline_comparison import (
     validate_quantization_quality,
     validate_qdq_export,
     TestResult,
 )
-
-
-FEATURE_RUNNERS = {
-    "quantsim": run_quantsim,
-    "lite_mp": run_lite_mp,
-    "adaround": run_adaround,
-    "mixed_precision": run_mixed_precision,
-}
 
 os.environ.setdefault("TORCH_HOME", "./torch_cache")
 os.environ.setdefault("QAIHM_CACHE_DIR", "./qaihm_cache")
@@ -110,7 +107,6 @@ def _export_torch_to_onnx_local(
 
     sample_inputs = make_torch_inputs(input_spec)
 
-    # Convert traced model to ONNX
     fp32_path = out_dir / f"{model_name}_fp32.onnx"
 
     print(f"[INFO] Converting model to ONNX...")
@@ -124,7 +120,6 @@ def _export_torch_to_onnx_local(
         else:
             sample_inputs_for_export = tuple(input_values)
     else:
-        # Non-dict inputs
         if isinstance(sample_inputs, list):
             sample_inputs = tuple(sample_inputs)
         if isinstance(sample_inputs, tuple):
@@ -264,6 +259,51 @@ def _build_single_batch_loader(
     return [(batch_inputs, batch_labels)]
 
 
+def _eval_pytorch_fp32(model: Any, dataset_name: str, num_samples: int) -> float:
+    """
+    Evaluate FP32 PyTorch model accuracy.
+
+    Note: QAI Hub models include preprocessing (normalization) with mean/std
+    tensors that may stay on CPU. We use the device patch to handle this.
+    """
+    # The device patch is applied inside eval_pytorch_model, but we can
+    # also evaluate on CPU to avoid any device mismatch issues
+    use_cuda = torch.cuda.is_available()
+
+    if use_cuda:
+        # Try GPU evaluation with device patch
+        try:
+            if hasattr(model, "to_torch_model"):
+                torch_model = model.to_torch_model()
+            else:
+                torch_model = model
+
+            device = torch.device("cuda")
+            torch_model = torch_model.to(device).eval()
+
+            return eval_pytorch_model(
+                torch_model, model, dataset_name, num_samples=num_samples
+            )
+        except RuntimeError as e:
+            if "device" in str(e).lower():
+                print(
+                    f"[WARNING] GPU evaluation failed due to device mismatch, falling back to CPU..."
+                )
+                # Fall through to CPU evaluation
+            else:
+                raise
+
+    # CPU evaluation (fallback or default if no CUDA)
+    if hasattr(model, "to_torch_model"):
+        torch_model = model.to_torch_model()
+    else:
+        torch_model = model
+
+    torch_model = torch_model.cpu().eval()
+
+    return eval_pytorch_model(torch_model, model, dataset_name, num_samples=num_samples)
+
+
 def run_single_config(
     config: Dict[str, Any], skip_reports: bool = False
 ) -> Dict[str, Any]:
@@ -280,19 +320,56 @@ def run_single_config(
     model_name = config.get("model_name")
     device_name = config.get("device", "Samsung Galaxy S24 (Family)")
     feature_name = config.get("feature", "quantsim").strip().lower()
+    framework = config.get("framework", "onnx").strip().lower()
 
-    if feature_name not in FEATURE_RUNNERS:
+    if framework == "onnx":
+        from ONNXRegression.features.quantsim_runner import run_quantsim
+        from ONNXRegression.features.lite_mp_runner import run_lite_mp
+        from ONNXRegression.features.adaround_runner import run_adaround
+        from ONNXRegression.features.mixed_precision_runner import run_mixed_precision
+
+        FEATURE_RUNNERS = {
+            "quantsim": run_quantsim,
+            "lite_mp": run_lite_mp,
+            "adaround": run_adaround,
+            "mixed_precision": run_mixed_precision,
+        }
+
+        if feature_name not in FEATURE_RUNNERS:
+            raise RuntimeError(
+                f"Unsupported feature for ONNX: {feature_name}. "
+                f"Supported: {list(FEATURE_RUNNERS.keys())}"
+            )
+    elif framework == "torch":
+        from ONNXRegression.features.torch.quantsim_runner import (
+            run_quantsim as run_quantsim_torch,
+        )
+        from ONNXRegression.features.torch.adaround_runner import (
+            run_adaround as run_adaround_torch,
+        )
+
+        TORCH_FEATURE_RUNNERS = {
+            "quantsim": run_quantsim_torch,
+            "adaround": run_adaround_torch,
+        }
+
+        if feature_name not in TORCH_FEATURE_RUNNERS:
+            raise RuntimeError(
+                f"Unsupported feature for Torch: {feature_name}. "
+                f"Supported: {list(TORCH_FEATURE_RUNNERS.keys())}"
+            )
+    else:
         raise RuntimeError(
-            f"Unsupported feature: {feature_name}. "
-            f"Supported: {list(FEATURE_RUNNERS.keys())}"
+            f"Unsupported framework: {framework}. Supported: onnx, torch"
         )
 
     print(f"\n{'=' * 60}")
     print(f"Running Single Test")
     print(f"{'=' * 60}")
-    print(f"Model:    {model_name}")
-    print(f"Feature:  {feature_name}")
-    print(f"Device:   {device_name}")
+    print(f"Model:     {model_name}")
+    print(f"Framework: {framework}")
+    print(f"Feature:   {feature_name}")
+    print(f"Device:    {device_name}")
     print(f"{'=' * 60}\n")
 
     model_artifacts_dir = ARTIFACTS_DIR / model_name
@@ -303,34 +380,53 @@ def run_single_config(
     dataset_name = resolve_dataset_name(model)
     print(f"Dataset: {dataset_name}")
 
-    print(f"\n[Step 2] Creating FP32 baseline via local ONNX export...")
-    fp32_path = _export_torch_to_onnx_local(
-        model, input_spec, model_artifacts_dir, model_name
-    )
-
-    fp32_eval_samples = int(config.get("fp32_eval_samples", 200))
-    print(f"[Step 2] Evaluating FP32 accuracy with {fp32_eval_samples} samples...")
-    fp32_acc = eval_onnx_model(
-        fp32_path, model, dataset_name, num_samples=fp32_eval_samples
-    )
-    print(f"[Step 2] FP32 Accuracy: {fp32_acc:.4f}")
-
-    print(f"\n[Step 3] Applying {feature_name} quantization...")
-    runner = FEATURE_RUNNERS[feature_name]
-
     config["_export_dir"] = str(model_artifacts_dir)
 
-    aimet_onnx_path, feature_acc, stats, aimet_bundle_dir = runner(
-        fp32_onnx_path=str(fp32_path),
-        model=model,
-        dataset_name=dataset_name,
-        config=config,
-    )
+    if framework == "onnx":
+        print(f"\n[Step 2] Creating FP32 baseline via ONNX export...")
+        fp32_path = _export_torch_to_onnx_local(
+            model, input_spec, model_artifacts_dir, model_name
+        )
+
+        fp32_eval_samples = int(config.get("fp32_eval_samples", 200))
+        print(f"[Step 2] Evaluating FP32 accuracy with {fp32_eval_samples} samples...")
+        fp32_acc = eval_onnx_model(
+            fp32_path, model, dataset_name, num_samples=fp32_eval_samples
+        )
+        print(f"[Step 2] FP32 Accuracy: {fp32_acc:.4f}")
+
+        print(f"\n[Step 3] Applying {feature_name} quantization (ONNX)...")
+        runner = FEATURE_RUNNERS[feature_name]
+
+        aimet_onnx_path, feature_acc, stats, aimet_bundle_dir = runner(
+            fp32_onnx_path=str(fp32_path),
+            model=model,
+            dataset_name=dataset_name,
+            config=config,
+        )
+
+    elif framework == "torch":
+        ensure_device_patch()
+        print(f"\n[Step 2] Evaluating FP32 PyTorch model accuracy...")
+        fp32_eval_samples = int(config.get("fp32_eval_samples", 200))
+        fp32_acc = _eval_pytorch_fp32(model, dataset_name, fp32_eval_samples)
+        print(f"[Step 2] FP32 Accuracy: {fp32_acc:.4f}")
+
+        print(f"\n[Step 3] Applying {feature_name} quantization (Torch)...")
+        runner = TORCH_FEATURE_RUNNERS[feature_name]
+
+        aimet_onnx_path, feature_acc, stats, aimet_bundle_dir = runner(
+            model=model,
+            input_spec=input_spec,
+            dataset_name=dataset_name,
+            config=config,
+        )
 
     if not aimet_bundle_dir:
         raise RuntimeError(f"{feature_name} did not return a bundle directory")
 
     aimet_bundle_path = Path(aimet_bundle_dir)
+    aimet_onnx_path = Path(aimet_onnx_path)
 
     if not aimet_onnx_path.exists():
         raise FileNotFoundError(
@@ -523,6 +619,7 @@ def run_single_config(
     result = {
         "Model": model_name,
         "Feature": feature_name,
+        "Framework": framework,
         "Techniques": (stats or {}).get("techniques", feature_name),
         "FP32_accuracy": float(fp32_acc) if fp32_acc is not None else None,
         "AIMET Accuracy": float(feature_acc) if feature_acc is not None else None,

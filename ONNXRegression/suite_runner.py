@@ -3,30 +3,24 @@
 # pylint: disable=missing-module-docstring
 
 """
-Suite Runner for AIMET ONNX Regression
+Suite Runner for AIMET ONNX and Torch Regression
 
-This module executes a suite of AIMET quantization tests using the new
-hierarchical configuration system.
+This module executes a suite of AIMET quantization tests using the hierarchical
+configuration system. Supports both AIMET ONNX and AIMET Torch frameworks.
 
 Key Features:
 - Load suite definition (profile + models + test_filter)
 - Discover available tests from model configs
 - Filter tests by suite and/or command-line flags
+- Filter unsupported features based on framework (e.g., lite_mp not in Torch)
 - Merge configs for each test (defaults → profile → model → test)
 - Execute tests and collect results
 - Generate consolidated reports
 
 Usage:
-    # Run full suite
     python suite_runner.py --suite nightly
-
-    # Filter by model
     python suite_runner.py --suite nightly --filter-model resnet
-
-    # Filter by test
     python suite_runner.py --suite nightly --filter-test quantsim_int8
-
-    # Combine filters
     python suite_runner.py --suite nightly --filter-model resnet --filter-test quantsim
 
 Design:
@@ -44,10 +38,12 @@ from typing import Dict, List, Any
 
 import yaml
 
-# ==================== Internal Imports ====================
 from ONNXRegression.config_loader import load_config, list_tests, validate_config
 from ONNXRegression.runner import run_single_config
 from ONNXRegression.report.report_writer import write_csv, write_html
+
+
+TORCH_UNSUPPORTED_FEATURES = {"lite_mp", "mixed_precision"}
 
 
 def load_suite_file(suite_path: Path) -> Dict[str, Any]:
@@ -78,7 +74,6 @@ def load_suite_file(suite_path: Path) -> Dict[str, Any]:
     if not isinstance(suite, dict):
         raise ValueError(f"Suite file must be a dictionary, got: {type(suite)}")
 
-    # Validate required fields
     if "models" not in suite:
         raise ValueError(
             f"Suite missing 'models' list: {suite_path}\n"
@@ -88,11 +83,15 @@ def load_suite_file(suite_path: Path) -> Dict[str, Any]:
     if not isinstance(suite["models"], list):
         raise ValueError(f"'models' must be a list in suite: {suite_path}")
 
-    # Set defaults for optional fields
     suite.setdefault("suite_name", suite_path.stem)
     suite.setdefault("description", "")
-    suite.setdefault("profile", None)  # Optional profile
-    suite.setdefault("test_filter", [])  # Empty = run all tests
+    suite.setdefault("profile", None)
+    suite.setdefault("test_filter", [])
+    suite.setdefault("config_overrides", {})  # Suite-level config overrides
+
+    # Support 'framework' at suite level as a shorthand for config_overrides
+    if "framework" in suite and "framework" not in suite["config_overrides"]:
+        suite["config_overrides"]["framework"] = suite["framework"]
 
     return suite
 
@@ -108,38 +107,23 @@ def main():
        a. Discover available tests
        b. Apply suite test_filter
        c. Apply command-line filters
-       d. For each matching test:
+       d. Filter unsupported features based on framework
+       e. For each matching test:
           - Merge configs via config_loader
           - Execute test via run_single_config()
     4. Generate consolidated reports
     """
-    # ============ Argument Parsing ============
     parser = argparse.ArgumentParser(
-        description="Run a suite of AIMET ONNX regression tests (NEW CONFIG SYSTEM)",
+        description="Run a suite of AIMET ONNX/Torch regression tests",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run nightly suite (fast, no QNN)
   python suite_runner.py --suite nightly
-
-  # Filter by model name
   python suite_runner.py --suite nightly --filter-model resnet
-
-  # Filter by test name
   python suite_runner.py --suite nightly --filter-test quantsim_int8
-
-  # Combine filters
   python suite_runner.py --suite nightly --filter-model resnet --filter-test quantsim
 
 Suite files location: ONNXRegression/suites/
-Available suites: nightly (add smoke, weekly, release later)
-
-What happens:
-1. Load suite definition (profile + models + test_filter)
-2. Discover tests from each model config
-3. Apply filters (suite + command-line)
-4. Execute each test with merged config
-5. Generate consolidated CSV/HTML reports
         """,
     )
 
@@ -173,12 +157,10 @@ What happens:
 
     args = parser.parse_args()
 
-    # ============ Setup Paths ============
     suites_dir = Path("ONNXRegression/suites")
     reports_dir = Path("ONNXRegression/reports")
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    # ============ Load Suite Configuration ============
     suite_path = suites_dir / f"{args.suite}.yaml"
 
     if not suite_path.exists():
@@ -201,6 +183,7 @@ What happens:
     profile = suite.get("profile")
     models = suite["models"]
     test_filter = suite.get("test_filter", [])
+    config_overrides = suite.get("config_overrides", {})
 
     print(f"\n{'=' * 60}")
     print(f"Suite: {suite_name}")
@@ -209,40 +192,34 @@ What happens:
     print(f"Profile: {profile or '(none - using defaults)'}")
     print(f"Models: {len(models)}")
     print(f"Test Filter: {test_filter or '(all tests)'}")
+    if config_overrides:
+        print(f"Config Overrides: {config_overrides}")
     if args.filter_model:
         print(f"Model Filter (CLI): {args.filter_model}")
     if args.filter_test:
         print(f"Test Filter (CLI): {args.filter_test}")
     print(f"{'=' * 60}\n")
 
-    # ============ Build Test Matrix ============
-    # For each model, expand into individual test configs
     test_configs = []
 
     for model_yaml in models:
-        # Apply command-line model filter
         if args.filter_model and args.filter_model not in model_yaml:
             print(f"⏭️  Skipping {model_yaml} (filtered by --filter-model)")
             continue
 
         try:
-            # Get list of available tests in this model
             available_tests = list_tests(model_yaml)
 
             print(f"\n📋 Model: {model_yaml}")
             print(f"   Available tests: {available_tests}")
 
-            # Apply suite test_filter (from suite YAML)
             if test_filter:
-                # Suite specifies which tests to run
                 tests_to_run = [t for t in available_tests if t in test_filter]
                 print(f"   After suite filter: {tests_to_run}")
             else:
-                # No suite filter - run all tests
                 tests_to_run = available_tests
                 print(f"   Running all tests")
 
-            # Apply command-line test filter
             if args.filter_test:
                 tests_to_run = [t for t in tests_to_run if args.filter_test in t]
                 print(f"   After CLI filter: {tests_to_run}")
@@ -251,16 +228,26 @@ What happens:
                 print(f"   ⚠️  No tests match filters - skipping model")
                 continue
 
-            # For each matching test, load merged config
             for test_name in tests_to_run:
                 try:
-                    # Merge configs: defaults → profile → model → test
                     merged_config = load_config(model_yaml, test_name, profile)
 
-                    # Validate the merged config
+                    # Apply suite-level config overrides (e.g., framework: torch)
+                    config_overrides = suite.get("config_overrides", {})
+                    for key, value in config_overrides.items():
+                        merged_config[key] = value
+
                     validate_config(merged_config)
 
-                    # Add to test matrix
+                    framework = merged_config.get("framework", "onnx").lower()
+                    feature = merged_config.get("feature", "").lower()
+
+                    if framework == "torch" and feature in TORCH_UNSUPPORTED_FEATURES:
+                        print(
+                            f"   ⏭️  Skipping {test_name}: feature '{feature}' not available in AIMET Torch"
+                        )
+                        continue
+
                     test_configs.append(
                         {
                             "model_yaml": model_yaml,
@@ -292,7 +279,6 @@ What happens:
     print(f"Total tests to run: {len(test_configs)}")
     print(f"{'=' * 60}\n")
 
-    # ============ Dry Run (Preview) ============
     if args.dry_run:
         print("=" * 60)
         print("DRY RUN - Test Matrix")
@@ -300,7 +286,9 @@ What happens:
 
         for idx, test_info in enumerate(test_configs, 1):
             config = test_info["config"]
+            framework = config.get("framework", "onnx")
             print(f"\n{idx}. {config['model_name']}/{test_info['test_name']}")
+            print(f"   Framework: {framework}")
             print(f"   Feature: {config['feature']}")
             print(
                 f"   Samples: calib={config.get('calib_samples')}, eval={config.get('eval_samples')}"
@@ -313,7 +301,6 @@ What happens:
         print(f"{'=' * 60}")
         sys.exit(0)
 
-    # ============ Execute Tests ============
     all_results = []
 
     for idx, test_info in enumerate(test_configs, 1):
@@ -330,6 +317,7 @@ What happens:
         print(f"{'=' * 60}\n")
 
         print(f"  Model: {config['model_name']}")
+        print(f"  Framework: {config.get('framework', 'onnx')}")
         print(f"  Feature: {config['feature']}")
         print(
             f"  Samples: calib={config.get('calib_samples')}, eval={config.get('eval_samples')}"
@@ -350,7 +338,6 @@ What happens:
             traceback.print_exc()
             continue
 
-    # ============ Generate Consolidated Reports ============
     if not all_results:
         print("\n❌ No successful test runs!")
         sys.exit(1)
@@ -359,19 +346,14 @@ What happens:
     print("Generating consolidated reports...")
     print(f"{'=' * 60}")
 
-    # Determine output filenames
     out_prefix = args.out_prefix or f"results_{suite_name}"
     csv_path = reports_dir / f"{out_prefix}.csv"
     html_path = reports_dir / f"{out_prefix}.html"
 
-    # Determine what to hide based on profile
-    # For host-only profiles (nightly), hide QNN columns
     hide_prefixes = None
     if profile in ["nightly", "smoke"]:
-        # These profiles don't run QNN, so hide those columns
         hide_prefixes = ["qnn_", "ai_hub_qnn"]
 
-    # Generate reports
     page_title = f"AIMET Regression - {suite_name}"
     subtitle = f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
@@ -387,7 +369,6 @@ What happens:
         subtitle=subtitle,
     )
 
-    # ============ Summary ============
     print(f"\n✅ Suite completed: {suite_name}")
     print(f"Tests run: {len(all_results)}/{len(test_configs)}")
 
@@ -399,7 +380,6 @@ What happens:
     print(f"  CSV:  {csv_path}")
     print(f"  HTML: {html_path}")
 
-    # Show summary statistics
     if all_results:
         accuracies = [
             r.get("AIMET Accuracy", 0)
