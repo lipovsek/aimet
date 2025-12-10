@@ -5404,7 +5404,7 @@ def test_nan_handling_alignment_with_onnxruntime():
         if "CUDAExecutionProvider" in ort.get_available_providers()
         else ["CPUExecutionProvider"]
     )
-    sim = QuantizationSimModel._from_onnx_qdq(copy.deepcopy(model), providers=providers)
+    sim = QuantizationSimModel.from_onnx_qdq(copy.deepcopy(model), providers=providers)
 
     nan_tensor = np.array([-np.nan, np.nan], dtype=np.float32)
     sim_out = sim.session.run(None, {"input": nan_tensor})[0]
@@ -6033,7 +6033,7 @@ def test_from_onnx_qdq(
     When: Create sim from onnx QDQ model
     Then: The new sim should be in same state as the original sim
     """
-    sim_2 = QuantizationSimModel._from_onnx_qdq(
+    sim_2 = QuantizationSimModel.from_onnx_qdq(
         sim.to_onnx_qdq(
             export_int32_bias=export_int32_bias_encodings,
             prequantize_constants=prequantize_constants,
@@ -6120,7 +6120,7 @@ def test_from_onnx_qdq_lpbq(seed: int, prequantize_constants: bool):
     When: Create sim from onnx QDQ model
     Then: The new sim should be in same state as the original sim
     """
-    sim_2 = QuantizationSimModel._from_onnx_qdq(
+    sim_2 = QuantizationSimModel.from_onnx_qdq(
         sim.to_onnx_qdq(prequantize_constants=prequantize_constants),
         config_file="htp_v81",
     )
@@ -6276,7 +6276,7 @@ def test_from_onnx_qdq_output_dtype():
     When: Create sim from onnx QDQ and re-export to QDQ
     Then: Re-exported QDQ model should produce same output as the original model
     """
-    model_2 = QuantizationSimModel._from_onnx_qdq(copy.deepcopy(model)).to_onnx_qdq()
+    model_2 = QuantizationSimModel.from_onnx_qdq(copy.deepcopy(model)).to_onnx_qdq()
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
     sess = ort.InferenceSession(model.SerializeToString(), sess_options=sess_options)
@@ -6301,7 +6301,7 @@ def test_from_onnx_qdq_split_op():
     When: Create sim from onnx QDQ model
     Then: The new sim should be in same state as the original sim
     """
-    sim_2 = QuantizationSimModel._from_onnx_qdq(
+    sim_2 = QuantizationSimModel.from_onnx_qdq(
         sim.to_onnx_qdq(),
         config_file="htp_v81",
     )
@@ -6353,7 +6353,7 @@ def test_from_onnx_qdq_encoding_delegation(
     qdq_model, output_scales = model_factory()
 
     with _apply_constraints(tie_encodings):
-        sim = QuantizationSimModel._from_onnx_qdq(model_factory()[0])
+        sim = QuantizationSimModel.from_onnx_qdq(model_factory()[0])
 
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
@@ -6424,7 +6424,7 @@ def test_from_onnx_qdq_excess_encodings(
 
     try:
         with _apply_constraints(tie_encodings):
-            sim = QuantizationSimModel._from_onnx_qdq(qdq_model)
+            sim = QuantizationSimModel.from_onnx_qdq(qdq_model)
     except NotImplementedError:
         return
 

@@ -11,7 +11,7 @@ aimet_onnx.quantsim
     It is recommended to use onnx-simplifier before creating quantsim model.
 
 .. autoclass:: aimet_onnx.QuantizationSimModel
-   :members: compute_encodings, export, to_onnx_qdq
+   :members: compute_encodings, export, to_onnx_qdq, from_onnx_qdq
 
 .. autofunction:: aimet_onnx.compute_encodings
 

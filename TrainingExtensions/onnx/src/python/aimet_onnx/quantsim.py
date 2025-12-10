@@ -527,6 +527,47 @@ class QuantizationSimModel:
         )
 
     @classmethod
+    def from_onnx_qdq(cls, model: ModelProto, **kwargs) -> "QuantizationSimModel":
+        """
+        Create sim from an ONNX QDQ model that contains QuantizeLinear/DequantizeLinear nodes.
+
+        This method is designed to construct a fully quantized model
+        based on a partially quantized ONNX QDQ model exported from
+        aimet-torch (:func:`aimet_torch.onnx.export`) or other 3rd party tools.
+
+        Args:
+            model: ONNX model that contains QuantizeLinear/DequantizeLinear
+            **kwargs: same as QuantizationSimModel.__init__
+        Returns:
+            QuantizationSimModel: QuantizationSimModel created from ONNX QDQ model
+
+        Example:
+            >>> sim = aimet_onnx.QuantizationSimModel.from_onnx_qdq(
+            ...     onnx.load("model_qdq.onnx"),
+            ...     config_file="htp_v81",
+            ... )
+            Quant - INFO - Loaded 26 encodings from QuantizeLinear/DequantizeLinear nodes; remaining 37 quantizers yet to be initialized
+        """
+        sim = cls._from_onnx_qdq(model, **kwargs)
+
+        loaded = [
+            q
+            for q in sim.qc_quantize_op_dict.values()
+            if q.enabled and q.is_initialized()
+        ]
+        remaining = [
+            q
+            for q in sim.qc_quantize_op_dict.values()
+            if q.enabled and not q.is_initialized()
+        ]
+        # pylint: disable=logging-fstring-interpolation
+        logger.info(
+            f"Loaded {len(loaded)} encodings from QuantizeLinear/DequantizeLinear nodes; "
+            f"remaining {len(remaining)} quantizers yet to be initialized"
+        )
+        return sim
+
+    @classmethod
     def _from_onnx_qdq(cls, model: ModelProto, **kwargs) -> "QuantizationSimModel":
         """
         Create sim from onnx QDQ model with following strategy

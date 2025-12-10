@@ -77,7 +77,7 @@ def test_hf_torch_to_onnx_workflow(tmp_dir, model_cls, config_cls):
         dynamo=False,
     )
 
-    onnx_sim = aimet_onnx.QuantizationSimModel._from_onnx_qdq(
+    onnx_sim = aimet_onnx.QuantizationSimModel.from_onnx_qdq(
         onnx.load(onnx_qdq_model_path),
         config_file="htp_quantsim_config_v81_per_channel_linear.json",
     )
