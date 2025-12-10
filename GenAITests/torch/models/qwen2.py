@@ -3,6 +3,7 @@
 
 """Qwen model class"""
 
+import warnings
 import torch
 
 from aimet_torch.common.defs import QuantScheme
@@ -27,7 +28,14 @@ class Qwen_25_Torch(Qwen_25):
         sequence_length: int,
         small_model: bool = False,
         dtype: torch.dtype = torch.float32,
+        kv_bits: int = 8,
     ) -> QuantizationSimModel:
+        warnings.warn(
+            f"kv_bits parameter (value: {kv_bits}) is ignored in Torch GenAI framework. "
+            f"KV Cache quantization is not simulated. If you would like this setting to be "
+            f"simulated on your model, please enable eval_in_onnx in your config file."
+        )
+
         model = cls.instantiate_model(model_id, small_model)
         model = model.to(dtype=dtype)
 

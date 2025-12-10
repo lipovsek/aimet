@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 from transformers import AutoConfig
 
+from aimet_onnx.quantsim import load_encodings_to_sim
+
 from GenAITests.shared.helpers.profiler import (
     GPUMeter,
     MetricResult,
@@ -39,11 +41,15 @@ def test_llm_quantization(test_parameters):
     sequence_length = model_kwargs.pop("sequence_length")
     model_id = model_kwargs.pop("model_id", None)
     model_dtype = model_kwargs.pop("dtype", None)
+    precomputed_encodings = model_kwargs.pop("encodings", None)
 
     if model_dtype is not None:
         warnings.warn(
             "User-specified dtypes are not yet supported in ONNX GenAITests. All models are FP32 by default."
         )
+
+    if test_parameters["eval_in_onnx"]:
+        warnings.warn("eval_in_onnx is ignored for ONNX GenAI tests.")
 
     dataset_kwargs = test_parameters.pop("dataset")
     dataset_cls = dataset_kwargs.pop("class")
@@ -71,6 +77,16 @@ def test_llm_quantization(test_parameters):
         )
     )
 
+    if precomputed_encodings is not None:
+        print(f"Loading precomputed encodings from {precomputed_encodings}.")
+        load_encodings_to_sim(
+            quantsim,
+            precomputed_encodings,
+            strict=False,
+            allow_overwrite=False,
+            disable_missing_quantizers=False,
+        )
+
     quantsim_with_torch_interface = TorchONNXInterface(quantsim, config)
     generator = Generator(
         quantsim_with_torch_interface, tokenizer, sequence_length, context_length
@@ -86,6 +102,11 @@ def test_llm_quantization(test_parameters):
 
     gc.collect()
     torch.cuda.empty_cache()
+
+    if test_parameters["export"]:
+        config.save_pretrained(test_parameters["export"])
+        tokenizer.save_pretrained(test_parameters["export"])
+        quantsim.export(test_parameters["export"], "model", export_model=True)
 
     evaluation_results = []
     with torch.no_grad():
@@ -109,6 +130,8 @@ def test_llm_quantization(test_parameters):
 
     model_kwargs["context_length"] = context_length
     model_kwargs["sequence_length"] = sequence_length
+    if precomputed_encodings is not None:
+        model_kwargs["encodings"] = precomputed_encodings
 
     output_folder = Path(os.getcwd()) / "genai_test_artifacts"
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -125,4 +148,7 @@ def test_llm_quantization(test_parameters):
         dataset_modifiers=dataset_kwargs,
         quantization_results=quantization_profiler,
         accuracy_results=evaluation_results,
+        export_location=test_parameters["export"]
+        if test_parameters["export"]
+        else None,
     )

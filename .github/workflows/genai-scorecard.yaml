@@ -64,11 +64,6 @@ jobs:
   build-aimet-onnx-gpu:
     name: Build aimet_onnx
 
-    if: |
-      github.event_name != 'workflow_dispatch' ||
-      github.event.inputs.run_mode != 'ad_hoc' ||
-      github.event.inputs.ad_hoc_variants != 'torch'
-
     # Reuses existing build workflow
     uses: ./.github/workflows/build-wheels.yml
 
@@ -208,11 +203,16 @@ jobs:
           key: aimet-cache-${{ runner.os }}-${{ hashFiles('GenAITests/**') }}
           restore-keys: aimet-cache-${{ runner.os }}-
 
-      # Download AIMET wheel built in Job 1
-      - name: Download AIMET wheel
+      - name: Download aimet-torch wheel
         uses: actions/download-artifact@v3
         with:
-          name: ${{ matrix.variant }}-gpu-wheel
+          name: torch-gpu-wheel
+          path: downloads
+
+      - name: Download aimet-onnx wheel
+        uses: actions/download-artifact@v3
+        with:
+          name: onnx-gpu-wheel
           path: downloads
 
       # -----------------------------------------------------------------------
@@ -289,6 +289,33 @@ jobs:
           export HF_HOME=/local/mnt2/workspace2/aimet_bot/huggingface
           hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
           pytest -s GenAITests/${{ matrix.variant }}/test_genai.py --config GenAITests/scorecard_config.yaml
+
+      - name: Run optional secondary evaluation using aimet-onnx
+        if: ${{ matrix.variant == 'torch' }}
+        run: |
+          OUT_FILE="GenAITests/secondary_onnx_eval.yaml"
+          rm -f "$OUT_FILE"
+
+          mapfile -t FILES < <(ls -1 artifacts/*/*onnx*.yml artifacts/*/*onnx*.yaml 2>/dev/null | sort)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "No YAML files found in artifacts/"
+            exit 0
+          fi
+
+          for f in "${FILES[@]}"; do
+            cat "$f" >> "$OUT_FILE"
+            echo "---" >> "$OUT_FILE"
+          done
+          sed -i '$d' "$OUT_FILE"
+          echo "Created $OUT_FILE with ${#FILES[@]} documents."
+          cat "$OUT_FILE"
+
+          . .venv/bin/activate
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+          export HF_HOME=/local/mnt2/workspace2/aimet_bot/huggingface
+          hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
+          pytest -s GenAITests/onnx/test_genai.py --config "$OUT_FILE"
+        shell: bash
 
       # (after reports are generated, before upload)
       - name: Build file metadata string

@@ -4,6 +4,8 @@
 """Qwen-2.5 ONNX model class"""
 
 import torch
+import onnx
+import os
 
 from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel as QuantSimOnnx
@@ -16,9 +18,10 @@ from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithC
 from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
     get_onnx_model,
     get_model_checkpoint_path,
+    is_huggingface_ckpt,
 )
 from GenAITests.onnx.models.utils.quantsim_utils import (
-    _set_tensors_to_output_8b_sym,
+    _set_tensors_to_output_n_bit_symmmetric,
     _tie_quantizers_for_kv_cache,
     _set_lm_head_to_8b,
     get_ort_providers,
@@ -35,33 +38,39 @@ class Qwen_25_ONNX(Qwen_25):
         context_length: int,
         sequence_length: int,
         small_model: bool = False,
+        kv_bits: int = 8,
     ):
         if model_id is None:
             model_id = cls.DEFAULT_MODEL_ID
 
-        model = cls.instantiate_model(model_id, small_model)
-        exportable_model = ONNXExportableModuleWithCache(model)
+        if is_huggingface_ckpt(model_id):
+            model = cls.instantiate_model(model_id, small_model)
+            exportable_model = ONNXExportableModuleWithCache(model)
 
-        dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
-        dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
+            dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
+            dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
 
-        assembled_dummy_inputs = Generator.prepare_inputs(
-            model,
-            dummy_input_ids,
-            dummy_attention_mask,
-            [],
-            sequence_length,
-            context_length,
-        )
+            assembled_dummy_inputs = Generator.prepare_inputs(
+                model,
+                dummy_input_ids,
+                dummy_attention_mask,
+                [],
+                sequence_length,
+                context_length,
+            )
 
-        onnx_model = get_onnx_model(
-            get_model_checkpoint_path(model_id),
-            exportable_model,
-            context_length,
-            assembled_dummy_inputs,
-            Generator.get_input_names(model.config.num_hidden_layers),
-            Generator.get_output_names(model.config.num_hidden_layers),
-        )
+            onnx_model = get_onnx_model(
+                get_model_checkpoint_path(model_id),
+                exportable_model,
+                context_length,
+                assembled_dummy_inputs,
+                Generator.get_input_names(model.config.num_hidden_layers),
+                Generator.get_output_names(model.config.num_hidden_layers),
+            )
+        else:
+            onnx_model = onnx.load(
+                os.path.join(model_id, f"model_cl{context_length}.onnx")
+            )
 
         with (
             AttributePatch(quantsim, "op_types_to_tie_qtzrs", ["Concat"]),
@@ -86,7 +95,7 @@ class Qwen_25_ONNX(Qwen_25):
             )
 
         # Setting kv_cache and some other layers to 8-bit
-        _set_tensors_to_output_8b_sym(quant_sim)
+        _set_tensors_to_output_n_bit_symmmetric(quant_sim, kv_bits)
         # Setting the LM head weights to 8-bit.
         _set_lm_head_to_8b(quant_sim)
         # Tie kv_cache

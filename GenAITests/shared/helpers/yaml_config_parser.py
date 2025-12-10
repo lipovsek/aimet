@@ -3,7 +3,11 @@
 
 """Config parser for GenAI model testing"""
 
+import os
+import warnings
+from pathlib import Path
 import yaml
+from .export import get_test_artifacts_path
 
 
 class YAMLConfigParser:
@@ -100,6 +104,26 @@ class YAMLConfigParser:
         cls.validate_config(doc)
         task_params = {}
 
+        task_params["export"] = doc.pop("export", False)
+        if not isinstance(task_params["export"], bool):
+            raise ValueError("Export field must be a boolean value.")
+
+        task_params["eval_in_onnx"] = doc.pop("eval_in_onnx", False)
+        if not isinstance(task_params["export"], bool):
+            raise ValueError("Export field must be a boolean value.")
+
+        if task_params["eval_in_onnx"] and not task_params["export"]:
+            warnings.warn(
+                "eval_in_onnx is enabled, but export is disabled. Overriding export to True."
+            )
+            task_params["export"] = True
+
+        if task_params["export"]:
+            task_params["export"] = get_test_artifacts_path(doc)
+            Path(task_params["export"]).mkdir(parents=True, exist_ok=True)
+            with open(os.path.join(task_params["export"], "config.yaml"), "w") as file:
+                yaml.dump(doc, file)
+
         model_name = doc["model"]["name"]
         try:
             model_cls = cls.get_model(model_name)
@@ -164,3 +188,12 @@ class YAMLConfigParser:
             docs = yaml.safe_load_all(file)
             for doc in docs:
                 yield cls.parse_document(doc)
+
+    @classmethod
+    def save_parameters_to_config(cls, task_parameters, location):
+        data = {
+            "model": None,
+            "dataset": None,
+            "recipe": None,
+            "metrics": None,
+        }

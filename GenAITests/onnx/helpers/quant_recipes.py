@@ -208,9 +208,10 @@ class Adascale(QuantizationTechnique):
         quantsim: QuantizationSimModel,
         generator: Generator,
         dataloader: DataLoader,
+        num_batches: int = 20,
         num_iterations: int = 1500,
     ):
-        inputs = _prefill_inputs(quantsim, generator, dataloader, num_iterations=20)
+        inputs = _prefill_inputs(quantsim, generator, dataloader, num_batches)
         AdaScale.apply_adascale(
             quantsim,
             inputs,

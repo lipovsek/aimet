@@ -8,10 +8,43 @@ import torch
 import onnx
 import glob
 from transformers import AutoConfig
+from huggingface_hub import HfApi
+
+
+def is_huggingface_ckpt(model_id: str) -> bool:
+    hf_api = HfApi()
+    try:
+        _ = hf_api.model_info(model_id)
+        return True
+    except Exception:
+        return False
 
 
 def get_model_checkpoint_path(model_id: str) -> str:
-    return f"onnx_checkpoints/{model_id}"
+    if is_huggingface_ckpt(model_id):
+        # user has passed in a huggingface checkpoint, use default framework cache path
+        return f"onnx_checkpoints/{model_id}"
+    else:
+        # user has passed in a local path, verify that .onnx file and .config files exist and just return the path
+        if not os.path.isdir(model_id):
+            raise RuntimeError(
+                f"Provided model_id '{model_id}' is not a valid HuggingFace model ID or a local directory."
+            )
+
+        for filename in os.listdir(model_id):
+            if filename.endswith(".onnx"):
+                break
+        else:
+            raise RuntimeError(
+                f"No .onnx file found in the provided local directory '{model_id}'.'"
+            )
+
+        if not os.path.exists(os.path.join(model_id, "config.json")):
+            raise RuntimeError(
+                f"No config.json file found in the provided local directory '{model_id}'.'"
+            )
+
+        return model_id
 
 
 def equivalent_configs(config_a, config_b) -> bool:

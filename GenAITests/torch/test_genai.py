@@ -7,6 +7,7 @@ import pytest
 import torch
 import gc
 import os
+import yaml
 from pathlib import Path
 
 from aimet_torch.utils import place_model
@@ -21,8 +22,6 @@ from GenAITests.shared.helpers.profiler import (
 from GenAITests.shared.helpers import datasets, metrics
 from GenAITests.torch import models
 from GenAITests.torch.helpers import quant_recipes
-from aimet_torch.v2.utils import remove_all_quantizers
-from aimet_torch.v2.quantsim import QuantizationSimModel
 
 
 def test_llm_quantization(test_parameters):
@@ -35,6 +34,7 @@ def test_llm_quantization(test_parameters):
     context_length = model_kwargs.pop("context_length")
     sequence_length = model_kwargs.pop("sequence_length")
     model_id = model_kwargs.pop("model_id", None)
+    precomputed_encodings = model_kwargs.pop("encodings", None)
 
     if "dtype" in model_kwargs:
         model_kwargs["dtype"] = getattr(torch, model_kwargs["dtype"])
@@ -61,6 +61,15 @@ def test_llm_quantization(test_parameters):
     tokenizer = model_cls.instantiate_tokenizer(model_id)
     generator = Generator(quantsim.model, tokenizer, sequence_length, context_length)
 
+    if precomputed_encodings is not None:
+        print(f"Loading precomputed encodings from {precomputed_encodings}.")
+        quantsim.load_encodings(
+            precomputed_encodings,
+            partial=True,
+            strict=False,
+            allow_overwrite=False,
+        )
+
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     with place_model(quantsim.model, device):
         with GPUMeter(
@@ -75,6 +84,67 @@ def test_llm_quantization(test_parameters):
         gc.collect()
         torch.cuda.empty_cache()
 
+    if test_parameters["export"]:
+        quantsim.model.config.save_pretrained(test_parameters["export"])
+        tokenizer.save_pretrained(test_parameters["export"])
+
+        dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
+        dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
+
+        assembled_dummy_inputs = Generator.prepare_inputs(
+            model=quantsim.model.model,
+            input_ids=dummy_input_ids,
+            attention_mask=dummy_attention_mask,
+            past_key_values=[],
+            sequence_length=sequence_length,
+            context_length=context_length,
+        )
+
+        quantsim.onnx.export(
+            f=os.path.join(test_parameters["export"], f"model_cl{context_length}.onnx"),
+            args=assembled_dummy_inputs,
+            input_names=Generator.get_input_names(
+                quantsim.model.model.config.num_hidden_layers
+            ),
+            output_names=Generator.get_output_names(
+                quantsim.model.model.config.num_hidden_layers
+            ),
+            opset_version=17,
+            dynamo=False,
+            export_int32_bias=False,
+        )
+
+        if test_parameters["eval_in_onnx"]:
+            data = {
+                "model": {
+                    "name": model_cls.__name__.removesuffix("_Torch"),
+                    "model_id": test_parameters["export"],
+                    "encodings": test_parameters["export"]
+                    + f"/model_cl{context_length}.encodings",
+                    "sequence_length": sequence_length,
+                    "context_length": context_length,
+                    **model_kwargs,
+                },
+                "dataset": {
+                    "name": dataset_cls.__name__,
+                    **dataset_kwargs,
+                },
+                "recipe": {"name": "LPBQ" if "LPBQ" in recipe_cls.__name__ else "PCQ"},
+                "metrics": [
+                    {
+                        "name": metric["class"].__name__,
+                        **{k: v for k, v in metric.items() if k != "class"},
+                    }
+                    for metric in metrics
+                ],
+            }
+
+            with open(
+                os.path.join(test_parameters["export"], "onnx_eval_config.yaml"), "w"
+            ) as file:
+                yaml.dump(data, file, default_flow_style=False)
+
+    with place_model(quantsim.model, device):
         evaluation_results = []
         with torch.no_grad():
             for metric_kwargs in metrics:
@@ -99,6 +169,8 @@ def test_llm_quantization(test_parameters):
 
     model_kwargs["context_length"] = context_length
     model_kwargs["sequence_length"] = sequence_length
+    if precomputed_encodings is not None:
+        model_kwargs["encodings"] = precomputed_encodings
 
     output_folder = Path(os.getcwd()) / "genai_test_artifacts"
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -115,4 +187,7 @@ def test_llm_quantization(test_parameters):
         dataset_modifiers=dataset_kwargs,
         quantization_results=quantization_profiler,
         accuracy_results=evaluation_results,
+        export_location=test_parameters["export"]
+        if test_parameters["export"]
+        else None,
     )

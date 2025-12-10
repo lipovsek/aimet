@@ -59,7 +59,7 @@ def _tie_quantizers_for_kv_cache(quantsim_model: QuantSimOnnx) -> None:
     quantsim_model.set_quantizers(quantizer_mapping)
 
 
-def _set_tensors_to_output_8b_sym(quantsim_model: QuantSimOnnx):
+def _set_tensors_to_output_n_bit_symmmetric(quantsim_model: QuantSimOnnx, n: int = 8):
     out_tensors = []
     out_tensors.extend(
         [
@@ -76,17 +76,20 @@ def _set_tensors_to_output_8b_sym(quantsim_model: QuantSimOnnx):
         ]
     )
     for out_tensor in out_tensors:
-        _set_tensor_to_8_bit_symmetric(quantsim_model, out_tensor)
+        _set_tensor_to_n_bit_symmetric(quantsim_model, out_tensor, n)
 
 
-def _set_tensor_to_8_bit_symmetric(quantsim_model: QuantSimOnnx, tensor_name: str):
+def _set_tensor_to_n_bit_symmetric(
+    quantsim_model: QuantSimOnnx, tensor_name: str, n: int = 8
+):
     if tensor_name in quantsim_model.qc_quantize_op_dict:
         quantizer = quantsim_model.qc_quantize_op_dict[tensor_name]
-        quantizer.set_bitwidth(8)
+        quantizer.set_bitwidth(n)
         quantizer.use_symmetric_encodings = True
 
 
 def _set_lm_head_to_8b(quantsim_model: QuantSimOnnx):
+    # todo: update this to support weights in O, I format (like from torch.onnx.export)
     for weight in _get_lm_head_weights(quantsim_model.model.model):
         quantizer = quantsim_model.qc_quantize_op_dict[weight.name]
         quantizer.set_bitwidth(8)

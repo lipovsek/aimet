@@ -67,6 +67,7 @@ def write_stats_to_disk(
     dataset_modifiers: dict[str, str],
     quantization_results: GPUMeter,
     accuracy_results: list[MetricResult],
+    export_location: str | None = None,
 ):
     _write_stats_to_json(
         str(os.path.join(output_folder, filename + ".json")),
@@ -79,6 +80,7 @@ def write_stats_to_disk(
         dataset_modifiers,
         quantization_results,
         accuracy_results,
+        export_location,
     )
 
     _write_stats_to_csv(
@@ -92,6 +94,7 @@ def write_stats_to_disk(
         dataset_modifiers,
         quantization_results,
         accuracy_results,
+        export_location,
     )
 
 
@@ -106,6 +109,7 @@ def _write_stats_to_csv(
     dataset_modifiers: dict[str, str],
     quantization_results: GPUMeter,
     accuracy_results: list[MetricResult],
+    export_location: str | None = None,
 ):
     def dict_to_postgres_csv_json_field(d):
         json_str = json.dumps(d, separators=(",", ":"))  # Compact JSON
@@ -130,6 +134,7 @@ def _write_stats_to_csv(
             convert_gpu_meter_to_dict(quantization_results, remove_finegrained=True)
         ),
         dict_to_postgres_csv_json_field(accuracy_table),
+        export_location if export_location is not None else "",
     ]
 
     if not os.path.exists(filename):
@@ -146,6 +151,7 @@ def _write_stats_to_csv(
                     "dataset_modifiers",
                     "quantization_results",
                     "accuracy_results",
+                    "export",
                 ]
             )
 
@@ -165,6 +171,7 @@ def _write_stats_to_json(
     dataset_modifiers: dict[str, str],
     quantization_results: GPUMeter,
     accuracy_results: list[MetricResult],
+    export_location: str | None = None,
 ):
     """Helper function to write collected stats to disk, only overwriting newly collected fields"""
 
@@ -194,6 +201,9 @@ def _write_stats_to_json(
         | convert_gpu_meter_to_dict(result.profiler)
         for result in accuracy_results
     }
+
+    if export_location is not None:
+        stats["export"] = export_location
 
     # Update the dictionary with x
     x = {f"{quant_params_string_formatted}": stats}

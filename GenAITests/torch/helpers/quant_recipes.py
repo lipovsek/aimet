@@ -212,7 +212,9 @@ class AdaScale(QuantizationTechnique):
         num_batches: int = 20,
         num_iterations: int = 1500,
     ):
-        inputs = _prefill_inputs(generator, dataloader, 20, torch.device("cpu"))
+        inputs = _prefill_inputs(
+            generator, dataloader, num_batches, torch.device("cpu")
+        )
         apply_adascale(
             quantsim,
             inputs,
