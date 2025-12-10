@@ -127,12 +127,15 @@ def eval_onnx_model(
         >>> print(f"Accuracy: {accuracy:.2%}")
         Accuracy: 75.60%
     """
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+
     # Create session if path was provided
     if isinstance(session_or_path, ort.InferenceSession):
         session = session_or_path
     else:
         # Load ONNX model from file
-        session = ort.InferenceSession(str(session_or_path))
+        session = ort.InferenceSession(str(session_or_path), sess_options=sess_options)
 
     # Evaluate using QAI Hub's standardized evaluation
     accuracy, _ = evaluate_session_on_dataset(

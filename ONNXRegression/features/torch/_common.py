@@ -39,7 +39,7 @@ from ONNXRegression.features.torch.utils import ensure_device_patch
 from aimet_torch.quantsim import QuantizationSimModel
 from aimet_torch.common.defs import QuantScheme
 from aimet_torch.model_preparer import prepare_model
-import aimet_torch.onnx as aimet_onnx
+import aimet_torch
 from torch.utils.data import DataLoader
 from qai_hub_models.datasets import DatasetSplit, get_dataset_from_name
 from qai_hub_models.utils.evaluate import get_deterministic_sample
@@ -270,12 +270,12 @@ def export_torch_bundle(
 
     qdq_path = export_dir / f"{model_name}_qdq.onnx"
 
-    aimet_onnx.export(
+    aimet_torch.onnx.export(
         sim.model,
         (dummy_input_cpu,),
         str(qdq_path),
         dynamo=False,
-        opset_version=20,  # For INT4/INT16 support
+        opset_version=21,  # For INT4/INT16 support
     )
 
     print(f"[AIMET Torch] QDQ model: {qdq_path}")
