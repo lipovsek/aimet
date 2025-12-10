@@ -48,10 +48,16 @@ from torch.utils.data import DataLoader
 
 from transformers.models.llama.modeling_llama import LlamaModel, LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Model, Qwen2DecoderLayer
+from transformers.models.phi3.modeling_phi3 import Phi3Model, Phi3DecoderLayer
 from transformers.models.mistral.modeling_mistral import (
     MistralModel,
     MistralDecoderLayer,
 )
+
+try:
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3Model, Qwen3DecoderLayer
+except ImportError:
+    Qwen3Model = Qwen3DecoderLayer = None
 
 
 from aimet_torch.common.utils import AimetLogger
@@ -93,7 +99,19 @@ adascale_model_config_dict = {
     MistralModel: AdaScaleModelConfig(
         block_type=MistralDecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
     ),
+    Phi3Model: AdaScaleModelConfig(
+        block_type=Phi3DecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
+    ),
 }
+
+if Qwen3Model is not None and Qwen3DecoderLayer is not None:
+    adascale_model_config_dict.update(
+        {
+            Qwen3Model: AdaScaleModelConfig(
+                block_type=Qwen3DecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
+            )
+        }
+    )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
