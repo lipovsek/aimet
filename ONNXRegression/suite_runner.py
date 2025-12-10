@@ -43,7 +43,7 @@ from ONNXRegression.runner import run_single_config
 from ONNXRegression.report.report_writer import write_csv, write_html
 
 
-TORCH_UNSUPPORTED_FEATURES = {"lite_mp", "mixed_precision"}
+TORCH_UNSUPPORTED_FEATURES = {"lite_mp"}
 
 
 def load_suite_file(suite_path: Path) -> Dict[str, Any]:

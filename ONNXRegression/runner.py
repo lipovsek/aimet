@@ -347,10 +347,14 @@ def run_single_config(
         from ONNXRegression.features.torch.adaround_runner import (
             run_adaround as run_adaround_torch,
         )
+        from ONNXRegression.features.torch.mixed_precision_runner import (
+            run_mixed_precision as run_mixed_precision_torch,
+        )
 
         TORCH_FEATURE_RUNNERS = {
             "quantsim": run_quantsim_torch,
             "adaround": run_adaround_torch,
+            "mixed_precision": run_mixed_precision_torch,
         }
 
         if feature_name not in TORCH_FEATURE_RUNNERS:

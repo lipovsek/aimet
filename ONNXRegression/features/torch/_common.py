@@ -275,18 +275,21 @@ def export_torch_bundle(
         (dummy_input_cpu,),
         str(qdq_path),
         dynamo=False,
-        opset_version=21,  # For INT4/INT16 support
+        opset_version=20,  # For INT4/INT16 support
     )
 
     print(f"[AIMET Torch] QDQ model: {qdq_path}")
 
     bundle_dir = export_dir / f"{model_name}.aimet"
     bundle_dir.mkdir(parents=True, exist_ok=True)
+    bundle_onnx_path = bundle_dir / f"{model_name}.onnx"
 
     sim.onnx.export(
-        path=str(bundle_dir),
-        filename_prefix=model_name,
-        dummy_input=dummy_input_cpu,
+        (dummy_input_cpu,),
+        str(bundle_onnx_path),
+        dynamo=False,
+        opset_version=20,
+        encoding_version="1.0.0",
     )
 
     print(f"[AIMET Torch] AIMET bundle: {bundle_dir}")

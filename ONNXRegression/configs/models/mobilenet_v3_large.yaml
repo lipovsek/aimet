@@ -3,6 +3,11 @@ tests:
 
   - name: amp_int8_fp16_fast
     feature: mixed_precision
+    mode: manual
+    precision_config:
+      Sigmoid: {activation: fp16, param: fp16}
+      Hardsigmoid: {activation: fp16, param: fp16}
+      ReLU: {activation: fp16, param: int8}
     candidates: int8_fp16
     enable_sqnr_pruning: true
     phase1_samples: 1000
