@@ -1219,6 +1219,7 @@ class GroupedBlockQuantizeDequantize(QuantizeDequantize):  # pylint: disable=too
                 block_grouping=self.block_grouping,
                 decompressed_bw=self.decompressed_bw,
                 per_channel_scale=per_channel_scale,
+                zero_point_shift=self.zero_point_shift,
             )
         return None
 

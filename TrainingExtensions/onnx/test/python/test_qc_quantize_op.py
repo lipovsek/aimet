@@ -2512,3 +2512,273 @@ def test_quantizer_with_zero_point_shift():
         np.round(clipped_tensor / exp_delta - zero_point_shift) + zero_point_shift
     ) * exp_delta
     assert np.allclose(qdq_tensor, exp_qdq_tensor)
+
+
+def test_qc_quantize_op_maintains_zero_point_shift():
+    input_shape = (3, 20)
+    tensor_quantizer_params = TensorQuantizerParams(input_shape, 0, 1)
+    qc_op = QcQuantizeOp(
+        quant_info=libquant_info.QcQuantizeInfo(),
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=2,
+        use_symmetric_encodings=True,
+        tensor_quantizer_params=tensor_quantizer_params,
+    )
+    qc_op._tensor_quantizer.setZeroPointShift(0.5)
+    assert qc_op._tensor_quantizer.getZeroPointShift() == 0.5
+    dummy_input = np.random.randn(*input_shape).astype(np.float32)
+
+    qc_op.update_encoding_stats(dummy_input)
+    qc_op.compute_encodings()
+    assert all(enc.offset == -1.5 for enc in qc_op.get_encodings())
+    assert all(enc.min == -enc.max for enc in qc_op.get_encodings())
+    assert all(enc.min == enc.offset * enc.delta for enc in qc_op.get_encodings())
+
+    qc_op.enable_per_channel_quantization()
+    assert qc_op._tensor_quantizer.getZeroPointShift() == 0.5
+    qc_op.update_encoding_stats(dummy_input)
+    qc_op.compute_encodings()
+    assert all(enc.offset == -1.5 for enc in qc_op.get_encodings())
+    assert all(enc.min == -enc.max for enc in qc_op.get_encodings())
+    assert all(enc.min == enc.offset * enc.delta for enc in qc_op.get_encodings())
+
+    qc_op._enable_blockwise_quantization(block_size=10)
+    assert qc_op._tensor_quantizer.getZeroPointShift() == 0.5
+    qc_op.update_encoding_stats(dummy_input)
+    qc_op.compute_encodings()
+    assert all(enc.offset == -1.5 for enc in qc_op.get_encodings())
+    assert all(enc.min == -enc.max for enc in qc_op.get_encodings())
+    assert all(enc.min == enc.offset * enc.delta for enc in qc_op.get_encodings())
+
+
+def test_load_encodings_with_zero_point_shift():
+    np.random.seed(0)
+    input_shape = (3, 20)
+    channel_axis = 0
+    block_axis = 1
+    bitwidth = 2
+    zero_point_shift = 0.5
+    min_val = -0.75
+    max_val = 0.75
+
+    quant_info = libquant_info.QcQuantizeInfo()
+    tensor_quantizer_params = TensorQuantizerParams(
+        input_shape, channel_axis, block_axis
+    )
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=8,
+        use_symmetric_encodings=True,
+        tensor_quantizer_params=tensor_quantizer_params,
+    )
+    qc_op.enable_per_channel_quantization()
+
+    """
+    When: Loading encodings with non-zero zero_point_shift
+    Then: 1) Stored encodings should reflect the zero_point_shift correctly
+          2) Tensors should be quantized correctly using shifted offset
+    """
+    encodings = []
+    for _ in range(input_shape[channel_axis]):
+        encoding = libpymo.TfEncoding()
+        encoding.min = min_val
+        encoding.max = max_val
+        encoding.bw = bitwidth
+        encoding.delta = (encoding.max - encoding.min) / (2**bitwidth - 1)
+        encoding.offset = -(2 ** (bitwidth - 1)) + zero_point_shift
+        encodings.append(encoding)
+
+    qc_op.load_encodings(encodings)
+    loaded_encodings = qc_op.get_encodings()
+
+    for enc in loaded_encodings:
+        assert enc.offset == -(2 ** (bitwidth - 1)) + zero_point_shift
+        assert enc.min == min_val
+        assert enc.max == max_val
+        assert enc.delta == (enc.max - enc.min) / (2**bitwidth - 1)
+        assert enc.bw == bitwidth
+
+    assert qc_op.bitwidth == bitwidth
+    input_tensor = np.random.randn(*input_shape).astype(np.float32)
+    qdq_tensor = qc_op.quantize_dequantize(input_tensor)
+
+    delta = np.array([enc.delta for enc in loaded_encodings]).reshape(-1, 1)
+
+    rounded = np.round(input_tensor / delta - zero_point_shift)
+    clipped = np.clip(rounded, -(2 ** (bitwidth - 1)), 2 ** (bitwidth - 1) - 1)
+    exp_qdq_tensor = (clipped + zero_point_shift) * delta
+
+    assert np.all(qdq_tensor == exp_qdq_tensor)
+    assert not np.any(qdq_tensor == 0)
+
+    """
+    When: Loading encodings with no zero_point_shift
+    Then: 1) Stored encodings should have integer offsets
+          2) Tensors should be quantized correctly using integer offset
+    """
+    for enc in encodings:
+        enc.offset = -(2 ** (bitwidth - 1))
+        enc.min -= enc.delta * zero_point_shift
+        enc.max -= enc.delta * zero_point_shift
+
+    qc_op.load_encodings(encodings)
+    loaded_encodings = qc_op.get_encodings()
+    for enc in loaded_encodings:
+        assert enc.offset == -(2 ** (bitwidth - 1))
+
+    qdq_tensor = qc_op.quantize_dequantize(input_tensor)
+
+    rounded = np.round(input_tensor / delta)
+    clipped = np.clip(rounded, -(2 ** (bitwidth - 1)), 2 ** (bitwidth - 1) - 1)
+    exp_qdq_tensor = clipped * delta
+    assert np.all(qdq_tensor == exp_qdq_tensor)
+
+
+def test_import_1_0_0_encoding_dict_with_zero_point_shift():
+    encoding_dict = {
+        "bw": 2,
+        "dtype": "INT",
+        "enc_type": "PER_CHANNEL",
+        "is_sym": True,
+        "offset": [
+            -2,
+            -2,
+        ],
+        "scale": [
+            0.25,
+            0.5,
+        ],
+        "zero_point_shift": [
+            0.5,
+            0.5,
+        ],
+    }
+    input_shape = (2, 1)
+    quant_info = libquant_info.QcQuantizeInfo()
+    tensor_quantizer_params = TensorQuantizerParams(input_shape, 0)
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=8,
+        use_symmetric_encodings=True,
+        tensor_quantizer_params=tensor_quantizer_params,
+    )
+    assert qc_op._tensor_quantizer.getZeroPointShift() == 0.0
+
+    """
+    When: Loading encoding dict with zero point shift
+    Then: 1) Stored encodings contain shifted offset
+          2) quantizer.zeroPointShift is updated accordingly
+    """
+    qc_op._load_encodings_dict(encoding_dict)
+    assert qc_op._tensor_quantizer.getZeroPointShift() == 0.5
+    for i, enc in enumerate(qc_op.get_encodings()):
+        assert enc.min == encoding_dict["scale"][i] * -1.5
+        assert enc.max == encoding_dict["scale"][i] * 1.5
+        assert enc.delta == encoding_dict["scale"][i]
+        assert enc.offset == -1.5
+
+    """
+    When: Try to export encodings with zeroPointShift
+    Then: Raise NotImplementedError
+    """
+    with pytest.raises(NotImplementedError):
+        qc_op.export_encodings("1.0.0")
+
+    """
+    When: Try to import encodings with inconsistent zero_point_shift
+    Then: Raise error
+    """
+    encoding_dict["zero_point_shift"][-1] = 0.75
+    with pytest.raises(RuntimeError):
+        qc_op._load_encodings_dict(encoding_dict)
+
+    """
+    When: Loading encoding dict with no zero point shift
+    Then: 1) Stored encodings contain integer offset
+          2) quantizer.zeroPointShift should be 0.0
+    """
+    encoding_dict.pop("zero_point_shift")
+    qc_op._load_encodings_dict(encoding_dict)
+    assert qc_op._tensor_quantizer.getZeroPointShift() == 0.0
+
+    for i, enc in enumerate(qc_op.get_encodings()):
+        assert enc.min == encoding_dict["scale"][i] * -2
+        assert enc.max == encoding_dict["scale"][i] * 1
+        assert enc.delta == encoding_dict["scale"][i]
+        assert enc.offset == -2
+
+
+def test_import_1_0_0_LPBQ_encodings_with_zero_point_shift():
+    encoding_dict = {
+        "block_size": 2,
+        "bw": 8,
+        "compressed_bw": 2,
+        "dtype": "INT",
+        "enc_type": "LPBQ",
+        "is_sym": True,
+        "offset": [-128, -128],
+        "per_block_int_scale": [32, 64, 32, 64],
+        "scale": [3.0, 3.0],
+        "zero_point_shift": [0.5, 0.5],
+    }
+    input_shape = (2, 4)
+    quant_info = libquant_info.QcQuantizeInfo()
+    tensor_quantizer_params = TensorQuantizerParams(input_shape, 0, 1)
+    qc_op = GroupedBlockQuantizeDequantize(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=4,
+        decompressed_bw=8,
+        tensor_quantizer_params=tensor_quantizer_params,
+        block_size=0,
+    )
+    """
+    When: Loading LPBQ encodings with zero_point_shift
+    Then: 1) Stored encodings contain shifted offset
+          2) quantizer.getZeroPointShift is updated appropriately
+    """
+    qc_op._load_encodings_dict(encoding_dict)
+    assert qc_op._tensor_quantizer.getZeroPointShift() == 0.5
+    for pb_scale, enc in zip(
+        encoding_dict["per_block_int_scale"], qc_op.get_encodings()
+    ):
+        assert enc.delta == pb_scale * 3.0
+        assert enc.offset == -1.5
+        assert enc.min == enc.delta * -1.5
+        assert enc.max == enc.delta * 1.5
+
+    """
+    When: Try to export encodings with zeroPointShift
+    Then: Raise NotImplementedError
+    """
+    with pytest.raises(NotImplementedError):
+        qc_op.export_encodings("1.0.0")
+
+    """
+    When: Try to import encodings with inconsistent zero_point_shift
+    Then: Raise error
+    """
+    encoding_dict["zero_point_shift"][0] = 0.0
+    with pytest.raises(RuntimeError):
+        qc_op._load_encodings_dict(encoding_dict)
+
+    """
+    When: Loading encoding dict with no zero point shift
+    Then: 1) Stored encodings contain integer offset
+          2) quantizer.zeroPointShift should be 0.0
+    """
+    encoding_dict.pop("zero_point_shift")
+    qc_op._load_encodings_dict(encoding_dict)
+    assert qc_op._tensor_quantizer.getZeroPointShift() == 0.0
+
+    for i, enc in enumerate(qc_op.get_encodings()):
+        assert enc.delta == encoding_dict["per_block_int_scale"][i] * 3.0
+        assert enc.min == enc.delta * -2
+        assert enc.max == enc.delta * 1
+        assert enc.offset == -2

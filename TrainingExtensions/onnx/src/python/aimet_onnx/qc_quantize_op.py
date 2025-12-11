@@ -238,6 +238,7 @@ class QcQuantizeOp:
         )
         quantizer.setUnsignedSymmetric(self.use_unsigned_symmetric)
         quantizer.setStrictSymmetric(self.use_strict_symmetric)
+        quantizer.setZeroPointShift(self._tensor_quantizer.getZeroPointShift())
 
         return quantizer
 
@@ -480,6 +481,17 @@ class QcQuantizeOp:
         libpymo_encodings = []
         scales = encoding_dict["scale"]
         offsets = encoding_dict["offset"]
+        zero_point_shift = encoding_dict.get("zero_point_shift")
+        if zero_point_shift:
+            if not len(set(zero_point_shift)) == 1:
+                raise RuntimeError(
+                    "Value of zero-point-shift must be the same for all encodings"
+                )
+            shift = zero_point_shift[0]
+            self._tensor_quantizer.setZeroPointShift(shift)
+            offsets = [offset + shift for offset in offsets]
+        else:
+            self._tensor_quantizer.setZeroPointShift(0.0)
 
         if (
             self.quant_info.blockSize > 0
@@ -672,6 +684,11 @@ class QcQuantizeOp:
 
         :param encoding_version: Version string indicated the encoding export format.
         """
+        if self._tensor_quantizer.getZeroPointShift() != 0.0:
+            raise NotImplementedError(
+                "Exporting encodings with shifted zero point is not supported"
+            )
+
         if encoding_version == "0.6.1":
             return self._export_legacy_encodings()
 
@@ -1145,9 +1162,21 @@ class GroupedBlockQuantizeDequantize(QcQuantizeOp):
             )
         per_block_scales_np = per_channel_scales_np * per_block_int_scales_np
         per_block_scales = per_block_scales_np.reshape(-1).tolist()
-        per_block_offsets = [-(2 ** (encoding_dict["compressed_bw"] - 1))] * len(
-            per_block_scales
-        )
+
+        zero_point_shift = encoding_dict.get("zero_point_shift")
+        if zero_point_shift:
+            if not len(set(zero_point_shift)) == 1:
+                raise RuntimeError(
+                    "Value of zero-point-shift must be the same for all encodings"
+                )
+            self._tensor_quantizer.setZeroPointShift(zero_point_shift[0])
+        else:
+            self._tensor_quantizer.setZeroPointShift(0.0)
+
+        per_block_offsets = [
+            -(2 ** (encoding_dict["compressed_bw"] - 1))
+            + self._tensor_quantizer.getZeroPointShift()
+        ] * len(per_block_scales)
 
         for idx, scale in enumerate(per_block_scales):
             enc = libpymo.TfEncoding()
