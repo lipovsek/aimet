@@ -58,14 +58,8 @@ class EncodingBase(ABC):
 
         return subcls.from_qnn_encoding_dict(encoding_dict)
 
-    @abstractmethod
-    def to_TfEncoding(self) -> list[libpymo.TfEncoding]:
-        """
-        Convert EncodingBase object to list of TfEncoding objects.
-        """
-
     @classmethod
-    def _infer_encoding_version(cls, encoding_dict: list | dict[str, Any]):
+    def _infer_encoding_version(cls, encoding_dict: list | dict[str, Any]) -> str:
         if isinstance(encoding_dict, list):
             version = "0.6.1"
         else:
@@ -187,7 +181,7 @@ class AffineEncoding(EncodingBase):
             scale = other.scale.reshape(self.scale.shape)
             offset = other.offset.reshape(self.offset.shape)
 
-        return (
+        return bool(
             self.channel_axis == channel_axis
             and self.block_axis == block_axis
             and np.all(self.scale == scale)
@@ -263,6 +257,9 @@ class AffineEncoding(EncodingBase):
         return (self.offset + self.qmax) * self.scale
 
     def to_TfEncoding(self) -> list[libpymo.TfEncoding]:
+        """
+        Convert EncodingBase object to list of TfEncoding objects.
+        """
         tf_encodings = []
         bitwidth = self.bitwidth
         unsigned_encoding = self.to_unsigned()
@@ -301,7 +298,7 @@ class AffineEncoding(EncodingBase):
 
     def _to_0_6_1(self) -> list[dict[str, Any]]:
         bitwidth = self.bitwidth
-        symmetric = self.signed and np.all(self.offset == 0)
+        symmetric = self.signed and bool(np.all(self.offset == 0))
 
         return [
             {
@@ -331,7 +328,7 @@ class AffineEncoding(EncodingBase):
         encoding_dict = {
             "dtype": "INT",
             "bw": self.bitwidth,
-            "is_sym": self.signed and np.all(self.offset == 0),
+            "is_sym": self.signed and bool(np.all(self.offset == 0)),
             "scale": self.scale.flatten().tolist(),
             "offset": offset.flatten().tolist(),
         }
@@ -506,4 +503,86 @@ class AffineEncoding(EncodingBase):
         )
 
 
-class FloatEncoding(EncodingBase): ...
+@dataclass(frozen=True)
+class FloatEncoding(EncodingBase):
+    exponent_bits: int
+    mantissa_bits: int
+    finite: bool = False
+    unsigned_zero: bool = False
+
+    def to_qnn_encoding_dict(
+        self, encoding_version: str | None = None
+    ) -> list | dict[str, Any]:
+        if encoding_version == "0.6.1":
+            return self._to_0_6_1()
+
+        if encoding_version == "1.0.0":
+            return self._to_1_0_0()
+
+        if encoding_version == "2.0.0":
+            raise RuntimeError(
+                "FloatEncoding cannot be exported to 2.0.0 encoding format."
+            )
+
+        raise ValueError(
+            f"Unsupported encoding version: {encoding_version}. "
+            "Supported versions are: 0.6.1, 1.0.0"
+        )
+
+    def _to_0_6_1(self) -> list[dict[str, Any]]:
+        if self == _float16:
+            return [{"bitwidth": 16, "dtype": "float"}]
+        raise RuntimeError
+
+    def _to_1_0_0(self) -> dict[str, Any]:
+        if self == _float16:
+            return {
+                "dtype": "FLOAT",
+                "bw": 16,
+                "enc_type": EncodingType.PER_TENSOR.name,
+            }
+        raise RuntimeError
+
+    @classmethod
+    def from_qnn_encoding_dict(
+        cls, encoding_dict: list | dict[str, Any]
+    ) -> FloatEncoding:
+        version = cls._infer_encoding_version(encoding_dict)
+
+        if version == "0.6.1":
+            return cls._from_0_6_1(encoding_dict)
+        else:
+            return cls._from_1_0_0(encoding_dict)
+
+    @classmethod
+    def _from_0_6_1(cls, encoding_dict) -> FloatEncoding:
+        if encoding_dict == _float16.to_qnn_encoding_dict("0.6.1"):
+            return _float16
+        raise RuntimeError
+
+    @classmethod
+    def _from_1_0_0(cls, encoding_dict) -> FloatEncoding:
+        if encoding_dict == _float16.to_qnn_encoding_dict("1.0.0"):
+            return _float16
+        raise RuntimeError
+
+
+# ONNX floating point data types
+_float16 = FloatEncoding(
+    exponent_bits=5, mantissa_bits=10, finite=False, unsigned_zero=False
+)
+_bfloat16 = FloatEncoding(
+    exponent_bits=8, mantissa_bits=7, finite=False, unsigned_zero=False
+)
+_float8e4m3fn = FloatEncoding(
+    exponent_bits=4, mantissa_bits=3, finite=True, unsigned_zero=False
+)
+_float8e4m3fnuz = FloatEncoding(
+    exponent_bits=4, mantissa_bits=3, finite=True, unsigned_zero=True
+)
+_float8e5m2 = FloatEncoding(
+    exponent_bits=5, mantissa_bits=2, finite=False, unsigned_zero=False
+)
+_float8e5m2fnuz = FloatEncoding(
+    exponent_bits=5, mantissa_bits=2, finite=True, unsigned_zero=True
+)

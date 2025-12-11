@@ -55,7 +55,6 @@ from onnx.external_data_helper import uses_external_data, _get_all_tensors
 import onnx.numpy_helper
 import torch
 import torch.nn.functional as F
-from torch.utils._pytree import tree_flatten
 import numpy as np
 from onnx import load_model
 import onnx
@@ -63,7 +62,6 @@ import onnxruntime as ort
 import pytest
 from onnxsim import simplify
 
-from aimet_onnx.common import quantsim
 from aimet_onnx.common import libpymo
 from aimet_onnx.common.defs import (
     QuantScheme,
@@ -1253,48 +1251,63 @@ class TestQuantSim:
                 assert qc_op.quant_info.channelAxis == 1
                 assert len(qc_op.get_encodings()) == weight.dims[1]
 
-    def test_load_encodings_ptq(self):
-        model = single_residual_model().model
-        with tempfile.TemporaryDirectory() as tempdir:
-            sim = QuantizationSimModel(copy.deepcopy(model))
-
-            dummy_tensor = {"input": np.random.rand(1, 3, 32, 32).astype(np.float32)}
-
-            sim.compute_encodings([dummy_tensor])
-            sim.export(tempdir, "onnx_sim")
-
-            out2 = sim.session.run(None, dummy_tensor)
-
-            del sim
-
-            sim = QuantizationSimModel(copy.deepcopy(model))
-            load_encodings_to_sim(sim, os.path.join(tempdir, "onnx_sim.encodings"))
-            out3 = sim.session.run(None, dummy_tensor)
-
-            assert np.allclose(out2, out3)
-
-    def test_load_encodings_pcq(self, tmp_dir):
+    @pytest.mark.parametrize(
+        "config_file",
+        [
+            "default_config_per_channel.json",
+            "default_config.json",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "encoding_version",
+        [
+            "0.6.1",
+            "1.0.0",
+        ],
+    )
+    @pytest.mark.parametrize("param_type", [aimet_onnx.int8, aimet_onnx.float16])
+    @pytest.mark.parametrize(
+        "activation_type",
+        [
+            aimet_onnx.int8,
+            aimet_onnx.float16,
+        ],
+    )
+    def test_load_encodings(
+        self,
+        tmp_dir,
+        param_type,
+        activation_type,
+        encoding_version: str,
+        config_file: str,
+    ):
         model = single_residual_model().model
         sim = QuantizationSimModel(
             copy.deepcopy(model),
-            config_file=get_path_for_per_channel_config(),
+            param_type=param_type,
+            activation_type=activation_type,
+            config_file=config_file,
         )
 
         dummy_tensor = {"input": np.random.rand(1, 3, 32, 32).astype(np.float32)}
 
         sim.compute_encodings((dummy_tensor,))
-        sim.export(tmp_dir, "onnx_sim")
+        sim.export(tmp_dir, "onnx_sim", encoding_version=encoding_version)
 
         out2 = sim.session.run(None, dummy_tensor)
 
-        del sim
-
         sim = QuantizationSimModel(
             copy.deepcopy(model),
-            config_file=get_path_for_per_channel_config(),
+            param_type=param_type,
+            activation_type=activation_type,
+            config_file=config_file,
         )
-        load_encodings_to_sim(sim, os.path.join(tmp_dir, "onnx_sim.encodings"))
+        load_encodings_to_sim(
+            sim, os.path.join(tmp_dir, "onnx_sim.encodings"), allow_overwrite=False
+        )
+        sim.compute_encodings([{"input": dummy_tensor["input"] * 2 + 1}])
         out3 = sim.session.run(None, dummy_tensor)
+
         assert np.allclose(out2, out3)
 
     def test_load_encodings_assertion(self, tmp_dir):

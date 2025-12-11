@@ -136,6 +136,7 @@ from aimet_onnx.utils import (
     create_ort_session_options_with_aimet_custom_ops,
     OrtInferenceSession,
 )
+from ._encoding import EncodingBase
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
 
@@ -3083,12 +3084,24 @@ def load_encodings_to_sim(
         )
 
     if encoding_version == "0.6.1":
-        encodings["activation_encodings"] = _convert_encoding_format_0_6_1_to_1_0_0(
-            encodings["activation_encodings"]
-        )
-        encodings["param_encodings"] = _convert_encoding_format_0_6_1_to_1_0_0(
-            encodings["param_encodings"]
-        )
+        encodings["activation_encodings"] = [
+            {
+                "name": tensor_name,
+                **EncodingBase.from_qnn_encoding_dict(encoding).to_qnn_encoding_dict(
+                    "1.0.0"
+                ),
+            }
+            for tensor_name, encoding in encodings["activation_encodings"].items()
+        ]
+        encodings["param_encodings"] = [
+            {
+                "name": tensor_name,
+                **EncodingBase.from_qnn_encoding_dict(encoding).to_qnn_encoding_dict(
+                    "1.0.0"
+                ),
+            }
+            for tensor_name, encoding in encodings["param_encodings"].items()
+        ]
 
     validate_encodings_to_load(encodings, quant_sim_model)
 

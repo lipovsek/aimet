@@ -3,7 +3,7 @@
 from pytest import approx
 import pytest
 import numpy as np
-from aimet_onnx._encoding import AffineEncoding
+from aimet_onnx._encoding import AffineEncoding, FloatEncoding, _float16, _bfloat16
 
 
 @pytest.mark.parametrize("dtype", ["int8", "uint8"])
@@ -121,3 +121,32 @@ def test_affine_encoding_from_dict(
         # 2.0.0 doesn't specify channel_axis explicitly if block_axis is given
         allow_auto_axis=block_axis != None,
     )
+
+
+def test_float_encoding_to_dict():
+    assert _float16.to_qnn_encoding_dict("0.6.1") == [
+        {"bitwidth": 16, "dtype": "float"}
+    ]
+    assert _float16.to_qnn_encoding_dict("1.0.0") == {
+        "dtype": "FLOAT",
+        "bw": 16,
+        "enc_type": "PER_TENSOR",
+    }
+    with pytest.raises(RuntimeError):
+        _ = _bfloat16.to_qnn_encoding_dict("2.0.0")
+
+    assert _float16 == FloatEncoding.from_qnn_encoding_dict(
+        _float16.to_qnn_encoding_dict("0.6.1")
+    )
+    assert _float16 == FloatEncoding.from_qnn_encoding_dict(
+        _float16.to_qnn_encoding_dict("1.0.0")
+    )
+
+    with pytest.raises(RuntimeError):
+        _ = _bfloat16.to_qnn_encoding_dict("0.6.1")
+
+    with pytest.raises(RuntimeError):
+        _ = _bfloat16.to_qnn_encoding_dict("1.0.0")
+
+    with pytest.raises(RuntimeError):
+        _ = _bfloat16.to_qnn_encoding_dict("2.0.0")
