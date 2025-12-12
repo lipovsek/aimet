@@ -57,7 +57,7 @@ from aimet_onnx.common.quantsim import (
     create_encoding_from_min_max,
 )
 from aimet_onnx import lpbq_utils
-from ._encoding import LPBQEncoding
+from ._encoding import EncodingBase
 
 
 OpMode = libpymo.TensorQuantizerOpMode
@@ -690,45 +690,12 @@ class QcQuantizeOp:
                 "Exporting encodings with shifted zero point is not supported"
             )
 
-        if encoding_version == "0.6.1":
-            return self._export_legacy_encodings()
+        e = EncodingBase.from_quantizer(self)
 
-        if encoding_version == "1.0.0":
-            return self._export_1_0_0_encodings()
+        if e:
+            return e.to_qnn_encoding_dict(encoding_version)
 
-        if encoding_version == "2.0.0":
-            return self._export_2_0_0_encodings()
-
-        raise RuntimeError(f"Unsupported encoding export version: {encoding_version}")
-
-    def _export_legacy_encodings(self) -> Union[List, None]:
-        """
-        Create encoding dictionary from encoding object
-
-        :return: List of encoding dictionaries in 0.6.1 encoding format
-        """
-        if not self.enabled or not self.is_initialized():
-            return None
-
-        if self.data_type == QuantizationDataType.float:
-            return [{"bitwidth": self.bitwidth, "dtype": "float"}]
-
-        if self.data_type == QuantizationDataType.int:
-            encodings = []
-            for encoding in self.get_encodings():
-                enc_dict = {
-                    "min": encoding.min,
-                    "max": encoding.max,
-                    "scale": encoding.delta,
-                    "offset": int(encoding.offset),
-                    "bitwidth": encoding.bw,
-                    "is_symmetric": str(self.use_symmetric_encodings),
-                    "dtype": "int",
-                }
-                encodings.append(enc_dict)
-            return encodings
-
-        raise RuntimeError(f"Exporting data type {self.data_type} not supported")
+        return None
 
     def _encoding_type(self):
         if (
@@ -739,117 +706,6 @@ class QcQuantizeOp:
         if not self.quant_info.blockSize:
             return EncodingType.PER_CHANNEL
         return EncodingType.PER_BLOCK
-
-    def _export_1_0_0_encodings(self) -> Optional[Dict]:
-        """
-        Exports the quantizer's encodings in the "1.0.0" encoding format
-        """
-        if not self.enabled or not self.is_initialized():
-            return None
-
-        enc_dict = {
-            "enc_type": self._encoding_type().name,
-            "dtype": "INT" if self.data_type == QuantizationDataType.int else "FLOAT",
-            "bw": self.bitwidth,
-        }
-
-        if self.data_type == QuantizationDataType.int:
-            enc_dict["is_sym"] = self.use_symmetric_encodings
-            encodings = self.get_encodings()
-            scale = np.array([enc.delta for enc in encodings]).reshape(
-                self._encoding_shape()
-            )
-            offset = np.array([enc.offset for enc in encodings]).reshape(
-                self._encoding_shape()
-            )
-
-            if self.quant_info.blockSize > 0:
-                enc_dict["block_size"] = self.quant_info.blockSize
-                if _should_permute_to_1_0_0_blockwise_ordering(
-                    self.tensor_quantizer_params
-                ):
-                    scale = scale.transpose((1, 0))
-                    offset = offset.transpose((1, 0))
-
-            enc_dict["scale"] = scale.flatten().tolist()
-            enc_dict["offset"] = offset.flatten().tolist()
-
-        return enc_dict
-
-    def _export_2_0_0_encodings(self) -> Optional[Dict]:  # pylint: disable=too-many-branches
-        if (
-            not self.enabled
-            or not self.is_initialized()
-            or (self.data_type == QuantizationDataType.float and self.bitwidth >= 16)
-        ):
-            return None
-
-        encodings = self.get_encodings()
-
-        if encodings is None:
-            # This means one of the three:
-            #   1. This quantizer not enabled
-            #   2. This quantizer not initialized
-            #   3. This quantizer is a floating point quantizer
-            # In any case, this corresponds to no-encoding in encoding_version 2.0.0
-            return None
-
-        signed = self.use_symmetric_encodings
-        bw = encodings[0].bw
-
-        output_dtype = f"int{bw}" if signed else f"uint{bw}"
-
-        y_scale = np.array([e.delta for e in encodings])
-        offset = np.array([e.offset for e in encodings])
-
-        # NOTE: AIMET TfEncoding offset is defined in a bit quirky way
-        #
-        #                    (AIMET)
-        #                +-  -offset                    ... uint4, uint8, uint16, uint32
-        # y_zero_point = |
-        #    (ONNX)      +-  -offset - 2 ** (bits - 1)  ... int4, int8, int16, int32
-        #                    (AIMET)
-        if signed:
-            y_zero_point = -offset - 2 ** (bw - 1)
-        else:
-            y_zero_point = -offset
-
-        if self.quant_info.usePerChannelMode and self.tensor_quantizer_params:
-            channel_axis = self.tensor_quantizer_params.channel_axis
-            block_axis = self.tensor_quantizer_params.block_axis
-            block_size = self.quant_info.blockSize or None
-        else:
-            channel_axis = None
-            block_axis = None
-            block_size = None
-
-        if block_size is not None:
-            axis = block_axis
-        elif channel_axis is not None:
-            axis = channel_axis
-        else:
-            axis = None
-            assert y_scale.size == 1
-            assert y_zero_point.size == 1
-
-        y_scale = y_scale.reshape(self._encoding_shape())
-        y_zero_point = y_zero_point.reshape(self._encoding_shape()).astype(np.int64)
-
-        y_scale = y_scale.tolist()
-        y_zero_point = None if np.all(y_zero_point == 0) else y_zero_point.tolist()
-
-        ret = {
-            "output_dtype": output_dtype,
-            "y_scale": y_scale,
-        }
-        if y_zero_point is not None:
-            ret.update({"y_zero_point": y_zero_point})
-        if axis is not None:
-            ret.update({"axis": axis})
-        if block_size is not None:
-            ret.update({"block_size": block_size})
-
-        return ret
 
     def update_encoding_stats(self, tensor: np.ndarray):
         """
@@ -1218,55 +1074,6 @@ class GroupedBlockQuantizeDequantize(QcQuantizeOp):
         if encoding_type == EncodingType.PER_BLOCK:
             return EncodingType.LPBQ
         return encoding_type
-
-    def export_encodings(self, encoding_version: str = "0.6.1"):
-        """
-        Exports the quantizer's encodings in the selected format.
-
-        :param encoding_version: Version string indicated the encoding export format.
-        """
-        if not (
-            self.quant_info.usePerChannelMode
-            and self.tensor_quantizer_params
-            and self.quant_info.blockSize
-        ):
-            return super().export_encodings(encoding_version)
-
-        if self._tensor_quantizer.getZeroPointShift() != 0.0:
-            raise NotImplementedError(
-                "Exporting encodings with shifted zero point is not supported"
-            )
-
-        if encoding_version == "0.6.1":
-            raise NotImplementedError(
-                f"0.6.1 encoding format is not supported for {type(self).__qualname__}. "
-                "Please export using 1.0.0 or 2.0.0 format instead."
-            )
-
-        if not self.enabled or not self.is_initialized():
-            return None
-
-        scale, _ = lpbq_utils.encodings_to_scale_offset_arrays(
-            self.get_encodings(), self._encoding_shape()
-        )
-        compressed_bw = self.bitwidth
-        decompressed_bw = self.decompressed_bw
-        per_block_int_scale, per_channel_scale = lpbq_utils.grouped_dynamic_quantize(
-            scale, self._block_grouping(), decompressed_bw - compressed_bw
-        )
-        per_channel_scale = per_channel_scale.squeeze(
-            tuple(range(1, per_channel_scale.ndim, 2))
-        )
-
-        return LPBQEncoding(
-            per_channel_float_scale=per_channel_scale,
-            per_block_int_scale=per_block_int_scale,
-            dtype=f"int{compressed_bw}",
-            decompressed_dtype=f"int{decompressed_bw}",
-            channel_axis=self.quant_info.channelAxis,
-            block_axis=self.quant_info.blockAxis,
-            block_size=self.quant_info.blockSize,
-        ).to_qnn_encoding_dict(encoding_version)
 
     def _fill_mismatching_encoding_settings_info(
         self,

@@ -185,8 +185,7 @@ def test_float_encoding_to_dict():
         "bw": 16,
         "enc_type": "PER_TENSOR",
     }
-    with pytest.raises(RuntimeError):
-        _ = _bfloat16.to_qnn_encoding_dict("2.0.0")
+    assert _float16.to_qnn_encoding_dict("2.0.0") == {}
 
     assert _float16 == FloatEncoding.from_qnn_encoding_dict(
         _float16.to_qnn_encoding_dict("0.6.1")
@@ -201,5 +200,4 @@ def test_float_encoding_to_dict():
     with pytest.raises(RuntimeError):
         _ = _bfloat16.to_qnn_encoding_dict("1.0.0")
 
-    with pytest.raises(RuntimeError):
-        _ = _bfloat16.to_qnn_encoding_dict("2.0.0")
+    assert _bfloat16.to_qnn_encoding_dict("2.0.0") == {}

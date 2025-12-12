@@ -1922,7 +1922,7 @@ class TestLPBQOp:
         )
         assert exported_encodings["offset"] == [-128, -128]
 
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError):
             lpbq_op.export_encodings("0.6.1")
 
         expected_per_channel_scale = expected_per_channel_scale.reshape(2, 1)

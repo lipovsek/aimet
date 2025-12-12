@@ -7,9 +7,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import numpy as np
-from typing import Any, Literal, TypeVar, Type
-from aimet_onnx.common.defs import EncodingType
+from typing import Any, Literal, TypeVar, Type, TYPE_CHECKING
+from aimet_onnx.common.defs import EncodingType, QuantizationDataType
 from aimet_onnx.common import libpymo
+
+from . import lpbq_utils
+
+if TYPE_CHECKING:
+    from aimet_onnx.qc_quantize_op import QcQuantizeOp, GroupedBlockQuantizeDequantize
 
 
 T = TypeVar("T", bound="EncodingBase")
@@ -66,6 +71,31 @@ class EncodingBase(ABC):
             version = "1.0.0" if "bw" in encoding_dict else "2.0.0"
 
         return version
+
+    @classmethod
+    @abstractmethod
+    def from_quantizer(cls: Type[T], qtzr: QcQuantizeOp) -> T | None:
+        """
+        Create EncodingBase object from QcQuantizeOp object.
+
+        Args:
+            qtzr: QcQuantizeOp object
+        """
+        from aimet_onnx.qc_quantize_op import GroupedBlockQuantizeDequantize
+
+        if (
+            isinstance(qtzr, GroupedBlockQuantizeDequantize)
+            and qtzr.quant_info.usePerChannelMode
+            and qtzr.tensor_quantizer_params
+            and qtzr.quant_info.blockSize
+        ):
+            subcls = LPBQEncoding
+        elif qtzr.data_type == QuantizationDataType.int:
+            subcls = AffineEncoding
+        else:
+            subcls = FloatEncoding
+
+        return subcls.from_quantizer(qtzr)
 
 
 class _AffineMixin:
@@ -302,7 +332,6 @@ class AffineEncoding(EncodingBase, _AffineMixin):
 
     def _to_0_6_1(self) -> list[dict[str, Any]]:
         bitwidth = self.bitwidth
-        symmetric = self.signed and bool(np.all(self.offset == 0))
 
         return [
             {
@@ -312,7 +341,7 @@ class AffineEncoding(EncodingBase, _AffineMixin):
                 "offset": offset_,
                 "bitwidth": bitwidth,
                 "dtype": "int",
-                "is_symmetric": str(symmetric),
+                "is_symmetric": str(self.signed),
             }
             for min_, max_, scale_, offset_ in zip(
                 self.min.flatten().tolist(),
@@ -323,17 +352,40 @@ class AffineEncoding(EncodingBase, _AffineMixin):
             )
         ]
 
+    def _should_permute_to_1_0_0_blockwise_ordering(self) -> bool:
+        """
+        For Gemm and MatMul operators where the tensor is ordered (in_channels, out_channels),
+        the 1.0.0 encoding format expects the encodings to be ordered in (out_channels, in_channels) order
+        when blockwise quantization is used.
+
+        This is a short-term fix to handle this until 1.0.0 format is deprecated.
+        """
+        # Note: This is a hacky way of preventing permute for ConvTranspose encodings,
+        # since the quantizer is not aware of the operator type.
+        return bool(
+            self.block_size
+            and self.scale.ndim == 2
+            and isinstance(self.channel_axis, int)
+            and self.channel_axis in (1, -1)
+        )
+
     def _to_1_0_0(self) -> dict[str, Any]:
+        scale = self.scale
         # 1.0.0 encoding offset assumes uint
         offset = self.to_unsigned().offset.astype(np.float64)
+
+        if self._should_permute_to_1_0_0_blockwise_ordering():
+            scale = scale.transpose((1, 0))
+            offset = offset.transpose((1, 0))
+
         zero_point_shift = offset % 1.0
         offset = offset // 1.0
 
         encoding_dict = {
             "dtype": "INT",
             "bw": self.bitwidth,
-            "is_sym": self.signed and bool(np.all(self.offset == 0)),
-            "scale": self.scale.flatten().tolist(),
+            "is_sym": self.signed,
+            "scale": scale.flatten().tolist(),
             "offset": offset.flatten().tolist(),
         }
 
@@ -506,6 +558,51 @@ class AffineEncoding(EncodingBase, _AffineMixin):
             block_size=block_size,
         )
 
+    @classmethod
+    def from_quantizer(cls, qtzr: QcQuantizeOp) -> AffineEncoding | None:
+        # pylint: disable=protected-access
+        if qtzr.quant_info.usePerChannelMode and qtzr.tensor_quantizer_params:
+            channel_axis = qtzr.tensor_quantizer_params.channel_axis
+            block_size = qtzr.quant_info.blockSize or None
+            block_axis = (
+                None if block_size is None else qtzr.tensor_quantizer_params.block_axis
+            )
+        else:
+            channel_axis = None
+            block_size = None
+            block_axis = None
+
+        encodings = qtzr.get_encodings()
+
+        if encodings is None:
+            # This means one of the three:
+            #   1. This quantizer not enabled
+            #   2. This quantizer not initialized
+            #   3. This quantizer is a floating point quantizer
+            # In any case, this corresponds to no-encoding in encoding_version 2.0.0
+            return None
+
+        signed = qtzr.use_symmetric_encodings
+        bw = encodings[0].bw
+
+        scale = np.array([e.delta for e in encodings])
+        offset = np.array([e.offset for e in encodings])
+
+        if signed:
+            dtype = f"int{bw}"
+            offset += 2 ** (bw - 1)
+        else:
+            dtype = f"uint{bw}"
+
+        return AffineEncoding(
+            scale=scale.reshape(qtzr._encoding_shape()),
+            offset=offset.reshape(qtzr._encoding_shape()),
+            dtype=dtype,
+            channel_axis=channel_axis,
+            block_axis=block_axis,
+            block_size=block_size,
+        )
+
 
 @dataclass
 class LPBQEncoding(EncodingBase, _AffineMixin):
@@ -653,11 +750,11 @@ class LPBQEncoding(EncodingBase, _AffineMixin):
         """
         # Note: This is a hacky way of preventing permute for ConvTranspose encodings,
         # since the quantizer is not aware of the operator type.
-        return (
-            self.per_block_int_scale.ndim == 2
+        return bool(
+            self.block_size
+            and self.per_block_int_scale.ndim == 2
             and isinstance(self.channel_axis, int)
-            and isinstance(self.block_axis, int)
-            and self.channel_axis > self.block_axis
+            and self.channel_axis in (1, -1)
         )
 
     def _to_1_0_0(self) -> dict[str, Any]:
@@ -749,6 +846,55 @@ class LPBQEncoding(EncodingBase, _AffineMixin):
             block_size=block_size,
         )
 
+    @classmethod
+    def from_quantizer(
+        cls, qtzr: GroupedBlockQuantizeDequantize
+    ) -> LPBQEncoding | None:
+        # pylint: disable=protected-access
+        if qtzr.quant_info.usePerChannelMode and qtzr.tensor_quantizer_params:
+            block_size = qtzr.quant_info.blockSize or None
+        else:
+            block_size = None
+
+        if not block_size:
+            raise RuntimeError("LPBQEncoding requires block_size to be specified.")
+
+        channel_axis = qtzr.tensor_quantizer_params.channel_axis
+        block_axis = qtzr.tensor_quantizer_params.block_axis
+
+        encodings = qtzr.get_encodings()
+
+        if encodings is None:
+            # This means one of the three:
+            #   1. This quantizer not enabled
+            #   2. This quantizer not initialized
+            #   3. This quantizer is a floating point quantizer
+            # In any case, this corresponds to no-encoding in encoding_version 2.0.0
+            return None
+
+        scale, _ = lpbq_utils.encodings_to_scale_offset_arrays(
+            encodings, qtzr._encoding_shape()
+        )
+        compressed_bw = qtzr.bitwidth
+        decompressed_bw = qtzr.decompressed_bw
+        per_block_int_scale, per_channel_scale = lpbq_utils.grouped_dynamic_quantize(
+            scale, qtzr._block_grouping(), decompressed_bw - compressed_bw
+        )
+
+        per_channel_scale = per_channel_scale.squeeze(
+            tuple(range(1, per_channel_scale.ndim, 2))
+        )
+
+        return LPBQEncoding(
+            per_channel_float_scale=per_channel_scale,
+            per_block_int_scale=per_block_int_scale,
+            dtype=f"int{compressed_bw}",
+            decompressed_dtype=f"int{decompressed_bw}",
+            channel_axis=channel_axis,
+            block_axis=block_axis,
+            block_size=block_size,
+        )
+
 
 @dataclass(frozen=True)
 class FloatEncoding(EncodingBase):
@@ -767,9 +913,7 @@ class FloatEncoding(EncodingBase):
             return self._to_1_0_0()
 
         if encoding_version == "2.0.0":
-            raise RuntimeError(
-                "FloatEncoding cannot be exported to 2.0.0 encoding format."
-            )
+            return self._to_2_0_0()
 
         raise ValueError(
             f"Unsupported encoding version: {encoding_version}. "
@@ -789,6 +933,12 @@ class FloatEncoding(EncodingBase):
                 "enc_type": EncodingType.PER_TENSOR.name,
             }
         raise RuntimeError
+
+    def _to_2_0_0(self) -> dict[str, Any]:
+        if self in (_float16, _bfloat16):
+            return {}
+
+        raise RuntimeError("FloatEncoding cannot be exported to 2.0.0 encoding format.")
 
     @classmethod
     def from_qnn_encoding_dict(
@@ -812,6 +962,23 @@ class FloatEncoding(EncodingBase):
         if encoding_dict == _float16.to_qnn_encoding_dict("1.0.0"):
             return _float16
         raise RuntimeError
+
+    @classmethod
+    def from_quantizer(cls, qtzr: QcQuantizeOp) -> FloatEncoding | None:
+        if qtzr.data_type != QuantizationDataType.float:
+            raise RuntimeError(
+                f"Can't create FloatEncoding from QcQuantizeOp with data_type={qtzr.data_type}"
+            )
+
+        if not qtzr.enabled:
+            return None
+
+        if qtzr.bitwidth == 16:
+            return _float16
+
+        raise NotImplementedError(
+            f"FloatEncoding.from_quantizer only supports float16; got bitwidth={qtzr.bitwidth}."
+        )
 
 
 # ONNX floating point data types

@@ -1411,6 +1411,7 @@ class TestQuantSim:
             sim.get_qc_quantize_op()[act_1].enabled = True
             sim.get_qc_quantize_op()[act_2].enabled = False
             sim.get_qc_quantize_op()[act_3].data_type = QuantizationDataType.float
+            sim.get_qc_quantize_op()[act_3].bitwidth = 16
             sim.get_qc_quantize_op()[weight_initializers[0]].bitwidth = 16
             sim.get_qc_quantize_op()[act_4].bitwidth = 4
             sim.get_qc_quantize_op()[
