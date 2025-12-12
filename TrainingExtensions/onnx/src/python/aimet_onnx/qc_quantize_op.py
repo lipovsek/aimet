@@ -57,6 +57,7 @@ from aimet_onnx.common.quantsim import (
     create_encoding_from_min_max,
 )
 from aimet_onnx import lpbq_utils
+from ._encoding import LPBQEncoding
 
 
 OpMode = libpymo.TensorQuantizerOpMode
@@ -1212,27 +1213,39 @@ class GroupedBlockQuantizeDequantize(QcQuantizeOp):
             )
         super().load_encodings(encoding)
 
-    def _export_legacy_encodings(self) -> Union[List, None]:
-        raise NotImplementedError(
-            f"0.6.1 encoding format is not supported for {type(self).__qualname__}. Please export "
-            f"using 1.0.0 format instead."
-        )
-
     def _encoding_type(self):
         encoding_type = super()._encoding_type()
         if encoding_type == EncodingType.PER_BLOCK:
             return EncodingType.LPBQ
         return encoding_type
 
-    def _export_1_0_0_encodings(self) -> Optional[Dict]:
-        encodings = super()._export_1_0_0_encodings()
-        if not encodings:
-            return None
-        if "block_size" not in encodings:
-            return encodings
+    def export_encodings(self, encoding_version: str = "0.6.1"):
+        """
+        Exports the quantizer's encodings in the selected format.
 
-        encodings["compressed_bw"] = self.bitwidth
-        encodings["bw"] = self.decompressed_bw
+        :param encoding_version: Version string indicated the encoding export format.
+        """
+        if not (
+            self.quant_info.usePerChannelMode
+            and self.tensor_quantizer_params
+            and self.quant_info.blockSize
+        ):
+            return super().export_encodings(encoding_version)
+
+        if self._tensor_quantizer.getZeroPointShift() != 0.0:
+            raise NotImplementedError(
+                "Exporting encodings with shifted zero point is not supported"
+            )
+
+        if encoding_version == "0.6.1":
+            raise NotImplementedError(
+                f"0.6.1 encoding format is not supported for {type(self).__qualname__}. "
+                "Please export using 1.0.0 or 2.0.0 format instead."
+            )
+
+        if not self.enabled or not self.is_initialized():
+            return None
+
         scale, _ = lpbq_utils.encodings_to_scale_offset_arrays(
             self.get_encodings(), self._encoding_shape()
         )
@@ -1241,53 +1254,19 @@ class GroupedBlockQuantizeDequantize(QcQuantizeOp):
         per_block_int_scale, per_channel_scale = lpbq_utils.grouped_dynamic_quantize(
             scale, self._block_grouping(), decompressed_bw - compressed_bw
         )
-
-        if _should_permute_to_1_0_0_blockwise_ordering(self.tensor_quantizer_params):
-            per_block_int_scale = per_block_int_scale.transpose((1, 0))
-
-        encodings["per_block_int_scale"] = (
-            per_block_int_scale.astype(np.uint32).flatten().tolist()
-        )
-        encodings["scale"] = per_channel_scale.flatten().tolist()
-        encodings["offset"] = [
-            -(2 ** (self.decompressed_bw - 1)) for _ in encodings["scale"]
-        ]
-
-        return encodings
-
-    def _export_2_0_0_encodings(self) -> Optional[Dict]:
-        encodings = super()._export_2_0_0_encodings()
-
-        if encodings is None:
-            return None
-
-        output_dtype = encodings.pop("output_dtype")
-        y_zero_point = encodings.pop("y_zero_point", None)
-
-        if y_zero_point is not None and np.any(np.array(y_zero_point) != 0):
-            raise RuntimeError(
-                f"LPBQ only supports symmetric quantization; got non-zero y_zero_point {y_zero_point}"
-            )
-
-        compressed_bw = self.bitwidth
-        decompressed_bw = self.decompressed_bw
-        y_scale = np.array(encodings.pop("y_scale"))
-        per_block_int_scale, per_channel_scale = lpbq_utils.grouped_dynamic_quantize(
-            y_scale, self._block_grouping(), decompressed_bw - compressed_bw
-        )
         per_channel_scale = per_channel_scale.squeeze(
             tuple(range(1, per_channel_scale.ndim, 2))
         )
-        assert per_block_int_scale.ndim == per_channel_scale.ndim
 
-        return {
-            "per_block_int_scale": per_block_int_scale.astype(np.uint32).tolist(),
-            "per_channel_float_scale": per_channel_scale.tolist(),
-            **encodings,
-            "output_dtype": f"int{compressed_bw}"
-            if output_dtype.startswith("int")
-            else f"uint{compressed_bw}",
-        }
+        return LPBQEncoding(
+            per_channel_float_scale=per_channel_scale,
+            per_block_int_scale=per_block_int_scale,
+            dtype=f"int{compressed_bw}",
+            decompressed_dtype=f"int{decompressed_bw}",
+            channel_axis=self.quant_info.channelAxis,
+            block_axis=self.quant_info.blockAxis,
+            block_size=self.quant_info.blockSize,
+        ).to_qnn_encoding_dict(encoding_version)
 
     def _fill_mismatching_encoding_settings_info(
         self,

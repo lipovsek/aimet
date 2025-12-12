@@ -48,7 +48,6 @@ from aimet_onnx.common import libpymo
 from aimet_onnx.common.defs import (
     QuantScheme,
     MAP_QUANT_SCHEME_TO_PYMO,
-    MAP_ROUND_MODE_TO_PYMO,
     QuantizationDataType,
     EncodingType,
 )
@@ -1846,7 +1845,7 @@ class TestLPBQOp:
         )
         offset = np.ones_like(scale) * -8
         expected_lpbq_scale = np.asarray([[1.6, 1.1, 0.1], [16, 3, 5]], np.float32)
-        expected_per_channel_scale = np.asarray([1.6 / 2**4, 16 / 2**4])
+        expected_per_channel_scale = np.asarray([1.6 / 2**4, 16 / 2**4], np.float32)
         bitwidth = 4
         decompressed_bw = 8
         quant_info = libquant_info.QcQuantizeInfo()
@@ -1925,6 +1924,18 @@ class TestLPBQOp:
 
         with pytest.raises(NotImplementedError):
             lpbq_op.export_encodings("0.6.1")
+
+        expected_per_channel_scale = expected_per_channel_scale.reshape(2, 1)
+        expected_per_block_int_scale = (
+            (expected_lpbq_scale / expected_per_channel_scale).round().astype(np.int32)
+        )
+        assert lpbq_op.export_encodings("2.0.0") == {
+            "output_dtype": "int4",
+            "per_channel_float_scale": expected_per_channel_scale.tolist(),
+            "per_block_int_scale": expected_per_block_int_scale.tolist(),
+            "axis": 1,
+            "block_size": 3,
+        }
 
     def test_compute_lpbq_encodings(self):
         input_shape = (4, 2)

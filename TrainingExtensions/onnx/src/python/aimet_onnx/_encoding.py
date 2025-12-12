@@ -68,8 +68,40 @@ class EncodingBase(ABC):
         return version
 
 
+class _AffineMixin:
+    dtype: str
+
+    @property
+    def signed(self) -> bool:
+        unsigned, _ = self.dtype.split("int")
+        return not bool(unsigned)
+
+    @property
+    def bitwidth(self) -> int:
+        _, bitwidth = self.dtype.split("int")
+        return int(bitwidth)
+
+    @property
+    def qmin(self) -> int:
+        unsigned, bitwidth = self.dtype.split("int")
+
+        if unsigned:
+            return 0
+
+        return -(2 ** (int(bitwidth) - 1))
+
+    @property
+    def qmax(self) -> int:
+        unsigned, bitwidth = self.dtype.split("int")
+
+        if unsigned:
+            return 2 ** int(bitwidth) - 1
+
+        return 2 ** (int(bitwidth) - 1) - 1
+
+
 @dataclass
-class AffineEncoding(EncodingBase):
+class AffineEncoding(EncodingBase, _AffineMixin):
     """
     Represents an affine quantization encoding.
 
@@ -114,7 +146,7 @@ class AffineEncoding(EncodingBase):
                 self.offset = self.offset.squeeze()
             else:
                 raise ValueError(
-                    f"Channel axis must be specified for {self.scale.ndim}-dimensional scale"
+                    f"channel_axis must be specified for {self.scale.ndim}-dimensional scale"
                 )
 
         if (self.block_axis is None) != (self.block_size is None):
@@ -123,12 +155,12 @@ class AffineEncoding(EncodingBase):
             )
 
         if isinstance(self.block_axis, int) and self.scale.ndim < 2:
-            if self.scale.ndim == 0:
-                raise ValueError("Block axis must be None for 0-dimensional scale.")
-            else:
-                raise ValueError(
-                    f"Block axis must be 'auto' or None for {self.scale.ndim}-dimensional scale."
-                )
+            choices = " or ".join(
+                ["None"] if self.scale.ndim == 0 else ["None", "'auto'"]
+            )
+            raise ValueError(
+                f"block_axis must be {choices} for {self.scale.ndim}-dimensional scale."
+            )
 
     def __repr__(self) -> str:
         attributes = [f"  dtype={self.dtype},"]
@@ -184,8 +216,8 @@ class AffineEncoding(EncodingBase):
         return bool(
             self.channel_axis == channel_axis
             and self.block_axis == block_axis
-            and np.all(self.scale == scale)
-            and np.all(self.offset == offset)
+            and np.array_equal(self.scale, scale)
+            and np.array_equal(self.offset, offset)
         )
 
     def to_signed(self) -> AffineEncoding:
@@ -213,34 +245,6 @@ class AffineEncoding(EncodingBase):
             block_axis=self.block_axis,
             block_size=self.block_size,
         )
-
-    @property
-    def signed(self) -> bool:
-        unsigned, _ = self.dtype.split("int")
-        return not bool(unsigned)
-
-    @property
-    def bitwidth(self) -> int:
-        _, bitwidth = self.dtype.split("int")
-        return int(bitwidth)
-
-    @property
-    def qmin(self) -> int:
-        unsigned, bitwidth = self.dtype.split("int")
-
-        if unsigned:
-            return 0
-
-        return -(2 ** (int(bitwidth) - 1))
-
-    @property
-    def qmax(self) -> int:
-        unsigned, bitwidth = self.dtype.split("int")
-
-        if unsigned:
-            return 2 ** int(bitwidth) - 1
-
-        return 2 ** (int(bitwidth) - 1) - 1
 
     @property
     def min(self) -> np.ndarray:
@@ -499,6 +503,249 @@ class AffineEncoding(EncodingBase):
             dtype=encoding_dict["output_dtype"],
             channel_axis=channel_axis,
             block_axis=block_axis,
+            block_size=block_size,
+        )
+
+
+@dataclass
+class LPBQEncoding(EncodingBase, _AffineMixin):
+    per_channel_float_scale: np.ndarray
+    per_block_int_scale: np.ndarray
+    dtype: str
+    channel_axis: int | Literal["auto"]
+    block_axis: int | Literal["auto"]
+    block_size: int
+    decompressed_dtype: str | None = None
+
+    def decompressed_bitwidth(self) -> int:
+        _, bitwidth = self.decompressed_dtype.split("int")
+        return int(bitwidth)
+
+    def __post_init__(self):
+        if not self.signed:
+            raise ValueError("LPBQEncoding only supports signed int. Got {self.dtype}.")
+
+        if not self.decompressed_dtype:
+            self.decompressed_dtype = f"int{self.bitwidth * 2}"
+
+        if not self.decompressed_dtype.startswith("int"):
+            raise ValueError(
+                f"decompressed_dtype must be signed int. Got {self.decompressed_dtype}."
+            )
+
+        if (
+            self.channel_axis is None
+            or self.block_axis is None
+            or self.block_size is None
+        ):
+            raise ValueError(
+                "LPBQEncoding requires channel_axis, block_axis and block_size to be specified; got "
+                f"channel_axis={self.channel_axis}, "
+                f"block_axis={self.block_axis}, "
+                f"block_size={self.block_size}."
+            )
+
+        if self.per_block_int_scale.ndim != self.per_channel_float_scale.ndim:
+            raise ValueError(
+                "per_channel_float_scale and per_block_int_scale "
+                "must have the same number of dimensions; got "
+                f"per_channel_float_scale.ndim={self.per_channel_float_scale.ndim}, "
+                f"per_block_int_scale.ndim={self.per_block_int_scale.ndim}, "
+            )
+
+        if isinstance(self.block_axis, int):
+            if self.per_block_int_scale.ndim < 2:
+                raise ValueError(
+                    "block_axis must be 'auto' for "
+                    f"{self.per_block_int_scale.ndim}-dimensional per_block_int_scale."
+                )
+            # Convert to positive index
+            self.block_axis = (
+                self.per_block_int_scale.ndim + self.block_axis
+            ) % self.per_block_int_scale.ndim
+
+            if not (
+                self.per_channel_float_scale.shape[: self.block_axis]
+                == self.per_block_int_scale.shape[: self.block_axis]
+                and self.per_channel_float_scale.shape[self.block_axis + 1 :]
+                == self.per_block_int_scale.shape[self.block_axis + 1 :]
+            ):
+                raise ValueError(
+                    "per_channel_float_scale and per_block_int_scale shapes are incompatible; got "
+                    f"per_channel_float_scale.shape={self.per_channel_float_scale.shape}, "
+                    f"per_block_int_scale.shape={self.per_block_int_scale.shape}, "
+                )
+
+    def __repr__(self) -> str:
+        return "\n".join(
+            [
+                "LPBQEncoding(",
+                f"  dtype={self.dtype},",
+                f"  channel_axis={self.channel_axis},",
+                f"  block_axis={self.block_axis},",
+                f"  block_size={self.block_size},",
+                f"  per_channel_float_scale={self.per_channel_float_scale},",
+                f"  per_block_int_scale={self.per_block_int_scale},",
+                ")",
+            ]
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, LPBQEncoding):
+            return False
+        return self.is_equal(other, allow_auto_axis=False)
+
+    def is_equal(self, other: LPBQEncoding, allow_auto_axis: bool = False) -> bool:
+        if (
+            self.dtype != other.dtype
+            or self.block_size != other.block_size
+            or self.per_block_int_scale.size != other.per_block_int_scale.size
+            or self.per_channel_float_scale.size != other.per_channel_float_scale.size
+        ):
+            return False
+
+        channel_axis = other.channel_axis
+        block_axis = other.block_axis
+        per_channel_float_scale = other.per_channel_float_scale
+        per_block_int_scale = other.per_block_int_scale
+
+        if allow_auto_axis:
+            if "auto" in (self.channel_axis, other.channel_axis):
+                channel_axis = self.channel_axis
+
+            if "auto" in (self.block_axis, other.block_axis):
+                block_axis = self.block_axis
+
+            per_channel_float_scale = other.per_channel_float_scale.reshape(
+                self.per_channel_float_scale.shape
+            )
+            per_block_int_scale = other.per_block_int_scale.reshape(
+                self.per_block_int_scale.shape
+            )
+
+        return bool(
+            self.channel_axis == channel_axis
+            and self.block_axis == block_axis
+            and np.array_equal(self.per_channel_float_scale, per_channel_float_scale)
+            and np.array_equal(self.per_block_int_scale, per_block_int_scale)
+        )
+
+    def to_qnn_encoding_dict(
+        self, encoding_version: str | None = None
+    ) -> dict[str, Any]:
+        if encoding_version == "1.0.0":
+            return self._to_1_0_0()
+        if encoding_version == "2.0.0":
+            return self._to_2_0_0()
+
+        raise ValueError(
+            f"Unsupported encoding version: {encoding_version}. "
+            "Supported versions are: 1.0.0, 2.0.0."
+        )
+
+    def _should_permute_to_1_0_0_blockwise_ordering(self) -> bool:
+        """
+        For Gemm and MatMul operators where the tensor is ordered (in_channels, out_channels),
+        the 1.0.0 encoding format expects the encodings to be ordered in (out_channels, in_channels) order
+        when blockwise quantization is used.
+
+        This is a short-term fix to handle this until 1.0.0 format is deprecated.
+        """
+        # Note: This is a hacky way of preventing permute for ConvTranspose encodings,
+        # since the quantizer is not aware of the operator type.
+        return (
+            self.per_block_int_scale.ndim == 2
+            and isinstance(self.channel_axis, int)
+            and isinstance(self.block_axis, int)
+            and self.channel_axis > self.block_axis
+        )
+
+    def _to_1_0_0(self) -> dict[str, Any]:
+        per_block_int_scale = self.per_block_int_scale.astype(np.int64)
+
+        if self._should_permute_to_1_0_0_blockwise_ordering():
+            per_block_int_scale = per_block_int_scale.transpose((1, 0))
+
+        offset = -(2 ** (self.decompressed_bitwidth() - 1))
+        return {
+            "dtype": "INT",
+            "enc_type": EncodingType.LPBQ.name,
+            "compressed_bw": self.bitwidth,
+            "bw": self.decompressed_bitwidth(),
+            "is_sym": True,
+            "scale": self.per_channel_float_scale.flatten().tolist(),
+            "per_block_int_scale": per_block_int_scale.flatten().tolist(),
+            "offset": [offset] * self.per_channel_float_scale.size,
+            "block_size": self.block_size,
+        }
+
+    def _to_2_0_0(self) -> dict[str, Any]:
+        if self.decompressed_bitwidth() != self.bitwidth * 2:
+            raise RuntimeError(
+                "LPBQEncoding with decompressed_bitwidth != 2 * bitwidth cannot be "
+                f"exported to 2.0.0 encoding format; got\n{self}"
+            )
+
+        return {
+            "output_dtype": self.dtype,
+            "per_channel_float_scale": self.per_channel_float_scale.tolist(),
+            "per_block_int_scale": self.per_block_int_scale.astype(np.int64).tolist(),
+            "axis": self.block_axis,
+            "block_size": self.block_size,
+        }
+
+    @classmethod
+    def from_qnn_encoding_dict(
+        cls, encoding_dict: list | dict[str, Any]
+    ) -> LPBQEncoding:
+        version = cls._infer_encoding_version(encoding_dict)
+
+        if version == "0.6.1":
+            raise RuntimeError(
+                "LPBQEncoding cannot be created from 0.6.1 encoding format."
+            )
+        elif version == "1.0.0":
+            return cls._from_1_0_0(encoding_dict)
+        else:
+            return cls._from_2_0_0(encoding_dict)
+
+    @classmethod
+    def _from_1_0_0(cls, encoding_dict) -> LPBQEncoding:
+        bitwidth = encoding_dict["compressed_bw"]
+        dtype = f"int{bitwidth}"
+        per_channel_float_scale = np.array(
+            encoding_dict["scale"], dtype=np.float64
+        ).squeeze()
+        per_block_int_scale = np.array(
+            encoding_dict["per_block_int_scale"], dtype=np.int32
+        ).squeeze()
+        block_size = encoding_dict["block_size"]
+
+        return LPBQEncoding(
+            per_channel_float_scale=per_channel_float_scale,
+            per_block_int_scale=per_block_int_scale,
+            dtype=dtype,
+            channel_axis="auto",
+            block_axis="auto",
+            block_size=block_size,
+        )
+
+    @classmethod
+    def _from_2_0_0(cls, encoding_dict) -> LPBQEncoding:
+        per_channel_float_scale = np.array(
+            encoding_dict["per_channel_float_scale"], dtype=np.float64
+        )
+        per_block_int_scale = np.array(
+            encoding_dict["per_block_int_scale"], dtype=np.int64
+        )
+        block_size = encoding_dict["block_size"]
+
+        return LPBQEncoding(
+            per_channel_float_scale=per_channel_float_scale,
+            per_block_int_scale=per_block_int_scale,
+            dtype=encoding_dict["output_dtype"],
+            channel_axis="auto",
+            block_axis=encoding_dict["axis"],
             block_size=block_size,
         )
 

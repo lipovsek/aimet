@@ -3,7 +3,13 @@
 from pytest import approx
 import pytest
 import numpy as np
-from aimet_onnx._encoding import AffineEncoding, FloatEncoding, _float16, _bfloat16
+from aimet_onnx._encoding import (
+    AffineEncoding,
+    LPBQEncoding,
+    FloatEncoding,
+    _float16,
+    _bfloat16,
+)
 
 
 @pytest.mark.parametrize("dtype", ["int8", "uint8"])
@@ -121,6 +127,53 @@ def test_affine_encoding_from_dict(
         # 2.0.0 doesn't specify channel_axis explicitly if block_axis is given
         allow_auto_axis=block_axis != None,
     )
+
+
+@pytest.mark.parametrize("channel_axis, block_axis", [(0, 1), (1, 0)])
+def test_lpbq_encoding_to_dict(channel_axis: int, block_axis: int):
+    per_channel_float_scale = (
+        np.arange(0.01, 0.11, 0.01, dtype=np.float64)
+        .reshape(10, 1)
+        .transpose((channel_axis, block_axis))
+    )
+    per_block_int_scale = np.random.randint(1, 16, (10, 10), dtype=np.int64)
+
+    e = LPBQEncoding(
+        per_channel_float_scale=per_channel_float_scale,
+        per_block_int_scale=per_block_int_scale,
+        dtype="int4",
+        channel_axis=channel_axis,
+        block_axis=block_axis,
+        block_size=32,
+    )
+
+    assert e.to_qnn_encoding_dict("1.0.0") == {
+        "dtype": "INT",
+        "enc_type": "LPBQ",
+        "compressed_bw": 4,
+        "bw": 8,
+        "block_size": 32,
+        "scale": per_channel_float_scale.flatten().tolist(),
+        "per_block_int_scale": per_block_int_scale.transpose((channel_axis, block_axis))
+        .flatten()
+        .tolist(),
+        "offset": [-128] * 10,
+        "is_sym": True,
+    }
+    assert e.to_qnn_encoding_dict("2.0.0") == {
+        "output_dtype": "int4",
+        "per_channel_float_scale": per_channel_float_scale.tolist(),
+        "per_block_int_scale": per_block_int_scale.tolist(),
+        "axis": block_axis,
+        "block_size": 32,
+    }
+
+    # TODO (kyunggeu)
+    # e2 = LPBQEncoding.from_qnn_encoding_dict(e.to_qnn_encoding_dict("1.0.0"))
+    # assert LPBQEncoding.is_equal(e, e2, allow_auto_axis=True)
+
+    e2 = LPBQEncoding.from_qnn_encoding_dict(e.to_qnn_encoding_dict("2.0.0"))
+    assert LPBQEncoding.is_equal(e, e2, allow_auto_axis=True)
 
 
 def test_float_encoding_to_dict():
