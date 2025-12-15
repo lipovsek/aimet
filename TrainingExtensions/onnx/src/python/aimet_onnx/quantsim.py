@@ -1411,7 +1411,7 @@ class QuantizationSimModel:
         encoding_dict = {}
         for name in quantizer_names:
             encoding = self.qc_quantize_op_dict[name].export_encodings(enc_version)
-            if encoding is None:
+            if not encoding:
                 continue
             encoding_dict[name] = encoding
 

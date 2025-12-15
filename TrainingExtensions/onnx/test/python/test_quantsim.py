@@ -548,10 +548,16 @@ class TestQuantSim:
             else:
                 assert enc["enc_type"] == EncodingType.PER_TENSOR.name
 
-    def test_export_model_2_0_0(self, tmp_path: pathlib.Path):
+    @pytest.mark.parametrize("activation_type", [aimet_onnx.int8, aimet_onnx.float16])
+    def test_export_model_2_0_0(self, tmp_path: pathlib.Path, activation_type):
         """Test to export encodings and model in 1.0.0 format"""
         model = build_dummy_model()
-        sim = QuantizationSimModel(model, config_file=get_path_for_per_channel_config())
+        sim = QuantizationSimModel(
+            model,
+            param_type=aimet_onnx.int8,
+            activation_type=activation_type,
+            config_file=get_path_for_per_channel_config(),
+        )
 
         sim.compute_encodings([make_dummy_input(model)])
 
@@ -566,19 +572,29 @@ class TestQuantSim:
         """
         assert encodings["version"] == "2.0.0"
         encodings = encodings["encodings"]
-        assert sorted(e["name"] for e in encodings) == [
-            "4",
-            "5",
-            "6",
-            "conv_w",
-            "fc_w",
-            "input",
-            "output",
-        ]
-        # Exported encoding contains more entry than qc_quantize_op_dict since
+        assert (
+            sorted(e["name"] for e in encodings)
+            == [
+                "4",
+                "5",
+                "6",
+                "conv_w",
+                "fc_w",
+                "input",
+                "output",
+            ]
+            if activation_type == aimet_onnx.int8
+            else [
+                "conv_w",
+                "fc_w",
+            ]
+        )
+        # Exported encoding can contain more entry than qc_quantize_op_dict since
         # some grid-preserving op's input/output encodings are auto-generated
-        assert set(e["name"] for e in encodings) > {
-            name for name, qtzr in sim.qc_quantize_op_dict.items() if qtzr.enabled
+        assert set(e["name"] for e in encodings) >= {
+            name
+            for name, qtzr in sim.qc_quantize_op_dict.items()
+            if qtzr.enabled and qtzr.data_type == QuantizationDataType.int
         }
 
         # Cross-check with onnx QDQ.
