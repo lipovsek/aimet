@@ -203,13 +203,17 @@ jobs:
           key: aimet-cache-${{ runner.os }}-${{ hashFiles('GenAITests/**') }}
           restore-keys: aimet-cache-${{ runner.os }}-
 
+      # Download aimet-torch wheel only when the build succeeded
       - name: Download aimet-torch wheel
+        if: needs.build-aimet-torch-gpu.result == 'success'
         uses: actions/download-artifact@v3
         with:
           name: torch-gpu-wheel
           path: downloads
 
+      # Download aimet-onnx wheel only when the build succeeded
       - name: Download aimet-onnx wheel
+        if: needs.build-aimet-onnx-gpu.result == 'success'
         uses: actions/download-artifact@v3
         with:
           name: onnx-gpu-wheel
