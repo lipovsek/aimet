@@ -394,7 +394,7 @@ class AffineEncoding(EncodingBase, _AffineMixin):
 
         if self.scale.ndim == 0:
             encoding_dict["enc_type"] = EncodingType.PER_TENSOR.name
-        elif self.scale.ndim == 1:
+        elif self.scale.ndim == 1 and not self.block_size:
             encoding_dict["enc_type"] = EncodingType.PER_CHANNEL.name
         else:
             encoding_dict["enc_type"] = EncodingType.PER_BLOCK.name

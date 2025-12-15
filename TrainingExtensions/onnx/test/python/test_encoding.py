@@ -69,7 +69,9 @@ def test_affine_encoding_to_dict(dtype: str):
     [
         (None, None, None),
         (0, None, None),
+        ("auto", None, None),
         (0, 1, 4),
+        ("auto", "auto", 4),
     ],
 )
 @pytest.mark.parametrize("zero_point_shift", [0.0, 0.5])
@@ -110,6 +112,13 @@ def test_affine_encoding_from_dict(
             # e2.channel_axis will be "auto" because 0.6.1 doesn't specify axis explicitly
             allow_auto_axis=not (channel_axis == block_axis == None),
         )
+        assert e.to_qnn_encoding_dict("0.6.1") == [
+            {
+                name: approx(value, rel=1e-6) if isinstance(value, float) else value
+                for name, value in enc.items()
+            }
+            for enc in e2.to_qnn_encoding_dict("0.6.1")
+        ]
 
     e2 = AffineEncoding.from_qnn_encoding_dict(e.to_qnn_encoding_dict("1.0.0"))
     assert AffineEncoding.is_equal(
@@ -118,15 +127,21 @@ def test_affine_encoding_from_dict(
         # e2.channel/block_axis will be "auto" because 1.0.0 doesn't specify axis explicitly
         allow_auto_axis=not (channel_axis == block_axis == None),
     )
+    assert e.to_qnn_encoding_dict("1.0.0") == e2.to_qnn_encoding_dict("1.0.0")
 
-    e2 = AffineEncoding.from_qnn_encoding_dict(e.to_qnn_encoding_dict("2.0.0"))
-    assert AffineEncoding.is_equal(
-        e.to_unsigned(),
-        e2.to_unsigned(),
-        # e2.channel_axis can be "auto" because
-        # 2.0.0 doesn't specify channel_axis explicitly if block_axis is given
-        allow_auto_axis=block_axis != None,
-    )
+    if "auto" in (channel_axis, block_axis):
+        with pytest.raises(RuntimeError):
+            e2 = AffineEncoding.from_qnn_encoding_dict(e.to_qnn_encoding_dict("2.0.0"))
+    else:
+        e2 = AffineEncoding.from_qnn_encoding_dict(e.to_qnn_encoding_dict("2.0.0"))
+        assert AffineEncoding.is_equal(
+            e.to_unsigned(),
+            e2.to_unsigned(),
+            # e2.channel_axis can be "auto" because
+            # 2.0.0 doesn't specify channel_axis explicitly if block_axis is given
+            allow_auto_axis=isinstance(block_axis, int),
+        )
+        assert e.to_qnn_encoding_dict("2.0.0") == e2.to_qnn_encoding_dict("2.0.0")
 
 
 @pytest.mark.parametrize("channel_axis, block_axis", [(0, 1), (1, 0)])
