@@ -564,6 +564,9 @@ class TestTrainingExtensionElementwiseOps:
             model = Model3(aimet_modules.Cast(dtype))
             inputs = torch.rand((5, 10, 10, 20))
 
+            # Should be created without error
+            _ = v2.QuantizationSimModel(model, inputs)
+
             custom_module_out = model(inputs)
             original_module_out = inputs.to(dtype)
             assert np.allclose(custom_module_out, original_module_out)

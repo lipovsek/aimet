@@ -365,7 +365,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
 
             if isinstance(module, Cast):
                 (inp,) = inputs
-                (out,) = outputs
+                out = outputs
                 inout_tensors_dtypes_for_cast_ops[module] = (inp.dtype, out.dtype)
 
         handles = []
