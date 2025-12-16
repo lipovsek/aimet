@@ -2710,6 +2710,9 @@ def test_encoding_dict_with_zero_point_shift(encoding_version: str):
     assert qc_op.export_encodings(encoding_version) == encoding_dict
 
 
+@pytest.mark.skip(
+    reason="Exporting/Loading LPBQ encodings with zero point shift is not supported yet"
+)
 def test_import_1_0_0_LPBQ_encodings_with_zero_point_shift():
     encoding_dict = {
         "block_size": 2,

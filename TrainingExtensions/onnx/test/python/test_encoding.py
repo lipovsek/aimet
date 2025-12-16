@@ -144,8 +144,11 @@ def test_affine_encoding_from_dict(
         assert e.to_qnn_encoding_dict("2.0.0") == e2.to_qnn_encoding_dict("2.0.0")
 
 
+@pytest.mark.parametrize("compressed_bw, decompressed_bw", [(4, 8), (2, 8)])
 @pytest.mark.parametrize("channel_axis, block_axis", [(0, 1), (1, 0)])
-def test_lpbq_encoding_to_dict(channel_axis: int, block_axis: int):
+def test_lpbq_encoding_to_dict(
+    channel_axis: int, block_axis: int, compressed_bw: int, decompressed_bw: int
+):
     per_channel_float_scale = (
         np.arange(0.01, 0.11, 0.01, dtype=np.float64)
         .reshape(10, 1)
@@ -156,17 +159,18 @@ def test_lpbq_encoding_to_dict(channel_axis: int, block_axis: int):
     e = LPBQEncoding(
         per_channel_float_scale=per_channel_float_scale,
         per_block_int_scale=per_block_int_scale,
-        dtype="int4",
+        dtype=f"int{compressed_bw}",
         channel_axis=channel_axis,
         block_axis=block_axis,
         block_size=32,
+        decompressed_dtype=f"int{decompressed_bw}",
     )
 
     assert e.to_qnn_encoding_dict("1.0.0") == {
         "dtype": "INT",
         "enc_type": "LPBQ",
-        "compressed_bw": 4,
-        "bw": 8,
+        "compressed_bw": compressed_bw,
+        "bw": decompressed_bw,
         "block_size": 32,
         "scale": per_channel_float_scale.flatten().tolist(),
         "per_block_int_scale": per_block_int_scale.transpose((channel_axis, block_axis))
@@ -175,17 +179,29 @@ def test_lpbq_encoding_to_dict(channel_axis: int, block_axis: int):
         "offset": [-128] * 10,
         "is_sym": True,
     }
+
+    # 1.0.0 encoding can't be fully reconstructed unless
+    # input_shape, channel_axis, block_axis are provided
+    e2 = LPBQEncoding.from_qnn_encoding_dict(
+        e.to_qnn_encoding_dict("1.0.0"),
+        input_shape=(10, 320) if channel_axis == 0 else (320, 10),
+        default_channel_axis=channel_axis,
+        default_block_axis=block_axis,
+    )
+    assert LPBQEncoding.is_equal(e, e2, allow_auto_axis=True)
+
+    if decompressed_bw != compressed_bw * 2:
+        with pytest.raises(RuntimeError):
+            _ = e.to_qnn_encoding_dict("2.0.0")
+        return
+
     assert e.to_qnn_encoding_dict("2.0.0") == {
-        "output_dtype": "int4",
+        "output_dtype": f"int{compressed_bw}",
         "per_channel_float_scale": per_channel_float_scale.tolist(),
         "per_block_int_scale": per_block_int_scale.tolist(),
         "axis": block_axis,
         "block_size": 32,
     }
-
-    # TODO (kyunggeu)
-    # e2 = LPBQEncoding.from_qnn_encoding_dict(e.to_qnn_encoding_dict("1.0.0"))
-    # assert LPBQEncoding.is_equal(e, e2, allow_auto_axis=True)
 
     e2 = LPBQEncoding.from_qnn_encoding_dict(e.to_qnn_encoding_dict("2.0.0"))
     assert LPBQEncoding.is_equal(e, e2, allow_auto_axis=True)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import math
 import numpy as np
 from typing import Any, Literal, TypeVar, Type, TYPE_CHECKING
 from aimet_onnx.common.defs import EncodingType, QuantizationDataType
@@ -128,40 +129,7 @@ class EncodingBase(ABC):
         return subcls.from_quantizer(qtzr)
 
 
-class _AffineMixin:
-    dtype: str
-
-    @property
-    def signed(self) -> bool:
-        unsigned, _ = self.dtype.split("int")
-        return not bool(unsigned)
-
-    @property
-    def bitwidth(self) -> int:
-        _, bitwidth = self.dtype.split("int")
-        return int(bitwidth)
-
-    @property
-    def qmin(self) -> int:
-        unsigned, bitwidth = self.dtype.split("int")
-
-        if unsigned:
-            return 0
-
-        return -(2 ** (int(bitwidth) - 1))
-
-    @property
-    def qmax(self) -> int:
-        unsigned, bitwidth = self.dtype.split("int")
-
-        if unsigned:
-            return 2 ** int(bitwidth) - 1
-
-        return 2 ** (int(bitwidth) - 1) - 1
-
-
-@dataclass
-class AffineEncoding(EncodingBase, _AffineMixin):
+class AffineEncoding(EncodingBase):
     """
     Represents an affine quantization encoding.
 
@@ -177,14 +145,27 @@ class AffineEncoding(EncodingBase, _AffineMixin):
       x_q = (x / scale - offset).round().clamp(qmin, qmax)
     """
 
-    scale: np.ndarray
-    offset: np.ndarray
     dtype: str
     channel_axis: int | Literal["auto"] | None = None
     block_axis: int | Literal["auto"] | None = None
     block_size: int | None = None
 
-    def __post_init__(self):
+    def __init__(
+        self,
+        scale: np.ndarray,
+        offset: np.ndarray,
+        dtype: str,
+        channel_axis: int | Literal["auto"] | None = None,
+        block_axis: int | Literal["auto"] | None = None,
+        block_size: int | None = None,
+    ):
+        self.scale = scale
+        self.offset = offset
+        self.dtype = dtype
+        self.channel_axis = channel_axis
+        self.block_axis = block_axis
+        self.block_size = block_size
+
         if not isinstance(self.scale, np.ndarray):
             self.scale = np.array(self.scale, dtype=np.float64)
 
@@ -305,6 +286,34 @@ class AffineEncoding(EncodingBase, _AffineMixin):
             block_axis=self.block_axis,
             block_size=self.block_size,
         )
+
+    @property
+    def signed(self) -> bool:
+        unsigned, _ = self.dtype.split("int")
+        return not bool(unsigned)
+
+    @property
+    def bitwidth(self) -> int:
+        _, bitwidth = self.dtype.split("int")
+        return int(bitwidth)
+
+    @property
+    def qmin(self) -> int:
+        unsigned, bitwidth = self.dtype.split("int")
+
+        if unsigned:
+            return 0
+
+        return -(2 ** (int(bitwidth) - 1))
+
+    @property
+    def qmax(self) -> int:
+        unsigned, bitwidth = self.dtype.split("int")
+
+        if unsigned:
+            return 2 ** int(bitwidth) - 1
+
+        return 2 ** (int(bitwidth) - 1) - 1
 
     @property
     def min(self) -> np.ndarray:
@@ -738,6 +747,7 @@ class AffineEncoding(EncodingBase, _AffineMixin):
                 "Value of zero-point-shift must be the same for all encodings"
             )
 
+        qtzr.bitwidth = self.bitwidth
         qtzr.use_symmetric_encodings = self.signed
         qtzr.use_strict_symmetric = self.signed and bool(np.all(self.offset == 1))
         qtzr.use_unsigned_symmetric = self.signed and bool(
@@ -748,31 +758,38 @@ class AffineEncoding(EncodingBase, _AffineMixin):
         qtzr.op_mode = libpymo.TensorQuantizerOpMode.quantizeDequantize
 
 
-@dataclass
-class LPBQEncoding(EncodingBase, _AffineMixin):
+class LPBQEncoding(AffineEncoding):
     per_channel_float_scale: np.ndarray
     per_block_int_scale: np.ndarray
     dtype: str
     channel_axis: int | Literal["auto"]
     block_axis: int | Literal["auto"]
     block_size: int
-    decompressed_dtype: str | None = None
+    decompressed_dtype: str
 
     def decompressed_bitwidth(self) -> int:
         _, bitwidth = self.decompressed_dtype.split("int")
         return int(bitwidth)
 
-    def __post_init__(self):
-        if not self.signed:
-            raise ValueError("LPBQEncoding only supports signed int. Got {self.dtype}.")
-
-        if not self.decompressed_dtype:
-            self.decompressed_dtype = f"int{self.bitwidth * 2}"
-
-        if not self.decompressed_dtype.startswith("int"):
-            raise ValueError(
-                f"decompressed_dtype must be signed int. Got {self.decompressed_dtype}."
-            )
+    def __init__(  # pylint: disable=super-init-not-called
+        self,
+        per_channel_float_scale: np.ndarray,
+        per_block_int_scale: np.ndarray,
+        dtype: str,
+        channel_axis: int | Literal["auto"] | None,
+        block_axis: int | Literal["auto"] | None,
+        block_size: int | None,
+        decompressed_dtype: str | None = None,
+    ):
+        self.per_channel_float_scale = per_channel_float_scale
+        self.per_block_int_scale = per_block_int_scale
+        self.dtype = dtype
+        self.channel_axis = channel_axis
+        self.block_axis = block_axis
+        self.block_size = block_size
+        self.decompressed_dtype = decompressed_dtype or (
+            f"int{self.bitwidth * 2}" if self.signed else f"uint{self.bitwidth * 2}"
+        )
 
         if (
             self.channel_axis is None
@@ -822,6 +839,7 @@ class LPBQEncoding(EncodingBase, _AffineMixin):
             [
                 "LPBQEncoding(",
                 f"  dtype={self.dtype},",
+                f"  decompressed_dtype={self.decompressed_dtype},",
                 f"  channel_axis={self.channel_axis},",
                 f"  block_axis={self.block_axis},",
                 f"  block_size={self.block_size},",
@@ -969,6 +987,8 @@ class LPBQEncoding(EncodingBase, _AffineMixin):
     ) -> LPBQEncoding:
         bitwidth = encoding_dict["compressed_bw"]
         dtype = f"int{bitwidth}"
+        decompressed_bw = encoding_dict["bw"]
+        decompressed_dtype = f"int{decompressed_bw}"
         per_channel_float_scale = np.array(encoding_dict["scale"], dtype=np.float64)
         per_block_int_scale = np.array(
             encoding_dict["per_block_int_scale"], dtype=np.int32
@@ -1003,14 +1023,31 @@ class LPBQEncoding(EncodingBase, _AffineMixin):
                 ]
             )
 
-        return LPBQEncoding(
+        encoding = LPBQEncoding(
             per_channel_float_scale=per_channel_float_scale,
             per_block_int_scale=per_block_int_scale,
             dtype=dtype,
             channel_axis=channel_axis,
             block_axis=block_axis,
             block_size=block_size,
+            decompressed_dtype=decompressed_dtype,
         )
+
+        if encoding._should_permute_to_1_0_0_blockwise_ordering():
+            # Reverse the temporary permutation done during export to 1.0.0 format
+            encoding = LPBQEncoding(
+                per_channel_float_scale=per_channel_float_scale,
+                per_block_int_scale=per_block_int_scale.reshape(
+                    *reversed(encoding.per_block_int_scale.shape)
+                ).transpose((1, 0)),
+                dtype=dtype,
+                channel_axis=channel_axis,
+                block_axis=block_axis,
+                block_size=block_size,
+                decompressed_dtype=decompressed_dtype,
+            )
+
+        return encoding
 
     @classmethod
     def _from_2_0_0(
@@ -1091,7 +1128,69 @@ class LPBQEncoding(EncodingBase, _AffineMixin):
         """
         Load encoding to QcQuantizeOp object
         """
-        raise NotImplementedError
+        from aimet_onnx.qc_quantize_op import GroupedBlockQuantizeDequantize
+
+        if not isinstance(qtzr, GroupedBlockQuantizeDequantize):
+            raise RuntimeError(
+                "LPBQEncoding can only be loaded to GroupedBlockQuantizeDequantize quantizer."
+            )
+
+        if qtzr.tensor_quantizer_params is None:
+            raise RuntimeError(
+                "QcQuantizeOp.tensor_quantizer_params is None; cannot set "
+                "channel/block quantization."
+            )
+
+        qtzr.decompressed_bw = self.decompressed_bitwidth()
+        return super().load_to(qtzr)
+
+    @property
+    def scale(self) -> np.ndarray:
+        """
+        Get the effective scale of the LPBQEncoding.
+        """
+        try:
+            return self.per_block_int_scale * self.per_channel_float_scale
+        except ValueError as e:
+            raise ValueError(
+                "Failed to compute combined scale from per_channel_float_scale and "
+                "per_block_int_scale due to incompatible shapes; got "
+                f"per_channel_float_scale.shape={self.per_channel_float_scale.shape}, "
+                f"per_block_int_scale.shape={self.per_block_int_scale.shape}. "
+            ) from e
+
+    @property
+    def offset(self) -> np.ndarray:
+        centroid = math.ceil((self.qmax + self.qmin) / 2)
+        return np.full(self.per_block_int_scale.shape, -centroid, dtype=np.float64)
+
+    def to_signed(self) -> AffineEncoding:
+        if self.signed:
+            return self
+
+        return LPBQEncoding(
+            per_channel_float_scale=self.per_channel_float_scale,
+            per_block_int_scale=self.per_block_int_scale,
+            dtype=f"int{self.bitwidth}",
+            channel_axis=self.channel_axis,
+            block_axis=self.block_axis,
+            block_size=self.block_size,
+            decompressed_dtype=f"int{self.decompressed_bitwidth()}",
+        )
+
+    def to_unsigned(self) -> LPBQEncoding:
+        if not self.signed:
+            return self
+
+        return LPBQEncoding(
+            per_channel_float_scale=self.per_channel_float_scale,
+            per_block_int_scale=self.per_block_int_scale,
+            dtype=f"uint{self.bitwidth}",
+            channel_axis=self.channel_axis,
+            block_axis=self.block_axis,
+            block_size=self.block_size,
+            decompressed_dtype=f"uint{self.decompressed_bitwidth()}",
+        )
 
 
 @dataclass(frozen=True)
