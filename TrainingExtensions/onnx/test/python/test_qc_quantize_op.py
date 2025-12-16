@@ -60,6 +60,7 @@ from aimet_onnx.qc_quantize_op import (
 from aimet_onnx.common import libquant_info
 from aimet_onnx.common.quantsim import calculate_delta_offset
 from aimet_onnx import lpbq_utils
+from aimet_onnx._encoding import AffineEncoding
 
 
 FLOAT32_MIN = np.finfo(np.float32).min
@@ -2655,25 +2656,16 @@ def test_load_encodings_with_zero_point_shift():
     assert np.all(qdq_tensor == exp_qdq_tensor)
 
 
-def test_import_1_0_0_encoding_dict_with_zero_point_shift():
-    encoding_dict = {
-        "bw": 2,
-        "dtype": "INT",
-        "enc_type": "PER_CHANNEL",
-        "is_sym": True,
-        "offset": [
-            -2,
-            -2,
-        ],
-        "scale": [
-            0.25,
-            0.5,
-        ],
-        "zero_point_shift": [
-            0.5,
-            0.5,
-        ],
-    }
+@pytest.mark.parametrize("encoding_version", ["1.0.0", "2.0.0"])
+def test_encoding_dict_with_zero_point_shift(encoding_version: str):
+    encoding = AffineEncoding(
+        scale=np.array([0.25, 0.5]),
+        offset=np.array([0.5, 0.5]),
+        dtype="int2",
+        channel_axis=0,
+    )
+    encoding_dict = encoding.to_qnn_encoding_dict(encoding_version)
+
     input_shape = (2, 1)
     quant_info = libquant_info.QcQuantizeInfo()
     tensor_quantizer_params = TensorQuantizerParams(input_shape, 0)
@@ -2694,41 +2686,28 @@ def test_import_1_0_0_encoding_dict_with_zero_point_shift():
     """
     qc_op._load_encodings_dict(encoding_dict)
     assert qc_op._tensor_quantizer.getZeroPointShift() == 0.5
-    for i, enc in enumerate(qc_op.get_encodings()):
-        assert enc.min == encoding_dict["scale"][i] * -1.5
-        assert enc.max == encoding_dict["scale"][i] * 1.5
-        assert enc.delta == encoding_dict["scale"][i]
-        assert enc.offset == -1.5
-
-    """
-    When: Try to export encodings with zeroPointShift
-    Then: Raise NotImplementedError
-    """
-    with pytest.raises(NotImplementedError):
-        qc_op.export_encodings("1.0.0")
+    assert AffineEncoding.from_quantizer(qc_op) == encoding
+    assert qc_op.export_encodings(encoding_version) == encoding_dict
 
     """
     When: Try to import encodings with inconsistent zero_point_shift
     Then: Raise error
     """
-    encoding_dict["zero_point_shift"][-1] = 0.75
+    encoding.offset[-1] = 0.75
     with pytest.raises(RuntimeError):
-        qc_op._load_encodings_dict(encoding_dict)
+        qc_op._load_encodings_dict(encoding.to_qnn_encoding_dict(encoding_version))
 
     """
     When: Loading encoding dict with no zero point shift
     Then: 1) Stored encodings contain integer offset
           2) quantizer.zeroPointShift should be 0.0
     """
-    encoding_dict.pop("zero_point_shift")
+    encoding.offset[:] = 0.0
+    encoding_dict = encoding.to_qnn_encoding_dict(encoding_version)
     qc_op._load_encodings_dict(encoding_dict)
     assert qc_op._tensor_quantizer.getZeroPointShift() == 0.0
-
-    for i, enc in enumerate(qc_op.get_encodings()):
-        assert enc.min == encoding_dict["scale"][i] * -2
-        assert enc.max == encoding_dict["scale"][i] * 1
-        assert enc.delta == encoding_dict["scale"][i]
-        assert enc.offset == -2
+    assert AffineEncoding.from_quantizer(qc_op) == encoding
+    assert qc_op.export_encodings(encoding_version) == encoding_dict
 
 
 def test_import_1_0_0_LPBQ_encodings_with_zero_point_shift():

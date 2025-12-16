@@ -632,11 +632,6 @@ class QcQuantizeOp:
 
         :param encoding_version: Version string indicated the encoding export format.
         """
-        if self._tensor_quantizer.getZeroPointShift() != 0.0:
-            raise NotImplementedError(
-                "Exporting encodings with shifted zero point is not supported"
-            )
-
         e = EncodingBase.from_quantizer(self)
 
         if e:
@@ -879,6 +874,19 @@ class GroupedBlockQuantizeDequantize(QcQuantizeOp):
         self.decompressed_bw = decompressed_bw
         self._enable_blockwise_quantization(block_size)
         self.data_type = QuantizationDataType.int
+
+    def export_encodings(self, encoding_version: str = "0.6.1"):
+        """
+        Exports the quantizer's encodings in the selected format.
+
+        :param encoding_version: Version string indicated the encoding export format.
+        """
+        if self._tensor_quantizer.getZeroPointShift() != 0.0:
+            raise NotImplementedError(
+                "Exporting encodings with shifted zero point is not supported"
+            )
+
+        return super().export_encodings(encoding_version)
 
     def _get_per_channel_scale(self) -> Optional[np.ndarray]:
         scale = self._get_scale()
