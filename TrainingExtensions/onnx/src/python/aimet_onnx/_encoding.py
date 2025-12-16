@@ -37,12 +37,27 @@ class EncodingBase(ABC):
     def from_qnn_encoding_dict(
         cls: Type[T],
         encoding_dict: list | dict[str, Any],
+        input_shape: tuple[int, ...] | None = None,
+        default_channel_axis: int | None = None,
+        default_block_axis: int | None = None,
     ) -> T:
         """
         Create EncodingBase object from QNN encoding dict format.
 
         Args:
             encoding_dict: QNN encoding dict
+            input_shape (optional):
+                Input shape of the tensor being quantized.
+                Used to infer encoding shape for blockwise quantization.
+                Only required for 1.0.0 BQ encoding; ignored in all other cases
+            default_channel_axis (optional):
+                Default channel axis to use if channel axis isn't specified in encoding_dict.
+                Required for 1.0.0 BQ encoding;
+                optional but recommended for 2.0.0 BQ encoding;
+                ignored in all other cases
+            default_block_axis (optional):
+                Default block axis to use if block axis isn't specified in encoding_dict.
+                Only required for 1.0.0 BQ encoding; ignored in all other cases
         """
         version = cls._infer_encoding_version(encoding_dict)
 
@@ -51,17 +66,32 @@ class EncodingBase(ABC):
                 AffineEncoding if encoding_dict[0]["dtype"] == "int" else FloatEncoding
             )
         elif version == "1.0.0":
-            subcls = (
-                AffineEncoding if encoding_dict["dtype"] == "INT" else FloatEncoding
-            )
+            if encoding_dict["enc_type"] == EncodingType.LPBQ.name:
+                subcls = LPBQEncoding
+            elif encoding_dict["dtype"] == "INT":
+                subcls = AffineEncoding
+            else:
+                subcls = FloatEncoding
         else:
-            subcls = (
-                AffineEncoding
-                if "int" in encoding_dict["output_dtype"]
-                else FloatEncoding
-            )
+            if "per_block_int_scale" in encoding_dict:
+                subcls = LPBQEncoding
+            elif "int" in encoding_dict["output_dtype"]:
+                subcls = AffineEncoding
+            else:
+                subcls = FloatEncoding
 
-        return subcls.from_qnn_encoding_dict(encoding_dict)
+        return subcls.from_qnn_encoding_dict(
+            encoding_dict,
+            input_shape=input_shape,
+            default_channel_axis=default_channel_axis,
+            default_block_axis=default_block_axis,
+        )
+
+    @abstractmethod
+    def load_to(self, qtzr: QcQuantizeOp) -> None:
+        """
+        Load encoding to QcQuantizeOp object
+        """
 
     @classmethod
     def _infer_encoding_version(cls, encoding_dict: list | dict[str, Any]) -> str:
@@ -156,10 +186,10 @@ class AffineEncoding(EncodingBase, _AffineMixin):
 
     def __post_init__(self):
         if not isinstance(self.scale, np.ndarray):
-            self.scale = np.array(self.scale, dtype=np.float32)
+            self.scale = np.array(self.scale, dtype=np.float64)
 
         if not isinstance(self.offset, np.ndarray):
-            self.offset = np.array(self.offset, dtype=np.float32)
+            self.offset = np.array(self.offset, dtype=np.float64)
 
         if self.scale.shape != self.offset.shape:
             raise ValueError(
@@ -292,7 +322,7 @@ class AffineEncoding(EncodingBase, _AffineMixin):
 
     def to_TfEncoding(self) -> list[libpymo.TfEncoding]:
         """
-        Convert EncodingBase object to list of TfEncoding objects.
+        Convert AffineEncoding object to list of TfEncoding objects.
         """
         tf_encodings = []
         bitwidth = self.bitwidth
@@ -447,16 +477,30 @@ class AffineEncoding(EncodingBase, _AffineMixin):
 
     @classmethod
     def from_qnn_encoding_dict(
-        cls, encoding_dict: list | dict[str, Any]
+        cls,
+        encoding_dict: list | dict[str, Any],
+        input_shape: tuple[int, ...] | None = None,
+        default_channel_axis: int | None = None,
+        default_block_axis: int | None = None,
     ) -> AffineEncoding:
         version = cls._infer_encoding_version(encoding_dict)
 
         if version == "0.6.1":
             return cls._from_0_6_1(encoding_dict)
         if version == "1.0.0":
-            return cls._from_1_0_0(encoding_dict)
+            return cls._from_1_0_0(
+                encoding_dict,
+                input_shape=input_shape,
+                default_channel_axis=default_channel_axis,
+                default_block_axis=default_block_axis,
+            )
         else:
-            return cls._from_2_0_0(encoding_dict)
+            return cls._from_2_0_0(
+                encoding_dict,
+                input_shape=input_shape,
+                default_channel_axis=default_channel_axis,
+                default_block_axis=default_block_axis,
+            )
 
     @classmethod
     def _from_0_6_1(cls, encoding_dict) -> AffineEncoding:
@@ -466,11 +510,11 @@ class AffineEncoding(EncodingBase, _AffineMixin):
 
         scale = np.array(
             [enc["scale"] for enc in encoding_dict],
-            dtype=np.float32,
+            dtype=np.float64,
         ).squeeze()
         offset = np.array(
             [enc["offset"] for enc in encoding_dict],
-            dtype=np.float32,
+            dtype=np.float64,
         ).squeeze()
 
         if signed:
@@ -490,33 +534,65 @@ class AffineEncoding(EncodingBase, _AffineMixin):
         )
 
     @classmethod
-    def _from_1_0_0(cls, encoding_dict) -> AffineEncoding:
+    def _from_1_0_0(
+        cls,
+        encoding_dict,
+        input_shape: tuple[int, ...] | None = None,
+        default_channel_axis: int | None = None,
+        default_block_axis: int | None = None,
+    ) -> AffineEncoding:
         bitwidth = encoding_dict["bw"]
         signed = encoding_dict["is_sym"]
         dtype = f"int{bitwidth}" if signed else f"uint{bitwidth}"
-        scale = np.array(encoding_dict["scale"], dtype=np.float32)
+        scale = np.array(encoding_dict["scale"], dtype=np.float64)
         offset = np.array(encoding_dict["offset"], dtype=np.float64)
         zero_point_shift = encoding_dict.get("zero_point_shift", 0.0)
         offset += zero_point_shift
+
+        encoding_shape = scale.shape
 
         if encoding_dict["enc_type"] == EncodingType.PER_TENSOR.name:
             channel_axis = None
             block_axis = None
             block_size = None
+            encoding_shape = []
         elif encoding_dict["enc_type"] == EncodingType.PER_CHANNEL.name:
-            channel_axis = "auto"
+            channel_axis = (
+                "auto" if default_channel_axis is None else default_channel_axis
+            )
             block_axis = None
             block_size = None
+            encoding_shape = [scale.size]
         elif encoding_dict["enc_type"] == EncodingType.PER_BLOCK.name:
-            channel_axis = "auto"
-            block_axis = "auto"
+            channel_axis = (
+                "auto" if default_channel_axis is None else default_channel_axis
+            )
+            block_axis = "auto" if default_block_axis is None else default_block_axis
             block_size = encoding_dict["block_size"]
+
+            if (
+                input_shape is not None
+                and isinstance(channel_axis, int)
+                and isinstance(block_axis, int)
+            ):
+                # Convert to positive index
+                channel_axis = (len(input_shape) + channel_axis) % len(input_shape)
+                block_axis = (len(input_shape) + block_axis) % len(input_shape)
+
+                encoding_shape = [
+                    dim
+                    if axis == channel_axis
+                    else dim // block_size
+                    if axis == block_axis and block_size
+                    else 1
+                    for axis, dim in enumerate(input_shape)
+                ]
         else:
             raise RuntimeError(f"Unsupported enc_type: {encoding_dict['enc_type']}")
 
         encoding = AffineEncoding(
-            scale=scale,
-            offset=offset,
+            scale=scale.reshape(encoding_shape),
+            offset=offset.reshape(encoding_shape),
             dtype=dtype,
             channel_axis=channel_axis,
             block_axis=block_axis,
@@ -525,23 +601,43 @@ class AffineEncoding(EncodingBase, _AffineMixin):
 
         # Legacy behavior is to shift offset by qmin
         encoding.offset -= encoding.qmin
+
+        if encoding._should_permute_to_1_0_0_blockwise_ordering():
+            # Reverse the temporary permutation done during export to 1.0.0 format
+            encoding = AffineEncoding(
+                scale=scale.reshape(*reversed(encoding_shape)).transpose((1, 0)),
+                offset=offset.reshape(*reversed(encoding_shape)).transpose((1, 0)),
+                dtype=dtype,
+                channel_axis=channel_axis,
+                block_axis=block_axis,
+                block_size=block_size,
+            )
+
         return encoding
 
     @classmethod
-    def _from_2_0_0(cls, encoding_dict) -> AffineEncoding:
+    def _from_2_0_0(
+        cls,
+        encoding_dict,
+        input_shape: tuple[int, ...] | None = None,  # pylint: disable=unused-argument
+        default_channel_axis: int | None = None,
+        default_block_axis: int | None = None,  # pylint: disable=unused-argument
+    ) -> AffineEncoding:
         if "per_block_int_scale" in encoding_dict:
             raise NotImplementedError("LPBQ encodings are not supported")
 
-        scale = np.array(encoding_dict["y_scale"], dtype=np.float32)
+        scale = np.array(encoding_dict["y_scale"], dtype=np.float64)
         zp = encoding_dict.get("y_zero_point", None)
 
         if zp is None:
-            offset = np.zeros_like(scale, dtype=np.float32)
+            offset = np.zeros_like(scale, dtype=np.float64)
         else:
-            offset = -np.array(zp, dtype=np.float32)
+            offset = -np.array(zp, dtype=np.float64)
 
         if "block_size" in encoding_dict:
-            channel_axis = "auto"
+            channel_axis = (
+                "auto" if default_channel_axis is None else default_channel_axis
+            )
             block_axis = encoding_dict["axis"]
             block_size = encoding_dict["block_size"]
         else:
@@ -602,6 +698,54 @@ class AffineEncoding(EncodingBase, _AffineMixin):
             block_axis=block_axis,
             block_size=block_size,
         )
+
+    def load_to(self, qtzr: QcQuantizeOp) -> None:
+        """
+        Load encoding to QcQuantizeOp object
+        """
+        if (
+            self.channel_axis is not None or self.block_axis is not None
+        ) and qtzr.tensor_quantizer_params is None:
+            raise RuntimeError(
+                "QcQuantizeOp.tensor_quantizer_params is None; cannot set "
+                "channel/block quantization."
+            )
+
+        if isinstance(self.channel_axis, int):
+            qtzr.tensor_quantizer_params.channel_axis = self.channel_axis
+
+        if isinstance(self.block_axis, int):
+            qtzr.tensor_quantizer_params.block_axis = self.block_axis
+
+        if self.channel_axis is None:
+            qtzr.enable_per_channel_quantization(False)
+        else:
+            qtzr.enable_per_channel_quantization(True)
+
+            if self.block_axis is None:
+                # block_size=0 indicates no block quantization
+                qtzr._enable_blockwise_quantization(block_size=0)  # pylint: disable=protected-access
+            else:
+                if not isinstance(self.block_size, int):
+                    raise RuntimeError(
+                        f"Cannot load encoding with block_size={self.block_size} to QcQuantizeOp."
+                    )
+                qtzr._enable_blockwise_quantization(block_size=self.block_size)  # pylint: disable=protected-access
+
+        zero_point_shift = (self.offset % 1.0).flatten()
+        if len(set(zero_point_shift.tolist())) > 1:
+            raise RuntimeError(
+                "Value of zero-point-shift must be the same for all encodings"
+            )
+
+        qtzr.use_symmetric_encodings = self.signed
+        qtzr.use_strict_symmetric = self.signed and bool(np.all(self.offset == 1))
+        qtzr.use_unsigned_symmetric = self.signed and bool(
+            np.all(self.offset == 2 ** (self.bitwidth - 1))
+        )
+        qtzr.quant_info.tensorQuantizerRef.setEncodings(self.to_TfEncoding())
+        qtzr.quant_info.tensorQuantizerRef.setZeroPointShift(zero_point_shift[0])
+        qtzr.op_mode = libpymo.TensorQuantizerOpMode.quantizeDequantize
 
 
 @dataclass
@@ -793,7 +937,11 @@ class LPBQEncoding(EncodingBase, _AffineMixin):
 
     @classmethod
     def from_qnn_encoding_dict(
-        cls, encoding_dict: list | dict[str, Any]
+        cls,
+        encoding_dict: list | dict[str, Any],
+        input_shape: tuple[int, ...] | None = None,
+        default_channel_axis: int | None = None,
+        default_block_axis: int | None = None,
     ) -> LPBQEncoding:
         version = cls._infer_encoding_version(encoding_dict)
 
@@ -802,33 +950,76 @@ class LPBQEncoding(EncodingBase, _AffineMixin):
                 "LPBQEncoding cannot be created from 0.6.1 encoding format."
             )
         elif version == "1.0.0":
-            return cls._from_1_0_0(encoding_dict)
+            return cls._from_1_0_0(
+                encoding_dict,
+                input_shape=input_shape,
+                default_channel_axis=default_channel_axis,
+                default_block_axis=default_block_axis,
+            )
         else:
             return cls._from_2_0_0(encoding_dict)
 
     @classmethod
-    def _from_1_0_0(cls, encoding_dict) -> LPBQEncoding:
+    def _from_1_0_0(
+        cls,
+        encoding_dict,
+        input_shape: tuple[int, ...] | None = None,
+        default_channel_axis: int | None = None,
+        default_block_axis: int | None = None,
+    ) -> LPBQEncoding:
         bitwidth = encoding_dict["compressed_bw"]
         dtype = f"int{bitwidth}"
-        per_channel_float_scale = np.array(
-            encoding_dict["scale"], dtype=np.float64
-        ).squeeze()
+        per_channel_float_scale = np.array(encoding_dict["scale"], dtype=np.float64)
         per_block_int_scale = np.array(
             encoding_dict["per_block_int_scale"], dtype=np.int32
-        ).squeeze()
+        )
         block_size = encoding_dict["block_size"]
+        channel_axis = "auto"
+        block_axis = "auto"
+
+        if (
+            input_shape is not None
+            and default_channel_axis is not None
+            and default_block_axis is not None
+        ):
+            # Convert to positive index
+            channel_axis = (len(input_shape) + default_channel_axis) % len(input_shape)
+            block_axis = (len(input_shape) + default_block_axis) % len(input_shape)
+
+            per_block_int_scale = per_block_int_scale.reshape(
+                [
+                    dim
+                    if axis == channel_axis
+                    else dim // block_size
+                    if axis == block_axis
+                    else 1
+                    for axis, dim in enumerate(input_shape)
+                ]
+            )
+            per_channel_float_scale = per_channel_float_scale.reshape(
+                [
+                    dim if axis == channel_axis else 1
+                    for axis, dim in enumerate(input_shape)
+                ]
+            )
 
         return LPBQEncoding(
             per_channel_float_scale=per_channel_float_scale,
             per_block_int_scale=per_block_int_scale,
             dtype=dtype,
-            channel_axis="auto",
-            block_axis="auto",
+            channel_axis=channel_axis,
+            block_axis=block_axis,
             block_size=block_size,
         )
 
     @classmethod
-    def _from_2_0_0(cls, encoding_dict) -> LPBQEncoding:
+    def _from_2_0_0(
+        cls,
+        encoding_dict,
+        input_shape: tuple[int, ...] | None = None,  # pylint: disable=unused-argument
+        default_channel_axis: int | None = None,
+        default_block_axis: int | None = None,  # pylint: disable=unused-argument
+    ) -> LPBQEncoding:
         per_channel_float_scale = np.array(
             encoding_dict["per_channel_float_scale"], dtype=np.float64
         )
@@ -836,12 +1027,13 @@ class LPBQEncoding(EncodingBase, _AffineMixin):
             encoding_dict["per_block_int_scale"], dtype=np.int64
         )
         block_size = encoding_dict["block_size"]
+        channel_axis = "auto" if default_channel_axis is None else default_channel_axis
 
         return LPBQEncoding(
             per_channel_float_scale=per_channel_float_scale,
             per_block_int_scale=per_block_int_scale,
             dtype=encoding_dict["output_dtype"],
-            channel_axis="auto",
+            channel_axis=channel_axis,
             block_axis=encoding_dict["axis"],
             block_size=block_size,
         )
@@ -895,6 +1087,12 @@ class LPBQEncoding(EncodingBase, _AffineMixin):
             block_size=block_size,
         )
 
+    def load_to(self, qtzr: QcQuantizeOp) -> None:
+        """
+        Load encoding to QcQuantizeOp object
+        """
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class FloatEncoding(EncodingBase):
@@ -942,7 +1140,11 @@ class FloatEncoding(EncodingBase):
 
     @classmethod
     def from_qnn_encoding_dict(
-        cls, encoding_dict: list | dict[str, Any]
+        cls,
+        encoding_dict: list | dict[str, Any],
+        input_shape: tuple[int, ...] | None = None,
+        default_channel_axis: int | None = None,
+        default_block_axis: int | None = None,
     ) -> FloatEncoding:
         version = cls._infer_encoding_version(encoding_dict)
 
@@ -959,6 +1161,8 @@ class FloatEncoding(EncodingBase):
 
     @classmethod
     def _from_1_0_0(cls, encoding_dict) -> FloatEncoding:
+        encoding_dict = encoding_dict.copy()
+        encoding_dict.pop("name", None)
         if encoding_dict == _float16.to_qnn_encoding_dict("1.0.0"):
             return _float16
         raise RuntimeError
@@ -978,6 +1182,20 @@ class FloatEncoding(EncodingBase):
 
         raise NotImplementedError(
             f"FloatEncoding.from_quantizer only supports float16; got bitwidth={qtzr.bitwidth}."
+        )
+
+    def load_to(self, qtzr: QcQuantizeOp) -> None:
+        """
+        Load encoding to QcQuantizeOp object
+        """
+        if self == _float16:
+            qtzr.data_type = QuantizationDataType.float
+            qtzr.bitwidth = 16
+            qtzr.enabled = True
+            return
+
+        raise NotImplementedError(
+            f"FloatEncoding.load_to only supports float16; got\n{self}"
         )
 
 

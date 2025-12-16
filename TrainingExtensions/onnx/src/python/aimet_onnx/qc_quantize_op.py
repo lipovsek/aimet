@@ -57,7 +57,7 @@ from aimet_onnx.common.quantsim import (
     create_encoding_from_min_max,
 )
 from aimet_onnx import lpbq_utils
-from ._encoding import EncodingBase
+from ._encoding import EncodingBase, LPBQEncoding
 
 
 OpMode = libpymo.TensorQuantizerOpMode
@@ -152,6 +152,9 @@ class QcQuantizeOp:
         """
         Enables per channel quantization for qc_quantize_op
         """
+        if self.quant_info.usePerChannelMode == enable:
+            return
+
         self.quant_info.usePerChannelMode = enable
 
         if enable:
@@ -171,6 +174,10 @@ class QcQuantizeOp:
         tensor_shape = self.tensor_quantizer_params.tensor_shape
         block_axis = self.tensor_quantizer_params.block_axis
         channel_axis = self.tensor_quantizer_params.channel_axis
+
+        if block_size == self.quant_info.blockSize:
+            return
+
         assert channel_axis is not None
         assert block_axis is not None
         assert block_axis != channel_axis
@@ -438,99 +445,40 @@ class QcQuantizeOp:
             self.load_encodings(encoding)
 
     def _load_encodings_dict(self, encoding_dict: dict, allow_overwrite: bool = True):
-        self.bitwidth = encoding_dict["bw"]
-        data_type = (
-            QuantizationDataType.int
-            if encoding_dict["dtype"] == QuantizationDataType.int.name.upper()
-            else QuantizationDataType.float
-        )
-        self.data_type = data_type
-
-        if data_type == QuantizationDataType.float:
-            return
-
-        if encoding_dict["enc_type"] == EncodingType.LPBQ.name:
-            raise AssertionError(
-                f"Loading LPBQ encodings for tensor name {encoding_dict['name']} into a non-LPBQ quantizer"
-                f" is not yet supported. Ensure QuantizationSimModel is set with proper quantizers before "
-                f"loading."
-            )
-        if encoding_dict["enc_type"] == EncodingType.PER_TENSOR.name:
-            self.enable_per_channel_quantization(False)
-        elif encoding_dict["enc_type"] == EncodingType.PER_CHANNEL.name:
-            self.enable_per_channel_quantization()
-        elif encoding_dict["enc_type"] == EncodingType.PER_BLOCK.name:
-            self._enable_blockwise_quantization(encoding_dict["block_size"])
+        if self.tensor_quantizer_params:
+            input_shape = self.tensor_quantizer_params.tensor_shape
+            default_channel_axis = self.tensor_quantizer_params.channel_axis
+            default_block_axis = self.tensor_quantizer_params.block_axis
         else:
-            raise RuntimeError(
-                f"Cannot load encodings for unknown encoding type {encoding_dict['enc_type']}"
-            )
+            input_shape = None
+            default_channel_axis = None
+            default_block_axis = None
 
-        is_symmetric, is_strict_symmetric, is_unsigned_symmetric = (
-            _get_symmetric_properties(encoding_dict)
+        e = EncodingBase.from_qnn_encoding_dict(
+            encoding_dict,
+            input_shape=input_shape,
+            default_channel_axis=default_channel_axis,
+            default_block_axis=default_block_axis,
         )
-        self.use_symmetric_encodings = is_symmetric
-        if self.use_symmetric_encodings:
-            self.use_strict_symmetric = is_strict_symmetric
-        # is_unsigned_symmetric is a special case since the flag could be enabled but the encoding can be signed
-        # if the observed tensor had negative values.
-        # To err on the side of caution, only set self.use_unsigned_symmetric if we know for sure that the encodings
-        # were unsigned.
-        if self.use_symmetric_encodings and is_unsigned_symmetric:
-            self.use_unsigned_symmetric = is_unsigned_symmetric
 
-        libpymo_encodings = []
-        scales = encoding_dict["scale"]
-        offsets = encoding_dict["offset"]
-        zero_point_shift = encoding_dict.get("zero_point_shift")
-        if zero_point_shift:
-            if not len(set(zero_point_shift)) == 1:
-                raise RuntimeError(
-                    "Value of zero-point-shift must be the same for all encodings"
-                )
-            shift = zero_point_shift[0]
-            self._tensor_quantizer.setZeroPointShift(shift)
-            offsets = [offset + shift for offset in offsets]
-        else:
-            self._tensor_quantizer.setZeroPointShift(0.0)
-
-        if (
-            self.quant_info.blockSize > 0
-            and _should_permute_to_1_0_0_blockwise_ordering(
-                self.tensor_quantizer_params
-            )
+        if isinstance(e, LPBQEncoding) and not isinstance(
+            self, GroupedBlockQuantizeDequantize
         ):
-            tensor_shape = self.tensor_quantizer_params.tensor_shape
-            num_channels = tensor_shape[self.quant_info.channelAxis]
-            scales = (
-                np.array(scales)
-                .reshape(num_channels, -1)
-                .transpose((1, 0))
-                .flatten()
-                .tolist()
-            )
-            offsets = (
-                np.array(offsets)
-                .reshape(num_channels, -1)
-                .transpose((1, 0))
-                .flatten()
-                .tolist()
+            name = encoding_dict.get("name", None)
+            if name:
+                msg = (
+                    f"Loading LPBQ encodings for tensor name {name} "
+                    "into a non-LPBQ quantizer is not supported"
+                )
+            else:
+                msg = "Loading LPBQ encodings into a non-LPBQ quantizer"
+
+            raise AssertionError(
+                msg
+                + " Ensure QuantizationSimModel is set with proper quantizers before loading."
             )
 
-        for idx, scale in enumerate(scales):
-            enc = libpymo.TfEncoding()
-            enc.bw = encoding_dict["bw"]
-            enc_min = scale * offsets[idx]
-            enc_max = scale * (2 ** encoding_dict["bw"] - 1 + offsets[idx])
-            enc.delta, enc.max, enc.min, enc.offset = (
-                scale,
-                enc_max,
-                enc_min,
-                offsets[idx],
-            )
-            libpymo_encodings.append(enc)
-
-        self.load_encodings(libpymo_encodings)
+        e.load_to(self)
 
         if not allow_overwrite:
             self.freeze_encodings()
@@ -543,7 +491,6 @@ class QcQuantizeOp:
 
         :param encoding: The list of libpymo.TfEncoding objects to be used by the C++ op
         """
-        assert isinstance(encoding, (list, tuple))
         if self.data_type == QuantizationDataType.float:
             raise RuntimeError(
                 f"{type(self).load_encodings.__qualname__} is not supported for floating-point quantizers."

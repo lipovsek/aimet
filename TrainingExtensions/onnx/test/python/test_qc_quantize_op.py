@@ -1726,6 +1726,12 @@ class TestBlockwiseQuantizeOp:
         encodings = [
             libpymo.TfEncoding() for _ in range(tensor_shape[channel_axis] * 2)
         ]
+        for encoding in encodings:
+            encoding.min = delta * offset
+            encoding.max = delta * (offset + 2**bitwidth - 1)
+            encoding.bw = bitwidth
+            encoding.offset = offset
+            encoding.delta = delta
         qc_quantize_op.load_encodings(encodings)
         exported_encodings = qc_quantize_op.export_encodings("1.0.0")
         assert exported_encodings.keys() == {
@@ -1995,6 +2001,7 @@ class TestLPBQOp:
             op_mode=OpMode.updateStats,
             tensor_quantizer_params=tensor_quantizer_params,
         )
+        lpbq_op.enable_per_channel_quantization()
 
         # Note: computed delta = abs_max / num_positive_steps = abs_max / 7
         input_tensor = np.asarray(
