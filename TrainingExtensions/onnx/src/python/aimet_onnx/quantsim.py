@@ -546,24 +546,25 @@ class QuantizationSimModel:
             ...     onnx.load("model_qdq.onnx"),
             ...     config_file="htp_v81",
             ... )
-            Quant - INFO - Loaded 26 encodings from QuantizeLinear/DequantizeLinear nodes; remaining 37 quantizers yet to be initialized
+            Quant - INFO - Loaded 26 out of 63 encodings from QuantizeLinear/DequantizeLinear nodes
         """
         sim = cls._from_onnx_qdq(model, **kwargs)
 
         loaded = [
             q
             for q in sim.qc_quantize_op_dict.values()
-            if q.enabled and q.is_initialized()
+            if q.enabled
+            and q.data_type == QuantizationDataType.int
+            and q.is_initialized()
         ]
-        remaining = [
+        all_ = [
             q
             for q in sim.qc_quantize_op_dict.values()
-            if q.enabled and not q.is_initialized()
+            if q.enabled and q.data_type == QuantizationDataType.int
         ]
         # pylint: disable=logging-fstring-interpolation
         logger.info(
-            f"Loaded {len(loaded)} encodings from QuantizeLinear/DequantizeLinear nodes; "
-            f"remaining {len(remaining)} quantizers yet to be initialized"
+            f"Loaded {len(loaded)} out of {len(all_)} encodings from QuantizeLinear/DequantizeLinear nodes"
         )
         return sim
 
