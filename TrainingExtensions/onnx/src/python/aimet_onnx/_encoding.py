@@ -231,6 +231,28 @@ class AffineEncoding(EncodingBase):
         return self.is_equal(other, allow_auto_axis=False)
 
     def is_equal(self, other: AffineEncoding, allow_auto_axis: bool = False) -> bool:
+        return self._allclose(
+            other, rtol=0.0, atol=0.0, allow_auto_axis=allow_auto_axis
+        )
+
+    def allclose(
+        self,
+        other: AffineEncoding,
+        rtol: float = 1e-05,
+        atol: float = 1e-08,
+        allow_auto_axis: bool = False,
+    ) -> bool:
+        return self._allclose(
+            other, rtol=rtol, atol=atol, allow_auto_axis=allow_auto_axis
+        )
+
+    def _allclose(
+        self,
+        other: AffineEncoding,
+        rtol: float,
+        atol: float,
+        allow_auto_axis: bool = False,
+    ) -> bool:
         if (
             self.dtype != other.dtype
             or self.block_size != other.block_size
@@ -257,7 +279,7 @@ class AffineEncoding(EncodingBase):
         return bool(
             self.channel_axis == channel_axis
             and self.block_axis == block_axis
-            and np.array_equal(self.scale, scale)
+            and np.allclose(self.scale, scale, rtol=rtol, atol=atol)
             and np.array_equal(self.offset, offset)
         )
 
@@ -784,6 +806,20 @@ class LPBQEncoding(AffineEncoding):
         block_size: int | None,
         decompressed_dtype: str | None = None,
     ):
+        if per_block_int_scale.ndim == 2:
+            if channel_axis == "auto" and isinstance(block_axis, int):
+                channel_axis = (block_axis + 1) % 2
+
+            if block_axis == "auto" and isinstance(channel_axis, int):
+                block_axis = (channel_axis + 1) % 2
+
+            if per_channel_float_scale.ndim == 1:
+                per_channel_float_scale = per_channel_float_scale.reshape(
+                    (per_channel_float_scale.size, 1)
+                    if channel_axis in (0, -2)
+                    else (1, per_channel_float_scale.size)
+                )
+
         self.per_channel_float_scale = per_channel_float_scale
         self.per_block_int_scale = per_block_int_scale
         self.dtype = dtype
@@ -858,6 +894,28 @@ class LPBQEncoding(AffineEncoding):
         return self.is_equal(other, allow_auto_axis=False)
 
     def is_equal(self, other: LPBQEncoding, allow_auto_axis: bool = False) -> bool:
+        return self._allclose(
+            other, rtol=0.0, atol=0.0, allow_auto_axis=allow_auto_axis
+        )
+
+    def allclose(
+        self,
+        other: LPBQEncoding,
+        rtol: float = 1e-05,
+        atol: float = 1e-08,
+        allow_auto_axis: bool = False,
+    ) -> bool:
+        return self._allclose(
+            other, rtol=rtol, atol=atol, allow_auto_axis=allow_auto_axis
+        )
+
+    def _allclose(
+        self,
+        other: LPBQEncoding,
+        rtol: float,
+        atol: float,
+        allow_auto_axis: bool = False,
+    ) -> bool:
         if (
             self.dtype != other.dtype
             or self.block_size != other.block_size
@@ -888,7 +946,12 @@ class LPBQEncoding(AffineEncoding):
         return bool(
             self.channel_axis == channel_axis
             and self.block_axis == block_axis
-            and np.array_equal(self.per_channel_float_scale, per_channel_float_scale)
+            and np.allclose(
+                self.per_channel_float_scale,
+                per_channel_float_scale,
+                rtol=rtol,
+                atol=atol,
+            )
             and np.array_equal(self.per_block_int_scale, per_block_int_scale)
         )
 

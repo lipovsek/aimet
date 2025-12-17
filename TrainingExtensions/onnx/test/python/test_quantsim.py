@@ -91,6 +91,7 @@ import aimet_onnx
 from aimet_onnx.qc_quantize_op import OpMode, GroupedBlockQuantizeDequantize
 from aimet_onnx.utils import make_dummy_input
 from aimet_onnx import int8
+from aimet_onnx._encoding import EncodingBase, AffineEncoding
 from .models import models_for_tests, test_models
 from .models.models_for_tests import (
     batchnorm_model,
@@ -6346,17 +6347,15 @@ def _assert_sim_equal(sim_1: QuantizationSimModel, sim_2: QuantizationSimModel):
         if not qtzr_1.enabled:
             continue
 
-        e1 = qtzr_1.export_encodings("2.0.0")
-        e2 = qtzr_2.export_encodings("2.0.0")
-        assert np.allclose(e1.get("y_scale", 0), e2.get("y_scale", 0))
-        assert np.allclose(
-            e1.get("per_channel_float_scale", 0), e2.get("per_channel_float_scale", 0)
-        )
-        assert e1.get("per_block_int_scale") == e2.get("per_block_int_scale")
-        assert e1.get("y_zero_point") == e2.get("y_zero_point")
-        assert e1.get("output_dtype") == e2.get("output_dtype")
-        assert e1.get("axis") == e2.get("axis")
-        assert e1.get("block_size") == e2.get("block_size")
+        e1 = EncodingBase.from_quantizer(qtzr_1)
+        e2 = EncodingBase.from_quantizer(qtzr_2)
+
+        assert type(e1) == type(e2)
+
+        if isinstance(e1, AffineEncoding) and isinstance(e2, AffineEncoding):
+            e1 = e1.to_unsigned()
+            e2 = e2.to_unsigned()
+            assert e1.allclose(e2)
 
 
 def test_from_onnx_qdq_output_dtype():

@@ -123,7 +123,6 @@ from aimet_onnx.qc_quantize_op import (
     TensorQuantizerParams,
     GroupedBlockQuantizeDequantize,
     _EncodingMismatchInfo,
-    _2_0_0_json_encoding_to_TfEncoding_list,
 )
 from aimet_onnx.quantsim_config.quantsim_config import QuantSimConfigurator
 from aimet_onnx.utils import (
@@ -644,51 +643,13 @@ class QuantizationSimModel:
                 strict=True,
             )
 
-        # Load encodings to sim
-        for enc in encodings.values():
-            qtzr = sim.qc_quantize_op_dict[enc["name"]]
-
-            if enc["name"] in bias_names and enc["output_dtype"] == "int32":
-                qtzr.enabled = False
-                continue
-
-            channel_axis = block_axis = None
-            block_size = enc.get("block_size")
-            if "axis" in enc:
-                if block_size is None:
-                    channel_axis = enc["axis"]
-                else:
-                    param = utils.ParamUtils.get_param_by_name(model, enc["name"])
-                    if not param:
-                        raise RuntimeError(
-                            "Creating QuantizationSimModel from onnx models with "
-                            "blockwise QuantizeLinear/DequantizeLinear is supported "
-                            f"with static 2D weights. Got dynamic input {enc['name']}"
-                        )
-                    if len(param.dims) != 2:
-                        raise RuntimeError(
-                            "Creating QuantizationSimModel from onnx models with "
-                            "blockwise QuantizeLinear/DequantizeLinear is supported "
-                            f"with 2D weights. Got {len(param.dims)}D weight {param.name}"
-                        )
-                    block_axis = enc["axis"]
-                    channel_axis = 0 if block_axis in (1, -1) else 1
-
-            if channel_axis is not None:
-                if not qtzr.tensor_quantizer_params:
-                    raise RuntimeError(
-                        f"Per-channel quantization for tensor {enc['name']} is not supported"
-                    )
-
-                qtzr.tensor_quantizer_params.channel_axis = channel_axis
-                qtzr.enable_per_channel_quantization()
-
-                if block_axis is not None:
-                    qtzr.tensor_quantizer_params.block_axis = block_axis
-                    qtzr._enable_blockwise_quantization(block_size)
-
-            qtzr.load_encodings(_2_0_0_json_encoding_to_TfEncoding_list(enc))
-            qtzr.freeze_encodings()
+        load_encodings_to_sim(
+            sim,
+            {"version": "2.0.0", "encodings": list(encodings.values())},
+            strict=False,
+            allow_overwrite=False,
+            disable_missing_quantizers=False,
+        )
 
         return sim
 
