@@ -1516,6 +1516,11 @@ class QuantizationSimModel:
             if bias is None:
                 continue
 
+            # TODO(hitameht): weight being None indicates that something went wrong during
+            # onnx graph parsing. Need to investigate further.
+            if weight is None:
+                continue
+
             input, *_ = op.inputs
             input_qtzr = self._get_enabled_quantizer(input.name)
 
@@ -1629,10 +1634,20 @@ class QuantizationSimModel:
         weight, bias = self._get_weight_and_bias(op)
         assert bias is not None
 
-        weight_qtzr = self.qc_quantize_op_dict.get(weight.name)
+        if weight is None:
+            weight_qtzr = None
+        else:
+            weight_qtzr = self.qc_quantize_op_dict.get(weight.name)
         input_qtzr = self._get_enabled_quantizer(input.name)
 
-        if not (input_qtzr and input_qtzr.enabled and input_qtzr.is_initialized()):
+        if not (
+            input_qtzr
+            and input_qtzr.enabled
+            and input_qtzr.is_initialized()
+            and weight_qtzr
+            and weight_qtzr.enabled
+            and weight_qtzr.is_initialized()
+        ):
             return self._get_statistical_bias_scale(op)
 
         channel_axis = None
@@ -1732,8 +1747,12 @@ class QuantizationSimModel:
 
                 bias_qtzr = self.qc_quantize_op_dict[bias.name]
 
-                weight_qtzr = self.qc_quantize_op_dict.get(weight.name)
-                encoding_type = weight_qtzr._encoding_type().name
+                if weight is None:
+                    weight_qtzr = None
+                    encoding_type = EncodingType.PER_TENSOR.name
+                else:
+                    weight_qtzr = self.qc_quantize_op_dict[weight.name]
+                    encoding_type = weight_qtzr._encoding_type().name
 
                 if bias_qtzr.data_type == QuantizationDataType.float:
                     # Float16 quantizers are not exported to onnx QDQ graph
