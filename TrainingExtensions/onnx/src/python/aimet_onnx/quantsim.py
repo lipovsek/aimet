@@ -3086,6 +3086,7 @@ def load_encodings_to_sim(
     :param diable_missing_quantizers: If true, quantizers which do not have encodings will be disabled.
     :return: List of EncodingMismatchInfo objects containing quantizer names and mismatched settings
     """
+    # pylint: disable=protected-access
     mismatched_encodings = []
 
     # Load encodings file
@@ -3180,6 +3181,13 @@ def load_encodings_to_sim(
                 f"Encodings were provided for missing quantizers: {missing_quantizers}. "
             )
 
+    bias_names = set(
+        bias.name
+        for op in quant_sim_model.connected_graph.get_all_ops().values()
+        for _, bias in [quant_sim_model._get_weight_and_bias(op)]
+        if bias is not None
+    )
+
     # Second pass through quantizers to set quantizer settings
     for quantizer_name, quantizer in all_quantizers.items():
         e = all_encodings.get(quantizer_name, None)
@@ -3189,8 +3197,14 @@ def load_encodings_to_sim(
                 quantizer.enabled = False
             continue
 
-        # pylint: disable=protected-access
         quantizer._load_encodings_dict(e, allow_overwrite=allow_overwrite)
+
+        if quantizer.bitwidth >= 32 and quantizer_name in bias_names:
+            # Disable bias quantizers with bitwidth >= 32 assuming lossless quantization.
+            # The loaded int32 bias encoding won't be simulated but will be exported
+            # if sim.export or sim.to_onnx_qdq is called with export_int32_bias=True
+            quantizer.enabled = False
+
     return mismatched_encodings
 
 

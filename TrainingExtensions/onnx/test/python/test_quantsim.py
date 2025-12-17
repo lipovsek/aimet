@@ -1268,6 +1268,7 @@ class TestQuantSim:
                 assert qc_op.quant_info.channelAxis == 1
                 assert len(qc_op.get_encodings()) == weight.dims[1]
 
+    @pytest.mark.parametrize("export_int32_bias", [False, True])
     @pytest.mark.parametrize(
         "config_file",
         [
@@ -1275,8 +1276,21 @@ class TestQuantSim:
             "default_config.json",
         ],
     )
-    @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
-    @pytest.mark.parametrize("param_type", [aimet_onnx.int8, aimet_onnx.float16])
+    @pytest.mark.parametrize(
+        "encoding_version",
+        [
+            "0.6.1",
+            "1.0.0",
+            "2.0.0",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "param_type",
+        [
+            aimet_onnx.int8,
+            aimet_onnx.float16,
+        ],
+    )
     @pytest.mark.parametrize(
         "activation_type",
         [
@@ -1291,6 +1305,7 @@ class TestQuantSim:
         activation_type,
         encoding_version: str,
         config_file: str,
+        export_int32_bias: bool,
     ):
         model = single_residual_model().model
         sim = QuantizationSimModel(
@@ -1303,23 +1318,38 @@ class TestQuantSim:
         dummy_tensor = {"input": np.random.rand(1, 3, 32, 32).astype(np.float32)}
 
         sim.compute_encodings((dummy_tensor,))
-        sim.export(tmp_dir, "onnx_sim", encoding_version=encoding_version)
+        sim.export(
+            tmp_dir,
+            "onnx_sim",
+            encoding_version=encoding_version,
+            export_int32_bias=export_int32_bias,
+        )
 
         out2 = sim.session.run(None, dummy_tensor)
 
-        sim = QuantizationSimModel(
+        sim2 = QuantizationSimModel(
             copy.deepcopy(model),
             param_type=param_type,
             activation_type=activation_type,
             config_file=config_file,
         )
         load_encodings_to_sim(
-            sim, os.path.join(tmp_dir, "onnx_sim.encodings"), allow_overwrite=False
+            sim2,
+            os.path.join(tmp_dir, "onnx_sim.encodings"),
+            allow_overwrite=False,
+            strict=not export_int32_bias,
         )
-        sim.compute_encodings([{"input": dummy_tensor["input"] * 2 + 1}])
-        out3 = sim.session.run(None, dummy_tensor)
+        sim2.compute_encodings([{"input": dummy_tensor["input"] * 2 + 1}])
+        out3 = sim2.session.run(None, dummy_tensor)
 
         assert np.allclose(out2, out3, atol=np.finfo(np.float16).eps * 3)
+
+        assert sim.to_onnx_qdq(export_int32_bias=True) == sim2.to_onnx_qdq(
+            export_int32_bias=True
+        )
+        assert sim.to_onnx_qdq(export_int32_bias=False) == sim2.to_onnx_qdq(
+            export_int32_bias=False
+        )
 
     @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
     def test_load_encodings_assertion(self, tmp_dir, encoding_version: str):
