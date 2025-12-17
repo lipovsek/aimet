@@ -55,7 +55,6 @@ from aimet_common.quantsim_config.utils import (
     get_path_for_per_channel_config,
     get_path_for_per_tensor_config,
 )
-from aimet_common import quantsim as quantsim_common
 import aimet_torch.v2 as aimet
 import aimet_torch.v2.quantization as Q
 from aimet_torch.v2.quantsim.quantsim import QuantizationSimModel
@@ -70,6 +69,7 @@ from aimet_torch.utils import get_all_quantizers
 from aimet_torch.v2.utils import remove_activation_quantizers
 from aimet_torch.model_preparer import prepare_model
 from aimet_torch.v2.quantsim.config_utils import (
+    set_blockwise_quantization_for_weights,
     set_grouped_blockwise_quantization_for_weights,
 )
 import aimet_torch
@@ -887,23 +887,11 @@ def test_unsupported_args(kwargs):
 
 def test_non_standard_quantizer():
     """
-    When: Export model with LPBQ quantizer
-    Then: Should throw NotImplementedError
-    """
-    model = torch.nn.Sequential(torch.nn.Linear(16, 16))
-    x = torch.zeros(16, 16)
-    sim = QuantizationSimModel(model, x)
-    set_grouped_blockwise_quantization_for_weights(
-        sim, [sim.model[0]], bitwidth=4, symmetric=True, decompressed_bw=8, block_size=4
-    )
-
-    with pytest.raises(NotImplementedError):
-        aimet_torch.onnx.export(sim.model, x, f=os.devnull, dynamo=False)
-
-    """
     When: Export model with non-standard-bitwidth quantizer
     Then: Should throw RuntimeError
     """
+    model = torch.nn.Sequential(torch.nn.Linear(16, 16))
+    x = torch.zeros(16, 16)
     sim = QuantizationSimModel(model, x)
     sim.model[0].param_quantizers["weight"].bitwidth = 9
 
@@ -1448,3 +1436,54 @@ def test_dynamo_error(tmp_path):
         aimet_torch.onnx.export(
             torch.nn.Linear(3, 3), torch.randn(1, 3), f=tmp_path / "model.onnx"
         )
+
+
+@torch.no_grad()
+@pytest.mark.parametrize("lpbq", [False, True])
+def test_1x1_conv_bq(tmp_path: pathlib.Path, lpbq: bool):
+    """
+    When: Export quantized model with 1x1 conv using aimet_torch.onnx.export
+    Then: The exported onnx model should produce output close enough to
+          the original pytorch model with qdq weights
+    """
+    model = torch.nn.Sequential(
+        torch.nn.Conv2d(in_channels=16, out_channels=8, kernel_size=1, bias=False)
+    )
+    dummy_input = torch.randn(1, 16, 100, 100)
+
+    sim = aimet_torch.QuantizationSimModel(model, dummy_input=dummy_input)
+    if lpbq:
+        set_grouped_blockwise_quantization_for_weights(
+            sim,
+            [torch.nn.Conv2d],
+            bitwidth=4,
+            symmetric=True,
+            decompressed_bw=8,
+            block_size=4,
+        )
+    else:
+        set_blockwise_quantization_for_weights(
+            sim, [torch.nn.Conv2d], bitwidth=4, symmetric=True, block_size=4
+        )
+
+    sim.compute_encodings(lambda model: model(dummy_input))
+    aimet_torch.onnx.export(
+        sim.model,
+        dummy_input,
+        tmp_path / "lpbq_conv1x1.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        opset_version=21,
+    )
+
+    out_sim = sim.model(dummy_input)
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        tmp_path / "lpbq_conv1x1.onnx", sess_options=sess_options
+    )
+    (out_onnx,) = sess.run(None, {"input": dummy_input.numpy()})
+    atol = sim.model[0].output_quantizers[0].get_scale().item()
+
+    assert torch.allclose(torch.from_numpy(out_onnx), out_sim, atol=atol)

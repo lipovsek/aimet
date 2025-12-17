@@ -5700,6 +5700,52 @@ def test_to_onnx_qdq_lpbq(seed: int, prequantize_constants: bool):
     assert np.allclose(out_sim, out_onnx_qdq, atol=atol)
 
 
+@pytest.mark.parametrize("lpbq", [True, False])
+def test_to_onnx_qdq_1x1_conv_bq(tmp_dir, lpbq: bool):
+    """
+    When: Export onnx QDQ model for 1x1 Conv with blockwise quantization for weights
+    Then: Output of the onnx QDQ model should be equal to that of sim.session
+    """
+    model = torch.nn.Sequential(
+        torch.nn.Conv2d(in_channels=16, out_channels=8, kernel_size=1, bias=False)
+    )
+    dummy_input = torch.randn(1, 16, 100, 100)
+    path = os.path.join(tmp_dir, "conv1x1.onnx")
+
+    torch.onnx.export(
+        model,
+        dummy_input,
+        path,
+        input_names=["input"],
+        output_names=["output"],
+    )
+
+    sim = aimet_onnx.QuantizationSimModel(onnx.load(path))
+
+    if lpbq:
+        set_grouped_blockwise_quantization_for_weights(
+            sim, "Conv", bitwidth=4, decompressed_bw=8, block_size=4
+        )
+    else:
+        set_blockwise_quantization_for_weights(
+            sim, "Conv", bitwidth=4, symmetric=True, block_size=4
+        )
+
+    sim.compute_encodings([{"input": dummy_input.numpy()}])
+    onnx_qdq = sim.to_onnx_qdq()
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(onnx_qdq.SerializeToString(), sess_options=sess_options)
+    (out_onnx,) = sess.run(None, {"input": dummy_input.numpy()})
+    (out_sim,) = sim.session.run(None, {"input": dummy_input.numpy()})
+    assert np.allclose(
+        out_onnx,
+        out_sim,
+        atol=sim.qc_quantize_op_dict["output"].get_encodings()[0].delta,
+    )
+
+
 class TestDynamicWeightSymmetryMapping:
     def _assert_uint_activation(self, model: onnx.ModelProto):
         model = onnx.shape_inference.infer_shapes(model)

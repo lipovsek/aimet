@@ -201,17 +201,32 @@ def _add_onnx_qdq_nodes(
             except StopIteration:
                 weight_dims = None
 
-            if weight_dims is not None and len(weight_dims) != 2:
-                raise RuntimeError(
-                    "LPBQ can be only applied to 2D matrices when exported to onnx QDQ. "
-                    f'Got "{input_name}" with shape {weight_dims}'
+            channel_axis = axis - 1  # Assume channel_axis = block_axis - 1 by default
+
+            if weight_dims is not None:
+                # Convert to positive index
+                axis = (axis + len(weight_dims)) % len(weight_dims)
+                channel_axis = (channel_axis + len(weight_dims)) % len(weight_dims)
+
+                non_singleton_axes = tuple(
+                    i for i, dim in enumerate(weight_dims) if dim != 1
                 )
 
-            if axis not in (-2, -1, 0, 1):
-                raise RuntimeError(
-                    "LPBQ can be only applied to 2D matrices when exported to onnx QDQ. "
-                    f"Got axis {axis}"
-                )
+                if len(non_singleton_axes) > 2 or (
+                    len(non_singleton_axes) == 2 and axis not in non_singleton_axes
+                ):
+                    raise RuntimeError(
+                        "When exported to onnx QDQ, LPBQ can be only applied to tensors with "
+                        "at most two non-singleton dimensions, "
+                        "each representing channel and block axes. "
+                        f'Got "{input_name}" with shape {weight_dims} and block axis {axis}'
+                    )
+
+                try:
+                    # The non-singleton axis which isn't block axis (if any) is channel axis
+                    channel_axis = next(i for i in non_singleton_axes if i != axis)
+                except StopIteration:
+                    pass
 
             tensors_to_add.extend(
                 [
@@ -234,7 +249,7 @@ def _add_onnx_qdq_nodes(
                         ],
                         output=f"{input_name}_scale",
                         dtype="uint8",
-                        axis=0 if axis in (-1, 1) else 1,  # == channel axis
+                        axis=channel_axis,
                     )
                 ]
             )

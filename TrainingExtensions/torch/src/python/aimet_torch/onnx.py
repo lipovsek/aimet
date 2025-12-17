@@ -59,7 +59,7 @@ from aimet_torch.common.onnx._utils import (
 from .nn import QuantizationMixin
 from .quantization import DequantizedTensor
 from .quantization.base import EncodingBase
-from .quantization.affine import AffineQuantizerBase, GroupedBlockQuantizeDequantize
+from .quantization.affine import AffineQuantizerBase
 from .quantization.float import FloatQuantizeDequantize
 from .quantsim import QuantizationSimModel
 from .v2.experimental import onnx as _onnx
@@ -338,12 +338,6 @@ def _check_non_standard_quantizer(model: torch.nn.Module):
     for name, qtzr in model.named_modules():
         if not isinstance(qtzr, AffineQuantizerBase):
             continue
-
-        if isinstance(qtzr, GroupedBlockQuantizeDequantize):
-            raise NotImplementedError(
-                "torch.onnx.export doesn't support GroupedBlockQuantizeDequantize (a.k.a LPBQ) yet; "
-                f"got '{name}' of type GroupedBlockQuantizeDequantize"
-            )
 
         if qtzr.bitwidth not in (4, 8, 16, 32):
             raise RuntimeError(
