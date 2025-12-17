@@ -45,15 +45,26 @@ _DEBUG_NUM_PARTIAL_ITERATIONS = None
 
 @dataclass
 class AdaScaleModelConfig:
+    model_type: str
     beta_gamma_lr: float = 1e-3  # lr for beta and gamma
     scales_lr: float = 5e-4  # lr for s2, s3, [s4]
 
 
 # mapping of model type and the corresponding adascale config
 adascale_model_config_dict = {
-    "llama": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
-    "qwen2": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
-    "mistral": AdaScaleModelConfig(beta_gamma_lr=1e-3, scales_lr=5e-4),
+    "llama": AdaScaleModelConfig(
+        model_type="llama", beta_gamma_lr=1e-3, scales_lr=5e-4
+    ),
+    "qwen2": AdaScaleModelConfig(
+        model_type="qwen2", beta_gamma_lr=1e-3, scales_lr=5e-4
+    ),
+    "mistral": AdaScaleModelConfig(
+        model_type="mistral", beta_gamma_lr=1e-3, scales_lr=5e-4
+    ),
+    "qwen3": AdaScaleModelConfig(
+        model_type="qwen3", beta_gamma_lr=1e-3, scales_lr=5e-4
+    ),
+    "phi3": AdaScaleModelConfig(model_type="phi3", beta_gamma_lr=1e-3, scales_lr=5e-4),
 }
 
 
@@ -89,13 +100,13 @@ class AdaScale:
         :param sim: Quantization Sim model
         :param inputs: (Collection[Dict[str, np.ndarray]]): The set of input samples to use during optimization.
         :param adascale_model_config: Adascale model config. There are pre-defined configs for
-                                      LlamaModel, Qwen2Model, MistralModel. For other models use AdaScaleModelConfig
+                                      Llama, Qwen2, Mistral, Qwen3, Phi3. For other models use AdaScaleModelConfig
         :param num_iterations: Number of iterations to optimize for during AdaScale
 
         Example usage:
             >>> model = DummyModel()
             >>> inputs = ...
-            >>> adascale_model_config = adascale_model_config['LlamaModel']
+            >>> adascale_model_config = adascale_model_config['llama']
             >>> sim = QuantizationSimModel(model)
             >>> apply_adascale(sim, inputs, adascale_model_config, num_iterations=num_iterations)
             >>> sim.compute_encodings(...)
@@ -113,7 +124,9 @@ class AdaScale:
             # Compute param encodings
             sim._compute_param_encodings(overwrite=False)
 
-            blocks_end_points = get_decoder_blocks_end_points(sim)
+            blocks_end_points = get_decoder_blocks_end_points(
+                sim, adascale_model_config.model_type
+            )
 
             with tempfile.TemporaryDirectory() as tempdir:
                 fp32_model = copy.deepcopy(sim.model.model)

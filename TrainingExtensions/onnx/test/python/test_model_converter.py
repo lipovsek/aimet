@@ -109,7 +109,7 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
         location="fp_model.data",
     )
     common_inputs = ["attention_mask", "position_ids"]
-    adascale_blocks_end_points = get_decoder_blocks_end_points(sim)
+    adascale_blocks_end_points = get_decoder_blocks_end_points(sim, "qwen2")
     block_inputs = [adascale_blocks_end_points[0][0].inputs[0].name]
 
     model_before_block = os.path.join(CHECKPOINT_DIR, "before_decoder_block.onnx")
@@ -122,7 +122,7 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
     )
     block_input_tensor = before_session.run(block_inputs, inputs[0])
     for block_id, (block_start, block_end) in enumerate(
-        get_decoder_blocks_end_points(sim)
+        get_decoder_blocks_end_points(sim, "qwen2")
     ):
         block_inputs = [block_start.inputs[0].name]
         block_input_names = (

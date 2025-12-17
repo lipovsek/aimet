@@ -6,6 +6,7 @@
 from aimet_onnx.common.connected_graph.operation import Op
 from aimet_onnx.graph_passes.graph_pass import GraphPass
 from aimet_onnx.graph_passes.passes.common_patterns import match_rms_norm_pattern
+
 from aimet_onnx.qc_quantize_op import QcQuantizeOp
 from aimet_onnx.graph_passes.pass_registry import register_pass
 from aimet_onnx.utils import ModelProto
@@ -50,3 +51,29 @@ class DecoderBlock(GraphPass):
         self.pattern_last_op = all_ops[0]
 
         return all_ops
+
+
+@register_pass("DecoderBlockQwen3")
+class DecoderBlockQwen3(DecoderBlock):
+    """
+    Finds end points of Decoder blocks
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.decoder_blocks: List[Tuple[str, str]] = []
+        self.pattern_last_op: Op = None
+        self.block_start_op = None
+        self.intermediate_op = []
+
+    def apply_on_op(self, op: Op, model: ModelProto, _: Dict[str, QcQuantizeOp]):
+        if self.match_pattern(op, model):
+            if not self.block_start_op:
+                self.block_start_op = self.pattern_last_op
+            elif len(self.intermediate_op) < 3:
+                self.intermediate_op.append(self.pattern_last_op)
+            else:
+                self.decoder_blocks.append((self.block_start_op, self.pattern_last_op))
+                self.block_start_op = self.pattern_last_op
+                self.intermediate_op = []
+            self.pattern_last_op = None

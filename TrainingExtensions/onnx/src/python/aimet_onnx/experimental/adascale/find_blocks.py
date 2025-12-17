@@ -7,7 +7,6 @@ from aimet_onnx.graph_passes.pass_registry import PASS_REGISTRY
 from aimet_onnx.quantsim import QuantizationSimModel
 
 OP_TYPES_IN_BLOCKS = ["Conv", "MatMul", "Gemm"]
-PASS_TO_RUN = "DecoderBlock"
 
 
 def get_conv_linear_layers_decoder_block(
@@ -55,11 +54,23 @@ def get_all_layers_per_decoder_block(
     ]
 
 
-def get_decoder_blocks_end_points(quantsim: QuantizationSimModel) -> List[Tuple]:
+def get_decoder_blocks_end_points(
+    quantsim: QuantizationSimModel, model_type
+) -> List[Tuple]:
     """
     Gets end points of the decoder blocks
     :param quantsim: quantization simulator
+    :param model_type: model type: llama, qwen2, mistral, phi3, qwen3
     """
+    if model_type in ["llama", "qwen2", "mistral", "phi3"]:
+        PASS_TO_RUN = "DecoderBlock"
+    elif model_type == "qwen3":
+        PASS_TO_RUN = "DecoderBlockQwen3"
+    else:
+        raise ValueError(
+            f"Unsupported model type: '{model_type}'. Expected one of ['llama', 'qwen2', 'mistral', 'phi3', 'qwen3']."
+        )
+
     if PASS_TO_RUN in PASS_REGISTRY:
         graph_pass_obj = PASS_REGISTRY[PASS_TO_RUN]
         graph_pass_obj(
@@ -81,7 +92,6 @@ def get_position_embedding_names(
     op_name_to_index = {op.name: index for index, op in enumerate(all_ops)}
 
     shared_inputs = set()
-    running_inputs = set()
 
     # Find common inputs to all decoder blocks
     for _, block in enumerate(decoder_blocks_end_points):
