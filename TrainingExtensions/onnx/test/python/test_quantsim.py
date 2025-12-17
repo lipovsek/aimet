@@ -963,14 +963,15 @@ class TestQuantSim:
                 )
                 assert sim_enc != enc if allow_overwrite else sim_enc == enc
 
-    def test_load_partial_encodings_to_sim(self, tmp_dir):
+    @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
+    def test_load_partial_encodings_to_sim(self, tmp_dir, encoding_version: str):
         model = single_residual_model().model
         sim = QuantizationSimModel(copy.deepcopy(model))
         for name in sim.activation_names:
             sim.qc_quantize_op_dict[name].enabled = False
 
         sim.compute_encodings([make_dummy_input(model)])
-        sim.export(tmp_dir, "model")
+        sim.export(tmp_dir, "model", encoding_version=encoding_version)
 
         sim = QuantizationSimModel(copy.deepcopy(model))
         enabled_quantizers = {
@@ -1274,13 +1275,7 @@ class TestQuantSim:
             "default_config.json",
         ],
     )
-    @pytest.mark.parametrize(
-        "encoding_version",
-        [
-            "0.6.1",
-            "1.0.0",
-        ],
-    )
+    @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
     @pytest.mark.parametrize("param_type", [aimet_onnx.int8, aimet_onnx.float16])
     @pytest.mark.parametrize(
         "activation_type",
@@ -1324,9 +1319,10 @@ class TestQuantSim:
         sim.compute_encodings([{"input": dummy_tensor["input"] * 2 + 1}])
         out3 = sim.session.run(None, dummy_tensor)
 
-        assert np.allclose(out2, out3)
+        assert np.allclose(out2, out3, atol=np.finfo(np.float16).eps * 3)
 
-    def test_load_encodings_assertion(self, tmp_dir):
+    @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
+    def test_load_encodings_assertion(self, tmp_dir, encoding_version: str):
         model = single_residual_model().model
 
         sim = QuantizationSimModel(model, config_file=get_path_for_per_channel_config())
@@ -1338,7 +1334,7 @@ class TestQuantSim:
         with aimet_onnx.compute_encodings(sim):
             callback(sim.session, None)
 
-        sim.export(tmp_dir, "onnx_sim")
+        sim.export(tmp_dir, "onnx_sim", encoding_version=encoding_version)
         model = multi_output_model().model
         sim = QuantizationSimModel(model)
         with pytest.raises(AssertionError):
@@ -1346,7 +1342,10 @@ class TestQuantSim:
                 sim, os.path.join(tmp_dir, "onnx_sim.encodings"), strict=False
             )
 
-    def test_load_encodings_with_missing_quantizer(self, tmp_dir):
+    @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
+    def test_load_encodings_with_missing_quantizer(
+        self, tmp_dir, encoding_version: str
+    ):
         model = models_for_tests.conv_relu_model()
         sim = QuantizationSimModel(
             copy.deepcopy(model), providers=["CPUExecutionProvider"], path=tmp_dir
@@ -1358,7 +1357,7 @@ class TestQuantSim:
             name for name, q in sim.qc_quantize_op_dict.items() if q.enabled
         }
         output = sim.session.run(None, dummy_input)
-        sim.export(tmp_dir, "onnx_sim")
+        sim.export(tmp_dir, "onnx_sim", encoding_version=encoding_version)
 
         # Create a new quantsim model
         sim_2 = QuantizationSimModel(
@@ -1373,9 +1372,19 @@ class TestQuantSim:
         sim_2.qc_quantize_op_dict = {}
 
         # Loading encodings with strict=False should re-load all the quantizers
-        load_encodings_to_sim(
-            sim_2, os.path.join(tmp_dir, "onnx_sim.encodings"), strict=False
-        )
+        with (
+            pytest.raises(RuntimeError)
+            if encoding_version
+            == "2.0.0"  # 2.0.0 does not support adding new quantizers
+            else contextlib.nullcontext()
+        ):
+            load_encodings_to_sim(
+                sim_2, os.path.join(tmp_dir, "onnx_sim.encodings"), strict=False
+            )
+
+        if encoding_version == "2.0.0":
+            return
+
         loaded_quantized_tensors = {
             name for name, q in sim_2.qc_quantize_op_dict.items() if q.enabled
         }
@@ -1387,7 +1396,10 @@ class TestQuantSim:
             assert np.all(tensor1 == tensor2)
 
     @pytest.mark.parametrize("strict", [False, True])
-    def test_load_encodings_strict_and_non_strict(self, strict):
+    @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
+    def test_load_encodings_strict_and_non_strict(
+        self, strict: bool, encoding_version: str
+    ):
         torch.random.manual_seed(0)
         np.random.seed(0)
         model = single_residual_model().model
@@ -1446,7 +1458,7 @@ class TestQuantSim:
 
             with aimet_onnx.compute_encodings(sim):
                 callback(sim.session, None)
-            sim.export(tempdir, "onnx_sim")
+            sim.export(tempdir, "onnx_sim", encoding_version=encoding_version)
             out2 = sim.session.run(None, dummy_tensor)
             del sim
 
@@ -1461,14 +1473,20 @@ class TestQuantSim:
                     sim, os.path.join(tempdir, "onnx_sim.encodings"), strict=strict
                 )
                 out3 = sim.session.run(None, dummy_tensor)
-                sim.export(tempdir, "loaded_onnx_sim")
+                sim.export(
+                    tempdir, "loaded_onnx_sim", encoding_version=encoding_version
+                )
 
                 assert sim.get_qc_quantize_op()[act_1].enabled
                 assert not sim.get_qc_quantize_op()[act_2].enabled
-                assert (
-                    sim.get_qc_quantize_op()[act_3].data_type
-                    == QuantizationDataType.float
-                )
+
+                if encoding_version in ("0.6.1", "1.0.0"):
+                    # 2.0.0 encoding does not have float16 encodings
+                    assert (
+                        sim.get_qc_quantize_op()[act_3].data_type
+                        == QuantizationDataType.float
+                    )
+                    assert sim.get_qc_quantize_op()[act_3].bitwidth == 16
                 assert sim.get_qc_quantize_op()[weight_initializers[0]].bitwidth == 16
                 assert sim.get_qc_quantize_op()[act_4].bitwidth == 4
                 assert not sim.get_qc_quantize_op()[
@@ -1487,7 +1505,8 @@ class TestQuantSim:
                     atol=sim.qc_quantize_op_dict[output_name].get_encodings()[0].delta,
                 )  # Bit flip is possible from recomputing min/max during load
 
-    def test_load_encodings_per_channel_matmul(self, tmp_dir):
+    @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
+    def test_load_encodings_per_channel_matmul(self, tmp_dir, encoding_version: str):
         model = models_for_tests.weight_matmul_model()
         sim = QuantizationSimModel(
             copy.deepcopy(model),
@@ -1496,7 +1515,7 @@ class TestQuantSim:
         dummy_input = make_dummy_input(model)
         sim.compute_encodings([dummy_input])
         out1 = sim.session.run(None, dummy_input)
-        sim.export(tmp_dir, "export")
+        sim.export(tmp_dir, "export", encoding_version=encoding_version)
         sim_2 = QuantizationSimModel(
             copy.deepcopy(model),
             config_file="htp_v81",
@@ -1530,7 +1549,10 @@ class TestQuantSim:
             ),
         ],
     )
-    def test_load_per_block_and_lpbq_encodings(self, swap_quantizer_func, is_lpbq):
+    @pytest.mark.parametrize("encoding_version", ["1.0.0", "2.0.0"])
+    def test_load_per_block_and_lpbq_encodings(
+        self, swap_quantizer_func, is_lpbq: bool, encoding_version: str
+    ):
         torch.manual_seed(0)
         np.random.seed(0)
         model = single_residual_model()
@@ -1553,7 +1575,7 @@ class TestQuantSim:
         sim.compute_encodings([dummy_input])
         out1 = sim.session.run(None, dummy_input)
         with tempfile.TemporaryDirectory() as tempdir:
-            sim.export(tempdir, "export", encoding_version="1.0.0")
+            sim.export(tempdir, "export", encoding_version=encoding_version)
 
             sim_2 = QuantizationSimModel(
                 model_2, param_type="int16", activation_type="int16"
@@ -1564,21 +1586,31 @@ class TestQuantSim:
                 sim_2, os.path.join(tempdir, "export.encodings"), strict=True
             )
             out2 = sim_2.session.run(None, dummy_input)
-            sim_2.export(tempdir, "export_2", encoding_version="1.0.0")
+            sim_2.export(tempdir, "export_2", encoding_version=encoding_version)
             with open(os.path.join(tempdir, "export.encodings"), "rb") as f1:
                 encodings_1 = json.load(f1)
             with open(os.path.join(tempdir, "export_2.encodings"), "rb") as f2:
                 encodings_2 = json.load(f2)
             assert encodings_1 == encodings_2
-            seen_lpbq_or_per_block = False
-            for encoding in encodings_1["param_encodings"]:
+
+            if encoding_version == "1.0.0":
+                assert encodings_1["param_encodings"]
+                bq_enc_type = "LPBQ" if is_lpbq else "PER_BLOCK"
+                assert any(
+                    e["enc_type"] == bq_enc_type for e in encodings_1["param_encodings"]
+                )
+            else:
+                assert encodings_1["encodings"]
                 if is_lpbq:
-                    if encoding["enc_type"] == "LPBQ":
-                        seen_lpbq_or_per_block = True
+                    assert any(
+                        "per_channel_float_scale" in e for e in encodings_1["encodings"]
+                    )
                 else:
-                    if encoding["enc_type"] == "PER_BLOCK":
-                        seen_lpbq_or_per_block = True
-            assert seen_lpbq_or_per_block
+                    assert any(
+                        "block_size" in e and "per_channel_float_scale" not in e
+                        for e in encodings_1["encodings"]
+                    )
+
             assert np.allclose(out1, out2)
 
             sim_3 = QuantizationSimModel(
@@ -1615,7 +1647,10 @@ class TestQuantSim:
             ),
         ],
     )
-    def test_load_per_block_and_lpbq_conv_transpose(self, swap_quantizer_func, is_lpbq):
+    @pytest.mark.parametrize("encoding_version", ["1.0.0", "2.0.0"])
+    def test_load_per_block_and_lpbq_conv_transpose(
+        self, swap_quantizer_func, is_lpbq: bool, encoding_version: str
+    ):
         torch.manual_seed(0)
         np.random.seed(0)
         model = models_for_tests.pointwise_convtranspose1d((1, 64, 32))
@@ -1627,7 +1662,7 @@ class TestQuantSim:
         sim.compute_encodings([dummy_input])
         out1 = sim.session.run(None, dummy_input)
         with tempfile.TemporaryDirectory() as tempdir:
-            sim.export(tempdir, "export", encoding_version="1.0.0")
+            sim.export(tempdir, "export", encoding_version=encoding_version)
 
             sim2 = QuantizationSimModel(model_2)
             swap_quantizer_func(sim=sim2, bitwidth=4, block_size=4)
@@ -1637,26 +1672,34 @@ class TestQuantSim:
             )
             out2 = sim2.session.run(None, dummy_input)
 
-            sim2.export(tempdir, "export_2", encoding_version="1.0.0")
+            sim2.export(tempdir, "export_2", encoding_version=encoding_version)
             with open(os.path.join(tempdir, "export.encodings"), "rb") as f1:
                 encodings_1 = json.load(f1)
             with open(os.path.join(tempdir, "export_2.encodings"), "rb") as f2:
                 encodings_2 = json.load(f2)
             assert encodings_1 == encodings_2
-            seen_lpbq_or_per_block = False
-            for encoding in encodings_1["param_encodings"]:
+            if encoding_version == "1.0.0":
+                assert encodings_1["param_encodings"]
+                bq_enc_type = "LPBQ" if is_lpbq else "PER_BLOCK"
+                assert any(
+                    e["enc_type"] == bq_enc_type for e in encodings_1["param_encodings"]
+                )
+            else:
+                assert encodings_1["encodings"]
                 if is_lpbq:
-                    if encoding["enc_type"] == "LPBQ":
-                        seen_lpbq_or_per_block = True
+                    assert any(
+                        "per_channel_float_scale" in e for e in encodings_1["encodings"]
+                    )
                 else:
-                    if encoding["enc_type"] == "PER_BLOCK":
-                        seen_lpbq_or_per_block = True
-            assert seen_lpbq_or_per_block
-            assert encodings_1["param_encodings"]
+                    assert any(
+                        "block_size" in e and "per_channel_float_scale" not in e
+                        for e in encodings_1["encodings"]
+                    )
             assert np.allclose(out1, out2)
 
-    @pytest.mark.parametrize("strict", [False])
-    def test_mismatching_lpbq_settings(self, strict):
+    @pytest.mark.parametrize("strict", [False, True])
+    @pytest.mark.parametrize("encoding_version", ["1.0.0", "2.0.0"])
+    def test_mismatching_lpbq_settings(self, strict: bool, encoding_version: str):
         torch.manual_seed(0)
         np.random.seed(0)
         model = single_residual_model()
@@ -1676,7 +1719,7 @@ class TestQuantSim:
         sim.compute_encodings([dummy_input])
         out1 = sim.session.run(None, dummy_input)
         with tempfile.TemporaryDirectory() as tempdir:
-            sim.export(tempdir, "export", encoding_version="1.0.0")
+            sim.export(tempdir, "export", encoding_version=encoding_version)
 
             sim_2 = QuantizationSimModel(
                 model_2, param_type="int16", activation_type="int16"
@@ -1706,7 +1749,7 @@ class TestQuantSim:
                     sim_2, os.path.join(tempdir, "export.encodings"), strict=strict
                 )
                 out2 = sim_2.session.run(None, dummy_input)
-                sim_2.export(tempdir, "export_2", encoding_version="1.0.0")
+                sim_2.export(tempdir, "export_2", encoding_version=encoding_version)
                 with open(os.path.join(tempdir, "export.encodings"), "rb") as f1:
                     encodings_1 = json.load(f1)
                 with open(os.path.join(tempdir, "export_2.encodings"), "rb") as f2:
@@ -2551,12 +2594,13 @@ class TestQuantSim:
         assert activation_encodings["add_input2"]
         assert activation_encodings["mul_input2"]
 
-    def test_load_float16_encodings(self, tmp_dir):
+    @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
+    def test_load_float16_encodings(self, tmp_dir, encoding_version: str):
         model = models_for_tests.weight_matmul_model(10, 10)
         sim = QuantizationSimModel(
             model, param_type="float16", activation_type="float16"
         )
-        sim.export(tmp_dir, "model")
+        sim.export(tmp_dir, "model", encoding_version=encoding_version)
 
         model = models_for_tests.weight_matmul_model(10, 10)
         sim = QuantizationSimModel(
@@ -2787,7 +2831,8 @@ class TestQuantSim:
             ),
         ),
     )
-    def test_bq_lpbq_1_0_0_export_import(self, tmp_dir, lpbq, model):
+    @pytest.mark.parametrize("encoding_version", ["1.0.0", "2.0.0"])
+    def test_bq_lpbq_export_import(self, tmp_dir, lpbq, model, encoding_version: str):
         """
         When: Import BQ/LPBQ weights for linear layer in 1.0.0 format
         Then: Loaded sim output should match original sim output
@@ -2811,7 +2856,7 @@ class TestQuantSim:
 
         export_dir = tmp_dir + "/export_1.aimet"
         os.makedirs(export_dir, exist_ok=True)
-        sim.export(export_dir, "tmp_model", encoding_version="1.0.0")
+        sim.export(export_dir, "tmp_model", encoding_version=encoding_version)
 
         sim_loaded = QuantizationSimModel(
             copy.deepcopy(model),

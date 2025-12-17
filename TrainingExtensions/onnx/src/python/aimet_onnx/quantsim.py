@@ -37,7 +37,6 @@
 """Implementation for simulating models running on Quantized hardware"""
 
 # pylint: disable=wrong-import-order
-import copy
 from collections import defaultdict
 import contextlib
 import tempfile
@@ -587,12 +586,6 @@ class QuantizationSimModel:
         # Removes Q/DQ node from model and extract them into 2.0.0 json encoding
         encodings = _remove_onnx_qdq_nodes(model)
         encodings = {enc["name"]: enc for enc in encodings}
-        nodes = [copy.copy(node) for node in model.graph.node]
-        producers = {output: node for node in nodes for output in node.output}
-        consumers = defaultdict(list)
-        for node in nodes:
-            for input_name in node.input:
-                consumers[input_name].append(node)
 
         # Create sim
         sim = QuantizationSimModel(model, **kwargs)
@@ -608,70 +601,16 @@ class QuantizationSimModel:
             for _, bias in [sim._get_weight_and_bias(op)]
             if bias is not None
         )
+
+        _remove_delegatable_excess_encodings(sim, encodings)
+
         excess_encodings = encodings.keys() - (quantizable_tensor_names | bias_names)
-        delegatable = set()
-
-        def _is_encoding_equal(enc1, enc2):
-            return enc1.keys() == enc2.keys() and all(
-                enc1[key] == enc2[key] for key in enc1 if key != "name"
-            )
-
-        for output_name in excess_encodings:
-            producer = producers.get(output_name)
-            output_encoding = encodings[output_name]
-
-            while producer and (
-                _is_grid_preserving_op(producer.op_type) or producer.op_type == "Cast"
-            ):
-                # Delegate excess encoding to producer's input
-                #                                                      (excess encoding)
-                #   input_name                                            output_name
-                #       ↓                                                      ↓
-                # ... ----> producer -----> [ 0 or more grid-preserving ops ] -->
-                #      (grid-preserving)
-                input_name = producer.input[0]
-
-                if (
-                    sim.qc_quantize_op_dict.get(input_name)
-                    and sim.qc_quantize_op_dict[input_name].enabled
-                    and (
-                        (
-                            input_name not in encodings
-                            and len(consumers[input_name]) == 1
-                            and all(
-                                _is_encoding_equal(
-                                    encodings.get(other_output, {}), output_encoding
-                                )
-                                for other_output in producer.output
-                            )
-                        )
-                        or (
-                            input_name in encodings
-                            and _is_encoding_equal(
-                                encodings[input_name], output_encoding
-                            )
-                        )
-                    )
-                ):
-                    encodings[input_name] = {
-                        **output_encoding,
-                        "name": input_name,
-                    }
-                    delegatable.add(output_name)
-
-                producer = producers.get(input_name)
-
-        excess_encodings -= delegatable
 
         if excess_encodings:
             raise NotImplementedError(
                 "Unexpected QuantizeLinear/DequantizeLinear nodes were found "
                 f"for the following tensors: {excess_encodings}"
             )
-
-        encodings = {
-            name: enc for name, enc in encodings.items() if name not in delegatable
-        }
 
         # Make sure each encoding is associated with only one quantizer
         sim.set_quantizers(
@@ -3040,10 +2979,74 @@ def _to_unsigned_encoding(encoding: dict) -> dict:
     return encoding
 
 
+def _remove_delegatable_excess_encodings(
+    sim: QuantizationSimModel, encodings: Dict[str, dict]
+):
+    # pylint: disable=protected-access
+    quantizable_tensor_names = set(
+        name for name, qtzr in sim.qc_quantize_op_dict.items() if qtzr and qtzr.enabled
+    )
+    bias_names = set(
+        bias.name
+        for op in sim.connected_graph.get_all_ops().values()
+        for _, bias in [sim._get_weight_and_bias(op)]
+        if bias is not None
+    )
+    excess_encodings = encodings.keys() - (quantizable_tensor_names | bias_names)
+    delegatable = set()
+
+    for output_name in excess_encodings:
+        producer = sim.connected_graph.get_product(output_name).producer
+        output_encoding = encodings[output_name]
+
+        while producer and (
+            _is_grid_preserving_op(producer.type) or producer.type == "Cast"
+        ):
+            # Delegate excess encoding to producer's input
+            #                                                      (excess encoding)
+            #   input_name                                            output_name
+            #       ↓                                                      ↓
+            # ... ----> producer -----> [ 0 or more grid-preserving ops ] -->
+            #      (grid-preserving)
+            input_name = producer.inputs[0].name
+
+            if (
+                sim.qc_quantize_op_dict.get(input_name)
+                and sim.qc_quantize_op_dict[input_name].enabled
+                and (
+                    (
+                        input_name not in encodings
+                        and len(sim.connected_graph.get_product(input_name).consumers)
+                        == 1
+                        and all(
+                            encodings.get(other_output.name)
+                            and EncodingBase.from_qnn_encoding_dict(
+                                encodings[other_output.name]
+                            )
+                            == EncodingBase.from_qnn_encoding_dict(output_encoding)
+                            for other_output in producer.outputs
+                        )
+                    )
+                    or (
+                        input_name in encodings
+                        and EncodingBase.from_qnn_encoding_dict(encodings[input_name])
+                        == EncodingBase.from_qnn_encoding_dict(output_encoding)
+                    )
+                )
+            ):
+                encodings[input_name] = {**output_encoding, "name": input_name}
+                delegatable.add(output_name)
+
+            producer = sim.connected_graph.get_product(input_name).producer
+
+    for name in delegatable:
+        encodings.pop(name)
+
+
 # pylint: disable=too-many-locals, too-many-branches
 def load_encodings_to_sim(
     quant_sim_model: QuantizationSimModel,
-    onnx_encoding_path: str,
+    onnx_encoding_path: str | dict,
     strict=True,
     *,
     allow_overwrite=True,
@@ -3067,8 +3070,11 @@ def load_encodings_to_sim(
     mismatched_encodings = []
 
     # Load encodings file
-    with open(onnx_encoding_path) as json_file:
-        encodings = json.load(json_file)
+    if isinstance(onnx_encoding_path, dict):
+        encodings = onnx_encoding_path
+    else:
+        with open(onnx_encoding_path) as json_file:
+            encodings = json.load(json_file)
 
     encoding_version = encodings.get("version", None)
     if encoding_version not in VALID_ENCODING_VERSIONS:
@@ -3077,56 +3083,50 @@ def load_encodings_to_sim(
             f"got {encoding_version}"
         )
 
-    if encoding_version not in ("0.6.1", "1.0.0"):
-        raise NotImplementedError(
-            "load_encodings_to_sim only supports encoding version 0.6.1 and 1.0.0; "
-            f"got {encoding_version}"
-        )
+    if encoding_version in ("0.6.1", "1.0.0"):
+        all_quantizers = quant_sim_model.qc_quantize_op_dict.copy()
+    else:
+        # 2.0.0 doesn't have float16 encoding
+        all_quantizers = {
+            name: qtzr
+            for name, qtzr in quant_sim_model.qc_quantize_op_dict.items()
+            if not (
+                qtzr.data_type == QuantizationDataType.float and qtzr.bitwidth >= 16
+            )
+        }
 
     if encoding_version == "0.6.1":
-        encodings["activation_encodings"] = [
-            {
-                "name": tensor_name,
-                **EncodingBase.from_qnn_encoding_dict(encoding).to_qnn_encoding_dict(
-                    "1.0.0"
-                ),
-            }
-            for tensor_name, encoding in encodings["activation_encodings"].items()
-        ]
-        encodings["param_encodings"] = [
-            {
-                "name": tensor_name,
-                **EncodingBase.from_qnn_encoding_dict(encoding).to_qnn_encoding_dict(
-                    "1.0.0"
-                ),
-            }
-            for tensor_name, encoding in encodings["param_encodings"].items()
-        ]
+        param_encodings = encodings["param_encodings"].copy()
+        activation_encodings = encodings["activation_encodings"].copy()
+        all_encodings = param_encodings | activation_encodings
+    elif encoding_version == "1.0.0":
+        param_encodings = {
+            encoding["name"]: encoding for encoding in encodings["param_encodings"]
+        }
+        activation_encodings = {
+            encoding["name"]: encoding for encoding in encodings["activation_encodings"]
+        }
+        all_encodings = param_encodings | activation_encodings
+    else:
+        all_encodings = {e["name"]: e for e in encodings["encodings"]}
 
-    validate_encodings_to_load(encodings, quant_sim_model)
+    _validate_encodings_to_load(quant_sim_model, all_encodings.keys())
+
+    if encoding_version == "2.0.0":
+        _remove_delegatable_excess_encodings(quant_sim_model, all_encodings)
 
     # First pass through quantizers to check for mismatched encodings
-    param_encodings = {
-        encoding["name"]: encoding for encoding in encodings["param_encodings"]
-    }
-    activation_encodings = {
-        encoding["name"]: encoding for encoding in encodings["activation_encodings"]
-    }
+    missing_quantizers = all_encodings.keys() - all_quantizers.keys()
 
-    # If quantizer not in qc_quantize_op_dict, that is equivalent to being disabled
-    missing_quantizers = (
-        param_encodings.keys() | activation_encodings.keys()
-    ) - quant_sim_model.qc_quantize_op_dict.keys()
     for name in missing_quantizers:
         mismatched_encodings.append(
             _EncodingMismatchInfo(name, enabled_mismatch=(False, True))
         )
 
-    for quantizer_name, quantizer in quant_sim_model.qc_quantize_op_dict.items():
-        if (
-            quantizer_name not in param_encodings
-            and quantizer_name not in activation_encodings
-        ):
+    for quantizer_name, quantizer in all_quantizers.items():
+        e = all_encodings.get(quantizer_name, None)
+
+        if not e:
             mismatched_info = get_encoding_mismatch_info(
                 quantizer_name, quantizer, None
             )
@@ -3134,45 +3134,50 @@ def load_encodings_to_sim(
                 mismatched_encodings.append(mismatched_info)
             continue
 
-        if quantizer_name in activation_encodings:
-            encodings_to_load = activation_encodings[quantizer_name]
-        else:
-            encodings_to_load = param_encodings[quantizer_name]
+        e = EncodingBase.from_qnn_encoding_dict(e).to_qnn_encoding_dict("1.0.0")
 
-        mismatched_info = get_encoding_mismatch_info(
-            quantizer_name, quantizer, encodings_to_load
-        )
+        mismatched_info = get_encoding_mismatch_info(quantizer_name, quantizer, e)
         if mismatched_info.has_mismatch():
             mismatched_encodings.append(mismatched_info)
 
     log_and_catch_mismatched_encodings(mismatched_encodings, strict)
-    if missing_quantizers and not strict:
-        _add_missing_quantizers(encodings, quant_sim_model)
+
+    if missing_quantizers:
+        if not strict and encoding_version in ("0.6.1", "1.0.0"):
+            _add_missing_quantizers(
+                quant_sim_model,
+                param_encodings.keys(),
+                activation_encodings.keys(),
+            )
+            all_quantizers |= {
+                name: qtzr
+                for name, qtzr in quant_sim_model.qc_quantize_op_dict.items()
+                if name in missing_quantizers
+            }
+        else:
+            # 2.0.0 encoding has no distinction between param and act encodings,
+            # so we cannot add missing quantizers
+            raise RuntimeError(
+                f"Encodings were provided for missing quantizers: {missing_quantizers}. "
+            )
 
     # Second pass through quantizers to set quantizer settings
-    for quantizer_name, quantizer in quant_sim_model.qc_quantize_op_dict.items():
-        if (
-            quantizer_name not in activation_encodings
-            and quantizer_name not in param_encodings
-        ):
+    for quantizer_name, quantizer in all_quantizers.items():
+        e = all_encodings.get(quantizer_name, None)
+
+        if not e:
             if disable_missing_quantizers:
                 quantizer.enabled = False
             continue
 
-        if quantizer_name in activation_encodings:
-            encodings_to_load = activation_encodings[quantizer_name]
-        else:
-            encodings_to_load = param_encodings[quantizer_name]
-
         # pylint: disable=protected-access
-        quant_sim_model.qc_quantize_op_dict[quantizer_name]._load_encodings_dict(
-            encodings_to_load, allow_overwrite=allow_overwrite
-        )
+        quantizer._load_encodings_dict(e, allow_overwrite=allow_overwrite)
     return mismatched_encodings
 
 
-def validate_encodings_to_load(
-    encodings_to_load: Dict, quant_sim_model: QuantizationSimModel
+def _validate_encodings_to_load(
+    quant_sim_model: QuantizationSimModel,
+    encoding_names: Iterable[str],
 ):
     """
     Validate that all names of encodings to load correspond to quantizable tensors in the model.
@@ -3185,10 +3190,7 @@ def validate_encodings_to_load(
     # will not show up in encodings_to_load.
     encoding_names_not_found = []
     non_quantizable_tensors_found = set()
-    for encoding in itertools.chain(
-        encodings_to_load["activation_encodings"], encodings_to_load["param_encodings"]
-    ):
-        name = encoding["name"]
+    for name in encoding_names:
         # If quantizer already exists, continue
         if name in quant_sim_model.qc_quantize_op_dict:
             continue
@@ -3220,21 +3222,19 @@ def validate_encodings_to_load(
 
 
 def _add_missing_quantizers(
-    encodings_to_load: Dict[str, List], sim: QuantizationSimModel
+    sim: QuantizationSimModel,
+    param_names: Iterable[str],
+    activation_names: Iterable[str],
 ):
     """
     Add quantizers for any tensors which are present in encodings_to_load but are not present in
     sim.qc_quantize_op_dict
     """
     # pylint:disable = protected-access
-    act_encodings, param_encodings = (
-        encodings_to_load["activation_encodings"],
-        encodings_to_load["param_encodings"],
-    )
     added_quantizers = set()
+
     # Insert any missing activation quantizers as disabled act quantizers
-    for enc in act_encodings:
-        tensor_name = enc["name"]
+    for tensor_name in activation_names:
         if tensor_name not in sim.qc_quantize_op_dict:
             sim._insert_quantizer(tensor_name, is_param=False)
             sim.qc_quantize_op_dict[tensor_name].enabled = False
@@ -3242,8 +3242,7 @@ def _add_missing_quantizers(
             added_quantizers.add(tensor_name)
 
     # Insert any missing param quantizers as disabled param quantizers
-    for enc in param_encodings:
-        tensor_name = enc["name"]
+    for tensor_name in param_names:
         if tensor_name not in sim.qc_quantize_op_dict:
             sim._insert_quantizer(tensor_name, is_param=True)
             sim.qc_quantize_op_dict[tensor_name].enabled = False
