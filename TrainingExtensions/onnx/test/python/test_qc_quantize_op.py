@@ -1677,6 +1677,10 @@ class TestBlockwiseQuantizeOp:
         assert exported_encodings["scale"][0] == delta
         assert exported_encodings["offset"][0] == offset
 
+        qc_quantize_op.enabled = False
+        assert qc_quantize_op.export_encodings("0.6.1") is None
+        assert qc_quantize_op.export_encodings("1.0.0") is None
+
     @pytest.mark.parametrize(
         "symmetric, bitwidth, delta, offset",
         [
@@ -1747,6 +1751,10 @@ class TestBlockwiseQuantizeOp:
         assert exported_encodings["enc_type"] == EncodingType.PER_BLOCK.name
         assert len(exported_encodings["scale"]) == tensor_shape[channel_axis] * 2
         assert exported_encodings["block_size"] == block_size
+
+        qc_quantize_op.enabled = False
+        assert qc_quantize_op.export_encodings("0.6.1") is None
+        assert qc_quantize_op.export_encodings("1.0.0") is None
 
     def test_export_float_encodings(self):
         quant_info = libquant_info.QcQuantizeInfo()

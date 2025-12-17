@@ -666,6 +666,9 @@ class AffineEncoding(EncodingBase):
     @classmethod
     def from_quantizer(cls, qtzr: QcQuantizeOp) -> AffineEncoding | None:
         # pylint: disable=protected-access
+        if not qtzr.enabled:
+            return None
+
         if qtzr.quant_info.usePerChannelMode and qtzr.tensor_quantizer_params:
             channel_axis = qtzr.tensor_quantizer_params.channel_axis
             block_size = qtzr.quant_info.blockSize or None
@@ -1080,6 +1083,9 @@ class LPBQEncoding(AffineEncoding):
         cls, qtzr: GroupedBlockQuantizeDequantize
     ) -> LPBQEncoding | None:
         # pylint: disable=protected-access
+        if not qtzr.enabled:
+            return None
+
         if qtzr.quant_info.usePerChannelMode and qtzr.tensor_quantizer_params:
             block_size = qtzr.quant_info.blockSize or None
         else:
