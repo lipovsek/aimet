@@ -5032,6 +5032,19 @@ def test_bias_export(model_factory, input_shape, block_size, lpbq, enable_mp, tm
         expected_bias_scale = np.maximum(abs(bias_value) / 2**31, _INT32_MINIMUM_SCALE)
         assert np.allclose(bias_scale, expected_bias_scale)
 
+    """
+    When: Call _concretize_int32_bias_quantizers
+    Then: export and to_onnx_qdq should work normally
+    """
+    # NOTE: This test was added as a regression test for a bug where
+    # sim.export and sim.to_onnx_qdq fails with null pointer error
+    # if the return value of _concretize_int32_bias_quantizers was garbage-collected before export.
+    sim._concretize_int32_bias_quantizers()
+    sim.export(tmp_dir, "model", export_int32_bias=False)
+    sim.export(tmp_dir, "model", export_int32_bias=True)
+    if not lpbq:
+        _ = sim.to_onnx_qdq()
+
 
 def _parse_type(type_str: str) -> tuple[str, int]:
     if type_str.startswith("int"):

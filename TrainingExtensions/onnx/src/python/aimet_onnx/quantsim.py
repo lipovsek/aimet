@@ -1688,15 +1688,23 @@ class QuantizationSimModel:
             if op.type in switcher
         }
 
-        original_bias_quantizers = {
-            bias.name: self.qc_quantize_op_dict[bias.name]
-            for _, (_, bias) in ops_with_bias.items()
-            if bias and bias.name in self.qc_quantize_op_dict
-        }
+        original_bias_encodings: dict[str, tuple[bool, EncodingBase]] = {}
+        for _, (_, bias) in ops_with_bias.items():
+            if bias and bias.name in self.qc_quantize_op_dict:
+                bias_qtzr = self.qc_quantize_op_dict[bias.name]
+                original_bias_encodings[bias.name] = (
+                    bias_qtzr.enabled,
+                    EncodingBase.from_quantizer(bias_qtzr),
+                )
 
         def cleanup():
-            for name, bias_qtzr in original_bias_quantizers.items():
-                self.qc_quantize_op_dict[name] = bias_qtzr
+            for name, (enabled, encoding) in original_bias_encodings.items():
+                bias_qtzr = self.qc_quantize_op_dict[name]
+                bias_qtzr.enabled = enabled
+                if encoding:
+                    encoding.load_to(bias_qtzr)
+                else:
+                    bias_qtzr.reset_encoding_stats()
 
         try:
             for op, (weight, bias) in ops_with_bias.items():
@@ -1744,9 +1752,6 @@ class QuantizationSimModel:
                     # Input quantizer wasn't created, enabled, or initialized.
                     # Since input_scale isn't available, exclude bias from quantization.
                     continue
-
-                bias_qtzr = bias_qtzr._copy()
-                self.qc_quantize_op_dict[bias.name] = bias_qtzr
 
                 if encoding_type == EncodingType.PER_TENSOR.name:
                     bias_qtzr.enable_per_channel_quantization(False)
@@ -2475,6 +2480,12 @@ class QuantizationSimModel:
 
             # If the quantizer did not need to be collected, skip
             if param_name not in qdq_tensor_name_map:
+                continue
+
+            # Skip pre-quantization of int32 parameters due to numerical instability.
+            # QcQuantizeOp uses float32 to simulate quantization,
+            # which is insufficient for simulating int32 quantization.
+            if self.qc_quantize_op_dict[param_name].bitwidth >= 32:
                 continue
 
             qdq_param_name = qdq_tensor_name_map.get(param_name)
