@@ -11,9 +11,13 @@ import numpy as np
 import torch
 import tqdm
 import tempfile
+import gc
 
 from aimet_onnx.common.utils import AimetLogger  # pylint: disable=import-error
-from aimet_onnx.experimental.adascale.utils import convert_to_torch
+from aimet_onnx.experimental.adascale.utils import (
+    convert_to_torch,
+    change_tensor_device_placement,
+)
 from aimet_onnx.utils import (
     get_torch_device,
 )
@@ -203,6 +207,7 @@ class AdaScale:
                         adascale_model_config.scales_lr,
                         num_iterations,
                     )
+                    del fp_input_list, qsim_input_list
 
     @staticmethod
     def get_block_start_end_name(blocks_end_points, block_idx):
@@ -221,8 +226,8 @@ class AdaScale:
     @staticmethod
     def optimize_adascale_block(
         sim: QuantizationSimModel,
-        fp_inputs: List[torch.Tensor],
-        quantized_inputs: List[torch.Tensor],
+        fp_inputs: List[np.ndarray],
+        quantized_inputs: List[np.ndarray],
         block_input_output_names: Tuple[List[str], List[str]],
         beta_gamma_lr: float = 1e-3,
         scales_lr: float = 5e-4,
@@ -261,17 +266,17 @@ class AdaScale:
         torch_device = get_torch_device(sim.session)
         pytorch_block.to(torch_device)
         fp_out = []
-        for input_tensor in torch_fp_input:
-            if isinstance(input_tensor, torch.Tensor):
-                input_tensor = [input_tensor]
+        with torch.no_grad():
+            for input_tensor in torch_fp_input:
+                if isinstance(input_tensor, torch.Tensor):
+                    input_tensor = [input_tensor]
 
-            for i, in_t in enumerate(input_tensor):
-                input_tensor[i] = in_t.to(device=torch_device)
-            out = pytorch_block(*input_tensor).detach()
+                for i, in_t in enumerate(input_tensor):
+                    input_tensor[i] = in_t.to(device=torch_device)
+                out = pytorch_block(*input_tensor).detach()
 
-            out.requires_grad_(False)
-            fp_out.append(out)
-
+                out.requires_grad_(False)
+                fp_out.append(change_tensor_device_placement(out, torch.device("cpu")))
         pytorch_block = add_qlinear_layers(
             pytorch_block, bitwidth=AdaScale.ADASCALE_PARAM_BW
         )
@@ -316,8 +321,6 @@ class AdaScale:
                         quant_input,
                         fp_input,
                     )
-
-                # todo: use probabilistic sampling of qt and fp input
                 pytorch_block.to(torch_device)
                 if isinstance(input_tensor, torch.Tensor):
                     input_tensor = input_tensor.to(device=torch_device)
@@ -326,21 +329,35 @@ class AdaScale:
                     for i, in_t in enumerate(input_tensor):
                         input_tensor[i] = in_t.to(device=torch_device)
                     quant_out = pytorch_block(*input_tensor)
-
+                batch_fp_out = fp_out[iteration % len(torch_fp_input)].to(torch_device)
                 loss = _LOSS_FN(
                     quant_out,
-                    fp_out[iteration % len(torch_quant_input)].to(torch_device),
+                    batch_fp_out,
                 )
 
                 loss.backward()
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
+                del quant_out, batch_fp_out, loss, input_tensor
 
         copy_pt_weights_to_onnx(
             pytorch_block, sim.model.model, pt_weights_to_onnx_initializers
         )
         copy_pt_encodings_to_sim(pytorch_block, sim, pt_weights_to_onnx_initializers)
+
+        del (
+            pytorch_block,
+            torch_quant_input,
+            torch_fp_input,
+            optimizer,
+            pt_weights_to_onnx_initializers,
+            fp_out,
+        )
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
         sim._rebuild_session()  # pylint: disable=protected-access
 
     @staticmethod

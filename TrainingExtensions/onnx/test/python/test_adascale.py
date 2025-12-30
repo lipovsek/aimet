@@ -651,24 +651,29 @@ def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
         adascale_model_config_dict["qwen2"],
         num_iterations=2,
     )
+    param_list = [
+        "onnx::MatMul_571",
+        "onnx::MatMul_587",
+        "onnx::MatMul_588",
+        "onnx::MatMul_643",
+        "onnx::MatMul_644",
+        "onnx::MatMul_645",
+        "onnx::MatMul_646",
+        "onnx::MatMul_647",
+        "onnx::MatMul_663",
+        "onnx::MatMul_664",
+        "onnx::MatMul_719",
+        "onnx::MatMul_720",
+        "onnx::MatMul_721",
+        "onnx::MatMul_722",
+    ]
+
+    # Verify that the encodings are frozen for the parameters modified by AdaScale
+    for param in param_list:
+        assert sim.qc_quantize_op_dict[param]._is_encoding_frozen
 
     for initializer in sim.model.model.graph.initializer:
-        if initializer.name in [
-            "onnx::MatMul_571",
-            "onnx::MatMul_587",
-            "onnx::MatMul_588",
-            "onnx::MatMul_643",
-            "onnx::MatMul_644",
-            "onnx::MatMul_645",
-            "onnx::MatMul_646",
-            "onnx::MatMul_647",
-            "onnx::MatMul_663",
-            "onnx::MatMul_664",
-            "onnx::MatMul_719",
-            "onnx::MatMul_720",
-            "onnx::MatMul_721",
-            "onnx::MatMul_722",
-        ]:
+        if initializer.name in param_list:
             weight_array = numpy_helper.to_array(initializer)
             assert not np.all(original_weights[initializer.name] == weight_array)
         else:

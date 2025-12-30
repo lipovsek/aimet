@@ -10,6 +10,8 @@ import functools
 import torch
 import numpy as np
 
+from torch.utils._pytree import tree_map
+
 
 def derive_symmetric_qmin_qmax(bitwidth: int) -> tuple[int, int]:
     """
@@ -257,3 +259,16 @@ def convert_to_torch(obj):
         return tensor.float() if np.issubdtype(obj.dtype, np.floating) else tensor
     else:
         return obj
+
+
+def change_tensor_device_placement(input_data, device: torch.device):
+    """
+    Change the tensor_data's device placement
+
+    :param input_data: torch.tensor , list of torch.tensors, tuple of torch.tensors or dict of torch.tensors
+    :param device: device
+    :return: tensor_data with modified device placement
+    """
+    return tree_map(
+        lambda x: x.to(device) if isinstance(x, torch.Tensor) else x, input_data
+    )
