@@ -3,6 +3,7 @@
 
 import numpy as np
 import os
+import json
 
 import onnx
 import onnxruntime as ort
@@ -94,3 +95,95 @@ def test_hf_torch_to_onnx_workflow(tmp_dir, model_cls, config_cls):
         onnx_sim_out, *_ = onnx_sim.session.run(None, input)
         onnx_qdq_out, *_ = onnx_qdq_sess.run(None, input)
         assert np.allclose(onnx_sim_out, onnx_qdq_out, atol=atol)
+
+
+@pytest.mark.parametrize("encoding_version", ["1.0.0", "2.0.0"])
+def test_torch_to_onnx_zero_point_shift(tmp_dir, encoding_version):
+    """
+    Given: aimet_torch quantized model with shifted weight zero-points
+    When: Export to onnx using aimet-torch and import into aimet-onnx
+    Then: aimet-onnx sim should produce same output and exported encodings as aimet-torch sim
+    """
+    model = torch.nn.Sequential(
+        torch.nn.Linear(128, 128),
+        torch.nn.ReLU(),
+        torch.nn.Linear(128, 128),
+    )
+    input_tensor = torch.randn(1, 128)
+    torch_sim = aimet_torch.QuantizationSimModel(
+        model,
+        dummy_input=input_tensor,
+        config_file="htp_v81",
+        in_place=True,
+    )
+
+    # Set param quantizers to 2-bit with zero-point shift of 0.5
+    for layer in torch_sim.qmodules():
+        if isinstance(layer, torch.nn.Linear):
+            quantizer = aimet_torch.quantization.affine.QuantizeDequantize(
+                shape=(layer.out_features, 1),
+                bitwidth=2,
+                symmetric=True,
+            )
+            quantizer.zero_point_shift = 0.5
+            layer.param_quantizers["weight"] = quantizer
+
+    torch_sim.compute_encodings(lambda model: model(input_tensor))
+    torch_output = torch_sim.model(input_tensor).detach().numpy()
+    torch_export_dir = os.path.join(tmp_dir, "torch_export")
+    os.makedirs(torch_export_dir, exist_ok=True)
+
+    torch_export_path = os.path.join(torch_export_dir, "model.onnx")
+    encoding_path = os.path.join(torch_export_dir, "model.encodings")
+    torch_sim.onnx.export(
+        input_tensor,
+        torch_export_path,
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch_size"}},
+        dynamo=False,
+        encoding_version=encoding_version,
+        export_int32_bias=False,
+    )
+
+    with open(encoding_path, "r") as f:
+        torch_encodings = json.load(f)
+
+    onnx_sim = aimet_onnx.QuantizationSimModel(onnx.load(torch_export_path))
+    aimet_onnx.quantsim.load_encodings_to_sim(
+        onnx_sim, encoding_path, strict=False, disable_missing_quantizers=True
+    )
+    onnx_output = onnx_sim.session.run(None, {"input": input_tensor.numpy()})[0]
+
+    for name in onnx_sim.param_names:
+        if onnx_sim.qc_quantize_op_dict[name].enabled:
+            assert (
+                onnx_sim.qc_quantize_op_dict[name]._tensor_quantizer.getZeroPointShift()
+                == 0.5
+            )
+            assert onnx_sim.qc_quantize_op_dict[name].bitwidth == 2
+
+    assert np.allclose(torch_output, onnx_output)
+
+    onnx_export_path = os.path.join(tmp_dir, "onnx_export")
+    onnx_encoding_path = os.path.join(onnx_export_path, "model.encodings")
+    os.makedirs(onnx_export_path, exist_ok=True)
+    onnx_sim.export(onnx_export_path, "model", encoding_version=encoding_version)
+
+    with open(onnx_encoding_path, "r") as f:
+        onnx_encodings = json.load(f)
+
+    if encoding_version == "1.0.0":
+        onnx_enc = (
+            onnx_encodings["param_encodings"] + onnx_encodings["activation_encodings"]
+        )
+        torch_enc = (
+            torch_encodings["param_encodings"] + torch_encodings["activation_encodings"]
+        )
+    else:
+        onnx_enc = onnx_encodings["encodings"]
+        torch_enc = torch_encodings["encodings"]
+
+    assert sorted(onnx_enc, key=lambda x: x["name"]) == sorted(
+        torch_enc, key=lambda x: x["name"]
+    )
