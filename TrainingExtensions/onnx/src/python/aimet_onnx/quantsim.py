@@ -134,7 +134,7 @@ from aimet_onnx.utils import (
     create_ort_session_options_with_aimet_custom_ops,
     OrtInferenceSession,
 )
-from ._encoding import EncodingBase
+from ._encoding import EncodingBase, LPBQEncoding
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
 
@@ -618,30 +618,6 @@ class QuantizationSimModel:
                 for name, qtzr in sim.qc_quantize_op_dict.items()
             }
         )
-
-        lpbq_weights = {
-            name: enc
-            for name, enc in encodings.items()
-            if "per_channel_float_scale" in enc
-        }
-
-        def get_lpbq_params(op: Op):
-            for inp in op.inputs:
-                if inp.name in lpbq_weights:
-                    enc = lpbq_weights[inp.name]
-                    *_, bitwidth = enc["output_dtype"].split("int")
-                    bitwidth = int(bitwidth)
-                    decompressed_bw = bitwidth * 2
-                    block_size = enc["block_size"]
-                    return bitwidth, decompressed_bw, block_size
-            return None, None, None
-
-        if lpbq_weights:
-            _set_grouped_blockwise_quantization_for_weights(
-                sim,
-                get_lpbq_params,
-                strict=True,
-            )
 
         load_encodings_to_sim(
             sim,
@@ -3106,6 +3082,36 @@ def load_encodings_to_sim(
 
     if encoding_version == "2.0.0":
         _remove_delegatable_excess_encodings(quant_sim_model, all_encodings)
+
+    if not strict:
+        # Only convert regular quantizers to LPBQ quantizers in non-strict mode
+        lpbq_encodings: dict[str, LPBQEncoding] = {
+            name: LPBQEncoding.from_qnn_encoding_dict(enc)
+            for name, enc in all_encodings.items()
+            if EncodingBase.get_subclass(enc) == LPBQEncoding
+        }
+
+        def get_lpbq_params(op: Op):
+            for inp in op.inputs:
+                enc = lpbq_encodings.get(inp.name)
+                qtzr = quant_sim_model.qc_quantize_op_dict.get(inp.name)
+                if enc and not isinstance(qtzr, GroupedBlockQuantizeDequantize):
+                    return enc.bitwidth, enc.decompressed_bitwidth(), enc.block_size
+            return None, None, None
+
+        if lpbq_encodings:
+            _set_grouped_blockwise_quantization_for_weights(
+                quant_sim_model,
+                get_lpbq_params,
+                strict=True,
+            )
+            all_quantizers.update(
+                {
+                    name: qtzr
+                    for name, qtzr in quant_sim_model.qc_quantize_op_dict.items()
+                    if name in lpbq_encodings and all_quantizers.get(name) != qtzr
+                }
+            )
 
     # First pass through quantizers to check for mismatched encodings
     missing_quantizers = all_encodings.keys() - all_quantizers.keys()

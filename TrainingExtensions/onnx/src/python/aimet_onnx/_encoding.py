@@ -60,6 +60,17 @@ class EncodingBase(ABC):
                 Default block axis to use if block axis isn't specified in encoding_dict.
                 Only required for 1.0.0 BQ encoding; ignored in all other cases
         """
+        subcls = cls.get_subclass(encoding_dict)
+
+        return subcls.from_qnn_encoding_dict(
+            encoding_dict,
+            input_shape=input_shape,
+            default_channel_axis=default_channel_axis,
+            default_block_axis=default_block_axis,
+        )
+
+    @classmethod
+    def get_subclass(cls, encoding_dict) -> Type[EncodingBase]:
         version = cls._infer_encoding_version(encoding_dict)
 
         if version == "0.6.1":
@@ -81,12 +92,7 @@ class EncodingBase(ABC):
             else:
                 subcls = FloatEncoding
 
-        return subcls.from_qnn_encoding_dict(
-            encoding_dict,
-            input_shape=input_shape,
-            default_channel_axis=default_channel_axis,
-            default_block_axis=default_block_axis,
-        )
+        return subcls
 
     @abstractmethod
     def load_to(self, qtzr: QcQuantizeOp) -> None:

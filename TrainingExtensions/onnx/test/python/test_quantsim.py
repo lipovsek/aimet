@@ -1581,14 +1581,18 @@ class TestQuantSim:
         ],
     )
     @pytest.mark.parametrize("encoding_version", ["1.0.0", "2.0.0"])
+    @pytest.mark.parametrize("strict", [True, False])
     def test_load_per_block_and_lpbq_encodings(
-        self, swap_quantizer_func, is_lpbq: bool, encoding_version: str
+        self,
+        swap_quantizer_func,
+        is_lpbq: bool,
+        encoding_version: str,
+        strict: bool,
     ):
         torch.manual_seed(0)
         np.random.seed(0)
         model = single_residual_model()
         model_2 = copy.deepcopy(model)
-        model_3 = copy.deepcopy(model)
         dummy_input = make_dummy_input(model.model)
         bq_layers = ("MatMul", "Conv", "Gemm")
         bq_weights = set()
@@ -1611,10 +1615,18 @@ class TestQuantSim:
             sim_2 = QuantizationSimModel(
                 model_2, param_type="int16", activation_type="int16"
             )
-            swap_quantizer_func(sim=sim_2, bitwidth=4, block_size=4)
+
+            if strict:
+                # In strict mode, non-BQ/LPBQ quantizers are not allowed to load BQ/LPBQ encodings.
+                # load_encodings_to_sim will throw AssertionError in this case.
+                with pytest.raises(AssertionError):
+                    load_encodings_to_sim(
+                        sim_2, os.path.join(tempdir, "export.encodings"), strict=strict
+                    )
+                return
 
             load_encodings_to_sim(
-                sim_2, os.path.join(tempdir, "export.encodings"), strict=True
+                sim_2, os.path.join(tempdir, "export.encodings"), strict=strict
             )
             out2 = sim_2.session.run(None, dummy_input)
             sim_2.export(tempdir, "export_2", encoding_version=encoding_version)
@@ -1643,17 +1655,6 @@ class TestQuantSim:
                     )
 
             assert np.allclose(out1, out2)
-
-            sim_3 = QuantizationSimModel(
-                model_3, param_type="int16", activation_type="int16"
-            )
-
-            # TODO: switch to strict=True when we support swapping to LPBQ quantizer from non-LPBQ quantizer
-            if is_lpbq:
-                with pytest.raises(AssertionError):
-                    load_encodings_to_sim(
-                        sim_3, os.path.join(tempdir, "export.encodings"), strict=False
-                    )
 
     @pytest.mark.parametrize(
         "swap_quantizer_func, is_lpbq",
