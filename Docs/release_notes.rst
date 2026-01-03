@@ -6,11 +6,30 @@
 Release notes
 #############
 
+2.22.0
+======
+
+* Bug fixes and Improvements
+    * ONNX
+        * Allow loading 2.0.0 encoding format to sim (`e8cb098`_)
+        * Fix Cast unpacking error (`6761a19`_)
+        * Enable exporting non-LPBQ encodings with zero_point shift (`7b3cc4c`_)
+        * Implement aimet-onnx LPBQEncoding (`5ad7ea6`_)
+
+    * Common
+        * Support exporting 1x1 Conv LPBQ to ONNX QDQ (`58ce71d`_)
+
+.. _e8cb098: https://github.com/quic/aimet/commit/e8cb098c19a786ab3cdae693f6cc651d348bc824
+.. _6761a19: https://github.com/quic/aimet/commit/6761a1920718cf161a8c5f42614cd5b25ac0be70
+.. _7b3cc4c: https://github.com/quic/aimet/commit/7b3cc4c927991e0cdd98df5fa69c4c529147b787
+.. _5ad7ea6: https://github.com/quic/aimet/commit/5ad7ea66056a3e243e17f14e2f3daad3c1c517ac
+.. _58ce71d: https://github.com/quic/aimet/commit/58ce71de197e681d364a958da9b2d2389dfbf501
+
+
 2.21.0
 ======
 
 * Bug fixes and Improvements
-    
     * ONNX
         * Fix IndexError when Conv or Linear layers are reused in the model (`65c4b3b`_)
         * Add optional argument `export_int32_bias` to aimet-onnx export (`3b8e0f0`_)
