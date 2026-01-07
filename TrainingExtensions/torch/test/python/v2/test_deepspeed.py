@@ -351,9 +351,8 @@ def test_deepspeed_zero3_offload(
     assert sim_deepspeed.model.conv1.param_quantizers["weight"].shape == (32, 1, 1, 1)
     assert sim_deepspeed.model.conv2.param_quantizers["weight"].shape == (32, 1, 1, 1)
 
-    # NOTE: default per-channel quantsim config doesn't apply per-channel qtzn to nn.Linear
-    assert sim_deepspeed.model.fc1.param_quantizers["weight"].shape == ()
-    assert sim_deepspeed.model.fc2.param_quantizers["weight"].shape == ()
+    assert sim_deepspeed.model.fc1.param_quantizers["weight"].shape == (256, 1)
+    assert sim_deepspeed.model.fc2.param_quantizers["weight"].shape == (10, 1)
 
     assert (
         sim_deepspeed.model.conv1.input_quantizers[0].shape
@@ -655,9 +654,8 @@ def test_deepspeed_zero3_offload_fallback(
     assert sim_deepspeed.model.conv1.param_quantizers["weight"].shape == (32, 1, 1, 1)
     assert sim_deepspeed.model.conv2.param_quantizers["weight"].shape == (32, 1, 1, 1)
 
-    # NOTE: default per-channel quantsim config doesn't apply per-channel qtzn to nn.Linear
-    assert sim_deepspeed.model.fc1.param_quantizers["weight"].shape == ()
-    assert sim_deepspeed.model.fc2.param_quantizers["weight"].shape == ()
+    assert sim_deepspeed.model.fc1.param_quantizers["weight"].shape == (256, 1)
+    assert sim_deepspeed.model.fc2.param_quantizers["weight"].shape == (10, 1)
 
     assert (
         sim_deepspeed.model.conv1.input_quantizers[0].shape
@@ -897,7 +895,7 @@ def test_seqmse_with_zero3_offload(
         sim_deepspeed.model.fc1.param_quantizers.parameters()
     ):
         enc_after = sim_deepspeed.model.fc1.param_quantizers["weight"].get_encoding()
-    assert enc_before.scale == enc_after.scale
+    assert torch.all(enc_before.scale == enc_after.scale)
 
     bs_params = {
         name: param.clone().detach()

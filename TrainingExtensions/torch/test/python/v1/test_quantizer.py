@@ -3158,7 +3158,8 @@ class TestQuantizationSimStaticGrad:
                         "offset": -8,
                         "scale": 0.018708012998104095,
                     }
-                ],
+                ]
+                * model.fc2.out_features,
             },
             "quantizer_args": {
                 "activation_bitwidth": 8,
@@ -3918,7 +3919,9 @@ class TestQuantizationSimLearnedGrid:
             -sim.model.conv1_a.weight_encoding_max,
         )
         assert torch.allclose(
-            sim.model.fc1.weight_encoding_min, -sim.model.fc1.weight_encoding_max
+            sim.model.fc1.weight_encoding_min,
+            -sim.model.fc1.weight_encoding_max,
+            atol=1e-5,
         )
 
         after_conv1_weight_encoding_min = (
@@ -4275,7 +4278,8 @@ class TestQuantizationSimLearnedGrid:
                         "offset": -8,
                         "scale": 0.018708012998104095,
                     }
-                ],
+                ]
+                * model.fc2.out_features,
             },
             "quantizer_args": {
                 "activation_bitwidth": 8,
@@ -4353,7 +4357,8 @@ class TestQuantizationSimLearnedGrid:
                         "offset": -8,
                         "scale": 0.018708012998104095,
                     }
-                ],
+                ]
+                * model.fc2.out_features,
             },
             "quantizer_args": {
                 "activation_bitwidth": 8,

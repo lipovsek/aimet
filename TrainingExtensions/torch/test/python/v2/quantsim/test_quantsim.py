@@ -716,7 +716,8 @@ class TestQuantsim:
                         "offset": -8,
                         "scale": 0.018708012998104095,
                     }
-                ],
+                ]
+                * model.fc2.out_features,
             },
             "quantizer_args": {
                 "activation_bitwidth": 8,

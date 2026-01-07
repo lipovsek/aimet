@@ -412,7 +412,9 @@ class TestAdascale:
         torch.manual_seed(0)
         dummy_input = torch.rand(200, 3, 32, 64)
         model = test_models.ModelWithConsecutiveLinearBlocks()
-        sim = QuantizationSimModel(model, dummy_input, default_param_bw=4)
+        sim = QuantizationSimModel(
+            model, dummy_input, default_param_bw=4, config_file="default_config.json"
+        )
         for module in sim.qmodules():
             if isinstance(module, torch.nn.Linear):
                 module.param_quantizers["weight"].zero_point_shift = 0.5

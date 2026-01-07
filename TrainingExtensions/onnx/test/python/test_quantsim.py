@@ -543,8 +543,7 @@ class TestQuantSim:
             }
             assert isinstance(enc["scale"], list)
             assert enc["dtype"] == "INT"
-            # Gemm layers do not use per-channel in the default_per_channel_config
-            if enc["name"] == "conv_w":
+            if enc["name"] in param_keys:
                 assert enc["enc_type"] == EncodingType.PER_CHANNEL.name
             else:
                 assert enc["enc_type"] == EncodingType.PER_TENSOR.name
@@ -3029,7 +3028,10 @@ class TestQuantSim:
     def test_lpbq_strict(self):
         model = models_for_tests.weight_matmul_model(in_features=16, out_features=32)
         sim = QuantizationSimModel(
-            model, param_type="float16", activation_type="float16"
+            model,
+            param_type="float16",
+            activation_type="float16",
+            config_file="default_config.json",
         )
         quantizers = set(sim.qc_quantize_op_dict.values())
 

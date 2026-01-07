@@ -273,10 +273,12 @@ class TestSeqMse:
         enc_before = sim.model.fc1.param_quantizers["weight"].encoding
         sim.compute_encodings(calibrate, dummy_input)
         enc_after = sim.model.fc1.param_quantizers["weight"].encoding
-        assert enc_before.max == enc_after.max
-        assert numpy.abs(enc_before.min - enc_after.min) < 1.05 * numpy.abs(
-            enc_before.delta
-        )
+        max_before = numpy.array([e.max for e in enc_before])
+        max_after = numpy.array([e.max for e in enc_after])
+        min_before = numpy.array([e.min for e in enc_before])
+        min_after = numpy.array([e.min for e in enc_after])
+        assert numpy.allclose(max_before, max_after)
+        assert numpy.allclose(min_before, min_after, atol=1.05 * numpy.abs(min_before))
 
     @pytest.mark.parametrize("inp_symmetry", ["asym", "symfp", "symqt"])
     @pytest.mark.parametrize("loss_fn", ["mse", "l1", "sqnr"])
@@ -334,10 +336,13 @@ class TestSeqMse:
             ].encoding
 
         # encodings should be bit-exact
-        assert without_checkpoints_enc.min == with_checkpoints_enc.min
-        assert without_checkpoints_enc.max == with_checkpoints_enc.max
-        assert without_checkpoints_enc.delta == with_checkpoints_enc.delta
-        assert without_checkpoints_enc.offset == with_checkpoints_enc.offset
+        for without_checkpoint, with_checkpoint in zip(
+            without_checkpoints_enc, with_checkpoints_enc
+        ):
+            assert without_checkpoint.min == with_checkpoint.min
+            assert without_checkpoint.max == with_checkpoint.max
+            assert without_checkpoint.delta == with_checkpoint.delta
+            assert without_checkpoint.offset == with_checkpoint.offset
 
     @pytest.mark.parametrize(
         "qscheme",

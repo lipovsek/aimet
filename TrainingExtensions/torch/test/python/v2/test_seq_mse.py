@@ -362,7 +362,7 @@ class TestSeqMse:
         enc_before = sim.model.fc1.param_quantizers["weight"].get_encodings()
         sim.compute_encodings(calibrate, dummy_input)
         enc_after = sim.model.fc1.param_quantizers["weight"].get_encodings()
-        assert enc_before.scale == enc_after.scale
+        assert torch.all(enc_before.scale == enc_after.scale)
 
     @pytest.mark.parametrize("inp_symmetry", ["asym", "symfp", "symqt"])
     @pytest.mark.parametrize("loss_fn", ["mse", "l1", "sqnr"])
@@ -437,10 +437,10 @@ class TestSeqMse:
             ].get_encodings()
 
         # encodings should be bit-exact
-        assert without_checkpoints_enc.min == with_checkpoints_enc.min
-        assert without_checkpoints_enc.max == with_checkpoints_enc.max
-        assert without_checkpoints_enc.scale == with_checkpoints_enc.scale
-        assert without_checkpoints_enc.offset == with_checkpoints_enc.offset
+        assert torch.all(without_checkpoints_enc.min == with_checkpoints_enc.min)
+        assert torch.all(without_checkpoints_enc.max == with_checkpoints_enc.max)
+        assert torch.all(without_checkpoints_enc.scale == with_checkpoints_enc.scale)
+        assert torch.all(without_checkpoints_enc.offset == with_checkpoints_enc.offset)
 
     @pytest.mark.parametrize(
         "qscheme",

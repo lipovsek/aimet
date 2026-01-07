@@ -535,7 +535,7 @@ class TestAdascaleQuantizer:
             sim = QuantizationSimModel(
                 model_onnx,
                 [dummy_input],
-                config_file="htp_quantsim_config_v73_per_channel_linear.json",
+                config_file="htp_v73",
             )
             sim._compute_param_encodings(overwrite=False)
             qt_input = []

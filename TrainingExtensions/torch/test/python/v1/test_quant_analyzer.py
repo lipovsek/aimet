@@ -403,7 +403,9 @@ class TestQuantAnalyzer:
         input_shape = (1, 3, 32, 32)
         dummy_input = torch.randn(*input_shape)
         model = TinyModel().eval()
-        sim = QuantizationSimModel(model, dummy_input)
+        sim = QuantizationSimModel(
+            model, dummy_input, config_file="default_config.json"
+        )
         sim.compute_encodings(evaluate, dummy_input)
         forward_pass_callback = CallbackFunc(calibrate, dummy_input)
         eval_callback = CallbackFunc(evaluate, dummy_input)
@@ -505,7 +507,7 @@ class TestQuantAnalyzer:
                 quant_scheme=QuantScheme.post_training_tf_enhanced,
                 default_param_bw=8,
                 default_output_bw=8,
-                config_file=None,
+                config_file="default_config.json",
                 results_dir=tempdir,
             )
 

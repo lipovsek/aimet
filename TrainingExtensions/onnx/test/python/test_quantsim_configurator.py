@@ -43,7 +43,10 @@ import pytest
 import torch
 import onnx
 from aimet_onnx.common.defs import QuantizationDataType, qtype
-from aimet_onnx.common.quantsim_config.utils import get_path_for_per_channel_config
+from aimet_onnx.common.quantsim_config.utils import (
+    get_path_for_per_channel_config,
+    get_path_for_per_tensor_config,
+)
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.quantsim import QuantizationSimModel, QuantSimConfigurator
 from .models import models_for_tests
@@ -378,7 +381,7 @@ class TestQuantSimConfig:
 
     def test_matmul_perchannel_config(self):
         model = models_for_tests.weight_matmul_model(in_features=10, out_features=20)
-        sim = QuantizationSimModel(model, config_file=get_path_for_per_channel_config())
+        sim = QuantizationSimModel(model, config_file=get_path_for_per_tensor_config())
         assert not sim.qc_quantize_op_dict["weight"].quant_info.usePerChannelMode
 
     @pytest.mark.parametrize("config", (None, get_path_for_per_channel_config()))

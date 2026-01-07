@@ -47,6 +47,7 @@ import onnxruntime as ort
 
 from aimet_onnx.common.utils import CallbackFunc
 from aimet_onnx.common.defs import QuantScheme
+from aimet_onnx.common.quantsim_config.utils import get_path_for_per_tensor_config
 from aimet_onnx.batch_norm_fold import fold_all_batch_norms_to_weight
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.quant_analyzer import QuantAnalyzer
@@ -272,7 +273,9 @@ class TestQuantAnalyzer:
         )
         dummy_input_dict = {"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}
         fold_all_batch_norms_to_weight(model)
-        sim = QuantizationSimModel(copy.deepcopy(model))
+        sim = QuantizationSimModel(
+            copy.deepcopy(model), config_file=get_path_for_per_tensor_config()
+        )
         sim.compute_encodings(evaluate, dummy_input_dict)
         forward_pass_callback = CallbackFunc(calibrate, dummy_input_dict)
         eval_callback = CallbackFunc(evaluate, dummy_input_dict)
@@ -494,7 +497,7 @@ class TestQuantAnalyzer:
                 quant_scheme=QuantScheme.post_training_tf_enhanced,
                 default_param_bw=8,
                 default_activation_bw=8,
-                config_file=None,
+                config_file=get_path_for_per_tensor_config(),
                 results_dir=tmp_dir,
             )
 

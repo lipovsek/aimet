@@ -204,7 +204,7 @@ def test_set_blockwise_quantization_for_weights(device):
 
     assert qsim.model.fc.param_quantizers["weight"].is_initialized()
     assert qsim.model.fc.param_quantizers["weight"].bitwidth == 8
-    assert qsim.model.fc.param_quantizers["weight"].shape == ()
+    assert qsim.model.fc.param_quantizers["weight"].shape == (model.fc.out_features, 1)
 
     with pytest.raises(RuntimeError):
         # This should error out since the first conv's in_channels of 3 is invalid with block size 4
@@ -316,7 +316,7 @@ def test_set_grouped_blockwise_quantization_for_weights(device):
     assert isinstance(qsim.model.fc.param_quantizers["weight"], QuantizeDequantize)
     assert qsim.model.fc.param_quantizers["weight"].is_initialized()
     assert qsim.model.fc.param_quantizers["weight"].bitwidth == 8
-    assert qsim.model.fc.param_quantizers["weight"].shape == ()
+    assert qsim.model.fc.param_quantizers["weight"].shape == (model.fc.out_features, 1)
 
     with pytest.raises(RuntimeError):
         # This should error out since the first conv's in_channels of 3 is invalid with block size 4
