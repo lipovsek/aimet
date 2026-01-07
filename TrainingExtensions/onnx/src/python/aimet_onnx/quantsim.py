@@ -3092,9 +3092,9 @@ def load_encodings_to_sim(
         }
 
         def get_lpbq_params(op: Op):
-            for inp in op.inputs:
-                enc = lpbq_encodings.get(inp.name)
-                qtzr = quant_sim_model.qc_quantize_op_dict.get(inp.name)
+            for product, _ in op.parameters.values():
+                enc = lpbq_encodings.get(product.name)
+                qtzr = quant_sim_model.qc_quantize_op_dict.get(product.name)
                 if enc and not isinstance(qtzr, GroupedBlockQuantizeDequantize):
                     return enc.bitwidth, enc.decompressed_bitwidth(), enc.block_size
             return None, None, None

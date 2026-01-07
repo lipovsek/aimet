@@ -187,3 +187,73 @@ def test_torch_to_onnx_zero_point_shift(tmp_dir, encoding_version):
     assert sorted(onnx_enc, key=lambda x: x["name"]) == sorted(
         torch_enc, key=lambda x: x["name"]
     )
+
+
+def test_transpose_mm_lpbq(tmp_dir):
+    """
+    Given: QDQ Model with weight -> QDQ (lpbq) -> Transpose -> MatMul sequence
+    """
+    from aimet_torch.v2.quantsim.config_utils import (
+        set_grouped_blockwise_quantization_for_weights,
+    )
+
+    model = torch.nn.Sequential(torch.nn.Linear(64, 64))
+    x = torch.randn(3, 64, 64)
+    torch_sim = aimet_torch.QuantizationSimModel(model, x)
+    set_grouped_blockwise_quantization_for_weights(
+        torch_sim,
+        [torch.nn.Linear],
+        bitwidth=4,
+        symmetric=True,
+        decompressed_bw=8,
+        block_size=8,
+        block_grouping=8,
+    )
+    torch_sim.compute_encodings(lambda model: model(x))
+    torch_out = torch_sim.model(x).detach().numpy()
+    torch_sim.onnx.export(
+        x,
+        os.path.join(tmp_dir, "transpose_mm.onnx"),
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        encoding_version="2.0.0",
+    )
+    # TODO (kyunggeu): Uncomment once aimet-torch 2.22 is released
+    # aimet_torch.onnx.export(
+    #     torch_sim.model,
+    #     x,
+    #     os.path.join(tmp_dir, "transpose_mm_qdq.onnx"),
+    #     input_names=["input"],
+    #     output_names=["output"],
+    #     opset_version=21,
+    #     dynamo=False,
+    # )
+
+    """
+    When: Load encodings to aimet-onnx sim
+    Then: Encodings should be loaded normally and outputs should match
+    """
+    onnx_sim = aimet_onnx.QuantizationSimModel(
+        onnx.load(os.path.join(tmp_dir, "transpose_mm.onnx"))
+    )
+    aimet_onnx.quantsim.load_encodings_to_sim(
+        onnx_sim, os.path.join(tmp_dir, "transpose_mm.encodings"), strict=False
+    )
+    (onnx_out,) = onnx_sim.session.run(None, {"input": x.numpy()})
+    assert np.allclose(
+        torch_out,
+        onnx_out,
+        atol=torch_sim.model[0].output_quantizers[0].get_scale().item(),
+    )
+
+    # TODO (kyunggeu): Uncomment once aimet-torch 2.22 is released
+    # onnx_sim = aimet_onnx.QuantizationSimModel.from_onnx_qdq(
+    #     onnx.load(os.path.join(tmp_dir, "transpose_mm_qdq.onnx"))
+    # )
+    # (onnx_out,) = onnx_sim.session.run(None, {"input": x.numpy()})
+    # assert np.allclose(
+    #     torch_out,
+    #     onnx_out,
+    #     atol=torch_sim.model[0].output_quantizers[0].get_scale().item(),
+    # )
