@@ -41,6 +41,7 @@ import yaml
 from ONNXRegression.config_loader import load_config, list_tests, validate_config
 from ONNXRegression.runner import run_single_config
 from ONNXRegression.report.report_writer import write_csv, write_html
+from ONNXRegression.workflow.utils import install_model_extras
 
 
 TORCH_UNSUPPORTED_FEATURES = {"lite_mp"}
@@ -325,6 +326,9 @@ Suite files location: ONNXRegression/suites/
         print(f"  QNN: {'Enabled' if config.get('qnn_options') else 'Disabled'}")
 
         try:
+            # Install model extras before running (comment out to disable)
+            install_model_extras(config["model_name"])
+
             # Run the test using the merged config
             # Skip individual reports
             result = run_single_config(config, skip_reports=True)

@@ -9,13 +9,17 @@ Provides utilities for:
 - Baseline setup and verification
 - Environment lockfile generation with metadata
 - AI Hub authentication and configuration
+- Model dependency installation
 """
 
 import os
 import json
 import subprocess
+import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+
+import yaml
 
 
 class BaselineSetup:
@@ -276,6 +280,118 @@ verbose = True
             return False
 
 
+class ModelDependencyInstaller:
+    """
+    Install model-specific dependencies from suite configuration.
+
+    NOTE: This class installs ALL model extras from a suite file upfront.
+    Use this for:
+    - CLI: `python -m ONNXRegression.workflow.utils install-deps --suite nightly-torch`
+    - Workflow pre-install step (before running tests)
+
+    For per-model installation inside test loops, use `install_model_extras()` instead.
+    """
+
+    # Common packages needed by certain model types
+    COMMON_PACKAGES: List[str] = [
+        "object-detection-metrics",  # For YOLO mAP evaluation
+    ]
+
+    def __init__(self, suite_path: str):
+        self.suite_path = Path(suite_path)
+
+    def _run_install(self, packages: List[str]) -> bool:
+        """
+        Run uv pip install for given packages.
+
+        Args:
+            packages: List of package specifiers
+
+        Returns:
+            True if successful, False otherwise
+        """
+        cmd = ["uv", "pip", "install", "-q"] + packages
+
+        try:
+            subprocess.run(cmd, check=True)
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def install(self) -> None:
+        """
+        Install model-specific dependencies from suite YAML file.
+
+        Reads the suite file, extracts model names, and installs:
+        1. Common packages (e.g., object-detection-metrics)
+        2. Per-model extras via: qai-hub-models[model-name]
+        """
+        print("=" * 60)
+        print("Installing Model Dependencies")
+        print("=" * 60)
+
+        if not self.suite_path.exists():
+            print(f"❌ Suite file not found: {self.suite_path}")
+            return
+
+        with open(self.suite_path) as f:
+            suite = yaml.safe_load(f)
+
+        models = suite.get("models", [])
+        if not models:
+            print("ℹ️  No models found in suite")
+            return
+
+        # Install common packages
+        if self.COMMON_PACKAGES:
+            print(f"Installing common packages: {self.COMMON_PACKAGES}")
+            for package in self.COMMON_PACKAGES:
+                if self._run_install([package]):
+                    print(f"  ✓ {package}")
+                else:
+                    print(f"  ⚠️  {package} (failed, may not be needed)")
+            print("")
+
+        # Install per-model extras
+        print(f"Installing model extras ({len(models)} models):")
+        for model_yaml in models:
+            # Extract model name from path like 'models/yolov5.yaml'
+            model_name = model_yaml.replace("models/", "").replace(".yaml", "")
+
+            if self._run_install([f"qai-hub-models[{model_name}]"]):
+                print(f"  ✓ {model_name}")
+            else:
+                print(f"  - {model_name} (no extras or already installed)")
+
+        print("")
+        print("✓ Model dependencies installed")
+
+
+import subprocess
+
+
+def install_model_extras(model_name: str, use_uv: bool = True) -> None:
+    """
+    Install qai-hub-models extras for a single model.
+
+    Use this for per-model installation inside test loops.
+    For bulk installation from suite file, use ModelDependencyInstaller.
+
+    Args:
+        model_name: Model name (e.g., "yolov8_det", "resnet50")
+        use_uv: Use uv pip instead of pip
+    """
+    pip_cmd = ["uv", "pip", "install", "-q"] if use_uv else ["pip", "install", "-q"]
+    try:
+        subprocess.run(
+            [*pip_cmd, f"qai-hub-models[{model_name}]"],
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        pass  # No extras for this model
+
+
 def main():
     """CLI entry point for workflow helpers."""
     import argparse
@@ -305,6 +421,16 @@ def main():
     )
     aihub_parser.add_argument("--token", help="AI Hub API token (or use env var)")
 
+    # Model dependencies
+    deps_parser = subparsers.add_parser(
+        "install-deps", help="Install model-specific dependencies from suite"
+    )
+    deps_parser.add_argument(
+        "--suite",
+        required=True,
+        help="Suite name (e.g., 'nightly-torch')",
+    )
+
     args = parser.parse_args()
 
     if args.command == "setup-baseline":
@@ -326,6 +452,12 @@ def main():
     elif args.command == "configure-aihub":
         success = AIHubConfig.configure(args.token)
         exit(0 if success else 1)
+
+    elif args.command == "install-deps":
+        suite_path = f"ONNXRegression/suites/{args.suite}.yaml"
+        installer = ModelDependencyInstaller(suite_path)
+        installer.install()
+        exit(0)
 
     else:
         parser.print_help()

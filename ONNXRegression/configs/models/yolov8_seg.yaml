@@ -1,0 +1,10 @@
+model_name: yolov8_seg
+apply_prepare_model: False
+
+tests:
+  - name: quantsim_int8_int16
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int16
+    config_file: htp_v79

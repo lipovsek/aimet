@@ -120,7 +120,7 @@ jobs:
 
           # Install QAI Hub packages
           uv pip install qai-hub qai-hub-models
-          uv pip install pynvml pytest requests
+          uv pip install pynvml pytest requests object-detection-metrics
 
       - name: Install AIMET
         run: |

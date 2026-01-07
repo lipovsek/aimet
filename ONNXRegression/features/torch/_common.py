@@ -43,11 +43,7 @@ import aimet_torch
 from torch.utils.data import DataLoader
 from qai_hub_models.datasets import DatasetSplit, get_dataset_from_name
 from qai_hub_models.utils.evaluate import get_deterministic_sample
-
-try:
-    from aimet_torch.quantsim_config.quantsim_config import get_path_for_target_config
-except ImportError:
-    get_path_for_target_config = None
+from aimet_torch.nn import QuantizationMixin
 
 __all__ = [
     "get_torch_model",
@@ -160,6 +156,24 @@ def get_torch_model(model: Any, device: torch.device = None) -> torch.nn.Module:
     return torch_model
 
 
+_MODULES_REGISTERED = False
+
+
+def _register_ignored_modules() -> None:
+    """Register ultralytics modules to be ignored by AIMET quantization."""
+    global _MODULES_REGISTERED
+    if _MODULES_REGISTERED:
+        return
+    try:
+        from ultralytics.nn.modules.conv import Concat
+
+        QuantizationMixin.ignore(Concat)
+        print(f"[QuantSim Torch] Ignoring ultralytics.Concat for quantization")
+    except ImportError:
+        pass
+    _MODULES_REGISTERED = True
+
+
 # ==================== AIMET QuantSim Construction ====================
 
 
@@ -189,6 +203,7 @@ def build_quantsim_torch(
     Returns:
         Tuple of QuantizationSimModel
     """
+    _register_ignored_modules()
     device = next(model.parameters()).device
 
     if dummy_input.device != device:
