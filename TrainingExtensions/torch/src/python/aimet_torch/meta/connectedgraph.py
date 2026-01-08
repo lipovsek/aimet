@@ -108,6 +108,24 @@ MULTI_INPUT_OPS_TO_PARSE = [
     aimet_modules.Concat,
     aimet_modules.Minimum,
     aimet_modules.DynamicConv2d,
+    aimet_modules.BatchNorm,
+    aimet_modules.Bmm,
+    aimet_modules.Equal,
+    aimet_modules.FloorDivide,
+    aimet_modules.Fmod,
+    aimet_modules.Greater,
+    aimet_modules.GreaterEqual,
+    aimet_modules.GroupNorm,
+    aimet_modules.Less,
+    aimet_modules.LessEqual,
+    aimet_modules.LogicalAnd,
+    aimet_modules.LogicalOr,
+    aimet_modules.MaskedFill,
+    aimet_modules.Maximum,
+    aimet_modules.NotEqual,
+    aimet_modules.Outer,
+    aimet_modules.Remainder,
+    aimet_modules.Where,
 ]
 
 # We want to consider following operations as leaf nodes while creating op for connected graph.
@@ -121,6 +139,10 @@ SKIP_LIST_FOR_SUBGRAPH_TRACE = [
     aimet_modules.ChannelShuffle,
     aimet_modules.NonMaxSuppression,
     aimet_modules.DepthToSpaceCRDMode,
+    aimet_modules.Addmm,
+    aimet_modules.Baddbmm,
+    aimet_modules.Gather,
+    aimet_modules.GridSample,
 ]
 
 

@@ -1436,3 +1436,67 @@ class TestConnectedGraphUtils(unittest.TestCase):
 
         # propagate_output_encodings should work normally
         propagate_output_encodings(sim, custom.Concat)
+
+
+@pytest.mark.parametrize(
+    "layer, inputs, buffer",
+    [
+        (
+            aimet_modules.Where,
+            (torch.tensor([True, False, True]), torch.randn(3)),
+            torch.randn(3),
+        ),
+        (
+            aimet_modules.Addmm,
+            (torch.randn(3, 3), torch.randn(3, 3)),
+            torch.randn(3, 3),
+        ),
+        (
+            aimet_modules.Baddbmm,
+            (torch.randn(1, 3, 3), torch.randn(1, 3, 3)),
+            torch.randn(1, 3, 3),
+        ),
+        (aimet_modules.Bmm, (torch.randn(1, 3, 3),), torch.randn(1, 3, 3)),
+        (aimet_modules.Equal, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.FloorDivide, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.Fmod, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.Greater, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.GreaterEqual, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.GridSample, (torch.randn(1, 1, 2, 2),), torch.randn(1, 2, 2, 2)),
+        (aimet_modules.Less, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.LessEqual, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.LogicalAnd, (torch.tensor([True]),), torch.tensor([False])),
+        (aimet_modules.LogicalOr, (torch.tensor([True]),), torch.tensor([False])),
+        # (aimet_modules.MaskedFill, (torch.randn(1), torch.tensor([True])), torch.randn(1)), # TODO: Fix forward pass definition
+        (aimet_modules.Maximum, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.NotEqual, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.Outer, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.Remainder, (torch.randn(3),), torch.randn(3)),
+        (aimet_modules.Multiply, (torch.randn(3),), torch.randn(3)),
+        (
+            aimet_modules.ScatterND,
+            (torch.randn(3, 3), torch.tensor([[0, 0], [1, 1]])),
+            torch.randn(2),
+        ),
+        # (
+        #     aimet_modules.ScaledDotProductAttention,
+        #     (torch.randn(1, 3, 3), torch.randn(1, 3, 3)),
+        #     torch.randn(1, 3, 3),
+        # ),  # TODO: Implement quantized class
+    ],
+)
+def test_nary_operator_input_ordering(layer, inputs, buffer):
+    class Model(torch.nn.Module):
+        def __init__(self, layer):
+            super(Model, self).__init__()
+            self.layer = layer
+            self.register_buffer("buffer", buffer)
+
+        def forward(self, *x):
+            return self.layer(*x, self.buffer)
+
+    sim = aimet_torch.QuantizationSimModel(Model(layer()), inputs)
+
+    assert sim.connected_graph.ordered_ops[0].inputs[-1].is_const
+    for inp in sim.connected_graph.ordered_ops[0].inputs[:-1]:
+        assert inp.is_model_input
