@@ -346,6 +346,55 @@ def _check_non_standard_quantizer(model: torch.nn.Module):
             )
 
 
+def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> onnx.ModelProto:
+    """
+    Duplicate QDQ nodes that share the same input tensor to avoid name conflicts
+    For example,
+
+    Before: One tensor associated with multiple encodings
+
+        "conv1.weight" -+--------------> QDQ -> Conv
+                        |
+                        +--------------> QDQ -> Conv
+
+    After: Duplicate QDQ nodes for each usage
+
+        "conv1.weight" -+--------------> QDQ -> Conv
+                        |
+                        +-> Identity --> QDQ -> Conv
+                                      ↑
+                              "conv1.weight_dup"
+    """
+    consumers: dict[str, list[onnx.NodeProto]] = {}
+
+    for node in onnx_model.graph.node:
+        if f"{node.domain}::{node.op_type}" in (
+            "aimet::quantize_dequantize",
+            "aimet::QuantizeDequantize",
+            "::QuantizeLinear",
+            "::DequantizeLinear",
+        ):
+            consumers.setdefault(node.input[0], []).append(node)
+
+    for input_name, qdq_nodes in consumers.items():
+        if len(qdq_nodes) <= 1:
+            continue
+
+        # Duplicate QDQ nodes for each usage
+        for i, qdq_node in enumerate(qdq_nodes):
+            # Create an Identity node to duplicate the tensor
+            identity_node = onnx.helper.make_node(
+                "Identity",
+                inputs=[input_name],
+                outputs=[f"{input_name}_dup_{i}"],
+                name=f"Identity_{input_name}_dup_{i}",
+            )
+            onnx_model.graph.node.append(identity_node)
+            qdq_node.input[0] = identity_node.output[0]
+
+    return onnx_model
+
+
 def _to_onnx(
     model: torch.nn.Module,
     args: Union[Tuple[Any, ...], torch.Tensor],
@@ -356,6 +405,7 @@ def _to_onnx(
 
     _onnx.export(model, args, f, **kwargs)
     onnx_model = onnx.load(f, load_external_data=False)
+    onnx_model = _duplicate_shared_qdq_inputs(onnx_model)
 
     param_names = {
         f"{layer_name}.{param_name}"

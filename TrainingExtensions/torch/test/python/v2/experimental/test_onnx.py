@@ -1489,3 +1489,74 @@ def test_1x1_conv_bq(tmp_path: pathlib.Path, lpbq: bool):
     atol = sim.model[0].output_quantizers[0].get_scale().item()
 
     assert torch.allclose(torch.from_numpy(out_onnx), out_sim, atol=atol)
+
+
+@torch.no_grad()
+def test_duplicate_qdq_input(tmp_path):
+    """
+    Given: Same input tensor associated with multiple QDQ nodes
+
+                     +-----> aimet::QuantizeDequantize ------> out0
+        Relu --------+
+                ↑    +-----> aimet::QuantizeDequantize ------> out1
+                |
+           "/Relu_output_0"
+
+    When: Export to onnx QDQ
+    Then: There should be no tensor that feeds into multiple QuantizeLinear/DequantizeLinear nodes
+          in the exported onnx graph
+
+                                  "/Relu_output_0_dup_0"
+                                      ↓
+                     +-----> Identity -> QuantizeLinear -> DequantizeLinear ------> out0
+        Relu --------+
+                ↑    +-----> Identity -> QuantizeLinear -> DequantizeLinear ------> out1
+                |                     ↑
+           "/Relu_output_0"       "/Relu_output_0_dup_1"
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super(Model, self).__init__()
+            self.qdq0 = Q.affine.QuantizeDequantize(
+                (), qmin=0, qmax=255, symmetric=False
+            )
+            self.qdq1 = Q.affine.QuantizeDequantize(
+                (), qmin=0, qmax=255, symmetric=False
+            )
+
+        def forward(self, x):
+            x = torch.nn.functional.relu(x)
+            y0 = self.qdq0(x)
+            y1 = self.qdq1(x)
+            return y0, y1
+
+    model = Model()
+    x = torch.randn(1, 10)
+    model.qdq0.set_range(-1.0, 1.0)
+    model.qdq1.set_range(0.0, 1.0)
+    aimet_torch.onnx.export(
+        model,
+        (x,),
+        tmp_path / "duplicate_qdq_input.onnx",
+        input_names=["input"],
+        output_names=["output_0", "output_1"],
+        dynamo=False,
+    )
+
+    onnx_model = onnx.load(tmp_path / "duplicate_qdq_input.onnx")
+    onnx.checker.check_model(onnx_model)
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(), sess_options=sess_options
+    )
+    ort_out0, ort_out1 = sess.run(None, {"input": x.numpy()})
+    sim_out0, sim_out1 = model(x)
+    assert np.allclose(
+        ort_out0, sim_out0.detach().numpy(), atol=model.qdq0.get_scale().item()
+    )
+    assert np.allclose(
+        ort_out1, sim_out1.detach().numpy(), atol=model.qdq1.get_scale().item()
+    )
