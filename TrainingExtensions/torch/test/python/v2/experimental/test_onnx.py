@@ -1518,6 +1518,9 @@ def test_duplicate_qdq_input(tmp_path):
     class Model(torch.nn.Module):
         def __init__(self):
             super(Model, self).__init__()
+            self.qdq2 = Q.affine.QuantizeDequantize(
+                (), qmin=0, qmax=255, symmetric=False
+            )
             self.qdq0 = Q.affine.QuantizeDequantize(
                 (), qmin=0, qmax=255, symmetric=False
             )
@@ -1529,7 +1532,7 @@ def test_duplicate_qdq_input(tmp_path):
             x = torch.nn.functional.relu(x)
             y0 = self.qdq0(x)
             y1 = self.qdq1(x)
-            return y0, y1
+            return y0.flatten(), y1.flatten()
 
     model = Model()
     x = torch.randn(1, 10)

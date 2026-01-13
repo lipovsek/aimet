@@ -376,6 +376,7 @@ def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> onnx.ModelProto
         ):
             consumers.setdefault(node.input[0], []).append(node)
 
+    producers: dict[str, onnx.NodeProto] = {}
     for input_name, qdq_nodes in consumers.items():
         if len(qdq_nodes) <= 1:
             continue
@@ -389,8 +390,19 @@ def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> onnx.ModelProto
                 outputs=[f"{input_name}_dup_{i}"],
                 name=f"Identity_{input_name}_dup_{i}",
             )
-            onnx_model.graph.node.append(identity_node)
             qdq_node.input[0] = identity_node.output[0]
+            producers[identity_node.output[0]] = identity_node
+
+    # Insert Identity nodes to the graph in topological order
+    all_nodes = []
+    for node in onnx_model.graph.node:
+        if node.input and node.input[0] in producers:
+            identity_node = producers[node.input[0]]
+            all_nodes.append(identity_node)
+        all_nodes.append(node)
+
+    onnx_model.graph.ClearField("node")
+    onnx_model.graph.node.extend(all_nodes)
 
     return onnx_model
 
