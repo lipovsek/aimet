@@ -172,7 +172,7 @@ jobs:
           . .venv/bin/activate
 
           # Install core packages
-          uv pip install qai-hub qai-hub-models
+          uv pip install qai-hub qai-hub-models==0.43.0 # TODO: Remove after next QAI Hub Models release
           uv pip install onnxruntime-gpu==1.19.2
           uv pip install pynvml pytest requests
 

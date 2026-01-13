@@ -119,7 +119,7 @@ jobs:
           uv pip install torch==${{ env.VER_TORCH}} torchvision --index-url https://download.pytorch.org/whl/${{ env.VER_CUDA_SHORT }}
 
           # Install QAI Hub packages
-          uv pip install qai-hub qai-hub-models
+          uv pip install qai-hub qai-hub-models==0.43.0 # TODO: Remove after next QAI Hub Models release
           uv pip install pynvml pytest requests object-detection-metrics
 
       - name: Install AIMET
