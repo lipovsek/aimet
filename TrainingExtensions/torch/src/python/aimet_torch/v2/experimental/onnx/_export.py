@@ -43,9 +43,11 @@ from packaging import version
 import functools
 import math
 import numpy as np
-from typing import Sequence, Iterable, Optional
+import os
+from typing import Any, Sequence, Iterable, Optional
 
 import onnx
+from onnx.external_data_helper import _get_all_tensors
 import onnxscript
 from onnxscript import opset15, opset16, opset17, opset18, opset19, opset20, opset21
 import torch
@@ -62,10 +64,106 @@ except ImportError:
 
 from aimet_torch.v2.utils import patch_attr
 
-
-ONNX_QUANTIZER_OP_TYPES = ("quantize", "quantize_dequantize")
+ONNX_QUANTIZER_OP_TYPES = ("quantize", "quantize_dequantize", "QuantizeDequantize")
 aimet_opset = onnxscript.values.Opset(domain="aimet", version=1)
 _is_torch_2 = version.parse(torch.__version__) >= version.parse("2.0.0")
+
+# QuantizeDequantize placeholder definition.
+# This node is a dummy placeholder for torch.ops.aimet.quantize_dequantize,
+# which can't be directly executed by ONNXRuntime.
+# These nodes will be substituted with ONNX QuantizeLinear/DequantizeLinear or
+# be detached into a separate encoding JSON file
+onnx.defs.register_schema(
+    onnx.defs.OpSchema(
+        name="QuantizeDequantize",
+        domain="aimet",
+        since_version=1,
+        doc="Quantize and Dequantize operation as defined in AIMET.",
+        inputs=[
+            onnx.defs.OpSchema.FormalParameter(
+                name="tensor",
+                type_str="T",
+                description="Input tensor to be quantized and dequantized",
+            ),
+            onnx.defs.OpSchema.FormalParameter(
+                name="scale",
+                type_str="T",
+                description="Scale tensor for quantization",
+            ),
+            onnx.defs.OpSchema.FormalParameter(
+                name="offset",
+                type_str="T",
+                description="Offset tensor for quantization",
+            ),
+        ],
+        outputs=[
+            onnx.defs.OpSchema.FormalParameter(
+                name="output",
+                type_str="T",
+                description="Quantized and dequantized output tensor",
+            )
+        ],
+        type_constraints=[
+            (
+                "T",
+                [
+                    "tensor(float)",
+                    "tensor(double)",
+                    "tensor(float16)",
+                    "tensor(bfloat16)",
+                ],
+                "Constrain input and output types to numeric tensors.",
+            )
+        ],
+        attributes=[
+            onnx.defs.OpSchema.Attribute(
+                name="qmin",
+                type=onnx.defs.OpSchema.AttrType.INT,
+                description="Minimum quantization value",
+                required=True,
+            ),
+            onnx.defs.OpSchema.Attribute(
+                name="qmax",
+                type=onnx.defs.OpSchema.AttrType.INT,
+                description="Maximum quantization value",
+                required=True,
+            ),
+            onnx.defs.OpSchema.Attribute(
+                name="block_size",
+                type=onnx.defs.OpSchema.AttrType.INTS,
+                description="Block size",
+                required=False,
+            ),
+            onnx.defs.OpSchema.Attribute(
+                name="zero_point_shift",
+                type=onnx.defs.OpSchema.AttrType.FLOAT,
+                description="Zero point shift for quantization",
+                required=False,
+            ),
+        ],
+    )
+)
+
+
+@onnxscript.script(aimet_opset, default_opset=onnxscript.opset1)
+def _quantize_dequantize_placeholder(
+    tensor: onnxscript.FLOAT,
+    scale: onnxscript.FLOAT,
+    offset: onnxscript.FLOAT,
+    qmin: int,
+    qmax: int,
+    block_size: Sequence[int] = (1,),
+    zero_point_shift: float = 0.0,
+) -> onnxscript.FLOAT:
+    return aimet_opset.QuantizeDequantize(
+        tensor,
+        scale,
+        offset,
+        qmin=qmin,
+        qmax=qmax,
+        block_size=block_size,
+        zero_point_shift=zero_point_shift,
+    )
 
 
 def _quantize_template(opset: onnxscript.values.Opset) -> onnxscript.OnnxFunction:
@@ -474,17 +572,29 @@ def register_symbolic(symbolic_fn):
     return decorator
 
 
-def export(model: torch.nn.Module, *args, **kwargs):
+def export(
+    model: torch.nn.Module,
+    args: tuple[Any, ...] = (),
+    f: str | os.PathLike | None = None,
+    **kwargs,
+):
     """
     Export a torch model to ONNX with precomputed scale and offset.
     """
     if not isinstance(model, torch.nn.Module):
         raise NotImplementedError
 
+    if version.parse(torch.__version__) >= version.parse("2.6.0"):
+        custom_translation_table = kwargs.get("custom_translation_table", {})
+        kwargs["custom_translation_table"] = {
+            **custom_translation_table,
+            torch.ops.aimet.quantize_dequantize.default: _quantize_dequantize_placeholder,
+        }
+
     with _precompute_encodings(model):
         # Precompute scale/offset before entering torch.onnx.export so that
         # scale/offset are always represented as a leaf inputs in the onnx graphs
-        return torch.onnx.export(model, *args, **kwargs)
+        return torch.onnx.export(model, args, f, **kwargs)
 
 
 def remove_quantization_nodes_from_onnx_graph(
@@ -627,6 +737,10 @@ def _get_tensor_from_constant_name(
     """
     Returns tensor from the constant name.
     """
+    for const in _get_all_tensors(onnx_model):
+        if const.name == constant_name:
+            return onnx.numpy_helper.to_array(const, base_dir=base_dir)
+
     for node in onnx_model.graph.node:
         if constant_name in node.output:
             for attr in node.attribute:

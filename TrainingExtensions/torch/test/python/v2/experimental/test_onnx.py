@@ -36,6 +36,7 @@
 # =============================================================================
 import copy
 import os
+import itertools
 import json
 import pathlib
 import onnxruntime as ort
@@ -49,7 +50,6 @@ from onnx import helper, TensorProto
 import tempfile
 from unittest.mock import patch
 from ..models_ import test_models
-from packaging import version
 
 from aimet_common.quantsim_config.utils import (
     get_path_for_per_channel_config,
@@ -341,10 +341,42 @@ def test_export_torchvision_models(model_factory, input_shape):
 
 
 @torch.no_grad()
-@pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
-@pytest.mark.parametrize("lpbq", [False, True])
-@pytest.mark.parametrize("export_int32_bias", [False, True])
-@pytest.mark.parametrize("fold_param_quantizers", [False, True])
+@pytest.mark.parametrize(
+    "dynamo",
+    [
+        False,
+        True,
+    ],
+)
+@pytest.mark.parametrize(
+    "encoding_version",
+    [
+        "0.6.1",
+        "1.0.0",
+        "2.0.0",
+    ],
+)
+@pytest.mark.parametrize(
+    "lpbq",
+    [
+        False,
+        True,
+    ],
+)
+@pytest.mark.parametrize(
+    "export_int32_bias",
+    [
+        False,
+        True,
+    ],
+)
+@pytest.mark.parametrize(
+    "fold_param_quantizers",
+    [
+        False,
+        True,
+    ],
+)
 @pytest.mark.parametrize(
     "param_dtype, activation_dtype",
     [
@@ -360,6 +392,7 @@ def test_quantsim_export_resnet18(
     export_int32_bias: bool,
     param_dtype: str,
     activation_dtype: str,
+    dynamo: bool,
 ):
     """
     When: Export quantized torchvision model using quantsim.export
@@ -468,7 +501,7 @@ def test_quantsim_export_resnet18(
             output_names=["output"],
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
             export_int32_bias=export_int32_bias,
-            dynamo=False,
+            dynamo=dynamo,
             encoding_version=encoding_version,
         )
 
@@ -487,13 +520,27 @@ def test_quantsim_export_resnet18(
         with open(encodings_path) as f:
             onnx_encodings = json.load(f)
 
+        onnx_weight_names = set(
+            convfc.input[1]
+            for convfc in onnx_model.graph.node
+            if convfc.op_type in ("Conv", "Gemm")
+        )
+        onnx_bias_names = set(
+            convfc.input[2]
+            for convfc in onnx_model.graph.node
+            if convfc.op_type in ("Conv", "Gemm") and len(convfc.input) > 2
+        )
         """
         Then: The onnx encodings should have the same number of encodings
               as the number of quantizers in the original pytorch model
         """
         if encoding_version < "2.0.0":
-            assert len(onnx_encodings["param_encodings"]) == len(
-                expected_param_encodings
+            assert len(onnx_encodings["param_encodings"]) == (
+                0
+                if param_kind == "float"
+                else len(onnx_weight_names | onnx_bias_names)
+                if export_int32_bias
+                else len(onnx_weight_names)
             )
             # Exported encodings can contain MORE encodings than quantsim
             # due to data movement op's output encodings that are generated
@@ -506,16 +553,32 @@ def test_quantsim_export_resnet18(
             # due to data movement op's output encodings that are generated
             # on-the-fly during export
             assert len(onnx_encodings["encodings"]) >= len(
-                expected_param_encodings
-            ) + len(expected_activation_encodings)
+                expected_activation_encodings
+            ) + (
+                0
+                if param_kind == "float"
+                else len(onnx_weight_names | onnx_bias_names)
+                if export_int32_bias
+                else len(onnx_weight_names)
+            )
 
         """
         Then: The onnx encodings should have the same scale and offset value
               as the values of quantizers in the original pytorch model
         """
         if encoding_version == "0.6.1":
-            assert onnx_encodings["param_encodings"] == expected_param_encodings
-
+            for name, e in onnx_encodings["param_encodings"].items():
+                if name in expected_param_encodings:
+                    assert e == expected_param_encodings[name]
+                else:
+                    assert any(
+                        len(e) == len(expected)
+                        and e[i]["scale"] == expected[i]["scale"]
+                        and e[i]["offset"] == expected[i]["offset"]
+                        and e[i]["bitwidth"] == expected[i]["bitwidth"]
+                        for expected in expected_param_encodings.values()
+                        for i in range(len(e))
+                    )
             for e in onnx_encodings["activation_encodings"].values():
                 assert any(
                     e[0]["scale"] == expected[0]["scale"]
@@ -526,7 +589,15 @@ def test_quantsim_export_resnet18(
         elif encoding_version == "1.0.0":
             for e in onnx_encodings["param_encodings"]:
                 name = e.pop("name")
-                assert e == expected_param_encodings[name]
+                if name in expected_param_encodings:
+                    assert e == expected_param_encodings[name]
+                else:
+                    assert any(
+                        e["scale"] == expected["scale"]
+                        and e["offset"] == expected["offset"]
+                        and e["bw"] == expected["bw"]
+                        for expected in expected_param_encodings.values()
+                    )
 
             for e in onnx_encodings["activation_encodings"]:
                 assert any(
@@ -579,9 +650,28 @@ def _parse_type(type_str: str) -> tuple[str, int]:
     raise RuntimeError
 
 
+@pytest.mark.parametrize(
+    "dynamo",
+    [
+        False,
+        True,
+    ],
+)
 @pytest.mark.parametrize("lpbq", [False])
-@pytest.mark.parametrize("fold_param_quantizers", [False, True])
-@pytest.mark.parametrize("export_int32_bias", [True, False])
+@pytest.mark.parametrize(
+    "fold_param_quantizers",
+    [
+        False,
+        True,
+    ],
+)
+@pytest.mark.parametrize(
+    "export_int32_bias",
+    [
+        True,
+        False,
+    ],
+)
 @pytest.mark.parametrize(
     "param_dtype, activation_dtype",
     [
@@ -597,6 +687,7 @@ def test_quantsim_export_onnx_qdq_resnet18(
     fold_param_quantizers: bool,
     param_dtype: str,
     activation_dtype: str,
+    dynamo: bool,
 ):
     """
     When: Export quantized torchvision model using quantsim.export
@@ -662,10 +753,13 @@ def test_quantsim_export_onnx_qdq_resnet18(
         else contextlib.nullcontext()
     ):
         expected_out = sim.model(x)
-        sim_qdq_nodes = [
-            q
-            for q in sim.model.modules()
-            if isinstance(q, (Q.affine.QuantizeDequantize, Q.affine.Dequantize))
+        activation_qdq_nodes = [
+            qtzr
+            for _, qmodule in sim.named_qmodules()
+            for qtzr in itertools.chain(
+                qmodule.input_quantizers, qmodule.output_quantizers
+            )
+            if isinstance(qtzr, Q.affine.AffineQuantizerBase)
         ]
 
     if fold_param_quantizers:
@@ -682,7 +776,7 @@ def test_quantsim_export_onnx_qdq_resnet18(
             opset_version=21,
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
             export_int32_bias=export_int32_bias,
-            dynamo=False,
+            dynamo=dynamo,
         )
 
         """
@@ -706,7 +800,23 @@ def test_quantsim_export_onnx_qdq_resnet18(
         # Exported onnx qdq model can contain MORE qdq nodes than quantsim
         # as data movement op's output encodings that are generated
         # on-the-fly during export
-        assert len(onnx_dq_nodes) >= len(sim_qdq_nodes)
+        onnx_weight_names = set(
+            convfc.input[1]
+            for convfc in onnx_model.graph.node
+            if convfc.op_type in ("Conv", "Gemm")
+        )
+        onnx_bias_names = set(
+            convfc.input[2]
+            for convfc in onnx_model.graph.node
+            if convfc.op_type in ("Conv", "Gemm") and len(convfc.input) > 2
+        )
+        assert len(onnx_dq_nodes) >= len(activation_qdq_nodes) + (
+            0
+            if param_kind == "float"
+            else len(onnx_weight_names | onnx_bias_names)
+            if export_int32_bias
+            else len(onnx_weight_names)
+        )
 
         if activation_kind in ("uint", "int"):
             """
@@ -889,7 +999,8 @@ def test_unsupported_args(kwargs):
         aimet_torch.onnx.export(sim.model, x, f=os.devnull, **kwargs)
 
 
-def test_non_standard_quantizer():
+@pytest.mark.parametrize("dynamo", [False, True])
+def test_non_standard_quantizer(dynamo: bool):
     """
     When: Export model with non-standard-bitwidth quantizer
     Then: Should throw RuntimeError
@@ -900,10 +1011,11 @@ def test_non_standard_quantizer():
     sim.model[0].param_quantizers["weight"].bitwidth = 9
 
     with pytest.raises(RuntimeError):
-        aimet_torch.onnx.export(sim.model, x, f=os.devnull, dynamo=False)
+        aimet_torch.onnx.export(sim.model, x, f=os.devnull, dynamo=dynamo)
 
 
-def test_data_movement_op_encoding_generation():
+@pytest.mark.parametrize("dynamo", [False, True])
+def test_data_movement_op_encoding_generation(dynamo: bool):
     """
     Given: Model with data movement ops
     """
@@ -935,7 +1047,7 @@ def test_data_movement_op_encoding_generation():
             input_names=["input"],
             output_names=["output"],
             dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-            dynamo=False,
+            dynamo=dynamo,
         )
         onnx_model = onnx.load_model(full_path)
 
@@ -972,7 +1084,7 @@ def test_data_movement_op_encoding_generation():
                 input_names=["input"],
                 output_names=["output"],
                 dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-                dynamo=False,
+                dynamo=dynamo,
             )
         onnx_model_ = onnx.load_model(full_path)
         # patch sanity check
@@ -1088,7 +1200,8 @@ def test_data_movement_op_encoding_generation_edge_case():
     assert not new_encodings
 
 
-def test_back_to_back_qdq(tmp_path):
+@pytest.mark.parametrize("dynamo", [False, True])
+def test_back_to_back_qdq(tmp_path, dynamo: bool):
     class Model(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -1129,7 +1242,7 @@ def test_back_to_back_qdq(tmp_path):
             input_names=["input"],
             output_names=["output"],
             opset_version=21,
-            dynamo=False,
+            dynamo=dynamo,
         )
 
     with pytest.raises(NotImplementedError):
@@ -1138,7 +1251,7 @@ def test_back_to_back_qdq(tmp_path):
             "qdq_model.onnx",
             input_names=["input"],
             output_names=["output"],
-            dynamo=False,
+            dynamo=dynamo,
         )
 
     # TODO: Uncomment this when AIMET begins to support exporting back-to-back QDQ
@@ -1187,7 +1300,7 @@ def test_back_to_back_qdq(tmp_path):
         input_names=["input"],
         output_names=["output"],
         opset_version=21,
-        dynamo=False,
+        dynamo=dynamo,
     )
     onnx_model = onnx.load_model(tmp_path / "qdq_model.onnx")
     num_dq = len(
@@ -1225,12 +1338,14 @@ def tmp_path():
 
 
 @torch.no_grad()
+@pytest.mark.parametrize("dynamo", [False, True])
 @pytest.mark.parametrize("opset_version", [19, 21])
 @pytest.mark.parametrize("prequantize_constants", [False, True])
 def test_export_large_model(
     large_model: torch.nn.Module,
     opset_version: int,
     prequantize_constants: bool,
+    dynamo: bool,
     tmp_path: pathlib.Path,
 ):
     """
@@ -1252,7 +1367,7 @@ def test_export_large_model(
         input_names=["input"],
         output_names=["output"],
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-        dynamo=False,
+        dynamo=dynamo,
         encoding_version="2.0.0",
     )
 
@@ -1282,7 +1397,7 @@ def test_export_large_model(
         opset_version=opset_version,
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
         prequantize_constants=prequantize_constants,
-        dynamo=False,
+        dynamo=dynamo,
     )
 
     sess_options = ort.SessionOptions()
@@ -1301,7 +1416,8 @@ def test_export_large_model(
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
 
 
-def test_output_split(tmp_path):
+@pytest.mark.parametrize("dynamo", [False, True])
+def test_output_split(tmp_path, dynamo: bool):
     """
     Given:
       Model with an output that is split into multiple consumers:
@@ -1337,7 +1453,7 @@ def test_output_split(tmp_path):
         sim.model,
         x,
         f=tmp_path / "model.onnx",
-        dynamo=False,
+        dynamo=dynamo,
         input_names=["input"],
         output_names=["output1", "output2"],
     )
@@ -1361,8 +1477,12 @@ def test_output_split(tmp_path):
     assert torch.allclose(torch.from_numpy(out2), expected_out2, atol=atol2)
 
 
+@torch.no_grad()
+@pytest.mark.parametrize("dynamo", [False, True])
 @pytest.mark.parametrize("zero_point_shift", [0.0, 0.5])
-def test_quantsim_export_int2(tmp_path: pathlib.Path, zero_point_shift: float):
+def test_quantsim_export_int2(
+    tmp_path: pathlib.Path, zero_point_shift: float, dynamo: bool
+):
     """
     When: Export quantized model with int2 weights using sim.onnx.export
     Then: The exported weight encoding's y_zero_point should be equal to -zero_point_shift
@@ -1378,7 +1498,7 @@ def test_quantsim_export_int2(tmp_path: pathlib.Path, zero_point_shift: float):
         tmp_path / "int2_conv.onnx",
         input_names=["input"],
         output_names=["output"],
-        dynamo=False,
+        dynamo=dynamo,
         encoding_version="2.0.0",
     )
 
@@ -1416,7 +1536,7 @@ def test_quantsim_export_int2(tmp_path: pathlib.Path, zero_point_shift: float):
         opset_version=21,
         input_names=["input"],
         output_names=["output"],
-        dynamo=False,
+        dynamo=dynamo,
         prequantize_constants=True,
     )
     sess_options = ort.SessionOptions()
@@ -1429,20 +1549,10 @@ def test_quantsim_export_int2(tmp_path: pathlib.Path, zero_point_shift: float):
     assert torch.allclose(torch.from_numpy(out_onnx), out2, atol=atol)
 
 
-def test_dynamo_error(tmp_path):
-    with (
-        pytest.raises(NotImplementedError)
-        if version.parse(torch.__version__) >= version.parse("2.9.0")
-        else contextlib.nullcontext()
-    ):
-        aimet_torch.onnx.export(
-            torch.nn.Linear(3, 3), torch.randn(1, 3), f=tmp_path / "model.onnx"
-        )
-
-
 @torch.no_grad()
+@pytest.mark.parametrize("dynamo", [False, True])
 @pytest.mark.parametrize("lpbq", [False, True])
-def test_1x1_conv_bq(tmp_path: pathlib.Path, lpbq: bool):
+def test_1x1_conv_bq(tmp_path: pathlib.Path, lpbq: bool, dynamo: bool):
     """
     When: Export quantized model with 1x1 conv using aimet_torch.onnx.export
     Then: The exported onnx model should produce output close enough to
@@ -1475,7 +1585,7 @@ def test_1x1_conv_bq(tmp_path: pathlib.Path, lpbq: bool):
         tmp_path / "lpbq_conv1x1.onnx",
         input_names=["input"],
         output_names=["output"],
-        dynamo=False,
+        dynamo=dynamo,
         opset_version=21,
     )
 
@@ -1492,7 +1602,8 @@ def test_1x1_conv_bq(tmp_path: pathlib.Path, lpbq: bool):
 
 
 @torch.no_grad()
-def test_duplicate_qdq_input(tmp_path):
+@pytest.mark.parametrize("dynamo", [False, True])
+def test_duplicate_qdq_input(tmp_path, dynamo: bool):
     """
     Given: Same input tensor associated with multiple QDQ nodes
 
@@ -1544,7 +1655,7 @@ def test_duplicate_qdq_input(tmp_path):
         tmp_path / "duplicate_qdq_input.onnx",
         input_names=["input"],
         output_names=["output_0", "output_1"],
-        dynamo=False,
+        dynamo=dynamo,
     )
 
     onnx_model = onnx.load(tmp_path / "duplicate_qdq_input.onnx")

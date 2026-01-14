@@ -141,7 +141,7 @@ def export(
             f"aimet_torch.export only supports torch.nn.Module or QuantizationSimModel; got {type(model)}"
         )
 
-    base_dir = str(Path(f if isinstance(f, str) else f.name).absolute().parent)
+    base_dir = str(Path(str(f)).absolute().parent)
 
     _check_opset_version(kwargs)
     _check_unsupported_args(kwargs)
@@ -293,14 +293,8 @@ def _check_unsupported_args(kwargs):
         "dynamo", version.parse(torch.__version__) >= version.parse("2.9.0")
     )
 
-    if dynamo:
-        msg = "dynamo=True is not supported yet."
-        if version.parse(torch.__version__) >= version.parse("2.9.0"):
-            msg += (
-                " PyTorch onnx.export has switched to using dynamo-based export by default since v2.9.0. "
-                "Please pass dynamo=False explicitly to disable dynamo-based export."
-            )
-        raise NotImplementedError(msg)
+    if dynamo and version.parse(torch.__version__) < version.parse("2.8.0"):
+        raise RuntimeError("AIMET dynamo export is only supported in torch >= 2.8.0")
 
     export_params = kwargs.get("export_params", True)
 
@@ -346,9 +340,9 @@ def _check_non_standard_quantizer(model: torch.nn.Module):
             )
 
 
-def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> onnx.ModelProto:
+def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> dict[str, str]:
     """
-    Duplicate QDQ nodes that share the same input tensor to avoid name conflicts
+    Duplicate input tensors associated with multiple QDQ nodes to avoid name collision
     For example,
 
     Before: One tensor associated with multiple encodings
@@ -359,11 +353,13 @@ def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> onnx.ModelProto
 
     After: Duplicate QDQ nodes for each usage
 
-        "conv1.weight" -+--------------> QDQ -> Conv
+                              "conv1.weight_dup_0"
+                                      ↓
+        "conv1.weight" -+-- Identity --> QDQ -> Conv
                         |
                         +-> Identity --> QDQ -> Conv
                                       ↑
-                              "conv1.weight_dup"
+                              "conv1.weight_dup_1"
     """
     consumers: dict[str, list[onnx.NodeProto]] = {}
 
@@ -376,6 +372,7 @@ def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> onnx.ModelProto
         ):
             consumers.setdefault(node.input[0], []).append(node)
 
+    aliases: dict[str, str] = {}
     producers: dict[str, onnx.NodeProto] = {}
     for input_name, qdq_nodes in consumers.items():
         if len(qdq_nodes) <= 1:
@@ -384,10 +381,12 @@ def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> onnx.ModelProto
         # Duplicate QDQ nodes for each usage
         for i, qdq_node in enumerate(qdq_nodes):
             # Create an Identity node to duplicate the tensor
+            alias = f"{input_name}_dup_{i}"
+            aliases[alias] = input_name
             identity_node = onnx.helper.make_node(
                 "Identity",
                 inputs=[input_name],
-                outputs=[f"{input_name}_dup_{i}"],
+                outputs=[alias],
                 name=f"Identity_{input_name}_dup_{i}",
             )
             qdq_node.input[0] = identity_node.output[0]
@@ -404,7 +403,7 @@ def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> onnx.ModelProto
     onnx_model.graph.ClearField("node")
     onnx_model.graph.node.extend(all_nodes)
 
-    return onnx_model
+    return aliases
 
 
 def _to_onnx(
@@ -417,7 +416,7 @@ def _to_onnx(
 
     _onnx.export(model, args, f, **kwargs)
     onnx_model = onnx.load(f, load_external_data=False)
-    onnx_model = _duplicate_shared_qdq_inputs(onnx_model)
+    aliases = _duplicate_shared_qdq_inputs(onnx_model)
 
     param_names = {
         f"{layer_name}.{param_name}"
@@ -430,7 +429,7 @@ def _to_onnx(
     base_dir = str(Path(f if isinstance(f, str) else f.name).absolute().parent)
     tensor_to_encoding_map: Mapping[str, Tuple[EncodingBase, bool]]
     tensor_to_encoding_map = {
-        name: (encoding, name in param_names)
+        name: (encoding, name in param_names or aliases.get(name) in param_names)
         for name, encoding in _onnx.remove_quantization_nodes_from_onnx_graph(
             onnx_model,
             base_dir=base_dir,

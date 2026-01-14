@@ -41,6 +41,7 @@ from itertools import chain, repeat
 from typing import overload, Union, Tuple, Optional
 import torch
 from .utils import *
+from aimet_torch.v2.utils import _torch_compiler_is_exporting
 
 
 @overload
@@ -364,7 +365,16 @@ def quantize_dequantize(
                 1.0000, 1.0000, 1.0000, 1.0000, 1.0000])
     """
     qmin, qmax, block_size, zero_point_shift = _parse_args(args, kwargs)
-    return get_backend().quantize_dequantize(
+
+    if _torch_compiler_is_exporting() and torch.onnx.is_in_onnx_export():
+        # Call torch.ops.aimet.quantize_dequantize during dynamo-based onnx export.
+        # This is to enable dynamo tracer to capture aimet Q/DQ function
+        # as a single torch.ops.aimet.quantize_dequantize node
+        backend = torch.ops.aimet
+    else:
+        backend = get_backend()
+
+    return backend.quantize_dequantize(
         tensor, scale, offset, qmin, qmax, block_size, zero_point_shift
     )
 

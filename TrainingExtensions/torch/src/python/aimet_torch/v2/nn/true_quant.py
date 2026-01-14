@@ -317,7 +317,10 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
         stack = contextlib.ExitStack()
         for param_name, _ in self.param_quantizers.items():
             qparam = getattr(self, param_name)
-            ctx = patch_attr(self, param_name, _dequantize_if_applicable(qparam))
+            dqparam = _dequantize_if_applicable(qparam)
+            if not isinstance(dqparam, torch.nn.Parameter):
+                dqparam = torch.nn.Parameter(dqparam)
+            ctx = patch_attr(self, param_name, dqparam)
             stack.enter_context(ctx)
 
         return stack

@@ -282,7 +282,7 @@ class BaseQuantizationMixin(abc.ABC):
             if param_quantizer and param_quantizer.is_initialized():
                 orig_param = getattr(self, param_name)
                 quantized_param = param_quantizer(orig_param)
-                ctx = patch_attr(self, param_name, quantized_param)
+                ctx = patch_attr(self, param_name, torch.nn.Parameter(quantized_param))
                 stack.enter_context(ctx)
 
         return stack
