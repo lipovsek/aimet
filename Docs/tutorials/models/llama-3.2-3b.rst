@@ -40,13 +40,13 @@ Hyperparameters:
       - 58.09
       - 06:35:22
       - 41.24
-    * - PCQ + AdaScale
+    * - PCQ + SpinQuant + AdaScale
       - ``aimet-onnx``
       - ``aimet-onnx``
       - 11.14
-      - 56.79
+      - 57.28
       - 04:49:36
-      - 47.35
+      - 65.88
     * - LPBQ + SequentialMSE
       - ``aimet-torch``
       - ``aimet-onnx``

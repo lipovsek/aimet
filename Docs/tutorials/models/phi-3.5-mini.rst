@@ -10,7 +10,7 @@ Precision settings:
 
 Hyperparameters:
 
-- AdaScale: ``num_batches=128``, ``num_iterations=256``
+- AdaScale: ``num_batches=32``, ``num_iterations=256``
 - SequentialMSE: ``num_batches=20``
 - Calibration: ``num_batches=20``
 
