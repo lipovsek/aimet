@@ -426,7 +426,7 @@ def _to_onnx(
         if quantizer
     }
 
-    base_dir = str(Path(f if isinstance(f, str) else f.name).absolute().parent)
+    base_dir = str(Path(str(f)).absolute().parent)
     tensor_to_encoding_map: Mapping[str, Tuple[EncodingBase, bool]]
     tensor_to_encoding_map = {
         name: (encoding, name in param_names or aliases.get(name) in param_names)

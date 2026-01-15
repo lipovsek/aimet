@@ -386,6 +386,7 @@ def test_export_torchvision_models(model_factory, input_shape):
     ],
 )
 def test_quantsim_export_resnet18(
+    tmp_path: pathlib.Path,
     encoding_version,
     lpbq: bool,
     fold_param_quantizers: bool,
@@ -490,154 +491,150 @@ def test_quantsim_export_resnet18(
     if fold_param_quantizers:
         sim.fold_param_quantizers()
 
-    with tempfile.TemporaryDirectory() as dirname:
-        onnx_path = os.path.join(dirname, "torchvision_model.onnx")
-        encodings_path = os.path.join(dirname, "torchvision_model.encodings")
+    onnx_path = tmp_path / "torchvision_model.onnx"
+    encodings_path = tmp_path / "torchvision_model.encodings"
 
-        sim.onnx.export(
-            x,
-            onnx_path,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-            export_int32_bias=export_int32_bias,
-            dynamo=dynamo,
-            encoding_version=encoding_version,
+    sim.onnx.export(
+        x,
+        onnx_path,
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        export_int32_bias=export_int32_bias,
+        dynamo=dynamo,
+        encoding_version=encoding_version,
+    )
+
+    """
+    Then: The saved onnx model should pass onnx model checker
+    """
+    onnx_model = onnx.load_model(onnx_path)
+    onnx.checker.check_model(onnx_model)
+
+    """
+    Then: Input/Output names should be strictly honored
+    """
+    assert list(x.name for x in onnx_model.graph.input) == ["input"]
+    assert list(y.name for y in onnx_model.graph.output) == ["output"]
+
+    with open(encodings_path) as f:
+        onnx_encodings = json.load(f)
+
+    onnx_weight_names = set(
+        convfc.input[1]
+        for convfc in onnx_model.graph.node
+        if convfc.op_type in ("Conv", "Gemm")
+    )
+    onnx_bias_names = set(
+        convfc.input[2]
+        for convfc in onnx_model.graph.node
+        if convfc.op_type in ("Conv", "Gemm") and len(convfc.input) > 2
+    )
+    """
+    Then: The onnx encodings should have the same number of encodings
+          as the number of quantizers in the original pytorch model
+    """
+    if encoding_version < "2.0.0":
+        assert len(onnx_encodings["param_encodings"]) == (
+            0
+            if param_kind == "float"
+            else len(onnx_weight_names | onnx_bias_names)
+            if export_int32_bias
+            else len(onnx_weight_names)
+        )
+        # Exported encodings can contain MORE encodings than quantsim
+        # due to data movement op's output encodings that are generated
+        # on-the-fly during export
+        assert len(onnx_encodings["activation_encodings"]) >= len(
+            expected_activation_encodings
+        )
+    else:
+        # Exported encodings can contain MORE encodings than quantsim
+        # due to data movement op's output encodings that are generated
+        # on-the-fly during export
+        assert len(onnx_encodings["encodings"]) >= len(
+            expected_activation_encodings
+        ) + (
+            0
+            if param_kind == "float"
+            else len(onnx_weight_names | onnx_bias_names)
+            if export_int32_bias
+            else len(onnx_weight_names)
         )
 
-        """
-        Then: The saved onnx model should pass onnx model checker
-        """
-        onnx_model = onnx.load_model(onnx_path)
-        onnx.checker.check_model(onnx_model)
-
-        """
-        Then: Input/Output names should be strictly honored
-        """
-        assert list(x.name for x in onnx_model.graph.input) == ["input"]
-        assert list(y.name for y in onnx_model.graph.output) == ["output"]
-
-        with open(encodings_path) as f:
-            onnx_encodings = json.load(f)
-
-        onnx_weight_names = set(
-            convfc.input[1]
-            for convfc in onnx_model.graph.node
-            if convfc.op_type in ("Conv", "Gemm")
-        )
-        onnx_bias_names = set(
-            convfc.input[2]
-            for convfc in onnx_model.graph.node
-            if convfc.op_type in ("Conv", "Gemm") and len(convfc.input) > 2
-        )
-        """
-        Then: The onnx encodings should have the same number of encodings
-              as the number of quantizers in the original pytorch model
-        """
-        if encoding_version < "2.0.0":
-            assert len(onnx_encodings["param_encodings"]) == (
-                0
-                if param_kind == "float"
-                else len(onnx_weight_names | onnx_bias_names)
-                if export_int32_bias
-                else len(onnx_weight_names)
-            )
-            # Exported encodings can contain MORE encodings than quantsim
-            # due to data movement op's output encodings that are generated
-            # on-the-fly during export
-            assert len(onnx_encodings["activation_encodings"]) >= len(
-                expected_activation_encodings
-            )
-        else:
-            # Exported encodings can contain MORE encodings than quantsim
-            # due to data movement op's output encodings that are generated
-            # on-the-fly during export
-            assert len(onnx_encodings["encodings"]) >= len(
-                expected_activation_encodings
-            ) + (
-                0
-                if param_kind == "float"
-                else len(onnx_weight_names | onnx_bias_names)
-                if export_int32_bias
-                else len(onnx_weight_names)
-            )
-
-        """
-        Then: The onnx encodings should have the same scale and offset value
-              as the values of quantizers in the original pytorch model
-        """
-        if encoding_version == "0.6.1":
-            for name, e in onnx_encodings["param_encodings"].items():
-                if name in expected_param_encodings:
-                    assert e == expected_param_encodings[name]
-                else:
-                    assert any(
-                        len(e) == len(expected)
-                        and e[i]["scale"] == expected[i]["scale"]
-                        and e[i]["offset"] == expected[i]["offset"]
-                        and e[i]["bitwidth"] == expected[i]["bitwidth"]
-                        for expected in expected_param_encodings.values()
-                        for i in range(len(e))
-                    )
-            for e in onnx_encodings["activation_encodings"].values():
+    """
+    Then: The onnx encodings should have the same scale and offset value
+          as the values of quantizers in the original pytorch model
+    """
+    if encoding_version == "0.6.1":
+        for name, e in onnx_encodings["param_encodings"].items():
+            if name in expected_param_encodings:
+                assert e == expected_param_encodings[name]
+            else:
                 assert any(
-                    e[0]["scale"] == expected[0]["scale"]
-                    and e[0]["offset"] == expected[0]["offset"]
-                    and e[0]["bitwidth"] == expected[0]["bitwidth"]
-                    for expected in expected_activation_encodings.values()
+                    len(e) == len(expected)
+                    and e[i]["scale"] == expected[i]["scale"]
+                    and e[i]["offset"] == expected[i]["offset"]
+                    and e[i]["bitwidth"] == expected[i]["bitwidth"]
+                    for expected in expected_param_encodings.values()
+                    for i in range(len(e))
                 )
-        elif encoding_version == "1.0.0":
-            for e in onnx_encodings["param_encodings"]:
-                name = e.pop("name")
-                if name in expected_param_encodings:
-                    assert e == expected_param_encodings[name]
-                else:
-                    assert any(
-                        e["scale"] == expected["scale"]
-                        and e["offset"] == expected["offset"]
-                        and e["bw"] == expected["bw"]
-                        for expected in expected_param_encodings.values()
-                    )
-
-            for e in onnx_encodings["activation_encodings"]:
+        for e in onnx_encodings["activation_encodings"].values():
+            assert any(
+                e[0]["scale"] == expected[0]["scale"]
+                and e[0]["offset"] == expected[0]["offset"]
+                and e[0]["bitwidth"] == expected[0]["bitwidth"]
+                for expected in expected_activation_encodings.values()
+            )
+    elif encoding_version == "1.0.0":
+        for e in onnx_encodings["param_encodings"]:
+            name = e.pop("name")
+            if name in expected_param_encodings:
+                assert e == expected_param_encodings[name]
+            else:
                 assert any(
                     e["scale"] == expected["scale"]
                     and e["offset"] == expected["offset"]
                     and e["bw"] == expected["bw"]
-                    for expected in expected_activation_encodings.values()
+                    for expected in expected_param_encodings.values()
                 )
-        elif encoding_version == "2.0.0":
-            expected_encodings = (
-                expected_param_encodings | expected_activation_encodings
+
+        for e in onnx_encodings["activation_encodings"]:
+            assert any(
+                e["scale"] == expected["scale"]
+                and e["offset"] == expected["offset"]
+                and e["bw"] == expected["bw"]
+                for expected in expected_activation_encodings.values()
             )
+    elif encoding_version == "2.0.0":
+        expected_encodings = expected_param_encodings | expected_activation_encodings
 
-            for e in onnx_encodings["encodings"]:
-                name = e.pop("name")
-                if name in expected_encodings:
-                    assert e == expected_encodings[name]
-                    continue
+        for e in onnx_encodings["encodings"]:
+            name = e.pop("name")
+            if name in expected_encodings:
+                assert e == expected_encodings[name]
+                continue
 
-                assert any(
-                    e.get("output_dtype") == expected.get("output_dtype")
-                    and e.get("y_scale") == expected.get("y_scale")
-                    and e.get("y_zero_point") == expected.get("y_zero_point")
-                    and e.get("per_channel_float_scale")
-                    == expected.get("per_channel_float_scale")
-                    and e.get("per_block_int_scale")
-                    == expected.get("per_block_int_scale")
-                    for expected in expected_encodings.values()
-                )
-        else:
-            raise RuntimeError(f"Unexpected encoding veresion: {encoding_version}")
+            assert any(
+                e.get("output_dtype") == expected.get("output_dtype")
+                and e.get("y_scale") == expected.get("y_scale")
+                and e.get("y_zero_point") == expected.get("y_zero_point")
+                and e.get("per_channel_float_scale")
+                == expected.get("per_channel_float_scale")
+                and e.get("per_block_int_scale") == expected.get("per_block_int_scale")
+                for expected in expected_encodings.values()
+            )
+    else:
+        raise RuntimeError(f"Unexpected encoding veresion: {encoding_version}")
 
-        """
-        Then: The exported onnx model should produce output close enough to
-              the original pytorch model with qdq weights
-        """
-        sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-        (out,) = sess.run(None, {"input": x.numpy()})
+    """
+    Then: The exported onnx model should produce output close enough to
+          the original pytorch model with qdq weights
+    """
+    sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    (out,) = sess.run(None, {"input": x.numpy()})
 
-        assert torch.allclose(torch.from_numpy(out), expected_out, atol=1e-5)
+    assert torch.allclose(torch.from_numpy(out), expected_out, atol=1e-5)
 
 
 def _parse_type(type_str: str) -> tuple[str, int]:
@@ -682,6 +679,7 @@ def _parse_type(type_str: str) -> tuple[str, int]:
     ],
 )
 def test_quantsim_export_onnx_qdq_resnet18(
+    tmp_path: pathlib.Path,
     lpbq: bool,
     export_int32_bias: bool,
     fold_param_quantizers: bool,
@@ -765,77 +763,76 @@ def test_quantsim_export_onnx_qdq_resnet18(
     if fold_param_quantizers:
         sim.fold_param_quantizers()
 
-    with tempfile.TemporaryDirectory() as dirname:
-        onnx_path = os.path.join(dirname, "torchvision_model.onnx")
-        aimet_torch.onnx.export(
-            sim,
-            x,
-            onnx_path,
-            input_names=["input"],
-            output_names=["output"],
-            opset_version=21,
-            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-            export_int32_bias=export_int32_bias,
-            dynamo=dynamo,
-        )
+    onnx_path = tmp_path / "torchvision_model.onnx"
+    aimet_torch.onnx.export(
+        sim,
+        x,
+        onnx_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        export_int32_bias=export_int32_bias,
+        dynamo=dynamo,
+    )
 
-        """
-        Then: The saved onnx model should pass onnx model checker
-        """
-        onnx_model = onnx.load_model(onnx_path)
-        onnx.checker.check_model(onnx_model)
+    """
+    Then: The saved onnx model should pass onnx model checker
+    """
+    onnx_model = onnx.load_model(onnx_path)
+    onnx.checker.check_model(onnx_model)
 
-        """
-        Then: Input/Output names should be strictly honored
-        """
-        assert list(x.name for x in onnx_model.graph.input) == ["input"]
-        assert list(y.name for y in onnx_model.graph.output) == ["output"]
+    """
+    Then: Input/Output names should be strictly honored
+    """
+    assert list(x.name for x in onnx_model.graph.input) == ["input"]
+    assert list(y.name for y in onnx_model.graph.output) == ["output"]
 
-        """
-        Then: Model should contain expected number of DequantizedLinear nodes
-        """
-        onnx_dq_nodes = [
-            node for node in onnx_model.graph.node if node.op_type == "DequantizeLinear"
-        ]
-        # Exported onnx qdq model can contain MORE qdq nodes than quantsim
-        # as data movement op's output encodings that are generated
-        # on-the-fly during export
-        onnx_weight_names = set(
-            convfc.input[1]
-            for convfc in onnx_model.graph.node
-            if convfc.op_type in ("Conv", "Gemm")
-        )
-        onnx_bias_names = set(
-            convfc.input[2]
-            for convfc in onnx_model.graph.node
-            if convfc.op_type in ("Conv", "Gemm") and len(convfc.input) > 2
-        )
-        assert len(onnx_dq_nodes) >= len(activation_qdq_nodes) + (
-            0
-            if param_kind == "float"
-            else len(onnx_weight_names | onnx_bias_names)
-            if export_int32_bias
-            else len(onnx_weight_names)
-        )
+    """
+    Then: Model should contain expected number of DequantizedLinear nodes
+    """
+    onnx_dq_nodes = [
+        node for node in onnx_model.graph.node if node.op_type == "DequantizeLinear"
+    ]
+    # Exported onnx qdq model can contain MORE qdq nodes than quantsim
+    # as data movement op's output encodings that are generated
+    # on-the-fly during export
+    onnx_weight_names = set(
+        convfc.input[1]
+        for convfc in onnx_model.graph.node
+        if convfc.op_type in ("Conv", "Gemm")
+    )
+    onnx_bias_names = set(
+        convfc.input[2]
+        for convfc in onnx_model.graph.node
+        if convfc.op_type in ("Conv", "Gemm") and len(convfc.input) > 2
+    )
+    assert len(onnx_dq_nodes) >= len(activation_qdq_nodes) + (
+        0
+        if param_kind == "float"
+        else len(onnx_weight_names | onnx_bias_names)
+        if export_int32_bias
+        else len(onnx_weight_names)
+    )
 
-        if activation_kind in ("uint", "int"):
-            """
-            Then: All model input/outputs should be associated with QDQ
-            """
-            input_names = set(inp.name for inp in onnx_model.graph.input)
-            output_names = set(out.name for out in onnx_model.graph.output)
-            for node in onnx_model.graph.node:
-                if node.input and node.input[0] in input_names:
-                    assert node.op_type == "QuantizeLinear"
-                    input_names.remove(node.input[0])
-                if node.output and node.output[0] in output_names:
-                    assert node.op_type == "DequantizeLinear"
-                    output_names.remove(node.output[0])
-            assert not input_names
-            assert not output_names
+    if activation_kind in ("uint", "int"):
+        """
+        Then: All model input/outputs should be associated with QDQ
+        """
+        input_names = set(inp.name for inp in onnx_model.graph.input)
+        output_names = set(out.name for out in onnx_model.graph.output)
+        for node in onnx_model.graph.node:
+            if node.input and node.input[0] in input_names:
+                assert node.op_type == "QuantizeLinear"
+                input_names.remove(node.input[0])
+            if node.output and node.output[0] in output_names:
+                assert node.op_type == "DequantizeLinear"
+                output_names.remove(node.output[0])
+        assert not input_names
+        assert not output_names
 
-        sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-        (out,) = sess.run(None, {"input": x.numpy()})
+    sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    (out,) = sess.run(None, {"input": x.numpy()})
 
     if activation_kind in ("uint", "int"):
         # Allow off-by-3 error
