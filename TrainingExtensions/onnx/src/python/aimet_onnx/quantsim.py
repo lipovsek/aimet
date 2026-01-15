@@ -1121,6 +1121,13 @@ class QuantizationSimModel:
                         target_quantizer_for_second_input.use_symmetric_encodings = True
                         target_quantizer_for_first_input.set_bitwidth(16)
 
+            elif op.type == "ConvTranspose":
+                groups = utils.get_node_attribute(op.get_module(), "group")
+                weight_qtzr = param_quantizers.get("weight", None)
+                # TODO: Fix handling of PCQ for grouped ConvTranspose
+                if groups not in (None, 1) and weight_qtzr:
+                    weight_qtzr.enable_per_channel_quantization(False)
+
     @deprecated("Use _get_enabled_quantizer instead")
     def _get_closest_enabled_quantizer(self, tensor: Product):
         """

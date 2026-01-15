@@ -89,7 +89,7 @@ from aimet_onnx.quantsim import (
 )
 import aimet_onnx
 from aimet_onnx.qc_quantize_op import OpMode, GroupedBlockQuantizeDequantize
-from aimet_onnx.utils import make_dummy_input
+from aimet_onnx.utils import make_dummy_input, get_node_attribute
 from aimet_onnx import int8
 from aimet_onnx._encoding import EncodingBase, AffineEncoding
 from .models import models_for_tests, test_models
@@ -1237,11 +1237,6 @@ class TestQuantSim:
     )
     def test_per_channel_quant_conv_transpose(self, model_factory):
         model = model_factory()
-        conv_transpose_weight_names = []
-        for node in model.graph().node:
-            if node.op_type == "ConvTranspose":
-                conv_transpose_weight_names.append(node.input[1])
-
         sim = QuantizationSimModel(
             model,
             providers=CPU_PROVIDERS,
@@ -1255,18 +1250,25 @@ class TestQuantSim:
         with aimet_onnx.compute_encodings(sim):
             dummy_callback(sim.session, None)
 
-        for param_name in sim.param_names:
-            if param_name in conv_transpose_weight_names:
-                for weight in sim.model.graph().initializer:
-                    if weight.name == param_name:
-                        break
-                else:
-                    raise RuntimeError(f"Param {param_name} not found in model")
-                qc_op = sim.qc_quantize_op_dict[param_name]
+        for op in sim.connected_graph.ordered_ops:
+            if not op.type == "ConvTranspose":
+                continue
+            param_name = op.inputs[1].name
+            for weight in sim.model.graph().initializer:
+                if weight.name == param_name:
+                    break
+            else:
+                raise RuntimeError(f"Param {param_name} not found in model")
+            groups = get_node_attribute(op.get_module(), "group")
+            qc_op = sim.qc_quantize_op_dict[param_name]
+            if groups not in (None, 1):
+                assert not qc_op.quant_info.usePerChannelMode
+                assert len(qc_op.get_encodings()) == 1
+            else:
                 assert qc_op.quant_info.usePerChannelMode
-                assert qc_op.quant_info.enabled
-                assert qc_op.quant_info.channelAxis == 1
                 assert len(qc_op.get_encodings()) == weight.dims[1]
+                assert qc_op.quant_info.channelAxis == 1
+            assert qc_op.quant_info.enabled
 
     @pytest.mark.parametrize("export_int32_bias", [False, True])
     @pytest.mark.parametrize(
