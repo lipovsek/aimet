@@ -4479,3 +4479,71 @@ def integer_output_model():
     )
     onnx.checker.check_model(model, True)
     return model
+
+
+def conv_matmul_model():
+    model = make_model(
+        graph=helper.make_graph(
+            name="ConvMatMulModel",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "model_input", TensorProto.FLOAT, shape=[1, 3, 32]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    "model_output", TensorProto.FLOAT, shape=[1, 16, 64]
+                )
+            ],
+            initializer=[
+                numpy_helper.from_array(
+                    np.random.randn(16, 3, 3).astype("float32"),
+                    name="conv1_weight",
+                ),
+                numpy_helper.from_array(
+                    np.random.randn(16, 16, 3).astype("float32"),
+                    name="conv2_weight",
+                ),
+                numpy_helper.from_array(
+                    np.random.randn(32, 64).astype("float32"),
+                    name="matmul_weight",
+                ),
+            ],
+            nodes=[
+                helper.make_node(
+                    "Conv",
+                    inputs=["model_input", "conv1_weight"],
+                    outputs=["conv_output"],
+                    name="conv1",
+                    auto_pad="SAME_UPPER",
+                ),
+                helper.make_node(
+                    "Relu",
+                    inputs=["conv_output"],
+                    outputs=["relu_output"],
+                    name="relu",
+                ),
+                helper.make_node(
+                    "Conv",
+                    inputs=["relu_output", "conv2_weight"],
+                    outputs=["conv2_output"],
+                    name="conv2",
+                    auto_pad="SAME_UPPER",
+                ),
+                helper.make_node(
+                    "Relu",
+                    inputs=["conv2_output"],
+                    outputs=["relu2_output"],
+                    name="relu2",
+                ),
+                helper.make_node(
+                    "MatMul",
+                    inputs=["relu2_output", "matmul_weight"],
+                    outputs=["model_output"],
+                    name="matmul",
+                ),
+            ],
+        )
+    )
+    onnx.checker.check_model(model, True)
+    return model

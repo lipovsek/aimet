@@ -624,6 +624,7 @@ class Float(qtype):
             )
 
 
+int2 = qtype.int(2)
 int4 = qtype.int(4)
 int8 = qtype.int(8)
 int16 = qtype.int(16)
@@ -635,6 +636,7 @@ float32 = qtype.float(
 )
 
 QTYPE_ALIASES = {
+    "int2": int2,
     "int4": int4,
     "int8": int8,
     "int16": int16,

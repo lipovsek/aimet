@@ -86,6 +86,7 @@ from aimet_onnx.quantsim import (
     clamp_activation_encodings,
     set_grouped_blockwise_quantization_for_weights,
     _INT32_MINIMUM_SCALE,
+    set_param_type,
 )
 import aimet_onnx
 from aimet_onnx.qc_quantize_op import OpMode, GroupedBlockQuantizeDequantize
@@ -6852,3 +6853,101 @@ def test_matmul_with_transposed_weight(do_constant_folding, out_channels):
             tensor_shape = qtzr.tensor_quantizer_params.tensor_shape
             channel_axis = qtzr.tensor_quantizer_params.channel_axis
             assert tensor_shape[channel_axis] == out_channels
+
+
+def test_set_param_type():
+    """
+    When: Set param type after initialization
+    Then: Param quantizers should update their bitwidth accordingly
+    """
+    model = models_for_tests.single_residual_model().model
+    sim = QuantizationSimModel(
+        model,
+        param_type=aimet_onnx.int8,
+        activation_type=aimet_onnx.int8,
+    )
+
+    set_param_type(sim, aimet_onnx.int2, shift_zero_point=True)
+
+    for param_name in sim.param_names:
+        qtzr = sim.qc_quantize_op_dict[param_name]
+        if not qtzr.enabled:
+            continue
+        assert qtzr.bitwidth == 2
+        assert qtzr.data_type == QuantizationDataType.int
+        assert qtzr.get_zero_point_shift() == 0.5
+
+    set_param_type(sim, "float16")
+
+    for param_name in sim.param_names:
+        qtzr = sim.qc_quantize_op_dict[param_name]
+        if not qtzr.enabled:
+            continue
+        assert qtzr.bitwidth == 16
+        assert qtzr.data_type == QuantizationDataType.float
+        assert qtzr.get_zero_point_shift() == 0.0
+
+    for act_name in sim.activation_names:
+        qtzr = sim.qc_quantize_op_dict[act_name]
+        if not qtzr.enabled:
+            continue
+        assert qtzr.bitwidth == 8
+        assert qtzr.data_type == QuantizationDataType.int
+        assert qtzr.get_zero_point_shift() == 0.0
+
+    with pytest.raises(ValueError):
+        set_param_type(sim, aimet_onnx.int4, shift_zero_point=True)
+
+
+def test_set_param_type_by_op():
+    model = models_for_tests.conv_matmul_model()
+    sim = QuantizationSimModel(
+        model,
+        param_type=aimet_onnx.int8,
+        activation_type=aimet_onnx.int8,
+    )
+    """
+    When: Pass op_types argument to set_param_type
+    Then: Only params of specified op types should update their bitwidth
+    """
+    set_param_type(sim, "int4", op_types=["Conv"])
+
+    assert sim.qc_quantize_op_dict["conv1_weight"].bitwidth == 4
+    assert sim.qc_quantize_op_dict["conv2_weight"].bitwidth == 4
+    assert sim.qc_quantize_op_dict["matmul_weight"].bitwidth == 8
+
+    """
+    When: Pass op_types and nodes_to_exclude arguments to set_param_type
+    Then: Only params of specified op types not in nodes_to_exclude should update their bitwidth
+    """
+    set_param_type(sim, "int2", op_types=["Conv"], nodes_to_exclude=["conv2"])
+
+    assert sim.qc_quantize_op_dict["conv1_weight"].bitwidth == 2
+    assert sim.qc_quantize_op_dict["conv2_weight"].bitwidth == 4
+    assert sim.qc_quantize_op_dict["matmul_weight"].bitwidth == 8
+
+    """
+    When: Pass nodes_to_include argument to set_param_type
+    Then: Only params of ops specified in nodes_to_include should update their bitwidth
+    """
+    set_param_type(sim, "float16", nodes_to_include=["matmul"])
+
+    assert sim.qc_quantize_op_dict["matmul_weight"].bitwidth == 16
+    assert (
+        sim.qc_quantize_op_dict["matmul_weight"].data_type == QuantizationDataType.float
+    )
+    assert sim.qc_quantize_op_dict["conv1_weight"].bitwidth == 2
+    assert sim.qc_quantize_op_dict["conv2_weight"].bitwidth == 4
+
+    with pytest.raises(ValueError):
+        set_param_type(
+            sim, aimet_onnx.int8, op_types=["MatMul"], nodes_to_include=["conv1"]
+        )
+
+    with pytest.raises(ValueError):
+        set_param_type(
+            sim, aimet_onnx.int8, nodes_to_include=["conv1"], nodes_to_exclude=["conv2"]
+        )
+
+    with pytest.raises(TypeError):
+        set_param_type(sim, aimet_onnx.int8, unsupported_arg=True)

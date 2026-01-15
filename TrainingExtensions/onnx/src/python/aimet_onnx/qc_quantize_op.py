@@ -717,6 +717,23 @@ class QcQuantizeOp:
         """
         self._encoding_min_max_fixed_vals = fixed_range
 
+    def set_zero_point_shift(self, zero_point_shift: float = 0.5):
+        """
+        Set the zero point shift value for the quantizer
+
+        :param zero_point_shift: Zero point shift value
+        """
+        if not self._is_encoding_frozen:
+            self._tensor_quantizer.setZeroPointShift(zero_point_shift)
+
+    def get_zero_point_shift(self) -> float:
+        """
+        Get the zero point shift value for the quantizer
+
+        :return: Zero point shift value
+        """
+        return self._tensor_quantizer.getZeroPointShift()
+
     def _fill_mismatching_encoding_settings_info(
         self,
         encoding_dict: Optional[dict],
