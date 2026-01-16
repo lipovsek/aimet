@@ -5,7 +5,7 @@
 
 from abc import ABC, abstractmethod
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, GenerationConfig, TextStreamer
 
@@ -149,7 +149,7 @@ class GenericMMLU(EvaluationMetric):
 class TinyMMLU(GenericMMLU):
     @staticmethod
     def get_dataloader(
-        tokenizer: PreTrainedTokenizer, context_length: int, batch_size: int = 1
+        tokenizer: PreTrainedTokenizer, context_length: int
     ) -> DataLoader:
         dataset = TinyMMLUDataset.load_encoded_dataset(
             tokenizer, context_length, "test"
@@ -161,10 +161,28 @@ class TinyMMLU(GenericMMLU):
 class MMLU(GenericMMLU):
     @staticmethod
     def get_dataloader(
-        tokenizer: PreTrainedTokenizer, context_length: int, batch_size: int = 1
+        tokenizer: PreTrainedTokenizer,
+        context_length: int,
+        num_fewshot: int = 5,
     ) -> DataLoader:
-        dataset = MMLUDataset.load_encoded_dataset(tokenizer, context_length, "test")
+        dataset = MMLUDataset.load_encoded_dataset(
+            tokenizer, context_length, "test", num_fewshot=num_fewshot
+        )
         return DataLoader(dataset)
+
+
+@YAMLConfigParser.register_metric
+class MMLU1000(GenericMMLU):
+    @staticmethod
+    def get_dataloader(
+        tokenizer: PreTrainedTokenizer,
+        context_length: int,
+        num_fewshot: int = 5,
+    ) -> DataLoader:
+        dataset = MMLUDataset.load_encoded_dataset(
+            tokenizer, context_length, "test", num_fewshot=num_fewshot
+        )
+        return DataLoader(Subset(dataset, torch.arange(1000)))
 
 
 @YAMLConfigParser.register_metric
@@ -175,7 +193,6 @@ class MMMLU(GenericMMLU):
         context_length: int,
         split: str,
         num_fewshot: int = 5,
-        batch_size: int = 1,
     ) -> DataLoader:
         dataset = MMMLUDataset.load_encoded_dataset(
             tokenizer, context_length, split, num_fewshot
