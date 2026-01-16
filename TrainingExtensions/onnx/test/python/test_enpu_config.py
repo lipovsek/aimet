@@ -72,7 +72,7 @@ class TestEnpuV6Config:
 
         sim = aimet_onnx.QuantizationSimModel(
             onnx_model,
-            config_file="enpu_quantsim_config_v6.json",
+            config_file="enpu_v6",
         )
         assert sim.qc_quantize_op_dict["input"].enabled
         assert sim.qc_quantize_op_dict["input"].use_symmetric_encodings
@@ -115,7 +115,7 @@ class TestEnpuV6Config:
         )
         sim = aimet_onnx.QuantizationSimModel(
             onnx.load(tmp_path / "model.onnx"),
-            config_file="enpu_quantsim_config_v6.json",
+            config_file="enpu_v6",
         )
         assert sim.qc_quantize_op_dict["input"].enabled
         assert sim.qc_quantize_op_dict["input"].use_symmetric_encodings
@@ -290,7 +290,7 @@ class TestEnpuV6Config:
 
         sim = aimet_onnx.QuantizationSimModel(
             onnx_model,
-            config_file="enpu_quantsim_config_v6.json",
+            config_file="enpu_v6",
         )
         for name in itertools.chain(input_names, output_names):
             assert sim.qc_quantize_op_dict[name].enabled

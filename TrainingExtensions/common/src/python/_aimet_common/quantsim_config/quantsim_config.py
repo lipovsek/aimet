@@ -158,6 +158,7 @@ _config_file_aliases = {
     "htp_v75": "htp_quantsim_config_v75.json",
     "htp_v79": "htp_quantsim_config_v79.json",
     "htp_v81": "htp_quantsim_config_v81.json",
+    "enpu_v6": "enpu_quantsim_config_v6.json",
 }
 
 

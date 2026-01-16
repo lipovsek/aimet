@@ -732,9 +732,7 @@ class TestQuantSim:
                     cell_state_names.append(node.output[2])
 
         with _apply_constraints(True):
-            sim = aimet_onnx.QuantizationSimModel(
-                model, config_file="enpu_quantsim_config_v6.json"
-            )
+            sim = aimet_onnx.QuantizationSimModel(model, config_file="enpu_v6")
 
         """
         When: Created QuantizationSimModel with _apply_constraints(True)
