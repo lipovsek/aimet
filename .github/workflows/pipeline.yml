@@ -57,9 +57,9 @@ jobs:
               : # Documentation change doesn't require running unit tests; only doc rebuild is needed
             elif [[ "$file" == "$EXAMPLES_SRC_CODE"* ]]; then
               : # Examples change doesn't require running unit tests; only doc rebuild is needed
-            elif [[ "$file" == $GENAI_TEST_CODE"* ]]; then
+            elif [[ "$file" == "$GENAI_TEST_CODE"* ]]; then
               : # GenAI tests change doesn't require running unit tests
-            elif [[ "$file" == $ONNXREGRESSION_TEST_CODE"* ]]; then
+            elif [[ "$file" == "$ONNXREGRESSION_TEST_CODE"* ]]; then
               : # ONNXRegression tests change doesn't require running unit tests
             else
               TORCH_TEST_REQUIRED='true'

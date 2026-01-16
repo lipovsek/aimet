@@ -26,7 +26,7 @@ class EvaluationMetric(ABC):
     @abstractmethod
     def evaluate(
         cls, model: Generator, tokenizer: PreTrainedTokenizer, context_length: int
-    ) -> float:
+    ) -> float | list[str]:
         """Perform evaluation on provided model"""
 
 
@@ -185,31 +185,47 @@ class MMMLU(GenericMMLU):
 
 @YAMLConfigParser.register_metric
 class Interactive(EvaluationMetric):
+    @staticmethod
+    def get_system_prompt() -> str:
+        return "You are a helpful AI assistant."
+
     @classmethod
-    def evaluate(
-        cls, model: Generator, tokenizer: PreTrainedTokenizer, context_length: int
-    ) -> float:
-        while True:
-            user_input_prompt = input("Enter your prompt or 'exit' to quit: ")
-            if user_input_prompt == "exit":
-                break
-
-            messages = [
-                {
-                    "role": "system",
-                    "content": "You are a helpful AI assistant. Please be concise.",
-                },
-                {"role": "user", "content": user_input_prompt},
-            ]
-
-            formatted_user_input = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+    def generate_output(
+        cls,
+        model: Generator,
+        tokenizer: PreTrainedTokenizer,
+        unformatted_prompt: str = None,
+        formatted_prompt: str = None,
+        generation_config: GenerationConfig = None,
+        highlight_output: bool = False,
+    ) -> str:
+        if formatted_prompt is None and unformatted_prompt is None:
+            raise ValueError(
+                "Either unformatted_prompt or formatted_prompt must be provided."
             )
-            tokenized_user_input = tokenizer(
-                formatted_user_input, return_tensors="pt"
-            ).to(model.device)
+        if formatted_prompt is not None and unformatted_prompt is not None:
+            raise ValueError(
+                "Only one of unformatted_prompt or formatted_prompt should be provided."
+            )
 
-            model.generation_config = GenerationConfig(
+        if formatted_prompt is None:
+            formatted_prompt = tokenizer.apply_chat_template(
+                [
+                    {"role": "system", "content": cls.get_system_prompt()},
+                    {"role": "user", "content": unformatted_prompt},
+                ],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+        tokenized_user_input = tokenizer(formatted_prompt, return_tensors="pt").to(
+            model.device
+        )
+
+        model.generation_config = (
+            generation_config
+            if generation_config is not None
+            else GenerationConfig(
                 max_new_tokens=1000,
                 eos_token_id=tokenizer.eos_token_id,
                 pad_token_id=tokenizer.pad_token_id,
@@ -218,12 +234,87 @@ class Interactive(EvaluationMetric):
                 top_p=0.95,
                 temperature=0.8,
             )
+        )
 
-            streamer = TextStreamer(tokenizer=tokenizer, skip_prompt=True)
-            model.generate(
-                inputs=tokenized_user_input["input_ids"],
-                attention_mask=tokenized_user_input["attention_mask"],
-                generation_config=model.generation_config,
-                streamer=streamer,
-            )
+        print(formatted_prompt, end="")
+        if highlight_output:
+            print("\033[0;31m", end="")  # Start red color for output
+
+        streamer = TextStreamer(tokenizer=tokenizer, skip_prompt=True)
+        outputs = model.generate(
+            inputs=tokenized_user_input["input_ids"],
+            attention_mask=tokenized_user_input["attention_mask"],
+            generation_config=model.generation_config,
+            streamer=streamer,
+        )
+
+        if highlight_output:
+            print("\033[0m")  # Reset color after highlighted output
+
+        # Detokenize and return the generated string
+        generated_tokens = outputs[0] if isinstance(outputs, (list, tuple)) else outputs
+        generated_text = tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
+        return generated_text
+
+    @classmethod
+    def evaluate(
+        cls, model: Generator, tokenizer: PreTrainedTokenizer, context_length: int
+    ) -> float:
+        while True:
+            user_input_prompt = input("Enter your prompt or 'exit' to quit: ")
+            if user_input_prompt == "exit":
+                break
+            cls.generate_output(model, tokenizer, unformatted_prompt=user_input_prompt)
         return float("nan")
+
+
+@YAMLConfigParser.register_metric
+class TrickyPrompts(Interactive):
+    prompts = {
+        "phi3": [
+            "<|system|>\nYou are a helpful AI assistant.<|end|>\n<|user|>\nWhat is Gravity?<|end|>\n<|assistant|>\nGravity is a fundamental force of nature that attracts two bodies with mass towards each other. It is described by Isaac Newton'",
+            "<|system|>\nYou are a helpful AI assistant.<|end|>\n<|user|>\nWhat is Gravity?<|end|>\n<|assistant|>\nGravity is a fundamental force of nature that attracts two bodies with mass towards each other. It is described by Isaac Newton's theory in the 17th century and is a key component in Albert Einstein'",
+        ]
+    }
+
+    @classmethod
+    def evaluate(
+        cls, model: Generator, tokenizer: PreTrainedTokenizer, context_length: int
+    ) -> list[str]:
+        generated_text = []
+        for prompt in TrickyPrompts.prompts.get(model.config.model_type, []):
+            print("===============================")
+            generated_text.append(
+                cls.generate_output(
+                    model,
+                    tokenizer,
+                    formatted_prompt=prompt,
+                    generation_config=GenerationConfig(
+                        max_new_tokens=2,
+                        eos_token_id=tokenizer.eos_token_id,
+                        pad_token_id=tokenizer.pad_token_id,
+                        do_sample=False,
+                    ),
+                    highlight_output=True,
+                )
+            )
+        print("===============================")
+        return generated_text
+
+
+@YAMLConfigParser.register_metric
+class Prompts(Interactive):
+    prompts = ["What is gravity?", "What is a llama?"]
+
+    @classmethod
+    def evaluate(
+        cls, model: Generator, tokenizer: PreTrainedTokenizer, context_length: int
+    ) -> list[str]:
+        generated_text = []
+        for prompt in Prompts.prompts:
+            print("===============================")
+            generated_text.append(
+                cls.generate_output(model, tokenizer, unformatted_prompt=prompt)
+            )
+        print("===============================")
+        return generated_text

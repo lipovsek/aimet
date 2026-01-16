@@ -41,7 +41,7 @@ class MetricResult:
     """Dataclass to hold accuracy and profiling results from running a matric"""
 
     metric_name: str
-    result: float
+    result: float | list[str]
     profiler: GPUMeter
 
 
