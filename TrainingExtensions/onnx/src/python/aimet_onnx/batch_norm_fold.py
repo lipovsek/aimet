@@ -441,6 +441,9 @@ def _update_standalone_batchnorm_ops(model: ModelProto):
                 ParamUtils.get_param(model, node, idx) for idx in range(1, 5)
             ]
 
+            if None in (init_w, init_b, init_rm, init_rv):
+                continue  # Cannot update if any initializer is missing
+
             attr = [item for item in node.attribute if item.name == "epsilon"]
             if not attr:
                 attr = onnx.helper.make_attribute(
@@ -474,3 +477,47 @@ def _update_standalone_batchnorm_ops(model: ModelProto):
             init_b.CopyFrom(init_b_)
             init_rm.CopyFrom(init_rm_)
             init_rv.CopyFrom(init_rv_)
+
+
+def _has_unfolded_batchnorms(
+    model: ModelProto, connected_graph: ConnectedGraph | None = None
+) -> bool:
+    """
+    Check if the model has any BatchNormalization layers that can be folded.
+
+    Args:
+        model: onnx Model to check for foldable BatchNormalization layers.
+        connected_graph: ConnectedGraph object. If None, it will be created from the model.
+
+    Returns:
+        True if there are foldable BatchNormalization layers, False otherwise.
+    """
+    if connected_graph is None:
+        connected_graph = ConnectedGraph(model)
+    conv_bn_pairs, bn_conv_pairs = find_all_batch_norms_to_fold(connected_graph)
+    if len(conv_bn_pairs) + len(bn_conv_pairs) > 0:
+        return True
+
+    # Note: Remaining batchnorms should have running stats folded into beta/gamma parameters
+    return _has_batchnorms_with_fusable_running_stats(model)
+
+
+def _has_batchnorms_with_fusable_running_stats(model: ModelProto) -> bool:
+    for node in model.graph.node:
+        if node.op_type not in BatchNormType:
+            continue
+
+        inits = [ParamUtils.get_param_by_name(model, name) for name in node.input[1:]]
+
+        # If any of the initializers is missing, stats are not fusable
+        if None in inits:
+            continue
+
+        init_rm, init_rv = inits[2], inits[3]
+
+        tensor_rm = numpy_helper.to_array(init_rm)
+        tensor_rv = numpy_helper.to_array(init_rv)
+        if not np.allclose(tensor_rm, 0) or not np.allclose(tensor_rv, 1):
+            return True
+
+    return False

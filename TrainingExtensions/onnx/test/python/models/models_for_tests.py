@@ -3233,7 +3233,66 @@ def standalone_batchnorm(input_shape: tuple[int, int, int, int]):
     return model
 
 
+def standalone_dynamic_batchnorm(input_shape: tuple[int, int, int, int]):
+    _, num_channels, *_ = input_shape
+
+    model = make_model(
+        graph=helper.make_graph(
+            name="BatchnormModel",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "input", TensorProto.FLOAT, shape=input_shape
+                ),
+                helper.make_tensor_value_info(
+                    "batchnorm.input_mean", TensorProto.FLOAT, shape=[num_channels]
+                ),
+                helper.make_tensor_value_info(
+                    "batchnorm.input_var", TensorProto.FLOAT, shape=[num_channels]
+                ),
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    "output", TensorProto.FLOAT, shape=input_shape
+                )
+            ],
+            initializer=[
+                numpy_helper.from_array(
+                    (np.random.randint(2000, size=num_channels) / 1000).astype(
+                        np.float32
+                    ),
+                    name="batchnorm.weight",
+                ),
+                numpy_helper.from_array(
+                    (np.random.randint(-1000, 1000, size=num_channels) / 1000).astype(
+                        np.float32
+                    ),
+                    name="batchnorm.bias",
+                ),
+            ],
+            nodes=[
+                helper.make_node(
+                    "BatchNormalization",
+                    inputs=[
+                        "input",
+                        "batchnorm.weight",
+                        "batchnorm.bias",
+                        "batchnorm.input_mean",
+                        "batchnorm.input_var",
+                    ],
+                    outputs=["output"],
+                    name="batchnorm",
+                ),
+            ],
+        )
+    )
+    onnx.checker.check_model(model, True)
+    return model
+
+
 batchnorm_model = functools.partial(standalone_batchnorm, (10, 10, 8, 8))
+dynamic_batchnorm_model = functools.partial(
+    standalone_dynamic_batchnorm, (10, 10, 8, 8)
+)
 
 
 def standalone_batchnorm_constants(

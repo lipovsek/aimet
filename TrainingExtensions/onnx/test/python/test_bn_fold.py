@@ -50,6 +50,7 @@ from aimet_onnx.batch_norm_fold import (
     find_all_batch_norms_to_fold,
     fold_all_batch_norms_to_weight,
     _update_standalone_batchnorm_ops,
+    _has_unfolded_batchnorms,
 )
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import make_dummy_input
@@ -609,3 +610,32 @@ class TestBatchNormFold:
         }
         assert len(bns_after_fold) == 0
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
+
+    @pytest.mark.parametrize(
+        "model_factory",
+        [
+            models_for_tests.batchnorm_model,
+            models_for_tests.shared_stat_batchnorm_model,
+            models_for_tests.batchnorm_model_constants,
+            lambda: models_for_tests.standalone_batchnorm((1, 3, 32, 32)),
+            lambda: _convert_to_onnx_no_fold(
+                BNAfterConv(), torch.randn(2, 10, 24, 24)
+            ).model,
+            lambda: _convert_to_onnx_no_fold(
+                BNBeforeLinear(), torch.randn(32, 10)
+            ).model,
+            lambda: _convert_to_onnx_no_fold(
+                torchvision.models.resnet18(), torch.randn(2, 3, 224, 224)
+            ).model,
+        ],
+    )
+    def test_has_unfolded_batchnorm(self, model_factory):
+        model = model_factory()
+        assert _has_unfolded_batchnorms(model)
+        fold_all_batch_norms_to_weight(model)
+        assert not _has_unfolded_batchnorms(model)
+
+    def test_non_fusable_batchnorm_model(self):
+        model = models_for_tests.dynamic_batchnorm_model()
+        fold_all_batch_norms_to_weight(model)
+        assert not _has_unfolded_batchnorms(model)

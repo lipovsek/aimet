@@ -136,6 +136,7 @@ from aimet_onnx.utils import (
     create_ort_session_options_with_aimet_custom_ops,
     OrtInferenceSession,
 )
+from aimet_onnx.batch_norm_fold import _has_unfolded_batchnorms
 from ._encoding import EncodingBase, LPBQEncoding
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
@@ -476,6 +477,11 @@ class QuantizationSimModel:
 
         self.qc_quantize_op_dict = {}
         self.connected_graph = ConnectedGraph(self.model)
+        if _has_unfolded_batchnorms(self.model.model, self.connected_graph):
+            logger.warning(
+                "Model contains unfolded BatchNormalization layers. To accurately simulate quantization behavior, "
+                "please call aimet_onnx.batch_norm_fold.fold_all_batch_norms_to_weight(model) before creating QuantizationSimModel."
+            )
         self._quant_scheme = quant_scheme
         self._param_type = param_type
         self._activation_type = activation_type
