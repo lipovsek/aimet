@@ -4487,7 +4487,7 @@ def conv_matmul_model():
             name="ConvMatMulModel",
             inputs=[
                 helper.make_tensor_value_info(
-                    "model_input", TensorProto.FLOAT, shape=[1, 3, 32]
+                    "model_input", TensorProto.FLOAT, shape=[1, 16, 32]
                 )
             ],
             outputs=[
@@ -4497,7 +4497,7 @@ def conv_matmul_model():
             ],
             initializer=[
                 numpy_helper.from_array(
-                    np.random.randn(16, 3, 3).astype("float32"),
+                    np.random.randn(16, 16, 3).astype("float32"),
                     name="conv1_weight",
                 ),
                 numpy_helper.from_array(

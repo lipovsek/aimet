@@ -80,15 +80,14 @@ This function can be called multiple times to set different LPBQ configuration f
             # 1. Create QuantizationSimModel
             # ...
 
-            from aimet_onnx.quantsim import set_blockwise_quantization_for_weights
+            from aimet_onnx.quantsim import set_lpbq_for_params
 
             # 2. Apply LPBQ
-            set_grouped_blockwise_quantization_for_weights(
+            set_lpbq_for_params(
                 sim=quantsim,
-                op_types=("Gemm", "MatMul", "Conv"),
                 bitwidth=4,
-                decompressed_bw=8,
                 block_size=64,
+                op_types=("Gemm", "MatMul", "Conv"),
                 nodes_to_exclude = ['conv1', 'linear10']
             )
 
@@ -115,5 +114,5 @@ API
     .. tab-item:: ONNX
         :sync: onnx
 
-        .. autofunction:: aimet_onnx.quantsim.set_grouped_blockwise_quantization_for_weights
+        .. autofunction:: aimet_onnx.quantsim.set_lpbq_for_params
             :noindex:

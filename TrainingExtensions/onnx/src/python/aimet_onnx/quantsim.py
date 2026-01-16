@@ -3505,6 +3505,7 @@ def set_blockwise_quantization_for_weights(
                 bias_quantizer.data_type = QuantizationDataType.int
 
 
+@deprecated("Use 'set_lpbq_for_params' instead.")
 def set_grouped_blockwise_quantization_for_weights(
     sim: QuantizationSimModel,
     op_types: Union[str, Tuple],
@@ -3557,6 +3558,113 @@ def set_grouped_blockwise_quantization_for_weights(
     def get_lpbq_params(op: Op):
         if op.type in op_types and op.name not in nodes_to_exclude:
             return bitwidth, decompressed_bw, block_size
+        return None, None, None
+
+    return _set_grouped_blockwise_quantization_for_weights(sim, get_lpbq_params, strict)
+
+
+@overload
+def set_lpbq_for_params(
+    sim: QuantizationSimModel,
+    bitwidth: int,
+    block_size: int,
+    *,
+    nodes_to_include: Set[str] = None,
+): ...
+
+
+@overload
+def set_lpbq_for_params(
+    sim: QuantizationSimModel,
+    bitwidth: int,
+    block_size: int,
+    *,
+    op_types: Union[str, Set[str]] = None,
+    nodes_to_exclude: None = None,
+    strict: bool = False,
+): ...
+
+
+def set_lpbq_for_params(
+    sim: QuantizationSimModel,
+    bitwidth: int,
+    block_size: int,
+    *,
+    op_types: Optional[Union[str, Set[str]]] = None,
+    nodes_to_exclude: Optional[Set[str]] = None,
+    nodes_to_include: Optional[Set[str]] = None,
+    strict: bool = None,
+):
+    """
+    Set weight quantizers of specified nodes to use low-power blockwise quantization.
+
+    This function is overloaded with the following signatures:
+
+    .. function:: set_lpbq_for_params(sim, bitwidth, block_size, *, nodes_to_include = None)
+        :noindex:
+
+        :param QuantizationSimModel sim: Quantsim to set weight quantizers for
+        :param int bitwidth: Compressed bitwidth for lpbq quantization
+        :param int block_size: Block size for affine quantization. The block size will be applied to the
+            weight's input features dimension, while per-channel will be used for the weight's output features dimension
+        :param Set[str] nodes_to_include: Set of onnx node names to include for blockwise weight quantization.
+
+    .. function:: set_lpbq_for_params(sim, bitwidth, block_size, *, op_types=None, nodes_to_exclude=None, strict=False)
+        :noindex:
+
+        :param QuantizationSimModel sim: Quantsim to set weight quantizers for
+        :param int bitwidth: Compressed bitwidth for lpbq quantization
+        :param int block_size: Block size for affine quantization. The block size will be applied to the
+            weight's input features dimension, while per-channel will be used for the weight's output features dimension
+        :param Union[str, Set[str]] op_types: Operator types for which to enable grouped blockwise weight quantizaiton
+        :param Set[str] nodes_to_exclude: Set of onnx node names to exclude from blockwise weight quantization.
+        :param bool strict: If False, only enable blockwise quant for layers with dimensions evenly divisible by block_size.
+            If True, throw an error for layers with incompatible shapes.
+
+    Examples:
+
+        >>> sim = QuantizationSimModel(...)
+        >>> set_lpbq_for_params(sim, bitwidth=4, block_size=64, op_types={"Gemm", "MatMul", "Conv"})
+        >>> # or
+        >>> set_lpbq_for_params(sim, bitwidth=4, block_size=64, nodes_to_include={"/lm_head/MatMul", ...})
+
+    """
+    if isinstance(op_types, str):
+        op_types = {op_types}
+
+    if nodes_to_exclude and nodes_to_include:
+        raise ValueError(
+            "Both 'nodes_to_exclude' and 'nodes_to_include' arguments cannot be set at the same time."
+        )
+
+    if op_types and nodes_to_include:
+        raise ValueError(
+            "Both 'op_types' and 'nodes_to_include' arguments cannot be set at the same time."
+        )
+
+    if op_types is None and nodes_to_include is None:
+        raise ValueError(
+            "Either 'op_types' or 'nodes_to_include' argument must be provided."
+        )
+
+    if not nodes_to_include:
+        nodes_to_exclude = nodes_to_exclude or set()
+        nodes_to_include = {
+            op.name
+            for op in sim.connected_graph.ordered_ops
+            if op.type in op_types and op.name not in nodes_to_exclude
+        }
+        strict = strict or False
+    else:
+        if strict is not None:
+            raise TypeError(
+                "Cannot specify 'strict' when 'nodes_to_include' is provided."
+            )
+        strict = True
+
+    def get_lpbq_params(op: Op):
+        if op.name in nodes_to_include:
+            return bitwidth, bitwidth * 2, block_size
         return None, None, None
 
     return _set_grouped_blockwise_quantization_for_weights(sim, get_lpbq_params, strict)

@@ -86,6 +86,7 @@ from aimet_onnx.quantsim import (
     clamp_activation_encodings,
     set_grouped_blockwise_quantization_for_weights,
     _INT32_MINIMUM_SCALE,
+    set_lpbq_for_params,
     set_param_type,
 )
 import aimet_onnx
@@ -1564,9 +1565,8 @@ class TestQuantSim:
         [
             (
                 partial(
-                    set_grouped_blockwise_quantization_for_weights,
+                    set_lpbq_for_params,
                     op_types=("MatMul", "Conv", "Gemm"),
-                    decompressed_bw=8,
                     strict=False,
                 ),
                 True,
@@ -1663,9 +1663,8 @@ class TestQuantSim:
         [
             (
                 partial(
-                    set_grouped_blockwise_quantization_for_weights,
+                    set_lpbq_for_params,
                     op_types=("ConvTranspose",),
-                    decompressed_bw=8,
                     strict=True,
                 ),
                 True,
@@ -1741,11 +1740,10 @@ class TestQuantSim:
         dummy_input = make_dummy_input(model.model)
 
         sim = QuantizationSimModel(model, param_type="int16", activation_type="int16")
-        set_grouped_blockwise_quantization_for_weights(
+        set_lpbq_for_params(
             sim,
             op_types=("MatMul", "Conv", "Gemm"),
             bitwidth=4,
-            decompressed_bw=8,
             block_size=4,
             strict=False,
         )
@@ -1758,11 +1756,10 @@ class TestQuantSim:
             sim_2 = QuantizationSimModel(
                 model_2, param_type="int16", activation_type="int16"
             )
-            set_grouped_blockwise_quantization_for_weights(
+            set_lpbq_for_params(
                 sim_2,
                 op_types=("MatMul", "Conv", "Gemm"),
                 bitwidth=2,
-                decompressed_bw=4,
                 block_size=2,
                 strict=False,
             )
@@ -2752,12 +2749,11 @@ class TestQuantSim:
         bq_weights.remove(model.graph().node[0].input[1])
 
         sim = QuantizationSimModel(model, param_type="int16", activation_type="int16")
-        set_grouped_blockwise_quantization_for_weights(
+        set_lpbq_for_params(
             sim,
-            ("MatMul", "Conv", "Gemm"),
             bitwidth,
-            decompressed_bw,
             block_size,
+            op_types=("MatMul", "Conv", "Gemm"),
             strict=False,
         )
 
@@ -2811,14 +2807,13 @@ class TestQuantSim:
         sim = QuantizationSimModel(
             model, dummy_input, default_param_bw=16, default_activation_bw=16
         )
-        set_grouped_blockwise_quantization_for_weights(
+        set_lpbq_for_params(
             sim,
-            bq_layers,
             bitwidth,
-            decompressed_bw,
             block_size,
             strict=False,
             nodes_to_exclude=excluded_ops,
+            op_types=bq_layers,
         )
 
         sim.compute_encodings(lambda session, _: session.run(None, dummy_input), None)
@@ -3039,15 +3034,15 @@ class TestQuantSim:
         quantizers = set(sim.qc_quantize_op_dict.values())
 
         with pytest.raises(ValueError):
-            set_grouped_blockwise_quantization_for_weights(
-                sim, ("MatMul", "Gemm"), 4, 8, block_size=7, strict=True
+            set_lpbq_for_params(
+                sim, 4, op_types=("MatMul", "Gemm"), block_size=7, strict=True
             )
         """
         When: Call block size is incompatible with weight shape
         Then: Original quantizer/quant_info should be unchanged from the call
         """
-        set_grouped_blockwise_quantization_for_weights(
-            sim, ("MatMul", "Gemm"), 4, 8, block_size=7, strict=False
+        set_lpbq_for_params(
+            sim, 4, op_types=("MatMul", "Gemm"), block_size=7, strict=False
         )
         assert quantizers == set(sim.qc_quantize_op_dict.values())
 
@@ -6853,6 +6848,127 @@ def test_matmul_with_transposed_weight(do_constant_folding, out_channels):
             tensor_shape = qtzr.tensor_quantizer_params.tensor_shape
             channel_axis = qtzr.tensor_quantizer_params.channel_axis
             assert tensor_shape[channel_axis] == out_channels
+
+
+@pytest.mark.parametrize(
+    "op_types",
+    [["Conv"], ["Gemm"], ["Conv", "Gemm"]],
+)
+def test_set_lpbq_for_params(op_types):
+    """
+    When: Set param type after initialization
+    Then: Param quantizers should update their bitwidth accordingly
+    """
+    model = models_for_tests.single_residual_model().model
+    sim = QuantizationSimModel(
+        model,
+        param_type=aimet_onnx.int8,
+        activation_type=aimet_onnx.int8,
+    )
+    first_conv = next(
+        iter(op for op in sim.connected_graph.ordered_ops if op.type == "Conv")
+    )
+    set_lpbq_for_params(sim, bitwidth=4, block_size=8, op_types=op_types, strict=False)
+
+    for op in sim.connected_graph.ordered_ops:
+        # First conv weight is not divisible by block_size
+        if op.type in op_types and op.name != first_conv.name:
+            param_qtzr = sim.qc_quantize_op_dict[op.inputs[1].name]
+            assert isinstance(param_qtzr, GroupedBlockQuantizeDequantize), f"{op.name}"
+            assert param_qtzr.bitwidth == 4
+            assert param_qtzr.quant_info.blockSize == 8
+            assert param_qtzr.decompressed_bw == 8
+        else:
+            for inp in op.inputs:
+                qtzr = sim.qc_quantize_op_dict.get(inp.name)
+                if qtzr and qtzr.enabled:
+                    assert not isinstance(qtzr, GroupedBlockQuantizeDequantize)
+                    assert qtzr.bitwidth == 8
+                    assert qtzr.quant_info.blockSize == 0
+
+
+def test_set_lpbq_for_params_by_op():
+    model = models_for_tests.conv_matmul_model()
+    sim = QuantizationSimModel(
+        copy.deepcopy(model),
+        param_type=aimet_onnx.int8,
+        activation_type=aimet_onnx.int8,
+    )
+    """
+    When: Pass op_types argument to set_lpbq_for_params
+    Then: Only params of specified op types should be blockwise quantized
+    """
+    set_lpbq_for_params(sim, bitwidth=4, block_size=8, op_types=["Conv"])
+
+    assert sim.qc_quantize_op_dict["conv1_weight"].quant_info.blockSize == 8
+    assert sim.qc_quantize_op_dict["conv2_weight"].quant_info.blockSize == 8
+    assert sim.qc_quantize_op_dict["matmul_weight"].quant_info.blockSize == 0
+
+    """
+    When: Pass op_types and nodes_to_exclude arguments to set_lpbq_for_params
+    Then: Only params of specified op types not in nodes_to_exclude should be blockwise quantized
+    """
+    sim = QuantizationSimModel(
+        copy.deepcopy(model),
+        param_type=aimet_onnx.int8,
+        activation_type=aimet_onnx.int8,
+    )
+    set_lpbq_for_params(
+        sim, bitwidth=2, block_size=8, op_types=["Conv"], nodes_to_exclude=["conv2"]
+    )
+    assert sim.qc_quantize_op_dict["conv1_weight"].quant_info.blockSize == 8
+    assert sim.qc_quantize_op_dict["conv2_weight"].quant_info.blockSize == 0
+    assert sim.qc_quantize_op_dict["matmul_weight"].quant_info.blockSize == 0
+
+    """
+    When: Pass nodes_to_include argument to set_lpbq_for_params
+    Then: Only params of ops specified in nodes_to_include should update their bitwidth
+    """
+    sim = QuantizationSimModel(
+        copy.deepcopy(model),
+        param_type=aimet_onnx.int8,
+        activation_type=aimet_onnx.int8,
+    )
+    set_lpbq_for_params(sim, bitwidth=4, block_size=8, nodes_to_include=["matmul"])
+
+    assert sim.qc_quantize_op_dict["matmul_weight"].quant_info.blockSize == 8
+    assert sim.qc_quantize_op_dict["conv1_weight"].quant_info.blockSize == 0
+    assert sim.qc_quantize_op_dict["conv2_weight"].quant_info.blockSize == 0
+
+    # Weight of specified layers not divisible by block_size
+    with pytest.raises(ValueError):
+        set_lpbq_for_params(
+            sim, bitwidth=4, block_size=7, nodes_to_include=["conv1", "conv2"]
+        )
+
+    with pytest.raises(ValueError):
+        set_lpbq_for_params(
+            sim,
+            bitwidth=4,
+            block_size=8,
+            op_types=["MatMul"],
+            nodes_to_include=["conv1"],
+        )
+
+    with pytest.raises(ValueError):
+        set_lpbq_for_params(sim, bitwidth=4, block_size=8)
+
+    with pytest.raises(ValueError):
+        set_lpbq_for_params(
+            sim,
+            bitwidth=4,
+            block_size=8,
+            nodes_to_include=["conv1"],
+            nodes_to_exclude=["conv2"],
+        )
+
+    with pytest.raises(TypeError):
+        set_lpbq_for_params(
+            sim, bitwidth=4, block_size=8, nodes_to_include=["conv1"], strict=True
+        )
+
+    with pytest.raises(TypeError):
+        set_lpbq_for_params(sim, bitwidth=4, block_size=8, unsupported_arg=True)
 
 
 def test_set_param_type():
