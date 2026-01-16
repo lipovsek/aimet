@@ -6,6 +6,30 @@
 Release notes
 #############
 
+2.23.0
+======
+
+* Bug fixes and Improvements
+    * ONNX
+        * Disable per-channel quantization for ConvTranspose ops (`9395e32`_)
+        * New top level API for configuring parameter quantization type (`a1c197d`_)
+
+    * Torch
+        * Enable Torch Dynamo ONNX export (`59e0125`_)
+
+    * Common
+        * Enable per-channel matmul quantization in config files (`7137849`_)
+        * LLM quantization recipes in docs (`6561f0e`_)
+        * Fix CUDA discrepancies against CPU wheel (`01e7422`_)
+
+.. _9395e32: https://github.com/quic/aimet/commit/9395e3243fdfdc245540ef8a39b3058b27404baa
+.. _a1c197d: https://github.com/quic/aimet/commit/a1c197d06c72793a4d903fdecdd214389c3f4b3e
+.. _59e0125: https://github.com/quic/aimet/commit/59e01254fefdc99394b984ef4c9a8bb907ac4a3c
+.. _7137849: https://github.com/quic/aimet/commit/71378496f6a966904938b600d562e7d3eb402b90
+.. _6561f0e: https://github.qualcomm.com/qualcomm-ai/aimet/commit/6561f0e06e339596201ea93963f75f187094e79c
+.. _01e7422: https://github.com/quic/aimet/commit/01e7422dd0da63f8fcf338dcc1636cf6a0294823
+
+
 2.22.0
 ======
 
