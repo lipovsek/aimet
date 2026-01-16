@@ -4796,6 +4796,8 @@ class TestEncodingPropagation:
                     print(f"Updated bias: {bias.name}")
                     _update_bias(ini)
 
+        adj_weight_scale = sim._adjust_weight_scales_for_int32_bias
+        sim._adjust_weight_scales_for_int32_bias = lambda: None
         sim.compute_encodings([dummy_tensor])
         sim.export(tmp_dir, "before_weight_adj")
         with open(os.path.join(tmp_dir, "before_weight_adj.encodings")) as f:
@@ -4808,9 +4810,10 @@ class TestEncodingPropagation:
             }
 
         """
-        When: Call _adjust_weight_scales_for_int32_bias() and before export
+        When: Call compute_encodings and export
         """
-        sim._adjust_weight_scales_for_int32_bias()
+        sim._adjust_weight_scales_for_int32_bias = adj_weight_scale
+        sim.compute_encodings([dummy_tensor])
         sim.export(tmp_dir, "after_weight_adj", export_int32_bias=True)
 
         with open(os.path.join(tmp_dir, "after_weight_adj.encodings")) as f:

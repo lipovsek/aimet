@@ -94,6 +94,7 @@ from aimet_onnx.common.quantsim import (
     _INT32_MINIMUM_SCALE,
     _is_bias_out_of_int32_range,
     _get_adjusted_weight_scale,
+    compute_min_max_given_delta_offset,
 )
 from aimet_onnx.common.utils import (
     save_json_yaml,
@@ -346,6 +347,8 @@ def compute_encodings(sim: "QuantizationSimModel"):
         ):
             qc_op.compute_encodings()
         qc_op.op_mode = OpMode.quantizeDequantize
+
+    sim._adjust_weight_scales_for_int32_bias()  # pylint: disable=protected-access
 
 
 def _fill_missing_node_names(model: onnx.ModelProto):
@@ -1524,11 +1527,21 @@ class QuantizationSimModel:
             adjusted_weight_scale = _get_adjusted_weight_scale(
                 bias_float, input_scale, weight_scale
             )
+            offset = np.array([enc.offset for enc in encodings], dtype=np.float32)
+            adjusted_min, adjusted_max = compute_min_max_given_delta_offset(
+                adjusted_weight_scale,
+                offset,
+                weight_qtzr.bitwidth,
+                weight_qtzr.use_symmetric_encodings,
+                weight_qtzr.use_strict_symmetric,
+            )
             assert len(adjusted_weight_scale) == len(encodings), (
                 "Weight scale adjustment only supported for per-tensor and per-channel scales."
             )
-            for new_scale, enc in zip(adjusted_weight_scale, encodings):
-                enc.delta = new_scale
+            for new_scale, new_min, new_max, enc in zip(
+                adjusted_weight_scale, adjusted_min, adjusted_max, encodings
+            ):
+                enc.min, enc.max, enc.delta = new_min, new_max, new_scale
             weight_qtzr.load_encodings(encodings)
             logger.info(
                 "Adjusted weight scale for %s to prevent bias overflow.", op.name
