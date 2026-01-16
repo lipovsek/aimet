@@ -107,9 +107,6 @@ def export(
         This is due to a known bug in onnx <1.19 version converter.
         For more information, see https://github.com/onnx/onnx/issues/6529
 
-    .. note::
-        Dynamo-based export (`dynamo=True`) is not supported yet
-
     .. _torch.onnx.export(): https://docs.pytorch.org/docs/stable/onnx_torchscript.html#torch.onnx.export
     .. _QuantizeLinear: https://onnx.ai/onnx/operators/onnx__QuantizeLinear.html
     .. _DequantizeLinear: https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html

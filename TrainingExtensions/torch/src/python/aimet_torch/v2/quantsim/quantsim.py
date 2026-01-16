@@ -901,9 +901,6 @@ class QuantizationSimModelOnnxExporter:
     .. _torch.onnx.export(): https://docs.pytorch.org/docs/stable/onnx_torchscript.html#torch.onnx.export
 
     .. note::
-        Dynamo-based export (`dynamo=True`) is not supported yet
-
-    .. note::
         See also :func:`aimet_torch.onnx.export`, an equivalent API that
         exports a single ONNX graph with quantization encodings
         embedded in QuantizeLinear and DequantizeLinear nodes
