@@ -59,13 +59,16 @@ def get_onnx_model(
     checkpoint: str | os.PathLike,
     fp_model: torch.nn.Module,
     context_length: int,
+    sequence_length: int,
     sample_input: tuple[torch.Tensor, ...],
     input_names: tuple[str, ...],
     output_names: tuple[str, ...],
 ) -> onnx.ModelProto:
     # Create the checkpoint directory if it does not exist.
     os.makedirs(checkpoint, exist_ok=True)
-    onnx_model_path = os.path.join(checkpoint, f"model_cl{context_length}.onnx")
+    onnx_model_path = os.path.join(
+        checkpoint, f"model_sl{sequence_length}_cl{context_length}.onnx"
+    )
     config_path = os.path.join(checkpoint, "config.json")
 
     fp_model.eval()

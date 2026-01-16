@@ -87,6 +87,9 @@ class Generator(GenerationMixin, torch.nn.Module):
         sequence_length: int,
         context_length: int,
         config: Union[PretrainedConfig | None] = None,
+        attention_mask_min: int = -100,
+        *args,
+        **kwargs,
     ):
         super().__init__()
 
@@ -96,6 +99,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         self.context_length = context_length
         self.generation_config = None
         self._config = config
+        self.attention_mask_min = attention_mask_min
 
     @staticmethod
     def can_generate() -> bool:
@@ -195,6 +199,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         sequence_length: int,
         context_length: int,
         pad_token: int = 0,
+        attention_mask_min: int = -100,
     ) -> tuple[torch.Tensor, ...]:
         """Prepare provided inputs for model forward pass with static graph constraints"""
         device = input_ids.device
@@ -274,7 +279,7 @@ class Generator(GenerationMixin, torch.nn.Module):
             key_value_length=context_length,
             dtype=torch.float32,
         )
-        cm_attention_mask = cm_attention_mask.clip(-100, 0)
+        cm_attention_mask = cm_attention_mask.clip(attention_mask_min, 0)
 
         # Compute position_ids
         position_ids = torch.cumsum(padded_attention_mask, dim=1, dtype=torch.int32) - 1
@@ -362,6 +367,7 @@ class Generator(GenerationMixin, torch.nn.Module):
                 sequence_length=self.sequence_length,
                 context_length=self.context_length,
                 pad_token=getattr(self.tokenizer, "eos_token_id", 0),
+                attention_mask_min=self.attention_mask_min,
             )
 
             local_outputs = self.model(*prepared_inputs)
@@ -415,12 +421,14 @@ class Generator(GenerationMixin, torch.nn.Module):
             input_ids_to_preconsume, attention_mask_to_preconsume, self.sequence_length
         ):
             prepared_inputs = self.prepare_inputs(
-                self.model,
-                input_ids_slice,
-                attention_mask_slice,
-                preconsumed_outputs["past_key_values"],
-                self.sequence_length,
-                self.context_length,
+                model=self.model,
+                input_ids=input_ids_slice,
+                attention_mask=attention_mask_slice,
+                past_key_values=preconsumed_outputs["past_key_values"],
+                sequence_length=self.sequence_length,
+                context_length=self.context_length,
+                pad_token=getattr(self.tokenizer, "eos_token_id", 0),
+                attention_mask_min=self.attention_mask_min,
             )
 
             yield prepared_inputs
@@ -435,13 +443,14 @@ class Generator(GenerationMixin, torch.nn.Module):
         remaining_input_ids = input_ids[:, num_tokens_to_preconsume:]
         remaining_attention_mask = attention_mask[:, num_tokens_to_preconsume:]
         prefilled_inputs = self.prepare_inputs(
-            self.model,
-            remaining_input_ids,
-            remaining_attention_mask,
-            preconsumed_outputs["past_key_values"],
-            self.sequence_length,
-            self.context_length,
-            getattr(self.tokenizer, "eos_token_id", 0),
+            model=self.model,
+            input_ids=remaining_input_ids,
+            attention_mask=remaining_attention_mask,
+            past_key_values=preconsumed_outputs["past_key_values"],
+            sequence_length=self.sequence_length,
+            context_length=self.context_length,
+            pad_token=getattr(self.tokenizer, "eos_token_id", 0),
+            attention_mask_min=self.attention_mask_min,
         )
 
         yield prefilled_inputs

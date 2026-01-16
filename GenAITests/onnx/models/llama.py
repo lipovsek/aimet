@@ -39,6 +39,8 @@ class Llama_32_ONNX(Llama_32):
         sequence_length: int,
         small_model: bool = False,
         kv_bits: int = 8,
+        *args,
+        **kwargs,
     ):
         if model_id is None:
             model_id = cls.DEFAULT_MODEL_ID
@@ -60,12 +62,13 @@ class Llama_32_ONNX(Llama_32):
             )
 
             onnx_model = get_onnx_model(
-                get_model_checkpoint_path(model_id),
-                exportable_model,
-                context_length,
-                assembled_dummy_inputs,
-                Generator.get_input_names(model.config.num_hidden_layers),
-                Generator.get_output_names(model.config.num_hidden_layers),
+                checkpoint=get_model_checkpoint_path(model_id),
+                fp_model=exportable_model,
+                context_length=context_length,
+                sequence_length=sequence_length,
+                sample_input=assembled_dummy_inputs,
+                input_names=Generator.get_input_names(model.config.num_hidden_layers),
+                output_names=Generator.get_output_names(model.config.num_hidden_layers),
             )
         else:
             onnx_model = onnx.load(

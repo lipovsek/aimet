@@ -32,6 +32,8 @@ class Llama_32_Torch(Llama_32):
         small_model: bool = False,
         dtype: torch.dtype = torch.float32,
         kv_bits: int = 8,
+        *args,
+        **kwargs,
     ) -> QuantizationSimModel:
         warnings.warn(
             f"kv_bits parameter (value: {kv_bits}) is ignored in Torch GenAI framework. "

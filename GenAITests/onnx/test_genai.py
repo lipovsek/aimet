@@ -89,7 +89,11 @@ def test_llm_quantization(test_parameters):
 
     quantsim_with_torch_interface = TorchONNXInterface(quantsim, config)
     generator = Generator(
-        quantsim_with_torch_interface, tokenizer, sequence_length, context_length
+        quantsim_with_torch_interface,
+        tokenizer,
+        sequence_length,
+        context_length,
+        **model_kwargs,
     )
 
     with GPUMeter(

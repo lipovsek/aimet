@@ -59,7 +59,9 @@ def test_llm_quantization(test_parameters):
         model_id, context_length, sequence_length, **model_kwargs
     )
     tokenizer = model_cls.instantiate_tokenizer(model_id)
-    generator = Generator(quantsim.model, tokenizer, sequence_length, context_length)
+    generator = Generator(
+        quantsim.model, tokenizer, sequence_length, context_length, **model_kwargs
+    )
 
     if precomputed_encodings is not None:
         print(f"Loading precomputed encodings from {precomputed_encodings}.")
