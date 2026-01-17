@@ -19,6 +19,7 @@ from GenAITests.shared.helpers.profiler import (
     write_stats_to_disk,
 )
 from GenAITests.shared.models.generator import Generator
+from GenAITests.shared.helpers.determinism_utils import set_seed
 
 from GenAITests.shared.helpers import datasets, metrics
 from GenAITests.onnx import models
@@ -33,6 +34,7 @@ from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
 def test_llm_quantization(test_parameters):
     if test_parameters is None:
         pytest.skip("No GenAI test parameters provided.")
+    set_seed(42)
 
     print(test_parameters)
     model_kwargs = test_parameters.pop("model")
