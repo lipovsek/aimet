@@ -187,7 +187,6 @@ endif()
 if (ENABLE_ONNX)
     set_onnx_version()
     set_onnxruntime_variables()
-    set_torch_cmake_prefix_path()
     update_onnx_cuda_arch_list()
 endif()
 
