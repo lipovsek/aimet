@@ -87,10 +87,22 @@ jobs:
       - name: Run pylint
         run: |
           CONDA_PYTHONPATH="./.conda/envs/${{ inputs.env_name }}/lib/python${{ inputs.ver_python }}/site-packages"
-          AIMET_PACKAGES=$(find $CONDA_PYTHONPATH -regex ".*/aimet_\(common\|torch\|onnx\)" | tr "\n" " ")
 
-          ./.conda/bin/conda run --live-stream --name "${{ inputs.env_name }}" \
-              python3 -m pylint --rcfile=.pylintrc $AIMET_PACKAGES
+          # Run pylint on aimet-onnx or aimet-torch
+          if [ "${{ inputs.ver_onnxruntime }}" != "" ] ; then
+              AIMET_ONNX_PATH=$(find $CONDA_PYTHONPATH -regex ".*/aimet_onnx")
+              if [ -z "$AIMET_ONNX_PATH" ]; then
+                echo "aimet_onnx package not found in $CONDA_PYTHONPATH"
+              fi
+              ./.conda/bin/conda run --live-stream --name "${{ inputs.env_name }}" python3 -m pylint --rcfile=.pylintrc $AIMET_ONNX_PATH
+          elif [ "${{ inputs.ver_torch }}" != "" ] ; then
+            AIMET_TORCH_PATH=$(find $CONDA_PYTHONPATH -regex ".*/aimet_torch")
+            if [ -z "$AIMET_TORCH_PATH" ]; then
+              echo "aimet_torch package not found in $CONDA_PYTHONPATH"
+            fi
+            ./.conda/bin/conda run --live-stream --name "${{ inputs.env_name }}" python3 -m pylint --rcfile=.pylintrc $AIMET_TORCH_PATH
+          fi
+
       - name: Run Unit tests
         if: inputs.run_unit_tests
         run: |
