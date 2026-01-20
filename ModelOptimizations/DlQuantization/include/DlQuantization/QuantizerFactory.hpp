@@ -38,7 +38,7 @@
 #ifndef QUANTIZER_FACTORY_HPP
 #define QUANTIZER_FACTORY_HPP
 
-#include <bits/unique_ptr.h>
+#include <memory>
 #include <string>
 #include <vector>
 

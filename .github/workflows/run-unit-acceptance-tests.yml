@@ -169,15 +169,30 @@ jobs:
         with:
           ENV_NAME: "onnx-cpu"
           VER_PYTHON: "3.10"
-          PIP_INDEX: ""
-          VER_CUDA: ""
+
+      - name: Install AIMET-ONNX wheel
+        run: |
+
+          # Activate uv environment
+          .\onnx-cpu\Scripts\Activate.ps1
+
+          python -m ensurepip --upgrade
+          python -m pip install uv
+
+          # Install test dependencies
+          python -m uv pip compile --output-file "$env:GITHUB_WORKSPACE\test_requirements.txt" --extra test pyproject.toml
+          python -m uv pip install -r "$env:GITHUB_WORKSPACE\test_requirements.txt" --extra-index-url="https://download.pytorch.org/whl/cpu" --index-strategy unsafe-best-match
+
+          # Install aimet-onnx
+          $wheel = Get-ChildItem -Path downloads -Filter "aimet_onnx*.whl" | Select-Object -First 1 -ExpandProperty FullName
+          python -m uv pip install $wheel --extra-index-url="https://download.pytorch.org/whl/cpu" --index-strategy unsafe-best-match
 
       - name: Run Unit tests
         if: inputs.run_unit_tests
         run: |
 
           # Activate uv environment
-          .\onnx-cpu\Scripts\activate
+          .\onnx-cpu\Scripts\Activate.ps1
 
           # Run tests
           $pytest_args = "not cuda"
@@ -189,6 +204,7 @@ jobs:
       - name: Run Acceptance tests
         if: inputs.run_acceptance_tests
         run: |
+
           # Activate uv environment
           .\onnx-cpu\Scripts\activate
 

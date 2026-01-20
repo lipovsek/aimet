@@ -138,15 +138,15 @@ endif()
 if (SKBUILD)
     if (ENABLE_TORCH)
         install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/DlQuantization
-                DESTINATION aimet_torch/common/x86_64-linux-gnu/include)
+                DESTINATION aimet_torch/common/${AIMET_PLATFORM_DIR}/include)
     endif()
     if (ENABLE_ONNX)
         install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/DlQuantization
-                DESTINATION aimet_onnx/common/x86_64-linux-gnu/include)
+                DESTINATION aimet_onnx/common/${AIMET_PLATFORM_DIR}/include)
     endif()
 else (SKBUILD)
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/DlQuantization
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/x86_64-linux-gnu/include)
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/${AIMET_PLATFORM_DIR}/include)
 
     whl_add_whl_prep_common_target(DlQuantization)
 endif (SKBUILD)

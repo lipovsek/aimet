@@ -197,7 +197,7 @@ public:
         throw std::runtime_error("getPercentileValue is only applicable for percentile encoding analyzers");
     }
 
-    virtual TensorDims getShape();
+    virtual TensorDims getShape() = 0;
 };
 
 

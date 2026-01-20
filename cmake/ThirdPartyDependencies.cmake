@@ -46,38 +46,41 @@ include(FetchContent)
 # michof: TODO: Do we need Patchelf at all? Can't we do the RPATH fiddling with CMake built-in tools,
 # such as setting CMAKE_INSTALL_RPATH per-target?
 
-find_program(PATCHELF_EXE patchelf
-             PATHS ${CMAKE_BINARY_DIR}/_deps/patchelf-src/bin)
+# Patchelf is only needed on Linux (not Windows)
+if (NOT WIN32)
+    find_program(PATCHELF_EXE patchelf
+                 PATHS ${CMAKE_BINARY_DIR}/_deps/patchelf-src/bin)
 
-if (PATCHELF_EXE)
-    # michof: TODO: Consider removing this path.
-    message(STATUS "Patchelf: Found in '${PATCHELF_EXE}'")
-elseif (EXISTS $ENV{DEPENDENCY_DATA_PATH}/patchelf.tar.gz)
-    # michof: TODO: Needs testing. Move to using FetchContent_Declare as below.
-    message(STATUS "Patchelf: Setting up from internal cache")
-    file(ARCHIVE_EXTRACT INPUT $ENV{DEPENDENCY_DATA_PATH}/patchelf.tar.gz
-    DESTINATION ${CMAKE_BINARY_DIR}/_deps/patchelf-src/)
-    set(PATCHELF_EXE ${CMAKE_BINARY_DIR}/_deps/patchelf-src/bin/patchelf)
-else()
-    # FIXME Better to include patchefl into docker image, although seems it is not trivial
-
-    if (DEFINED ENV{PATCHELF_INTERNAL_URL})
-        message(STATUS "Patchelf: Using Internal URL: $ENV{PATCHELF_INTERNAL_URL}")
-        FetchContent_Declare(patchelf
-        URL "$ENV{PATCHELF_INTERNAL_URL}/patchelf-0.15.0-x86_64.tar.gz"
-        )
+    if (PATCHELF_EXE)
+        # michof: TODO: Consider removing this path.
+        message(STATUS "Patchelf: Found in '${PATCHELF_EXE}'")
+    elseif (EXISTS $ENV{DEPENDENCY_DATA_PATH}/patchelf.tar.gz)
+        # michof: TODO: Needs testing. Move to using FetchContent_Declare as below.
+        message(STATUS "Patchelf: Setting up from internal cache")
+        file(ARCHIVE_EXTRACT INPUT $ENV{DEPENDENCY_DATA_PATH}/patchelf.tar.gz
+        DESTINATION ${CMAKE_BINARY_DIR}/_deps/patchelf-src/)
+        set(PATCHELF_EXE ${CMAKE_BINARY_DIR}/_deps/patchelf-src/bin/patchelf)
     else()
-        message(NOTICE "Patchelf: Fetching from external URL")
-        FetchContent_Declare(patchelf
-            URL "https://github.com/NixOS/patchelf/releases/download/0.15.0/patchelf-0.15.0-x86_64.tar.gz"
-        )
+        # FIXME Better to include patchefl into docker image, although seems it is not trivial
+
+        if (DEFINED ENV{PATCHELF_INTERNAL_URL})
+            message(STATUS "Patchelf: Using Internal URL: $ENV{PATCHELF_INTERNAL_URL}")
+            FetchContent_Declare(patchelf
+            URL "$ENV{PATCHELF_INTERNAL_URL}/patchelf-0.15.0-x86_64.tar.gz"
+            )
+        else()
+            message(NOTICE "Patchelf: Fetching from external URL")
+            FetchContent_Declare(patchelf
+                URL "https://github.com/NixOS/patchelf/releases/download/0.15.0/patchelf-0.15.0-x86_64.tar.gz"
+            )
+        endif()
+
+        FetchContent_MakeAvailable(patchelf)
+        set(PATCHELF_EXE ${patchelf_SOURCE_DIR}/bin/patchelf)
     endif()
 
-    FetchContent_MakeAvailable(patchelf)
-    set(PATCHELF_EXE ${patchelf_SOURCE_DIR}/bin/patchelf)
+    message(STATUS "** PATCHELF_EXE = ${PATCHELF_EXE}")
 endif()
-
-message(STATUS "** PATCHELF_EXE = ${PATCHELF_EXE}")
 
 ############
 # GoogleTest
@@ -127,7 +130,13 @@ if (ENABLE_ONNX)
     COMMAND ${Python3_EXECUTABLE} "-c" "import onnxruntime; print(onnxruntime.__version__)"
       OUTPUT_VARIABLE ONNXRUNTIME_VERSION
       OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE _onnxrt_version_result
   )
+
+  if (NOT _onnxrt_version_result EQUAL 0 OR NOT ONNXRUNTIME_VERSION)
+    message(FATAL_ERROR "Failed to detect onnxruntime version. Please install onnxruntime: pip install onnxruntime")
+  endif()
+  message(STATUS "Detected ONNX Runtime version: ${ONNXRUNTIME_VERSION}")
 
   if ("${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}"     STREQUAL "Linux-x86_64")
     set(PLATFORM_TAG "linux-x64")
@@ -135,8 +144,8 @@ if (ENABLE_ONNX)
   elseif ("${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "Linux-aarch64")
     set(PLATFORM_TAG "linux-aarch64")
     set(EXTENSION "tgz")
-  elseif ("${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "Windows-x86_64")
-    set(PLATFORM_TAG "win-x86")
+  elseif ("${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "Windows-x86_64" OR "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "Windows-AMD64")
+    set(PLATFORM_TAG "win-x64")
     set(EXTENSION "zip")
   else()
     message(

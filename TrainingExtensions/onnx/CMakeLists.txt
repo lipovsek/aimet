@@ -53,7 +53,6 @@ add_library(OnnxCppOps SHARED
 )
 
 target_include_directories(OnnxCppOps PRIVATE
-        ${EIGEN3_INCLUDE_DIR}
         ${ONNXRUNTIME_INCLUDE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../common/include
         ${CMAKE_CURRENT_SOURCE_DIR}/../../ModelOptimizations/DlQuantization/src
@@ -61,6 +60,7 @@ target_include_directories(OnnxCppOps PRIVATE
 
 target_link_libraries(OnnxCppOps PUBLIC
         MoDlQuantization
+        Eigen3::Eigen
         )
 
 if (ENABLE_CUDA)
@@ -75,6 +75,7 @@ endif (ENABLE_CUDA)
 
 if (SKBUILD)
     set_target_properties(OnnxCppOps PROPERTIES
+        PREFIX "lib"
         OUTPUT_NAME "aimet_onnxrt_ops"
         )
 
@@ -83,6 +84,7 @@ if (SKBUILD)
 
 else (SKBUILD)
     set_target_properties(OnnxCppOps PROPERTIES
+        PREFIX "lib"
         OUTPUT_NAME "aimet_onnxrt_ops"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/_aimet_common"
         )
@@ -112,6 +114,7 @@ endif (ENABLE_CUDA)
 if (SKBUILD)
     set_target_properties(quant_info
         PROPERTIES
+        PREFIX "lib"
         OUTPUT_NAME "quant_info"
         )
 
@@ -121,6 +124,7 @@ else (SKBUILD)
 
 set_target_properties(quant_info
         PROPERTIES
+        PREFIX "lib"
         OUTPUT_NAME "quant_info"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/_aimet_common/"
         )
@@ -131,20 +135,35 @@ install(TARGETS quant_info
 
 # ----
 
-add_custom_target(whl_prep_cp_onnx
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_ONNX_DIR}
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OnnxCppOps> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
-    COMMAND ${PATCHELF_EXE} --set-rpath '$$ORIGIN' ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:quant_info> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
-    COMMAND ${PATCHELF_EXE} --set-rpath '$$ORIGIN' ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
-    DEPENDS OnnxCppOps quant_info
-)
-add_custom_target(whl_prep_ln_onnx
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_ONNX_DIR}
-    COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:OnnxCppOps> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
-    COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:quant_info> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
-    DEPENDS OnnxCppOps quant_info
-)
+if (WIN32)
+    add_custom_target(whl_prep_cp_onnx
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_ONNX_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OnnxCppOps> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:quant_info> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
+        DEPENDS OnnxCppOps quant_info
+    )
+    add_custom_target(whl_prep_ln_onnx
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_ONNX_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OnnxCppOps> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:quant_info> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
+        DEPENDS OnnxCppOps quant_info
+    )
+else()
+    add_custom_target(whl_prep_cp_onnx
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_ONNX_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OnnxCppOps> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
+        COMMAND ${PATCHELF_EXE} --set-rpath '$$ORIGIN' ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:quant_info> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
+        COMMAND ${PATCHELF_EXE} --set-rpath '$$ORIGIN' ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
+        DEPENDS OnnxCppOps quant_info
+    )
+    add_custom_target(whl_prep_ln_onnx
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_ONNX_DIR}
+        COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:OnnxCppOps> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
+        COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:quant_info> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
+        DEPENDS OnnxCppOps quant_info
+    )
+endif()
 
 add_dependencies(whl_prep_cp whl_prep_cp_onnx)
 add_dependencies(whl_prep_ln whl_prep_ln_onnx)

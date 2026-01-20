@@ -57,7 +57,7 @@ add_custom_target(whl_prep_ln_common DEPENDS
 
 message(STATUS "Package rename command: ${src_packaging_dir}/convert_wheel_format.sh ${CMAKE_BINARY_DIR}")
 add_custom_target(generate_deps
-    COMMAND python3
+    COMMAND ${Python3_EXECUTABLE}
             "${CMAKE_CURRENT_SOURCE_DIR}/src/python/_aimet_common/_gen.py"
             --output-dir ${CMAKE_BINARY_DIR}/artifacts/_aimet_common
             --build-dir ${CMAKE_BINARY_DIR}

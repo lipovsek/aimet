@@ -59,9 +59,11 @@ set_target_properties(PyModelOptimizations
 add_dependencies(PyModelOptimizations generate_deps)
 
 if (SKBUILD)
-    set_target_properties(PyModelOptimizations PROPERTIES
-        INSTALL_RPATH "\$ORIGIN:\$ORIGIN/../../.."
-        )
+    if (NOT WIN32)
+        set_target_properties(PyModelOptimizations PROPERTIES
+            INSTALL_RPATH "\$ORIGIN:\$ORIGIN/../../.."
+            )
+    endif()
     if (ENABLE_TORCH)
         install(TARGETS PyModelOptimizations
                 DESTINATION aimet_torch/common)

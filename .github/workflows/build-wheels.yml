@@ -9,9 +9,13 @@ on:
       image-tag:
         required: true
         type: string
+      build-windows-wheel:
+        required: false
+        type: boolean
+        default: false
 
 jobs:
-  build:
+  build-linux:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.variants) }}
@@ -113,36 +117,68 @@ jobs:
           path: wheelhouse/Docs/
           if-no-files-found: error
           retention-days: 30d
-      - name: "Build aimet-onnx for Windows (temporary)"
-        if: matrix.id == 'onnx-cpu'
+
+  build-windows:
+    runs-on: [self-hosted, Windows]
+    if: inputs.build-windows-wheel == true
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-uv-env
+        with:
+          ENV_NAME: "onnx-cpu"
+          VER_PYTHON: "3.10"
+
+      - name: "Build AIMET ONNX-CPU wheel package for Windows"
         run: |
-          set -x
-          rm -rf build dist
-          . /etc/profile.d/conda.sh
-          export CMAKE_ARGS="$AIMET_CMAKE_ARGS"
-          export SKBUILD_BUILD_TARGETS="$AIMET_BUILD_TARGETS"
 
-          # Add cmake flags specific to cross compiling for Windows
-          # 1. Define CMAKE_TOOLCHAIN_FILE
-          export CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=mingw.cmake"
+          # Activate uv environment
+          .\onnx-cpu\Scripts\activate
 
-          # 2. Disable building test binaries; mingw environment is missing some C++
-          #    libraries required for compiling test binaries
-          export CMAKE_ARGS="$CMAKE_ARGS -DENABLE_TESTS=OFF"
+          # Bootstrap pip in the venv
+          python -m ensurepip --upgrade
 
-          # TODO: aimet-onnx for Windows can be only compiled with ORT 1.22
-          python3 -m pip install "onnxruntime==1.22.*"
-          python3 -m build --wheel --no-isolation .
+          python -m pip install uv
 
-          # Retag wheel with win_amd64 platform tag
-          wheel tags --remove --platform-tag=win_amd64 dist/aimet*.whl
-          mv dist/*.whl wheelhouse
-      - name: "Upload aimet-onnx for Windows wheel file (temporary)"
-        if: matrix.id == 'onnx-cpu'
+          # Install dev requirements
+          python -m uv pip compile --output-file "$env:GITHUB_WORKSPACE\dev_requirements.txt" --extra dev pyproject.toml
+          python -m uv pip install -r "$env:GITHUB_WORKSPACE\dev_requirements.txt"
+
+          # Additional dependencies for windows build
+          python -m uv pip install onnxruntime==1.19.2 onnx build pybind11
+
+          # Install vcpkg if not present, then install Eigen3
+          $vcpkgRoot = Join-Path $env:GITHUB_WORKSPACE "vcpkg"
+          $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
+          if (-not (Test-Path $vcpkgExe)) {
+            git clone https://github.com/microsoft/vcpkg $vcpkgRoot
+            & (Join-Path $vcpkgRoot "bootstrap-vcpkg.bat") -disableMetrics
+          }
+          & $vcpkgExe install eigen3:x64-windows
+
+          $vcpkgToolchain = (Join-Path $vcpkgRoot "scripts/buildsystems/vcpkg.cmake") -replace '\\','/'
+          $env:CMAKE_TOOLCHAIN_FILE = $vcpkgToolchain
+
+          # Set CMake args for amd64 Windows build
+          $env:CMAKE_ARGS = "-DENABLE_CUDA=OFF -DENABLE_TORCH=OFF -DENABLE_ONNX=ON -DENABLE_TESTS=OFF -DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain"
+          $env:CMAKE_GENERATOR = "Visual Studio 17 2022"
+          $env:CMAKE_GENERATOR_PLATFORM = "x64"
+
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build, dist, wheelhouse
+          New-Item -ItemType Directory -Force -Path wheelhouse
+
+          # Build AIMET wheel
+          python -m build --wheel --no-isolation .
+
+          # Move-Item -Path dist\aimet*.whl -Destination wheelhouse\
+      - name: Upload AIMET Windows wheel file
         uses: actions/upload-artifact@v3
         with:
-          name: "${{ matrix.id }}-win-wheel"
+          name: "onnx-cpu-win-wheel"
           path: |
-            wheelhouse/aimet*-win*.whl
+            dist/aimet*.whl
           if-no-files-found: error
           retention-days: 30d
+

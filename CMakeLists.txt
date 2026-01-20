@@ -100,26 +100,27 @@ message(STATUS "** AUTO_SET_GCC_ABI_VERSION = ${AUTO_SET_GCC_ABI_VERSION}")
 message(STATUS "** ---")
 
 # Find Python libraries
+# On Windows, the executable is typically 'python' not 'python3'
+if (WIN32)
+    set(_python_cmd python)
+else()
+    set(_python_cmd python3)
+endif()
+
 execute_process(
-    COMMAND python3 -V         # "Python 3.XX.YY"
-    COMMAND cut -d " " -f 2    # "3.XX.YY"
-    COMMAND cut -d "." -f 1,2  # "3.XX"
+    COMMAND ${_python_cmd} -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
     OUTPUT_VARIABLE Python3_VERSION
     OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE _python_version_result
 )
-set(Python3_FIND_VIRTUALENV "STANDARD")
-find_package(Python3 ${Python3_VERSION} EXACT COMPONENTS Interpreter Development REQUIRED)
-message(STATUS "Found Python3: ${Python3_FOUND}, at ${Python3_LIBRARIES}")
 
-if (CMAKE_CROSSCOMPILING)
-    # Set Python3 SOABI manually.
-    # Python3_SOABI is an empty string when cross compiling
-    if ("${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "Windows-x86_64")
-        set(Python3_SOABI "cp${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR}-win_amd64")
-    else()
-        message(FATAL_ERROR "Cross compiling is not supported except Windows-x86_64; got ${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
-    endif()
+set(Python3_FIND_VIRTUALENV "STANDARD")
+if (_python_version_result EQUAL 0 AND Python3_VERSION)
+    find_package(Python3 ${Python3_VERSION} EXACT COMPONENTS Interpreter Development REQUIRED)
+else()
+    find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 endif()
+message(STATUS "Found Python3: ${Python3_FOUND}, at ${Python3_LIBRARIES}")
 
 # -------------------------------
 # Compilation flags - not (yet) per target
@@ -144,24 +145,35 @@ if (ENABLE_TORCH)
     endif()
 endif()
 
-if(DEFINED CMAKE_CXX_FLAGS)
-    if(NOT CMAKE_CXX_FLAGS MATCHES "-O(0|1|2|3|s|fast)")
-        message(NOTICE "No optimization flag found. Setting optimization to -O3.")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
+if (MSVC)
+    # MSVC compiler flags
+    # /permissive- enables standard conformance (required for 'not', 'and', 'or' keywords)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /permissive-")
+    if(NOT CMAKE_CXX_FLAGS MATCHES "/O[12d]")
+        message(NOTICE "No optimization flag found. Setting optimization to /O2.")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2")
     endif()
 else()
-    message(NOTICE "CMAKE_CXX_FLAGS not defined. Setting optimization to -O3.")
-    set(CMAKE_CXX_FLAGS "-O3")
-endif()
+    # GCC/Clang compiler flags
+    if(DEFINED CMAKE_CXX_FLAGS)
+        if(NOT CMAKE_CXX_FLAGS MATCHES "-O(0|1|2|3|s|fast)")
+            message(NOTICE "No optimization flag found. Setting optimization to -O3.")
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
+        endif()
+    else()
+        message(NOTICE "CMAKE_CXX_FLAGS not defined. Setting optimization to -O3.")
+        set(CMAKE_CXX_FLAGS "-O3")
+    endif()
 
-if (ENABLE_GCC_PRE_CXX11_ABI)
-    message(NOTICE "Adding to CXXFLAGS: -D_GLIBCXX_USE_CXX11_ABI=0")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_GLIBCXX_USE_CXX11_ABI=0")
-endif()
+    if (ENABLE_GCC_PRE_CXX11_ABI)
+        message(NOTICE "Adding to CXXFLAGS: -D_GLIBCXX_USE_CXX11_ABI=0")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_GLIBCXX_USE_CXX11_ABI=0")
+    endif()
 
-if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND "${GCC_ABI_VERSION}" GREATER "0")
-    message(NOTICE "Adding to CXXFLAGS: -fabi-version=${GCC_ABI_VERSION}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fabi-version=${GCC_ABI_VERSION}")
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND "${GCC_ABI_VERSION}" GREATER "0")
+        message(NOTICE "Adding to CXXFLAGS: -fabi-version=${GCC_ABI_VERSION}")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fabi-version=${GCC_ABI_VERSION}")
+    endif()
 endif()
 
 # -------------------------------
@@ -171,7 +183,9 @@ endif()
 # Find system thread library. Seems to be only needed by DlCompression tests. May be optional - not sure.
 find_package(Threads)
 
-find_package(PkgConfig)
+if (NOT WIN32)
+    find_package(PkgConfig)
+endif()
 find_package (Eigen3 REQUIRED)
 
 include(cmake/ThirdPartyDependencies.cmake)

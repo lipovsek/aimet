@@ -9,12 +9,6 @@ inputs:
   VER_PYTHON:
     description: "Python version"
     required: true
-  VER_CUDA:
-    description: "CUDA version"
-    required: true
-  PIP_INDEX:
-    description: "PyPI or GitHub release"
-    required: true
 
 runs:
   using: "composite"
@@ -33,27 +27,3 @@ runs:
         uv venv --python "${{ inputs.VER_PYTHON }}" "${{ inputs.ENV_NAME }}"
         .\"${{ inputs.ENV_NAME }}"\Scripts\Activate.ps1
 
-    - name: Install AIMET wheel (Windows)
-      if: runner.os == 'Windows'
-      shell: powershell
-      run: |
-        if ( "${{ inputs.PIP_INDEX }}" -eq "pypi") {
-            # PyPI release does NOT have +cpu or +cu suffix
-            $whl_name_pattern = "aimet_(torch|onnx)-\d+\.\d+\.\d+-.*\.whl"
-        } else {
-            # Github release has +cpu or +cu suffix
-            $whl_name_pattern = "aimet_(torch|onnx)-\d+\.\d+\.\d+\+(cpu|cu).*\.whl"
-        }
-
-        $whl_file = Get-ChildItem -Path "downloads" -Recurse | Where-Object { $_.FullName -match $whl_name_pattern } | Select-Object -First 1 -ExpandProperty Name
-        $ver_cuda = "${{ inputs.VER_CUDA }}"
-        if ($ver_cuda -ne "") {
-            $parts = $ver_cuda -split '\.'
-            $suffix = "cu$($parts[0])$($parts[1])"
-        } else {
-            $suffix = "cpu"
-        }
-
-        $package_name = "downloads\\${whl_file}[test, v1-deps]"
-        .\"${{ inputs.ENV_NAME }}"\Scripts\activate
-        uv pip install `"$package_name`" --extra-index-url="https://download.pytorch.org/whl/$suffix" --index-strategy unsafe-best-match

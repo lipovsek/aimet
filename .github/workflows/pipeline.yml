@@ -186,6 +186,7 @@ jobs:
     with:
       variants: ${{ needs.variants.outputs.matrix }}
       image-tag: ${{ needs.docker-tag.outputs.tag }}
+      build-windows-wheel: false
     secrets: inherit
 
   call-run-unit-acceptance-tests:
