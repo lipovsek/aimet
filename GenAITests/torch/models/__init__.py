@@ -3,7 +3,7 @@
 
 """GenAI models"""
 
-from .llama import Llama_32_Torch
+from .llama import Llama_32_Torch, Llama_32_SHA_Torch
 from .qwen2 import Qwen_25_Torch
 from .phi3 import Phi_3_Torch
 from .mistral import Mistral_03_Torch

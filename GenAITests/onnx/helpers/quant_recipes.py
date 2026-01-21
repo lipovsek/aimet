@@ -17,7 +17,7 @@ from aimet_onnx.quantsim import (
 )
 from aimet_onnx.sequential_mse.seq_mse import SeqMseParams, SequentialMse
 from aimet_onnx.experimental.adascale.adascale_optimizer import (
-    AdaScale,
+    apply_adascale,
     adascale_model_config_dict,
 )
 
@@ -200,7 +200,7 @@ class LPBQ_SeqMSE(QuantizationTechnique):
 
 
 @YAMLConfigParser.register_recipe
-class Adascale(QuantizationTechnique):
+class AdaScale(QuantizationTechnique):
     """Apply AdaScale to model"""
 
     @staticmethod
@@ -212,7 +212,7 @@ class Adascale(QuantizationTechnique):
         num_iterations: int = 1500,
     ):
         inputs = _prefill_inputs(quantsim, generator, dataloader, num_batches)
-        AdaScale.apply_adascale(
+        apply_adascale(
             quantsim,
             inputs,
             adascale_model_config_dict[generator.config.model_type],

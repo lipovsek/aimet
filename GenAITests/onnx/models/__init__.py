@@ -3,7 +3,7 @@
 
 """GenAI models"""
 
-from .llama import Llama_32_ONNX
+from .llama import Llama_32_ONNX, Llama_32_SHA_ONNX
 from .qwen2 import Qwen_25_ONNX
 from .phi3 import Phi_3_ONNX
 from .mistral import Mistral_03_ONNX

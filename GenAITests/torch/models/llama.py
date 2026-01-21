@@ -16,7 +16,7 @@ from aimet_torch.v2.nn.transformers.models.llama.modeling_llama import (
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.generator import Generator
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
-from GenAITests.shared.models.llama import Llama_32
+from GenAITests.shared.models.llama import Llama_32, Llama_32_SHA_Mixin
 
 
 @YAMLConfigParser.register_model
@@ -75,3 +75,8 @@ class Llama_32_Torch(Llama_32):
                 module.param_quantizers["weight"].bitwidth = 16
 
         return quantsim
+
+
+@YAMLConfigParser.register_model
+class Llama_32_SHA_Torch(Llama_32_SHA_Mixin, Llama_32_Torch):
+    pass

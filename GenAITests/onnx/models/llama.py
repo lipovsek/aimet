@@ -11,7 +11,7 @@ from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel as QuantSimOnnx
 
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
-from GenAITests.shared.models.llama import Llama_32
+from GenAITests.shared.models.llama import Llama_32, Llama_32_SHA_Mixin
 from GenAITests.shared.models.generator import Generator
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
@@ -105,3 +105,8 @@ class Llama_32_ONNX(Llama_32):
         _tie_quantizers_for_kv_cache(quant_sim)
 
         return quant_sim
+
+
+@YAMLConfigParser.register_model
+class Llama_32_SHA_ONNX(Llama_32_SHA_Mixin, Llama_32_ONNX):
+    pass
