@@ -1,5 +1,6 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
+
 """Hadamard utilities for SpinQuant"""
 
 from aimet_torch.experimental.spinquant._hadamard_matrices import (

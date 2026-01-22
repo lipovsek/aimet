@@ -1,5 +1,6 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
+
 from aimet_onnx.quantsim import QuantizationSimModel as QuantSimOnnx
 from aimet_onnx.common.onnx._utils import _is_grid_preserving_op
 from aimet_onnx.qc_quantize_op import QcQuantizeOp

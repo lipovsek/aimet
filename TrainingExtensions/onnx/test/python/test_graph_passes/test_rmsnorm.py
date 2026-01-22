@@ -1,5 +1,6 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
+
 from aimet_onnx.quantsim import QuantizationSimModel, QuantScheme
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 

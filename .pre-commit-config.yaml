@@ -9,6 +9,46 @@ default_language_version:
   python: python3.10
 
 repos:
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.5
+    hooks:
+      - id: insert-license
+        files: (CMakeLists\.txt|Dockerfile.*|\.(sh|py|cmake)$)
+        exclude: |
+          (?x)^(
+            build/.*|
+            ThirdParty/.*|
+          )$
+        args:
+            - --license-filepath
+            - .pre-commit-license-header.txt
+            - --allow-past-years
+      - id: insert-license
+        files: \.(c|cpp|h|hpp|cu|cuh|js)$
+        exclude: |
+          (?x)^(
+            build/.*|
+            ThirdParty/.*|
+          )$
+        args:
+            - --license-filepath
+            - .pre-commit-license-header.txt
+            - --comment-style
+            - //
+            - --allow-past-years
+      - id: insert-license
+        files: \.rst$
+        exclude: |
+          (?x)^(
+            build/.*|
+            ThirdParty/.*|
+          )$
+        args:
+            - --license-filepath
+            - .pre-commit-license-header.txt
+            - --comment-style
+            - ".."
+            - --allow-past-years
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
