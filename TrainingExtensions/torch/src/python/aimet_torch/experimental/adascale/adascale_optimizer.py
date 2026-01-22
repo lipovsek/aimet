@@ -8,7 +8,7 @@
 from copy import deepcopy
 from dataclasses import dataclass
 from types import NoneType
-from typing import Callable, List, Any, Tuple, Type
+from typing import Callable, List, Any, Tuple, Type, Sequence, Optional, Dict
 from tqdm import tqdm
 
 import torch
@@ -35,8 +35,8 @@ from aimet_torch.v2.utils import (
     default_forward_fn,
     remove_all_quantizers,
     remove_activation_quantizers,
-    patch_attr,
 )
+from aimet_torch.v2.quantization.affine import QuantizeDequantize
 from aimet_torch.experimental.adascale.adascale_quantizer import (
     AdaScaleQuantizeDequantize,
     AdaScaleLinearQuantizeDequantize,
@@ -45,6 +45,7 @@ from aimet_torch.experimental.adascale.adascale_quantizer import (
 from aimet_torch.blockwise_sampler import (
     BlockwiseSampler,
     change_tensor_and_cache_device_placement,
+    CachedIterable,
 )
 from aimet_torch.utils import get_device
 
@@ -158,7 +159,7 @@ class AdaScale:
         # replace with adascale weight quantizer which introduces trainable params - beta, gamma, s2, s3
         device = get_device(qsim.model)
         dtype = next(qsim.model.parameters()).dtype
-        cls._replace_with_adascale_weight_quantizers(adascale_blocks)
+
         qsim.model.to(device=torch.device("cpu"), dtype=dtype)
 
         sampler = BlockwiseSampler(
@@ -177,120 +178,132 @@ class AdaScale:
             for block, fp_block_inputs, qt_block_inputs in sampler.sample(
                 device=device, desc="AdaScale blocks processed"
             ):
-                # only set adascale params to train mode
-                all_beta_gamma_parameters, all_scale_parameters = (
-                    cls._get_adascale_trainable_params(block)
+                fp_block_inputs = CachedIterable(fp_block_inputs)
+                qt_block_inputs = _SamplingIterable(
+                    CachedIterable(qt_block_inputs),
+                    fp_block_inputs,
+                    ratio=_QT_SAMPLING_PROB,
+                    device=device,
                 )
-                trainable_params = [
-                    {"params": all_beta_gamma_parameters, "lr": beta_gamma_lr},
-                    {"params": all_scale_parameters, "lr": scales_lr},
-                ]
-                optimizer = torch.optim.Adam(trainable_params)
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer, T_max=num_iterations, eta_min=0.0
+                cls.adascale_block(
+                    block,
+                    fp_block_inputs,
+                    qt_inputs=qt_block_inputs,
+                    num_iterations=num_iterations,
+                    beta_gamma_lr=beta_gamma_lr,
+                    scales_lr=scales_lr,
                 )
-                cls._set_requires_grad(
-                    all_beta_gamma_parameters + all_scale_parameters, True
-                )
-
-                fp_out = []  # save fp batchwise block outputs to use across epochs
-                for batch_idx in range(len(data_loader)):
-                    with remove_all_quantizers(block):
-                        with patch_attr(
-                            torch.Tensor,
-                            "__deepcopy__",
-                            lambda self, memo: self.detach().clone(),
-                        ):
-                            with fp_block_inputs[batch_idx].load():
-                                fp_args = change_tensor_and_cache_device_placement(
-                                    deepcopy(fp_block_inputs[batch_idx].args), device
-                                )
-                                fp_kwargs = change_tensor_and_cache_device_placement(
-                                    deepcopy(fp_block_inputs[batch_idx].kwargs), device
-                                )
-                        fp_block_results = change_tensor_and_cache_device_placement(
-                            block(*fp_args, **fp_kwargs), "cpu"
-                        )
-                        fp_out.append(fp_block_results)
-                        del fp_args, fp_kwargs
-
-                pbar = tqdm(
-                    total=num_iterations,
-                    leave=False,
-                    position=1,
-                    desc="Iterations completed",
-                )
-                curr_iteration = 0
-                while curr_iteration < num_iterations:
-                    for batch_idx in range(len(data_loader)):
-                        pbar.update(1)
-                        curr_iteration += 1
-                        if curr_iteration > num_iterations:
-                            pbar.close()
-                            break
-                        with torch.set_grad_enabled(True):
-                            with patch_attr(
-                                torch.Tensor,
-                                "__deepcopy__",
-                                lambda self, memo: self.detach().clone(),
-                            ):
-                                with qt_block_inputs[batch_idx].load():
-                                    qt_args = change_tensor_and_cache_device_placement(
-                                        deepcopy(qt_block_inputs[batch_idx].args),
-                                        device,
-                                    )
-                                    qt_kwargs = (
-                                        change_tensor_and_cache_device_placement(
-                                            deepcopy(qt_block_inputs[batch_idx].kwargs),
-                                            device,
-                                        )
-                                    )
-
-                                with fp_block_inputs[batch_idx].load():
-                                    fp_args = change_tensor_and_cache_device_placement(
-                                        deepcopy(fp_block_inputs[batch_idx].args),
-                                        device,
-                                    )
-
-                                if _QT_SAMPLING_PROB == 1.0:
-                                    combined_args = qt_args
-                                elif _QT_SAMPLING_PROB == 0.0:
-                                    combined_args = fp_args
-                                else:
-                                    combined_args = tuple(
-                                        torch.where(
-                                            torch.rand_like(qt_arg, dtype=qt_arg.dtype)
-                                            < _QT_SAMPLING_PROB,
-                                            qt_arg,
-                                            fp_arg,
-                                        )
-                                        for qt_arg, fp_arg in zip(qt_args, fp_args)
-                                    )
-
-                            quant_out = block(*combined_args, **qt_kwargs)
-                            if isinstance(quant_out, tuple):
-                                quant_out = torch.cat(quant_out)
-                            del qt_args, fp_args, combined_args, qt_kwargs
-
-                            batch_fp_out = change_tensor_and_cache_device_placement(
-                                deepcopy(fp_out[batch_idx]), device
-                            )
-                            if isinstance(batch_fp_out, tuple):
-                                batch_fp_out = torch.cat(batch_fp_out)
-
-                            loss = _LOSS_FN(quant_out, batch_fp_out)
-
-                            loss.backward()
-                            optimizer.step()
-                            scheduler.step()
-                            optimizer.zero_grad()
-
-                            del quant_out, batch_fp_out, loss
 
         del sampler
 
-        cls._fold_weights_and_replace_with_qdq(adascale_blocks)
+        cls.fold_adascale_quantizers(qsim.model)
+
         qsim.model.to(device=device, dtype=dtype)
+
+    @classmethod
+    def adascale_block(
+        cls,
+        block: torch.nn.Module,
+        fp_inputs: Sequence[Tuple[Tuple, Dict]],
+        qt_inputs: Sequence[Tuple[Tuple, Dict]],
+        *,
+        num_iterations: int = 1500,
+        beta_gamma_lr: float = 1e-3,
+        scales_lr: float = 5e-4,
+    ):
+        """
+        Performs AdaScale algorithm to optimize weight quantization of input block to minimize the output MSE
+        between floating point and quantized execution of the block.
+
+        Args:
+            block: Quantized torch.nn.Module object to optimize
+            fp_inputs: Sequence of (args, kwargs) observed by the block during floating-point model execution
+            qt_inputs: Sequence of (args, kwargs) observed by the block during quantized model execution over the same
+                input set as fp_inputs.
+            num_iterations: Number of iterations to optimize for during AdaScale BKD
+            beta_gamma_lr: Learning rate for beta and gamma parameters
+            scales_lr: Learning rate for scale parameters
+
+        """
+
+        compute_param_encodings(block)
+        device = get_device(block)
+        dtype = next(block.parameters()).dtype
+        block.requires_grad_(False)
+        cls._replace_with_adascale_weight_quantizers(block)
+        block.to(device=device, dtype=dtype)
+
+        def run_forward(args, kwargs):
+            args = change_tensor_and_cache_device_placement(args, device)
+            kwargs = change_tensor_and_cache_device_placement(kwargs, device)
+            return block(*args, **kwargs)
+
+        if not qt_inputs:
+            qt_inputs = fp_inputs
+
+        # only set adascale params to train mode
+        all_beta_gamma_parameters, all_scale_parameters = (
+            cls._get_adascale_trainable_params(block)
+        )
+        trainable_params = [
+            {"params": all_beta_gamma_parameters, "lr": beta_gamma_lr},
+            {"params": all_scale_parameters, "lr": scales_lr},
+        ]
+        optimizer = torch.optim.Adam(trainable_params)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=num_iterations, eta_min=0.0
+        )
+        cls._set_requires_grad(all_beta_gamma_parameters + all_scale_parameters, True)
+
+        fp_out = []  # save fp batchwise block outputs to use across epochs
+        with remove_all_quantizers(block):
+            for args, kwargs in fp_inputs:
+                fp_block_results = run_forward(args, kwargs)
+                fp_block_results = change_tensor_and_cache_device_placement(
+                    fp_block_results, "cpu"
+                )
+                fp_out.append(fp_block_results)
+                del args, kwargs, fp_block_results
+
+        pbar = tqdm(
+            total=num_iterations,
+            leave=False,
+            position=1,
+            desc="Iterations completed",
+        )
+        curr_iteration = 0
+        with remove_activation_quantizers(block):
+            while curr_iteration < num_iterations:
+                for batch_idx, (args, kwargs) in enumerate(qt_inputs):
+                    pbar.update(1)
+                    curr_iteration += 1
+                    if curr_iteration > num_iterations:
+                        pbar.close()
+                        break
+                    with torch.set_grad_enabled(True):
+                        quant_out = run_forward(args, kwargs)
+
+                        # TODO: Fix this, may not be possible to cat outputs.
+                        #       Compute _LOSS_FN for each output and sum
+                        if isinstance(quant_out, tuple):
+                            quant_out = torch.cat(quant_out)
+
+                        del args, kwargs
+
+                        batch_fp_out = change_tensor_and_cache_device_placement(
+                            deepcopy(fp_out[batch_idx]), device
+                        )
+                        if isinstance(batch_fp_out, tuple):
+                            batch_fp_out = torch.cat(batch_fp_out)
+
+                        loss = _LOSS_FN(quant_out, batch_fp_out)
+
+                        loss.backward()
+                        optimizer.step()
+                        scheduler.step()
+                        optimizer.zero_grad()
+
+                        del quant_out, batch_fp_out, loss
 
     @staticmethod
     def _screen_for_target_type(model: torch.nn.Module) -> Type:
@@ -332,32 +345,31 @@ class AdaScale:
         return model_config.beta_gamma_lr, model_config.scales_lr
 
     @classmethod
-    def _replace_with_adascale_weight_quantizers(cls, adascale_blocks: List):
+    def _replace_with_adascale_weight_quantizers(cls, block: torch.nn.Module):
         """Replace all the weight quantizers in supported modules with adascale quantizers"""
-        for block in adascale_blocks:
-            for layer in block.modules():
-                if isinstance(layer, tuple(supported_modules)):
-                    layer.param_quantizers["weight"] = cls._get_adascale_qdq_mapping()[
-                        type(layer)
-                    ](layer.param_quantizers["weight"], layer.weight.shape)
+        for layer in block.modules():
+            if isinstance(layer, tuple(supported_modules)):
+                if not isinstance(layer.param_quantizers["weight"], QuantizeDequantize):
+                    continue
+                layer.param_quantizers["weight"] = cls._get_adascale_qdq_mapping()[
+                    type(layer)
+                ](layer.param_quantizers["weight"], layer.weight.shape)
 
     @classmethod
     @torch.no_grad()
-    def _fold_weights_and_replace_with_qdq(
-        cls, adascale_blocks: List, allow_overwrite: bool = False
-    ):
-        """Replace adascale weight quantizers back with QDQ, and fold the params s2, s3 into weight"""
-        for block in adascale_blocks:
-            for layer in block.modules():
-                if isinstance(layer, tuple(supported_modules)):
-                    layer.weight.copy_(
-                        layer.param_quantizers["weight"].get_folded_weight(layer.weight)
-                    )
-                    layer.param_quantizers["weight"] = layer.param_quantizers[
-                        "weight"
-                    ].get_qdq()
-                    layer.param_quantizers["weight"].allow_overwrite(allow_overwrite)
-                    layer.requires_grad_(False)
+    def fold_adascale_quantizers(cls, module: torch.nn.Module):
+        for layer in module.modules():
+            if isinstance(layer, tuple(supported_modules)) and isinstance(
+                layer.param_quantizers["weight"], AdaScaleQuantizeDequantize
+            ):
+                layer.weight.copy_(
+                    layer.param_quantizers["weight"].get_folded_weight(layer.weight)
+                )
+                layer.param_quantizers["weight"] = layer.param_quantizers[
+                    "weight"
+                ].get_qdq()
+                layer.param_quantizers["weight"].allow_overwrite(False)
+                layer.requires_grad_(False)
 
     @staticmethod
     def _get_adascale_trainable_params(
@@ -391,4 +403,52 @@ class AdaScale:
         }
 
 
+class _SamplingIterable:
+    """
+    Args
+        iterable_1: First iterable to sample from
+        iterable_2: Second iterable to sample from
+        ratio: Ratio of values from tensors in iterable_1 to values from iterable_2 to use in the output
+        device: Device to place the yielded values on
+    """
+
+    def __init__(self, iterable_1, iterable_2, ratio=0.5, device="cpu"):
+        self.iterable_1 = iterable_1
+        self.iterable_2 = iterable_2
+        self.ratio = ratio
+        self.device = device
+
+    def __iter__(self):
+        for (args_1, kwargs_1), (args_2, _) in zip(
+            self.iterable_1, self.iterable_2, strict=True
+        ):
+            combined_args = tuple(
+                self._combine_tensors(arg_1, arg_2)
+                for arg_1, arg_2 in zip(
+                    change_tensor_and_cache_device_placement(args_1, self.device),
+                    change_tensor_and_cache_device_placement(args_2, self.device),
+                    strict=True,
+                )
+            )
+
+            yield (
+                combined_args,
+                change_tensor_and_cache_device_placement(kwargs_1, self.device),
+            )
+
+    def _combine_tensors(self, tensor_1: torch.Tensor, tensor_2: torch.Tensor):
+        return (
+            torch.where(
+                torch.rand_like(tensor_1, dtype=tensor_1.dtype, device=self.device)
+                < self.ratio,
+                tensor_1,
+                tensor_2,
+            )
+            if isinstance(tensor_1, torch.Tensor)
+            else tensor_1
+        )
+
+
 apply_adascale = AdaScale.apply_adascale
+adascale_block = AdaScale.adascale_block
+fold_adascale_quantizers = AdaScale.fold_adascale_quantizers

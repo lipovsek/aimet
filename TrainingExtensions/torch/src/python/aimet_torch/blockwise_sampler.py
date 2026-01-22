@@ -221,6 +221,37 @@ class CachedBlockInput:
         return iter((self.args, self.kwargs))
 
 
+class CachedIterable:
+    def __init__(self, data: List[CachedBlockInput]):
+        self.data: list[CachedBlockInput] = data
+        self._idx = 0
+
+    def __iter__(self):
+        self._idx = 0
+        return self
+
+    def __len__(self):
+        return len(self.data)
+
+    def __next__(self):
+        if self._idx >= len(self.data):
+            raise StopIteration
+
+        batch = self[self._idx]
+        self._idx += 1
+        return batch
+
+    def __getitem__(self, idx: int):
+        cached_data = self.data[idx]
+        with patch_attr(
+            torch.Tensor,
+            "__deepcopy__",
+            lambda self, memo: self.detach().clone(),
+        ):
+            with cached_data.load():
+                return deepcopy(cached_data.args), deepcopy(cached_data.kwargs)
+
+
 class BlockwiseSampler:
     """
     Class providing blockwise sampling utilities. Specifically, BlockWise sampler allows users to specify a list of

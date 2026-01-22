@@ -206,7 +206,8 @@ class TestAdascale:
             blocks = AdaScale._get_blocks(sim)
             assert len(blocks) == 5
 
-            AdaScale._replace_with_adascale_weight_quantizers(blocks)
+            for block in blocks:
+                AdaScale._replace_with_adascale_weight_quantizers(block)
 
             for block in blocks:
                 assert isinstance(
@@ -268,7 +269,8 @@ class TestAdascale:
             },
         ):
             blocks = AdaScale._get_blocks(sim)
-            AdaScale._replace_with_adascale_weight_quantizers(blocks)
+            for block in blocks:
+                AdaScale._replace_with_adascale_weight_quantizers(block)
 
             for block in blocks:
                 with remove_all_quantizers(block):
@@ -299,7 +301,8 @@ class TestAdascale:
                             assert param.requires_grad == False
                         else:
                             assert param.requires_grad == True
-            AdaScale._fold_weights_and_replace_with_qdq(blocks)
+
+            AdaScale.fold_adascale_quantizers(sim.model)
 
     @pytest.mark.cuda()
     @pytest.mark.parametrize(
@@ -367,7 +370,8 @@ class TestAdascale:
         ):
             adascale_blocks = AdaScale._get_blocks(sim)
 
-            AdaScale._replace_with_adascale_weight_quantizers(adascale_blocks)
+            for block in adascale_blocks:
+                AdaScale._replace_with_adascale_weight_quantizers(block)
             for block in adascale_blocks:
                 lwc_params, scale_params = AdaScale._get_adascale_trainable_params(
                     block
@@ -424,3 +428,42 @@ class TestAdascale:
                     atol=1e-7,
                 )
         assert found_linear
+
+    def test_block_level_adascale(self):
+        dummy_input = torch.rand(1, 3, 32, 64)
+        model = test_models.ModelWithConsecutiveLinearBlocks()
+        sim = QuantizationSimModel(model, dummy_input)
+
+        fp_inputs = [((torch.rand(1, 3, 32, 64),), {}) for _ in range(3)]
+        qt_inputs = fp_inputs
+        for block in sim.model.blocks:
+            AdaScale.adascale_block(
+                block, fp_inputs, qt_inputs=qt_inputs, num_iterations=10
+            )
+
+            with remove_all_quantizers(block), torch.no_grad():
+                fp_inputs = [((block(*inp),), {}) for inp, _ in fp_inputs]
+
+            with remove_activation_quantizers(block), torch.no_grad():
+                qt_inputs = [((block(*inp),), {}) for inp, _ in qt_inputs]
+
+        linear_layers = [
+            mod for mod in sim.model.modules() if isinstance(mod, torch.nn.Linear)
+        ]
+        adascale_quantizers = [
+            mod
+            for mod in sim.model.modules()
+            if isinstance(mod, AdaScaleQuantizeDequantize)
+        ]
+
+        assert len(linear_layers) == len(adascale_quantizers)
+
+        AdaScale.fold_adascale_quantizers(sim.model)
+
+        adascale_quantizers = [
+            mod
+            for mod in sim.model.modules()
+            if isinstance(mod, AdaScaleQuantizeDequantize)
+        ]
+
+        assert len(adascale_quantizers) == 0
