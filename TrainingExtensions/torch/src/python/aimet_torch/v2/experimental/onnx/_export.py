@@ -12,7 +12,7 @@ import functools
 import math
 import numpy as np
 import os
-from typing import Any, Sequence, Iterable, Optional
+from typing import Any, Sequence, Iterable, Optional, Mapping
 
 import onnx
 from onnx.external_data_helper import _get_all_tensors
@@ -579,6 +579,14 @@ def remove_quantization_nodes_from_onnx_graph(
     qtzr_nodes = list(
         node for node in model.graph.node if node.op_type in ONNX_QUANTIZER_OP_TYPES
     )
+    constants = {const.name: const for const in _get_all_tensors(model) if const.name}
+    constants |= {
+        const_node.output[0]: attr.t
+        for const_node in model.graph.node
+        if const_node.op_type == "Constant"
+        for attr in const_node.attribute
+        if attr.HasField("t")
+    }
 
     back_to_back_qdq_tensors = set(qdq.input[0] for qdq in qtzr_nodes) & set(
         qdq.output[0] for qdq in qtzr_nodes
@@ -587,23 +595,47 @@ def remove_quantization_nodes_from_onnx_graph(
         msg = []
         for tensor in back_to_back_qdq_tensors:
             producer = name_to_producer[tensor]
-            scale = _get_tensor_from_constant_name(
-                model, producer.input[1], base_dir=base_dir
-            )
-            offset = _get_tensor_from_constant_name(
-                model, producer.input[2], base_dir=base_dir
-            )
+
+            if producer.input[1] in constants:
+                scale = onnx.numpy_helper.to_array(
+                    constants[producer.input[1]], base_dir=base_dir
+                )
+            else:
+                raise RuntimeError(
+                    f"Cannot find constant with name {producer.input[1]} in onnx model"
+                )
+            if producer.input[2] in constants:
+                offset = onnx.numpy_helper.to_array(
+                    constants[producer.input[2]], base_dir=base_dir
+                )
+            else:
+                raise RuntimeError(
+                    f"Cannot find constant with name {producer.input[2]} in onnx model"
+                )
+
             for consumer in name_to_consumer[tensor]:
                 if consumer.op_type not in ONNX_QUANTIZER_OP_TYPES:
                     continue
 
                 if consumer.attribute == producer.attribute:
-                    scale_ = _get_tensor_from_constant_name(
-                        model, consumer.input[1], base_dir=base_dir
-                    )
-                    offset_ = _get_tensor_from_constant_name(
-                        model, consumer.input[2], base_dir=base_dir
-                    )
+                    if consumer.input[1] in constants:
+                        scale_ = onnx.numpy_helper.to_array(
+                            constants[consumer.input[1]], base_dir=base_dir
+                        )
+                    else:
+                        raise RuntimeError(
+                            f"Cannot find constant with name {consumer.input[1]} in onnx model"
+                        )
+
+                    if consumer.input[2] in constants:
+                        offset_ = onnx.numpy_helper.to_array(
+                            constants[consumer.input[2]], base_dir=base_dir
+                        )
+                    else:
+                        raise RuntimeError(
+                            f"Cannot find constant with name {consumer.input[2]} in onnx model"
+                        )
+
                     if np.allclose(scale, scale_) and np.all(offset == offset_):
                         # Back-to-back QDQ nodes share same quantization config & parameters.
                         # Tolerate.
@@ -619,9 +651,18 @@ def remove_quantization_nodes_from_onnx_graph(
             )
 
     graph_outputs = set(output.name for output in model.graph.output)
+
+    constants = {const.name: const for const in _get_all_tensors(model) if const.name}
+    for const_node in model.graph.node:
+        if const_node.op_type != "Constant":
+            continue
+        for attr in const_node.attribute:
+            if attr.HasField("t"):
+                constants[const_node.output[0]] = attr.t
+
     for node in qtzr_nodes:
         # Get quantizer name in torch model
-        encoding = _get_encoding_from_onnx_node(model, node, base_dir)
+        encoding = _get_encoding_from_onnx_node(constants, node, base_dir)
         producer = name_to_producer.get(node.input[0])
         consumers = name_to_consumer.get(node.output[0], [])
 
@@ -699,29 +740,8 @@ def remove_quantization_nodes_from_onnx_graph(
     return tensor_to_encoding_map
 
 
-def _get_tensor_from_constant_name(
-    onnx_model: onnx.ModelProto, constant_name: str, base_dir: Optional[str] = None
-):
-    """
-    Returns tensor from the constant name.
-    """
-    for const in _get_all_tensors(onnx_model):
-        if const.name == constant_name:
-            return onnx.numpy_helper.to_array(const, base_dir=base_dir)
-
-    for node in onnx_model.graph.node:
-        if constant_name in node.output:
-            for attr in node.attribute:
-                if attr.name == "value":
-                    return onnx.numpy_helper.to_array(attr.t, base_dir=base_dir)
-            raise RuntimeError(
-                f"Cannot find value attribute inside constant node {constant_name}"
-            )
-    raise RuntimeError(f"Cannot find constant with name {constant_name} in onnx model")
-
-
 def _get_encoding_from_onnx_node(
-    onnx_model: onnx.ModelProto,
+    constants: Mapping[str, onnx.TensorProto],
     quant_node: onnx.NodeProto,
     base_dir: Optional[str] = None,
 ):
@@ -736,7 +756,6 @@ def _get_encoding_from_onnx_node(
 
     assert quant_node.op_type in ONNX_QUANTIZER_OP_TYPES
 
-    scale, offset = None, None
     qmin, qmax, block_size, zero_point_shift = None, None, None, None
     scale_name, offset_name = quant_node.input[1], quant_node.input[2]
 
@@ -752,15 +771,21 @@ def _get_encoding_from_onnx_node(
         if attr.name == "zero_point_shift":
             zero_point_shift = attr.f
 
+    if scale_name in constants:
         scale = torch.tensor(
-            _get_tensor_from_constant_name(onnx_model, scale_name, base_dir)
+            onnx.numpy_helper.to_array(constants[scale_name], base_dir=base_dir)
         )
-        offset = torch.tensor(
-            _get_tensor_from_constant_name(onnx_model, offset_name, base_dir)
-        )
+    else:
+        raise RuntimeError(f"Cannot find constant with name {scale_name} in onnx model")
 
-    assert scale is not None
-    assert offset is not None
+    if offset_name in constants:
+        offset = torch.tensor(
+            onnx.numpy_helper.to_array(constants[offset_name], base_dir=base_dir)
+        )
+    else:
+        raise RuntimeError(
+            f"Cannot find constant with name {offset_name} in onnx model"
+        )
 
     if scale.numel() == 1 and offset.numel() == 1:
         scale = scale.squeeze()
