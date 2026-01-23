@@ -66,8 +66,9 @@ def _is_numerically_stable(dtype: torch.dtype, qmin: int, qmax: int):
         return True
 
     # NOTE: This is a heuristic criteria. It doesn't perfectly guarantee numerical stability
-    #       This criteria allows 8-bit quantization of float16, but it needs more discussion
-    if torch.finfo(dtype).eps > 1e-1 / (qmax - qmin):
+    #       This criteria allows up to 8-bit quantization with float16
+    #       and 4-bit quantization with bfloat16
+    if torch.finfo(dtype).eps > 0.25 / (qmax - qmin):
         return False
 
     return True

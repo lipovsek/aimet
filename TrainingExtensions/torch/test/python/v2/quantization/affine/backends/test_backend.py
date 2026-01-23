@@ -958,7 +958,7 @@ class TestQuantizationBackends:
 
 
 @pytest.mark.parametrize(
-    "qmin,   qmax,    offset",
+    "qmin, qmax, offset",
     [
         (-8, 7, 0),
         (0, 15, 0),
@@ -1025,30 +1025,15 @@ def test_cross_validate_torch_fake_quantize(
         tensor, scale.detach(), offset.detach(), qmin, qmax
     )
 
-    assert torch.allclose(out1, expected, atol=atol)
-    assert torch.allclose(out2, expected, atol=atol)
+    assert torch.allclose(out1, expected, atol=atol, rtol=1e-3)
+    assert torch.allclose(out2, expected, atol=atol, rtol=1e-3)
     if out3 is not None:
-        assert torch.allclose(out3, expected, atol=atol)
+        assert torch.allclose(out3, expected, atol=atol, rtol=1e-3)
 
-    scale = torch.stack(
-        [
-            scale,
-            scale,
-        ]
-    )
-    offset = torch.stack(
-        [
-            offset,
-            offset,
-        ]
-    )
+    scale = torch.stack([scale, scale])
+    offset = torch.stack([offset, offset])
     tensor = torch.stack([tensor, tensor])
-    expected = torch.stack(
-        [
-            expected,
-            expected,
-        ]
-    )
+    expected = torch.stack([expected, expected])
 
     out1 = torch_builtins.quantize_dequantize(tensor, scale, offset, qmin, qmax)
     out2 = torch_builtins.QuantDequantFunc.apply(tensor, scale, offset, qmin, qmax).to(
@@ -1058,7 +1043,7 @@ def test_cross_validate_torch_fake_quantize(
         tensor, scale.detach(), offset.detach(), qmin, qmax
     )
 
-    assert torch.allclose(out1, expected, atol=atol)
-    assert torch.allclose(out2, expected, atol=atol)
+    assert torch.allclose(out1, expected, atol=atol, rtol=1e-3)
+    assert torch.allclose(out2, expected, atol=atol, rtol=1e-3)
     if out3 is not None:
-        assert torch.allclose(out3, expected, atol=atol)
+        assert torch.allclose(out3, expected, atol=atol, rtol=1e-3)
