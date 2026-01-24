@@ -1018,9 +1018,9 @@ def test_cross_validate_torch_fake_quantize(
     atol = scale.item() if dtype in (torch.float16, torch.bfloat16) else 1e-8
 
     out1 = torch_builtins.quantize_dequantize(tensor, scale, offset, qmin, qmax)
-    out2 = torch_builtins.QuantDequantFunc.apply(tensor, scale, offset, qmin, qmax).to(
-        dtype
-    )
+    out2 = torch_builtins.QuantDequantFunc.apply(
+        tensor, scale, offset, qmin, qmax, 0.0
+    ).to(dtype)
     out3 = torch_builtins._torch_fake_quantize(
         tensor, scale.detach(), offset.detach(), qmin, qmax
     )
@@ -1036,9 +1036,9 @@ def test_cross_validate_torch_fake_quantize(
     expected = torch.stack([expected, expected])
 
     out1 = torch_builtins.quantize_dequantize(tensor, scale, offset, qmin, qmax)
-    out2 = torch_builtins.QuantDequantFunc.apply(tensor, scale, offset, qmin, qmax).to(
-        dtype
-    )
+    out2 = torch_builtins.QuantDequantFunc.apply(
+        tensor, scale, offset, qmin, qmax, 0.0
+    ).to(dtype)
     out3 = torch_builtins._torch_fake_quantize(
         tensor, scale.detach(), offset.detach(), qmin, qmax
     )

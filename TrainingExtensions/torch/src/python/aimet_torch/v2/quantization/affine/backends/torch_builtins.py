@@ -268,13 +268,14 @@ def quantize_dequantize(
     )
     offset = offset.view(get_encoding_shape_with_blocks(offset.shape, block_size))
     shifted_tensor = tensor
-    if zero_point_shift != 0.0:
-        shifted_tensor = torch.sub(tensor, scale, alpha=zero_point_shift)
     qdq_tensor = QuantDequantFunc.apply(
-        shifted_tensor, scale, offset.to(internal_dtype), qmin, qmax
+        shifted_tensor,
+        scale,
+        offset.to(internal_dtype),
+        qmin,
+        qmax,
+        zero_point_shift,
     )
-    if zero_point_shift != 0.0:
-        qdq_tensor = torch.add(qdq_tensor, scale, alpha=zero_point_shift)
 
     return qdq_tensor.to(output_dtype).view(orig_tensor_shape)
 
@@ -629,12 +630,13 @@ class QuantDequantFunc(torch.autograd.Function):
         offset: torch.Tensor,
         qmin: int,
         qmax: int,
+        zero_point_shift: float,
     ):
         if _USE_COMPILED_IMPL:
             impl = __class__._compiled_forward_impl
         else:
             impl = __class__._forward_impl
-        return impl(ctx, tensor, scale, offset, qmin, qmax)
+        return impl(ctx, tensor, scale, offset, qmin, qmax, zero_point_shift)
 
     @staticmethod
     def _forward_impl(
@@ -644,8 +646,13 @@ class QuantDequantFunc(torch.autograd.Function):
         offset: torch.Tensor,
         qmin: int,
         qmax: int,
+        zero_point_shift: float,
     ):
-        x_round = _round_fn_inplace(tensor.to(scale.dtype) / scale).sub_(offset)
+        x_round = _round_fn_inplace(
+            tensor.to(scale.dtype) / scale
+            if zero_point_shift == 0
+            else tensor.to(scale.dtype) / scale - zero_point_shift
+        ).sub_(offset)
 
         if tensor.requires_grad or scale.requires_grad or offset.requires_grad:
             mask = (qmin <= x_round) & (x_round <= qmax)
@@ -653,13 +660,16 @@ class QuantDequantFunc(torch.autograd.Function):
             mask = None
 
         x_quant = x_round.clamp_(qmin, qmax)
-        x_dequant = x_quant.add_(offset).mul_(scale)
+        x_dequant = x_quant.add_(
+            offset if zero_point_shift == 0 else offset + zero_point_shift
+        ).mul_(scale)
 
         ctx.tensor_requires_grad = tensor.requires_grad
         ctx.scale_requires_grad = scale.requires_grad
         ctx.offset_requires_grad = offset.requires_grad
         ctx.qmin = qmin
         ctx.qmax = qmax
+        ctx.zero_point_shift = zero_point_shift
         ctx.save_for_backward(
             tensor if scale.requires_grad else None,
             scale if scale.requires_grad or offset.requires_grad else None,
@@ -674,10 +684,11 @@ class QuantDequantFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad):
         qmax, qmin = ctx.qmax, ctx.qmin
+        zero_point_shift = ctx.zero_point_shift
         tensor, scale, offset, mask = ctx.saved_tensors
 
         if ctx.scale_requires_grad:
-            tensor = tensor.to(scale.dtype) / scale
+            tensor = tensor.to(scale.dtype) / scale - zero_point_shift
             scale_grad = grad * (
                 _round_fn(tensor).clamp(offset + qmin, offset + qmax) - (tensor * mask)
             )
@@ -688,7 +699,7 @@ class QuantDequantFunc(torch.autograd.Function):
 
         tensor_grad = grad * mask if ctx.tensor_requires_grad else None
         offset_grad = grad * (~mask * scale) if ctx.offset_requires_grad else None
-        return tensor_grad, scale_grad, offset_grad, None, None
+        return tensor_grad, scale_grad, offset_grad, None, None, None
 
 
 def get_encoding_shape_with_blocks(
