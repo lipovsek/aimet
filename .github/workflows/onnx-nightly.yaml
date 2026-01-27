@@ -97,7 +97,7 @@ jobs:
   onnx-gpu:
     name: Run ONNX Regression (GPU)
     needs: build-aimet-onnx-gpu
-    runs-on: k8s-gpu
+    runs-on: k8s-gpu-release
 
     container:
       image: "${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-onnx-gpu:latest"
