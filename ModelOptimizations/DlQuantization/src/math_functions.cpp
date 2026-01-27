@@ -85,7 +85,7 @@ std::tuple<DTYPE, DTYPE> GetMinMax(const DTYPE* data, uint64_t cnt, ComputationM
 template <typename DTYPE>
 std::tuple<std::vector<DTYPE>, std::vector<DTYPE>> GetMinMax_cpu(const DTYPE* data, uint64_t cnt, uint64_t blockSize)
 {
-    size_t numBlocks = cnt / blockSize;
+    size_t numBlocks = (blockSize == 0) ? 1 : (cnt / blockSize);
     std::vector<DTYPE> minVals(numBlocks);
     std::vector<DTYPE> maxVals(numBlocks);
     for (size_t idx = 0; idx < numBlocks; idx++)
@@ -236,6 +236,10 @@ template <typename DTYPE>
 void UpdatePdf(const DTYPE* data, uint64_t cnt, ComputationMode mode_cpu_gpu, bool signed_vals, PDF& pdf,
                IAllocator* allocator)
 {
+    if (cnt == 0)
+    {
+        return;
+    }
     // Check if we need to initialize the PDF.
     if (0 == pdf.xLeft.size())
     {

@@ -1231,6 +1231,25 @@ class TestQcQuantizeOp:
         qdq_output = quantizer.quantize_dequantize(input_tensor)
         assert np.array_equal(output, qdq_output.astype(np.float16))
 
+    @pytest.mark.parametrize(
+        "quant_scheme",
+        [QuantScheme.post_training_tf, QuantScheme.post_training_tf_enhanced],
+    )
+    def test_compute_encodings_with_size_zero_tensor(self, quant_scheme):
+        """
+        When: quantizer is updated with a size zero tensor
+        Then: compute_encoding does not throw error and encodings are computed based on previous stats
+        """
+        quantizer = create_tensor_quantizer((), quant_scheme=quant_scheme)
+        quant_info = create_quant_info(quantizer, OpMode.updateStats)
+        session = create_qc_quantize_model_session(quant_info, ("x", 100))
+        session.run(None, {"input": np.random.randn(1, 100).astype(np.float32)})
+        session.run(None, {"input": np.random.randn(0, 100).astype(np.float32)})
+        (encoding,) = quantizer.computeEncodings(False)
+        assert encoding.min < 0 and encoding.min > -100
+        assert encoding.max > 0 and encoding.max < 100
+        assert encoding.delta > 0 and encoding.delta < 1
+
 
 blockwise_qdq_test_1 = {
     "input_shape": (2, 3, 4),
