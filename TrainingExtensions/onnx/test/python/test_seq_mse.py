@@ -298,7 +298,6 @@ def test_min_max_for_candidate_selection(granularity, shape, channel_axis, block
     mock_dep_graph.get_param_name.return_value = "mock_weight"
 
     calibration_tensor = np.random.randn(*shape).astype(np.float32)
-    mock_dep_graph.get_param_value.return_value = calibration_tensor
 
     # Create quantizer
     tensor_quantizer_params = TensorQuantizerParams(shape, channel_axis, block_axis)
@@ -1053,38 +1052,67 @@ def test_compute_encoding_from_candidate(
     ],
 )
 @pytest.mark.parametrize(
-    "use_cuda, model_factory, block_size, channel_i_best_indices",
+    "use_cuda, model_kind, do_constant_folding, block_size, channel_i_best_indices",
     [
         (
             True,
-            single_conv_layer_model,
+            "conv",
+            None,
             1,
             {0: np.array([19, 19, 17, 17, 19])},
         ),  # weights shape (10, 5, 5, 5) where c_in=5, block_axis=1
         (
             True,
-            single_linear_layer_model,
+            "linear",
+            True,
             25,
             {0: np.array([18, 18, 19, 18])},
         ),  # weights shape (100, 100) where c_in=100, block_axis=0
         (
+            True,
+            "linear",
             False,
-            single_conv_layer_model,
+            25,
+            {0: np.array([18, 18, 19, 18])},
+        ),  # weights shape (100, 100) where c_in=100, block_axis=1
+        (
+            False,
+            "conv",
+            None,
             1,
             {0: np.array([19, 19, 17, 17, 19])},
         ),  # weights shape (10, 5, 5, 5) where c_in=5, block_axis=1
         (
             False,
-            single_linear_layer_model,
+            "linear",
+            True,
             25,
             {0: np.array([18, 18, 19, 18])},
         ),  # weights shape (100, 100) where c_in=100, block_axis=0
+        (
+            False,
+            "linear",
+            False,
+            25,
+            {0: np.array([18, 18, 19, 18])},
+        ),  # weights shape (100, 100) where c_in=100, block_axis=1
     ],
 )
 def test_bq_lpbq_single_layer(
-    swap_quantizer_func, use_cuda, model_factory, block_size, channel_i_best_indices
+    swap_quantizer_func,
+    use_cuda,
+    model_kind,
+    do_constant_folding,
+    block_size,
+    channel_i_best_indices,
 ):
-    model = model_factory()
+    if model_kind == "conv":
+        model = single_conv_layer_model()
+    elif model_kind == "linear":
+        model = single_linear_layer_model(do_constant_folding=bool(do_constant_folding))
+    else:
+        raise ValueError(f"Unsupported model kind: {model_kind}")
+
     providers = ["CUDAExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
@@ -1125,13 +1153,16 @@ def test_bq_lpbq_single_layer(
 
     ((channel_i, best_indices),) = channel_i_best_indices.items()
 
-    if model_factory == single_conv_layer_model:
+    if model_kind == "conv":
         channel_0_init_max = init_max[channel_i, :, 0, 0]
     else:
-        channel_0_init_max = init_max[
-            :, channel_i
-        ]  # For MatMul, Gemm (untransposed) weights in shape (c_in, c_out)
-
+        if do_constant_folding:
+            channel_0_init_max = init_max[
+                :,
+                channel_i,
+            ]  # For MatMul, Gemm (untransposed) weights in shape (c_in, c_out)
+        else:
+            channel_0_init_max = init_max[channel_i, :]
     """
     When: Given best indices for output channel 0
     Then: Expected max should be max_tensor / num_candidates * (indices + 1)
@@ -1141,10 +1172,13 @@ def test_bq_lpbq_single_layer(
     actual_max = np.array([enc.max for enc in encodings]).reshape(
         quantizer._encoding_shape()
     )
-    if model_factory == single_conv_layer_model:
+    if model_kind == "conv":
         channel_0_actual_max = actual_max[channel_i, :, 0, 0]
     else:
-        channel_0_actual_max = actual_max[:, channel_i]
+        if do_constant_folding:
+            channel_0_actual_max = actual_max[:, channel_i]
+        else:
+            channel_0_actual_max = actual_max[channel_i, :]
 
     channel_0_expected_max = channel_0_init_max / num_candidates * (best_indices + 1)
 

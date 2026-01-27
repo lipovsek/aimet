@@ -258,18 +258,6 @@ class DependencyGraph:
         assert name is not None
         return name
 
-    def get_param_value(self, dep_node: DependencyNode) -> np.ndarray:
-        """
-        Get the numpy data corresponding to the dependency node.
-        :param dep_node: dependency node
-        :return: parameter numpy array
-        """
-        assert dep_node.cg_op.type in SUPPORTED_MODULES
-        product = dep_node.cg_op.inputs[WEIGHT_INDEX]
-        assert isinstance(product.tensor, onnx.TensorProto)
-        tensor = onnx.numpy_helper.to_array(product.tensor)
-        return tensor
-
     def _populate_data_for_starting_ops(self, inputs: Iterable[Dict[str, np.ndarray]]):
         """
         Initializes float_data and sim_data dictionaries for model input(s) using data loader and number of batches.
@@ -307,8 +295,17 @@ class DependencyGraph:
         :param dependent_node_names: nodes that this node depends on. (inward nodes)
         """
         op_output_names = [out.name for out in cg_op.outputs]
+        # Strip transpose op if exist.
+        op_inputs = [
+            inp.producer.inputs[0]
+            if cg_op.transposed_params
+            and inp.producer
+            and inp.producer.type == "Transpose"
+            else inp
+            for inp in cg_op.inputs
+        ]
         op_input_names = [
-            inp.name for inp in cg_op.inputs if not (inp.is_const or inp.is_parm)
+            inp.name for inp in op_inputs if not (inp.is_const or inp.is_parm)
         ]
         dep_node = DependencyNode(cg_op, op_output_names, op_input_names)
         dep_node.in_degree = len(dependent_node_names)
@@ -412,7 +409,21 @@ class DependencyGraph:
         if len(cg_op.inputs) < 1:
             return False
         tensor = cg_op.inputs[WEIGHT_INDEX].tensor
-        return isinstance(tensor, onnx.TensorProto)
+        if isinstance(tensor, onnx.TensorProto):
+            return True
+
+        # Check for transposed MatMul weight pattern
+        if cg_op.type == "MatMul":
+            weight_producer = cg_op.inputs[WEIGHT_INDEX].producer
+            if (
+                cg_op.transposed_params
+                and weight_producer
+                and weight_producer.type == "Transpose"
+            ):
+                transpose_input = weight_producer.inputs[0].tensor
+                return isinstance(transpose_input, onnx.TensorProto)
+
+        return False
 
     def _update_input_ref_count(self, dependency_node: DependencyNode):
         """

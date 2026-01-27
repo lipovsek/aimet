@@ -1,7 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union, Set
 import numpy as np
 import onnx
 from onnx import helper, numpy_helper, TensorProto, TensorShapeProto
@@ -134,6 +134,8 @@ def modify_graph_with_grouped_linear(
     if not linear_nodes:
         raise ValueError("No Linear nodes found in the graph.")
 
+    producer_of = _build_producer_map(graph)
+    initializer_names = {init.name for init in graph.initializer}
     for node in linear_nodes:
         input_name, weight_name, output_name = (
             node.input[0],
@@ -156,6 +158,11 @@ def modify_graph_with_grouped_linear(
             # Only support transA==0 (no transposition of input)
             if trans_a != 0:
                 raise RuntimeError(f"transposition of {node.name} is not supported")
+
+        elif node.op_type == "MatMul":
+            weight_name, trans_b = _strip_transpose(
+                weight_name, producer_of, initializer_names
+            )
 
         # Get weight tensor
         weight_tensor = _get_weight_tensor(graph, weight_name)
@@ -326,7 +333,7 @@ def _transform_linear_weight(
     weight_name: str,
     weight_shape: Tuple,
     num_blocks: int,
-    trans_b: int,
+    trans_b: Union[int, bool],
 ) -> Dict:
     """
     Transforms a linear weight for block-wise grouped linear operation.
@@ -356,7 +363,7 @@ def _transform_linear_weight(
 
     input_name = weight_name
 
-    if trans_b == 1:
+    if trans_b:
         # Transpose weights from (c_out, c_in) to (c_in, c_out)
         c_out, c_in = weight_shape
         perm = [1, 0]
@@ -420,3 +427,67 @@ def prepare_linear_inputs(
         return reshaped.transpose(1, 0, 2).copy()
 
     return {key: [transform(arr) for arr in arr_list] for key, arr_list in data.items()}
+
+
+def _build_producer_map(graph: onnx.GraphProto) -> Dict[str, onnx.NodeProto]:
+    """
+    Map each producing tensor name to its producing node.
+
+    :param graph: The ONNX model graph.
+    :return: Dictionary mapping producing tensor name to node.
+    """
+    prod = {}
+    for node in graph.node:
+        for out in node.output:
+            prod[out] = node
+    return prod
+
+
+def _strip_transpose(
+    name: str, producer_of: Dict[str, onnx.NodeProto], initializer_names: Set[str]
+) -> Tuple[str, bool]:
+    """
+    Strip a single Transpose if it directly follows a leaf initializer.
+
+    Matches the following patterns:
+    - Unquantized: W (leaf initializer) -> Transpose -> MatMul
+    - Quantized: W (leaf initializer) -> QcQuantizeOp -> Transpose -> MatMul
+
+    For now, raises an error if multiple consecutive Transposes are detected.
+
+    :param name: The tensor name (weight input to MatMul).
+    :param producer_of: Dictionary mapping tensor name to producing node.
+    :param initializer_names: Set of initializer names in the graph.
+    :return: Tuple of (weight tensor name, True if a Transpose was stripped).
+    :raises ValueError: If multiple consecutive Transpose ops are detected.
+    """
+    # Look up node that produces this tensor
+    producer = producer_of.get(name)
+
+    # Check if this is a Transpose op
+    if (
+        producer is not None
+        and producer.op_type == "Transpose"
+        and len(producer.input) == 1
+    ):
+        transpose_input = producer.input[0]
+
+        # Check for chained Transposes (not supported)
+        input_producer = producer_of.get(transpose_input)
+        if input_producer is not None and input_producer.op_type == "Transpose":
+            raise ValueError(
+                f"Multiple consecutive Transpose ops detected before MatMul. "
+                f"Only a single Transpose following a leaf initializer is supported."
+            )
+
+        # Check if input is a leaf initializer (unquantized case)
+        if transpose_input in initializer_names:
+            return transpose_input, True
+
+        # Check for quantized case: W -> QcQuantizeOp -> Transpose
+        if input_producer and input_producer.op_type == "QcQuantizeOp":
+            qc_input = input_producer.input[0]
+            if qc_input in initializer_names:
+                return transpose_input, True
+
+    return name, False

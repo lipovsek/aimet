@@ -459,7 +459,7 @@ class SingleLinearLayerModel(nn.Module):
         return x
 
 
-def single_linear_layer_model():
+def single_linear_layer_model(do_constant_folding: bool = True):
     model = SingleLinearLayerModel(100, 100)
     x = torch.randn(1, 100, 100, requires_grad=True)
 
@@ -472,6 +472,7 @@ def single_linear_layer_model():
         input_names=["input"],  # the model's input names
         output_names=["output"],
         dynamo=False,
+        do_constant_folding=do_constant_folding,
     )
 
     buffer.seek(0)
