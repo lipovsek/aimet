@@ -544,7 +544,7 @@ class TestQcQuantizeOp:
 
         output_gpu = session_gpu.run(None, {"input": input_arr})
 
-        assert np.alltrue(output_gpu[0] == output_cpu[0])
+        assert np.all(output_gpu[0] == output_cpu[0])
 
     def test_set_get_properties(self):
         quant_info = libquant_info.QcQuantizeInfo()
@@ -1487,7 +1487,7 @@ class TestBlockwiseQuantizeOp:
         encodings = tensor_quantizer.computeEncodings(symmetric)
 
         # Op should be passthrough in update_stats mode
-        assert np.alltrue(input_tensor == output_tensor)
+        assert np.all(input_tensor == output_tensor)
 
         # Computed encodings should be symmetric and correspond to the absolute min/max in the block
         expected_max = np.max(np.abs(input_tensor.reshape(4, 3)), axis=1)
@@ -1533,7 +1533,7 @@ class TestBlockwiseQuantizeOp:
         encodings = tensor_quantizer.computeEncodings(symmetric)
 
         # Op should be passthrough in update_stats mode
-        assert np.alltrue(input_tensor == output_tensor)
+        assert np.all(input_tensor == output_tensor)
 
         # Computed encodings should be symmetric and correspond to the absolute min/max in the block
         expected_max = np.maximum(
