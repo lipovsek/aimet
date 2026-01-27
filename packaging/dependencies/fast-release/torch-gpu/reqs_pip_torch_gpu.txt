@@ -6,7 +6,7 @@ Jinja2>=3.0.3
 jsonschema
 matplotlib>=3
 networkx
-numpy<2
+numpy
 onnx
 onnxscript>=0.2.0
 osqp

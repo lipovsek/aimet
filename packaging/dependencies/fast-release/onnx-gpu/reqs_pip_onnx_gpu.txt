@@ -2,7 +2,7 @@ bokeh
 hvplot
 Jinja2
 jsonschema
-numpy<2
+numpy
 onnx
 onnxruntime>=1.19
 osqp

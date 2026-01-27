@@ -7,7 +7,7 @@ jsonschema
 keras
 matplotlib>=3
 networkx
-numpy<2
+numpy
 onnx
 onnxruntime>=1.19
 onnxscript==0.2.5
