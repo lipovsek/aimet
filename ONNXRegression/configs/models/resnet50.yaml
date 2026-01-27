@@ -49,6 +49,7 @@ tests:
     lite_mp:
       percent_flip: 25
       override_precision: float16
+    max_accuracy_drop: 1.0
 
   # --------------------------------------------------------------------------
   # Test 4: AdaRound Optimization (500 iterations)
@@ -61,6 +62,7 @@ tests:
     activation_type: int8
     config_file: htp_v79
     adaround_iters: 500
+    max_accuracy_drop: 1.0
 
   # --------------------------------------------------------------------------
   # Test 5: Automatic Mixed-Precision (INT8 + FP16, Fast)
@@ -78,3 +80,4 @@ tests:
     config_file: htp_v79
     calib_samples: 256
     eval_samples: 256
+    max_accuracy_drop: 1.0

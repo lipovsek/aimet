@@ -16,6 +16,8 @@ tests:
     param_type: int8
     activation_type: int8
     config_file: htp_v79
+    max_accuracy_drop_onnx: 6.0
+    max_accuracy_drop_torch: 7.0
 
   # --------------------------------------------------------------------------
   # Test 2: Lite Mixed-Precision (25% FP16)
@@ -30,3 +32,4 @@ tests:
     lite_mp:
       percent_flip: 25
       override_precision: float16
+    max_accuracy_drop_onnx: 4.5

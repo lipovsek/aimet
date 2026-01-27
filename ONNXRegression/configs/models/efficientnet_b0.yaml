@@ -16,13 +16,9 @@ tests:
     activation_type: int8
     config_file: htp_v79
 
-  # --------------------------------------------------------------------------
-  # Test: Standard INT8 Quantization V69 config
-  # --------------------------------------------------------------------------
-
-  - name: quantsim_int8_v69
+  - name: quantsim_int8_int16
     feature: quantsim
     quant_scheme: min_max
     param_type: int8
-    activation_type: int8
-    config_file: htp_v69
+    activation_type: int16
+    config_file: htp_v81

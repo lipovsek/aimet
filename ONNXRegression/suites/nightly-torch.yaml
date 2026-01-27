@@ -19,7 +19,7 @@ models:
   - models/densenet121.yaml
   - models/mobilenet_v3_large.yaml
   - models/yolov5.yaml
-  # - models/yolov8_seg.yaml  TODO: Enable once we have latest qai_hub_models release.
+  - models/yolov8_seg.yaml  #TODO: Enable once we have latest qai_hub_models release.
 
 
 compare_to_baseline: true

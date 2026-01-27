@@ -68,6 +68,33 @@ ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def get_max_accuracy_drop(config: Dict[str, Any]) -> float:
+    """
+    Resolve accuracy drop threshold from config with framework-specific override.
+
+    Resolution order:
+        1. max_accuracy_drop_{framework} (e.g., max_accuracy_drop_torch)
+        2. max_accuracy_drop
+        3. Default: 1.0
+
+    Args:
+        config: Test configuration dictionary
+
+    Returns:
+        Maximum allowed accuracy drop in percentage points
+    """
+    framework = config.get("framework", "onnx").lower()
+
+    framework_key = f"max_accuracy_drop_{framework}"
+    if framework_key in config:
+        return float(config[framework_key])
+
+    if "max_accuracy_drop" in config:
+        return float(config["max_accuracy_drop"])
+
+    return 1.0
+
+
 def _resolve_device(device_name: str) -> Device:
     """Convert device name string to AI Hub Device enum."""
     try:
@@ -445,6 +472,8 @@ def run_single_config(
         else "[Step 3] AIMET Accuracy: N/A"
     )
 
+    max_drop = get_max_accuracy_drop(config)
+
     if fp32_acc is not None and feature_acc is not None:
         print(f"\n[Validation] FP32 → AIMET Quality Check")
 
@@ -454,22 +483,23 @@ def run_single_config(
             fp32_accuracy=fp32_acc,
             aimet_accuracy=feature_acc,
             qdq_accuracy=0.0,
+            max_accuracy_drop=max_drop,
         )
 
         quality = validate_quantization_quality(test_result)
 
-        print(f"  FP32 Accuracy:   {fp32_acc:.4f} ({fp32_acc * 100:.1f}%)")
-        print(f"  AIMET Accuracy:  {feature_acc:.4f} ({feature_acc * 100:.1f}%)")
-        print(
-            f"  Drop:            {quality.drop_abs:+.4f} ({quality.drop_abs * 100:+.2f} percentage points)"
-        )
-        print(f"  Status:          {quality.formatted_drop}")
+        print(f"  FP32 Accuracy:   {fp32_acc:.4f}%")
+        print(f"  AIMET Accuracy:  {feature_acc:.4f}%")
+        print(f"  Drop:            {quality.drop_abs:+.4f} percentage points")
+        print(f"  Threshold:       {max_drop:.2f} percentage points")
+        print(f"  Status:          {quality.status_emoji}")
 
         if not quality.is_acceptable:
-            print(f"\n  ⚠️  WARNING: Quantization quality below threshold (≥1pp drop)")
-            print(f"      This test may fail quality checks")
+            print(
+                f"\n  ❌ Accuracy drop exceeds threshold ({abs(quality.drop_abs):.2f} > {max_drop:.2f})"
+            )
         else:
-            print(f"  ✅ Quantization quality acceptable (<1pp drop)")
+            print(f"  ✅ Quantization quality acceptable")
 
     print(f"\n[Step 4] Validating exported QDQ ONNX model...")
     print(f"[Step 4] Evaluating: {aimet_onnx_path}")
@@ -523,15 +553,14 @@ def run_single_config(
             fp32_accuracy=fp32_acc,
             aimet_accuracy=feature_acc,
             qdq_accuracy=qdq_acc,
+            max_accuracy_drop=max_drop,
         )
 
         export_val = validate_qdq_export(test_result)
 
-        print(f"  AIMET Accuracy:  {feature_acc:.4f} ({feature_acc * 100:.1f}%)")
-        print(f"  QDQ Accuracy:    {qdq_acc:.4f} ({qdq_acc * 100:.1f}%)")
-        print(
-            f"  Difference:      {export_val.diff_abs:+.4f} ({export_val.diff_abs * 100:+.2f} percentage points)"
-        )
+        print(f"  AIMET Accuracy:  {feature_acc:.4f}%")
+        print(f"  QDQ Accuracy:    {qdq_acc:.4f}%")
+        print(f"  Difference:      {export_val.diff_abs:+.4f} percentage points")
         print(f"  Status:          {export_val.status_emoji}")
 
         if not export_val.is_valid:
@@ -617,6 +646,7 @@ def run_single_config(
             fp32_accuracy=fp32_acc,
             aimet_accuracy=feature_acc,
             qdq_accuracy=qdq_acc if qdq_acc is not None else 0.0,
+            max_accuracy_drop=max_drop,
         )
         quality = validate_quantization_quality(test_result)
         fp32_vs_aimet_formatted = quality.formatted_drop
@@ -629,6 +659,7 @@ def run_single_config(
         "FP32_accuracy": float(fp32_acc) if fp32_acc is not None else None,
         "AIMET Accuracy": float(feature_acc) if feature_acc is not None else None,
         "FP32_vs_AIMET": fp32_vs_aimet_formatted,
+        "Max_Accuracy_Drop": max_drop,
         "QDQ Accuracy": float(qdq_acc) if qdq_acc is not None else None,
         "QNN Accuracy": float(qnn_acc) if qnn_acc is not None else None,
         "QNN Latency": f"{qnn_latency_ms:.3f} ms"

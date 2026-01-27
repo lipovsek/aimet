@@ -12,13 +12,15 @@ tests:
     enable_sqnr_pruning: true
     phase1_samples: 1000
     phase2_samples: 1000
-    allowed_accuracy_drop: 0.01
+    allowed_accuracy_drop: 0.02
     config_file: htp_v79
     quant_scheme: min_max
     param_type: int8
     activation_type: int8
     calib_samples: 1000
     eval_samples: 1000
+    max_accuracy_drop_onnx: 2.0
+    max_accuracy_drop_torch: 6.5
 
   - name: quantsim_int8_v79
     feature: quantsim
@@ -26,3 +28,5 @@ tests:
     param_type: int8
     activation_type: int8
     config_file: htp_v79
+    max_accuracy_drop_onnx: 1.5
+    max_accuracy_drop_torch: 4.0

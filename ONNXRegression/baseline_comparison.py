@@ -41,6 +41,7 @@ class TestResult:
     qdq_accuracy: float
     qnn_latency_ms: Optional[float] = None
     techniques: Optional[str] = None
+    max_accuracy_drop: float = 1.0
 
 
 @dataclass
@@ -53,20 +54,19 @@ class QualityCheck:
     aimet_acc: float
     drop_abs: float
     drop_pct: float
+    max_accuracy_drop: float = 1.0
 
     @property
     def status_emoji(self) -> str:
-        """Get emoji based on quantization quality."""
-        abs_drop = abs(self.drop_abs)
-        if abs_drop < 1.0:  # Less than 1 percentage point
+        """Get status indicator based on quantization quality."""
+        if self.is_acceptable:
             return "✅"
-        else:
-            return "⚠️"
+        return "❌"
 
     @property
     def is_acceptable(self) -> bool:
-        """Check if quantization quality is acceptable."""
-        return abs(self.drop_abs) < 1.0  # Less than 1 percentage point
+        """Check if quantization quality is within allowed threshold."""
+        return abs(self.drop_abs) <= self.max_accuracy_drop
 
     @property
     def formatted_drop(self) -> str:
@@ -122,6 +122,7 @@ class Comparison:
     current: float
     diff: float
     diff_pct: float
+    techniques: str = ""
 
     @property
     def is_regression(self) -> bool:
@@ -163,10 +164,8 @@ def validate_quantization_quality(result: TestResult) -> QualityCheck:
     Returns:
         QualityCheck with drop metrics and status
     """
-    # Values are already percentages, so difference is in percentage points
     drop_abs = result.aimet_accuracy - result.fp32_accuracy
 
-    # Calculate percentage change (e.g., 2% drop from 80% = -2.5% change)
     drop_pct = (
         (drop_abs / result.fp32_accuracy * 100) if result.fp32_accuracy > 0 else 0
     )
@@ -178,6 +177,7 @@ def validate_quantization_quality(result: TestResult) -> QualityCheck:
         aimet_acc=result.aimet_accuracy,
         drop_abs=drop_abs,
         drop_pct=drop_pct,
+        max_accuracy_drop=result.max_accuracy_drop,
     )
 
 
@@ -268,7 +268,8 @@ class BaselineManager:
         with open(self.results_csv, "r") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                key = f"{row['Model']}_{row['Feature']}"
+                techniques = row.get("Techniques", "")
+                key = f"{row['Model']}_{row['Feature']}_{techniques}"
 
                 def safe_float(value, default=0.0):
                     try:
@@ -293,10 +294,11 @@ class BaselineManager:
                     aimet_accuracy=safe_float(row.get("AIMET Accuracy")),
                     qdq_accuracy=qdq_acc,
                     qnn_latency_ms=qnn_latency,
-                    techniques=row.get("Techniques", ""),
+                    techniques=techniques,
+                    max_accuracy_drop=safe_float(row.get("Max_Accuracy_Drop"), 1.0),
                 )
 
-        print(f"✓ Loaded {len(results)} test results from CSV")
+        print(f"✔ Loaded {len(results)} test results from CSV")
         return results
 
     def save_baseline(self, results: Dict[str, TestResult]) -> None:
@@ -316,7 +318,7 @@ class BaselineManager:
         with open(self.baseline_file, "w") as f:
             json.dump(baseline_data, f, indent=2)
 
-        print(f"✓ Baseline saved to: {self.baseline_file}")
+        print(f"✔ Baseline saved to: {self.baseline_file}")
 
     def load_baseline(self) -> Dict[str, Dict]:
         """Load baseline results."""
@@ -348,7 +350,6 @@ class BaselineManager:
             base_acc = baseline[key]["aimet_accuracy"]
             curr_acc = curr_result.aimet_accuracy
 
-            # Values are already percentages, so diff is in percentage points
             diff = curr_acc - base_acc
             diff_pct = (diff / base_acc * 100) if base_acc > 0 else 0
 
@@ -359,6 +360,7 @@ class BaselineManager:
                 current=curr_acc,
                 diff=diff,
                 diff_pct=diff_pct,
+                techniques=curr_result.techniques or "",
             )
 
             if comp.is_regression:
@@ -391,32 +393,33 @@ class ReportGenerator:
             lines.append("### ℹ️  First Run - No Baseline\n")
             lines.append("Showing quantization accuracy checks:\n")
             lines.append(
-                "| Model | Feature | Config | FP32 | AIMET | Accuracy (FP32/AIMET) | QDQ | Export Status |"
+                "| Model | Technique | FP32 vs AIMET | Max Allowed Drop | Status | QDQ | Export |"
             )
             lines.append(
-                "|-------|---------|--------|------|-------|----------------------|-----|---------------|"
+                "|-------|-----------|---------------|------------------|--------|-----|--------|"
             )
 
             for result in current.values():
                 quality = validate_quantization_quality(result)
                 export_val = validate_qdq_export(result)
-                config = result.techniques or ""
+                technique = result.techniques or ""
 
-                # Values are already percentages, display directly
                 lines.append(
-                    f"| {result.model} | {result.feature} | {config} | "
-                    f"{result.fp32_accuracy:.3f}% | {result.aimet_accuracy:.3f}% | "
-                    f"{quality.formatted_drop} | {result.qdq_accuracy:.3f}% | "
+                    f"| {result.model} | {technique} | "
+                    f"{result.fp32_accuracy:.2f}% / {result.aimet_accuracy:.2f}% ({quality.drop_abs:+.2f}%) | "
+                    f"{result.max_accuracy_drop:.2f}% | "
+                    f"{quality.status_emoji} | {result.qdq_accuracy:.2f}% | "
                     f"{export_val.status_emoji} |"
                 )
 
             lines.append("")
             lines.append(
                 "\n**Legend:**\n"
-                "- Config: Quantization techniques and parameters applied\n"
-                "- Accuracy (FP32/AIMET): Compares original vs quantized accuracy\n"
-                "  - ✅ Within 1% of FP32 | ⚠️ Over 1% drop from FP32\n"
-                "- Export Status: ✅ <0.5pp diff | ⚠️ 0.5-1pp diff | ❌ >1pp diff\n"
+                "- **Technique**: Quantization method and parameters\n"
+                "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
+                "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
+                "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
+                "- **Export**: ✅ <0.5pp diff | ⚠️ 0.5-1pp diff | ❌ >1pp diff\n"
             )
 
         else:
@@ -429,11 +432,13 @@ class ReportGenerator:
                 quality = validate_quantization_quality(result)
                 export_val = validate_qdq_export(result)
 
-                # Find if this result has a baseline comparison
-                key = f"{result.model}_{result.feature}"
                 baseline_comp = None
                 for comp in regressions + improvements + unchanged:
-                    if comp.model == result.model and comp.feature == result.feature:
+                    if (
+                        comp.model == result.model
+                        and comp.feature == result.feature
+                        and comp.techniques == (result.techniques or "")
+                    ):
                         baseline_comp = comp
                         break
 
@@ -455,47 +460,53 @@ class ReportGenerator:
                 f"- 📈 Improvements: {len(improvements)}\n"
                 f"- ⚠️ Regressions: {len(regressions)}\n\n"
                 f"**Quantization Status** (AIMET quantization vs FP32 original):\n"
-                f"- ✅ Passed: {passed_count} tests (<1% loss)\n"
+                f"- ✅ Passed: {passed_count} tests (within threshold)\n"
                 f"- ⚠️ Warnings: {warning_count} tests\n"
-                f"- ❌ Failed: {failed_count} tests (>1% loss)\n"
+                f"- ❌ Failed: {failed_count} tests (exceeds threshold)\n"
             )
 
             if regressions:
                 lines.append("\n### ⚠️ Regressions\n")
                 lines.append(
                     "**Legend:**\n"
-                    "- Config: Quantization techniques and parameters applied\n"
-                    "- Accuracy (FP32/AIMET): Compares original vs quantized accuracy\n"
-                    "  - ✅ Within 1% of FP32 | ⚠️ Over 1% drop from FP32\n"
-                    "- vs Baseline: Difference from previous run's AIMET accuracy\n"
-                    "- Status: Overall test result considering all validation checks\n\n"
+                    "- **Technique**: Quantization method and parameters\n"
+                    "- **vs Baseline**: Change from previous nightly's AIMET accuracy\n"
+                    "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
+                    "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
+                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n\n"
                 )
                 lines.append(
-                    "| Model | Feature | Config | Baseline (AIMET) | Current (AIMET) | vs Baseline | Accuracy (FP32/AIMET) | Status |"
+                    "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
                 )
                 lines.append(
-                    "|-------|---------|--------|------------------|-----------------|-------------|----------------------|--------|"
+                    "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
                 )
                 for r in sorted(regressions, key=lambda x: x.diff):
-                    key = f"{r.model}_{r.feature}"
+                    key = f"{r.model}_{r.feature}_{r.techniques}"
                     curr_result = current.get(key)
                     if curr_result:
                         quality = validate_quantization_quality(curr_result)
                         export_val = validate_qdq_export(curr_result)
                         overall_status = compute_overall_status(quality, export_val, r)
-                        config = curr_result.techniques or ""
+                        technique = curr_result.techniques or ""
+                        threshold = curr_result.max_accuracy_drop
+                        fp32_acc = curr_result.fp32_accuracy
+                        aimet_acc = curr_result.aimet_accuracy
+                        drop = quality.drop_abs
                     else:
                         quality = None
                         overall_status = "⚠️"
-                        config = ""
+                        technique = r.techniques or ""
+                        threshold = 1.0
+                        fp32_acc = 0.0
+                        aimet_acc = r.current
+                        drop = 0.0
 
-                    # Values are already percentages, display directly
                     lines.append(
-                        f"| {r.emoji} {r.model} | {r.feature} | {config} | "
-                        f"{r.baseline:.3f}% | {r.current:.3f}% | "
-                        f"{r.diff:+.5f} ({r.diff_pct:+.1f}%) | "
-                        f"{quality.formatted_drop if quality else 'N/A'} | "
-                        f"{overall_status} |"
+                        f"| {r.emoji} {r.model} | {technique} | "
+                        f"{r.baseline:.2f}% | {r.current:.2f}% | {r.diff:+.2f}% | "
+                        f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
+                        f"{threshold:.2f}% | {overall_status} |"
                     )
                 lines.append("")
 
@@ -503,38 +514,44 @@ class ReportGenerator:
                 lines.append("### 📈 Improvements\n")
                 lines.append(
                     "**Legend:**\n"
-                    "- Config: Quantization techniques and parameters applied\n"
-                    "- Accuracy (FP32/AIMET): Compares original vs quantized accuracy\n"
-                    "  - ✅ Within 1% of FP32 | ⚠️ Over 1% drop from FP32\n"
-                    "- vs Baseline: Difference from previous run's AIMET accuracy\n"
-                    "- Status: Overall test result considering all validation checks\n\n"
+                    "- **Technique**: Quantization method and parameters\n"
+                    "- **vs Baseline**: Change from previous nightly's AIMET accuracy\n"
+                    "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
+                    "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
+                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n\n"
                 )
                 lines.append(
-                    "| Model | Feature | Config | Baseline (AIMET) | Current (AIMET) | vs Baseline | Accuracy (FP32/AIMET) | Status |"
+                    "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
                 )
                 lines.append(
-                    "|-------|---------|--------|------------------|-----------------|-------------|----------------------|--------|"
+                    "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
                 )
                 for r in sorted(improvements, key=lambda x: x.diff, reverse=True):
-                    key = f"{r.model}_{r.feature}"
+                    key = f"{r.model}_{r.feature}_{r.techniques}"
                     curr_result = current.get(key)
                     if curr_result:
                         quality = validate_quantization_quality(curr_result)
                         export_val = validate_qdq_export(curr_result)
                         overall_status = compute_overall_status(quality, export_val, r)
-                        config = curr_result.techniques or ""
+                        technique = curr_result.techniques or ""
+                        threshold = curr_result.max_accuracy_drop
+                        fp32_acc = curr_result.fp32_accuracy
+                        aimet_acc = curr_result.aimet_accuracy
+                        drop = quality.drop_abs
                     else:
                         quality = None
                         overall_status = "✅"
-                        config = ""
+                        technique = r.techniques or ""
+                        threshold = 1.0
+                        fp32_acc = 0.0
+                        aimet_acc = r.current
+                        drop = 0.0
 
-                    # Values are already percentages, display directly
                     lines.append(
-                        f"| {r.emoji} {r.model} | {r.feature} | {config} | "
-                        f"{r.baseline:.3f}% | {r.current:.3f}% | "
-                        f"{r.diff:+.5f} ({r.diff_pct:+.1f}%) | "
-                        f"{quality.formatted_drop if quality else 'N/A'} | "
-                        f"{overall_status} |"
+                        f"| {r.emoji} {r.model} | {technique} | "
+                        f"{r.baseline:.2f}% | {r.current:.2f}% | {r.diff:+.2f}% | "
+                        f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
+                        f"{threshold:.2f}% | {overall_status} |"
                     )
                 lines.append("")
 
@@ -543,38 +560,44 @@ class ReportGenerator:
                 lines.append("<summary>✅ Stable Tests (click to expand)</summary>\n")
                 lines.append(
                     "**Legend:**\n"
-                    "- Config: Quantization techniques and parameters applied\n"
-                    "- Accuracy (FP32/AIMET): Compares original vs quantized accuracy\n"
-                    "  - ✅ Within 1% of FP32 | ⚠️ Over 1% drop from FP32\n"
-                    "- vs Baseline: Difference from previous run's AIMET accuracy\n"
-                    "- Status: Overall test result considering all validation checks\n\n"
+                    "- **Technique**: Quantization method and parameters\n"
+                    "- **vs Baseline**: Change from previous nightly's AIMET accuracy\n"
+                    "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
+                    "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
+                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n\n"
                 )
                 lines.append(
-                    "| Model | Feature | Config | Baseline (AIMET) | Current (AIMET) | vs Baseline | Accuracy (FP32/AIMET) | Status |"
+                    "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
                 )
                 lines.append(
-                    "|-------|---------|--------|------------------|-----------------|-------------|----------------------|--------|"
+                    "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
                 )
                 for r in unchanged:
-                    key = f"{r.model}_{r.feature}"
+                    key = f"{r.model}_{r.feature}_{r.techniques}"
                     curr_result = current.get(key)
                     if curr_result:
                         quality = validate_quantization_quality(curr_result)
                         export_val = validate_qdq_export(curr_result)
                         overall_status = compute_overall_status(quality, export_val, r)
-                        config = curr_result.techniques or ""
+                        technique = curr_result.techniques or ""
+                        threshold = curr_result.max_accuracy_drop
+                        fp32_acc = curr_result.fp32_accuracy
+                        aimet_acc = curr_result.aimet_accuracy
+                        drop = quality.drop_abs
                     else:
                         quality = None
                         overall_status = "✅"
-                        config = ""
+                        technique = r.techniques or ""
+                        threshold = 1.0
+                        fp32_acc = 0.0
+                        aimet_acc = r.current
+                        drop = 0.0
 
-                    # Values are already percentages, display directly
                     lines.append(
-                        f"| {r.model} | {r.feature} | {config} | "
-                        f"{r.baseline:.3f}% | {r.current:.3f}% | "
-                        f"{r.diff:+.5f} | "
-                        f"{quality.formatted_drop if quality else 'N/A'} | "
-                        f"{overall_status} |"
+                        f"| {r.model} | {technique} | "
+                        f"{r.baseline:.2f}% | {r.current:.2f}% | {r.diff:+.2f}% | "
+                        f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
+                        f"{threshold:.2f}% | {overall_status} |"
                     )
                 lines.append("</details>\n")
 
@@ -592,7 +615,7 @@ class ReportGenerator:
         with open(summary_file, "a") as f:
             f.write("\n" + markdown)
 
-        print("✓ Report written to GitHub step summary")
+        print("✔ Report written to GitHub step summary")
 
 
 def main():

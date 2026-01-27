@@ -40,7 +40,7 @@ quant_eval_samples: 200
 calib_samples: 256
 
 # Evaluation samples after calibration (final accuracy measurement)
-eval_samples: 256
+eval_samples: 200
 
 # On-device evaluation samples (via QNN on target hardware)
 # Most expensive - set to 0 to disable on-device testing

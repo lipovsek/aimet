@@ -157,22 +157,25 @@ def get_torch_model(model: Any, device: torch.device = None) -> torch.nn.Module:
     return torch_model
 
 
-_MODULES_REGISTERED = False
-
-
 def _register_ignored_modules() -> None:
-    """Register ultralytics modules to be ignored by AIMET quantization."""
-    global _MODULES_REGISTERED
-    if _MODULES_REGISTERED:
-        return
+    """Register modules to be ignored by AIMET quantization."""
     try:
         from ultralytics.nn.modules.conv import Concat
 
         QuantizationMixin.ignore(Concat)
         print(f"[QuantSim Torch] Ignoring ultralytics.Concat for quantization")
+    except ImportError as e:
+        print(f"[QuantSim Torch] Could not import ultralytics.Concat: {e}")
+    except Exception as e:
+        print(f"[QuantSim Torch] Error registering ultralytics.Concat: {e}")
+
+    try:
+        from torchvision.ops.stochastic_depth import StochasticDepth
+
+        QuantizationMixin.ignore(StochasticDepth)
+        print(f"[QuantSim Torch] Ignoring torchvision StochasticDepth for quantization")
     except ImportError:
         pass
-    _MODULES_REGISTERED = True
 
 
 # ==================== AIMET QuantSim Construction ====================
@@ -186,7 +189,7 @@ def build_quantsim_torch(
     default_param_bw: int = 8,
     default_output_bw: int = 8,
     config_file: Optional[str] = None,
-    apply_prepare_model: bool = True,
+    apply_prepare_model: bool = False,
     use_cuda: bool = True,
 ) -> QuantizationSimModel:
     """
@@ -205,6 +208,7 @@ def build_quantsim_torch(
         Tuple of QuantizationSimModel
     """
     _register_ignored_modules()
+
     device = next(model.parameters()).device
 
     if dummy_input.device != device:
