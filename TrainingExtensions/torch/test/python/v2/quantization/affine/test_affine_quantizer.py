@@ -2726,3 +2726,46 @@ def test_from_qnn_encoding_dict():
     assert e.scale == 0.1
     assert e.offset == -128
     assert not e.symmetry
+
+
+def test_zero_representable():
+    """
+    When: Run QAT with non-negative inputs only
+    Then: Floating point zero should be always exactly representable in quantized domain
+    """
+    qdq = QuantizeDequantize(shape=(), bitwidth=8, symmetric=False)
+    x = torch.arange(0, 3, dtype=torch.float32)
+    optimizer = torch.optim.Adam(qdq.parameters(), lr=1e-2)
+
+    with qdq.compute_encodings(), torch.no_grad():
+        _ = qdq(x)
+
+    for i in range(1, 20):
+        optimizer.zero_grad()
+        out = qdq(x + 2**i)
+        torch.nn.functional.mse_loss(out, x).backward()
+        optimizer.step()
+
+        with torch.no_grad():
+            offset = qdq.get_offset()
+            assert torch.all((-255 <= offset) & (offset <= 0))
+
+    """
+    When: Run QAT with non-positive inputs only
+    Then: Floating point zero should be always exactly representable in quantized domain
+    """
+    qdq = QuantizeDequantize(shape=(), bitwidth=8, symmetric=False)
+    optimizer = torch.optim.Adam(qdq.parameters(), lr=1e-2)
+
+    with qdq.compute_encodings(), torch.no_grad():
+        _ = qdq(-x)
+
+    for i in range(1, 20):
+        optimizer.zero_grad()
+        out = qdq(-x - 2**i)
+        torch.nn.functional.mse_loss(out, x).backward()
+        optimizer.step()
+
+        with torch.no_grad():
+            offset = qdq.get_offset()
+            assert torch.all((-255 <= offset) & (offset <= 0))
