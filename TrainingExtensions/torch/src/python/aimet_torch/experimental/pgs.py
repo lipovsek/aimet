@@ -16,7 +16,7 @@ _PGS_EPS: float = 0.0
 _PGS_MULTIPLIER: float = 1.0
 
 
-def enable_pgs(eps: float, multiplier: float):
+def enable_pgs(eps: float = 0.05, multiplier: float = 3.0):
     global _PGS_EPS, _PGS_MULTIPLIER  # pylint: disable=global-statement
 
     if not (0.0 < eps <= 1.0):
