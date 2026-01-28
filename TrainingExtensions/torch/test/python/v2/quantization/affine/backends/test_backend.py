@@ -9,6 +9,7 @@ from collections import namedtuple
 from aimet_torch.v2.quantization import affine
 from aimet_torch.v2.quantization.affine.backends import torch_builtins
 from aimet_torch.v2.utils import ste_round
+from aimet_torch.experimental import pgs
 
 VectorSetForTest = namedtuple(
     "VectorSetForTest",
@@ -1047,3 +1048,81 @@ def test_cross_validate_torch_fake_quantize(
     assert torch.allclose(out2, expected, atol=atol, rtol=1e-3)
     if out3 is not None:
         assert torch.allclose(out3, expected, atol=atol, rtol=1e-3)
+
+
+@pytest.mark.parametrize("bitwidth", [2, 4])
+@pytest.mark.parametrize("zero_point_shift", [0, 0.5])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float32,
+        torch.float16,
+        torch.bfloat16,
+    ],
+)
+def test_pgs(bitwidth: int, zero_point_shift: float, dtype: torch.dtype):
+    scale = torch.tensor([1.0], dtype=dtype, requires_grad=True)
+    offset = torch.tensor([0], dtype=dtype, requires_grad=True)
+    qmin = -(2 ** (bitwidth - 1))
+    qmax = 2 ** (bitwidth - 1) - 1
+    x = torch.arange(
+        start=qmin * 2, end=qmax * 2, step=0.09, dtype=dtype, requires_grad=True
+    )
+
+    x_qdq = torch_builtins.quantize_dequantize(
+        x, scale, offset, qmin, qmax, zero_point_shift=zero_point_shift
+    )
+    torch.nn.functional.mse_loss(x_qdq, x.detach()).backward()
+    default_x_grad = x.grad.clone()
+    default_scale_grad = scale.grad.clone()
+    default_offset_grad = offset.grad.clone()
+
+    x.grad = None
+    scale.grad = None
+    offset.grad = None
+
+    pgs_eps = 0.2
+    pgs_multiplier = 3.0
+    try:
+        pgs.enable_pgs(eps=pgs_eps, multiplier=pgs_multiplier)
+        x_qdq = torch_builtins.quantize_dequantize(
+            x, scale, offset, qmin, qmax, zero_point_shift=zero_point_shift
+        )
+        torch.nn.functional.mse_loss(x_qdq, x.detach()).backward()
+        pgs_x_grad = x.grad.clone()
+        pgs_scale_grad = scale.grad.clone()
+        pgs_offset_grad = offset.grad.clone()
+    finally:
+        pgs.disable_pgs()
+
+    """
+    When: Compare default gradient and PGS gradient
+    Then:
+      1. scale and offset gradients are identical
+      2. PGS x gradient should be K times the default x gradient
+         when x is near rounding boundary and within clamping boundary;
+         otherwise, they should be identical
+    """
+    assert torch.equal(default_scale_grad, pgs_scale_grad)
+    assert torch.equal(default_offset_grad, pgs_offset_grad)
+
+    x_scaled = x / scale - zero_point_shift
+    x_rounded = x_scaled.round()
+
+    is_within_clamping_boundary = (qmin <= x_rounded) & (x_rounded <= qmax)
+    is_near_rounding_boundary = (x_rounded - x_scaled).abs() > (1 - pgs_eps) / 2
+
+    assert torch.equal(
+        default_x_grad * ~is_near_rounding_boundary,
+        pgs_x_grad * ~is_near_rounding_boundary,
+    )
+    assert torch.equal(
+        default_x_grad * ~is_within_clamping_boundary,
+        pgs_x_grad * ~is_within_clamping_boundary,
+    )
+    assert torch.allclose(
+        default_x_grad
+        * (is_near_rounding_boundary & is_within_clamping_boundary)
+        * pgs_multiplier,
+        pgs_x_grad * (is_near_rounding_boundary & is_within_clamping_boundary),
+    )

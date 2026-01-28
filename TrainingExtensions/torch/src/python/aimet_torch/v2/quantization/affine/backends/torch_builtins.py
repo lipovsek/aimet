@@ -19,6 +19,7 @@ from aimet_torch.v2.utils import (
     _torch_compiler_is_exporting,
 )
 import aimet_torch.v2.experimental.onnx._export as _onnx
+from aimet_torch.experimental import pgs
 
 
 _torch_version: Tuple[int, int, int] = (
@@ -669,6 +670,8 @@ class QuantDequantFunc(torch.autograd.Function):
         ctx.qmin = qmin
         ctx.qmax = qmax
         ctx.zero_point_shift = zero_point_shift
+        ctx.pgs_eps = pgs.get_pgs_eps()
+        ctx.pgs_multiplier = pgs.get_pgs_multiplier()
         ctx.save_for_backward(
             tensor if scale.requires_grad else None,
             scale if scale.requires_grad or offset.requires_grad else None,
@@ -684,20 +687,52 @@ class QuantDequantFunc(torch.autograd.Function):
     def backward(ctx, grad):
         qmax, qmin = ctx.qmax, ctx.qmin
         zero_point_shift = ctx.zero_point_shift
+        pgs_eps = ctx.pgs_eps
+        pgs_multiplier = ctx.pgs_multiplier
         tensor, scale, offset, mask = ctx.saved_tensors
 
-        if ctx.scale_requires_grad:
-            tensor = tensor.to(scale.dtype) / scale - zero_point_shift
-            scale_grad = grad * (
-                _round_fn(tensor).clamp(offset + qmin, offset + qmax) - (tensor * mask)
-            )
+        tensor_grad = grad
+        scale_grad = None
+        offset_grad = None
+
+        pgs_enabled = (
+            pgs_eps > 0.0 and pgs_multiplier != 1.0 and ctx.tensor_requires_grad
+        )
+
+        if ctx.scale_requires_grad or pgs_enabled:
+            x_scaled = tensor.to(scale.dtype) / scale - zero_point_shift
+            x_rounded = _round_fn(x_scaled)
+            rounding_err = x_rounded - x_scaled
+            del x_scaled
+
+            if ctx.scale_requires_grad:
+                scale_grad = grad * torch.where(
+                    mask,
+                    rounding_err,
+                    x_rounded.clamp_(offset + qmin, offset + qmax),
+                )
+
+            del x_rounded
+
+            if pgs_enabled:
+                is_near_rounding_boundary = rounding_err.abs_() > (1 - pgs_eps) / 2
+                tensor_grad = torch.where(
+                    is_near_rounding_boundary,
+                    grad * pgs_multiplier,
+                    grad,
+                )
+                del is_near_rounding_boundary
+
+            del rounding_err
+
+        if ctx.tensor_requires_grad:
+            tensor_grad = torch.where(mask, tensor_grad, 0)
         else:
-            scale_grad = None
+            tensor_grad = None
 
-        del tensor, offset
+        if ctx.offset_requires_grad:
+            offset_grad = torch.where(mask, 0, grad * scale)
 
-        tensor_grad = grad * mask if ctx.tensor_requires_grad else None
-        offset_grad = grad * (~mask * scale) if ctx.offset_requires_grad else None
         return tensor_grad, scale_grad, offset_grad, None, None, None
 
 

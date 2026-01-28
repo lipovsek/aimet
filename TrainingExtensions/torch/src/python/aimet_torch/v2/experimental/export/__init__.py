@@ -12,8 +12,6 @@ from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch._subclasses.fake_tensor import FakeTensorMode
 from ..onnx._export import _precompute_encodings
 from ...utils import patch_attr
-from ...nn import QuantizationMixin
-from ...quantization.affine import AffineQuantizerBase
 
 
 def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
@@ -28,6 +26,9 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
             "Exporting to torch.exoprt.ExportedProgram is only supported with torch>=2.8.0; "
             f" got torch=={torch.__version__}"
         )
+
+    from aimet_torch.nn import QuantizationMixin
+    from aimet_torch.quantization.affine import AffineQuantizerBase
 
     #  If no quantizers are initialized, raise error
     if all(
@@ -115,6 +116,8 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
 
 @contextlib.contextmanager
 def _duplicate_shared_weights(mod: torch.nn.Module):
+    from aimet_torch.nn import QuantizationMixin
+
     shared_params = {
         name: param for name, param in mod.named_parameters(remove_duplicate=False)
     }
