@@ -144,13 +144,18 @@ class ConvInplaceLinear(torch.nn.Module):
 
 
 class TestLoraAdapterPeft:
-    def test_replace_adapter(self):
-        model = one_adapter_model()
+    @pytest.mark.parametrize("train", [True, False])
+    def test_replace_adapter(self, train: bool):
+        model = one_adapter_model().train(train)
         count_lora_layer = 0
         for _, module in model.named_modules():
             if isinstance(module, PeftLoraLayer):
                 count_lora_layer += 1
+
         replace_lora_layers_with_quantizable_layers(model)
+
+        for module in model.modules():
+            assert module.training == train
 
         count_qc_lora_layer = 0
         new_count_lora_layer = 0

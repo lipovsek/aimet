@@ -99,7 +99,9 @@ def replace_lora_layers_with_quantizable_layers(model: torch.nn.Module):
     :param model: PEFT model
     """
     replace_modules(
-        model, lambda module: isinstance(module, (PeftLoraLayer, PeftConv2d)), LoraLayer
+        model,
+        lambda module: isinstance(module, (PeftLoraLayer, PeftConv2d)),
+        lambda module: LoraLayer(module).train(module.training),
     )
 
 
