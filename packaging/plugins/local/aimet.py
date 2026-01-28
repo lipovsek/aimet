@@ -8,6 +8,7 @@ import os
 import pathlib
 import shlex
 import subprocess
+import sys
 
 __all__ = ["dynamic_metadata"]
 _PKG_ROOT = (
@@ -34,6 +35,32 @@ def is_cmake_option_enabled(option_name: str) -> bool:
         "0",
         "N",
     }
+
+
+def is_target_windows_arm64() -> bool:
+    """Returns True if running on Windows with ARM64 target platform.
+
+    Checks CMAKE_ARGS for generator platform/system processor.
+    Matches CMake logic: WIN32 AND (CMAKE_GENERATOR_PLATFORM == "ARM64" OR CMAKE_SYSTEM_PROCESSOR matches "ARM64|aarch64")
+    """
+    is_windows = sys.platform == "win32"
+
+    # Also check CMAKE_ARGS for -DCMAKE_GENERATOR_PLATFORM and -DCMAKE_SYSTEM_PROCESSOR
+    cmake_args = {
+        k: v
+        for k, v in (
+            arg.split("=", 1) for arg in shlex.split(os.environ.get("CMAKE_ARGS", ""))
+        )
+    }
+    cmake_generator_platform = cmake_args.get("-DCMAKE_GENERATOR_PLATFORM", "").upper()
+    cmake_system_processor = cmake_args.get("-DCMAKE_SYSTEM_PROCESSOR", "").upper()
+
+    is_arm64 = cmake_generator_platform == "ARM64" or cmake_system_processor in (
+        "ARM64",
+        "AARCH64",
+    )
+
+    return is_windows and is_arm64
 
 
 def is_pip_index_pypi() -> bool:
@@ -79,7 +106,12 @@ def get_aimet_variant() -> str:
             )
         )
 
-    variant += "gpu" if enable_cuda else "cpu"
+    if enable_cuda:
+        variant += "gpu"
+    elif is_target_windows_arm64():
+        variant += "qnn"
+    else:
+        variant += "cpu"
     return variant
 
 
@@ -87,7 +119,7 @@ def get_name() -> str:
     aimet_variant = get_aimet_variant()
 
     # List of suffixes to remove
-    suffixes = ["-cpu", "-gpu"]
+    suffixes = ["-cpu", "-gpu", "-qnn"]
 
     # Remove suffix from the aimet_variant
     for suffix in suffixes:
@@ -102,7 +134,13 @@ def get_aimet_dependencies() -> list[str]:
     aimet_variant = get_aimet_variant()
     base_path = pathlib.Path(_PKG_ROOT, "packaging", "dependencies")
 
-    if aimet_variant in ("torch-cpu", "torch-gpu", "onnx-cpu", "onnx-torch-cpu"):
+    if aimet_variant in (
+        "torch-cpu",
+        "torch-gpu",
+        "onnx-cpu",
+        "onnx-torch-cpu",
+        "onnx-qnn",
+    ):
         deps_path = pathlib.Path(base_path, "fast-release", aimet_variant)
 
     # To publish the aimet-onnx-gpu wheel on PyPI, we have to temporarily use 'onnxruntime' as a dependency.
@@ -214,7 +252,7 @@ def optional_dependencies() -> dict[str, list[str]]:
     optional_dependencies["test"].extend(
         [
             "deepspeed<0.17.5",
-            "onnxruntime",
+            "onnxruntime-qnn" if is_target_windows_arm64() else "onnxruntime",
         ]
     )
 

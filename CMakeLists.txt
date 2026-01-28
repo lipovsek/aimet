@@ -88,6 +88,19 @@ else()
 endif()
 message(STATUS "Found Python3: ${Python3_FOUND}, at ${Python3_LIBRARIES}")
 
+# Override Python3_SOABI for Windows ARM64 cross-compilation
+# When cross-compiling for ARM64 from x64, the host Python's SOABI is win_amd64
+# but we need win_arm64 for the target platform
+if (WIN32)
+    string(TOUPPER "${CMAKE_GENERATOR_PLATFORM}" _gen_platform_upper)
+    string(TOUPPER "${CMAKE_SYSTEM_PROCESSOR}" _sys_proc_upper)
+    if (_gen_platform_upper STREQUAL "ARM64" OR _sys_proc_upper MATCHES "ARM64|AARCH64")
+        # Replace win_amd64 with win_arm64 in SOABI
+        string(REPLACE "win_amd64" "win_arm64" Python3_SOABI "${Python3_SOABI}")
+        message(STATUS "Cross-compiling for Windows ARM64, adjusted Python3_SOABI to: ${Python3_SOABI}")
+    endif()
+endif()
+
 # -------------------------------
 # Compilation flags - not (yet) per target
 # -------------------------------

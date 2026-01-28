@@ -2,9 +2,18 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 if (WIN32)
-    set(AIMET_PLATFORM_DIR "x86_64-windows")
+    # Detect architecture for Windows builds (including cross-compilation)
+    if (CMAKE_GENERATOR_PLATFORM MATCHES "[Aa][Rr][Mm]64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+        set(AIMET_PLATFORM_DIR "arm64-windows")
+    else()
+        set(AIMET_PLATFORM_DIR "x86_64-windows")
+    endif()
 else()
-    set(AIMET_PLATFORM_DIR "x86_64-linux-gnu")
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        set(AIMET_PLATFORM_DIR "aarch64-linux-gnu")
+    else()
+        set(AIMET_PLATFORM_DIR "x86_64-linux-gnu")
+    endif()
 endif()
 
 macro(whl_add_whl_prep_common_target name)

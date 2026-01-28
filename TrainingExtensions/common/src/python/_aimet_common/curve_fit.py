@@ -6,9 +6,16 @@
 
 from typing import List, Tuple
 
-import osqp
 import numpy as np
 from scipy.sparse import csc_matrix
+
+try:
+    import osqp
+except ImportError as e:
+    raise ImportError(
+        "The 'osqp' package is required for curve fitting but is not installed. "
+        "Please install it with: pip install osqp"
+    ) from e
 
 
 class MonotonicIncreasingCurveFit:

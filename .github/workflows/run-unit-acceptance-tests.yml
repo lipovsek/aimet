@@ -162,7 +162,7 @@ jobs:
       - name: Download built wheels
         uses: actions/download-artifact@v3
         with:
-          name: "onnx-cpu-win-wheel"
+          name: "onnx-cpu-win-x64-wheel"
           path: "downloads"
 
       - uses: ./.github/actions/setup-uv-env

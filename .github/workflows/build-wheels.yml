@@ -121,6 +121,18 @@ jobs:
   build-windows:
     runs-on: [self-hosted, Windows]
     if: inputs.build-windows-wheel == true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            vcpkg-triplet: x64-windows
+            python-arch: amd64
+            python-version: "3.10"
+          - arch: arm64
+            vcpkg-triplet: arm64-windows
+            python-arch: arm64
+            python-version: "3.11"
     defaults:
       run:
         shell: powershell
@@ -129,9 +141,29 @@ jobs:
       - uses: ./.github/actions/setup-uv-env
         with:
           ENV_NAME: "onnx-cpu"
-          VER_PYTHON: "3.10"
+          VER_PYTHON: "${{ matrix.python-version }}"
 
-      - name: "Build AIMET ONNX-CPU wheel package for Windows"
+      - name: "Download ARM64 Python for cross-compilation"
+        if: matrix.arch == 'arm64'
+        run: |
+          # Download ARM64 Python nuget package for cross-compilation libs
+          $pythonArm64Dir = Join-Path $env:GITHUB_WORKSPACE "python-arm64"
+          New-Item -ItemType Directory -Force -Path $pythonArm64Dir
+
+          # Download Python ARM64 nuget package (use .zip extension for Expand-Archive)
+          $nugetZip = Join-Path $pythonArm64Dir "python.zip"
+          Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/pythonarm64/3.11.9" -OutFile $nugetZip
+
+          # Extract the nuget package
+          Expand-Archive -Path $nugetZip -DestinationPath $pythonArm64Dir -Force
+
+          # Set environment variable for CMake to find ARM64 Python libs
+          $pythonArm64Libs = Join-Path $pythonArm64Dir "tools/libs"
+          $pythonArm64Include = Join-Path $pythonArm64Dir "tools/include"
+          echo "PYTHON_ARM64_LIBS=$pythonArm64Libs" >> $env:GITHUB_ENV
+          echo "PYTHON_ARM64_INCLUDE=$pythonArm64Include" >> $env:GITHUB_ENV
+
+      - name: "Build AIMET ONNX-CPU wheel package for Windows (${{ matrix.arch }})"
         run: |
 
           # Activate uv environment
@@ -156,15 +188,24 @@ jobs:
             git clone https://github.com/microsoft/vcpkg $vcpkgRoot
             & (Join-Path $vcpkgRoot "bootstrap-vcpkg.bat") -disableMetrics
           }
-          & $vcpkgExe install eigen3:x64-windows
+          & $vcpkgExe install eigen3:${{ matrix.vcpkg-triplet }}
 
           $vcpkgToolchain = (Join-Path $vcpkgRoot "scripts/buildsystems/vcpkg.cmake") -replace '\\','/'
           $env:CMAKE_TOOLCHAIN_FILE = $vcpkgToolchain
 
-          # Set CMake args for amd64 Windows build
-          $env:CMAKE_ARGS = "-DENABLE_CUDA=OFF -DENABLE_TORCH=OFF -DENABLE_ONNX=ON -DENABLE_TESTS=OFF -DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain"
-          $env:CMAKE_GENERATOR = "Visual Studio 17 2022"
-          $env:CMAKE_GENERATOR_PLATFORM = "x64"
+          # Set CMake args for ${{ matrix.arch }} Windows build
+          $cmakeArgs = "-DENABLE_CUDA=OFF -DENABLE_TORCH=OFF -DENABLE_ONNX=ON -DENABLE_TESTS=OFF -DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain"
+
+          # For ARM64 cross-compilation, point to ARM64 Python libs
+          if ("${{ matrix.arch }}" -eq "arm64") {
+            $pythonArm64Libs = $env:PYTHON_ARM64_LIBS -replace '\\','/'
+            $pythonArm64Include = $env:PYTHON_ARM64_INCLUDE -replace '\\','/'
+            $pythonLibName = "python" + "${{ matrix.python-version }}".Replace(".", "") + ".lib"
+            $cmakeArgs = "$cmakeArgs -DPython3_LIBRARY=$pythonArm64Libs/$pythonLibName -DPython3_INCLUDE_DIR=$pythonArm64Include"
+          }
+
+          $cmakeArgs = "$cmakeArgs -DCMAKE_GENERATOR='Visual Studio 17 2022' -DCMAKE_GENERATOR_PLATFORM='${{ matrix.arch }}'"
+          $env:CMAKE_ARGS = $cmakeArgs
 
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build, dist, wheelhouse
           New-Item -ItemType Directory -Force -Path wheelhouse
@@ -172,11 +213,27 @@ jobs:
           # Build AIMET wheel
           python -m build --wheel --no-isolation .
 
-          # Move-Item -Path dist\aimet*.whl -Destination wheelhouse\
+      - name: "Re-tag wheel for ARM64 platform"
+        if: matrix.arch == 'arm64'
+        run: |
+          .\onnx-cpu\Scripts\activate
+          python -m pip install wheel
+
+          # Re-tag the wheel from win_amd64 to win_arm64
+          Get-ChildItem dist\aimet*.whl | ForEach-Object {
+            python -m wheel tags --remove --platform-tag=win_arm64 $_.FullName
+          }
+
+          # Remove the original amd64 wheels
+          Remove-Item dist\*win_amd64.whl -ErrorAction SilentlyContinue
+
+          # Show the resulting wheels
+          Get-ChildItem dist\
+
       - name: Upload AIMET Windows wheel file
         uses: actions/upload-artifact@v3
         with:
-          name: "onnx-cpu-win-wheel"
+          name: "onnx-cpu-win-${{ matrix.arch }}-wheel"
           path: |
             dist/aimet*.whl
           if-no-files-found: error

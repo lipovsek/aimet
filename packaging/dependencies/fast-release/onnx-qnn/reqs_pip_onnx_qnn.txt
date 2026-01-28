@@ -1,0 +1,16 @@
+bokeh
+hvplot
+Jinja2
+jsonschema
+numpy
+onnx
+onnxruntime-qnn>=1.19
+pandas
+psutil
+pybind11
+PyYAML
+scikit-learn
+scipy
+torch
+tqdm
+onnx2torch
