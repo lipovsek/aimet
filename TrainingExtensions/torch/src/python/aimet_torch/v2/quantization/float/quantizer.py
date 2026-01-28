@@ -194,7 +194,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         self.mantissa_bits = state["mantissa_bits"].item()
         super().set_extra_state(state)
 
-    def load_state_dict(self, state_dict, strict: bool = True):
+    def load_state_dict(self, state_dict, *args, **kwargs):
         if "maxval" in state_dict:
             if self.maxval is None:
                 del self.maxval
@@ -203,7 +203,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
             del self.maxval
             self.register_buffer("maxval", None)
 
-        ret = super().load_state_dict(state_dict, strict)
+        ret = super().load_state_dict(state_dict, *args, **kwargs)
         return ret
 
     @property

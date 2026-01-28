@@ -169,7 +169,7 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
 
         return state_dict
 
-    def load_state_dict(self, state_dict, strict: bool = True):  # pylint:disable=arguments-differ
+    def load_state_dict(self, state_dict, *args, **kwargs):  # pylint:disable=arguments-differ
         if "_extra_state" not in state_dict:
             is_initialized = OrderedDict(
                 {
@@ -180,7 +180,7 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
             )
             state_dict["_extra_state"] = is_initialized
 
-        ret = super().load_state_dict(state_dict, strict)
+        ret = super().load_state_dict(state_dict, *args, **kwargs)
 
         if version.parse(torch.__version__) < version.parse("1.10"):
             # This is for backward compatibility with torch < 1.10

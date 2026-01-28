@@ -842,7 +842,8 @@ def test_invalid_encoding_analyzer():
 
 @torch.no_grad()
 @pytest.mark.cuda
-def test_is_initialized(x):
+@pytest.mark.parametrize("assign", [True, False])
+def test_is_initialized(x, assign: bool):
     """
     When: Instantiate a quantizer object
     Then:
@@ -920,7 +921,7 @@ def test_is_initialized(x):
         symmetric=True,
         encoding_analyzer=MinMaxEncodingAnalyzer((10,)),
     )
-    qdq.load_state_dict({"min": -torch.ones(10), "max": torch.ones(10)})
+    qdq.load_state_dict({"min": -torch.ones(10), "max": torch.ones(10)}, assign=assign)
     assert qdq.is_initialized()
 
     """
@@ -933,9 +934,9 @@ def test_is_initialized(x):
         symmetric=True,
         encoding_analyzer=MinMaxEncodingAnalyzer((10,)),
     )
-    qdq.load_state_dict({"min": -torch.ones(10)}, strict=False)
+    qdq.load_state_dict({"min": -torch.ones(10)}, strict=False, assign=assign)
     assert not qdq.is_initialized()  # False; max is not initialized yet
-    qdq.load_state_dict({"max": torch.ones(10)}, strict=False)
+    qdq.load_state_dict({"max": torch.ones(10)}, strict=False, assign=assign)
     assert qdq.is_initialized()
 
     """
@@ -949,17 +950,17 @@ def test_is_initialized(x):
         encoding_analyzer=MinMaxEncodingAnalyzer((10,)),
     )
     uninitialized_state_dict = qdq.state_dict()
-    qdq.load_state_dict(uninitialized_state_dict)
+    qdq.load_state_dict(uninitialized_state_dict, assign=assign)
     assert not qdq.is_initialized()
 
     qdq.min.mul_(1.0)
     partially_initialized_state_dict = qdq.state_dict()
-    qdq.load_state_dict(partially_initialized_state_dict)
+    qdq.load_state_dict(partially_initialized_state_dict, assign=assign)
     assert not qdq.is_initialized()
 
     qdq.max.mul_(1.0)
     fully_initialized_state_dict = qdq.state_dict()
-    qdq.load_state_dict(fully_initialized_state_dict)
+    qdq.load_state_dict(fully_initialized_state_dict, assign=assign)
     assert qdq.is_initialized()
 
     """
@@ -981,7 +982,7 @@ def test_is_initialized(x):
         symmetric=True,
         encoding_analyzer=MinMaxEncodingAnalyzer((10,)),
     )
-    qdq.load_state_dict({"min": -torch.ones(10), "max": torch.ones(10)})
+    qdq.load_state_dict({"min": -torch.ones(10), "max": torch.ones(10)}, assign=assign)
     qdq = copy.deepcopy(qdq)
     assert qdq.is_initialized()
 
@@ -1005,7 +1006,7 @@ def test_is_initialized(x):
         symmetric=True,
         encoding_analyzer=MinMaxEncodingAnalyzer((10,)),
     )
-    qdq.load_state_dict({"min": -torch.ones(10), "max": torch.ones(10)})
+    qdq.load_state_dict({"min": -torch.ones(10), "max": torch.ones(10)}, assign=assign)
     out_before = qdq(x.view(-1, 10))
     res = pickle.dumps(qdq)
     qdq = pickle.loads(res)
