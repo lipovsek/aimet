@@ -119,7 +119,7 @@ jobs:
           retention-days: 30d
 
   build-windows:
-    runs-on: [self-hosted, Windows]
+    runs-on: [self-hosted, Windows, X64]
     if: inputs.build-windows-wheel == true
     strategy:
       fail-fast: false

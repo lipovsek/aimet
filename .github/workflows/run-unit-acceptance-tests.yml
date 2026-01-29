@@ -149,7 +149,7 @@ jobs:
 
   test_on_windows:
     name: Run AIMET unit and acceptance tests on Windows
-    runs-on: [self-hosted, Windows]
+    runs-on: [self-hosted, Windows, X64]
     if: inputs.include_windows_tests && inputs.env_name == 'onnx-cpu' && (inputs.run_unit_tests || inputs.run_acceptance_tests)
     steps:
       - uses: actions/checkout@v4
