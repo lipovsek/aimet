@@ -1050,6 +1050,8 @@ def test_cross_validate_torch_fake_quantize(
         assert torch.allclose(out3, expected, atol=atol, rtol=1e-3)
 
 
+@pytest.mark.parametrize("offset_requires_grad", [True, False])
+@pytest.mark.parametrize("scale_requires_grad", [True, False])
 @pytest.mark.parametrize("bitwidth", [2, 4])
 @pytest.mark.parametrize("zero_point_shift", [0, 0.5])
 @pytest.mark.parametrize(
@@ -1060,9 +1062,15 @@ def test_cross_validate_torch_fake_quantize(
         torch.bfloat16,
     ],
 )
-def test_pgs(bitwidth: int, zero_point_shift: float, dtype: torch.dtype):
-    scale = torch.tensor([1.0], dtype=dtype, requires_grad=True)
-    offset = torch.tensor([0], dtype=dtype, requires_grad=True)
+def test_pgs(
+    bitwidth: int,
+    zero_point_shift: float,
+    dtype: torch.dtype,
+    scale_requires_grad: bool,
+    offset_requires_grad: bool,
+):
+    scale = torch.tensor([1.0], dtype=dtype, requires_grad=scale_requires_grad)
+    offset = torch.tensor([0], dtype=dtype, requires_grad=offset_requires_grad)
     qmin = -(2 ** (bitwidth - 1))
     qmax = 2 ** (bitwidth - 1) - 1
     x = torch.arange(
@@ -1074,8 +1082,8 @@ def test_pgs(bitwidth: int, zero_point_shift: float, dtype: torch.dtype):
     )
     torch.nn.functional.mse_loss(x_qdq, x.detach()).backward()
     default_x_grad = x.grad.clone()
-    default_scale_grad = scale.grad.clone()
-    default_offset_grad = offset.grad.clone()
+    default_scale_grad = scale.grad.clone() if scale_requires_grad else None
+    default_offset_grad = offset.grad.clone() if offset_requires_grad else None
 
     x.grad = None
     scale.grad = None
@@ -1090,8 +1098,8 @@ def test_pgs(bitwidth: int, zero_point_shift: float, dtype: torch.dtype):
         )
         torch.nn.functional.mse_loss(x_qdq, x.detach()).backward()
         pgs_x_grad = x.grad.clone()
-        pgs_scale_grad = scale.grad.clone()
-        pgs_offset_grad = offset.grad.clone()
+        pgs_scale_grad = scale.grad.clone() if scale_requires_grad else None
+        pgs_offset_grad = offset.grad.clone() if offset_requires_grad else None
     finally:
         pgs.disable_pgs()
 
@@ -1103,8 +1111,15 @@ def test_pgs(bitwidth: int, zero_point_shift: float, dtype: torch.dtype):
          when x is near rounding boundary and within clamping boundary;
          otherwise, they should be identical
     """
-    assert torch.equal(default_scale_grad, pgs_scale_grad)
-    assert torch.equal(default_offset_grad, pgs_offset_grad)
+    if scale_requires_grad:
+        assert torch.equal(default_scale_grad, pgs_scale_grad)
+    else:
+        assert default_scale_grad == pgs_scale_grad == None
+
+    if offset_requires_grad:
+        assert torch.equal(default_offset_grad, pgs_offset_grad)
+    else:
+        assert default_offset_grad == pgs_offset_grad == None
 
     x_scaled = x / scale - zero_point_shift
     x_rounded = x_scaled.round()

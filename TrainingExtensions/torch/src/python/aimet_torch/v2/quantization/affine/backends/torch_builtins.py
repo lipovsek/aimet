@@ -211,6 +211,9 @@ def quantize_dequantize(
     # if user explicitly designated specific rounding function, honor it strictly
     _fast_forward &= zero_point_shift == 0.0
 
+    # PGS is not supported with torch.fake_quantize
+    _fast_forward &= not (tensor.requires_grad and pgs.is_pgs_enabled())
+
     if _fast_forward:
         ret = _torch_fake_quantize(tensor, scale, offset, qmin, qmax)
 
@@ -673,8 +676,14 @@ class QuantDequantFunc(torch.autograd.Function):
         ctx.pgs_eps = pgs.get_pgs_eps()
         ctx.pgs_multiplier = pgs.get_pgs_multiplier()
         ctx.save_for_backward(
-            tensor if scale.requires_grad else None,
-            scale if scale.requires_grad or offset.requires_grad else None,
+            tensor
+            if scale.requires_grad or (tensor.requires_grad and pgs.is_pgs_enabled())
+            else None,
+            scale
+            if scale.requires_grad
+            or offset.requires_grad
+            or (tensor.requires_grad and pgs.is_pgs_enabled())
+            else None,
             offset if scale.requires_grad else None,
             mask,
         )
