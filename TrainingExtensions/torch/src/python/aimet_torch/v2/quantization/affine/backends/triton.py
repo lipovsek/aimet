@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import triton
 import triton.language as tl
+from aimet_torch.experimental import pgs
 
 
 @triton.jit
@@ -332,6 +333,8 @@ def quantize_dequantize_per_tensor_backward(
     qmax: tl.int32,
     n_elements: tl.uint64,
     COMPUTE_BLOCK_SIZE: tl.constexpr,
+    pgs_eps: tl.constexpr = 0.0,
+    pgs_multiplier: tl.constexpr = 1.0,
 ):
     pid = tl.program_id(0)
     start_index = pid * COMPUTE_BLOCK_SIZE
@@ -339,25 +342,44 @@ def quantize_dequantize_per_tensor_backward(
     mask = idx < n_elements
 
     output_grad = tl.load(output_grad_ptr + idx, mask=mask)
-    grad_mask = tl.load(mask_ptr + idx, mask=mask)
+    input_grad = output_grad
+    is_within_clamping_boundary = tl.load(mask_ptr + idx, mask=mask)
 
-    if input_grad_ptr is not None:
-        input_grad = output_grad * grad_mask
-        tl.store(input_grad_ptr + idx, input_grad, mask=mask)
-
-    if scale_grad_ptr is not None:
+    if scale_grad_ptr is not None or (
+        pgs_eps > 0.0 and pgs_multiplier != 1.0 and input_grad_ptr is not None
+    ):
         input = tl.load(input_ptr + idx, mask=mask)
         scale = tl.load(scale_ptr)
         offset = tl.load(offset_ptr)
         scaled = input / scale - offset
         rounded = tl.floor(scaled + 0.5)
-        clamped = tl.clamp(rounded, qmin, qmax)
-        scale_grad = (output_grad * (clamped - scaled * grad_mask)).sum()
-        tl.atomic_add(scale_grad_ptr, scale_grad)
+        rounding_err = rounded - scaled
+
+        if scale_grad_ptr is not None:
+            clamped = tl.clamp(rounded, qmin, qmax) + offset
+            scale_grad = output_grad * tl.where(
+                is_within_clamping_boundary,
+                rounding_err,
+                clamped,
+            )
+            scale_grad = scale_grad.sum()
+            tl.atomic_add(scale_grad_ptr, scale_grad)
+
+        if pgs_eps > 0.0 and pgs_multiplier != 1.0 and input_grad_ptr is not None:
+            is_near_rounding_boundary = rounding_err.abs() > (1 - pgs_eps) / 2
+            input_grad = tl.where(
+                is_near_rounding_boundary,
+                output_grad * pgs_multiplier,
+                output_grad,
+            )
+
+    if input_grad_ptr is not None:
+        input_grad = input_grad * is_within_clamping_boundary
+        tl.store(input_grad_ptr + idx, input_grad, mask=mask)
 
     if offset_grad_ptr is not None:
         scale = tl.load(scale_ptr)
-        offset_grad = (output_grad * scale * ~grad_mask).sum()
+        offset_grad = (output_grad * scale * ~is_within_clamping_boundary).sum()
         tl.atomic_add(offset_grad_ptr, offset_grad)
 
 
@@ -377,6 +399,8 @@ def quantize_dequantize_per_channel_backward(
     J: tl.uint64,
     K: tl.uint64,
     COMPUTE_BLOCK_SIZE: tl.constexpr,
+    pgs_eps: tl.constexpr = 0.0,
+    pgs_multiplier: tl.constexpr = 1.0,
 ):
     pid = tl.program_id(0)
     idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE).to(tl.uint64)
@@ -384,25 +408,43 @@ def quantize_dequantize_per_channel_backward(
     j = (idx % (J * K)) // K
 
     output_grad = tl.load(output_grad_ptr + idx, mask=mask)
-    grad_mask = tl.load(mask_ptr + idx, mask=mask)
+    input_grad = output_grad
+    is_within_clamping_boundary = tl.load(mask_ptr + idx, mask=mask)
 
-    if input_grad_ptr is not None:
-        input_grad = output_grad * grad_mask
-        tl.store(input_grad_ptr + idx, input_grad, mask=mask)
-
-    if scale_grad_ptr is not None:
+    if scale_grad_ptr is not None or (
+        pgs_eps > 0.0 and pgs_multiplier != 1.0 and input_grad_ptr is not None
+    ):
         input = tl.load(input_ptr + idx, mask=mask)
         scale = tl.load(scale_ptr + j)
         offset = tl.load(offset_ptr + j)
         scaled = input / scale - offset
         rounded = tl.floor(scaled + 0.5)
-        clamped = tl.clamp(rounded, qmin, qmax)
-        scale_grad = output_grad * (clamped - scaled * grad_mask)
-        tl.store(scale_grad_ptr + idx, scale_grad, mask=mask)
+        rounding_err = rounded - scaled
+
+        if scale_grad_ptr is not None:
+            clamped = tl.clamp(rounded, qmin, qmax) + offset
+            scale_grad = output_grad * tl.where(
+                is_within_clamping_boundary,
+                rounding_err,
+                clamped,
+            )
+            tl.store(scale_grad_ptr + idx, scale_grad, mask=mask)
+
+        if pgs_eps > 0.0 and pgs_multiplier != 1.0 and input_grad_ptr is not None:
+            is_near_rounding_boundary = rounding_err.abs() > (1 - pgs_eps) / 2
+            input_grad = tl.where(
+                is_near_rounding_boundary,
+                output_grad * pgs_multiplier,
+                output_grad,
+            )
+
+    if input_grad_ptr is not None:
+        input_grad = input_grad * is_within_clamping_boundary
+        tl.store(input_grad_ptr + idx, input_grad, mask=mask)
 
     if offset_grad_ptr is not None:
         scale = tl.load(scale_ptr + j)
-        offset_grad = output_grad * scale * ~grad_mask
+        offset_grad = output_grad * scale * ~is_within_clamping_boundary
         tl.store(offset_grad_ptr + idx, offset_grad, mask=mask)
 
 
@@ -424,42 +466,61 @@ def quantize_dequantize_per_block_backward(
     BLK_SIZE_J: tl.uint64,
     BLK_SIZE_K: tl.uint64,
     COMPUTE_BLOCK_SIZE: tl.constexpr,
+    pgs_eps: tl.constexpr = 0.0,
+    pgs_multiplier: tl.constexpr = 1.0,
 ):
     pid = tl.program_id(0)
     idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE).to(tl.uint64)
     mask = idx < (I * J * K)
 
     output_grad = tl.load(output_grad_ptr + idx, mask=mask)
-    grad_mask = tl.load(mask_ptr + idx, mask=mask)
+    input_grad = output_grad
+    is_within_clamping_boundary = tl.load(mask_ptr + idx, mask=mask)
 
-    if input_grad_ptr is not None:
-        input_grad = output_grad * grad_mask
-        tl.store(input_grad_ptr + idx, input_grad, mask=mask)
+    # B[n, m] where n and m are block indices along J and K dimensions
+    # 0 <= n < M == J / BLK_SIZE_J
+    # 0 <= m < N == K / BLK_SIZE_K
+    j = (idx % (J * K)) // K
+    k = idx % K
+    n = j // BLK_SIZE_J
+    m = k // BLK_SIZE_K
+    scale_idx = n * (K // BLK_SIZE_K) + m
 
-    if scale_grad_ptr is not None or offset_grad_ptr is not None:
-        # B[n, m] where n and m are block indices along J and K dimensions
-        # 0 <= n < M == J / BLK_SIZE_J
-        # 0 <= m < N == K / BLK_SIZE_K
-        j = (idx % (J * K)) // K
-        k = idx % K
-        n = j // BLK_SIZE_J
-        m = k // BLK_SIZE_K
-        scale_idx = n * (K // BLK_SIZE_K) + m
+    if scale_grad_ptr is not None or (
+        pgs_eps > 0.0 and pgs_multiplier != 1.0 and input_grad_ptr is not None
+    ):
+        input = tl.load(input_ptr + idx, mask=mask)
+        scale = tl.load(scale_ptr + scale_idx)
+        offset = tl.load(offset_ptr + scale_idx)
+        scaled = input / scale - offset
+        rounded = tl.floor(scaled + 0.5)
+        rounding_err = rounded - scaled
 
         if scale_grad_ptr is not None:
-            input = tl.load(input_ptr + idx, mask=mask)
-            scale = tl.load(scale_ptr + scale_idx)
-            offset = tl.load(offset_ptr + scale_idx)
-            scaled = input / scale - offset
-            rounded = tl.floor(scaled + 0.5)
-            clamped = tl.clamp(rounded, qmin, qmax)
-            scale_grad = output_grad * (clamped - scaled * grad_mask)
+            clamped = tl.clamp(rounded, qmin, qmax) + offset
+            scale_grad = output_grad * tl.where(
+                is_within_clamping_boundary,
+                rounding_err,
+                clamped,
+            )
             tl.store(scale_grad_ptr + idx, scale_grad, mask=mask)
 
-        if offset_grad_ptr is not None:
-            scale = tl.load(scale_ptr + scale_idx)
-            offset_grad = output_grad * scale * ~grad_mask
-            tl.store(offset_grad_ptr + idx, offset_grad, mask=mask)
+        if pgs_eps > 0.0 and pgs_multiplier != 1.0 and input_grad_ptr is not None:
+            is_near_rounding_boundary = rounding_err.abs() > (1 - pgs_eps) / 2
+            input_grad = tl.where(
+                is_near_rounding_boundary,
+                output_grad * pgs_multiplier,
+                output_grad,
+            )
+
+    if input_grad_ptr is not None:
+        input_grad = input_grad * is_within_clamping_boundary
+        tl.store(input_grad_ptr + idx, input_grad, mask=mask)
+
+    if offset_grad_ptr is not None:
+        scale = tl.load(scale_ptr + scale_idx)
+        offset_grad = output_grad * scale * ~is_within_clamping_boundary
+        tl.store(offset_grad_ptr + idx, offset_grad, mask=mask)
 
 
 @triton.jit
@@ -871,10 +932,20 @@ class TritonQuantizeDequantize(torch.autograd.Function):
         else:
             raise RuntimeError
 
+        ctx.pgs_eps = pgs.get_pgs_eps()
+        ctx.pgs_multiplier = pgs.get_pgs_multiplier()
         ctx.save_for_backward(
-            tensor if scale.requires_grad else None,
-            scale if scale.requires_grad or offset.requires_grad else None,
-            offset if scale.requires_grad else None,
+            tensor
+            if scale.requires_grad or (tensor.requires_grad and pgs.is_pgs_enabled())
+            else None,
+            scale
+            if scale.requires_grad
+            or offset.requires_grad
+            or (tensor.requires_grad and pgs.is_pgs_enabled())
+            else None,
+            offset
+            if scale.requires_grad or (tensor.requires_grad and pgs.is_pgs_enabled())
+            else None,
             mask,
         )
         ctx.qmin = qmin
@@ -899,6 +970,9 @@ class TritonQuantizeDequantize(torch.autograd.Function):
         COMPUTE_BLOCK_SIZE = 1024
         NUM_COMPUTE_BLOCKS = grad.numel() // COMPUTE_BLOCK_SIZE + 1
 
+        pgs_eps = ctx.pgs_eps
+        pgs_multiplier = ctx.pgs_multiplier
+
         if axis_0 is None:
             scale_grad = torch.zeros_like(scale) if ctx.scale_requires_grad else None
             offset_grad = torch.zeros_like(scale) if ctx.offset_requires_grad else None
@@ -915,6 +989,8 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 ctx.qmax,
                 grad.numel(),
                 COMPUTE_BLOCK_SIZE,
+                pgs_eps,
+                pgs_multiplier,
             )
         elif block_size[axis_0] == 1 and axis_1 is None:
             I = ctx.I
@@ -945,6 +1021,8 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 J,
                 K,
                 COMPUTE_BLOCK_SIZE,
+                pgs_eps,
+                pgs_multiplier,
             )
         elif axis_0 is not None and axis_1 is not None:
             I = ctx.I
@@ -980,6 +1058,8 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 BLK_SIZE_J,
                 BLK_SIZE_K,
                 COMPUTE_BLOCK_SIZE,
+                pgs_eps,
+                pgs_multiplier,
             )
 
             if scale_grad is not None:

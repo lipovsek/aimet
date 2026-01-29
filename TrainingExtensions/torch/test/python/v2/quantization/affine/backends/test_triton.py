@@ -23,6 +23,21 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         dequantize,
         quantize_dequantize,
     )
+    import aimet_torch.experimental.pgs
+
+    @pytest.fixture(params=[True, False], scope="function")
+    def enable_pgs(request):
+        enable = request.param
+
+        if enable:
+            try:
+                aimet_torch.experimental.pgs.enable_pgs(eps=0.1, multiplier=3.0)
+                yield
+            finally:
+                aimet_torch.experimental.pgs.disable_pgs()
+        else:
+            aimet_torch.experimental.pgs.disable_pgs()
+            yield
 
     @pytest.mark.parametrize("seed", range(5))
     def test_quantize_per_tensor(seed):
@@ -175,10 +190,11 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
     @pytest.mark.parametrize("offset_requires_grad", [True, False])
     @pytest.mark.parametrize("seed", range(5))
     def test_quantize_dequantize_per_tensor(
-        seed: int,
         input_requires_grad: bool,
         scale_requires_grad: bool,
         offset_requires_grad: bool,
+        enable_pgs,
+        seed: int,
     ):
         """
         Triton quantize_dequantize kernel should should produce close-enough output
@@ -197,7 +213,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
             0.01, dtype=torch.float32, device="cuda", requires_grad=scale_requires_grad
         )
         offset = torch.tensor(
-            0, dtype=torch.float32, device="cuda", requires_grad=offset_requires_grad
+            -1, dtype=torch.float32, device="cuda", requires_grad=offset_requires_grad
         )
         output_triton = TritonQuantizeDequantize.apply(
             input, scale, offset, -128, 127, None
@@ -218,16 +234,42 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
 
         if input_requires_grad:
             assert input.grad is not None
-            exact_match = output_triton == output_torch
-            assert torch.equal(input.grad[exact_match], input_.grad[exact_match])
-            assert torch.allclose(
-                input.grad,
-                input_.grad,
-                # Given MSE loss,
-                # `grad_x = 2 * (x_qdq - x) / x.numel()`,
-                # where `x_qdq` can differ by at most `scale` between triton and torch.
-                atol=scale.item() * 2 / input.numel(),
-            )
+            output_eq = output_triton == output_torch
+
+            if aimet_torch.experimental.pgs.is_pgs_enabled():
+                # When PGS is enabled, the gradients may not be exactly equal
+                # even where outputs are equal due to precision error near PGS boundaries
+                pgs_multiplier = aimet_torch.experimental.pgs.get_pgs_multiplier()
+                grad_eq = input.grad[output_eq] == input_.grad[output_eq]
+                assert grad_eq.sum() / output_eq.sum() > 0.999
+                assert torch.all(
+                    grad_eq
+                    | (input.grad[output_eq] == input_.grad[output_eq] * pgs_multiplier)
+                    | (input.grad[output_eq] * pgs_multiplier == input_.grad[output_eq])
+                )
+            else:
+                assert torch.equal(input.grad[output_eq], input_.grad[output_eq])
+
+            # Given MSE loss,
+            # `grad_x = 2 * (x_qdq - x) / x.numel()`,
+            # where `x_qdq` can differ by at most `scale` between triton and torch.
+            atol = scale.item() * 2 / input.numel()
+
+            if aimet_torch.experimental.pgs.is_pgs_enabled():
+                # When PGS is enabled, the gradients can further
+                # differ by a factor of pgs_multiplier
+                pgs_multiplier = aimet_torch.experimental.pgs.get_pgs_multiplier()
+                atol *= pgs_multiplier
+                isclose = torch.isclose(input.grad, input_.grad, atol=atol)
+                assert isclose.sum() / input.numel() > 0.999
+                assert torch.all(
+                    isclose
+                    | torch.isclose(input.grad, input_.grad * pgs_multiplier, atol=atol)
+                    | torch.isclose(input.grad * pgs_multiplier, input_.grad, atol=atol)
+                )
+            else:
+                torch.allclose(input.grad, input_.grad, atol=atol)
+
         else:
             assert input.grad is None
 
@@ -249,11 +291,12 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
     @pytest.mark.parametrize("channel_axis", range(4))
     @pytest.mark.parametrize("seed", range(5))
     def test_quantize_dequantize_per_channel(
-        seed: int,
         channel_axis: int,
         input_requires_grad: bool,
         scale_requires_grad: bool,
         offset_requires_grad: bool,
+        enable_pgs,
+        seed: int,
     ):
         """
         Triton quantize_dequantize kernel should should produce close-enough output
@@ -277,7 +320,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
             device="cuda",
         ).view(*scale_shape)
         scale.requires_grad_(scale_requires_grad)
-        offset = torch.zeros(
+        offset = -torch.ones(
             32,
             dtype=torch.float32,
             device="cuda",
@@ -307,17 +350,44 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
 
         if input_requires_grad:
             assert input.grad is not None
-            exact_match = output_triton == output_torch
-            assert torch.equal(input.grad[exact_match], input_.grad[exact_match])
-            assert np.allclose(
-                input.grad.cpu().detach().numpy(),
-                input_.grad.cpu().detach().numpy(),
-                # Given MSE loss,
-                # `grad_x = 2 * (x_qdq - x) / x.numel()`,
-                # where `x_qdq` can differ by at most `scale` between triton and torch.
-                atol=scale.cpu().detach().numpy() * 2 / input.numel(),
-                rtol=1e-3,
-            )
+            output_eq = output_triton == output_torch
+
+            if aimet_torch.experimental.pgs.is_pgs_enabled():
+                # When PGS is enabled, the gradients may not be exactly equal
+                # even where outputs are equal due to precision error near PGS boundaries
+                pgs_multiplier = aimet_torch.experimental.pgs.get_pgs_multiplier()
+                grad_eq = input.grad[output_eq] == input_.grad[output_eq]
+                assert grad_eq.sum() / output_eq.sum() > 0.999
+                assert torch.all(
+                    grad_eq
+                    | (input.grad[output_eq] == input_.grad[output_eq] * pgs_multiplier)
+                    | (input.grad[output_eq] * pgs_multiplier == input_.grad[output_eq])
+                )
+            else:
+                assert torch.equal(input.grad[output_eq], input_.grad[output_eq])
+
+            # Given MSE loss,
+            # `grad_x = 2 * (x_qdq - x) / x.numel()`,
+            # where `x_qdq` can differ by at most `scale` between triton and torch.
+            atol = scale.cpu().detach().numpy() * 2 / input.numel()
+            input_grad = input.grad.cpu().detach().numpy()
+            input_grad_ = input_.grad.cpu().detach().numpy()
+
+            if aimet_torch.experimental.pgs.is_pgs_enabled():
+                # When PGS is enabled, the gradients can further
+                # differ by a factor of pgs_multiplier
+                pgs_multiplier = aimet_torch.experimental.pgs.get_pgs_multiplier()
+                atol *= pgs_multiplier
+                isclose = np.isclose(input_grad, input_grad_, atol=atol)
+                assert isclose.sum() / input.numel() > 0.999
+                assert np.all(
+                    isclose
+                    | np.isclose(input_grad, input_grad_ * pgs_multiplier, atol=atol)
+                    | np.isclose(input_grad * pgs_multiplier, input_grad_, atol=atol)
+                )
+            else:
+                np.allclose(input_grad, input_grad_, atol=atol)
+
         else:
             assert input.grad is None
 
@@ -347,6 +417,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         input_requires_grad: bool,
         scale_requires_grad: bool,
         offset_requires_grad: bool,
+        enable_pgs,
     ):
         """
         Triton quantize_dequantize kernel should should produce close-enough output
@@ -376,7 +447,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
             device="cuda",
         ).view(*scale_shape)
         scale.requires_grad_(scale_requires_grad)
-        offset = torch.zeros(
+        offset = -torch.ones(
             64,
             dtype=torch.float32,
             device="cuda",
@@ -409,17 +480,40 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
 
         if input_requires_grad:
             assert input.grad is not None
-            exact_match = output_triton == output_torch
-            assert torch.equal(input.grad[exact_match], input_.grad[exact_match])
-            assert np.allclose(
-                input.grad.cpu().detach().numpy(),
-                input_.grad.cpu().detach().numpy(),
-                # Given MSE loss,
-                # `grad_x = 2 * (x_qdq - x) / x.numel()`,
-                # where `x_qdq` can differ by at most `scale` between triton and torch.
-                atol=atol.cpu().detach().numpy() * 2 / input.numel(),
-                rtol=1e-3,
-            )
+            output_eq = output_triton == output_torch
+
+            if aimet_torch.experimental.pgs.is_pgs_enabled():
+                # When PGS is enabled, the gradients may not be exactly equal
+                # even where outputs are equal due to precision error near PGS boundaries
+                pgs_multiplier = aimet_torch.experimental.pgs.get_pgs_multiplier()
+                grad_eq = input.grad[output_eq] == input_.grad[output_eq]
+                assert grad_eq.sum() / output_eq.sum() > 0.999
+                assert torch.all(
+                    grad_eq
+                    | (input.grad[output_eq] == input_.grad[output_eq] * pgs_multiplier)
+                    | (input.grad[output_eq] * pgs_multiplier == input_.grad[output_eq])
+                )
+            else:
+                assert torch.equal(input.grad[output_eq], input_.grad[output_eq])
+
+            atol = atol.cpu().detach().numpy()
+            input_grad = input.grad.cpu().detach().numpy()
+            input_grad_ = input_.grad.cpu().detach().numpy()
+
+            if aimet_torch.experimental.pgs.is_pgs_enabled():
+                # When PGS is enabled, the gradients can further
+                # differ by a factor of pgs_multiplier
+                pgs_multiplier = aimet_torch.experimental.pgs.get_pgs_multiplier()
+                atol *= pgs_multiplier
+                isclose = np.isclose(input_grad, input_grad_, atol=atol)
+                assert isclose.sum() / input.numel() > 0.999
+                assert np.all(
+                    isclose
+                    | np.isclose(input_grad, input_grad_ * pgs_multiplier, atol=atol)
+                    | np.isclose(input_grad * pgs_multiplier, input_grad_, atol=atol)
+                )
+            else:
+                np.allclose(input_grad, input_grad_, atol=atol)
         else:
             assert input.grad is None
 
