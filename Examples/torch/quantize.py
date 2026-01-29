@@ -94,7 +94,7 @@ def apply_spinquant_if_needed(hf_model: torch.nn.Module, recipe: str):
     old_weight = hf_model.lm_head.weight
     new_weight = torch.nn.Parameter(
         old_weight.data.clone().detach().to(old_weight.device),
-        requires_grad=True,
+        requires_grad=old_weight.requires_grad,
     )
     hf_model.lm_head.weight = new_weight
 

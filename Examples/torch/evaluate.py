@@ -118,6 +118,17 @@ if __name__ == "__main__":
         args.model_id, use_fast=True, trust_remote_code=True
     )
 
+    # Untie embed_tokens and lm_head weights for SpinQuant recipes
+    # SpinQuant applies different transformations to these layers,
+    # so they must be separate tensors before loading the state_dict
+    if "spinquant" in str(m["recipe"]).lower():
+        old_weight = hf_model.lm_head.weight
+        new_weight = torch.nn.Parameter(
+            old_weight.data.clone().detach().to(old_weight.device),
+            requires_grad=old_weight.requires_grad,
+        )
+        hf_model.lm_head.weight = new_weight
+
     # Load model weights/buffers into original HF model (quantizers states will be ignored.)
     state_dict = torch.load(
         weights_ckpt_path,
