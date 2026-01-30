@@ -1,8 +1,6 @@
 name: ONNX Nightly
 
 on:
-  schedule:
-    - cron: '0 6 * * *'
 
   workflow_dispatch:
     inputs:

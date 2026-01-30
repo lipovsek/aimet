@@ -389,8 +389,11 @@ def install_model_extras(model_name: str, use_uv: bool = True) -> None:
             capture_output=True,
             check=True,
         )
-    except subprocess.CalledProcessError:
-        pass  # No extras for this model
+        print(f"  ✔ Installed extras for {model_name}")
+    except subprocess.CalledProcessError as e:
+        print(
+            f"  ℹ️ No extras for {model_name}: {e.stderr[:100] if e.stderr else 'unknown'}"
+        )
 
 
 def main():
