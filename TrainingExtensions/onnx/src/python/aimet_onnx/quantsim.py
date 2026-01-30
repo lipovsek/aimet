@@ -2875,9 +2875,21 @@ class QuantizationSimModel:
                 if path:
                     *_, qc_quantize_op_node = path
                     initial_c = qc_quantize_op_node.input[0]
-                    initial_c_qtzr = self.qc_quantize_op_dict.get(initial_c)
-                    if initial_c_qtzr:
-                        yield initial_c, initial_c_qtzr
+                else:
+                    # No quantizer is enabled for initial_c. In this case,
+                    # interpret the closest disabled quantizer (if any)
+                    # as the initial_c quantizer.
+                    producer = self._producers.get(initial_c)
+
+                    while producer and _is_grid_preserving_op(producer.op_type):
+                        producer = self._producers.get(producer.input[0])
+
+                    if producer and producer.op_type == "QcQuantizeOp":
+                        initial_c = producer.input[0]
+
+                initial_c_qtzr = self.qc_quantize_op_dict.get(initial_c)
+                if initial_c_qtzr:
+                    yield initial_c, initial_c_qtzr
 
     def _disable_lstm_cell_state_quantizers(self):
         """

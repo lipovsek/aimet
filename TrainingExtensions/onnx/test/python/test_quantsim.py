@@ -677,6 +677,69 @@ class TestQuantSim:
         model = onnx.load(tmp_path / "rnn.onnx")
         self._test_lstm(model)
 
+    def test_lstm_single_output(self):
+        """
+        LSTM with single output (no hidden/cell state outputs)
+        """
+        lstm = onnx.helper.make_model(
+            opset_imports=[onnx.helper.make_opsetid("", 13)],
+            ir_version=10,
+            graph=onnx.helper.make_graph(
+                name="lstm_int32_cell",
+                inputs=[
+                    onnx.helper.make_tensor_value_info(
+                        "input", onnx.TensorProto.FLOAT, [1, 1, 4]
+                    ),
+                ],
+                outputs=[
+                    onnx.helper.make_tensor_value_info(
+                        "output", onnx.TensorProto.FLOAT, [1, 1, 8]
+                    ),
+                ],
+                nodes=[
+                    onnx.helper.make_node(
+                        "LSTM",
+                        inputs=["input", "W", "R", "B", "", "h0", "c0"],
+                        outputs=["output"],
+                        hidden_size=8,
+                    ),
+                ],
+                initializer=[
+                    onnx.helper.make_tensor(
+                        name="W",
+                        data_type=onnx.TensorProto.FLOAT,
+                        dims=[1, 32, 4],
+                        vals=[0.1] * (1 * 32 * 4),
+                    ),
+                    onnx.helper.make_tensor(
+                        name="R",
+                        data_type=onnx.TensorProto.FLOAT,
+                        dims=[1, 32, 8],
+                        vals=[0.1] * (1 * 32 * 8),
+                    ),
+                    onnx.helper.make_tensor(
+                        name="B",
+                        data_type=onnx.TensorProto.FLOAT,
+                        dims=[1, 64],
+                        vals=[0.0] * (1 * 64),
+                    ),
+                    onnx.helper.make_tensor(
+                        name="h0",
+                        data_type=onnx.TensorProto.FLOAT,
+                        dims=[1, 1, 8],
+                        vals=[0.0] * (1 * 1 * 8),
+                    ),
+                    onnx.helper.make_tensor(
+                        name="c0",
+                        data_type=onnx.TensorProto.FLOAT,
+                        dims=[1, 1, 8],
+                        vals=[0.0] * (1 * 1 * 8),
+                    ),
+                ],
+            ),
+        )
+        self._test_lstm(lstm)
+
     def _test_lstm(self, model: onnx.ModelProto):
         op_type = next(
             node.op_type
@@ -688,18 +751,22 @@ class TestQuantSim:
         for node in model.graph.node:
             if node.op_type in ("RNN", "GRU", "LSTM"):
                 if len(node.input) > 5:
-                    hidden_state_names.append(node.input[5])
+                    hidden_state_names.append("h0")
                 hidden_state_names.append(node.output[0])
                 if len(node.output) > 1:
                     hidden_state_names.append(node.output[1])
             if node.op_type == "LSTM":
                 if len(node.input) > 6:
-                    cell_state_names.append(node.input[6])
+                    cell_state_names.append("c0")
                 if len(node.output) > 2:
                     cell_state_names.append(node.output[2])
 
         with _apply_constraints(True):
             sim = aimet_onnx.QuantizationSimModel(model, config_file="enpu_v6")
+
+        assert set(cell_state_names) == set(
+            name for name, _ in sim._lstm_cell_state_quantizers()
+        )
 
         """
         When: Created QuantizationSimModel with _apply_constraints(True)
@@ -711,6 +778,7 @@ class TestQuantSim:
         hidden_state_quantizers = {q for q in hidden_state_quantizers if q.enabled}
         assert len(hidden_state_quantizers) == 1
 
+        cell_state_quantizers = set()
         if op_type == "LSTM":
             cell_state_quantizers = set(
                 sim.qc_quantize_op_dict[name] for name in cell_state_names
@@ -775,17 +843,22 @@ class TestQuantSim:
             _, cn = hncn
             _, cn_ = hncn_
             assert np.allclose(cn, cn_, rtol=1e-3)
+        else:
+            cn = cn_ = None
 
-            """
-            When: Call _concretize_int32_lstm_cell_state_quantizers
-            Then: int32 LSTM cell quantizers should be instantiated with fixed scale 2**-20
-            """
-            sim._concretize_int32_lstm_cell_state_quantizers()
-            assert sim.qc_quantize_op_dict["c0"].enabled
+        """
+        When: Call _concretize_int32_lstm_cell_state_quantizers
+        Then: int32 LSTM cell quantizers should be instantiated with fixed scale 2**-20
+        """
+        sim._concretize_int32_lstm_cell_state_quantizers()
+
+        for cell_state_name in cell_state_names:
+            qtzr = sim.qc_quantize_op_dict[cell_state_name]
+            assert qtzr.enabled, cell_state_name
+            assert qtzr.encodings[0].delta == 2**-20
+
+        if cn is not None:
             assert sim.qc_quantize_op_dict["cn"].enabled
-
-            for qtzr in cell_state_quantizers:
-                assert qtzr.encodings[0].delta == 2**-20
 
     def test_single_residual(self):
         model = single_residual_model().model
