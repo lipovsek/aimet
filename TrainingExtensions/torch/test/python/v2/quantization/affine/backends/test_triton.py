@@ -188,11 +188,13 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
     @pytest.mark.parametrize("input_requires_grad", [True, False])
     @pytest.mark.parametrize("scale_requires_grad", [True, False])
     @pytest.mark.parametrize("offset_requires_grad", [True, False])
+    @pytest.mark.parametrize("zero_point_shift", [0.0, 0.5])
     @pytest.mark.parametrize("seed", range(5))
     def test_quantize_dequantize_per_tensor(
         input_requires_grad: bool,
         scale_requires_grad: bool,
         offset_requires_grad: bool,
+        zero_point_shift: float,
         enable_pgs,
         seed: int,
     ):
@@ -216,7 +218,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
             -1, dtype=torch.float32, device="cuda", requires_grad=offset_requires_grad
         )
         output_triton = TritonQuantizeDequantize.apply(
-            input, scale, offset, -128, 127, None
+            input, scale, offset, -128, 127, None, zero_point_shift
         )
         loss = torch.nn.functional.mse_loss(output_triton, input.detach())
         if loss.requires_grad:
@@ -225,7 +227,9 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         input_ = input.clone().detach().requires_grad_(input_requires_grad)
         scale_ = scale.clone().detach().requires_grad_(scale_requires_grad)
         offset_ = offset.clone().detach().requires_grad_(offset_requires_grad)
-        output_torch = quantize_dequantize(input_, scale_, offset_, -128, 127)
+        output_torch = quantize_dequantize(
+            input_, scale_, offset_, -128, 127, zero_point_shift=zero_point_shift
+        )
         loss = torch.nn.functional.mse_loss(output_torch, input_.detach())
         if loss.requires_grad:
             loss.backward()
@@ -235,20 +239,30 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         if input_requires_grad:
             assert input.grad is not None
             output_eq = output_triton == output_torch
+            grad_eq = input.grad == input_.grad
+            is_on_rounding_boundary = (
+                input / scale - zero_point_shift - offset
+            ) % 1 == 0.5
 
             if aimet_torch.experimental.pgs.is_pgs_enabled():
                 # When PGS is enabled, the gradients may not be exactly equal
                 # even where outputs are equal due to precision error near PGS boundaries
                 pgs_multiplier = aimet_torch.experimental.pgs.get_pgs_multiplier()
-                grad_eq = input.grad[output_eq] == input_.grad[output_eq]
-                assert grad_eq.sum() / output_eq.sum() > 0.999
+                assert (output_eq & grad_eq).sum() / output_eq.sum() > 0.999
+
+                # if output is equal, then gradients should be equal unless
+                # it was exactly on rounding or PGS boundary
                 assert torch.all(
-                    grad_eq
-                    | (input.grad[output_eq] == input_.grad[output_eq] * pgs_multiplier)
-                    | (input.grad[output_eq] * pgs_multiplier == input_.grad[output_eq])
+                    ~output_eq
+                    | grad_eq
+                    | is_on_rounding_boundary
+                    | (input.grad == input_.grad * pgs_multiplier)
+                    | (input.grad * pgs_multiplier == input_.grad)
                 )
             else:
-                assert torch.equal(input.grad[output_eq], input_.grad[output_eq])
+                # if output is equal, then gradients should be equal unless
+                # it was exactly on rounding boundary
+                assert torch.all(~output_eq | grad_eq | is_on_rounding_boundary)
 
             # Given MSE loss,
             # `grad_x = 2 * (x_qdq - x) / x.numel()`,
@@ -288,6 +302,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
     @pytest.mark.parametrize("input_requires_grad", [True, False])
     @pytest.mark.parametrize("scale_requires_grad", [True, False])
     @pytest.mark.parametrize("offset_requires_grad", [True, False])
+    @pytest.mark.parametrize("zero_point_shift", [0.0, 0.5])
     @pytest.mark.parametrize("channel_axis", range(4))
     @pytest.mark.parametrize("seed", range(5))
     def test_quantize_dequantize_per_channel(
@@ -295,6 +310,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         input_requires_grad: bool,
         scale_requires_grad: bool,
         offset_requires_grad: bool,
+        zero_point_shift: float,
         enable_pgs,
         seed: int,
     ):
@@ -328,7 +344,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         offset.requires_grad_(offset_requires_grad)
 
         output_triton = TritonQuantizeDequantize.apply(
-            input, scale, offset, -128, 127, None
+            input, scale, offset, -128, 127, None, zero_point_shift
         )
         loss = torch.nn.functional.mse_loss(output_triton, input.detach())
         if loss.requires_grad:
@@ -337,7 +353,9 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         input_ = input.clone().detach().requires_grad_(input_requires_grad)
         scale_ = scale.clone().detach().requires_grad_(scale_requires_grad)
         offset_ = offset.clone().detach().requires_grad_(offset_requires_grad)
-        output_torch = quantize_dequantize(input_, scale_, offset_, -128, 127)
+        output_torch = quantize_dequantize(
+            input_, scale_, offset_, -128, 127, zero_point_shift=zero_point_shift
+        )
         loss = torch.nn.functional.mse_loss(output_torch, input_.detach())
         if loss.requires_grad:
             loss.backward()
@@ -351,20 +369,30 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         if input_requires_grad:
             assert input.grad is not None
             output_eq = output_triton == output_torch
+            grad_eq = input.grad == input_.grad
+            is_on_rounding_boundary = (
+                input / scale - zero_point_shift - offset
+            ) % 1 == 0.5
 
             if aimet_torch.experimental.pgs.is_pgs_enabled():
                 # When PGS is enabled, the gradients may not be exactly equal
                 # even where outputs are equal due to precision error near PGS boundaries
                 pgs_multiplier = aimet_torch.experimental.pgs.get_pgs_multiplier()
-                grad_eq = input.grad[output_eq] == input_.grad[output_eq]
-                assert grad_eq.sum() / output_eq.sum() > 0.999
+                assert (output_eq & grad_eq).sum() / output_eq.sum() > 0.999
+
+                # if output is equal, then gradients should be equal unless
+                # it was exactly on rounding or PGS boundary
                 assert torch.all(
-                    grad_eq
-                    | (input.grad[output_eq] == input_.grad[output_eq] * pgs_multiplier)
-                    | (input.grad[output_eq] * pgs_multiplier == input_.grad[output_eq])
+                    ~output_eq
+                    | grad_eq
+                    | is_on_rounding_boundary
+                    | (input.grad == input_.grad * pgs_multiplier)
+                    | (input.grad * pgs_multiplier == input_.grad)
                 )
             else:
-                assert torch.equal(input.grad[output_eq], input_.grad[output_eq])
+                # if output is equal, then gradients should be equal unless
+                # it was exactly on rounding boundary
+                assert torch.all(~output_eq | grad_eq | is_on_rounding_boundary)
 
             # Given MSE loss,
             # `grad_x = 2 * (x_qdq - x) / x.numel()`,
@@ -406,18 +434,20 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
     @pytest.mark.parametrize("input_requires_grad", [False, True])
     @pytest.mark.parametrize("scale_requires_grad", [False, True])
     @pytest.mark.parametrize("offset_requires_grad", [False, True])
+    @pytest.mark.parametrize("zero_point_shift", [0.0, 0.5])
     @pytest.mark.parametrize(
         "channel_axis, block_axis", itertools.combinations(range(4), 2)
     )
     @pytest.mark.parametrize("seed", range(5))
     def test_quantize_dequantize_per_block(
-        seed: int,
         channel_axis: int,
         block_axis: int,
         input_requires_grad: bool,
         scale_requires_grad: bool,
         offset_requires_grad: bool,
+        zero_point_shift: float,
         enable_pgs,
+        seed: int,
     ):
         """
         Triton quantize_dequantize kernel should should produce close-enough output
@@ -455,7 +485,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         offset.requires_grad_(offset_requires_grad)
 
         output_triton = TritonQuantizeDequantize.apply(
-            input, scale, offset, -128, 127, block_size
+            input, scale, offset, -128, 127, block_size, zero_point_shift
         )
         loss = torch.nn.functional.mse_loss(output_triton, input.detach())
         if loss.requires_grad:
@@ -465,7 +495,13 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         scale_ = scale.clone().detach().requires_grad_(scale_requires_grad)
         offset_ = offset.clone().detach().requires_grad_(offset_requires_grad)
         output_torch = quantize_dequantize(
-            input_, scale_, offset_, -128, 127, block_size=block_size
+            input_,
+            scale_,
+            offset_,
+            -128,
+            127,
+            block_size=block_size,
+            zero_point_shift=zero_point_shift,
         )
         loss = torch.nn.functional.mse_loss(output_torch, input_.detach())
         if loss.requires_grad:
@@ -481,20 +517,37 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         if input_requires_grad:
             assert input.grad is not None
             output_eq = output_triton == output_torch
+            grad_eq = input.grad == input_.grad
+            is_on_rounding_boundary = (
+                input
+                / scale.repeat_interleave(
+                    repeats=block_size[block_axis], dim=block_axis
+                )
+                - zero_point_shift
+                - offset.repeat_interleave(
+                    repeats=block_size[block_axis], dim=block_axis
+                )
+            ) % 1 == 0.5
 
             if aimet_torch.experimental.pgs.is_pgs_enabled():
                 # When PGS is enabled, the gradients may not be exactly equal
                 # even where outputs are equal due to precision error near PGS boundaries
                 pgs_multiplier = aimet_torch.experimental.pgs.get_pgs_multiplier()
-                grad_eq = input.grad[output_eq] == input_.grad[output_eq]
-                assert grad_eq.sum() / output_eq.sum() > 0.999
+                assert (output_eq & grad_eq).sum() / output_eq.sum() > 0.999
+
+                # if output is equal, then gradients should be equal unless
+                # it was exactly on rounding or PGS boundary
                 assert torch.all(
-                    grad_eq
-                    | (input.grad[output_eq] == input_.grad[output_eq] * pgs_multiplier)
-                    | (input.grad[output_eq] * pgs_multiplier == input_.grad[output_eq])
+                    ~output_eq
+                    | grad_eq
+                    | is_on_rounding_boundary
+                    | (input.grad == input_.grad * pgs_multiplier)
+                    | (input.grad * pgs_multiplier == input_.grad)
                 )
             else:
-                assert torch.equal(input.grad[output_eq], input_.grad[output_eq])
+                # if output is equal, then gradients should be equal unless
+                # it was exactly on rounding boundary
+                assert torch.all(~output_eq | grad_eq | is_on_rounding_boundary)
 
             atol = atol.cpu().detach().numpy()
             input_grad = input.grad.cpu().detach().numpy()

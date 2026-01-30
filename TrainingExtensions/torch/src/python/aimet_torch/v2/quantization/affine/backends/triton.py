@@ -159,6 +159,7 @@ def quantize_dequantize_per_tensor(
     offset: tl.float32,
     qmin: tl.int32,
     qmax: tl.int32,
+    zero_point_shift: tl.float32,
     output_ptr,
     mask_ptr,
     n_elements: tl.uint64,
@@ -181,10 +182,10 @@ def quantize_dequantize_per_tensor(
     idx = start_index + tl.arange(0, COMPUTE_BLOCK_SIZE)
     mask = idx < n_elements
     input = tl.load(input_ptr + idx, mask=mask)
-    input = input / scale - offset
+    input = input / scale - (zero_point_shift + offset)
     rounded = tl.floor(input + 0.5)
     clamped = tl.clamp(rounded, qmin, qmax)
-    tl.store(output_ptr + idx, (clamped + offset) * scale, mask=mask)
+    tl.store(output_ptr + idx, (clamped + zero_point_shift + offset) * scale, mask=mask)
 
     if mask_ptr is not None:
         tl.store(mask_ptr + idx, (clamped == rounded), mask=mask)
@@ -197,6 +198,7 @@ def quantize_dequantize_per_channel(
     offset_ptr,
     qmin: tl.int32,
     qmax: tl.int32,
+    zero_point_shift: tl.float32,
     output_ptr,
     mask_ptr,
     I: tl.uint64,
@@ -238,10 +240,10 @@ def quantize_dequantize_per_channel(
     input = tl.load(input_ptr + idx, mask=mask)
     scale = tl.load(scale_ptr + j)
     offset = tl.load(offset_ptr + j)
-    input = input / scale - offset
+    input = input / scale - (zero_point_shift + offset)
     rounded = tl.floor(input + 0.5)
     clamped = tl.clamp(rounded, qmin, qmax)
-    tl.store(output_ptr + idx, (clamped + offset) * scale, mask=mask)
+    tl.store(output_ptr + idx, (clamped + zero_point_shift + offset) * scale, mask=mask)
 
     if mask_ptr is not None:
         tl.store(mask_ptr + idx, (clamped == rounded), mask=mask)
@@ -254,6 +256,7 @@ def quantize_dequantize_per_block(
     offset_ptr,
     qmin: tl.int32,
     qmax: tl.int32,
+    zero_point_shift: tl.float32,
     output_ptr,
     mask_ptr,
     I: tl.uint64,
@@ -310,10 +313,10 @@ def quantize_dequantize_per_block(
     input = tl.load(input_ptr + idx, mask=mask)
     scale = tl.load(scale_ptr + scale_idx)
     offset = tl.load(offset_ptr + scale_idx)
-    input = input / scale - offset
+    input = input / scale - (zero_point_shift + offset)
     rounded = tl.floor(input + 0.5)
     clamped = tl.clamp(rounded, qmin, qmax)
-    tl.store(output_ptr + idx, (clamped + offset) * scale, mask=mask)
+    tl.store(output_ptr + idx, (clamped + zero_point_shift + offset) * scale, mask=mask)
 
     if mask_ptr is not None:
         tl.store(mask_ptr + idx, (clamped == rounded), mask=mask)
@@ -325,6 +328,7 @@ def quantize_dequantize_per_tensor_backward(
     input_ptr,
     scale_ptr,
     offset_ptr,
+    zero_point_shift: tl.float32,
     mask_ptr,
     input_grad_ptr,
     scale_grad_ptr,
@@ -351,7 +355,7 @@ def quantize_dequantize_per_tensor_backward(
         input = tl.load(input_ptr + idx, mask=mask)
         scale = tl.load(scale_ptr)
         offset = tl.load(offset_ptr)
-        scaled = input / scale - offset
+        scaled = input / scale - (zero_point_shift + offset)
         rounded = tl.floor(scaled + 0.5)
         rounding_err = rounded - scaled
 
@@ -389,6 +393,7 @@ def quantize_dequantize_per_channel_backward(
     input_ptr,
     scale_ptr,
     offset_ptr,
+    zero_point_shift: tl.float32,
     mask_ptr,
     input_grad_ptr,
     scale_grad_ptr,
@@ -417,7 +422,7 @@ def quantize_dequantize_per_channel_backward(
         input = tl.load(input_ptr + idx, mask=mask)
         scale = tl.load(scale_ptr + j)
         offset = tl.load(offset_ptr + j)
-        scaled = input / scale - offset
+        scaled = input / scale - (zero_point_shift + offset)
         rounded = tl.floor(scaled + 0.5)
         rounding_err = rounded - scaled
 
@@ -454,6 +459,7 @@ def quantize_dequantize_per_block_backward(
     input_ptr,
     scale_ptr,
     offset_ptr,
+    zero_point_shift: tl.float32,
     mask_ptr,
     input_grad_ptr,
     scale_grad_ptr,
@@ -492,7 +498,7 @@ def quantize_dequantize_per_block_backward(
         input = tl.load(input_ptr + idx, mask=mask)
         scale = tl.load(scale_ptr + scale_idx)
         offset = tl.load(offset_ptr + scale_idx)
-        scaled = input / scale - offset
+        scaled = input / scale - (zero_point_shift + offset)
         rounded = tl.floor(scaled + 0.5)
         rounding_err = rounded - scaled
 
@@ -852,6 +858,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
         qmin: int,
         qmax: int,
         block_size: Optional[Sequence[int]],
+        zero_point_shift: float,
     ):
         axis_0, axis_1, block_size = _get_axes(tensor, scale, offset, block_size)
 
@@ -871,6 +878,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 offset,
                 qmin,
                 qmax,
+                zero_point_shift,
                 output,
                 mask,
                 tensor.numel(),
@@ -888,6 +896,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 offset,
                 qmin,
                 qmax,
+                zero_point_shift,
                 output,
                 mask,
                 I,
@@ -914,6 +923,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 offset,
                 qmin,
                 qmax,
+                zero_point_shift,
                 output,
                 mask,
                 I,
@@ -950,6 +960,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
         )
         ctx.qmin = qmin
         ctx.qmax = qmax
+        ctx.zero_point_shift = zero_point_shift
         ctx.axis_0 = axis_0
         ctx.axis_1 = axis_1
         ctx.block_size = block_size
@@ -961,6 +972,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad):
         input, scale, offset, mask = ctx.saved_tensors
+        zero_point_shift = ctx.zero_point_shift
         axis_0 = ctx.axis_0
         axis_1 = ctx.axis_1
         block_size = ctx.block_size
@@ -981,6 +993,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 input,
                 scale,
                 offset,
+                zero_point_shift,
                 mask,
                 input_grad,
                 scale_grad,
@@ -1011,6 +1024,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 input,
                 scale,
                 offset,
+                zero_point_shift,
                 mask,
                 input_grad,
                 scale_grad,
@@ -1046,6 +1060,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 input,
                 scale,
                 offset,
+                zero_point_shift,
                 mask,
                 input_grad,
                 scale_grad,
@@ -1090,4 +1105,4 @@ class TritonQuantizeDequantize(torch.autograd.Function):
         else:
             raise NotImplementedError
 
-        return input_grad, scale_grad, offset_grad, None, None, None
+        return input_grad, scale_grad, offset_grad, None, None, None, None
