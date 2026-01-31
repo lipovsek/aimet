@@ -1639,3 +1639,60 @@ def test_duplicate_qdq_input(tmp_path, dynamo: bool):
     assert np.allclose(
         ort_out1, sim_out1.detach().numpy(), atol=model.qdq1.get_scale().item()
     )
+
+
+@pytest.mark.skipif(
+    not Q.affine.backends.triton.is_available(),
+    reason="Triton backend not available",
+)
+@pytest.mark.parametrize("dynamo", [False, True])
+@pytest.mark.parametrize("export_int32_bias", [False, True])
+@pytest.mark.parametrize("fold_param_quantizers", [False, True])
+def test_triton(
+    tmp_path: pathlib.Path,
+    dynamo: bool,
+    export_int32_bias: bool,
+    fold_param_quantizers: bool,
+):
+    """
+    When: Export to onnx QDQ with torch_builtins and triton backends
+    Then: The exported onnx models should be identical
+    """
+    model = torch.nn.Sequential(
+        torch.nn.Conv2d(3, 3, 3),
+        torch.nn.ReLU(),
+    )
+    dummy_input = torch.randn(1, 3, 32, 32)
+    sim = aimet_torch.QuantizationSimModel(model, dummy_input, config_file="htp_v81")
+    sim.compute_encodings(lambda model: model(dummy_input))
+
+    if fold_param_quantizers:
+        sim.fold_param_quantizers()
+
+    with Q.affine.set_backend("torch_builtins"):
+        aimet_torch.onnx.export(
+            sim.model,
+            dummy_input,
+            tmp_path / "model.onnx",
+            input_names=["input"],
+            output_names=["output"],
+            opset_version=21,
+            dynamo=dynamo,
+            export_int32_bias=export_int32_bias,
+        )
+        torch_builtin_export = onnx.load(tmp_path / "model.onnx")
+
+    with Q.affine.set_backend("triton"):
+        aimet_torch.onnx.export(
+            sim.model,
+            dummy_input,
+            tmp_path / "model.onnx",
+            input_names=["input"],
+            output_names=["output"],
+            opset_version=21,
+            dynamo=dynamo,
+            export_int32_bias=export_int32_bias,
+        )
+        triton_export = onnx.load(tmp_path / "model.onnx")
+
+    assert torch_builtin_export == triton_export

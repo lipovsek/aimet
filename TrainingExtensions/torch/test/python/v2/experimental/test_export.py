@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import itertools
+import functools
 from pathlib import Path
 from packaging import version
 import torch
@@ -10,6 +11,7 @@ from torch.export import ExportedProgram
 import aimet_torch
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.experimental.export import export
+import aimet_torch.v2.quantization as Q
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 import aimet_torch.v2.nn.transformers.models.llama
 from aimet_torch.quantization.affine import AffineQuantizerBase
@@ -206,3 +208,56 @@ def test_shared_weight(tmp_path: Path):
     ]
     # There should be two separate weight parameters in exported model
     assert len(weight_params) == 2
+
+
+@pytest.mark.skipif(
+    not Q.affine.backends.triton.is_available(),
+    reason="Triton backend not available",
+)
+def test_triton(tmp_path: Path):
+    """
+    When: Export to ExportedProgram with torch_builtins and triton backends
+    Then: The exported ExportedPrograms should be identical
+    """
+    model = torch.nn.Sequential(
+        torch.nn.Conv2d(3, 3, 3),
+        torch.nn.ReLU(),
+    )
+    x = torch.randn(1, 3, 32, 32)
+    sim = aimet_torch.QuantizationSimModel(model, x, config_file="htp_v81")
+    sim.compute_encodings(lambda model: model(x))
+
+    with Q.affine.set_backend("torch_builtins"):
+        ep_builtin = aimet_torch.experimental.export.export(sim.model, (x,))
+        path = tmp_path / "model.pt2"
+        torch.export.save(ep_builtin, path)
+        ep_builtin = torch.export.load(path)
+
+    with Q.affine.set_backend("triton"):
+        ep_triton = aimet_torch.experimental.export.export(sim.model, (x,))
+        path = tmp_path / "model.pt2"
+        torch.export.save(ep_triton, path)
+        ep_triton = torch.export.load(path)
+
+    assert ep_builtin.graph_signature == ep_triton.graph_signature
+    assert len(ep_builtin.graph.nodes) == len(ep_triton.graph.nodes)
+
+    @functools.lru_cache(maxsize=30)
+    def node_eq(node1, node2):
+        return (
+            node1.name == node2.name
+            and node1.op == node2.op
+            and node1.target == node2.target
+            and all(
+                node_eq(n1, n2)
+                for n1, n2 in zip(node1.all_input_nodes, node2.all_input_nodes)
+            )
+        )
+
+    for node, node_ in zip(ep_builtin.graph.nodes, ep_triton.graph.nodes):
+        assert node_eq(node, node_)
+
+    for seed in range(10):
+        torch.manual_seed(seed)
+        x = torch.randn(1, 3, 32, 32)
+        assert torch.equal(ep_builtin.module()(x), ep_triton.module()(x))

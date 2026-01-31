@@ -7,3 +7,4 @@ from .tensor import *
 from . import base
 from . import affine
 from . import float  # pylint: disable=, redefined-builtin
+from .affine import get_backend, set_backend

@@ -421,3 +421,5 @@ API reference
     affine.quantize
     affine.quantize_dequantize
     affine.dequantize
+    get_backend
+    set_backend

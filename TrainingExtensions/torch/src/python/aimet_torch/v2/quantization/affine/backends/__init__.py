@@ -7,6 +7,7 @@
 import math
 from itertools import chain, repeat
 from typing import overload, Union, Tuple, Optional
+from aimet_torch.v2.quantization.affine.backends import torch_builtins
 import torch
 from .utils import *
 from aimet_torch.v2.utils import _torch_compiler_is_exporting
@@ -165,7 +166,13 @@ def quantize(
     qmin, qmax, block_size, zero_point_shift = _parse_args(args, kwargs)
     if zero_point_shift != 0.0:
         raise RuntimeError("Nonzero zero_point_shift not supported for quantize()")
-    return get_backend().quantize(tensor, scale, offset, qmin, qmax, block_size)
+
+    if _torch_compiler_is_exporting() or torch.onnx.is_in_onnx_export():
+        backend = torch_builtins
+    else:
+        backend = get_backend()
+
+    return backend.quantize(tensor, scale, offset, qmin, qmax, block_size)
 
 
 @overload
@@ -334,12 +341,27 @@ def quantize_dequantize(
     """
     qmin, qmax, block_size, zero_point_shift = _parse_args(args, kwargs)
 
+    #                                             torch.onnx.is_in_onnx_export
+    #                      |                True                   |         False
+    #                ------|---------------------------------------|----------------------
+    #                 True |  torch.onnx.export(..., dynamo=True)  |  torch.export.export
+    #  torch               |     (Dynamo-based ONNX export)        |   (ExportedProgram)
+    # .compiler      ------|---------------------------------------|----------------------
+    # .is_exporting  False |  torch.onnx.export(..., dynamo=False) |    not in export
+    #                      |    (TorchScript-based ONNX export)    |
+
     if _torch_compiler_is_exporting() and torch.onnx.is_in_onnx_export():
-        # Call torch.ops.aimet.quantize_dequantize during dynamo-based onnx export.
-        # This is to enable dynamo tracer to capture aimet Q/DQ function
-        # as a single torch.ops.aimet.quantize_dequantize node
+        # Dynamo-based ONNX export (torch.onnx.export(..., dynamo=True))
+        # Call torch.ops.aimet.quantize_dequantize that dynamo tracer can
+        # capture as a single torch.ops.aimet.quantize_dequantize node
         backend = torch.ops.aimet
+    elif _torch_compiler_is_exporting() or torch.onnx.is_in_onnx_export():
+        # TorchScript-based ONNX export (torch.onnx.export(..., dynamo=False))
+        # or ExportedProgram export (torch.export.export)
+        # Fall back to torch builtins backend which is exportable to ONNX/ExportedProgram
+        backend = torch_builtins
     else:
+        # Not in export mode. Use the globally set backend
         backend = get_backend()
 
     return backend.quantize_dequantize(
@@ -375,7 +397,12 @@ def dequantize(
     :param block_size: Block size
     :type block_size: Tuple[int, ...], optional
     """
-    return get_backend().dequantize(tensor, scale, offset, block_size)
+    if _torch_compiler_is_exporting() or torch.onnx.is_in_onnx_export():
+        backend = torch_builtins
+    else:
+        backend = get_backend()
+
+    return backend.dequantize(tensor, scale, offset, block_size)
 
 
 def _parse_args(args, kwargs) -> Tuple[int, int, Optional[Tuple[int, ...]], float]:

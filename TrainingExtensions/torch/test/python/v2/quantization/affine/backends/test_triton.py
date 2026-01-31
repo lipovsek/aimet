@@ -3,44 +3,123 @@
 
 from packaging.version import parse
 import pytest
+from unittest.mock import MagicMock, patch
 import itertools
 import torch
 import numpy as np
+from aimet_torch.v2.quantization.affine.backends import (
+    quantize,
+    dequantize,
+    quantize_dequantize,
+    set_backend,
+)
+import aimet_torch.experimental.pgs
 
 try:
     import triton
 except ImportError:
     triton = None
 
-if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("3.0.0"):
-    from aimet_torch.v2.quantization.affine.backends.triton import (
-        TritonQuantize,
-        TritonDequantize,
-        TritonQuantizeDequantize,
-    )
-    from aimet_torch.v2.quantization.affine.backends.torch_builtins import (
-        quantize,
-        dequantize,
-        quantize_dequantize,
-    )
-    import aimet_torch.experimental.pgs
 
-    @pytest.fixture(params=[True, False], scope="function")
-    def enable_pgs(request):
-        enable = request.param
+@pytest.fixture(params=[True, False], scope="function")
+def enable_pgs(request):
+    enable = request.param
 
-        if enable:
-            try:
-                aimet_torch.experimental.pgs.enable_pgs(eps=0.1, multiplier=3.0)
-                yield
-            finally:
-                aimet_torch.experimental.pgs.disable_pgs()
-        else:
-            aimet_torch.experimental.pgs.disable_pgs()
+    if enable:
+        try:
+            aimet_torch.experimental.pgs.enable_pgs(eps=0.1, multiplier=3.0)
             yield
+        finally:
+            aimet_torch.experimental.pgs.disable_pgs()
+    else:
+        aimet_torch.experimental.pgs.disable_pgs()
+        yield
+
+
+@pytest.mark.skipif(
+    not (
+        torch.cuda.is_available()
+        and triton
+        and parse(triton.__version__) >= parse("3.0.0")
+    ),
+    reason="Triton backend requires CUDA and triton>=3.0.0",
+)
+class TestTritonBackend:
+    def test_backend_switching(self):
+        input = torch.randn(
+            (8, 8), dtype=torch.float32, device="cuda", requires_grad=True
+        )
+        scale = torch.tensor(
+            0.1, dtype=torch.float32, device="cuda", requires_grad=True
+        )
+        offset = torch.tensor(0, dtype=torch.float32, device="cuda", requires_grad=True)
+
+        """
+        When: Call quantize_dequantize with set_backend("triton")
+        Then: Triton QDQ kernel should be invoked
+        """
+        with (
+            patch(
+                "aimet_torch.v2.quantization.affine.backends.triton.TritonQuantizeDequantize.apply"
+            ) as triton_mock,
+            patch(
+                "aimet_torch.v2.quantization.affine.backends.torch_builtins.QuantDequantFunc.apply"
+            ) as torch_builtin_mock,
+        ):
+            with set_backend("torch_builtins"):
+                _ = quantize_dequantize(input, scale, offset, -128, 127)
+                assert torch_builtin_mock.call_count == 1
+                assert triton_mock.call_count == 0
+
+            torch_builtin_mock.reset_mock()
+            triton_mock.reset_mock()
+
+            with set_backend("triton"):
+                _ = quantize_dequantize(input, scale, offset, -128, 127)
+                assert torch_builtin_mock.call_count == 0
+                assert triton_mock.call_count == 1
+
+            torch_builtin_mock.reset_mock()
+            triton_mock.reset_mock()
+
+        """
+        When: Call quantize_dequantize with set_backend("triton") but with CPU tensors
+        Then: Fall back to torch-builtin implementation
+        """
+        with (
+            patch(
+                "aimet_torch.v2.quantization.affine.backends.torch_builtins.QuantDequantFunc.apply"
+            ) as torch_builtin_mock,
+        ):
+            with set_backend("triton"):
+                _ = quantize_dequantize(
+                    input.cpu(), scale.cpu(), offset.cpu(), -128, 127
+                )
+                assert torch_builtin_mock.call_count == 1
+
+        """
+        When: Call quantize_dequantize with set_backend("triton") with more than two block axes
+        Then: Fall back to torch-builtin implementation
+        """
+        input = torch.randn(
+            (32, 32, 32, 32), dtype=torch.float32, device="cuda", requires_grad=True
+        )
+        block_size = (4, 4, 4, 4)
+        scale = torch.ones(
+            8, 8, 8, 8, dtype=torch.float32, device="cuda", requires_grad=True
+        )
+        offset = torch.zeros_like(
+            scale, dtype=torch.float32, device="cuda", requires_grad=True
+        )
+
+        with set_backend("triton"):
+            _ = quantize_dequantize(
+                input, scale, offset, -128, 127, block_size=block_size
+            )
+            assert torch_builtin_mock.call_count == 1
 
     @pytest.mark.parametrize("seed", range(5))
-    def test_quantize_per_tensor(seed):
+    def test_quantize_per_tensor(self, seed):
         """
         Triton quantize kernel should should produce close-enough output
         as PyTorch built-in quantize function.
@@ -51,13 +130,18 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         input = torch.randn((512, 512), dtype=torch.float32, device="cuda")
         scale = torch.tensor(0.01, dtype=torch.float32, device="cuda")
         offset = torch.tensor(0, dtype=torch.float32, device="cuda")
-        output_torch = quantize(input, scale, offset, -128, 127)
-        output_triton = TritonQuantize.apply(input, scale, offset, -128, 127, None)
+
+        with set_backend("torch_builtins"):
+            output_torch = quantize(input, scale, offset, -128, 127)
+
+        with set_backend("triton"):
+            output_triton = quantize(input, scale, offset, -128, 127)
+
         assert torch.allclose(output_triton, output_torch, atol=1)
 
     @pytest.mark.parametrize("channel_axis", range(4))
     @pytest.mark.parametrize("seed", range(5))
-    def test_quantize_per_channel(seed, channel_axis: int):
+    def test_quantize_per_channel(self, seed, channel_axis: int):
         """
         Triton quantize kernel should should produce close-enough output
         as PyTorch built-in quantize function.
@@ -75,15 +159,20 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
             device="cuda",
         ).view(*scale_shape)
         offset = torch.zeros(32, dtype=torch.float32, device="cuda").view(*scale_shape)
-        output_torch = quantize(input, scale, offset, -128, 127)
-        output_triton = TritonQuantize.apply(input, scale, offset, -128, 127, None)
+
+        with set_backend("torch_builtins"):
+            output_torch = quantize(input, scale, offset, -128, 127)
+
+        with set_backend("triton"):
+            output_triton = quantize(input, scale, offset, -128, 127)
+
         assert torch.allclose(output_triton, output_torch, atol=1)
 
     @pytest.mark.parametrize(
         "channel_axis, block_axis", itertools.combinations(range(4), 2)
     )
     @pytest.mark.parametrize("seed", range(5))
-    def test_quantize_per_block(seed, channel_axis: int, block_axis: int):
+    def test_quantize_per_block(self, seed, channel_axis: int, block_axis: int):
         """
         Triton quantize kernel should should produce close-enough output
         as PyTorch built-in quantize function.
@@ -107,14 +196,21 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
             device="cuda",
         ).view(*scale_shape)
         offset = torch.zeros(64, dtype=torch.float32, device="cuda").view(*scale_shape)
-        output_torch = quantize(input, scale, offset, -128, 127, block_size=block_size)
-        output_triton = TritonQuantize.apply(
-            input, scale, offset, -128, 127, block_size
-        )
+
+        with set_backend("torch_builtins"):
+            output_torch = quantize(
+                input, scale, offset, -128, 127, block_size=block_size
+            )
+
+        with set_backend("triton"):
+            output_triton = quantize(
+                input, scale, offset, -128, 127, block_size=block_size
+            )
+
         assert torch.allclose(output_triton, output_torch, atol=1)
 
     @pytest.mark.parametrize("seed", range(5))
-    def test_dequantize_per_tensor(seed):
+    def test_dequantize_per_tensor(self, seed):
         """
         Triton dequantize kernel should should produce close-enough output
         as PyTorch built-in dequantize function.
@@ -125,13 +221,18 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         input = torch.randn((512, 512), dtype=torch.float32, device="cuda")
         scale = torch.tensor(0.01, dtype=torch.float32, device="cuda")
         offset = torch.tensor(0, dtype=torch.float32, device="cuda")
-        output_torch = dequantize(input, scale, offset)
-        output_triton = TritonDequantize.apply(input, scale, offset, None)
+
+        with set_backend("torch_builtins"):
+            output_torch = dequantize(input, scale, offset)
+
+        with set_backend("triton"):
+            output_triton = dequantize(input, scale, offset)
+
         assert torch.allclose(output_triton, output_torch)
 
     @pytest.mark.parametrize("channel_axis", range(4))
     @pytest.mark.parametrize("seed", range(5))
-    def test_dequantize_per_channel(seed: int, channel_axis: int):
+    def test_dequantize_per_channel(self, seed: int, channel_axis: int):
         """
         Triton dequantize kernel should should produce close-enough output
         as PyTorch built-in dequantize function.
@@ -149,15 +250,20 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
             device="cuda",
         ).view(*scale_shape)
         offset = torch.zeros(32, dtype=torch.float32, device="cuda").view(*scale_shape)
-        output_torch = dequantize(input, scale, offset)
-        output_triton = TritonDequantize.apply(input, scale, offset, None)
+
+        with set_backend("torch_builtins"):
+            output_torch = dequantize(input, scale, offset)
+
+        with set_backend("triton"):
+            output_triton = dequantize(input, scale, offset)
+
         assert torch.allclose(output_triton, output_torch)
 
     @pytest.mark.parametrize(
         "channel_axis, block_axis", itertools.combinations(range(4), 2)
     )
     @pytest.mark.parametrize("seed", range(5))
-    def test_dequantize_per_block(seed, channel_axis: int, block_axis: int):
+    def test_dequantize_per_block(self, seed, channel_axis: int, block_axis: int):
         """
         Triton dequantize kernel should should produce close-enough output
         as PyTorch built-in dequantize function.
@@ -181,8 +287,13 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
             device="cuda",
         ).view(*scale_shape)
         offset = torch.zeros(64, dtype=torch.float32, device="cuda").view(*scale_shape)
-        output_torch = dequantize(input, scale, offset, block_size=block_size)
-        output_triton = TritonDequantize.apply(input, scale, offset, block_size)
+
+        with set_backend("torch_builtins"):
+            output_torch = dequantize(input, scale, offset, block_size=block_size)
+
+        with set_backend("triton"):
+            output_triton = dequantize(input, scale, offset, block_size=block_size)
+
         assert torch.allclose(output_triton, output_torch, atol=1)
 
     @pytest.mark.parametrize("input_requires_grad", [True, False])
@@ -191,6 +302,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
     @pytest.mark.parametrize("zero_point_shift", [0.0, 0.5])
     @pytest.mark.parametrize("seed", range(5))
     def test_quantize_dequantize_per_tensor(
+        self,
         input_requires_grad: bool,
         scale_requires_grad: bool,
         offset_requires_grad: bool,
@@ -217,22 +329,26 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         offset = torch.tensor(
             -1, dtype=torch.float32, device="cuda", requires_grad=offset_requires_grad
         )
-        output_triton = TritonQuantizeDequantize.apply(
-            input, scale, offset, -128, 127, None, zero_point_shift
-        )
-        loss = torch.nn.functional.mse_loss(output_triton, input.detach())
-        if loss.requires_grad:
-            loss.backward()
+
+        with set_backend("triton"):
+            output_triton = quantize_dequantize(
+                input, scale, offset, -128, 127, None, zero_point_shift=zero_point_shift
+            )
+            loss = torch.nn.functional.mse_loss(output_triton, input.detach())
+            if loss.requires_grad:
+                loss.backward()
 
         input_ = input.clone().detach().requires_grad_(input_requires_grad)
         scale_ = scale.clone().detach().requires_grad_(scale_requires_grad)
         offset_ = offset.clone().detach().requires_grad_(offset_requires_grad)
-        output_torch = quantize_dequantize(
-            input_, scale_, offset_, -128, 127, zero_point_shift=zero_point_shift
-        )
-        loss = torch.nn.functional.mse_loss(output_torch, input_.detach())
-        if loss.requires_grad:
-            loss.backward()
+
+        with set_backend("torch_builtins"):
+            output_torch = quantize_dequantize(
+                input_, scale_, offset_, -128, 127, zero_point_shift=zero_point_shift
+            )
+            loss = torch.nn.functional.mse_loss(output_torch, input_.detach())
+            if loss.requires_grad:
+                loss.backward()
 
         assert torch.allclose(output_triton, output_torch, atol=scale.item())
 
@@ -306,6 +422,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
     @pytest.mark.parametrize("channel_axis", range(4))
     @pytest.mark.parametrize("seed", range(5))
     def test_quantize_dequantize_per_channel(
+        self,
         channel_axis: int,
         input_requires_grad: bool,
         scale_requires_grad: bool,
@@ -343,22 +460,25 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         ).view(*scale_shape)
         offset.requires_grad_(offset_requires_grad)
 
-        output_triton = TritonQuantizeDequantize.apply(
-            input, scale, offset, -128, 127, None, zero_point_shift
-        )
-        loss = torch.nn.functional.mse_loss(output_triton, input.detach())
-        if loss.requires_grad:
-            loss.backward()
+        with set_backend("triton"):
+            output_triton = quantize_dequantize(
+                input, scale, offset, -128, 127, None, zero_point_shift=zero_point_shift
+            )
+            loss = torch.nn.functional.mse_loss(output_triton, input.detach())
+            if loss.requires_grad:
+                loss.backward()
 
-        input_ = input.clone().detach().requires_grad_(input_requires_grad)
-        scale_ = scale.clone().detach().requires_grad_(scale_requires_grad)
-        offset_ = offset.clone().detach().requires_grad_(offset_requires_grad)
-        output_torch = quantize_dequantize(
-            input_, scale_, offset_, -128, 127, zero_point_shift=zero_point_shift
-        )
-        loss = torch.nn.functional.mse_loss(output_torch, input_.detach())
-        if loss.requires_grad:
-            loss.backward()
+            input_ = input.clone().detach().requires_grad_(input_requires_grad)
+            scale_ = scale.clone().detach().requires_grad_(scale_requires_grad)
+            offset_ = offset.clone().detach().requires_grad_(offset_requires_grad)
+
+        with set_backend("torch_builtins"):
+            output_torch = quantize_dequantize(
+                input_, scale_, offset_, -128, 127, zero_point_shift=zero_point_shift
+            )
+            loss = torch.nn.functional.mse_loss(output_torch, input_.detach())
+            if loss.requires_grad:
+                loss.backward()
 
         assert np.allclose(
             output_triton.cpu().detach().numpy(),
@@ -440,6 +560,7 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
     )
     @pytest.mark.parametrize("seed", range(5))
     def test_quantize_dequantize_per_block(
+        self,
         channel_axis: int,
         block_axis: int,
         input_requires_grad: bool,
@@ -484,28 +605,37 @@ if torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("
         ).view(*scale_shape)
         offset.requires_grad_(offset_requires_grad)
 
-        output_triton = TritonQuantizeDequantize.apply(
-            input, scale, offset, -128, 127, block_size, zero_point_shift
-        )
-        loss = torch.nn.functional.mse_loss(output_triton, input.detach())
-        if loss.requires_grad:
-            loss.backward()
+        with set_backend("triton"):
+            output_triton = quantize_dequantize(
+                input,
+                scale,
+                offset,
+                -128,
+                127,
+                block_size,
+                zero_point_shift=zero_point_shift,
+            )
+            loss = torch.nn.functional.mse_loss(output_triton, input.detach())
+            if loss.requires_grad:
+                loss.backward()
 
         input_ = input.clone().detach().requires_grad_(input_requires_grad)
         scale_ = scale.clone().detach().requires_grad_(scale_requires_grad)
         offset_ = offset.clone().detach().requires_grad_(offset_requires_grad)
-        output_torch = quantize_dequantize(
-            input_,
-            scale_,
-            offset_,
-            -128,
-            127,
-            block_size=block_size,
-            zero_point_shift=zero_point_shift,
-        )
-        loss = torch.nn.functional.mse_loss(output_torch, input_.detach())
-        if loss.requires_grad:
-            loss.backward()
+
+        with set_backend("torch_builtins"):
+            output_torch = quantize_dequantize(
+                input_,
+                scale_,
+                offset_,
+                -128,
+                127,
+                block_size=block_size,
+                zero_point_shift=zero_point_shift,
+            )
+            loss = torch.nn.functional.mse_loss(output_torch, input_.detach())
+            if loss.requires_grad:
+                loss.backward()
 
         atol = scale.repeat_interleave(repeats=block_size[block_axis], dim=block_axis)
         assert np.allclose(
