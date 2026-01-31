@@ -165,9 +165,10 @@ def copy_pt_encodings_to_sim(
                     use_symmetric_encodings=True,
                     use_strict_symmetric=False,
                 )
-                encoding.delta = delta
-                encoding.offset = offset
-                encoding.min = new_min[i]
-                encoding.max = new_max[i]
+                # TODO: #6393 calculate_delta_offset to return float
+                encoding.delta = delta.item()
+                encoding.offset = offset.item()
+                encoding.min = new_min[i].item()
+                encoding.max = new_max[i].item()
             sim.qc_quantize_op_dict[onnx_param_name].load_encodings(enc)
             sim.qc_quantize_op_dict[onnx_param_name].freeze_encodings()

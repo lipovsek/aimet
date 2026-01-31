@@ -2,8 +2,17 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import json
+import platform
+import sys
 
+import pytest
 import torch
+
+from .conftest import skip_module_on_windows_arm64
+
+skip_module_on_windows_arm64(
+    "transformers and onnx_sim is not available on Windows ARM64"
+)
 
 from aimet_onnx.utils import make_dummy_input
 
@@ -17,18 +26,14 @@ from aimet_onnx.experimental.llm_configurator.llm_configurator import (
 )
 
 import onnx
-import onnxsim
 import os
 
 from aimet_onnx.common.onnx._utils import _is_grid_preserving_op
 from aimet_onnx.qc_quantize_op import QcQuantizeOp
 
 from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaConfig
-
 from transformers.models.phi3.modeling_phi3 import Phi3ForCausalLM, Phi3Config
-
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2Config
-
 from transformers.cache_utils import DynamicCache
 
 from .models import models_for_tests
@@ -212,6 +217,10 @@ class ExportablePhi(Phi3ForCausalLM, ExportableBase):
 
 
 def apply_to_model(model_id, tmp_path):
+    # onnxsim is not available on Windows ARM64
+    # Lazy import to avoid import errors on unsupported platforms
+    from onnxsim import simplify
+
     vocab_size = 8
     num_hidden_layers = 2
     hidden_size = 64
@@ -290,7 +299,7 @@ def apply_to_model(model_id, tmp_path):
         )
 
         onnx_model = onnx.load(onnx_model_path)
-        onnx_model, _ = onnxsim.simplify(onnx_model)
+        onnx_model, _ = simplify(onnx_model)
 
     model_name = f"{model_id}_2HL_simplified"
 

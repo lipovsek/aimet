@@ -65,6 +65,7 @@ def _check_onnx_weights(model, layers_to_check: set = None, are_zeros: bool = Fa
             assert (weight_array == 1.0).all()
 
 
+@pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
 def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
     from GenAITests.shared.models.generator import Generator
     from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface

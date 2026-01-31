@@ -40,12 +40,14 @@ def is_cmake_option_enabled(option_name: str) -> bool:
 def is_target_windows_arm64() -> bool:
     """Returns True if running on Windows with ARM64 target platform.
 
-    Checks CMAKE_ARGS for generator platform/system processor.
+    Checks CMAKE_ARGS for generator platform/system processor, or detects native ARM64.
     Matches CMake logic: WIN32 AND (CMAKE_GENERATOR_PLATFORM == "ARM64" OR CMAKE_SYSTEM_PROCESSOR matches "ARM64|aarch64")
     """
+    import platform
+
     is_windows = sys.platform == "win32"
 
-    # Also check CMAKE_ARGS for -DCMAKE_GENERATOR_PLATFORM and -DCMAKE_SYSTEM_PROCESSOR
+    # Check CMAKE_ARGS for -DCMAKE_GENERATOR_PLATFORM and -DCMAKE_SYSTEM_PROCESSOR
     cmake_args = {
         k: v
         for k, v in (
@@ -55,9 +57,12 @@ def is_target_windows_arm64() -> bool:
     cmake_generator_platform = cmake_args.get("-DCMAKE_GENERATOR_PLATFORM", "").upper()
     cmake_system_processor = cmake_args.get("-DCMAKE_SYSTEM_PROCESSOR", "").upper()
 
-    is_arm64 = cmake_generator_platform == "ARM64" or cmake_system_processor in (
-        "ARM64",
-        "AARCH64",
+    # Check if ARM64 is specified in CMAKE_ARGS or if running natively on ARM64
+    native_machine = platform.machine().upper()
+    is_arm64 = (
+        cmake_generator_platform == "ARM64"
+        or cmake_system_processor in ("ARM64", "AARCH64")
+        or native_machine in ("ARM64", "AARCH64")
     )
 
     return is_windows and is_arm64
@@ -215,19 +220,11 @@ def optional_dependencies() -> dict[str, list[str]]:
             "beautifulsoup4",
             "matplotlib",
             "onnx",
-            "onnxruntime-extensions",
-            "onnxsim",
-            "peft",
             "pylint<3",
             "pytest",
             "pytest-xdist",
-            "pytest-github-report",
             "pytorch-ignite",
-            "safetensors<=0.5.3",
             "torchvision",
-            "transformers<4.52.2",
-            "accelerate<1.10.0",
-            "datasets",
         ],
         "docs": [
             "furo",
@@ -246,27 +243,42 @@ def optional_dependencies() -> dict[str, list[str]]:
 
     aimet_variant = get_aimet_variant()
 
-    if aimet_variant not in ("torch-gpu", "torch-cpu"):
-        return optional_dependencies
+    if aimet_variant in ("onnx-qnn",):
+        optional_dependencies["test"].extend(
+            [
+                "onnxruntime-qnn",
+            ]
+        )
+    else:
+        optional_dependencies["test"].extend(
+            [
+                "datasets",
+                "onnxruntime",
+                "onnxruntime-extensions",
+                "onnxsim",
+                "accelerate<1.10.0",
+                "safetensors<=0.5.3",
+                "transformers<4.52.2",
+                "peft",
+            ]
+        )
 
-    optional_dependencies["test"].extend(
-        [
-            "deepspeed<0.17.5",
-            "onnxruntime-qnn" if is_target_windows_arm64() else "onnxruntime",
-        ]
-    )
+    if aimet_variant in ("torch-gpu", "torch-cpu"):
+        optional_dependencies["test"].extend(
+            [
+                "deepspeed<0.17.5",
+                "spconv",
+            ]
+        )
+        try:
+            import torch
+        except ImportError:
+            return optional_dependencies
 
-    try:
-        import torch
-    except ImportError:
-        return optional_dependencies
+        from packaging import version
 
-    from packaging import version
-
-    v = version.parse(torch.__version__)
-
-    optional_dependencies["test"].append("spconv")
-    optional_dependencies["v1-deps"].append(f"torch=={v.major}.{v.minor}.*")
+        v = version.parse(torch.__version__)
+        optional_dependencies["v1-deps"].append(f"torch=={v.major}.{v.minor}.*")
 
     return optional_dependencies
 

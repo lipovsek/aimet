@@ -592,6 +592,7 @@ class TestAdascaleQuantizer:
                 assert consolidated_delta_updated_enc != consolidated_delta_orig_enc
 
 
+@pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
 def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     from transformers import AutoConfig
     from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
@@ -683,6 +684,7 @@ def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     assert len(sim.model.model.graph.output)
 
 
+@pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
 @pytest.mark.skip(reason="Too long to run in CI")
 def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
     """AdaScale test pipeline for qwen model"""

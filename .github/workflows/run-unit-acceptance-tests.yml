@@ -148,9 +148,19 @@ jobs:
           ./.conda/bin/conda run --live-stream --name "${{ inputs.env_name }}" python3 -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
 
   test_on_windows:
-    name: Run AIMET unit and acceptance tests on Windows
-    runs-on: [self-hosted, Windows, X64]
+    name: Run AIMET unit and acceptance tests on Windows (${{ matrix.arch }})
+    runs-on: [self-hosted, Windows, "${{ matrix.arch }}"]
     if: inputs.include_windows_tests && inputs.env_name == 'onnx-cpu' && (inputs.run_unit_tests || inputs.run_acceptance_tests)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: X64
+            python-version: "3.10"
+            wheel-arch: x64
+          - arch: ARM64
+            python-version: "3.12"
+            wheel-arch: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -162,13 +172,13 @@ jobs:
       - name: Download built wheels
         uses: actions/download-artifact@v3
         with:
-          name: "onnx-cpu-win-x64-wheel"
+          name: "onnx-cpu-win-${{ matrix.wheel-arch }}-wheel"
           path: "downloads"
 
       - uses: ./.github/actions/setup-uv-env
         with:
           ENV_NAME: "onnx-cpu"
-          VER_PYTHON: "3.10"
+          VER_PYTHON: "${{ matrix.python-version }}"
 
       - name: Install AIMET-ONNX wheel
         run: |
@@ -179,13 +189,9 @@ jobs:
           python -m ensurepip --upgrade
           python -m pip install uv
 
-          # Install test dependencies
-          python -m uv pip compile --output-file "$env:GITHUB_WORKSPACE\test_requirements.txt" --extra test pyproject.toml
-          python -m uv pip install -r "$env:GITHUB_WORKSPACE\test_requirements.txt" --extra-index-url="https://download.pytorch.org/whl/cpu" --index-strategy unsafe-best-match
-
           # Install aimet-onnx
           $wheel = Get-ChildItem -Path downloads -Filter "aimet_onnx*.whl" | Select-Object -First 1 -ExpandProperty FullName
-          python -m uv pip install $wheel --extra-index-url="https://download.pytorch.org/whl/cpu" --index-strategy unsafe-best-match
+          python -m uv pip install "$wheel[test]" --extra-index-url="https://download.pytorch.org/whl/cpu" --index-strategy unsafe-best-match --native-tls
 
       - name: Run Unit tests
         if: inputs.run_unit_tests
@@ -206,7 +212,7 @@ jobs:
         run: |
 
           # Activate uv environment
-          .\onnx-cpu\Scripts\activate
+          .\onnx-cpu\Scripts\Activate.ps1
 
           # Run tests
           $pytest_args = "not cuda"

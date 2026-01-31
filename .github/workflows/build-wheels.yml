@@ -132,7 +132,7 @@ jobs:
           - arch: arm64
             vcpkg-triplet: arm64-windows
             python-arch: arm64
-            python-version: "3.11"
+            python-version: "3.12"
     defaults:
       run:
         shell: powershell
@@ -152,7 +152,7 @@ jobs:
 
           # Download Python ARM64 nuget package (use .zip extension for Expand-Archive)
           $nugetZip = Join-Path $pythonArm64Dir "python.zip"
-          Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/pythonarm64/3.11.9" -OutFile $nugetZip
+          Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/pythonarm64/${{ matrix.python-version }}" -OutFile $nugetZip
 
           # Extract the nuget package
           Expand-Archive -Path $nugetZip -DestinationPath $pythonArm64Dir -Force
@@ -167,7 +167,7 @@ jobs:
         run: |
 
           # Activate uv environment
-          .\onnx-cpu\Scripts\activate
+          .\onnx-cpu\Scripts\Activate.ps1
 
           # Bootstrap pip in the venv
           python -m ensurepip --upgrade

@@ -5,6 +5,8 @@
 """Models for use in unit testing"""
 
 import functools
+import platform
+import sys
 from typing import Any
 import os
 import tempfile
@@ -22,7 +24,6 @@ from torch.nn.modules.instancenorm import _InstanceNorm
 from torch.nn.modules.batchnorm import _BatchNorm
 from onnx import helper, numpy_helper, OperatorSetIdProto, TensorProto, load_model
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
-from onnxruntime_extensions import PyOp, onnx_op
 
 from aimet_onnx.common import libquant_info
 from .mobilenet import MockMobileNetV1, MockMobileNetV11
@@ -3646,11 +3647,20 @@ def squeezenet1_0(tmpdir):
     return ONNXModel(model)
 
 
-@onnx_op(
-    op_type="CustomAdd", inputs=[PyOp.dt_float, PyOp.dt_float], outputs=[PyOp.dt_float]
-)
-def add_op(x, y):
-    return x + y
+if sys.platform != "win32" or platform.machine().lower() not in (
+    "aarch64",
+    "arm64",
+):
+    # onnxruntime_extensions is not available on Windows ARM64/ARM64EC
+    from onnxruntime_extensions import PyOp, onnx_op
+
+    @onnx_op(
+        op_type="CustomAdd",
+        inputs=[PyOp.dt_float, PyOp.dt_float],
+        outputs=[PyOp.dt_float],
+    )
+    def add_op(x, y):
+        return x + y
 
 
 def custom_op_model():

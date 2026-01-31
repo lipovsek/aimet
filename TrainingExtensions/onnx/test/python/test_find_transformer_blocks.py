@@ -2,11 +2,18 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import pytest
+import sys
+import platform
 from aimet_onnx.experimental.adascale.find_blocks import (
     get_decoder_blocks_end_points,
     get_conv_linear_layers_decoder_block,
 )
 from .utils import add_genai_tests_path
+from .conftest import skip_module_on_windows_arm64
+
+skip_module_on_windows_arm64(
+    "transformers and onnx_sim is not available on Windows ARM64"
+)
 
 
 def verify_find_blocks(sim, model_type):

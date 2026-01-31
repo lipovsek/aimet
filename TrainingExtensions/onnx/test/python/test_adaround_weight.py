@@ -11,7 +11,6 @@ import numpy as np
 import torch
 import pytest
 from onnx import numpy_helper
-from onnxsim import simplify
 import onnx
 
 import aimet_onnx
@@ -116,6 +115,9 @@ class TestAdaround:
 
         assert graph_outputs == sim.model.graph().output
 
+    @pytest.mark.skip_on_windows_arm64(
+        "onnxruntime_extensions is not available on Windows ARM64"
+    )
     @pytest.mark.parametrize(
         "providers",
         (["CPUExecutionProvider"], ["CUDAExecutionProvider", "CPUExecutionProvider"]),
@@ -203,6 +205,7 @@ class TestAdaround:
         dummy_input = {"input": np.random.rand(*input_shape).astype(np.float32)}
         apply_adaround(sim, [dummy_input for _ in range(2)], 5)
 
+    @pytest.mark.skip_on_windows_arm64("onnxsim is not available on Windows ARM64")
     @pytest.mark.parametrize(
         "model, input_shape", [(models_for_tests.simplifiable_model(1), (1, 10))]
     )
@@ -210,6 +213,8 @@ class TestAdaround:
         """
         AdaRound should not error-out for models which need simplification
         """
+        from onnxsim import simplify
+
         model, _ = simplify(model)
         dummy_input = {"input": np.random.rand(*input_shape).astype(np.float32)}
         sim = QuantizationSimModel(

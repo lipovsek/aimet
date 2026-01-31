@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
+import sys
 from packaging import version
 import tempfile
 import math
@@ -1234,6 +1235,9 @@ class TestQcQuantizeOp:
     @pytest.mark.parametrize(
         "quant_scheme",
         [QuantScheme.post_training_tf, QuantScheme.post_training_tf_enhanced],
+    )
+    @pytest.mark.skip_on_windows_arm64(
+        "#6364: divide-by-zero error on Windows ARM64 builds"
     )
     def test_compute_encodings_with_size_zero_tensor(self, quant_scheme):
         """

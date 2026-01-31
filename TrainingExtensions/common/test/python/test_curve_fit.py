@@ -5,6 +5,19 @@
 import unittest
 from matplotlib import pyplot as plt
 
+import sys
+import platform
+import pytest
+
+if sys.platform == "win32" and platform.machine().lower() in (
+    "aarch64",
+    "arm64",
+):
+    pytest.skip(
+        allow_module_level=True,
+        reason="osqp is not available on Windows ARM64",
+    )
+
 try:
     from aimet_onnx.common.curve_fit import MonotonicIncreasingCurveFit
 except ImportError:

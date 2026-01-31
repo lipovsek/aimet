@@ -27,7 +27,6 @@ from onnx import load_model
 import onnx
 import onnxruntime as ort
 import pytest
-from onnxsim import simplify
 
 from aimet_onnx.common import libpymo
 from aimet_onnx.common.defs import (
@@ -1903,6 +1902,9 @@ class TestQuantSim:
         assert peak_mem < current_mem + 0.25 * total_act_memory
         assert peak_mem < current_mem * 5
 
+    @pytest.mark.skip_on_windows_arm64(
+        "onnxruntime_extensions is not available on Windows ARM64"
+    )
     def test_model_with_custom_ops(self, tmp_dir):
         from onnxruntime_extensions import get_library_path
 
@@ -4065,11 +4067,13 @@ class TestEncodingPropagation:
         "op_type_under_test",
         [torch.nn.AvgPool2d, torch.nn.Upsample],
     )
+    @pytest.mark.skip_on_windows_arm64("onnxsim is not available on Windows ARM64")
     def test_output_parametrized(self, op_type_under_test):
         """
         Given: model as below
            [input] -+-> q_in1 -> conv1 -> q_out1 -> op_type_under_test -> q_out2 -> [output]
         """
+        from onnxsim import simplify
 
         class Model(torch.nn.Module):
             def __init__(self):
@@ -4702,6 +4706,9 @@ class TestEncodingPropagation:
             ].quant_info.usePerChannelMode
             assert sim.qc_quantize_op_dict["identity.input"].quant_info.channelAxis == 0
 
+    @pytest.mark.skip_on_windows_arm64(
+        "onnxruntime_extensions is not available on Windows ARM64"
+    )
     def test_customop_model(self, tmp_dir):
         from onnxruntime_extensions import get_library_path
 
