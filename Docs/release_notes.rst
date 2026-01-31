@@ -6,6 +6,39 @@
 Release notes
 #############
 
+2.24.0
+======
+
+* Bug fixes and Improvements
+    * ONNX
+        * Add Windows ARM64 wheel build/test support, distribute Windows ARM64 wheel on GitHub releases (`1390b96`_)
+        * Add transpose MatMul support in Sequential MSE (`ff7a284`_)
+
+    * Torch
+        * Expose block-level AdaScale API (`72246db`_)
+        * Improve numerical stability of zero point shifting ([-1.5, -.5, .5, 1.5]) implementation (`489f7df`_)
+        * Fix :func:`replace_lora_layers_with_quantizable_layers` to inherit train/eval flag (`af5a82d`_)
+        * Fix SpinQuant evaluation by untying lm_head and embed_tokens prior to loading the state_dict. (`47f574d`_)
+        * Experimental - Implement Progressive Gradient Scaling (PGS) support for Triton-based quantization kernels (`b58b00b`_)
+
+    * Common
+        * Fix TFEnhanced incorrectly producing negative scales when encountering empty (size‑0) inputs (`ea4af6a`_)
+        * Unpin numpy dependency (`8a999a1`_)
+        * Add an alias for referencing the eNPU configuration file (`b79611c`_)
+
+
+.. _8a999a1: https://github.com/quic/aimet/commit/8a999a1cf8c42e0a4cdfa9db52e3ea959aa155a4
+.. _af5a82d: https://github.com/quic/aimet/commit/af5a82ddacff1f5f01a9e2d3f5450677a359049c
+.. _ea4af6a: https://github.com/quic/aimet/commit/ea4af6a99ea61029bfaae48f041299cdbccb2508
+.. _489f7df: https://github.com/quic/aimet/commit/489f7df64c73260e83704fd09f0cab63f98f425d
+.. _72246db: https://github.com/quic/aimet/commit/72246dbb168559972fd5c9fc3a02d07b70a732d8
+.. _47f574d: https://github.com/quic/aimet/commit/47f574de4d2f51d5a6189a3f3de18726d5abcf5a
+.. _b58b00b: https://github.com/quic/aimet/commit/b58b00bd35c905ad1499e37f97dea7b0c264dbdd
+.. _ff7a284: https://github.com/quic/aimet/commit/ff7a2841935620615ccd52c001886f8ae8e29705
+.. _b79611c: https://github.com/quic/aimet/commit/b79611c86b52054a286adca257a2ba6d131ed5b0
+.. _1390b96: https://github.com/quic/aimet/commit/1390b96ec4bd014055c4a9c6b116eb9f06a85afd
+
+
 2.23.0
 ======
 
