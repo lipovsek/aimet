@@ -711,3 +711,252 @@ class TestTritonBackend:
             assert torch.allclose(offset.grad, offset_.grad, rtol=1e-3)
         else:
             assert offset.grad is None
+
+    @pytest.mark.parametrize("seed", range(5))
+    def test_noncontiguous_inputs(self, seed):
+        """
+        When: Inputs are non-contiguous tensors
+        Then: Triton backend should produce close-enough output
+        """
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+
+        input = torch.randn(
+            (512, 512), dtype=torch.float32, device="cuda", requires_grad=True
+        )
+        input_q = (input * 100).round().clamp(-128, 127)
+        scale = torch.tensor(
+            0.01, dtype=torch.float32, device="cuda", requires_grad=True
+        )
+        offset = torch.full_like(scale, -1, requires_grad=True)
+
+        with set_backend("torch_builtins"):
+            with torch.no_grad():
+                output_q_torch = quantize(input[::2, ::2], scale, offset, -128, 127)
+                output_dq_torch = dequantize(input_q[::2, ::2], scale, offset)
+
+            output_qdq_torch = quantize_dequantize(
+                input[::2, ::2], scale, offset, -128, 127
+            )
+
+            with torch.no_grad():
+                mse_grad = 2 * (
+                    quantize_dequantize(input, scale, offset, -128, 127) - input
+                )
+                mse_grad = (mse_grad / input[::2, ::2].numel())[::2, ::2]
+                assert not mse_grad.is_contiguous()
+
+            output_qdq_torch.backward(mse_grad)
+
+        input_ = input.detach().clone().requires_grad_(True)
+        scale_ = scale.detach().clone().requires_grad_(True)
+        offset_ = offset.detach().clone().requires_grad_(True)
+
+        with set_backend("triton"):
+            with torch.no_grad():
+                output_q_triton = quantize(input_[::2, ::2], scale_, offset_, -128, 127)
+                output_dq_triton = dequantize(input_q[::2, ::2], scale_, offset_)
+
+            output_qdq_triton = quantize_dequantize(
+                input_[::2, ::2], scale_, offset_, -128, 127
+            )
+
+            with torch.no_grad():
+                mse_grad = 2 * (
+                    quantize_dequantize(input_, scale_, offset_, -128, 127) - input_
+                )
+                mse_grad = (mse_grad / input[::2, ::2].numel())[::2, ::2]
+                assert not mse_grad.is_contiguous()
+
+            output_qdq_triton.backward(mse_grad)
+
+        assert torch.allclose(output_q_triton, output_q_torch, atol=1)
+        assert torch.allclose(output_dq_triton, output_dq_torch)
+        assert torch.allclose(output_qdq_triton, output_qdq_torch, atol=scale.item())
+        assert torch.allclose(
+            input.grad, input_.grad, atol=scale.item() * 2 / input[::2, ::2].numel()
+        )
+        assert torch.allclose(scale.grad, scale_.grad)
+        assert torch.allclose(offset.grad, offset_.grad)
+
+        scale = (
+            torch.arange(0.01, 5.13, step=0.01, dtype=torch.float32, device="cuda")
+            .view(512, 1)
+            .requires_grad_(True)
+        )
+        offset = torch.full_like(scale, -1, requires_grad=True)
+
+        with set_backend("torch_builtins"):
+            with torch.no_grad():
+                output_q_torch = quantize(
+                    input[::2, ::2], scale[::2], offset[::2], -128, 127
+                )
+                output_dq_torch = dequantize(input_q[::2, ::2], scale[::2], offset[::2])
+
+            output_qdq_torch = quantize_dequantize(
+                input[::2, ::2], scale[::2], offset[::2], -128, 127
+            )
+
+            with torch.no_grad():
+                mse_grad = 2 * (
+                    quantize_dequantize(input, scale, offset, -128, 127) - input
+                )
+                mse_grad = (mse_grad / input[::2, ::2].numel())[::2, ::2]
+                assert not mse_grad.is_contiguous()
+
+            output_qdq_torch.backward(mse_grad)
+
+        input_ = input.detach().clone().requires_grad_(True)
+        scale_ = scale.detach().clone().requires_grad_(True)
+        offset_ = offset.detach().clone().requires_grad_(True)
+
+        with set_backend("triton"):
+            with torch.no_grad():
+                output_q_triton = quantize(
+                    input_[::2, ::2], scale_[::2], offset_[::2], -128, 127
+                )
+                output_dq_triton = dequantize(
+                    input_q[::2, ::2], scale_[::2], offset_[::2]
+                )
+
+            output_qdq_triton = quantize_dequantize(
+                input_[::2, ::2], scale_[::2], offset_[::2], -128, 127
+            )
+
+            with torch.no_grad():
+                mse_grad = 2 * (
+                    quantize_dequantize(input_, scale_, offset_, -128, 127) - input_
+                )
+                mse_grad = (mse_grad / input[::2, ::2].numel())[::2, ::2]
+                assert not mse_grad.is_contiguous()
+
+            output_qdq_triton.backward(mse_grad)
+
+        assert torch.allclose(output_q_triton, output_q_torch, atol=1)
+        assert torch.allclose(output_dq_triton, output_dq_torch)
+        assert np.allclose(
+            output_qdq_triton.detach().cpu().numpy(),
+            output_qdq_torch.detach().cpu().numpy(),
+            atol=scale[::2].detach().cpu().numpy(),
+        )
+        assert torch.all((input.grad[1::2] == 0) & (input_.grad[1::2] == 0))
+        assert np.allclose(
+            input.grad[::2].detach().cpu().numpy(),
+            input_.grad[::2].detach().cpu().numpy(),
+            atol=scale[::2].detach().cpu().numpy() * 2 / input[::2, ::2].numel(),
+        )
+        assert torch.allclose(scale.grad, scale_.grad)
+        assert torch.allclose(offset.grad, offset_.grad)
+
+        block_size = 128
+        block_axis = 1
+        scale = (
+            scale.repeat_interleave(repeats=512 // block_size, dim=block_axis)
+            .contiguous()
+            .detach()
+            .clone()
+            .requires_grad_(True)
+        )
+        offset = torch.full_like(scale, -1, requires_grad=True)
+
+        with set_backend("torch_builtins"):
+            with torch.no_grad():
+                output_q_torch = quantize(
+                    input[::2, ::2],
+                    scale[::2, ::2],
+                    offset[::2, ::2],
+                    -128,
+                    127,
+                    block_size=(1, block_size),
+                )
+                output_dq_torch = dequantize(
+                    input_q[::2, ::2],
+                    scale[::2, ::2],
+                    offset[::2, ::2],
+                    block_size=(1, block_size),
+                )
+
+            output_qdq_torch = quantize_dequantize(
+                input[::2, ::2],
+                scale[::2, ::2],
+                offset[::2, ::2],
+                -128,
+                127,
+                block_size=(1, block_size),
+            )
+
+            with torch.no_grad():
+                mse_grad = 2 * (
+                    quantize_dequantize(
+                        input, scale, offset, -128, 127, block_size=(1, block_size)
+                    )
+                    - input
+                )
+                mse_grad = (mse_grad / input[::2, ::2].numel())[::2, ::2]
+                assert not mse_grad.is_contiguous()
+
+            output_qdq_torch.backward(mse_grad)
+
+        input_ = input.detach().clone().requires_grad_(True)
+        scale_ = scale.detach().clone().requires_grad_(True)
+        offset_ = offset.detach().clone().requires_grad_(True)
+
+        with set_backend("triton"):
+            with torch.no_grad():
+                output_q_triton = quantize(
+                    input_[::2, ::2],
+                    scale_[::2, ::2],
+                    offset_[::2, ::2],
+                    -128,
+                    127,
+                    block_size=(1, block_size),
+                )
+                output_dq_triton = dequantize(
+                    input_q[::2, ::2],
+                    scale_[::2, ::2],
+                    offset_[::2, ::2],
+                    block_size=(1, block_size),
+                )
+
+            output_qdq_triton = quantize_dequantize(
+                input_[::2, ::2],
+                scale_[::2, ::2],
+                offset_[::2, ::2],
+                -128,
+                127,
+                block_size=(1, block_size),
+            )
+
+            with torch.no_grad():
+                mse_grad = 2 * (
+                    quantize_dequantize(
+                        input_, scale_, offset_, -128, 127, block_size=(1, block_size)
+                    )
+                    - input_
+                )
+                mse_grad = (mse_grad / input[::2, ::2].numel())[::2, ::2]
+                assert not mse_grad.is_contiguous()
+
+            output_qdq_triton.backward(mse_grad)
+
+        atol = (
+            scale[::2, ::2]
+            .repeat_interleave(repeats=block_size, dim=block_axis)
+            .detach()
+            .cpu()
+            .numpy()
+        )
+        assert torch.allclose(output_q_triton, output_q_torch, atol=1)
+        assert torch.allclose(output_dq_triton, output_dq_torch)
+        assert np.allclose(
+            output_qdq_triton.detach().cpu().numpy(),
+            output_qdq_torch.detach().cpu().numpy(),
+            atol=atol,
+        )
+        assert np.allclose(
+            input.grad[::2, ::2].detach().cpu().numpy(),
+            input_.grad[::2, ::2].detach().cpu().numpy(),
+            atol=atol * 2 / input[::2, ::2].numel(),
+        )
+        assert torch.allclose(scale.grad, scale_.grad)
+        assert torch.allclose(offset.grad, offset_.grad)

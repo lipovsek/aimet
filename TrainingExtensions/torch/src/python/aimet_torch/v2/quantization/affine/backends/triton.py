@@ -742,9 +742,9 @@ class TritonQuantize(torch.autograd.Function):
 
         if axis_0 is None:
             quantize_per_tensor[(NUM_COMPUTE_BLOCKS,)](
-                tensor,
-                scale,
-                offset,
+                tensor.contiguous(),
+                scale.contiguous(),
+                offset.contiguous(),
                 qmin,
                 qmax,
                 output,
@@ -758,9 +758,9 @@ class TritonQuantize(torch.autograd.Function):
             K = int(np.prod(tensor.shape[channel_axis + 1 :]))
 
             quantize_per_channel[(NUM_COMPUTE_BLOCKS,)](
-                tensor,
-                scale,
-                offset,
+                tensor.contiguous(),
+                scale.contiguous(),
+                offset.contiguous(),
                 qmin,
                 qmax,
                 output,
@@ -779,9 +779,9 @@ class TritonQuantize(torch.autograd.Function):
             BLK_SIZE_K = int(np.prod(block_size[blk_axis_1:]))
 
             quantize_per_block[(NUM_COMPUTE_BLOCKS,)](
-                tensor,
-                scale,
-                offset,
+                tensor.contiguous(),
+                scale.contiguous(),
+                offset.contiguous(),
                 qmin,
                 qmax,
                 output,
@@ -815,9 +815,9 @@ class TritonDequantize(torch.autograd.Function):
 
         if axis_0 is None:
             dequantize_per_tensor[(NUM_COMPUTE_BLOCKS,)](
-                tensor,
-                scale,
-                offset,
+                tensor.contiguous(),
+                scale.contiguous(),
+                offset.contiguous(),
                 output,
                 tensor.numel(),
                 COMPUTE_BLOCK_SIZE,
@@ -829,9 +829,9 @@ class TritonDequantize(torch.autograd.Function):
             K = int(np.prod(tensor.shape[channel_axis + 1 :]))
 
             dequantize_per_channel[(NUM_COMPUTE_BLOCKS,)](
-                tensor,
-                scale,
-                offset,
+                tensor.contiguous(),
+                scale.contiguous(),
+                offset.contiguous(),
                 output,
                 I,
                 J,
@@ -848,9 +848,9 @@ class TritonDequantize(torch.autograd.Function):
             BLK_SIZE_K = int(np.prod(block_size[blk_axis_1:]))
 
             dequantize_per_block[(NUM_COMPUTE_BLOCKS,)](
-                tensor,
-                scale,
-                offset,
+                tensor.contiguous(),
+                scale.contiguous(),
+                offset.contiguous(),
                 output,
                 I,
                 J,
@@ -890,9 +890,9 @@ class TritonQuantizeDequantize(torch.autograd.Function):
 
         if axis_0 is None:
             quantize_dequantize_per_tensor[(NUM_COMPUTE_BLOCKS,)](
-                tensor,
-                scale,
-                offset,
+                tensor.contiguous(),
+                scale.contiguous(),
+                offset.contiguous(),
                 qmin,
                 qmax,
                 zero_point_shift,
@@ -908,9 +908,9 @@ class TritonQuantizeDequantize(torch.autograd.Function):
             K = int(np.prod(tensor.shape[channel_axis + 1 :]))
 
             quantize_dequantize_per_channel[(NUM_COMPUTE_BLOCKS,)](
-                tensor,
-                scale,
-                offset,
+                tensor.contiguous(),
+                scale.contiguous(),
+                offset.contiguous(),
                 qmin,
                 qmax,
                 zero_point_shift,
@@ -935,9 +935,9 @@ class TritonQuantizeDequantize(torch.autograd.Function):
             BLK_SIZE_K = int(np.prod(block_size[blk_axis_1:]))
 
             quantize_dequantize_per_block[(NUM_COMPUTE_BLOCKS,)](
-                tensor,
-                scale,
-                offset,
+                tensor.contiguous(),
+                scale.contiguous(),
+                offset.contiguous(),
                 qmin,
                 qmax,
                 zero_point_shift,
@@ -993,6 +993,16 @@ class TritonQuantizeDequantize(torch.autograd.Function):
         axis_0 = ctx.axis_0
         axis_1 = ctx.axis_1
         block_size = ctx.block_size
+
+        grad = grad.contiguous()
+        if input is not None:
+            input = input.contiguous()
+        if scale is not None:
+            scale = scale.contiguous()
+        if offset is not None:
+            offset = offset.contiguous()
+        if mask is not None:
+            mask = mask.contiguous()
 
         input_grad = torch.empty_like(grad) if ctx.tensor_requires_grad else None
 
