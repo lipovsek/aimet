@@ -22,10 +22,7 @@ RUN apt update && \
         jq \
         libeigen3-dev \
         libz-dev \
-        libz-mingw-w64-dev \
         make \
-        mingw-w64 \
-        mingw-w64-x86-64-dev \
         pandoc \
         pkg-config \
         sudo \
@@ -90,10 +87,6 @@ RUN --mount=type=bind,target=/workspace \
         uv pip install -r /tmp/requirements.txt \
         --extra-index-url="https://download.pytorch.org/whl/$(echo $VER_CUDA | awk -F'.' '{print ($1!="")? "cu"$1$2 : "cpu"}')" \
         --index-strategy unsafe-best-match
-
-# Install win-64 python environment for cross compile
-RUN export PATH=$PATH:${CONDA_PREFIX}/bin PIP_NO_CACHE_DIR=1 \
-    && ${CONDA} create --platform win-64 --name win64 python=${VER_PYTHON}
 
 ENV PYTHONPYCACHEPREFIX=/tmp
 
