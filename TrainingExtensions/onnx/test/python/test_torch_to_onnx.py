@@ -31,8 +31,7 @@ import aimet_onnx
 from aimet_onnx.utils import make_dummy_input
 import aimet_torch
 
-from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
-from .utils import tmp_dir
+from .utils import tmp_dir, add_genai_tests_path
 
 
 @pytest.mark.parametrize(
@@ -46,12 +45,17 @@ from .utils import tmp_dir
         (Qwen3ForCausalLM, Qwen3Config),
     ],
 )
-def test_hf_torch_to_onnx_workflow(tmp_dir, model_cls, config_cls):
+def test_hf_torch_to_onnx_workflow(
+    tmp_dir, add_genai_tests_path, model_cls, config_cls
+):
     """
     Given: HF model quantized / exported as onnx QDQ from aimet-torch
     When: Import onnx QDQ into aimet-onnx
     Then: aimet-onnx sim should produce same output as aimet-torch sim
     """
+
+    from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+
     config = config_cls(
         vocab_size=1000,
         hidden_size=32,
