@@ -211,13 +211,14 @@ if __name__ == "__main__":
     # Use CUDA if available
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     with place_model(quantsim.model, device):
-        if args.eval_ppl:
-            ppl_score = PPL.evaluate(generator, tokenizer, CONTEXT_LENGTH)
-            print(f"PPL: {ppl_score}")
+        with torch.no_grad():
+            if args.eval_ppl:
+                ppl_score = PPL.evaluate(generator, tokenizer, CONTEXT_LENGTH)
+                print(f"PPL: {ppl_score}")
 
-        if args.eval_mmlu:
-            mmlu_score = MMLU.evaluate(generator, tokenizer, CONTEXT_LENGTH)
-            print(f"MMLU: {mmlu_score}")
+            if args.eval_mmlu:
+                mmlu_score = MMLU.evaluate(generator, tokenizer, CONTEXT_LENGTH)
+                print(f"MMLU: {mmlu_score}")
 
-        if args.eval_interactive:
-            Interactive.evaluate(generator, tokenizer, CONTEXT_LENGTH)
+            if args.eval_interactive:
+                Interactive.evaluate(generator, tokenizer, CONTEXT_LENGTH)
