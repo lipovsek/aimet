@@ -5,7 +5,6 @@
 # pylint: disable=import-outside-toplevel
 """v2 lazy quant wrapper / quantizer"""
 
-from typing import Sequence
 import numpy as np
 import torch
 
@@ -48,7 +47,10 @@ class _V2LazyQuantizer(LazyQuantizer):
                 exponent_bits = 7 - mantissa_bits
                 encoding_analyzer = self._get_v2_encoding_analyzer(scale_shape)
                 quantizer = FloatQuantizeDequantize(
-                    exponent_bits, mantissa_bits, encoding_analyzer=encoding_analyzer
+                    exponent_bits,
+                    mantissa_bits,
+                    shape=scale_shape,
+                    encoding_analyzer=encoding_analyzer,
                 )
             # Float quantizers are not trainable in V1 quantsim
             for param in quantizer.parameters():
@@ -77,7 +79,7 @@ class _V2LazyQuantizer(LazyQuantizer):
                 f"Channel axis {self.channel_axis} is out of bound of param shape {self.input_tensor_shape}"
             )
 
-    def _get_scale_shape(self) -> Sequence[int]:
+    def _get_scale_shape(self) -> tuple[int, ...]:
         """Returns shape of quantization scale/offset."""
         if self.channel_axis is not None:
             assert self.input_tensor_shape
@@ -86,7 +88,7 @@ class _V2LazyQuantizer(LazyQuantizer):
             scale_shape = [1] * len(self.input_tensor_shape)
             scale_shape[channel_axis] = self.input_tensor_shape[channel_axis]
 
-            return scale_shape
+            return tuple(scale_shape)
 
         return tuple()
 

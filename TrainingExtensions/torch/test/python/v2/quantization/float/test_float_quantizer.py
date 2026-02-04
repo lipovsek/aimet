@@ -38,15 +38,14 @@ def x():
 
 @torch.no_grad()
 @pytest.mark.parametrize(
-    "dtype,               exponent_bits, mantissa_bits, finite, unsigned_zero",
+    "dtype, exponent_bits, mantissa_bits, finite, unsigned_zero",
     [
         (torch.float16, 5, 10, False, False),
         (torch.bfloat16, 8, 7, False, False),
         (torch.float8_e5m2, 5, 2, False, False),
         (torch.float8_e4m3fn, 4, 3, True, False),
-        # NOTE: Not supported in torch 2.1
-        # (torch.float8_e5m2fnuz, 5,             2,             False,  False),
-        # (torch.float8_e4m3fnuz, 4,             3,             True,   False),
+        (torch.float8_e5m2fnuz, 5, 2, True, True),
+        (torch.float8_e4m3fnuz, 4, 3, True, True),
     ],
 )
 def test_qdq_output_standard_dtypes(
@@ -74,23 +73,52 @@ def test_qdq_output_standard_dtypes(
     float_qdq_2 = FloatQuantizeDequantize(
         exponent_bits, mantissa_bits, finite, unsigned_zero
     )
+    assert float_qdq_1._finfo == float_qdq_2._finfo
+    assert (float_qdq_1.encoding_analyzer is None) == (float_qdq_1.bitwidth >= 16)
+    assert (float_qdq_2.encoding_analyzer is None) == (float_qdq_2.bitwidth >= 16)
+
     float_qdq_out_1 = float_qdq_1(x)
     float_qdq_out_2 = float_qdq_2(x)
     assert torch.equal(float_qdq_out_1, float_qdq_out_2)
     assert isinstance(float_qdq_out_1, DequantizedTensor)
     assert isinstance(float_qdq_out_2, DequantizedTensor)
     assert (
-        float_qdq_out_1.encoding.exponent_bits
-        == float_qdq_out_2.encoding.exponent_bits
-        == exponent_bits
-    )
-    assert (
-        float_qdq_out_1.encoding.mantissa_bits
-        == float_qdq_out_2.encoding.mantissa_bits
-        == mantissa_bits
+        float_qdq_out_1.encoding._finfo
+        == float_qdq_out_2.encoding._finfo
+        == float_qdq_1._finfo
     )
     assert float_qdq_out_1.dequantize() is float_qdq_out_1
     assert float_qdq_out_2.dequantize() is float_qdq_out_2
+
+    """
+    When: Run compute_encodings() and forward again
+    Then:
+      1. The two quantizers should still produce same output
+      2. If sub-16 floating point, compute_encodings should update its maxval
+    """
+    with float_qdq_1.compute_encodings(), float_qdq_2.compute_encodings():
+        _ = float_qdq_1(x)
+        _ = float_qdq_2(x)
+
+    float_qdq_out_1_post_calib = float_qdq_1(x)
+    float_qdq_out_2_post_calib = float_qdq_2(x)
+    assert torch.equal(float_qdq_out_1, float_qdq_out_2)
+    assert isinstance(float_qdq_out_1, DequantizedTensor)
+    assert isinstance(float_qdq_out_2, DequantizedTensor)
+    assert (
+        float_qdq_out_1_post_calib.encoding._finfo
+        == float_qdq_out_2_post_calib.encoding._finfo
+        == float_qdq_1._finfo
+    )
+    assert float_qdq_out_1_post_calib.dequantize() is float_qdq_out_1_post_calib
+    assert float_qdq_out_2_post_calib.dequantize() is float_qdq_out_2_post_calib
+
+    if float_qdq_1.bitwidth < 16:
+        assert not torch.isclose(float_qdq_out_1, float_qdq_out_1_post_calib).all()
+        assert not torch.isclose(float_qdq_out_2, float_qdq_out_2_post_calib).all()
+    else:
+        assert torch.equal(float_qdq_out_1, float_qdq_out_1_post_calib)
+        assert torch.equal(float_qdq_out_2, float_qdq_out_2_post_calib)
 
 
 @pytest.mark.parametrize(
@@ -144,9 +172,8 @@ def test_qdq_output_non_standard_dtypes(x, exponent_bits, mantissa_bits):
     [
         torch.float8_e5m2,
         torch.float8_e4m3fn,
-        # NOTE: Not supported in torch 2.1
-        # torch.float8_e5m2fnuz,
-        # torch.float8_e4m3fnuz,
+        torch.float8_e5m2fnuz,
+        torch.float8_e4m3fnuz,
     ],
 )
 def test_qdq_compute_encodings(dtype):
@@ -163,11 +190,7 @@ def test_qdq_compute_encodings(dtype):
         torch.arange(-0.5, 0.5, 0.001) * float8_max,
     ]:
         x = x.view(10, 100)
-
-        encoding_analyzer = MinMaxEncodingAnalyzer((100,))
-        float8_qdq = FloatQuantizeDequantize(
-            dtype=dtype, encoding_analyzer=encoding_analyzer
-        )
+        float8_qdq = FloatQuantizeDequantize(dtype=dtype, shape=(100,))
         with float8_qdq.compute_encodings():
             _ = float8_qdq(x)
 
@@ -183,9 +206,7 @@ def test_qdq_compute_encodings(dtype):
 
 def test_allow_overwrite(x):
     exponent_bits, mantissa_bits = 3, 4
-    q = FloatQuantizeDequantize(
-        exponent_bits, mantissa_bits, encoding_analyzer=MinMaxEncodingAnalyzer((1, 100))
-    )
+    q = FloatQuantizeDequantize(exponent_bits, mantissa_bits, shape=(1, 100))
     with q.compute_encodings():
         q(x)
     q_max = q.maxval.detach().clone()

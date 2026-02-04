@@ -74,7 +74,7 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
         symmetric (bool): If True, performs symmetric quantization;
                           otherwise, performs asymmetric quantization
         encoding_analyzer (EncodingAnalyzer, optional): Encoding analyzer for calibrating quantization encodings
-                                                        (default: absolute min-max encoding analyzer)
+                                                        (default: min-max encoding analyzer)
 
     """
 
@@ -784,7 +784,7 @@ class Quantize(AffineQuantizerBase):
         symmetric (bool): If True, performs symmetric quantization;
                           otherwise, performs asymmetric quantization
         encoding_analyzer (EncodingAnalyzer, optional): Encoding analyzer for calibrating quantization encodings
-                                                        (default: absolute min-max encoding analyzer)
+                                                        (default: min-max encoding analyzer)
         block_size (Tuple[int, ...], optional): Block size
 
     :ivar Tensor min: :math:`\theta_{min}` from which scale and offset will be derived.
@@ -914,7 +914,7 @@ class QuantizeDequantize(AffineQuantizerBase):
         symmetric (bool): If True, performs symmetric quantization;
                           otherwise, performs asymmetric quantization
         encoding_analyzer (EncodingAnalyzer, optional): Encoding analyzer for calibrating quantization encodings
-                                                        (default: absolute min-max encoding analyzer)
+                                                        (default: min-max encoding analyzer)
         block_size (Tuple[int, ...], optional): Block size
 
     :ivar Tensor min: :math:`\theta_{min}` from which scale and offset will be derived.
@@ -1073,7 +1073,7 @@ class GroupedBlockQuantizeDequantize(QuantizeDequantize):  # pylint: disable=too
         :param decompressed_bw: Bitwidth used for decompression
         :type decompressed_bw: int
         :param encoding_analyzer: Encoding analyzer for calibrating quantization encodings
-                                  (default: absolute min-max encoding analyzer)
+                                  (default: min-max encoding analyzer)
         :type encoding_analyzer: EncodingAnalyzer, optional
         :param block_size: Block size per dimension.
         :type block_size: Tuple
