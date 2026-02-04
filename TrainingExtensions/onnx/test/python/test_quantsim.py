@@ -3846,7 +3846,7 @@ class TestEncodingPropagation:
         class Model(torch.nn.Module):
             def forward(self, x: torch.Tensor):
                 x = torch.nn.functional.sigmoid(x)
-                x = torch.nn.functional.max_pool2d(x, (3, 3))
+                x = torch.nn.functional.avg_pool2d(x, (3, 3))
                 x *= 100
                 x = torch.nn.functional.softmax(x)
                 x = torch.nn.functional.interpolate(x, size=(50, 50), mode="bilinear")
@@ -3874,7 +3874,7 @@ class TestEncodingPropagation:
 
         assert (
             sim.qc_quantize_op_dict["/Sigmoid_output_0"]
-            is sim.qc_quantize_op_dict["/MaxPool_output_0"]
+            is sim.qc_quantize_op_dict["/AveragePool_output_0"]
         )
         (output_encoding,) = sim.qc_quantize_op_dict[
             "/Sigmoid_output_0"

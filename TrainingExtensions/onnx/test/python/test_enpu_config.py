@@ -9,6 +9,7 @@ from torch import nn
 import onnx
 
 import aimet_onnx
+from aimet_onnx.quantsim import _apply_constraints
 from .models.test_models import RMSNorm
 
 
@@ -127,6 +128,7 @@ class TestEnpuV6Config:
         assert not sim.qc_quantize_op_dict["running_var"].enabled
 
     @torch.no_grad()
+    @pytest.mark.parametrize("tie_quantizers", [True, False])
     @pytest.mark.parametrize(
         "model",
         [
@@ -247,7 +249,7 @@ class TestEnpuV6Config:
             ),
         ],
     )
-    def test_supergroup(self, tmp_path: Path, model: nn.Module):
+    def test_supergroup(self, tmp_path: Path, model: nn.Module, tie_quantizers: bool):
         input = (torch.randn(1, 3, 10, 10),)
 
         if isinstance(model, Sequential):
@@ -288,10 +290,11 @@ class TestEnpuV6Config:
             if node.op_type == "Constant"
         )
 
-        sim = aimet_onnx.QuantizationSimModel(
-            onnx_model,
-            config_file="enpu_v6",
-        )
+        with _apply_constraints(tie_quantizers):
+            sim = aimet_onnx.QuantizationSimModel(
+                onnx_model,
+                config_file="enpu_v6",
+            )
         for name in itertools.chain(input_names, output_names):
             assert sim.qc_quantize_op_dict[name].enabled
 
