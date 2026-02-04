@@ -347,7 +347,12 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
     @classmethod
     def ignore(cls, module_cls):
         """
-        Exempt given module type from quantization
+        Exclude given module type from quantization
+
+        .. note::
+            This method will exclude `module_cls` from quantization
+            even if its quantized module definition is already registered
+            with :meth:`implements`.
 
         Example:
 
@@ -367,7 +372,7 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
     @classmethod
     def ignore_unknown_modules(cls, ignore: bool = True):
         """
-        Exempt all unkown module types from quantization
+        Exclude all unkown module types from quantization
 
         Example:
 

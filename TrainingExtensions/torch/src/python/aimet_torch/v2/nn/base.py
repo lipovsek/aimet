@@ -341,18 +341,23 @@ class BaseQuantizationMixin(abc.ABC):
     @classmethod
     def ignore(cls, module_cls):
         """
-        Exempt given module type from quantization
+        Exclude given module type from quantization
         """
         if not issubclass(module_cls, torch.nn.Module):
             raise RuntimeError
 
         cls._ignored_module_types.add(module_cls)
+
+        qcls = cls.cls_to_qcls.pop(module_cls, None)
+        if qcls:
+            cls.qcls_to_cls.pop(qcls, None)
+
         return module_cls
 
     @classmethod
     def ignore_unknown_modules(cls, ignore: bool = True):
         """
-        Exempt all unkown module types from quantization
+        Exclude all unkown module types from quantization
         """
         cls._ignore_unknown_modules = ignore
 

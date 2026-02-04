@@ -1841,3 +1841,47 @@ def test_ignore():
     )
     sim = aimet_torch.QuantizationSimModel(model, torch.randn(10, 10))
     assert isinstance(sim.model[1].input_quantizers[0], QuantizeDequantize)
+
+    """
+    When: Call ignore on module whose Quantized- definition was already registered
+    Then: The module type should be excluded from quantization regardless
+    """
+
+    class MyModule(torch.nn.Module):
+        def forward(self, x):
+            return x**2
+
+    @QuantizationMixin.implements(MyModule)
+    class QuantizedMyModule(QuantizationMixin, MyModule):
+        def forward(self, x):
+            return super().forward(x)
+
+    QuantizationMixin.ignore(MyModule)
+
+    model = torch.nn.Sequential(MyModule())
+    sim = aimet_torch.QuantizationSimModel(
+        model, dummy_input=torch.randn(1, 3, 224, 224)
+    )
+    assert type(sim.model[0]) == MyModule
+
+    """
+    When: Register Quantized- definition of a module that was already excluded by .ignore
+    Then: The module type should be included for quantization regardless
+    """
+
+    class MyModule(torch.nn.Module):
+        def forward(self, x):
+            return x**2
+
+    QuantizationMixin.ignore(MyModule)
+
+    @QuantizationMixin.implements(MyModule)
+    class QuantizedMyModule(QuantizationMixin, MyModule):
+        def forward(self, x):
+            return super().forward(x)
+
+    model = torch.nn.Sequential(MyModule())
+    sim = aimet_torch.QuantizationSimModel(
+        model, dummy_input=torch.randn(1, 3, 224, 224)
+    )
+    assert type(sim.model[0]) == QuantizedMyModule
