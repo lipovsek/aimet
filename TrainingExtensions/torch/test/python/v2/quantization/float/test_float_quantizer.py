@@ -12,8 +12,8 @@ import warnings
 from aimet_torch.v2.quantization.encoding_analyzer import MinMaxEncodingAnalyzer
 from aimet_torch.v2.quantization import DequantizedTensor
 from aimet_torch.v2.quantization.float import FloatQuantizeDequantize, FloatEncoding
+from aimet_torch.v2.quantization.float.quantizer import _fake_cast_to_ieee_float
 from aimet_torch.v2.quantization.float._finfo import _finfo
-from aimet_torch.fp_quantization import fake_cast_to_ieee_float
 
 
 @pytest.fixture(autouse=True)
@@ -150,20 +150,61 @@ def test_special_floats_sanity(finite, unsigned_zero):
 
 
 @torch.no_grad()
-@pytest.mark.parametrize("exponent_bits", [3, 4])
-@pytest.mark.parametrize("mantissa_bits", [3, 4])
-def test_qdq_output_non_standard_dtypes(x, exponent_bits, mantissa_bits):
+def test_qdq_output_non_standard_dtype():
     """
     Given: Instantiated FloatQuantizeDequantize with a non-standard float dtype
     When: Run forward
     Then: Output should be equal to fake-casting the input to the non-standard float
     """
-    float_qdq = FloatQuantizeDequantize(exponent_bits, mantissa_bits)
-    max_representable_value = _finfo(exponent_bits, mantissa_bits, False, False).max
-    expected_output = fake_cast_to_ieee_float(
-        x, max_representable_value, exponent_bits, mantissa_bits
+    #  float4_e2m1fn
+    # |  in  | out  |
+    # |------|------|
+    # | -6.5 | -6.0 |
+    # | -6.0 | -6.0 |
+    # | -5.5 | -6.0 |
+    # | -5.0 | -4.0 |
+    # | -4.5 | -4.0 |
+    # | -4.0 | -4.0 |
+    # | -3.5 | -4.0 |
+    # | -3.0 | -3.0 |
+    # | -2.5 | -2.0 |
+    # | -2.0 | -2.0 |
+    # | -1.5 | -1.5 |
+    # | -1.0 | -1.0 |
+    # | -0.5 | -0.5 |
+    # |  0.0 |  0.0 |
+    # |  0.5 |  0.5 |
+    # |  1.0 |  1.0 |
+    # |  1.5 |  1.5 |
+    # |  2.0 |  2.0 |
+    # |  2.5 |  2.0 |
+    # |  3.0 |  3.0 |
+    # |  3.5 |  4.0 |
+    # |  4.0 |  4.0 |
+    # |  4.5 |  4.0 |
+    # |  5.0 |  4.0 |
+    # |  5.5 |  6.0 |
+    # |  6.0 |  6.0 |
+    # |  6.5 |  6.0 |
+    x = torch.tensor(
+        [-6.5, -6, -5.5, -5, -4.5, -4, -3.5, -3, -2.5, -2, -1.5, -1, -0.5]
+        + [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5]
     )
-    assert torch.equal(float_qdq(x), expected_output)
+    expected_output = torch.tensor(
+        [-6, -6, -6, -4, -4, -4, -4, -3, -2, -2, -1.5, -1, -0.5]
+        + [0, 0.5, 1, 1.5, 2, 2, 3, 4, 4, 4, 4, 6, 6, 6]
+    )
+    float4_e2m1fn_qdq = FloatQuantizeDequantize(
+        exponent_bits=2,
+        mantissa_bits=1,
+        finite=True,
+        unsigned_zero=False,
+    )
+    assert torch.equal(float4_e2m1fn_qdq(x), expected_output)
+    assert torch.equal(
+        expected_output,
+        _fake_cast_to_ieee_float(x, float4_e2m1fn_qdq._finfo),
+    )
 
 
 @torch.no_grad()

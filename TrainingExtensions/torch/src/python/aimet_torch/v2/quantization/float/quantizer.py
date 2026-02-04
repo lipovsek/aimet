@@ -21,7 +21,7 @@ from aimet_torch.v2.quantization.float import FloatEncoding
 from aimet_torch.v2.quantization.tensor import DequantizedTensor
 from aimet_torch.v2.utils import StatisticsNotFoundError, patch_attr, _is_expandable
 from aimet_torch.fp_quantization import fake_cast_to_ieee_float
-from ._finfo import _finfo, _torch_dtype_to_finfo
+from ._finfo import _finfo, _torch_dtype_to_finfo, _float4_e2m1fn
 
 
 __all__ = ["QuantizeDequantize", "FloatQuantizeDequantize"]
@@ -155,7 +155,9 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         self._assert_supported_dtype()
 
     def _assert_supported_dtype(self):
-        if self._finfo.finite or self._finfo.unsigned_zero:
+        if self._finfo != _float4_e2m1fn and (
+            self._finfo.finite or self._finfo.unsigned_zero
+        ):
             if self._finfo.to_torch_dtype() is None:
                 torch_special_builtin_dtypes = [
                     dtype
@@ -424,8 +426,8 @@ def _fake_cast(
     if finfo.to_torch_dtype():
         # Well knwon data types. Use cast-decast for better performance
         fake_cast = _cast_decast
-    elif not finfo.finite and not finfo.unsigned_zero:
-        # IEEE fake-cast is only valid when finite = unsigned_zero = false
+    elif not finfo.unsigned_zero:
+        # IEEE fake-cast is only valid when unsigned_zero = false
         fake_cast = _fake_cast_to_ieee_float
     else:
         raise NotImplementedError(
@@ -451,5 +453,5 @@ def _cast_decast(input: torch.Tensor, finfo: _finfo):
 
 def _fake_cast_to_ieee_float(input: torch.Tensor, finfo: _finfo):
     return fake_cast_to_ieee_float(
-        input, finfo.max, finfo.exponent_bits, finfo.mantissa_bits
+        input, finfo.max, finfo.exponent_bits, finfo.mantissa_bits, finite=finfo.finite
     )

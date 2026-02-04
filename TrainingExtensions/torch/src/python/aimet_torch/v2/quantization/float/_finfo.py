@@ -53,6 +53,9 @@ class _finfo(
         if torch_dtype:
             return torch.finfo(torch_dtype).max
 
+        if self == _float4_e2m1fn:
+            return 6.0
+
         if not self.finite and not self.unsigned_zero:
             return self._ieee_float_max_representable_value()
 
@@ -96,6 +99,10 @@ if hasattr(torch, "float8_e5m2fnuz"):
         exponent_bits=5, mantissa_bits=2, finite=True, unsigned_zero=True
     )
     _finfo_to_torch_dtype.update({_float8_e5m2fnuz: torch.float8_e5m2fnuz})
+
+_float4_e2m1fn = _finfo(
+    exponent_bits=2, mantissa_bits=1, finite=True, unsigned_zero=False
+)
 
 
 _torch_dtype_to_finfo: Mapping[torch.dtype, _finfo] = {

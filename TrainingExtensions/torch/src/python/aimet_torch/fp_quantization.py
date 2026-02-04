@@ -154,7 +154,13 @@ def quantize_to_fp8(
     return fake_cast_to_ieee_float(x_float, maxval, exponent_bits, mantissa_bits)
 
 
-def fake_cast_to_ieee_float(x_float, maxval, exponent_bits, mantissa_bits):
+def fake_cast_to_ieee_float(
+    x_float: np.ndarray | torch.Tensor | float,
+    maxval: np.ndarray | torch.Tensor | float,
+    exponent_bits: int,
+    mantissa_bits: int,
+    finite: bool = True,
+) -> torch.Tensor:
     """
     Fake-cast to the given exponent and mantissa bits based on IEEE float representation.
     IEEE float representation follows the following equation:
@@ -165,15 +171,18 @@ def fake_cast_to_ieee_float(x_float, maxval, exponent_bits, mantissa_bits):
     maximum representable value based on the above equation.
     """
 
-    def log2(x):
-        if isinstance(x, torch.Tensor):
-            return torch.log2(x)
-        return np.log2(x)
+    if not isinstance(x_float, torch.Tensor):
+        x_float = torch.tensor(x_float, dtype=torch.float64)
+
+    if not isinstance(maxval, torch.Tensor):
+        maxval = torch.tensor(maxval, dtype=torch.float64).to(x_float.device)
 
     # Math explanation of what happens here:
     # Bias is computed from maxval: $B=2^E - \log_2(M) + \log_2(2 - 2^{-M}) - 1$
     # This follows from maxval $M=(2 - 2^{-M}) \cdot 2^{2^E-1-B}$.
-    bias = 2**exponent_bits - log2(maxval) + log2(2 - 2 ** (-mantissa_bits)) - 1
+    bias = (
+        2**exponent_bits - torch.log2(maxval) + np.log2(2 - 2 ** (-mantissa_bits)) - 1
+    )
 
     # Ensure no values are greater than the maximum value represented by an 8 bit float system
     # with M mantissa and E exponent bits. torch.min/torch.max are used to allow gradients to
@@ -184,7 +193,7 @@ def fake_cast_to_ieee_float(x_float, maxval, exponent_bits, mantissa_bits):
     # \log_2 s = \left\lfloor \log_2 |x_c| + B \right\rfloor - M - B
     # the addition of bias inside the floor and subtraction outside ensures that a
     # tensor scaling $\alpha \neq 1$ is correctly incorporated
-    log_scales = torch.floor(log2(torch.abs(x_clipped)) + bias).detach()
+    log_scales = torch.floor(torch.log2(torch.abs(x_clipped)) + bias).detach()
 
     # This ensures scales are never smaller than the subnormal scale
     log_scales = torch.clamp(log_scales, 1.0)
@@ -193,4 +202,13 @@ def fake_cast_to_ieee_float(x_float, maxval, exponent_bits, mantissa_bits):
     scales = 2.0 ** (log_scales - mantissa_bits - bias)
 
     # Using the per-element scale we can quantize the clipped input tensor to the FP grid
-    return torch.round(x_clipped / scales) * scales
+    output = torch.round(x_clipped / scales) * scales
+
+    if not finite:
+        output = torch.where(
+            x_float.isinf(),
+            x_float,
+            output,
+        )
+
+    return output.to(x_float.dtype)
