@@ -41,10 +41,13 @@ class _Observer(Generic[_Statistics], ABC):
     Observes and gathers statistics
     """
 
-    def __init__(self, shape: tuple):
+    def __init__(
+        self, shape: tuple[int, ...], block_size: tuple[int, ...] | None = None
+    ):
         if isinstance(shape, int):
             shape = (shape,)
         self.shape = tuple(shape)
+        self.block_size = block_size
 
     @abstractmethod
     def collect_stats(self, input_tensor: torch.Tensor) -> _Statistics:
@@ -68,14 +71,26 @@ class _MinMaxObserver(_Observer[_MinMaxRange]):
     Observer for Min-Max calibration technique
     """
 
-    def __init__(self, shape: tuple):
-        super().__init__(shape)
+    def __init__(
+        self, shape: tuple[int, ...], block_size: tuple[int, ...] | None = None
+    ):
+        super().__init__(shape, block_size)
         self.stats = _MinMaxRange()
 
     @torch.no_grad()
     def collect_stats(self, input_tensor: torch.Tensor) -> _MinMaxRange:
-        new_min = reduce(input_tensor, shape=self.shape, reduce_op=torch.min).values
-        new_max = reduce(input_tensor, shape=self.shape, reduce_op=torch.max).values
+        new_min = reduce(
+            input_tensor,
+            shape=self.shape,
+            reduce_op=torch.amin,
+            block_size=self.block_size,
+        )
+        new_max = reduce(
+            input_tensor,
+            shape=self.shape,
+            reduce_op=torch.amax,
+            block_size=self.block_size,
+        )
         return _MinMaxRange(new_min, new_max)
 
     @torch.no_grad()
@@ -109,9 +124,14 @@ class _HistogramObserver(_Observer[_Histogram]):
     """
 
     def __init__(
-        self, shape: tuple, num_bins: int, growth_limit: Optional[float] = None
+        self,
+        shape: tuple,
+        *,
+        block_size: tuple[int, ...] | None = None,
+        num_bins: int,
+        growth_limit: Optional[float] = None,
     ):
-        super().__init__(shape)
+        super().__init__(shape, block_size)
         self.num_bins = num_bins
         self.stats = [_Histogram() for _ in range(np.prod(self.shape, dtype=np.int32))]
 
@@ -127,17 +147,25 @@ class _HistogramObserver(_Observer[_Histogram]):
     # pylint: disable=too-many-locals
     @torch.no_grad()
     def collect_stats(self, input_tensor: torch.Tensor) -> List[_Histogram]:
-        if not _is_expandable(self.shape, input_tensor.shape):
+        from ._utils import interleave, concretize_block_size
+
+        hist_stats = []
+        histogram_shape = self.shape
+
+        if self.block_size is not None:
+            block_size = concretize_block_size(
+                input_tensor.shape, self.shape, self.block_size
+            )
+            input_tensor = input_tensor.reshape(-1, *interleave(self.shape, block_size))
+            histogram_shape = interleave(self.shape, 1)
+
+        if not _is_expandable(histogram_shape, input_tensor.shape):
             raise RuntimeError(
                 f"Shape {self.shape} is incompatible with input of shape {input_tensor.shape}"
             )
 
-        hist_stats = []
-        input_shape = tuple(input_tensor.shape)
-        histogram_shape = self.shape
-
         padded_histogram_shape = (
-            *itertools.repeat(1, len(input_shape) - len(histogram_shape)),
+            *itertools.repeat(1, input_tensor.dim() - len(histogram_shape)),
             *histogram_shape,
         )
 
@@ -379,8 +407,10 @@ class MinMaxEncodingAnalyzer(EncodingAnalyzer[_MinMaxRange]):
         (tensor([-2.1721]), tensor([2.2592]))
     """
 
-    def __init__(self, shape: tuple):
-        observer = _MinMaxObserver(shape)
+    def __init__(
+        self, shape: tuple[int, ...], block_size: tuple[int, ...] | None = None
+    ):
+        observer = _MinMaxObserver(shape, block_size)
         super().__init__(observer)
 
     # pylint: disable=too-many-locals
@@ -520,11 +550,19 @@ class PercentileEncodingAnalyzer(EncodingAnalyzer[_Histogram]):
         (tensor([-1.1548]), tensor([0.2614]))
     """
 
-    def __init__(self, shape: tuple, num_bins: int = 2048, percentile: float = 100):
+    def __init__(
+        self,
+        shape: tuple,
+        num_bins: int = 2048,
+        percentile: float = 100,
+        block_size: tuple[int, ...] | None = None,
+    ):
         if num_bins <= 0:
             raise ValueError("Number of bins cannot be less than or equal to 0.")
 
-        observer = _HistogramObserver(shape=shape, num_bins=num_bins)
+        observer = _HistogramObserver(
+            shape=shape, num_bins=num_bins, block_size=block_size
+        )
         super().__init__(observer)
         self.set_percentile(percentile)
 
@@ -617,11 +655,15 @@ class _LpNormEncodingAnalyzer(EncodingAnalyzer[_Histogram]):
         max_parallelism: int,
         gamma: float,
         histogram_growth_limit: Optional[float] = None,
+        block_size: tuple[int, ...] | None = None,
     ):
         if num_bins <= 0:
             raise ValueError("Number of bins cannot be less than or equal to 0.")
         observer = _HistogramObserver(
-            shape=shape, num_bins=num_bins, growth_limit=histogram_growth_limit
+            shape=shape,
+            num_bins=num_bins,
+            growth_limit=histogram_growth_limit,
+            block_size=block_size,
         )
         super().__init__(observer)
         self.p = p
@@ -887,6 +929,7 @@ class SqnrEncodingAnalyzer(_LpNormEncodingAnalyzer):
         max_parallelism=64,
         gamma=3.0,
         histogram_growth_limit: Optional[float] = None,
+        block_size: tuple[int, ...] | None = None,
     ):
         super().__init__(
             shape=shape,
@@ -898,6 +941,7 @@ class SqnrEncodingAnalyzer(_LpNormEncodingAnalyzer):
             max_parallelism=max_parallelism,
             gamma=gamma,
             histogram_growth_limit=histogram_growth_limit,
+            block_size=block_size,
         )
 
 
@@ -923,7 +967,9 @@ class TfEnhancedEncodingAnalyzer(SqnrEncodingAnalyzer):
     #       we clip the all inputs with 3x range of the first input
     _V1_HISTOGRAM_MAX_GROWTH_RATE = 3.0
 
-    def __init__(self, shape: tuple):
+    def __init__(
+        self, shape: tuple[int, ...], block_size: tuple[int, ...] | None = None
+    ):
         super().__init__(
             shape=shape,
             num_bins=self._V1_HISTOGRAM_NUM_BINS,
@@ -932,6 +978,7 @@ class TfEnhancedEncodingAnalyzer(SqnrEncodingAnalyzer):
             offset_candidates=self._V1_OFFSET_CANDIDATES,
             gamma=self._V1_GAMMA,
             histogram_growth_limit=self._V1_HISTOGRAM_MAX_GROWTH_RATE,
+            block_size=block_size,
         )
 
     @classmethod

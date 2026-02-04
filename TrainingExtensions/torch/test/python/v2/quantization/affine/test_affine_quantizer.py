@@ -1262,7 +1262,7 @@ def test_bq_compute_encodings_and_forward(params):
     )
     if params == "scale_offset":
         bq._reparametrize_to_scale_offset()
-    assert bq.encoding_analyzer.observer.shape == (2, 1, 2, 1, 4, 1)
+    assert bq.encoding_analyzer.observer.shape == shape
 
     bq.eval()
     param_tensor = torch.randn(4, 8, 12)

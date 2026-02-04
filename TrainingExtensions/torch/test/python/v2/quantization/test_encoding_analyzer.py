@@ -136,13 +136,88 @@ class TestMinMaxEncodingAnalyzer:
         assert torch.allclose(symmetric_min, expected_min)
         assert torch.allclose(symmetric_max, expected_max)
 
-    @pytest.mark.parametrize("min_max_size", [[3, 4], [2, 3, 1], [4], [1]])
-    def test_update_stats_with_different_dimensions(self, min_max_size):
-        for _ in range(4):
-            encoding_analyzer = MinMaxEncodingAnalyzer(min_max_size)
-            encoding_analyzer.update_stats(torch.randn(2, 3, 4))
-            assert list(encoding_analyzer.observer.stats.min.shape) == min_max_size
-            assert list(encoding_analyzer.observer.stats.max.shape) == min_max_size
+    @pytest.mark.parametrize("seed", range(4))
+    def test_update_stats_with_different_dimensions(self, seed: int):
+        torch.manual_seed(seed)
+        x = torch.randn(2, 3, 4)
+
+        shape = (2, 3, 4)
+        encoding_analyzer = MinMaxEncodingAnalyzer(shape)
+        encoding_analyzer.update_stats(x)
+        assert (
+            encoding_analyzer.observer.stats.min.shape
+            == encoding_analyzer.observer.stats.max.shape
+            == shape
+        )
+        assert torch.equal(encoding_analyzer.observer.stats.min, x)
+        assert torch.equal(encoding_analyzer.observer.stats.max, x)
+
+        shape = (3, 4)
+        encoding_analyzer = MinMaxEncodingAnalyzer(shape)
+        encoding_analyzer.update_stats(x)
+        assert (
+            encoding_analyzer.observer.stats.min.shape
+            == encoding_analyzer.observer.stats.max.shape
+            == shape
+        )
+        assert torch.equal(encoding_analyzer.observer.stats.min, x.amin(dim=0))
+        assert torch.equal(encoding_analyzer.observer.stats.max, x.amax(dim=0))
+
+        shape = (2, 3, 1)
+        encoding_analyzer = MinMaxEncodingAnalyzer(shape)
+        encoding_analyzer.update_stats(x)
+        assert (
+            encoding_analyzer.observer.stats.min.shape
+            == encoding_analyzer.observer.stats.max.shape
+            == shape
+        )
+        assert torch.equal(
+            encoding_analyzer.observer.stats.min, x.amin(dim=2, keepdim=True)
+        )
+        assert torch.equal(
+            encoding_analyzer.observer.stats.max, x.amax(dim=2, keepdim=True)
+        )
+
+        shape = (4,)
+        encoding_analyzer = MinMaxEncodingAnalyzer(shape)
+        encoding_analyzer.update_stats(x)
+        assert (
+            encoding_analyzer.observer.stats.min.shape
+            == encoding_analyzer.observer.stats.max.shape
+            == shape
+        )
+        assert torch.equal(encoding_analyzer.observer.stats.min, x.amin(dim=[0, 1]))
+        assert torch.equal(encoding_analyzer.observer.stats.max, x.amax(dim=[0, 1]))
+
+        shape = ()
+        encoding_analyzer = MinMaxEncodingAnalyzer(shape)
+        encoding_analyzer.update_stats(x)
+        assert (
+            encoding_analyzer.observer.stats.min.shape
+            == encoding_analyzer.observer.stats.max.shape
+            == shape
+        )
+        assert torch.equal(encoding_analyzer.observer.stats.min, x.amin())
+        assert torch.equal(encoding_analyzer.observer.stats.max, x.amax())
+
+        shape = (2, 3, 2)
+        block_size = (1, 1, -1)
+        encoding_analyzer = MinMaxEncodingAnalyzer(shape, block_size=block_size)
+        encoding_analyzer.update_stats(x)
+        assert (
+            encoding_analyzer.observer.stats.min.shape
+            == encoding_analyzer.observer.stats.max.shape
+            == shape
+        )
+        for i in range(2):
+            assert torch.equal(
+                encoding_analyzer.observer.stats.min[..., i],
+                x[..., 2 * i : 2 * (i + 1)].amin(dim=2),
+            )
+            assert torch.equal(
+                encoding_analyzer.observer.stats.max[..., i],
+                x[..., 2 * i : 2 * (i + 1)].amax(dim=2),
+            )
 
     def test_update_stats_incompatible_dimension(self):
         encoding_analyzer = MinMaxEncodingAnalyzer([3, 4])
@@ -262,11 +337,29 @@ class TestHistogramEncodingAnalyzer:
     @pytest.mark.parametrize("symmetric", [True, False])
     @pytest.mark.parametrize("device", ["cuda", "cpu"])
     @pytest.mark.parametrize(
-        "shape", [(4,), (3, 1), (2, 1, 1), (3, 4), (2, 3, 1), (2, 1, 4), (2, 3, 4)]
+        "shape, block_size",
+        [
+            [(4,), None],
+            [(3, 1), None],
+            [(2, 1, 1), None],
+            [(3, 4), None],
+            [(2, 3, 1), None],
+            [(2, 1, 4), None],
+            [(2, 3, 4), None],
+            [(2, 3, 2), (1, 1, -1)],
+        ],
     )
-    def test_compute_encodings_multidimensional(self, symmetric, device, shape):
+    def test_compute_encodings_multidimensional(
+        self,
+        symmetric: bool,
+        device: torch.device,
+        shape: tuple[int, ...],
+        block_size: tuple[int, ...] | None,
+    ):
         x = torch.arange(24, dtype=torch.float).view(2, 3, 4).to(device)
-        encoding_analyzer = PercentileEncodingAnalyzer(shape=shape, percentile=99)
+        encoding_analyzer = PercentileEncodingAnalyzer(
+            shape=shape, percentile=99, block_size=block_size
+        )
         encoding_analyzer.update_stats(x)
         num_steps = 2**8 - 1
         encoding_min, encoding_max = encoding_analyzer.compute_encodings(
@@ -340,6 +433,17 @@ class TestHistogramEncodingAnalyzer:
             m = i % 4
             assert torch.equal(histograms[i].min, x[j, k, m].min())
             assert torch.equal(histograms[i].max, x[j, k, m].max())
+
+        shape = (2, 3, 2)
+        block_size = (1, 1, -1)
+        observer = _HistogramObserver(shape, num_bins=5, block_size=block_size)
+        histograms = observer.collect_stats(x)
+        for i in range(12):
+            j = i // 6
+            k = (i // 2) % 3
+            m = i % 2
+            assert torch.equal(histograms[i].min, x[j, k, 2 * m : 2 * (m + 1)].min())
+            assert torch.equal(histograms[i].max, x[j, k, 2 * m : 2 * (m + 1)].max())
 
     def test_histogram_during_merging(self):
         observer = _HistogramObserver((), num_bins=10)

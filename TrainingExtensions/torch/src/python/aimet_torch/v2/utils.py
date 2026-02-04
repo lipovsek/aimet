@@ -34,14 +34,29 @@ def _is_reducible(src_shape: Tuple[int, ...], target_shape: Tuple[int, ...]) -> 
     return _is_expandable(target_shape, src_shape)  # pylint: disable=arguments-out-of-order
 
 
-def reduce(input: torch.Tensor, shape: Tuple[int, ...], reduce_op: Callable):
+def reduce(
+    input: torch.Tensor,
+    shape: tuple[int, ...],
+    reduce_op: Callable,
+    block_size: tuple[int, ...] | None = None,
+):
     """
     Reduce input into given shape.
 
     :param input: Input to reduce
     :param shape: Shape of the reduced output
     :param reduce_op: Reduce operation
+    :param block_size: Block size for block-wise reduction
     """
+    from .quantization._utils import interleave, concretize_block_size
+
+    output_shape = shape
+
+    if block_size is not None:
+        block_size = concretize_block_size(input.shape, shape, block_size)
+        input = input.reshape(-1, *interleave(shape, block_size))
+        shape = interleave(shape, 1)
+
     if not _is_reducible(input.shape, shape):
         raise RuntimeError(
             f"Input of shape {list(input.shape)} can't be reduced to shape {list(shape)}"
@@ -53,7 +68,7 @@ def reduce(input: torch.Tensor, shape: Tuple[int, ...], reduce_op: Callable):
     permute_dims = reduce_dims + other_dims
 
     return reduce_op(
-        input.permute(permute_dims).reshape(-1, *shape), dim=0, keepdim=False
+        input.permute(permute_dims).reshape(-1, *output_shape), dim=0, keepdim=False
     )
 
 

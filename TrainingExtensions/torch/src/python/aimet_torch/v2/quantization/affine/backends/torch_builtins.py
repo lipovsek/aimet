@@ -20,6 +20,7 @@ from aimet_torch.v2.utils import (
 )
 import aimet_torch.v2.experimental.onnx._export as _onnx
 from aimet_torch.experimental import pgs
+from aimet_torch.v2.quantization._utils import interleave, concretize_block_size
 
 
 _torch_version: Tuple[int, int, int] = (
@@ -154,9 +155,13 @@ def quantize(
             internal_dtype = torch.float64
 
     orig_tensor_shape = tensor.shape
-    tensor = reshape_tensor_for_blocks(tensor, scale.shape, block_size)
-    scale = scale.view(get_encoding_shape_with_blocks(scale.shape, block_size))
-    offset = offset.view(get_encoding_shape_with_blocks(offset.shape, block_size))
+
+    if block_size:
+        block_size = concretize_block_size(tensor.shape, scale.shape, block_size)
+        tensor = tensor.reshape(-1, *interleave(scale.shape, block_size))
+        scale = scale.view(interleave(scale.shape, 1))
+        offset = offset.view(interleave(offset.shape, 1))
+
     return (
         QuantizeFunc.apply(
             tensor, scale.to(internal_dtype), offset.to(internal_dtype), qmin, qmax
@@ -239,11 +244,14 @@ def quantize_dequantize(
         raise RuntimeError(msg)
 
     orig_tensor_shape = tensor.shape
-    tensor = reshape_tensor_for_blocks(tensor, scale.shape, block_size)
-    scale = scale.view(get_encoding_shape_with_blocks(scale.shape, block_size)).to(
-        internal_dtype
-    )
-    offset = offset.view(get_encoding_shape_with_blocks(offset.shape, block_size))
+
+    if block_size:
+        block_size = concretize_block_size(tensor.shape, scale.shape, block_size)
+        tensor = tensor.reshape(-1, *interleave(scale.shape, block_size))
+        scale = scale.view(interleave(scale.shape, 1))
+        offset = offset.view(interleave(offset.shape, 1))
+
+    scale = scale.to(internal_dtype)
     shifted_tensor = tensor
     qdq_tensor = QuantDequantFunc.apply(
         shifted_tensor,
@@ -480,9 +488,13 @@ def dequantize(
     output_dtype = internal_dtype = tensor.dtype
 
     orig_tensor_shape = tensor.shape
-    tensor = reshape_tensor_for_blocks(tensor, scale.shape, block_size)
-    scale = scale.view(get_encoding_shape_with_blocks(scale.shape, block_size))
-    offset = offset.view(get_encoding_shape_with_blocks(offset.shape, block_size))
+
+    if block_size:
+        block_size = concretize_block_size(tensor.shape, scale.shape, block_size)
+        tensor = tensor.reshape(-1, *interleave(scale.shape, block_size))
+        scale = scale.view(interleave(scale.shape, 1))
+        offset = offset.view(interleave(offset.shape, 1))
+
     return (
         DequantizeFunc.apply(
             tensor, scale.to(internal_dtype), offset.to(internal_dtype)
@@ -743,69 +755,6 @@ class QuantDequantFunc(torch.autograd.Function):
             offset_grad = torch.where(mask, 0, grad * scale)
 
         return tensor_grad, scale_grad, offset_grad, None, None, None
-
-
-def get_encoding_shape_with_blocks(
-    original_encoding_shape: torch.Size, block_size: List[int]
-):
-    """
-    Get new encoding param shape to account for block sizes. If block_size is not None, the original shape is
-    interleaved with '1' in between each dimension. Otherwise, the original shape is returned.
-
-    :param original_encoding_shape: Original encoding shape
-    :param block_size: Block sizes per dimension
-    :return: Encoding shape accounting for blocks
-    """
-    if block_size is None:
-        return original_encoding_shape
-
-    new_encoding_shape = []
-
-    for size in original_encoding_shape:
-        new_encoding_shape.append(size)
-        new_encoding_shape.append(1)
-
-    return new_encoding_shape
-
-
-def reshape_tensor_for_blocks(
-    tensor: torch.Tensor, encoding_shape: torch.Size, block_size: Optional[List]
-) -> torch.Tensor:
-    """
-    Reshape tensor to account for block sizes. The new shape separates each dimension into num blocks and block size.
-    The resulting tensor shape has twice as many dimensions as the starting shape.
-
-    For example, given the following:
-    tensor shape: [dim_1_size, dim_2_size, dim_3_size]
-    block_size: [block_1_size, block_2_size, block_3_size]
-
-    The input is reshaped into the following expanded shape:
-    expanded shape: [dim_1_size / block_1_size, block_1_size, dim_2_size / block_2_size, block_2_size,
-                     dim_3_size / block_3_size, block_3_size]
-
-    This assumes that dimension sizes are divisible by block sizes and that no padding is required.
-    If block_size is None, the original shape is returned.
-
-    :param tensor: Tensor to reshape
-    :param encoding_shape: Encoding param shape (without taking blocks into consideration)
-    :param block_size: Block sizes per dimension
-    :return: Reshaped tensor
-    """
-    if block_size is None:
-        return tensor
-
-    input_reshape = []
-    for i in range(1, len(block_size) + 1):
-        if block_size[-i] == -1:
-            input_reshape.insert(0, tensor.shape[-i] // encoding_shape[-i])
-            input_reshape.insert(0, encoding_shape[-i])
-        else:
-            input_reshape.insert(0, block_size[-i])
-            input_reshape.insert(0, encoding_shape[-i])
-
-    input_reshape = list(tensor.shape[: -len(block_size)]) + input_reshape
-
-    return tensor.view(input_reshape)
 
 
 _USE_COMPILED_IMPL = False

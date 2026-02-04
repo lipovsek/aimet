@@ -14,7 +14,7 @@ from torchvision import models
 from unittest.mock import patch
 
 from aimet_torch.v2.quantization import affine
-from aimet_torch.v2.quantization.affine.backends import torch_builtins
+from aimet_torch.v2.quantization._utils import concretize_block_size, interleave
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.nn import BaseQuantizationMixin
 from aimet_torch.utils import is_leaf_module
@@ -34,13 +34,13 @@ def autograd_based_qdq(
     tensor, scale, offset, qmin, qmax, block_size=None, zero_point_shift=0.0
 ) -> torch.Tensor:
     orig_tensor_shape = tensor.shape
-    tensor = torch_builtins.reshape_tensor_for_blocks(tensor, scale.shape, block_size)
-    scale = scale.view(
-        torch_builtins.get_encoding_shape_with_blocks(scale.shape, block_size)
-    )
-    offset = offset.view(
-        torch_builtins.get_encoding_shape_with_blocks(offset.shape, block_size)
-    )
+
+    if block_size:
+        block_size = concretize_block_size(tensor.shape, scale.shape, block_size)
+        tensor = tensor.reshape(-1, *interleave(scale.shape, block_size))
+        scale = scale.view(interleave(scale.shape, 1))
+        offset = offset.view(interleave(offset.shape, 1))
+
     x_round = STE.apply(tensor / scale) - offset
     x_quant = torch.clamp(x_round, qmin, qmax)
     return ((x_quant + offset) * scale).view(orig_tensor_shape)

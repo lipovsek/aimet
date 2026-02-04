@@ -12,7 +12,7 @@ import torch
 
 from aimet_torch.v2.quantization import DequantizedTensor
 from aimet_torch.v2.quantization.affine import QuantizeDequantize
-from aimet_torch.v2.quantization.affine.backends import torch_builtins
+from aimet_torch.v2.quantization._utils import concretize_block_size, interleave
 
 use_adascale_lwc: bool = True
 
@@ -120,13 +120,14 @@ class AdaScaleLinearQuantizeDequantize(AdaScaleQuantizeDequantize):
         super().__init__(qdq=qdq)
 
         if qdq.block_size is not None:
+            block_size = concretize_block_size(weight_shape, qdq.shape, self.block_size)
+            s2_shape = [
+                *weight_shape[: len(weight_shape) - len(qdq.shape)],
+                *interleave(qdq.shape, block_size),
+            ]
             self.register_parameter(
                 "s2",
-                torch.nn.Parameter(
-                    torch_builtins.reshape_tensor_for_blocks(
-                        torch.zeros(weight_shape), qdq.shape, self.block_size
-                    ).squeeze(1)
-                ),
+                torch.nn.Parameter(torch.zeros(s2_shape).squeeze(1)),
             )
             self.register_parameter(
                 "s3", torch.nn.Parameter(torch.zeros(self.shape).unsqueeze(-1))
@@ -162,13 +163,14 @@ class AdaScaleConv2dQuantizeDequantize(AdaScaleQuantizeDequantize):
         out_ch, in_ch, _, _ = weight_shape
 
         if qdq.block_size is not None:
+            block_size = concretize_block_size(weight_shape, qdq.shape, self.block_size)
+            s2_shape = [
+                *weight_shape[: len(weight_shape) - len(qdq.shape)],
+                *interleave(qdq.shape, block_size),
+            ]
             self.register_parameter(
                 "s2",
-                torch.nn.Parameter(
-                    torch_builtins.reshape_tensor_for_blocks(
-                        torch.zeros(weight_shape), qdq.shape, self.block_size
-                    ).squeeze(1)
-                ),
+                torch.nn.Parameter(torch.zeros(s2_shape).squeeze(1)),
             )
             self.register_parameter(
                 "s3", torch.nn.Parameter(torch.zeros((out_ch, 1, 1, 1)))

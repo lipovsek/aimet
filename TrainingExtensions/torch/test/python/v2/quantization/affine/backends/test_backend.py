@@ -10,6 +10,7 @@ from aimet_torch.v2.quantization import affine
 from aimet_torch.v2.quantization.affine.backends import torch_builtins
 from aimet_torch.v2.utils import ste_round
 from aimet_torch.experimental import pgs
+from aimet_torch.v2.quantization._utils import interleave, concretize_block_size
 
 VectorSetForTest = namedtuple(
     "VectorSetForTest",
@@ -772,14 +773,15 @@ class TestQuantizationBackends:
         inp = torch.randn(8, 6, 8, 3)
         block_size = [-1, 2, 1, 3]
 
-        reshaped_inp = torch_builtins.reshape_tensor_for_blocks(
-            inp, scale.shape, block_size
+        reshaped_inp = inp.reshape(
+            *inp.shape[: inp.dim() - scale.dim()],
+            *interleave(
+                scale.shape, concretize_block_size(inp.shape, scale.shape, block_size)
+            ),
         )
         assert reshaped_inp.shape == (4, 2, 3, 2, 8, 1, 1, 3)
 
-        reshaped_scale = scale.view(
-            torch_builtins.get_encoding_shape_with_blocks(scale.shape, block_size)
-        )
+        reshaped_scale = scale.view(interleave(scale.shape, 1))
         assert reshaped_scale.shape == (4, 1, 3, 1, 8, 1, 1, 1)
 
         q = affine.quantize(inp, scale, offset, 8, True, block_size=block_size)

@@ -41,13 +41,16 @@ from aimet_torch.v2.quantization.affine.backends import (
     quantize,
     quantize_dequantize,
     dequantize,
-    torch_builtins,
     _derive_qmin_qmax,
 )
 from aimet_torch.v2.utils import ste_round
 from aimet_torch.v2.deepspeed_utils import SafeGatheredParameters
 from aimet_torch.common.quantsim import _get_minimum_scale
 from ._utils import _GridMixin, _register_signature
+from aimet_torch.v2.quantization._utils import (
+    interleave,
+    concretize_block_size,
+)
 
 
 __all__ = [
@@ -166,7 +169,8 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
             )
 
         self.encoding_analyzer = encoding_analyzer or MinMaxEncodingAnalyzer(
-            torch_builtins.get_encoding_shape_with_blocks(self.shape, self.block_size)
+            shape=self.shape,
+            block_size=self.block_size,
         )
 
         if self.block_size is None and not _is_expandable(
@@ -447,6 +451,7 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
                 self.block_size,
                 self.zero_point_shift,
             )
+
         return None
 
     @classmethod
@@ -592,12 +597,9 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
             raise RuntimeError from e
 
         @functools.wraps(original_forward)
-        def forward_wrapper(input):
+        def forward_wrapper(input: torch.Tensor) -> torch.Tensor:
             input = input.as_subclass(torch.Tensor)
-            expanded_input = torch_builtins.reshape_tensor_for_blocks(
-                input, shape, self.block_size
-            )
-            batch_statistics = self.encoding_analyzer.update_stats(expanded_input)
+            batch_statistics = self.encoding_analyzer.update_stats(input)
             num_steps = self.qmax - self.qmin
             if self.zero_point_shift == 0.5:
                 num_steps -= 1
@@ -1162,9 +1164,14 @@ class GroupedBlockQuantizeDequantize(QuantizeDequantize):  # pylint: disable=too
             s_dim // group_size if group_size != -1 else 1
             for s_dim, group_size in zip(raw_scale.shape, self.block_grouping)
         ]
-        reshaped_scale = torch_builtins.reshape_tensor_for_blocks(
-            raw_scale, per_channel_scale_shape, self.block_grouping
+        block_grouping = concretize_block_size(
+            raw_scale.shape, per_channel_scale_shape, self.block_grouping
         )
+        reshaped_scale = raw_scale.reshape(
+            *raw_scale.shape[: raw_scale.dim() - len(per_channel_scale_shape)],
+            *interleave(per_channel_scale_shape, block_grouping),
+        )
+
         max_scale = torch.amax(
             reshaped_scale, dim=tuple(range(1, reshaped_scale.dim(), 2))
         )
