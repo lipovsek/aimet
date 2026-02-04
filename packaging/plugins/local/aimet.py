@@ -252,7 +252,7 @@ def optional_dependencies() -> dict[str, list[str]]:
     else:
         optional_dependencies["test"].extend(
             [
-                "datasets",
+                "datasets>=2.18.0",
                 "onnxruntime",
                 "onnxruntime-extensions",
                 "onnxsim",
