@@ -1696,3 +1696,62 @@ def test_triton(
         triton_export = onnx.load(tmp_path / "model.onnx")
 
     assert torch_builtin_export == triton_export
+
+
+def test_activation_uint(tmp_path: pathlib.Path):
+    """
+    Given: Model with symmetric activation encoding
+    When: Export to onnx QDQ
+    Then: All activation encodings in the exported onnx model should be uint
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.mm = aimet_torch.nn.modules.custom.MatMul()
+
+        def forward(self, x, y):
+            return self.mm(x, y)
+
+    dummy_input = (torch.randn(10, 10), torch.randn(10, 10))
+    sim = QuantizationSimModel(
+        Model(), dummy_input, default_output_bw=16, config_file="htp_v81"
+    )
+    # sanity check
+    assert not sim.model.mm.input_quantizers[0].symmetric
+    assert sim.model.mm.input_quantizers[1].symmetric
+    assert not sim.model.mm.output_quantizers[0].symmetric
+
+    sim.compute_encodings(lambda m: m(*dummy_input))
+    aimet_torch.onnx.export(
+        sim.model,
+        dummy_input,
+        tmp_path / "model.onnx",
+        opset_version=21,
+        input_names=["x", "y"],
+        output_names=["output"],
+    )
+
+    onnx_model = onnx.load(tmp_path / "model.onnx")
+    onnx.checker.check_model(onnx_model)
+
+    initializers = {init.name: init for init in onnx_model.graph.initializer}
+    for node in onnx_model.graph.node:
+        if node.op_type in ("QuantizeLinear", "DequantizeLinear"):
+            zero_point = node.input[2]
+            assert initializers[zero_point].data_type == TensorProto.UINT16
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(), sess_options=sess_options
+    )
+    (ort_out,) = sess.run(
+        None, {"x": dummy_input[0].numpy(), "y": dummy_input[1].numpy()}
+    )
+    sim_out = sim.model(*dummy_input)
+    assert np.allclose(
+        ort_out,
+        sim_out.detach().numpy(),
+        atol=sim.model.mm.output_quantizers[0].get_scale().item(),
+    )

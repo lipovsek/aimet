@@ -900,6 +900,7 @@ class QuantizationSimModelOnnxExporter:
             )
 
         from aimet_torch.onnx import (
+            _temporarily_convert_activation_to_uint,
             _check_unsupported_args,
             _concretize_int32_bias_quantizers,
             _remove_fp16_quantizers,
@@ -924,6 +925,7 @@ class QuantizationSimModelOnnxExporter:
 
             # Export quantize-dequantized weight
             # pylint: disable=protected-access
+            stack.enter_context(_temporarily_convert_activation_to_uint(self.sim.model))
             stack.enter_context(self.sim._apply_qdq_to_model_parameters(self.sim.model))
 
             # Remove [b]float16 quantizers

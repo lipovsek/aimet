@@ -6,6 +6,7 @@
 
 import contextlib
 import io
+import itertools
 from aimet_torch.v2.quantization.affine.encoding import AffineEncoding
 from packaging import version
 import traceback
@@ -130,6 +131,7 @@ def export(
 
         # Export quantize-dequantized weight
         # pylint: disable=protected-access
+        stack.enter_context(_temporarily_convert_activation_to_uint(model))
         stack.enter_context(QuantizationSimModel._apply_qdq_to_model_parameters(model))
 
         # Remove [b]float16 quantizers
@@ -673,3 +675,29 @@ def _absorb_zero_point_shift(model: torch.nn.Module):
             min = new_scale * qtzr.qmin
             max = new_scale * qtzr.qmax
             qtzr.set_range(min, max)
+
+
+@contextlib.contextmanager
+def _temporarily_convert_activation_to_uint(model: torch.nn.Module):
+    """
+    Temporarily convert all signed activation quantizers to unsigned ones for onnx export.
+
+    TODO: This is a temporary workaround for QAIRT/HTP bug in handling signed activation encodings.
+          Remove this once the bug is fixed.
+          (https://github.qualcomm.com/qualcomm-ai/aimet/issues/5236)
+    """
+    signed_int_activation_quantizers = [
+        qtzr
+        for module in model.modules()
+        if isinstance(module, QuantizationMixin)
+        for qtzr in itertools.chain(module.input_quantizers, module.output_quantizers)
+        if isinstance(qtzr, AffineQuantizerBase) and qtzr.signed
+    ]
+
+    try:
+        for qtzr in signed_int_activation_quantizers:
+            qtzr.signed = False
+        yield
+    finally:
+        for qtzr in signed_int_activation_quantizers:
+            qtzr.signed = True
