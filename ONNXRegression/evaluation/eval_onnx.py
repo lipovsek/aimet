@@ -131,12 +131,19 @@ def eval_onnx_model(
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
 
+    # Determine execution providers - prefer CUDA if available
+    providers = ["CPUExecutionProvider"]
+    if "CUDAExecutionProvider" in ort.get_available_providers():
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
     # Create session if path was provided
     if isinstance(session_or_path, ort.InferenceSession):
         session = session_or_path
     else:
         # Load ONNX model from file
-        session = ort.InferenceSession(str(session_or_path), sess_options=sess_options)
+        session = ort.InferenceSession(
+            str(session_or_path), sess_options=sess_options, providers=providers
+        )
 
     # Evaluate using QAI Hub's standardized evaluation
     accuracy, _ = evaluate_session_on_dataset(
