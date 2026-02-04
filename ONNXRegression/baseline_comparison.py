@@ -42,6 +42,8 @@ class TestResult:
     qnn_latency_ms: Optional[float] = None
     techniques: Optional[str] = None
     max_accuracy_drop: float = 1.0
+    aimet_runtime_ms: Optional[float] = None
+    aimet_memory_mb: Optional[float] = None
 
 
 @dataclass
@@ -152,6 +154,48 @@ class Comparison:
         if abs(self.diff) < 0.1:
             return "stable ✅"
         return f"{self.diff:+.2f}% {self.emoji}"
+
+
+@dataclass
+class MetricComparison:
+    """Comparison for performance metrics (runtime, memory)."""
+
+    model: str
+    feature: str
+    metric_name: str
+    baseline: float
+    current: float
+    diff_pct: float
+    threshold_pct: float
+
+    @property
+    def is_regression(self) -> bool:
+        """Check if metric increased beyond threshold."""
+        return self.diff_pct > self.threshold_pct
+
+    @property
+    def emoji(self) -> str:
+        """Get emoji based on change severity."""
+        if self.diff_pct > self.threshold_pct * 2:
+            return "🔴"
+        elif self.diff_pct > self.threshold_pct:
+            return "⚠️"
+        elif self.diff_pct < -self.threshold_pct:
+            return "📈"
+        else:
+            return "✅"
+
+    @property
+    def formatted_change(self) -> str:
+        """Format the change with baseline and current values."""
+        if self.metric_name == "runtime":
+            return (
+                f"{self.baseline:.1f}ms → {self.current:.1f}ms ({self.diff_pct:+.1f}%)"
+            )
+        else:
+            return (
+                f"{self.baseline:.1f}MB → {self.current:.1f}MB ({self.diff_pct:+.1f}%)"
+            )
 
 
 def validate_quantization_quality(result: TestResult) -> QualityCheck:
@@ -287,6 +331,23 @@ class BaselineManager:
                     row.get("QDQ Accuracy") or row.get("ONNX Accuracy", 0)
                 )
 
+                # Parse runtime (format: "123.45 ms" or "1.23 s")
+                runtime_str = row.get("AIMET Runtime", "")
+                aimet_runtime = None
+                if runtime_str and runtime_str != "None":
+                    if " ms" in runtime_str:
+                        aimet_runtime = safe_float(runtime_str.replace(" ms", ""), None)
+                    elif " s" in runtime_str:
+                        val = safe_float(runtime_str.replace(" s", ""), None)
+                        if val is not None:
+                            aimet_runtime = val * 1000
+
+                # Parse memory (format: "456.7 MB")
+                memory_str = row.get("AIMET Memory", "")
+                aimet_memory = None
+                if memory_str and memory_str != "None":
+                    aimet_memory = safe_float(memory_str.replace(" MB", ""), None)
+
                 results[key] = TestResult(
                     model=row["Model"],
                     feature=row["Feature"],
@@ -296,6 +357,8 @@ class BaselineManager:
                     qnn_latency_ms=qnn_latency,
                     techniques=techniques,
                     max_accuracy_drop=safe_float(row.get("Max_Accuracy_Drop"), 1.0),
+                    aimet_runtime_ms=aimet_runtime,
+                    aimet_memory_mb=aimet_memory,
                 )
 
         print(f"✔ Loaded {len(results)} test results from CSV")
@@ -313,6 +376,8 @@ class BaselineManager:
                 "qdq_accuracy": result.qdq_accuracy,
                 "qnn_latency_ms": result.qnn_latency_ms,
                 "techniques": result.techniques,
+                "aimet_runtime_ms": result.aimet_runtime_ms,
+                "aimet_memory_mb": result.aimet_memory_mb,
             }
 
         with open(self.baseline_file, "w") as f:
@@ -372,6 +437,70 @@ class BaselineManager:
 
         return regressions, improvements, unchanged
 
+    def compare_metrics(
+        self,
+        current: Dict[str, TestResult],
+        baseline: Dict[str, Dict],
+        runtime_threshold_pct: float = 20.0,
+        memory_threshold_pct: float = 15.0,
+    ) -> Tuple[List[MetricComparison], List[MetricComparison]]:
+        """
+        Compare runtime and memory metrics with baseline.
+
+        Args:
+            current: Current test results
+            baseline: Baseline data
+            runtime_threshold_pct: Percentage increase threshold for runtime warnings
+            memory_threshold_pct: Percentage increase threshold for memory warnings
+
+        Returns:
+            Tuple of (runtime_regressions, memory_regressions)
+        """
+        runtime_regressions = []
+        memory_regressions = []
+
+        for key, curr_result in current.items():
+            if key not in baseline:
+                continue
+
+            base_data = baseline[key]
+
+            # Compare runtime
+            base_runtime = base_data.get("aimet_runtime_ms")
+            curr_runtime = curr_result.aimet_runtime_ms
+            if base_runtime and curr_runtime and base_runtime > 0:
+                diff_pct = ((curr_runtime - base_runtime) / base_runtime) * 100
+                comp = MetricComparison(
+                    model=curr_result.model,
+                    feature=curr_result.feature,
+                    metric_name="runtime",
+                    baseline=base_runtime,
+                    current=curr_runtime,
+                    diff_pct=diff_pct,
+                    threshold_pct=runtime_threshold_pct,
+                )
+                if comp.is_regression:
+                    runtime_regressions.append(comp)
+
+            # Compare memory
+            base_memory = base_data.get("aimet_memory_mb")
+            curr_memory = curr_result.aimet_memory_mb
+            if base_memory and curr_memory and base_memory > 0:
+                diff_pct = ((curr_memory - base_memory) / base_memory) * 100
+                comp = MetricComparison(
+                    model=curr_result.model,
+                    feature=curr_result.feature,
+                    metric_name="memory",
+                    baseline=base_memory,
+                    current=curr_memory,
+                    diff_pct=diff_pct,
+                    threshold_pct=memory_threshold_pct,
+                )
+                if comp.is_regression:
+                    memory_regressions.append(comp)
+
+        return runtime_regressions, memory_regressions
+
 
 class ReportGenerator:
     """Generate markdown reports for baseline comparison."""
@@ -383,6 +512,8 @@ class ReportGenerator:
         regressions: List[Comparison],
         improvements: List[Comparison],
         unchanged: List[Comparison],
+        runtime_regressions: Optional[List[MetricComparison]] = None,
+        memory_regressions: Optional[List[MetricComparison]] = None,
     ) -> str:
         """Generate markdown report with quality and export validations."""
         lines = []
@@ -425,32 +556,13 @@ class ReportGenerator:
         else:
             # Calculate quality status counts
             passed_count = 0
-            warning_count = 0
             failed_count = 0
 
             for result in current.values():
                 quality = validate_quantization_quality(result)
-                export_val = validate_qdq_export(result)
-
-                baseline_comp = None
-                for comp in regressions + improvements + unchanged:
-                    if (
-                        comp.model == result.model
-                        and comp.feature == result.feature
-                        and comp.techniques == (result.techniques or "")
-                    ):
-                        baseline_comp = comp
-                        break
-
-                overall_status = compute_overall_status(
-                    quality, export_val, baseline_comp
-                )
-
-                if overall_status == "✅":
+                if quality.is_acceptable:
                     passed_count += 1
-                elif overall_status == "⚠️":
-                    warning_count += 1
-                elif overall_status == "❌":
+                else:
                     failed_count += 1
 
             lines.append(
@@ -461,7 +573,6 @@ class ReportGenerator:
                 f"- ⚠️ Regressions: {len(regressions)}\n\n"
                 f"**Quantization Status** (AIMET quantization vs FP32 original):\n"
                 f"- ✅ Passed: {passed_count} tests (within threshold)\n"
-                f"- ⚠️ Warnings: {warning_count} tests\n"
                 f"- ❌ Failed: {failed_count} tests (exceeds threshold)\n"
             )
 
@@ -484,29 +595,21 @@ class ReportGenerator:
                 for r in sorted(regressions, key=lambda x: x.diff):
                     key = f"{r.model}_{r.feature}_{r.techniques}"
                     curr_result = current.get(key)
-                    if curr_result:
-                        quality = validate_quantization_quality(curr_result)
-                        export_val = validate_qdq_export(curr_result)
-                        overall_status = compute_overall_status(quality, export_val, r)
-                        technique = curr_result.techniques or ""
-                        threshold = curr_result.max_accuracy_drop
-                        fp32_acc = curr_result.fp32_accuracy
-                        aimet_acc = curr_result.aimet_accuracy
-                        drop = quality.drop_abs
-                    else:
-                        quality = None
-                        overall_status = "⚠️"
-                        technique = r.techniques or ""
-                        threshold = 1.0
-                        fp32_acc = 0.0
-                        aimet_acc = r.current
-                        drop = 0.0
+                    if not curr_result:
+                        continue  # Skip if detailed result not found
+                    quality = validate_quantization_quality(curr_result)
+                    technique = curr_result.techniques or ""
+                    threshold = curr_result.max_accuracy_drop
+                    fp32_acc = curr_result.fp32_accuracy
+                    aimet_acc = curr_result.aimet_accuracy
+                    drop = quality.drop_abs
+                    status = quality.status_emoji
 
                     lines.append(
                         f"| {r.emoji} {r.model} | {technique} | "
                         f"{r.baseline:.2f}% | {r.current:.2f}% | {r.diff:+.2f}% | "
                         f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
-                        f"{threshold:.2f}% | {overall_status} |"
+                        f"{threshold:.2f}% | {status} |"
                     )
                 lines.append("")
 
@@ -529,29 +632,21 @@ class ReportGenerator:
                 for r in sorted(improvements, key=lambda x: x.diff, reverse=True):
                     key = f"{r.model}_{r.feature}_{r.techniques}"
                     curr_result = current.get(key)
-                    if curr_result:
-                        quality = validate_quantization_quality(curr_result)
-                        export_val = validate_qdq_export(curr_result)
-                        overall_status = compute_overall_status(quality, export_val, r)
-                        technique = curr_result.techniques or ""
-                        threshold = curr_result.max_accuracy_drop
-                        fp32_acc = curr_result.fp32_accuracy
-                        aimet_acc = curr_result.aimet_accuracy
-                        drop = quality.drop_abs
-                    else:
-                        quality = None
-                        overall_status = "✅"
-                        technique = r.techniques or ""
-                        threshold = 1.0
-                        fp32_acc = 0.0
-                        aimet_acc = r.current
-                        drop = 0.0
+                    if not curr_result:
+                        continue  # Skip if detailed result not found
+                    quality = validate_quantization_quality(curr_result)
+                    technique = curr_result.techniques or ""
+                    threshold = curr_result.max_accuracy_drop
+                    fp32_acc = curr_result.fp32_accuracy
+                    aimet_acc = curr_result.aimet_accuracy
+                    drop = quality.drop_abs
+                    status = quality.status_emoji
 
                     lines.append(
                         f"| {r.emoji} {r.model} | {technique} | "
                         f"{r.baseline:.2f}% | {r.current:.2f}% | {r.diff:+.2f}% | "
                         f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
-                        f"{threshold:.2f}% | {overall_status} |"
+                        f"{threshold:.2f}% | {status} |"
                     )
                 lines.append("")
 
@@ -575,33 +670,99 @@ class ReportGenerator:
                 for r in unchanged:
                     key = f"{r.model}_{r.feature}_{r.techniques}"
                     curr_result = current.get(key)
-                    if curr_result:
-                        quality = validate_quantization_quality(curr_result)
-                        export_val = validate_qdq_export(curr_result)
-                        overall_status = compute_overall_status(quality, export_val, r)
-                        technique = curr_result.techniques or ""
-                        threshold = curr_result.max_accuracy_drop
-                        fp32_acc = curr_result.fp32_accuracy
-                        aimet_acc = curr_result.aimet_accuracy
-                        drop = quality.drop_abs
-                    else:
-                        quality = None
-                        overall_status = "✅"
-                        technique = r.techniques or ""
-                        threshold = 1.0
-                        fp32_acc = 0.0
-                        aimet_acc = r.current
-                        drop = 0.0
+                    if not curr_result:
+                        continue  # Skip if detailed result not found
+                    quality = validate_quantization_quality(curr_result)
+                    technique = curr_result.techniques or ""
+                    threshold = curr_result.max_accuracy_drop
+                    fp32_acc = curr_result.fp32_accuracy
+                    aimet_acc = curr_result.aimet_accuracy
+                    drop = quality.drop_abs
+                    status = quality.status_emoji
 
                     lines.append(
                         f"| {r.model} | {technique} | "
                         f"{r.baseline:.2f}% | {r.current:.2f}% | {r.diff:+.2f}% | "
                         f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
-                        f"{threshold:.2f}% | {overall_status} |"
+                        f"{threshold:.2f}% | {status} |"
                     )
                 lines.append("</details>\n")
 
+        # Performance metrics section - collapsible table showing all tests
+        if baseline and current:
+            lines.extend(
+                ReportGenerator._generate_performance_metrics_section(current, baseline)
+            )
+
         return "\n".join(lines)
+
+    @staticmethod
+    def _generate_performance_metrics_section(
+        current: Dict[str, TestResult],
+        baseline: Dict[str, Dict],
+    ) -> List[str]:
+        """Generate performance metrics section with runtime and memory comparisons."""
+        lines = []
+        lines.append("<details>")
+        lines.append("<summary>⏱️ Performance Metrics (click to expand)</summary>\n")
+        lines.append(
+            "**Legend:**\n"
+            "- **Runtime**: AIMET quantization time\n"
+            "- **Memory**: Peak GPU memory during quantization\n"
+            "- **vs Baseline**: Change from previous run (⚠️ if >20% runtime or >15% memory increase)\n\n"
+        )
+        lines.append(
+            "| Model | Technique | Runtime | vs Baseline | Memory | vs Baseline |"
+        )
+        lines.append(
+            "|-------|-----------|---------|-------------|--------|-------------|"
+        )
+
+        for key, result in current.items():
+            if key not in baseline:
+                continue
+
+            base_data = baseline[key]
+            technique = result.techniques or ""
+
+            # Format runtime
+            curr_runtime = result.aimet_runtime_ms
+            base_runtime = base_data.get("aimet_runtime_ms")
+            if curr_runtime is not None:
+                runtime_str = f"{curr_runtime:.1f} ms"
+                if base_runtime and base_runtime > 0:
+                    runtime_diff = ((curr_runtime - base_runtime) / base_runtime) * 100
+                    runtime_emoji = "⚠️" if runtime_diff > 20 else "✅"
+                    runtime_vs = f"{runtime_diff:+.1f}% {runtime_emoji}"
+                else:
+                    runtime_vs = "—"
+            else:
+                runtime_str = "—"
+                runtime_vs = "—"
+
+            # Format memory
+            curr_memory = result.aimet_memory_mb
+            base_memory = base_data.get("aimet_memory_mb")
+            if curr_memory is not None:
+                memory_str = f"{curr_memory:.1f} MB"
+                if base_memory and base_memory > 0:
+                    memory_diff = ((curr_memory - base_memory) / base_memory) * 100
+                    memory_emoji = "⚠️" if memory_diff > 15 else "✅"
+                    memory_vs = f"{memory_diff:+.1f}% {memory_emoji}"
+                else:
+                    memory_vs = "—"
+            else:
+                memory_str = "—"
+                memory_vs = "—"
+
+            lines.append(
+                f"| {result.model} | {technique} | "
+                f"{runtime_str} | {runtime_vs} | "
+                f"{memory_str} | {memory_vs} |"
+            )
+
+        lines.append("</details>\n")
+        return lines
 
     @staticmethod
     def write_github_summary(markdown: str) -> None:
@@ -754,9 +915,18 @@ def main():
 
         if baseline:
             regressions, improvements, unchanged = manager.compare(current, baseline)
+            runtime_regressions, memory_regressions = manager.compare_metrics(
+                current, baseline
+            )
 
             markdown = ReportGenerator.generate_markdown(
-                current, baseline, regressions, improvements, unchanged
+                current,
+                baseline,
+                regressions,
+                improvements,
+                unchanged,
+                runtime_regressions=runtime_regressions,
+                memory_regressions=memory_regressions,
             )
 
             if args.github_summary:
@@ -769,7 +939,19 @@ def main():
             print(f"{'=' * 60}")
             print(f"✅ Unchanged:    {len(unchanged)}")
             print(f"📈 Improvements: {len(improvements)}")
-            print(f"⚠️  Regressions:  {len(regressions)}")
+            print(f"⚠️ Regressions:  {len(regressions)}")
+
+            if runtime_regressions or memory_regressions:
+                print(f"\n⏱️  Performance Warnings:")
+                if runtime_regressions:
+                    print(
+                        f"   Runtime: {len(runtime_regressions)} test(s) exceeded threshold"
+                    )
+                if memory_regressions:
+                    print(
+                        f"   Memory:  {len(memory_regressions)} test(s) exceeded threshold"
+                    )
+
             print(f"{'=' * 60}")
 
             if regressions:
