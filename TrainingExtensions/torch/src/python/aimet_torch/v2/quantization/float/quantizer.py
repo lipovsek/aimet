@@ -22,6 +22,7 @@ from aimet_torch.v2.quantization.tensor import DequantizedTensor
 from aimet_torch.v2.utils import StatisticsNotFoundError, patch_attr, _is_expandable
 from aimet_torch.fp_quantization import fake_cast_to_ieee_float
 from ._finfo import _finfo, _torch_dtype_to_finfo, _float4_e2m1fn
+from aimet_torch.v2.quantization._utils import interleave, concretize_block_size
 
 
 __all__ = ["QuantizeDequantize", "FloatQuantizeDequantize"]
@@ -67,6 +68,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         unsigned_zero (bool, optional): If False, +/-0 is representable. Defaults to `True`. Ignored when `dtype` is specified.
         dtype (torch.dtype): torch.dtype to simulate. This argument is mutually exclusive with `exponent_bits` and `mantissa_bits`.
         shape (tuple, optional): Shape of quantization scales. Defaults to `()` (= per-tensor quantization).
+        block_size (tuple, optional): If specified, block-wise quantization is performed with the given block size.
         encoding_analyzer (EncodingAnalyzer, optional):
             If specified, quantization scale will be calibrated dynamically based on the input statistics.
             If not specified,
@@ -95,6 +97,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         unsigned_zero: Optional[bool] = None,
         dtype: Optional[torch.dtype] = None,
         shape: Optional[tuple[int, ...]] = None,
+        block_size: Optional[tuple[int, ...]] = None,
         encoding_analyzer: Optional[EncodingAnalyzer] = None,
     ):
         super().__init__()
@@ -133,8 +136,10 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         else:
             self.shape = shape
 
+        self.block_size = block_size
+
         if self.bitwidth < 16 and encoding_analyzer is None:
-            encoding_analyzer = MinMaxEncodingAnalyzer(self.shape)
+            encoding_analyzer = MinMaxEncodingAnalyzer(self.shape, self.block_size)
 
         self.encoding_analyzer = encoding_analyzer
 
@@ -311,7 +316,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         original_forward = self.forward
 
         @functools.wraps(original_forward)
-        def forward_wrapper(input):
+        def forward_wrapper(input: torch.Tensor) -> torch.Tensor:
             input = input.as_subclass(torch.Tensor)
             batch_statistics = self.encoding_analyzer.update_stats(input)
             num_steps = math.pow(2, self.bitwidth) - 1
@@ -376,7 +381,10 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
         output = _fake_cast(
-            input.as_subclass(torch.Tensor), self._finfo, self.get_scale()
+            input.as_subclass(torch.Tensor),
+            self._finfo,
+            self.get_scale(),
+            self.block_size,
         )
         output = output.as_subclass(DequantizedTensor)
         output.encoding = encoding
@@ -414,6 +422,7 @@ def _fake_cast(
     input: torch.Tensor,
     finfo: _finfo,
     scale: Optional[torch.Tensor] = None,
+    block_size: Optional[tuple[int, ...]] = None,
 ) -> torch.Tensor:
     """
     Fake-cast input to target float dtype.
@@ -423,6 +432,16 @@ def _fake_cast(
       finfo: Target float dtype
       scale: Scaling factor
     """
+    output_shape = input.shape
+
+    if block_size is not None:
+        if scale is None:
+            raise ValueError("Block-wise float QDQ requires scale.")
+
+        block_size = concretize_block_size(input.shape, scale.shape, block_size)
+        input = input.reshape(-1, *interleave(scale.shape, block_size))
+        scale = scale.view(interleave(scale.shape, 1))
+
     if finfo.to_torch_dtype():
         # Well knwon data types. Use cast-decast for better performance
         fake_cast = _cast_decast
@@ -444,7 +463,7 @@ def _fake_cast(
     if scale is not None:
         input = input * scale
 
-    return input
+    return input.reshape(output_shape)
 
 
 def _cast_decast(input: torch.Tensor, finfo: _finfo):

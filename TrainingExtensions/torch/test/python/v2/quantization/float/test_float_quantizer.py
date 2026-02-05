@@ -5,6 +5,7 @@
 import pytest
 
 import random
+import itertools
 import tempfile
 import torch
 import numpy as np
@@ -217,7 +218,20 @@ def test_qdq_output_non_standard_dtype():
         torch.float8_e4m3fnuz,
     ],
 )
-def test_qdq_compute_encodings(dtype):
+@pytest.mark.parametrize(
+    "shape, block_size",
+    [
+        [(100,), None],
+        [(10, 1), None],
+        [(10, 2), (1, 50)],
+        [(2, 2), (5, 50)],
+    ],
+)
+def test_qdq_compute_encodings(
+    dtype: torch.dtype,
+    shape: tuple[int, ...],
+    block_size: tuple[int, ...] | None,
+):
     """
     Given: Instantiated FloatQuantizeDequantize with a min-max encoding analyzer
     When: compute_encodings() and run forwad
@@ -231,18 +245,33 @@ def test_qdq_compute_encodings(dtype):
         torch.arange(-0.5, 0.5, 0.001) * float8_max,
     ]:
         x = x.view(10, 100)
-        float8_qdq = FloatQuantizeDequantize(dtype=dtype, shape=(100,))
+
+        float8_qdq = FloatQuantizeDequantize(
+            dtype=dtype, shape=shape, block_size=block_size
+        )
         with float8_qdq.compute_encodings():
             _ = float8_qdq(x)
 
-        scale = float8_qdq.get_scale()
-        expected_scale = x.abs().max(dim=0).values / float8_max
-        assert torch.allclose(scale, expected_scale)
+        output = float8_qdq(x)
+        scale = float8_qdq.get_scale().unsqueeze(0)
 
-        expected_output = (x / scale).clamp(-float8_max, float8_max).to(dtype).to(
-            x.dtype
-        ) * scale
-        assert torch.allclose(float8_qdq(x), expected_output, atol=float8_tiny)
+        if block_size:
+            B0, B1 = block_size
+        else:
+            B0 = x.shape[-2] // scale.shape[-2]
+            B1 = x.shape[-1] // scale.shape[-1]
+
+        for i, j in itertools.product(range(scale.shape[-2]), range(scale.shape[-1])):
+            blk_input = x[i * B0 : (i + 1) * B0, j * B1 : (j + 1) * B1]
+            blk_scale = scale[..., i, j]
+            expected_blk_scale = blk_input.abs().amax() / float8_max
+            assert torch.allclose(blk_scale, expected_blk_scale)
+
+            blk_output = output[i * B0 : (i + 1) * B0, j * B1 : (j + 1) * B1]
+            expected_blk_output = (blk_input / blk_scale).clamp(
+                -float8_max, float8_max
+            ).to(dtype).to(x.dtype) * blk_scale
+            assert torch.allclose(blk_output, expected_blk_output, atol=float8_tiny)
 
 
 def test_allow_overwrite(x):

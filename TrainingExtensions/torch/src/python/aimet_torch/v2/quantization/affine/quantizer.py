@@ -173,9 +173,7 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
             block_size=self.block_size,
         )
 
-        if self.block_size is None and not _is_expandable(
-            self.encoding_analyzer.observer.shape, self.shape
-        ):
+        if not _is_expandable(self.encoding_analyzer.observer.shape, self.shape):
             raise RuntimeError(
                 f"Encoding analyzer of shape {self.encoding_analyzer.observer.shape} "
                 f"is incompatible with quantizer of shape {self.shape}."
