@@ -23,9 +23,16 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
     """
     if parse(torch.__version__) < parse("2.8.0"):
         raise RuntimeError(
-            "Exporting to torch.exoprt.ExportedProgram is only supported with torch>=2.8.0; "
+            "Exporting to torch.export.ExportedProgram is only supported with torch>=2.8.0; "
             f" got torch=={torch.__version__}"
         )
+
+    if isinstance(mod, torch._dynamo.OptimizedModule):
+        if parse(torch.__version__) < parse("2.11.0.dev"):
+            raise RuntimeError(
+                "Exporting a torch.compile-d quantsim model is only supported in torch >= 2.11.0. "
+                "For more information, see https://github.com/pytorch/pytorch/issues/171674"
+            )
 
     from aimet_torch.nn import QuantizationMixin
     from aimet_torch.quantization.affine import AffineQuantizerBase

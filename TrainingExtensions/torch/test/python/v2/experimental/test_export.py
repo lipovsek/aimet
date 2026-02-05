@@ -65,7 +65,13 @@ def llama_rms_norm(**_):
         mobilenet_v3_large,
     ],
 )
-def test_export(model_factory, tmp_path: Path):
+@pytest.mark.parametrize("compile", [False, True])
+def test_export(model_factory, compile: bool, tmp_path: Path):
+    if compile and version.parse(torch.__version__) < version.parse("2.11.0.dev"):
+        pytest.skip(
+            reason="Exporting torch.compile-d model is only supported in torch >= 2.11.0"
+        )
+
     model = model_factory(pretrained=False).requires_grad_(False).eval()
     model = prepare_model(model)
     x = torch.randn(1, 3, 224, 224)
@@ -76,6 +82,9 @@ def test_export(model_factory, tmp_path: Path):
         export(sim.model, args=(x,))
 
     sim.compute_encodings(lambda model: model(x))
+
+    if compile:
+        sim.model = torch.compile(sim.model)
 
     last_layer_name = [name for name, _ in model.named_modules()][
         -2 if model_factory == conv_flatten else -1

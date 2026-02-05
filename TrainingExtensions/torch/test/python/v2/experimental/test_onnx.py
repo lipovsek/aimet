@@ -7,6 +7,7 @@ import os
 import itertools
 import json
 import pathlib
+from packaging import version
 import onnxruntime as ort
 import pytest
 import contextlib
@@ -1447,20 +1448,38 @@ def test_output_split(tmp_path, dynamo: bool):
 
 
 @torch.no_grad()
-@pytest.mark.parametrize("dynamo", [False, True])
+@pytest.mark.parametrize(
+    "compile, dynamo",
+    [
+        (False, False),
+        (False, True),
+        (True, True),
+    ],
+)
 @pytest.mark.parametrize("zero_point_shift", [0.0, 0.5])
 def test_quantsim_export_int2(
-    tmp_path: pathlib.Path, zero_point_shift: float, dynamo: bool
+    tmp_path: pathlib.Path,
+    zero_point_shift: float,
+    dynamo: bool,
+    compile: bool,
 ):
     """
     When: Export quantized model with int2 weights using sim.onnx.export
     Then: The exported weight encoding's y_zero_point should be equal to -zero_point_shift
     """
+    if compile and version.parse(torch.__version__) < version.parse("2.11.0.dev"):
+        pytest.skip(
+            reason="Exporting torch.compile-d model is only supported in torch >= 2.11.0"
+        )
+
     model = torch.nn.Sequential(torch.nn.Conv2d(3, 3, 3))
     x = torch.randn(1, 3, 32, 32)
     sim = QuantizationSimModel(model, x, default_param_bw=2)
     sim.model[0].param_quantizers["weight"].zero_point_shift = zero_point_shift
     sim.compute_encodings(lambda model: model(x))
+
+    if compile:
+        sim.model = torch.compile(sim.model)
 
     sim.onnx.export(
         x,
@@ -1474,7 +1493,11 @@ def test_quantsim_export_int2(
     with open(tmp_path / "int2_conv.encodings") as f:
         encodings = json.load(f)["encodings"]
 
-    weight_encoding = next(e for e in encodings if e["name"] == "0.weight")
+    weight_encoding = next(
+        e
+        for e in encodings
+        if e["name"] == ("_orig_mod.0.weight" if compile else "0.weight")
+    )
     y_zero_point = weight_encoding.get("y_zero_point", 0)
     assert np.all(np.array(y_zero_point) == -zero_point_shift)
 
@@ -1492,8 +1515,13 @@ def test_quantsim_export_int2(
     out2 = sim.model(x)
     assert torch.equal(out, out2)
 
-    weight_qtzr = sim.model[0].param_quantizers["weight"]
-    weight = sim.model[0].weight
+    if compile:
+        weight_qtzr = sim.model._orig_mod[0].param_quantizers["weight"]
+        weight = sim.model._orig_mod[0].weight
+    else:
+        weight_qtzr = sim.model[0].param_quantizers["weight"]
+        weight = sim.model[0].weight
+
     w_int4 = weight_qtzr(weight).quantize()
 
     assert torch.all((w_int4 == -3) | (w_int4 == -1) | (w_int4 == 1) | (w_int4 == 3))
@@ -1514,7 +1542,12 @@ def test_quantsim_export_int2(
         tmp_path / "int2_conv_qdq.onnx", sess_options=sess_options
     )
     (out_onnx,) = sess.run(None, {"input": x.numpy()})
-    atol = sim.model[0].output_quantizers[0].get_scale().item()
+
+    if compile:
+        atol = sim.model._orig_mod[0].output_quantizers[0].get_scale().item()
+    else:
+        atol = sim.model[0].output_quantizers[0].get_scale().item()
+
     assert torch.allclose(torch.from_numpy(out_onnx), out2, atol=atol)
 
 

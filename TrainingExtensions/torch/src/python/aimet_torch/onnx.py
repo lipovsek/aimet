@@ -34,6 +34,7 @@ from .quantsim import QuantizationSimModel
 from .v2.experimental import onnx as _onnx
 
 
+_TORCH_VERSION = version.parse(torch.__version__)
 _TORCH_DEFAULT_OPSET = _constants.ONNX_DEFAULT_OPSET
 _TORCH_MIN_OPSET = _constants.ONNX_MIN_OPSET
 _TORCH_MAX_OPSET = _constants.ONNX_MAX_OPSET
@@ -110,7 +111,7 @@ def export(
     base_dir = str(Path(str(f)).absolute().parent)
 
     _check_opset_version(kwargs)
-    _check_unsupported_args(kwargs)
+    _check_unsupported_args(model, kwargs)
     _check_non_standard_quantizer(model)
 
     target_version = kwargs.pop("opset_version", _TORCH_DEFAULT_OPSET)
@@ -255,12 +256,20 @@ def _check_opset_version(kwargs):
         raise ValueError(f"Unsupported ONNX opset version: {opset_version}")
 
 
-def _check_unsupported_args(kwargs):
-    dynamo = kwargs.get(
-        "dynamo", version.parse(torch.__version__) >= version.parse("2.9.0")
-    )
+def _check_unsupported_args(model, kwargs):
+    if _TORCH_VERSION >= version.parse("2.0.0") and isinstance(
+        model,
+        torch._dynamo.OptimizedModule,  # pylint: disable=protected-access
+    ):
+        if _TORCH_VERSION < version.parse("2.11.0.dev"):
+            raise RuntimeError(
+                "Exporting a torch.compile-d quantsim model is only supported in torch >= 2.11.0. "
+                "For more information, see https://github.com/pytorch/pytorch/issues/171674"
+            )
 
-    if dynamo and version.parse(torch.__version__) < version.parse("2.8.0"):
+    dynamo = kwargs.get("dynamo", _TORCH_VERSION >= version.parse("2.9.0"))
+
+    if dynamo and _TORCH_VERSION < version.parse("2.8.0"):
         raise RuntimeError("AIMET dynamo export is only supported in torch >= 2.8.0")
 
     export_params = kwargs.get("export_params", True)

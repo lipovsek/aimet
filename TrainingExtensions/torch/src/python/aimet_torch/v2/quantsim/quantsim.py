@@ -908,7 +908,7 @@ class QuantizationSimModelOnnxExporter:
             _temporarily_unfold_param_quantizers,
         )
 
-        _check_unsupported_args(kwargs)
+        _check_unsupported_args(self.sim.model, kwargs)
 
         with contextlib.ExitStack() as stack:
             # Unfold all param quantizers to incorporate QuantizeLinear/DequantizeLinear
