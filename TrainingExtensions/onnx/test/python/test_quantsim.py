@@ -1569,7 +1569,17 @@ class TestQuantSim:
                 assert sim.get_qc_quantize_op()[
                     weight_initializers[3]
                 ].use_unsigned_symmetric
-                assert len(mismatched_encodings) == 8
+
+                reconfigured_quantizers = {
+                    sim.qc_quantize_op_dict[name]
+                    for name in (act_1, act_2, act_3, act_4, *weight_initializers[:4])
+                }
+                reconfigured_tensors = [
+                    name
+                    for name, q in sim.qc_quantize_op_dict.items()
+                    if q in reconfigured_quantizers
+                ]
+                assert len(mismatched_encodings) == len(reconfigured_tensors)
                 assert np.allclose(
                     out2,
                     out3,
@@ -3514,8 +3524,7 @@ class TestQuantSim:
           - Conv output quantizer must be tied with Relu output quantizer
         """
         model = conv_relu()
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model, config_file="htp_v69")
+        sim = QuantizationSimModel(model, config_file="htp_v69")
 
         conv_input_qtzr = sim.qc_quantize_op_dict["input"]
         conv_output_qtzr = sim.qc_quantize_op_dict["conv_output"]
@@ -3548,8 +3557,7 @@ class TestQuantSim:
           - Conv input quantizer must NOT be tied with Relu output quantizer
         """
         model = conv_relu()
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model, config_file="htp_v73")
+        sim = QuantizationSimModel(model, config_file="htp_v73")
 
         conv_input_qtzr = sim.qc_quantize_op_dict["input"]
         conv_output_qtzr = sim.qc_quantize_op_dict["conv_output"]
@@ -3586,14 +3594,13 @@ class TestQuantSim:
         model = _convert_to_onnx(pt_model, x)
         dummy_input = make_dummy_input(model.model)
 
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model, config_file="htp_v69")
+        sim = QuantizationSimModel(model, config_file="htp_v69")
 
-            sim.compute_encodings([dummy_input])
-            assert not _compare_encodings(
-                sim.qc_quantize_op_dict["/conv/Conv_output_0"].encodings[0],
-                sim.qc_quantize_op_dict["output"].encodings[0],
-            )
+        sim.compute_encodings([dummy_input])
+        assert not _compare_encodings(
+            sim.qc_quantize_op_dict["/conv/Conv_output_0"].encodings[0],
+            sim.qc_quantize_op_dict["output"].encodings[0],
+        )
 
 
 class TestEncodingPropagation:
@@ -3635,18 +3642,17 @@ class TestEncodingPropagation:
         x = torch.randn(1, 3, 24, 24)
         model = _convert_to_onnx(pt_model, x)
         dummy_input = make_dummy_input(model.model)
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model)
+        sim = QuantizationSimModel(model)
 
-            sim.compute_encodings([dummy_input])
-            assert _compare_encodings(
-                sim.qc_quantize_op_dict["/relu1/Relu_output_0"].encodings[0],
-                sim.qc_quantize_op_dict["output"].encodings[0],
-            )
-            assert _compare_encodings(
-                sim.qc_quantize_op_dict["/relu2/Relu_output_0"].encodings[0],
-                sim.qc_quantize_op_dict["output"].encodings[0],
-            )
+        sim.compute_encodings([dummy_input])
+        assert _compare_encodings(
+            sim.qc_quantize_op_dict["/relu1/Relu_output_0"].encodings[0],
+            sim.qc_quantize_op_dict["output"].encodings[0],
+        )
+        assert _compare_encodings(
+            sim.qc_quantize_op_dict["/relu2/Relu_output_0"].encodings[0],
+            sim.qc_quantize_op_dict["output"].encodings[0],
+        )
 
     def test_math_invariant(self):
         """
@@ -3684,19 +3690,15 @@ class TestEncodingPropagation:
         dummy_input = torch.randn(1, 3, 24, 24)
         model = _convert_to_onnx(pt_model, dummy_input)
         dummy_input = make_dummy_input(model.model)
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model)
-            sim.compute_encodings([dummy_input])
+        sim = QuantizationSimModel(model)
+        sim.compute_encodings([dummy_input])
 
-            assert (
-                sim.qc_quantize_op_dict["/relu1/Relu_output_0"]
-                == sim.qc_quantize_op_dict["/Mul_output_0"]
-                == sim.qc_quantize_op_dict["output"]
-            )
-            assert (
-                sim.qc_quantize_op_dict["input"]
-                is not sim.qc_quantize_op_dict["output"]
-            )
+        assert (
+            sim.qc_quantize_op_dict["/relu1/Relu_output_0"]
+            == sim.qc_quantize_op_dict["/Mul_output_0"]
+            == sim.qc_quantize_op_dict["output"]
+        )
+        assert sim.qc_quantize_op_dict["input"] is not sim.qc_quantize_op_dict["output"]
 
     def test_concat_tree(self, tmp_path: pathlib.Path):
         """
@@ -3744,17 +3746,16 @@ class TestEncodingPropagation:
                     +-> q_in2a -> conv2a -> *q_out3* -> concat2 -> *q_out3* -------------^
                     +-> q_in2b -> conv2b -> *q_out3* ------^
         """
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model)
-            sim.compute_encodings([dummy_input])
+        sim = QuantizationSimModel(model)
+        sim.compute_encodings([dummy_input])
 
-            for cg_op in sim.connected_graph.ordered_ops:
-                if cg_op.type in ["Conv", "Concat"]:
-                    _, out_qtzr, __ = sim.get_op_quantizers(cg_op)
-                    assert _compare_encodings(
-                        out_qtzr[0].encodings[0],
-                        sim.qc_quantize_op_dict["output"].encodings[0],
-                    )
+        for cg_op in sim.connected_graph.ordered_ops:
+            if cg_op.type in ["Conv", "Concat"]:
+                _, out_qtzr, __ = sim.get_op_quantizers(cg_op)
+                assert _compare_encodings(
+                    out_qtzr[0].encodings[0],
+                    sim.qc_quantize_op_dict["output"].encodings[0],
+                )
         """
         Given:
             x ---> Sigmoid -------+
@@ -3792,10 +3793,9 @@ class TestEncodingPropagation:
             dynamo=False,
         )
 
-        with aimet_onnx.quantsim._apply_constraints(True):
-            sim = aimet_onnx.QuantizationSimModel(
-                onnx.load(tmp_path / "concat_tree.onnx"), config_file="htp_v81"
-            )
+        sim = aimet_onnx.QuantizationSimModel(
+            onnx.load(tmp_path / "concat_tree.onnx"), config_file="htp_v81"
+        )
 
         assert (
             sim.qc_quantize_op_dict["/Concat_output_0"]
@@ -3864,13 +3864,12 @@ class TestEncodingPropagation:
         dummy_input = torch.randn(1, 3, 224, 224)
         model = _convert_to_onnx(pt_model, dummy_input)
         dummy_input = make_dummy_input(model.model)
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(
-                model,
-                activation_type=aimet_onnx.int8 if bitwidth == 8 else aimet_onnx.int16,
-                config_file="htp_v81",
-            )
-            sim.compute_encodings([dummy_input])
+        sim = QuantizationSimModel(
+            model,
+            activation_type=aimet_onnx.int8 if bitwidth == 8 else aimet_onnx.int16,
+            config_file="htp_v81",
+        )
+        sim.compute_encodings([dummy_input])
 
         assert (
             sim.qc_quantize_op_dict["/Sigmoid_output_0"]
@@ -3929,9 +3928,8 @@ class TestEncodingPropagation:
         dummy_input = torch.randn(3, 3, 224, 224)
         model = _convert_to_onnx(pt_model, dummy_input)
         dummy_input = make_dummy_input(model.model)
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model, config_file="htp_v81")
-            sim.compute_encodings([dummy_input])
+        sim = QuantizationSimModel(model, config_file="htp_v81")
+        sim.compute_encodings([dummy_input])
 
         assert (
             sim.qc_quantize_op_dict["/conv/Conv_output_0"]
@@ -3963,9 +3961,8 @@ class TestEncodingPropagation:
         dummy_input = torch.randn(1, 3, 224, 224)
         model = _convert_to_onnx(pt_model, dummy_input)
         dummy_input = make_dummy_input(model.model)
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model, config_file="htp_v81")
-            sim.compute_encodings([dummy_input])
+        sim = QuantizationSimModel(model, config_file="htp_v81")
+        sim.compute_encodings([dummy_input])
 
         assert (
             sim.qc_quantize_op_dict["/Sigmoid_output_0"]
@@ -4008,9 +4005,8 @@ class TestEncodingPropagation:
         dummy_input = torch.randn(100, 100)
         model = _convert_to_onnx(pt_model, dummy_input)
         dummy_input = make_dummy_input(model.model)
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model, config_file="htp_v81")
-            sim.compute_encodings([dummy_input])
+        sim = QuantizationSimModel(model, config_file="htp_v81")
+        sim.compute_encodings([dummy_input])
 
         assert (
             sim.qc_quantize_op_dict["/Sigmoid_output_0"]
@@ -4099,18 +4095,17 @@ class TestEncodingPropagation:
         # simplifier required to transform torch.nn.Upsample into a single onnx Resize op
         model.model, _ = simplify(model.model)
         dummy_input = make_dummy_input(model.model)
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model)
-            sim.compute_encodings([dummy_input])
+        sim = QuantizationSimModel(model)
+        sim.compute_encodings([dummy_input])
 
-            for cg_op in sim.connected_graph.ordered_ops:
-                if cg_op.type in ["Conv"]:
-                    _, out_qtzr, __ = sim.get_op_quantizers(cg_op)
-                    if out_qtzr:
-                        assert _compare_encodings(
-                            out_qtzr[0].encodings[0],
-                            sim.qc_quantize_op_dict["output"].encodings[0],
-                        )
+        for cg_op in sim.connected_graph.ordered_ops:
+            if cg_op.type in ["Conv"]:
+                _, out_qtzr, __ = sim.get_op_quantizers(cg_op)
+                if out_qtzr:
+                    assert _compare_encodings(
+                        out_qtzr[0].encodings[0],
+                        sim.qc_quantize_op_dict["output"].encodings[0],
+                    )
 
     def test_resize_concat(self, tmp_path: pathlib.Path):
         """
@@ -4144,9 +4139,8 @@ class TestEncodingPropagation:
         )
         onnx_model = onnx.load(tmp_path / "resize_concat.onnx")
 
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(onnx_model, config_file="htp_v81")
-            sim.compute_encodings([make_dummy_input(onnx_model)])
+        sim = QuantizationSimModel(onnx_model, config_file="htp_v81")
+        sim.compute_encodings([make_dummy_input(onnx_model)])
 
         assert (
             sim.qc_quantize_op_dict["/Resize_output_0"]
@@ -4195,9 +4189,8 @@ class TestEncodingPropagation:
         )
         onnx_model = onnx.load(tmp_path / "conv_resize_concat.onnx")
 
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(onnx_model, config_file="htp_v81")
-            sim.compute_encodings([make_dummy_input(onnx_model)])
+        sim = QuantizationSimModel(onnx_model, config_file="htp_v81")
+        sim.compute_encodings([make_dummy_input(onnx_model)])
 
         assert (
             sim.qc_quantize_op_dict["/Resize_output_0"]
@@ -4256,10 +4249,9 @@ class TestEncodingPropagation:
             dynamo=False,
         )
 
-        with aimet_onnx.quantsim._apply_constraints(True):
-            sim = aimet_onnx.QuantizationSimModel(
-                onnx.load(tmp_path / "concat_resize.onnx")
-            )
+        sim = aimet_onnx.QuantizationSimModel(
+            onnx.load(tmp_path / "concat_resize.onnx")
+        )
 
         sim.compute_encodings(
             [
@@ -4292,8 +4284,7 @@ class TestEncodingPropagation:
 
     def test_gather_concat(self):
         model = models_for_tests.gather_concat_model()
-        with _apply_constraints(True):
-            sim = QuantizationSimModel(model)
+        sim = QuantizationSimModel(model)
 
         sim.compute_encodings([make_dummy_input(model)])
         concat_out_scale = sim.qc_quantize_op_dict["out"].get_encodings()[0].delta
@@ -5406,6 +5397,7 @@ def test_onnx_qdq_opset_compatibility(
 ):
     ort.set_seed(1)
     np.random.seed(1)
+    torch.random.manual_seed(1)
 
     input_shape = (1, 3, 32, 32)
     model = single_residual_model(opset_version=input_model_opset)
