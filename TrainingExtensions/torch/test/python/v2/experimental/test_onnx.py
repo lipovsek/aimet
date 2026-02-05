@@ -108,18 +108,20 @@ def test_quantize_torch_ort_equal(
             if qtzr_cls is Q.affine.Quantize
             else "/quantize_dequantize"
         )
-        assert node.attribute[0].name == "block_size"
-        assert node.attribute[0].ints == (
-            [1]
-            if block_size is None
-            else list(np.array(input_shape) // np.array(scale_shape))
-        )
+
+        if block_size:
+            assert node.attribute[0].name == "block_size"
+            assert node.attribute[0].ints == list(
+                np.array(input_shape) // np.array(scale_shape)
+            )
+        else:
+            assert not any(attr.name == "block_size" for attr in node.attribute)
 
         if qtzr_cls != Q.affine.Dequantize:
-            assert node.attribute[1].name == "qmax"
-            assert node.attribute[1].i == (127 if symmetric else 255)
-            assert node.attribute[2].name == "qmin"
-            assert node.attribute[2].i == (-128 if symmetric else 0)
+            assert node.attribute[bool(block_size) + 0].name == "qmax"
+            assert node.attribute[bool(block_size) + 0].i == (127 if symmetric else 255)
+            assert node.attribute[bool(block_size) + 1].name == "qmin"
+            assert node.attribute[bool(block_size) + 1].i == (-128 if symmetric else 0)
 
         """
         Then: The saved onnx model should contain exactly one graph node in "aimet" domain
@@ -213,12 +215,14 @@ def test_dequantize_torch_ort_equal(input_shape, scale_shape, block_size, symmet
         (node,) = nodes
 
         assert node.name == "/dequantize"
-        assert node.attribute[0].name == "block_size"
-        assert node.attribute[0].ints == (
-            [1]
-            if block_size is None
-            else list(np.array(input_shape) // np.array(scale_shape))
-        )
+
+        if block_size:
+            assert node.attribute[0].name == "block_size"
+            assert node.attribute[0].ints == list(
+                np.array(input_shape) // np.array(scale_shape)
+            )
+        else:
+            assert not any(attr.name == "block_size" for attr in node.attribute)
 
         """
         Then: The saved onnx model should produce the same output with the original quantizer

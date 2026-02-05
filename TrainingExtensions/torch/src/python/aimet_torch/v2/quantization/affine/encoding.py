@@ -663,6 +663,12 @@ class GroupedBlockEncoding(AffineEncoding):
                 f"got block_size={encoding.block_size}"
             )
 
+        if not encoding.symmetry:
+            raise ValueError(
+                "Only symmetric AffineEncodings can be converted to GroupedBlockEncoding; "
+                "asymmetric encodings are not supported"
+            )
+
         block_axis = encoding._get_block_axis()
         block_grouping = tuple(
             s_dim if axis == block_axis else 1

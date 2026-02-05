@@ -120,7 +120,7 @@ def _quantize_dequantize_placeholder(
     offset: onnxscript.FLOAT,
     qmin: int,
     qmax: int,
-    block_size: Sequence[int] = (1,),
+    block_size: Sequence[int] = (),
     zero_point_shift: float = 0.0,
 ) -> onnxscript.FLOAT:
     return aimet_opset.QuantizeDequantize(
@@ -137,7 +137,7 @@ def _quantize_dequantize_placeholder(
 def _quantize_template(opset: onnxscript.values.Opset) -> onnxscript.OnnxFunction:
     @onnxscript.script(aimet_opset, default_opset=opset)
     def quantize(
-        tensor, scale, offset, qmin: int, qmax: int, block_size: Sequence[int]
+        tensor, scale, offset, qmin: int, qmax: int, block_size: Sequence[int] = (1,)
     ):
         """Onnxscript implementation of affine quantize"""
         # Upscale scale/offset by the factor of block_size
@@ -160,7 +160,7 @@ def _quantize_template(opset: onnxscript.values.Opset) -> onnxscript.OnnxFunctio
 
 def _dequantize_template(opset: onnxscript.values.Opset) -> onnxscript.OnnxFunction:
     @onnxscript.script(aimet_opset, default_opset=opset)
-    def dequantize(tensor, scale, offset, block_size: Sequence[int]):
+    def dequantize(tensor, scale, offset, block_size: Sequence[int] = (1,)):
         """Onnxscript implementation of affine dequantize"""
         # Upscale scale/offset by the factor of block_size
         upscaled_shape = opset.Shape(scale) * block_size
@@ -189,8 +189,8 @@ def _quantize_dequantize_template(
         offset,
         qmin: int,
         qmax: int,
-        block_size: Sequence[int],
-        zero_point_shift: float,
+        block_size: Sequence[int] = (1,),
+        zero_point_shift: float = 0.0,
     ):
         """Onnxscript implementation of affine quantize-dequantize"""
         # Upscale scale/offset by the factor of block_size
@@ -289,26 +289,10 @@ def quantize_symbolic(g, tensor, scale, offset, qmin, qmax, block_size=None):
     scale = _unsqueeze_scalar(g, scale)
     offset = _unsqueeze_scalar(g, offset)
 
-    if block_size is None:
-        block_size = (1,)
+    if block_size is not None:
+        from aimet_torch.v2.quantization._utils import concretize_block_size
 
-    if any(b == -1 for b in block_size):
-        # Concretize wildcard block sizes
-        old_block_size = block_size
-        new_block_size = list(
-            reversed(
-                [
-                    input_dim // num_blocks
-                    for input_dim, num_blocks in zip(
-                        _shape(tensor)[::-1], _shape(scale)[::-1]
-                    )
-                ]
-            )
-        )
-        assert all(
-            old == new for old, new in zip(old_block_size, new_block_size) if old != -1
-        )
-        block_size = new_block_size
+        block_size = concretize_block_size(_shape(tensor), _shape(scale), block_size)
 
     if not _is_torch_2:
         # For torch <2, insert dummy placeholder node instead of
@@ -372,26 +356,10 @@ def dequantize_symbolic(g, tensor, scale, offset, block_size=None):
     scale = _unsqueeze_scalar(g, scale)
     offset = _unsqueeze_scalar(g, offset)
 
-    if block_size is None:
-        block_size = (1,)
+    if block_size is not None:
+        from aimet_torch.v2.quantization._utils import concretize_block_size
 
-    if any(b == -1 for b in block_size):
-        # Concretize wildcard block sizes
-        old_block_size = block_size
-        new_block_size = list(
-            reversed(
-                [
-                    input_dim // num_blocks
-                    for input_dim, num_blocks in zip(
-                        _shape(tensor)[::-1], _shape(scale)[::-1]
-                    )
-                ]
-            )
-        )
-        assert all(
-            old == new for old, new in zip(old_block_size, new_block_size) if old != -1
-        )
-        block_size = new_block_size
+        block_size = concretize_block_size(_shape(tensor), _shape(scale), block_size)
 
     if not _is_torch_2:
         # For torch <2, insert dummy placeholder node instead of
@@ -450,26 +418,10 @@ def quantize_dequantize_symbolic(
     scale = _unsqueeze_scalar(g, scale)
     offset = _unsqueeze_scalar(g, offset)
 
-    if block_size is None:
-        block_size = (1,)
+    if block_size is not None:
+        from aimet_torch.v2.quantization._utils import concretize_block_size
 
-    if any(b == -1 for b in block_size):
-        # Concretize wildcard block sizes
-        old_block_size = block_size
-        new_block_size = list(
-            reversed(
-                [
-                    input_dim // num_blocks
-                    for input_dim, num_blocks in zip(
-                        _shape(tensor)[::-1], _shape(scale)[::-1]
-                    )
-                ]
-            )
-        )
-        assert all(
-            old == new for old, new in zip(old_block_size, new_block_size) if old != -1
-        )
-        block_size = new_block_size
+        block_size = concretize_block_size(_shape(tensor), _shape(scale), block_size)
 
     if not _is_torch_2:
         # For torch <2, insert dummy placeholder node instead of
@@ -758,6 +710,7 @@ def _get_encoding_from_onnx_node(
 
     qmin, qmax, block_size, zero_point_shift = None, None, None, None
     scale_name, offset_name = quant_node.input[1], quant_node.input[2]
+    block_size = None
 
     for attr in quant_node.attribute:
         if attr.name == "qmin":
@@ -765,9 +718,7 @@ def _get_encoding_from_onnx_node(
         if attr.name == "qmax":
             qmax = attr.i
         if attr.name == "block_size":
-            block_size = attr.ints
-            if block_size == [1]:
-                block_size = None
+            block_size = attr.ints or None
         if attr.name == "zero_point_shift":
             zero_point_shift = attr.f
 
@@ -804,11 +755,12 @@ def _get_encoding_from_onnx_node(
         zero_point_shift=zero_point_shift,
     )
 
-    try:
-        # Try converting affine encoding to LPBQ encoding if possible
-        encoding = GroupedBlockEncoding._from_affine_encoding(encoding)
-    except ValueError:
-        pass
+    if block_size and symmetry:
+        try:
+            # Try converting affine encoding to LPBQ encoding if possible
+            encoding = GroupedBlockEncoding._from_affine_encoding(encoding)
+        except ValueError:
+            pass
 
     return encoding
 
