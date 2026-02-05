@@ -3,8 +3,9 @@ matplotlib>=3
 networkx
 numpy
 onnx
+onnx_ir>=0.1.9
 onnxruntime-extensions
-onnxscript>=0.2.0
+onnxscript>=0.4.0
 onnxsim
 pandas
 psutil

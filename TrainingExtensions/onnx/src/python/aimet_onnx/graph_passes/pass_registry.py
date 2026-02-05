@@ -5,22 +5,25 @@
 # pylint: disable=missing-module-docstring
 
 from aimet_onnx.graph_passes.graph_pass import GraphPass
-from typing import Dict, List
+from typing import Dict, List, TypeVar, Generic
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.qc_quantize_op import QcQuantizeOp
 from aimet_onnx.utils import ModelProto
 from ..meta.operations import Op
 
 
-class PassRegistry:
+PassType = TypeVar("PassType")
+
+
+class BaseRegistry(Generic[PassType]):
     """
     Registry for Graph passes.
     """
 
     def __init__(self):
-        self.passes: Dict[str, GraphPass] = {}
+        self.passes: Dict[str, PassType] = {}
 
-    def __getitem__(self, name: str) -> GraphPass:
+    def __getitem__(self, name: str) -> PassType:
         """
         return Graph Pass class associated with given pass name
         """
@@ -34,12 +37,12 @@ class PassRegistry:
         """
         return name in self.passes
 
-    def register(self, pass_cls: GraphPass, name: str, override: bool = False):
+    def register(self, pass_cls: PassType, name: str, override: bool = False):
         """
         Register Graph Pass
 
         Args:
-            pass_cls (GraphPass): GraphPass class being registered.
+            pass_cls (PassType): GraphPass class being registered.
             name (str): Pass name to register graph pass with.
             override (bool, optional): Override existing pass if set. Defaults to False.
 
@@ -51,6 +54,12 @@ class PassRegistry:
                 f"Pass {name} is already registered. Consider using override if intent to replace default pass."
             )
         self.passes[name] = pass_cls
+
+
+class PassRegistry(BaseRegistry[GraphPass]):
+    """
+    Registry for Graph passes.
+    """
 
 
 # Global Pass Registry to hold all graph passes

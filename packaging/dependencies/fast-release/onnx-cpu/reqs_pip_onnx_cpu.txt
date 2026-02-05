@@ -4,7 +4,9 @@ Jinja2
 jsonschema
 numpy
 onnx
+onnx_ir>=0.1.9
 onnxruntime>=1.19
+onnxscript>=0.4.0
 osqp
 pandas
 psutil
