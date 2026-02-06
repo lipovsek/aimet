@@ -6,6 +6,7 @@
 from collections import namedtuple
 from typing import Optional, Mapping
 import torch
+import onnx
 
 
 class _finfo(
@@ -22,6 +23,22 @@ class _finfo(
             msg = " ".join(
                 [
                     f"Expected dtype to be one of {list(_torch_dtype_to_finfo.keys())};",
+                    f"got {dtype}",
+                ]
+            )
+            raise ValueError(msg) from e
+
+    def to_onnx_dtype(self) -> onnx.TensorProto.DataType | None:
+        return _finfo_to_onnx_dtype.get(self)
+
+    @classmethod
+    def from_onnx_dtype(cls, dtype: int) -> "_finfo":
+        try:
+            return _onnx_dtype_to_finfo[dtype]
+        except KeyError as e:
+            msg = " ".join(
+                [
+                    f"Expected dtype to be one of {list(_onnx_dtype_to_finfo.keys())};",
                     f"got {dtype}",
                 ]
             )
@@ -76,35 +93,62 @@ _finfo_to_torch_dtype: Mapping[_finfo, torch.dtype] = {
     _bfloat16: torch.bfloat16,
 }
 
+_finfo_to_onnx_dtype: Mapping[torch.dtype, _finfo] = {
+    _float16: onnx.TensorProto.FLOAT16,
+    _bfloat16: onnx.TensorProto.BFLOAT16,
+}
+
+_float8_e4m3fn = _finfo(
+    exponent_bits=4, mantissa_bits=3, finite=True, unsigned_zero=False
+)
+
 if hasattr(torch, "float8_e4m3fn"):
-    _float8_e4m3fn = _finfo(
-        exponent_bits=4, mantissa_bits=3, finite=True, unsigned_zero=False
-    )
     _finfo_to_torch_dtype.update({_float8_e4m3fn: torch.float8_e4m3fn})
 
+if hasattr(onnx.TensorProto, "FLOAT8E4M3FN"):
+    _finfo_to_onnx_dtype.update({_float8_e4m3fn: onnx.TensorProto.FLOAT8E4M3FN})
+
+_float8_e4m3fnuz = _finfo(
+    exponent_bits=4, mantissa_bits=3, finite=True, unsigned_zero=True
+)
+
 if hasattr(torch, "float8_e4m3fnuz"):
-    _float8_e4m3fnuz = _finfo(
-        exponent_bits=4, mantissa_bits=3, finite=True, unsigned_zero=True
-    )
     _finfo_to_torch_dtype.update({_float8_e4m3fnuz: torch.float8_e4m3fnuz})
 
+if hasattr(onnx.TensorProto, "FLOAT8E4M3FNUZ"):
+    _finfo_to_onnx_dtype.update({_float8_e4m3fnuz: onnx.TensorProto.FLOAT8E4M3FNUZ})
+
+_float8_e5m2 = _finfo(
+    exponent_bits=5, mantissa_bits=2, finite=False, unsigned_zero=False
+)
+
 if hasattr(torch, "float8_e5m2"):
-    _float8_e5m2 = _finfo(
-        exponent_bits=5, mantissa_bits=2, finite=False, unsigned_zero=False
-    )
     _finfo_to_torch_dtype.update({_float8_e5m2: torch.float8_e5m2})
 
+if hasattr(onnx.TensorProto, "FLOAT8E5M2"):
+    _finfo_to_onnx_dtype.update({_float8_e5m2: onnx.TensorProto.FLOAT8E5M2})
+
+_float8_e5m2fnuz = _finfo(
+    exponent_bits=5, mantissa_bits=2, finite=True, unsigned_zero=True
+)
+
 if hasattr(torch, "float8_e5m2fnuz"):
-    _float8_e5m2fnuz = _finfo(
-        exponent_bits=5, mantissa_bits=2, finite=True, unsigned_zero=True
-    )
     _finfo_to_torch_dtype.update({_float8_e5m2fnuz: torch.float8_e5m2fnuz})
+
+if hasattr(onnx.TensorProto, "FLOAT8E5M2FNUZ"):
+    _finfo_to_onnx_dtype.update({_float8_e5m2fnuz: onnx.TensorProto.FLOAT8E5M2FNUZ})
 
 _float4_e2m1fn = _finfo(
     exponent_bits=2, mantissa_bits=1, finite=True, unsigned_zero=False
 )
 
+if hasattr(onnx.TensorProto, "FLOAT4E2M1"):
+    _finfo_to_onnx_dtype.update({_float4_e2m1fn: onnx.TensorProto.FLOAT4E2M1})
+
 
 _torch_dtype_to_finfo: Mapping[torch.dtype, _finfo] = {
     torch_dtype: finfo for finfo, torch_dtype in _finfo_to_torch_dtype.items()
+}
+_onnx_dtype_to_finfo = {
+    onnx_dtype: finfo for finfo, onnx_dtype in _finfo_to_onnx_dtype.items()
 }

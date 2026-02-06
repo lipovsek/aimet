@@ -23,6 +23,7 @@ from aimet_torch.v2.utils import StatisticsNotFoundError, patch_attr, _is_expand
 from aimet_torch.fp_quantization import fake_cast_to_ieee_float
 from ._finfo import _finfo, _torch_dtype_to_finfo, _float4_e2m1fn
 from aimet_torch.v2.quantization._utils import interleave, concretize_block_size
+import aimet_torch.v2.experimental.onnx._export as _onnx
 
 
 __all__ = ["QuantizeDequantize", "FloatQuantizeDequantize"]
@@ -87,7 +88,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         DequantizedTensor([[ 1.8998, -0.0950, -1.1399, -0.1741]])
     """
 
-    maxval: Optional[torch.Tensor]
+    maxval: torch.Tensor
 
     def __init__(
         self,
@@ -150,10 +151,8 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
                     f"is incompatible with quantizer of shape {self.shape}."
                 )
 
-            maxval = self._finfo.max
-            self.register_buffer("maxval", torch.full(self.shape, maxval))
-        else:
-            self.register_buffer("maxval", None)
+        maxval = self._finfo.max
+        self.register_buffer("maxval", torch.full(self.shape, maxval))
 
         self._is_overwrite_allowed.update({"maxval": True})
 
@@ -270,11 +269,12 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
                 self._finfo.exponent_bits,
                 self._finfo.finite,
                 self._finfo.unsigned_zero,
-                self.maxval,
+                self.get_scale(),
+                block_size=self.block_size,
             )
         return None
 
-    def get_scale(self) -> Optional[torch.Tensor]:
+    def get_scale(self) -> torch.Tensor:
         log2_scale = self._get_log2_scale()
 
         if log2_scale is None:
@@ -282,23 +282,25 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
 
         return 2**log2_scale
 
-    def _get_log2_scale(self) -> Optional[torch.Tensor]:
-        if self.maxval is None:
-            return None
-
+    def _get_log2_scale(self) -> torch.Tensor:
         return torch.log2(self.maxval.abs()) - math.log2(self._finfo.max)
 
     @classmethod
     def from_encodings(cls, encodings: FloatEncoding) -> "FloatQuantizeDequantize":
+        # pylint: disable=protected-access
         if not isinstance(encodings, FloatEncoding):
             raise TypeError(f"Expected {FloatEncoding}; got {type(encodings)}")
 
         qtzr = cls(
-            exponent_bits=encodings.exponent_bits, mantissa_bits=encodings.mantissa_bits
+            *encodings._finfo,
+            shape=encodings.scale.shape,
+            block_size=encodings.block_size,
         )
 
-        if encodings.maxval is not None:
-            qtzr.maxval.copy_(encodings.maxval)
+        if encodings.scale.numel() == 1 and encodings.scale.item() == 1:
+            pass
+        else:
+            qtzr.maxval = encodings.maxval.clone().detach()
 
         return qtzr
 
@@ -383,7 +385,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         output = _fake_cast(
             input.as_subclass(torch.Tensor),
             self._finfo,
-            self.get_scale(),
+            encoding.scale,
             self.block_size,
         )
         output = output.as_subclass(DequantizedTensor)
@@ -418,10 +420,11 @@ class QuantizeDequantize(FloatQuantizeDequantize):
     """
 
 
+@_onnx.register_symbolic(_onnx.float_quantize_dequantize_symbolic)
 def _fake_cast(
     input: torch.Tensor,
     finfo: _finfo,
-    scale: Optional[torch.Tensor] = None,
+    scale: torch.Tensor,
     block_size: Optional[tuple[int, ...]] = None,
 ) -> torch.Tensor:
     """
@@ -453,15 +456,10 @@ def _fake_cast(
             f"Fake-casting to {finfo.to_str()} is not implemented"
         )
 
-    # Analogous to quantize
-    if scale is not None:
-        input = input / scale
+    input = input / scale
     input = input.clamp(-finfo.max, finfo.max)
     input = fake_cast(input, finfo)
-
-    # Analogous to dequantize
-    if scale is not None:
-        input = input * scale
+    input = input * scale
 
     return input.reshape(output_shape)
 

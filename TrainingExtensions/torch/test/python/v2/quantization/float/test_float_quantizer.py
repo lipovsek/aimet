@@ -4,12 +4,15 @@
 
 import pytest
 
+from pathlib import Path
 import random
 import itertools
-import tempfile
 import torch
 import numpy as np
+import onnx
+import onnxruntime as ort
 import warnings
+import aimet_torch
 from aimet_torch.v2.quantization.encoding_analyzer import MinMaxEncodingAnalyzer
 from aimet_torch.v2.quantization import DequantizedTensor
 from aimet_torch.v2.quantization.float import FloatQuantizeDequantize, FloatEncoding
@@ -365,41 +368,104 @@ def test_extreme_values_warning():
         assert "Extreme values" in str(w[-1].message)
 
 
-def test_onnx_export():
+@torch.no_grad()
+@pytest.mark.parametrize(
+    "shape, block_size",
+    [
+        [(1, 10), None],
+        [(10, 1), (1, 10)],
+        [(10, 2), (1, 5)],
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, maxval",
+    [
+        (torch.float16, None),
+        (torch.float8_e5m2, None),
+        (torch.float8_e5m2, 16.0),
+    ],
+)
+def test_onnx_export(
+    dtype: torch.dtype,
+    maxval: float | None,
+    shape: tuple[int, ...],
+    block_size: tuple[int, ...] | None,
+    tmp_path: Path,
+):
     """
     When: torch.onnx.export a quantizer
     Then: export shouldn't throw error
     """
-    qdq = FloatQuantizeDequantize(dtype=torch.float16)
-    with tempfile.TemporaryFile() as f:
-        torch.onnx.export(qdq, torch.randn(10, 10), f, dynamo=False)
+    qdq = FloatQuantizeDequantize(dtype=dtype, shape=shape, block_size=block_size)
+    x = torch.randn(10, 10)
+
+    if maxval is not None:
+        qdq.maxval = torch.full(shape, maxval)
+
+    model = torch.nn.Sequential(torch.nn.Sigmoid(), qdq)
+    torch.onnx.export(
+        model,
+        (x,),
+        tmp_path / "float_qdq_pre.onnx",
+        dynamo=False,
+        input_names=["input"],
+        output_names=["output"],
+    )
+    onnx_qdq_model = onnx.load(tmp_path / "float_qdq_pre.onnx")
+    onnx.checker.check_model(onnx_qdq_model)
+
+    aimet_torch.onnx.export(
+        model,
+        (x,),
+        tmp_path / "float_qdq.onnx",
+        dynamo=False,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+    )
+    onnx_qdq_model = onnx.load(tmp_path / "float_qdq.onnx")
+    onnx.checker.check_model(onnx_qdq_model)
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_qdq_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out,) = sess.run(None, {"input": x.detach().numpy()})
+
+    if dtype == torch.float8_e5m2:
+        expected_out = qdq(torch.sigmoid(x))
+    else:
+        # float16 quantizer won't be actually exported to onnx QDQ.
+        expected_out = torch.sigmoid(x)
+
+    assert torch.allclose(torch.from_numpy(out), expected_out)
 
 
 def test_float_encoding_to():
     """
-    Given: FloatEncoding with maxval=None
-    When: Call .to()
-    Then: Should return identical object
+    When: FloatEncoding with scale=None
+    Then: Throw ValueError
     """
-    encoding = FloatEncoding(
-        exponent_bits=5,
-        mantissa_bits=10,
-        finite=False,
-        unsigned_zero=False,
-        maxval=None,
-    )
-    new_encoding = encoding.to(device="cpu", dtype=torch.float16)
-    assert new_encoding is encoding
+    with pytest.raises(ValueError):
+        encoding = FloatEncoding(
+            exponent_bits=5,
+            mantissa_bits=10,
+            finite=False,
+            unsigned_zero=False,
+            scale=None,
+        )
 
     """
-    Given: FloatEncoding with maxval=None
+    Given: FloatEncoding with scale!=None
     """
     encoding = FloatEncoding(
         exponent_bits=5,
         mantissa_bits=10,
         finite=False,
         unsigned_zero=False,
-        maxval=torch.tensor(124.0),
+        scale=torch.tensor(0.1),
     )
     """
     When: Call .to() with same dtype and device

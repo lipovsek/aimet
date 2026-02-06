@@ -5,7 +5,7 @@
 # pylint: disable=no-member
 from typing import Iterable, Optional
 from onnx import helper
-from ..onnx import opset10
+from . import opset10
 
 
 class QuantizeLinear(opset10.QuantizeLinear):

@@ -5,13 +5,14 @@
 # pylint: disable=redefined-builtin
 """Float encoding definition"""
 
-from typing import Union, List, Dict, Optional
+from typing import Union, List, Dict
 import torch
 from torch._C._nn import _parse_to as parse_to_args
+import onnx
 
 from aimet_torch.common.defs import EncodingType
 from aimet_torch.v2.quantization.base import EncodingBase
-from ._finfo import _finfo
+from ._finfo import _finfo, _float16, _bfloat16
 
 
 __all__ = ["FloatEncoding"]
@@ -28,10 +29,19 @@ class FloatEncoding(EncodingBase):
         exponent_bits: int,
         finite: bool,
         unsigned_zero: bool,
-        maxval: Optional[torch.Tensor],
+        scale: torch.Tensor,
+        block_size: tuple[int, ...] | None = None,
     ):
+        if scale is None:
+            raise ValueError("scale cannot be None for FloatEncoding")
+
         self._finfo = _finfo(exponent_bits, mantissa_bits, finite, unsigned_zero)
-        self._maxval = maxval
+
+        if block_size is not None:
+            block_size = tuple(block_size)
+
+        self._scale = scale
+        self._block_size = block_size or None
 
     @property
     def mapping(self) -> str:
@@ -69,11 +79,25 @@ class FloatEncoding(EncodingBase):
         return self._finfo.unsigned_zero
 
     @property
-    def maxval(self) -> Optional[torch.Tensor]:
+    def scale(self) -> torch.Tensor:
+        """
+        Returns the scale of the quantizer encoding
+        """
+        return self._scale
+
+    @property
+    def maxval(self) -> torch.Tensor:
         """
         Returns the maximum representable value of the dequantized tensor
         """
-        return self._maxval
+        return self._scale * self._finfo.max
+
+    @property
+    def block_size(self) -> tuple[int, ...] | None:
+        """
+        Returns the block size for block floating point quantization
+        """
+        return self._block_size
 
     @property
     def bitwidth(self) -> int:
@@ -82,28 +106,16 @@ class FloatEncoding(EncodingBase):
         """
         return self.mantissa_bits + self.exponent_bits + 1
 
-    @property
-    def granularity(self) -> str:
-        """
-        Returns the granularity of the quantizer encoding
-        """
-        if self.maxval is None or self.maxval.dim() == 0:
-            return "pertensor"
-        non_singleton_dims = tuple(dim for dim in self.maxval.shape if dim > 1)
-        if len(non_singleton_dims) <= 1:
-            return "perchannel"
-        return "unknown"
-
     def to(self, *args, **kwargs):
         """
         Changes dtype of data in quantizer encoding or device where the data is.
         Behaves similar to torch.Tensor.to
         """
-        if self._maxval is None:
+        if self._scale is None:
             return self
 
-        current_dtype = self._maxval.dtype
-        current_device = self._maxval.device
+        current_dtype = self._scale.dtype
+        current_device = self._scale.device
 
         to_args = parse_to_args(*args, **kwargs)
         device, dtype, _, _ = to_args
@@ -120,14 +132,14 @@ class FloatEncoding(EncodingBase):
                 "only floating point data types are supported"
             )
 
-        maxval = self._maxval.to(dtype=dtype, device=device)
+        scale = self._scale.to(dtype=dtype, device=device)
 
         return type(self)(
             self.mantissa_bits,
             self.exponent_bits,
             self.finite,
             self.unsigned_zero,
-            maxval,
+            scale,
         )
 
     def quantize(self, input: torch.Tensor) -> torch.Tensor:
@@ -150,18 +162,55 @@ class FloatEncoding(EncodingBase):
             }
 
         if encoding_version == "2.0.0":
-            if self.exponent_bits == 5 and self.mantissa_bits == 10:
-                # float16
+            if self._finfo in (_float16, _bfloat16):
+                # v2 encoding doesn't treat float16/bfloat16 as quantized dtypes
                 return {}
 
-            if self.exponent_bits == 8 and self.mantissa_bits == 7:
-                # bfloat16
-                return {}
+            onnx_dtype = self._finfo.to_onnx_dtype()
 
-            raise NotImplementedError(
-                "Floating point encoding export only supports [b]float16; "
-                f"got exponent_bits={self.exponent_bits}, mantissa_bits={self.mantissa_bits}"
-            )
+            if onnx_dtype is None:
+                raise RuntimeError
+
+            y_scale = self.scale
+            onnx_dtype_str = onnx.helper.tensor_dtype_to_string(onnx_dtype)
+            _, onnx_dtype_str = onnx_dtype_str.lower().split(".")
+
+            channel_axis = None
+            block_axis = None
+            block_size = None
+
+            if self.granularity == "pertensor":
+                pass
+            elif self.granularity == "perchannel":
+                channel_axis = self._get_channel_axis()
+            elif self.granularity == "blockwise":
+                # NOTE: This sometimes fail
+                block_axis = self._get_block_axis()
+            else:
+                raise NotImplementedError
+
+            if block_axis is not None:
+                axis = block_axis
+                block_size = self.block_size[block_axis]
+            elif channel_axis is not None:
+                axis = channel_axis
+                y_scale = y_scale.flatten()
+            else:
+                axis = None
+                y_scale = y_scale.squeeze()
+
+            y_scale = y_scale.tolist()
+
+            ret = {
+                "output_dtype": onnx_dtype_str,
+                "y_scale": y_scale,
+            }
+            if axis is not None:
+                ret.update({"axis": axis})
+            if block_size is not None:
+                ret.update({"block_size": block_size})
+
+            return ret
 
         raise AssertionError(
             f"Export encoding version {encoding_version} not supported."

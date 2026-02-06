@@ -100,7 +100,31 @@ class _QdqNodeFactory(ABC):
                 "DequantizeLinear with type int32 or float8 should have "
                 "no zero point or all zero points should be 0"
             )
-        return cls.make_int_arr(zero_point, dtype, name)
+
+        return cls.make_arr(zero_point, dtype, name)
+
+    @classmethod
+    def make_arr(cls, arr: np.ndarray, dtype: str, name: str) -> TensorProto:
+        if dtype.startswith("float"):
+            return cls.make_float_arr(arr, dtype, name)
+
+        return cls.make_int_arr(arr, dtype, name)
+
+    @classmethod
+    def make_float_arr(cls, arr: np.ndarray, dtype: str, name: str) -> TensorProto:
+        if not dtype.startswith("float4"):
+            arr = np.zeros(arr.shape, dtype=np.uint8)
+            tensor = numpy_helper.from_array(arr, name=name)
+            tensor.data_type = cls.SUPPORTED_DTYPES[dtype]
+            return tensor
+
+        target_shape = arr.shape
+        arr_float4x2 = pack_int8_to_int4x2(np.zeros(arr.size, dtype=np.uint8))
+        tensor = numpy_helper.from_array(arr_float4x2, name=name)
+        tensor.data_type = cls.SUPPORTED_DTYPES[dtype]
+        tensor.ClearField("dims")
+        tensor.dims.extend(target_shape)
+        return tensor
 
     @classmethod
     def make_int_arr(cls, arr: np.ndarray, dtype: str, name: str) -> TensorProto:

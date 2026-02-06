@@ -21,6 +21,20 @@ class EncodingBase(abc.ABC):
 
     @property
     @abc.abstractmethod
+    def scale(self) -> torch.Tensor:
+        """
+        Returns quantization scale
+        """
+
+    @property
+    @abc.abstractmethod
+    def block_size(self) -> tuple[int, ...] | None:
+        """
+        Returns quantization block size
+        """
+
+    @property
+    @abc.abstractmethod
     def bitwidth(self) -> int:
         """
         Returns the bitwidth of the quantized representation
@@ -31,13 +45,6 @@ class EncodingBase(abc.ABC):
     def mapping(self) -> str:
         """
         Returns the type of mapping function of this encoding object
-        """
-
-    @property
-    @abc.abstractmethod
-    def granularity(self) -> str:
-        """
-        Returns the granularity of this encoding
         """
 
     @abc.abstractmethod
@@ -98,3 +105,43 @@ class EncodingBase(abc.ABC):
         Create an encoding object from a QNN encoding dictionary
         """
         raise NotImplementedError
+
+    @property
+    def granularity(self) -> str:
+        """
+        Returns the granularity of the quantizer encoding
+        """
+        if self.scale.dim() == 0:
+            return "pertensor"
+        if self.block_size is not None:
+            return "blockwise"
+        non_singleton_dims = tuple(dim for dim in self.scale.shape if dim > 1)
+        if len(non_singleton_dims) <= 1:
+            return "perchannel"
+        return "unknown"
+
+    def _get_channel_axis(self) -> int | None:
+        try:
+            channel_axis = next(
+                iter(axis for axis, dim in enumerate(self.scale.shape) if dim > 1)
+            )
+        except StopIteration:
+            # Per-channel encoding that happens to have only one output channel
+            # In this case, fall back to per-tensor encoding since we aren't fully
+            # sure about the channel axis
+            channel_axis = None
+        return channel_axis
+
+    def _get_block_axis(self) -> int | None:
+        # NOTE: DO NOT USE THIS FUNCTION except for QNN encoding export.
+        #       This function assumes block axis can only be either axis 0 or axis 1.
+        #       This assumption holds in practical cases, but does not cover all theoretically
+        #       possible cases.
+        if self.block_size is None:
+            raise RuntimeError
+
+        for axis, blk in enumerate(self.block_size[:2]):
+            if blk != 1:
+                return axis
+
+        return None

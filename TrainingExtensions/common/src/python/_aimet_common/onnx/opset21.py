@@ -5,13 +5,13 @@
 # pylint: disable=no-member
 from typing import Iterable, Optional
 from onnx import helper, TensorProto
-from ..onnx import opset13
+from . import opset19
 
 
-class QuantizeLinear(opset13.QuantizeLinear):
+class QuantizeLinear(opset19.QuantizeLinear):
     OPSET = 21
     SUPPORTED_DTYPES = {
-        **opset13.QuantizeLinear.SUPPORTED_DTYPES,
+        **opset19.QuantizeLinear.SUPPORTED_DTYPES,
         "int4": TensorProto.INT4,
         "uint4": TensorProto.UINT4,
         "int16": TensorProto.INT16,
@@ -50,10 +50,10 @@ class QuantizeLinear(opset13.QuantizeLinear):
         )
 
 
-class DequantizeLinear(opset13.DequantizeLinear):
+class DequantizeLinear(opset19.DequantizeLinear):
     OPSET = 21
     SUPPORTED_DTYPES = {
-        **opset13.DequantizeLinear.SUPPORTED_DTYPES,
+        **opset19.DequantizeLinear.SUPPORTED_DTYPES,
         "int4": TensorProto.INT4,
         "uint4": TensorProto.UINT4,
         "int16": TensorProto.INT16,

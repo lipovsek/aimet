@@ -24,7 +24,7 @@ from onnx.external_data_helper import (
     _get_all_tensors,
 )
 
-from ..onnx import opset10, opset13, opset21
+from . import opset10, opset13, opset19, opset21, opset23
 from ..utils import AimetLogger
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
@@ -101,10 +101,14 @@ def _add_onnx_qdq_nodes(
 
     if onnx_opset < 13:
         opset = opset10
-    elif onnx_opset < 21:
+    elif onnx_opset < 19:
         opset = opset13
-    else:
+    elif onnx_opset < 21:
+        opset = opset19
+    elif onnx_opset < 23:
         opset = opset21
+    else:
+        opset = opset23
 
     constants = _get_all_constants(model)
     nodes_to_add = []

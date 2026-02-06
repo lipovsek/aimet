@@ -26,6 +26,11 @@ from aimet_common.quantsim_config.utils import (
 )
 import aimet_torch.v2 as aimet
 import aimet_torch.v2.quantization as Q
+from aimet_torch.v2.quantization.float._finfo import (
+    _finfo,
+    _float4_e2m1fn,
+    _float8_e5m2,
+)
 from aimet_torch.v2.quantsim.quantsim import QuantizationSimModel
 from aimet_torch.onnx import (
     _concretize_int32_bias_quantizers,
@@ -1792,3 +1797,168 @@ def test_activation_uint(tmp_path: pathlib.Path):
         sim_out.detach().numpy(),
         atol=sim.model.mm.output_quantizers[0].get_scale().item(),
     )
+
+
+@torch.no_grad()
+@pytest.mark.parametrize("dynamo", [False])
+@pytest.mark.parametrize("fold_param_quantizers", [True, False])
+@pytest.mark.parametrize("finfo", [_float8_e5m2, _float4_e2m1fn])
+@pytest.mark.parametrize(
+    "shape, block_size",
+    [
+        [(), None],  # per-tensor
+        [(1,), None],  # per-tensor
+        [(1, 10), None],  # per-channel
+        [(10, 1), None],  # per-channel
+        [(10, 2), (-1, 5)],  # blockwise
+    ],
+)
+def test_export_float8_and_float4(
+    shape: tuple[int, ...],
+    finfo: _finfo,
+    block_size: tuple[int, ...] | None,
+    fold_param_quantizers: bool,
+    dynamo: bool,
+    tmp_path: pathlib.Path,
+):
+    """
+    When: Export quantized model with float8 encodings using sim.onnx.export
+    Then: The exported encodings should match
+    """
+    model = torch.nn.Sequential(torch.nn.Linear(10, 10))
+    x = torch.randn(10, 10)
+
+    sim = aimet_torch.QuantizationSimModel(model, x)
+    sim.model[0].input_quantizers[0] = Q.float.FloatQuantizeDequantize(*finfo)
+    sim.model[0].output_quantizers[0] = Q.float.FloatQuantizeDequantize(*finfo)
+    sim.model[0].param_quantizers["weight"] = Q.float.FloatQuantizeDequantize(
+        *finfo,
+        shape=shape,
+        block_size=block_size,
+    )
+    sim.compute_encodings(lambda model: model(x))
+
+    if fold_param_quantizers:
+        sim.fold_param_quantizers()
+
+    sim.onnx.export(
+        (x,),
+        tmp_path / "float8_linear.onnx",
+        opset_version=19,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=dynamo,
+        encoding_version="2.0.0",
+    )
+
+    with open(tmp_path / "float8_linear.encodings") as f:
+        encodings = json.load(f)["encodings"]
+
+    for e in encodings:
+        assert e["output_dtype"] == (
+            "float8e5m2" if finfo == _float8_e5m2 else "float4e2m1"
+        )
+
+        if e["name"] == "input":
+            assert e.keys() == {"name", "y_scale", "output_dtype"}
+            assert e["y_scale"] == sim.model[0].input_quantizers[0].get_scale().item()
+        elif e["name"] == "output":
+            assert e.keys() == {"name", "y_scale", "output_dtype"}
+            assert e["y_scale"] == sim.model[0].output_quantizers[0].get_scale().item()
+        elif e["name"] == "0.weight":
+            if not shape or all(s == 1 for s in shape):
+                assert e.keys() == {"name", "y_scale", "output_dtype"}
+            elif block_size is None:
+                assert e.keys() == {
+                    "name",
+                    "y_scale",
+                    "output_dtype",
+                    "axis",
+                }
+                assert e["axis"] == (0 if shape[0] > 1 else 1)
+            else:
+                assert e.keys() == {
+                    "name",
+                    "y_scale",
+                    "output_dtype",
+                    "axis",
+                    "block_size",
+                }
+                assert e["axis"] == 1
+                assert e["block_size"] == 5
+
+            weight_scale = (
+                sim.model[0].weight.encoding.scale
+                if fold_param_quantizers
+                else sim.model[0].param_quantizers["weight"].get_scale()
+            )
+            assert torch.equal(torch.tensor(e["y_scale"]).reshape(shape), weight_scale)
+
+    aimet_torch.onnx.export(
+        sim.model,
+        (x,),
+        tmp_path / "float8_linear_qdq.onnx",
+        opset_version=(
+            23 if finfo == _float4_e2m1fn else 19 if block_size is None else 21
+        ),
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=dynamo,
+    )
+    onnx_qdq_model = onnx.load_model(tmp_path / "float8_linear_qdq.onnx")
+    onnx.checker.check_model(onnx_qdq_model)
+
+    for node in onnx_qdq_model.graph.node:
+        if node.op_type != "QuantizeLinear":
+            continue
+
+        scale_name, zp_name = node.input[1:3]
+
+        zp_array = onnx.numpy_helper.to_array(
+            next(
+                init
+                for init in onnx_qdq_model.graph.initializer
+                if init.name == zp_name
+            )
+        )
+        assert (zp_array == 0).all()
+
+        scale_array = onnx.numpy_helper.to_array(
+            next(
+                init
+                for init in onnx_qdq_model.graph.initializer
+                if init.name == scale_name
+            )
+        )
+        if node.output == "0.weight_q":
+            expected_scale = (
+                sim.model[0].weight.encoding.scale
+                if fold_param_quantizers
+                else sim.model[0].param_quantizers["weight"].get_scale()
+            )
+        elif node.input == "input_q":
+            expected_scale = sim.model[0].input_quantizers[0].get_scale()
+        elif node.output == "output_q":
+            expected_scale = sim.model[0].output_quantizers[0].get_scale()
+        else:
+            continue
+
+        assert torch.allclose(
+            torch.from_numpy(scale_array).reshape(expected_scale.shape),
+            expected_scale,
+        )
+
+    if finfo == _float4_e2m1fn:
+        # Onnxruntime doesn't support float4 yet
+        return
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_qdq_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out,) = sess.run(None, {"input": x.detach().numpy()})
+    expected_out = sim.model(x)
+    assert torch.allclose(torch.from_numpy(out), expected_out)

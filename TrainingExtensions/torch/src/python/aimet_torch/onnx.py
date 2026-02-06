@@ -40,7 +40,7 @@ _TORCH_MIN_OPSET = _constants.ONNX_MIN_OPSET
 _TORCH_MAX_OPSET = _constants.ONNX_MAX_OPSET
 
 # Allow at least up to opset 21 to enable [u]int16 QDQ export
-_AIMET_MAX_OPSET = max(_TORCH_MAX_OPSET, 21)
+_AIMET_MAX_OPSET = max(_TORCH_MAX_OPSET, 23)
 
 
 @torch.no_grad()
@@ -388,8 +388,6 @@ def _to_onnx(
     f: Union[str, io.BytesIO],
     **kwargs,
 ) -> Tuple[onnx.ModelProto, dict]:
-    _check_float16_quantizers(model)
-
     _onnx.export(model, args, f, **kwargs)
     onnx_model = onnx.load(f, load_external_data=False)
     aliases = _duplicate_shared_qdq_inputs(onnx_model)
