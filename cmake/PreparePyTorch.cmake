@@ -61,30 +61,26 @@ endfunction()
 # ----
 
 macro(update_torch_cuda_arch_list)
-    if (NOT ${Python3_FOUND})
-        message(FATAL_ERROR "Need Python3 executable to determine PyTorch supported CUDA architectures.")
-    endif()
-
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
         set(CMAKE_CUDA_ARCHITECTURES 52 60 61 70 72)
     endif()
     message(STATUS "** Initial CMAKE_CUDA_ARCHITECTURES = ${CMAKE_CUDA_ARCHITECTURES} **")
 
-    # Update CMAKE_CUDA_ARCHITECTURES with the supported architectures that this pytorch version was
-    # compiled for:
-    #   1. Remove sm_ prefixes from the CUDA architecture names.
-    #   2. Change python list into a CMake list.
-    execute_process(
-        COMMAND ${Python3_EXECUTABLE} "-c"
-        "import torch; \
-        arch_list = [arch.split('_')[1] for arch in torch.cuda.get_arch_list()]; \
-        print(';'.join([n for n in arch_list if int(n) <= 90]))" # NOTE: cuda 12.1 only suuports arch <= 90
-        # COMMAND cut -d "_" -f 2
-        # COMMAND awk '$1 < 80'
-        RESULT_VARIABLE TORCH_NOT_FOUND
-        OUTPUT_VARIABLE CMAKE_CUDA_ARCHITECTURES
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
+    execute_process(COMMAND nvcc --list-gpu-arch
+                    RESULT_VARIABLE NVCC_NOT_FOUND
+                    OUTPUT_VARIABLE CMAKE_CUDA_ARCHITECTURES_RAW
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    )
+
+    if(NVCC_NOT_FOUND)
+        message(WARNING "nvcc not found or failed to execute. Please ensure CUDA is installed and nvcc is in your PATH.")
+        set(CMAKE_CUDA_ARCHITECTURES "")
+    else()
+        string(REPLACE "compute_" "" CMAKE_CUDA_ARCHITECTURES_RAW "${CMAKE_CUDA_ARCHITECTURES_RAW}")
+        # Replace newline with semicolon to form proper list
+        string(REPLACE "\n" ";" CMAKE_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES_RAW}")
+    endif()
+
     message(STATUS "** Updated CMAKE_CUDA_ARCHITECTURES to ${CMAKE_CUDA_ARCHITECTURES} **")
 
     # Set torch cuda architecture list variable
