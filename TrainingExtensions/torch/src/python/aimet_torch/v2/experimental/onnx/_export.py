@@ -170,7 +170,7 @@ onnx.defs.register_schema(
             onnx.defs.OpSchema.Attribute(
                 name="dtype",
                 type=onnx.defs.OpSchema.AttrType.INT,
-                description="ONNX float8 data type. Choices: FLOAT8E4M3FN, FLOAT8E4M3FNUZ, FLOAT8E5M2, FLOAT8E5M2FNUZ",
+                description="ONNX float4/8 data type. Choices: FLOAT4E2M1, FLOAT8E4M3FN, FLOAT8E4M3FNUZ, FLOAT8E5M2, FLOAT8E5M2FNUZ",
                 required=True,
             ),
             onnx.defs.OpSchema.Attribute(

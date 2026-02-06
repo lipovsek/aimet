@@ -152,6 +152,19 @@ class FloatEncoding(EncodingBase):
         """
         Converts encoding object into QNN encoding
         """
+        if encoding_version != "2.0.0" and not (
+            torch.all(self.scale == 1) and self._finfo in (_float16, _bfloat16)
+        ):
+            if self._finfo not in (_float16, _bfloat16):
+                reason = f"got dtype={self._finfo.to_str()}"
+            else:
+                reason = "got non-1 scale"
+
+            raise RuntimeError(
+                f"v{encoding_version} floating point encoding only "
+                f"supports float16/bfloat16 with scale=1; {reason}"
+            )
+
         if encoding_version == "0.6.1":
             return [{"bitwidth": self.bitwidth, "dtype": "float"}]
         if encoding_version == "1.0.0":

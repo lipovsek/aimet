@@ -1841,6 +1841,19 @@ def test_export_float8_and_float4(
     if fold_param_quantizers:
         sim.fold_param_quantizers()
 
+    for encoding_version in ["0.6.1", "1.0.0"]:
+        # Old encoding versions can't support float8/float4 encodings
+        with pytest.raises(RuntimeError):
+            sim.onnx.export(
+                (x,),
+                tmp_path / "float8_linear.onnx",
+                opset_version=19,
+                input_names=["input"],
+                output_names=["output"],
+                dynamo=dynamo,
+                encoding_version=encoding_version,
+            )
+
     sim.onnx.export(
         (x,),
         tmp_path / "float8_linear.onnx",
@@ -1907,6 +1920,14 @@ def test_export_float8_and_float4(
     )
     onnx_qdq_model = onnx.load_model(tmp_path / "float8_linear_qdq.onnx")
     onnx.checker.check_model(onnx_qdq_model)
+
+    q_nodes = [
+        node for node in onnx_qdq_model.graph.node if node.op_type == "QuantizeLinear"
+    ]
+    dq_nodes = [
+        node for node in onnx_qdq_model.graph.node if node.op_type == "DequantizeLinear"
+    ]
+    assert len(q_nodes) == len(dq_nodes) == 3
 
     for node in onnx_qdq_model.graph.node:
         if node.op_type != "QuantizeLinear":
