@@ -615,9 +615,10 @@ def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     if small_model:
         llm_config.num_hidden_layers = 2
 
-    sim = model_cls.instantiate_quantsim(
+    collection = model_cls.instantiate_quantsim(
         model_id, context_length, sequence_length, small_model=small_model
     )
+    sim = collection.backbone
 
     onnx_weights_min_max = {}
     for initializer in sim.model.model.graph.initializer:
@@ -711,9 +712,10 @@ def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
         if small_model:
             llm_config.num_hidden_layers = 2
 
-        sim = model_cls.instantiate_quantsim(
+        collection = model_cls.instantiate_quantsim(
             model_id, context_length, sequence_length, small_model=small_model
         )
+        sim = collection.backbone
 
         tokenizer = Qwen_25_ONNX.instantiate_tokenizer(model_id)
 

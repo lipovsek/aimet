@@ -38,11 +38,21 @@ def convert_gpu_meter_to_dict(
 
 @dataclass
 class MetricResult:
-    """Dataclass to hold accuracy and profiling results from running a matric"""
+    """Dataclass to hold accuracy and profiling results from running a metric"""
 
     metric_name: str
     result: float | list[str]
     profiler: GPUMeter
+
+
+@dataclass
+class ComponentRecipeStats:
+    """Dataclass to hold recipe and dataset info for a model component"""
+
+    recipe_name: str
+    recipe_kwargs: dict
+    dataset_name: str
+    dataset_kwargs: dict
 
 
 def recursive_update(d, u):
@@ -61,10 +71,7 @@ def write_stats_to_disk(
     model_family: str,
     model_id: str,
     model_modifiers: dict[str, str],
-    recipe_name: str,
-    recipe_modifiers: dict[str, str],
-    dataset_name: str,
-    dataset_modifiers: dict[str, str],
+    components: dict[str, ComponentRecipeStats],
     quantization_results: GPUMeter,
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
@@ -74,10 +81,7 @@ def write_stats_to_disk(
         model_family,
         model_id,
         model_modifiers,
-        recipe_name,
-        recipe_modifiers,
-        dataset_name,
-        dataset_modifiers,
+        components,
         quantization_results,
         accuracy_results,
         export_location,
@@ -88,10 +92,7 @@ def write_stats_to_disk(
         model_family,
         model_id,
         model_modifiers,
-        recipe_name,
-        recipe_modifiers,
-        dataset_name,
-        dataset_modifiers,
+        components,
         quantization_results,
         accuracy_results,
         export_location,
@@ -103,10 +104,7 @@ def _write_stats_to_csv(
     model_cls: str,
     model_id: str,
     model_modifiers: dict[str, str],
-    recipe_name: str,
-    recipe_modifiers: dict[str, str],
-    dataset_name: str,
-    dataset_modifiers: dict[str, str],
+    components: dict[str, ComponentRecipeStats],
     quantization_results: GPUMeter,
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
@@ -122,14 +120,22 @@ def _write_stats_to_csv(
         for result in accuracy_results
     }
 
+    # Convert components to serializable dict
+    components_dict = {
+        name: {
+            "recipe_name": stats.recipe_name,
+            "recipe_kwargs": stats.recipe_kwargs,
+            "dataset_name": stats.dataset_name,
+            "dataset_kwargs": stats.dataset_kwargs,
+        }
+        for name, stats in components.items()
+    }
+
     stats = [
         model_cls,
         model_id,
         dict_to_postgres_csv_json_field(model_modifiers),
-        recipe_name,
-        dict_to_postgres_csv_json_field(recipe_modifiers),
-        dataset_name,
-        dict_to_postgres_csv_json_field(dataset_modifiers),
+        dict_to_postgres_csv_json_field(components_dict),
         dict_to_postgres_csv_json_field(
             convert_gpu_meter_to_dict(quantization_results, remove_finegrained=True)
         ),
@@ -145,10 +151,7 @@ def _write_stats_to_csv(
                     "model_family",
                     "model_id",
                     "model_modifiers",
-                    "quantization_recipe",
-                    "quantization_recipe_modifiers",
-                    "dataset_name",
-                    "dataset_modifiers",
+                    "components",
                     "quantization_results",
                     "accuracy_results",
                     "export",
@@ -165,10 +168,7 @@ def _write_stats_to_json(
     model_family: str,
     model_id: str,
     model_modifiers: dict[str, str],
-    recipe_name: str,
-    recipe_modifiers: dict[str, str],
-    dataset_name: str,
-    dataset_modifiers: dict[str, str],
+    components: dict[str, ComponentRecipeStats],
     quantization_results: GPUMeter,
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
@@ -184,18 +184,39 @@ def _write_stats_to_json(
         # If the file does not exist, create an empty dictionary
         data = {}
 
-    quant_params_string_formatted = ", ".join(
-        [f"{key}={value}" for key, value in recipe_modifiers.items()]
-    )
     model_params_string_formatted = ", ".join(
         [f"{key}={value}" for key, value in model_modifiers.items()]
         + [f"model_id={model_id}"]
     )
 
-    stats = {
-        recipe_name + "+" + dataset_name: convert_gpu_meter_to_dict(
-            quantization_results
+    # Build component key string (e.g., "backbone:AdaScale+Wikitext, visual:PCQ+Wikitext")
+    component_strings = []
+    for comp_name, comp_stats in components.items():
+        component_strings.append(
+            f"{comp_name}:{comp_stats.recipe_name}+{comp_stats.dataset_name}"
         )
+    components_key = ", ".join(component_strings)
+
+    # Build recipe params string from all components
+    recipe_params = []
+    for comp_name, comp_stats in components.items():
+        for key, value in comp_stats.recipe_kwargs.items():
+            recipe_params.append(f"{comp_name}.{key}={value}")
+    recipe_params_string_formatted = (
+        ", ".join(recipe_params) if recipe_params else "default"
+    )
+
+    stats = {
+        "quantization": convert_gpu_meter_to_dict(quantization_results),
+        "components": {
+            comp_name: {
+                "recipe": comp_stats.recipe_name,
+                "recipe_kwargs": comp_stats.recipe_kwargs,
+                "dataset": comp_stats.dataset_name,
+                "dataset_kwargs": comp_stats.dataset_kwargs,
+            }
+            for comp_name, comp_stats in components.items()
+        },
     } | {
         result.metric_name: {"result": result.result}
         | convert_gpu_meter_to_dict(result.profiler)
@@ -205,10 +226,10 @@ def _write_stats_to_json(
     if export_location is not None:
         stats["export"] = export_location
 
-    # Update the dictionary with x
-    x = {f"{quant_params_string_formatted}": stats}
-    x = {recipe_name: x}
-    x = {f"{model_params_string_formatted}": x}
+    # Update the dictionary with nested structure
+    x = {recipe_params_string_formatted: stats}
+    x = {components_key: x}
+    x = {model_params_string_formatted: x}
     x = {model_family: x}
     recursive_update(data, x)
 

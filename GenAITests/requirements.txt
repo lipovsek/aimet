@@ -1,4 +1,4 @@
-transformers==4.53.0
+transformers
 tokenizers
 datasets
 peft

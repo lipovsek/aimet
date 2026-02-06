@@ -63,25 +63,29 @@ def verify_find_blocks(sim, model_type):
 def test_get_decoder_blocks(add_genai_tests_path):
     from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
 
-    sim = Qwen_25_ONNX.instantiate_quantsim("Qwen/Qwen2-0.5B", 32, 16, small_model=True)
-    verify_find_blocks(sim, "qwen2")
+    collection = Qwen_25_ONNX.instantiate_quantsim(
+        "Qwen/Qwen2-0.5B", 32, 16, small_model=True
+    )
+    verify_find_blocks(collection.backbone, "qwen2")
 
 
 def test_get_decoder_blocks_qwen3(add_genai_tests_path):
     from GenAITests.onnx.models.qwen3 import Qwen_3_ONNX
 
-    sim = Qwen_3_ONNX.instantiate_quantsim("Qwen/Qwen3-0.6B", 32, 16, small_model=True)
-    verify_find_blocks(sim, "qwen3")
+    collection = Qwen_3_ONNX.instantiate_quantsim(
+        "Qwen/Qwen3-0.6B", 32, 16, small_model=True
+    )
+    verify_find_blocks(collection.backbone, "qwen3")
 
 
 @pytest.mark.skip(reason="This takes long to run, similar test for Qwen exists")
 def test_get_decoder_blocks_phi(add_genai_tests_path):
     from GenAITests.onnx.models.phi3 import Phi_3_ONNX
 
-    sim = Phi_3_ONNX.instantiate_quantsim(
+    collection = Phi_3_ONNX.instantiate_quantsim(
         "microsoft/Phi-3-mini-4k-instruct", 32, 16, small_model=True
     )
-    end_points = get_decoder_blocks_end_points(sim, "phi3")
+    end_points = get_decoder_blocks_end_points(collection.backbone, "phi3")
     end_points_names = [(op1.name, op2.name) for op1, op2 in end_points]
     assert end_points_names == [
         (
@@ -90,7 +94,9 @@ def test_get_decoder_blocks_phi(add_genai_tests_path):
         ),
         ("/model/model/layers.1/input_layernorm/Pow", "/model/model/norm/Pow"),
     ]
-    conv_linear_blocks = get_conv_linear_layers_decoder_block(sim, end_points)
+    conv_linear_blocks = get_conv_linear_layers_decoder_block(
+        collection.backbone, end_points
+    )
     conv_linear_blocks_names = []
     for ops in conv_linear_blocks:
         res = []

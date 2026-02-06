@@ -9,26 +9,34 @@ import torch
 import gc
 import os
 from pathlib import Path
-from transformers import AutoConfig
+from transformers import ProcessorMixin
 
 from aimet_onnx.quantsim import load_encodings_to_sim
 
 from GenAITests.shared.helpers.profiler import (
     GPUMeter,
     MetricResult,
+    ComponentRecipeStats,
     write_stats_to_disk,
 )
-from GenAITests.shared.models.generator import Generator
-from GenAITests.shared.helpers.determinism_utils import set_seed
+from GenAITests.shared.helpers.determinism import set_seed
 
 from GenAITests.shared.helpers import datasets, metrics
 from GenAITests.onnx import models
 from GenAITests.onnx.helpers import quant_recipes
 
-from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
-from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
-    get_model_checkpoint_path,
-)
+from GenAITests.onnx.models.utils.generator_utils import generator_factory
+
+
+def _extract_recipe_config(recipe_dict):
+    """Extract recipe class, dataset config, and kwargs from a recipe config dict."""
+    recipe_dict = recipe_dict.copy()
+    recipe_cls = recipe_dict.pop("class")
+    dataset_config = recipe_dict.pop("dataset", {}).copy()
+    dataset_cls = dataset_config.pop("class", None)
+    dataset_kwargs = dataset_config
+    recipe_kwargs = recipe_dict
+    return recipe_cls, recipe_kwargs, dataset_cls, dataset_kwargs
 
 
 def test_llm_quantization(test_parameters):
@@ -53,11 +61,7 @@ def test_llm_quantization(test_parameters):
     if test_parameters["eval_in_onnx"]:
         warnings.warn("eval_in_onnx is ignored for ONNX GenAI tests.")
 
-    dataset_kwargs = test_parameters.pop("dataset")
-    dataset_cls = dataset_kwargs.pop("class")
-
-    recipe_kwargs = test_parameters.pop("recipe")
-    recipe_cls = recipe_kwargs.pop("class")
+    all_recipes = test_parameters.pop("recipe")
 
     profiler_kwargs = test_parameters.pop("profiler")
     profiler_capture_intermediate_data = profiler_kwargs.pop(
@@ -69,50 +73,130 @@ def test_llm_quantization(test_parameters):
     gc.collect()
     torch.cuda.empty_cache()
 
-    quantsim = model_cls.instantiate_quantsim(
+    sim_collection = model_cls.instantiate_quantsim(
         model_id, context_length, sequence_length, **model_kwargs
     )
     tokenizer = model_cls.instantiate_tokenizer(model_id)
-    config = AutoConfig.from_pretrained(
-        get_model_checkpoint_path(
-            model_id if model_id is not None else model_cls.DEFAULT_MODEL_ID
-        )
-    )
-
-    if precomputed_encodings is not None:
-        print(f"Loading precomputed encodings from {precomputed_encodings}.")
-        load_encodings_to_sim(
-            quantsim,
-            precomputed_encodings,
-            strict=False,
-            allow_overwrite=False,
-            disable_missing_quantizers=False,
-        )
-
-    quantsim_with_torch_interface = TorchONNXInterface(quantsim, config)
-    generator = Generator(
-        quantsim_with_torch_interface,
+    generator = generator_factory(
+        sim_collection,
         tokenizer,
         sequence_length,
         context_length,
         **model_kwargs,
     )
 
+    if precomputed_encodings is not None:
+        backbone_encodings = os.path.join(
+            precomputed_encodings,
+            "backbone",
+            f"model_sl{sequence_length}_cl{context_length}.encodings",
+        )
+        if os.path.exists(backbone_encodings):
+            print(f"Loading precomputed backbone encodings from {backbone_encodings}.")
+            load_encodings_to_sim(
+                sim_collection.backbone,
+                backbone_encodings,
+                strict=False,
+                allow_overwrite=False,
+                disable_missing_quantizers=False,
+            )
+        else:
+            warnings.warn(
+                f"Precomputed backbone encodings not found  at {backbone_encodings}. Proceeding without loading."
+            )
+
+        if sim_collection.visual is not None:
+            visual_encodings = os.path.join(
+                precomputed_encodings, "visual", "model.encodings"
+            )
+            if os.path.exists(visual_encodings):
+                print(f"Loading precomputed visual encodings from {visual_encodings}.")
+                load_encodings_to_sim(
+                    sim_collection.visual,
+                    visual_encodings,
+                    strict=False,
+                    allow_overwrite=False,
+                    disable_missing_quantizers=False,
+                )
+            else:
+                warnings.warn(
+                    f"Precomputed visual encodings not found  at {visual_encodings}. Proceeding without loading."
+                )
+
     with GPUMeter(
         **profiler_kwargs, capture_intermediate_data=profiler_capture_intermediate_data
     ) as quantization_profiler:
-        train_dataset = dataset_cls.load_encoded_dataset(
-            tokenizer, context_length, **dataset_kwargs
+        (
+            backbone_recipe_cls,
+            backbone_recipe_kwargs,
+            backbone_dataset_cls,
+            backbone_dataset_kwargs,
+        ) = _extract_recipe_config(all_recipes["backbone"])
+
+        backbone_train_dataset = (
+            backbone_dataset_cls.load_encoded_dataset(
+                tokenizer.tokenizer
+                if isinstance(tokenizer, ProcessorMixin)
+                else tokenizer,
+                context_length,
+                **backbone_dataset_kwargs,
+            )
+            if backbone_dataset_cls
+            else None
         )
-        recipe_cls.apply(quantsim, generator, train_dataset, **recipe_kwargs)
+        backbone_recipe_cls.apply(
+            sim_collection.backbone,
+            generator,
+            backbone_train_dataset,
+            **backbone_recipe_kwargs,
+        )
+
+        # Apply visual recipe if specified
+        if "visual" in all_recipes and sim_collection.visual is not None:
+            (
+                visual_recipe_cls,
+                visual_recipe_kwargs,
+                visual_dataset_cls,
+                visual_dataset_kwargs,
+            ) = _extract_recipe_config(all_recipes["visual"])
+            visual_train_dataset = (
+                visual_dataset_cls.load_encoded_dataset(
+                    tokenizer,
+                    context_length,
+                    **visual_dataset_kwargs,
+                )
+                if visual_dataset_cls
+                else None
+            )
+            visual_recipe_cls.apply(
+                sim_collection.visual,
+                generator,
+                visual_train_dataset,
+                **visual_recipe_kwargs,
+            )
 
     gc.collect()
     torch.cuda.empty_cache()
 
     if test_parameters["export"]:
-        config.save_pretrained(test_parameters["export"])
+        sim_collection.config.save_pretrained(test_parameters["export"])
         tokenizer.save_pretrained(test_parameters["export"])
-        quantsim.export(test_parameters["export"], "model", export_model=True)
+        sim_collection.backbone.export(
+            os.path.join(test_parameters["export"], "backbone"),
+            f"model_sl{sequence_length}_cl{context_length}",
+            export_model=True,
+        )
+        if sim_collection.visual is not None:
+            sim_collection.visual.export(
+                os.path.join(test_parameters["export"], "visual"),
+                "model",
+                export_model=True,
+            )
+        if sim_collection.embedding is not None:
+            torch.save(
+                sim_collection.embedding.state_dict(),
+                os.path.join(test_parameters["export"], "embedding.pth"),
+            )
 
     evaluation_results = []
     with torch.no_grad():
@@ -122,7 +206,12 @@ def test_llm_quantization(test_parameters):
                 capture_intermediate_data=False, **profiler_kwargs
             ) as profiler:
                 result = metric_cls.evaluate(
-                    generator, tokenizer, context_length, **metric_kwargs
+                    generator,
+                    tokenizer.tokenizer
+                    if isinstance(tokenizer, ProcessorMixin)
+                    else tokenizer,
+                    context_length,
+                    **metric_kwargs,
                 )
                 print(f"{metric_cls.__name__} result: {result}")
 
@@ -142,16 +231,36 @@ def test_llm_quantization(test_parameters):
     output_folder = Path(os.getcwd()) / "genai_test_artifacts"
     output_folder.mkdir(parents=True, exist_ok=True)
 
+    components = (
+        {
+            "backbone": ComponentRecipeStats(
+                recipe_name=backbone_recipe_cls.__name__,
+                recipe_kwargs=backbone_recipe_kwargs,
+                dataset_name=backbone_dataset_cls.__name__
+                if backbone_dataset_cls
+                else "None",
+                dataset_kwargs=backbone_dataset_kwargs,
+            )
+        }
+        | {
+            "visual": ComponentRecipeStats(
+                recipe_name=visual_recipe_cls.__name__,
+                recipe_kwargs=visual_recipe_kwargs,
+                dataset_name=visual_dataset_cls.__name__ if visual_dataset_cls else "",
+                dataset_kwargs=visual_dataset_kwargs,
+            )
+        }
+        if "visual" in all_recipes
+        else {}
+    )
+
     write_stats_to_disk(
         output_folder=output_folder,
         filename="profiling_data",
         model_family=model_cls.__name__,
         model_id=model_id if model_id is not None else model_cls.DEFAULT_MODEL_ID,
         model_modifiers=model_kwargs,
-        recipe_name=recipe_cls.__name__,
-        recipe_modifiers=recipe_kwargs,
-        dataset_name=dataset_cls.__name__,
-        dataset_modifiers=dataset_kwargs,
+        components=components,
         quantization_results=quantization_profiler,
         accuracy_results=evaluation_results,
         export_location=test_parameters["export"]

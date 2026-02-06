@@ -10,7 +10,8 @@ from torch import nn
 from transformers import AutoConfig, AutoTokenizer, PreTrainedTokenizer, PreTrainedModel
 from transformers.models.llama import modeling_llama
 
-from .base import LLM
+from GenAITests.shared.models.base import LLM
+from GenAITests.shared.models.generator import Generator
 
 
 class Llama_32(LLM):
@@ -30,6 +31,11 @@ class Llama_32(LLM):
         )
         if small_model:
             llm_config.num_hidden_layers = 2
+            if (
+                hasattr(llm_config, "layer_types")
+                and llm_config.layer_types is not None
+            ):
+                llm_config.layer_types = llm_config.layer_types[:2]
         return modeling_llama.LlamaForCausalLM.from_pretrained(
             model_id, config=llm_config
         )
@@ -42,6 +48,21 @@ class Llama_32(LLM):
         return AutoTokenizer.from_pretrained(
             model_id, use_fast=True, trust_remote_code=True
         )
+
+    @classmethod
+    def get_sample_backbone_inputs(cls, model, context_length, sequence_length):
+        dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
+        dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
+
+        assembled_dummy_inputs = Generator.prepare_inputs(
+            model=model,
+            input_ids=dummy_input_ids,
+            attention_mask=dummy_attention_mask,
+            past_key_values=[],
+            context_length=context_length,
+            sequence_length=sequence_length,
+        )
+        return assembled_dummy_inputs
 
 
 #################################  Extra code to enable SHA tests on llama  #################################

@@ -3,10 +3,13 @@
 
 """Phi-3.5 model class"""
 
+import torch
+
 from transformers import AutoConfig, AutoTokenizer, PreTrainedTokenizer, PreTrainedModel
 from transformers.models.phi3 import modeling_phi3
 
-from .base import LLM
+from GenAITests.shared.models.base import LLM
+from GenAITests.shared.models.generator import Generator
 
 
 class Phi_3(LLM):
@@ -24,6 +27,11 @@ class Phi_3(LLM):
         llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
         if small_model:
             llm_config.num_hidden_layers = 2
+            if (
+                hasattr(llm_config, "layer_types")
+                and llm_config.layer_types is not None
+            ):
+                llm_config.layer_types = llm_config.layer_types[:2]
         return modeling_phi3.Phi3ForCausalLM.from_pretrained(
             model_id, config=llm_config
         )
@@ -36,3 +44,18 @@ class Phi_3(LLM):
         return AutoTokenizer.from_pretrained(
             model_id, use_fast=True, trust_remote_code=True
         )
+
+    @classmethod
+    def get_sample_backbone_inputs(cls, model, context_length, sequence_length):
+        dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
+        dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
+
+        assembled_dummy_inputs = Generator.prepare_inputs(
+            model=model,
+            input_ids=dummy_input_ids,
+            attention_mask=dummy_attention_mask,
+            past_key_values=[],
+            context_length=context_length,
+            sequence_length=sequence_length,
+        )
+        return assembled_dummy_inputs

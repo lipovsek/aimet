@@ -6,10 +6,12 @@
 import torch
 import onnx
 import os
+from transformers import AutoConfig
 
 from aimet_onnx import quantsim
-from aimet_onnx.quantsim import QuantizationSimModel as QuantSimOnnx
+from aimet_onnx.quantsim import QuantizationSimModel
 
+from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.qwen2 import Qwen_25
 from GenAITests.shared.models.generator import Generator
@@ -17,6 +19,7 @@ from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithC
 
 from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
     get_onnx_model,
+    load_model_components_from_disk,
     get_model_checkpoint_path,
     is_huggingface_ckpt,
 )
@@ -46,34 +49,27 @@ class Qwen_25_ONNX(Qwen_25):
             model_id = cls.DEFAULT_MODEL_ID
 
         if is_huggingface_ckpt(model_id):
-            model = cls.instantiate_model(model_id, small_model)
+            model = cls.instantiate_model(model_id, small_model).to(dtype=torch.float32)
             exportable_model = ONNXExportableModuleWithCache(model)
-
-            dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
-            dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
-
-            assembled_dummy_inputs = Generator.prepare_inputs(
-                model,
-                dummy_input_ids,
-                dummy_attention_mask,
-                [],
-                sequence_length,
-                context_length,
-            )
-
-            onnx_model = get_onnx_model(
+            onnx_model, *_ = get_onnx_model(
                 checkpoint=get_model_checkpoint_path(model_id),
-                fp_model=exportable_model,
+                fp_backbone_model=exportable_model,
                 context_length=context_length,
                 sequence_length=sequence_length,
-                sample_input=assembled_dummy_inputs,
+                sample_input=cls.get_sample_backbone_inputs(
+                    exportable_model, context_length, sequence_length
+                ),
                 input_names=Generator.get_input_names(model.config.num_hidden_layers),
                 output_names=Generator.get_output_names(model.config.num_hidden_layers),
             )
+            config = model.config
         else:
-            onnx_model = onnx.load(
-                os.path.join(model_id, f"model_cl{context_length}.onnx")
+            onnx_model, *_ = load_model_components_from_disk(
+                model_id,
+                context_length=context_length,
+                sequence_length=sequence_length,
             )
+            config = AutoConfig.from_pretrained(get_model_checkpoint_path(model_id))
 
         with (
             AttributePatch(quantsim, "op_types_to_tie_qtzrs", ["Concat"]),
@@ -84,7 +80,7 @@ class Qwen_25_ONNX(Qwen_25):
                 quantsim.op_outputs_to_ignore + ["Slice", "Constant"],
             ),
         ):
-            quant_sim = QuantSimOnnx(
+            quant_sim = QuantizationSimModel(
                 model=onnx_model,
                 quant_scheme="min_max",
                 default_activation_bw=16,
@@ -104,4 +100,4 @@ class Qwen_25_ONNX(Qwen_25):
         # Tie kv_cache
         _tie_quantizers_for_kv_cache(quant_sim)
 
-        return quant_sim
+        return SimCollection(quant_sim, config=config)

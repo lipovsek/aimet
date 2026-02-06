@@ -62,12 +62,27 @@ def change_tensor_and_cache_device_placement(inputs, device, cache_movement_fn=N
                 # Generally, this strategy should work in most cases. However, there is no guarantee from the base
                 # Cache class on this. So, if this fails we will ask users to provide a custom function for moving
                 # the contents of their Cache object between devices
-                cache_obj.key_cache = change_tensor_device_placement(
-                    cache_obj.key_cache, device
-                )
-                cache_obj.value_cache = change_tensor_device_placement(
-                    cache_obj.value_cache, device
-                )
+                if hasattr(cache_obj, "key_cache"):
+                    # Compatible with transformers < 4.55
+                    cache_obj.key_cache = change_tensor_device_placement(
+                        cache_obj.key_cache, device
+                    )
+                    cache_obj.value_cache = change_tensor_device_placement(
+                        cache_obj.value_cache, device
+                    )
+                else:
+                    # Compatible with transformers >= 4.55
+                    for layer_idx in range(len(cache_obj)):
+                        cache_obj.layers[
+                            layer_idx
+                        ].keys = change_tensor_device_placement(
+                            cache_obj.layers[layer_idx].keys, device
+                        )
+                        cache_obj.layers[
+                            layer_idx
+                        ].values = change_tensor_device_placement(
+                            cache_obj.layers[layer_idx].values, device
+                        )
             except Exception as e:
                 logger.error(
                     "Please provide a cache_movement_fn to move contents of the Cache object used by the model"

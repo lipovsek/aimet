@@ -47,23 +47,20 @@ class TorchExportableModuleWithCache(torch.nn.Module):
         input_ids: torch.Tensor = None,
         attention_mask: torch.Tensor = None,
         position_ids: torch.Tensor = None,
-        past_key_values: DynamicCache = None,
         *args,
         **kwargs,
     ):
         """Redefine model forward to convert to/from Huggingface DynamicCache objects"""
-        past_key_values = DynamicCache.from_legacy_cache(past_key_values)
         lm_logits, new_past_key_values = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_values=past_key_values,
             num_logits_to_return=0,
             return_dict=False,
             *args,
             **kwargs,
         )
-        return lm_logits, new_past_key_values.to_legacy_cache()
+        return lm_logits
 
 
 class RMSNormWithLinear(torch.nn.Module):

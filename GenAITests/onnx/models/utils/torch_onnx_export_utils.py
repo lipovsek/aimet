@@ -55,78 +55,138 @@ def equivalent_configs(config_a, config_b) -> bool:
     return config_dict_a == config_dict_b
 
 
+def load_model_components_from_disk(
+    checkpoint: str | os.PathLike,
+    context_length: int,
+    sequence_length: int,
+) -> tuple[onnx.ModelProto, onnx.ModelProto | None, torch.nn.Embedding | None]:
+    backbone = onnx.load(
+        os.path.join(
+            checkpoint, "backbone", f"model_sl{sequence_length}_cl{context_length}.onnx"
+        )
+    )
+
+    visual_path = os.path.join(checkpoint, "visual", "model.onnx")
+    visual = onnx.load(visual_path) if os.path.exists(visual_path) else None
+
+    embedding_path = os.path.join(checkpoint, "embedding.pth")
+    if os.path.exists(embedding_path):
+        weights = torch.load(
+            embedding_path, map_location="cpu"
+        )  # -> torch.Tensor of shape [V, D]
+        if not isinstance(weights, torch.Tensor) or weights.ndim != 2:
+            raise ValueError("Expected a 2D embedding tensor in embedding.pth")
+
+        embedding = torch.nn.Embedding.from_pretrained(weights, freeze=False)
+        embedding = embedding.to("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        embedding = None
+
+    return backbone, visual, embedding
+
+
 def get_onnx_model(
     checkpoint: str | os.PathLike,
-    fp_model: torch.nn.Module,
+    fp_backbone_model: torch.nn.Module,
     context_length: int,
     sequence_length: int,
     sample_input: tuple[torch.Tensor, ...],
     input_names: tuple[str, ...],
     output_names: tuple[str, ...],
-) -> onnx.ModelProto:
+    fp_visual_model: torch.nn.Module | None = None,
+    sample_visual_input: tuple[torch.Tensor, ...] | None = None,
+    visual_input_names: tuple[str, ...] | None = None,
+    visual_output_names: tuple[str, ...] | None = None,
+) -> tuple[onnx.ModelProto, onnx.ModelProto | None]:
     # Create the checkpoint directory if it does not exist.
     os.makedirs(checkpoint, exist_ok=True)
-    onnx_model_path = os.path.join(
-        checkpoint, f"model_sl{sequence_length}_cl{context_length}.onnx"
+    onnx_backbone_path = os.path.join(
+        checkpoint, "backbone", f"model_sl{sequence_length}_cl{context_length}.onnx"
     )
+    onnx_visual_path = os.path.join(checkpoint, "visual", "model.onnx")
     config_path = os.path.join(checkpoint, "config.json")
 
-    fp_model.eval()
-    fp_model.train(False)
+    visual_model_exists = fp_visual_model is not None
+
+    fp_backbone_model.eval()
+    fp_backbone_model.train(False)
 
     # re-export model if model/config is not found on disk OR if config on disk does not match model config
     if (
-        not os.path.exists(onnx_model_path)
+        not os.path.exists(onnx_backbone_path)
         or not os.path.exists(config_path)
         or not equivalent_configs(
-            AutoConfig.from_pretrained(config_path), fp_model.config
+            AutoConfig.from_pretrained(config_path), fp_backbone_model.config
         )
+        or (visual_model_exists and not os.path.exists(onnx_visual_path))
     ):
-        print("Exporting model to ONNX...")
-        fp_model.to(torch.device("cpu"))
+        print("Exporting model(s) to ONNX...")
+        fp_backbone_model.to(torch.device("cpu"))
 
-        fp_model.config.save_pretrained(checkpoint)
+        fp_backbone_model.config.save_pretrained(checkpoint)
         with torch.no_grad():
+            os.makedirs(os.path.join(checkpoint, "backbone"), exist_ok=True)
             torch.onnx.export(
-                fp_model,
+                fp_backbone_model,
                 sample_input,
-                onnx_model_path,
+                onnx_backbone_path,
                 input_names=input_names,
                 output_names=output_names,
                 opset_version=17,
                 dynamo=False,
             )
+            if visual_model_exists:
+                os.makedirs(os.path.join(checkpoint, "visual"), exist_ok=True)
+                torch.onnx.export(
+                    fp_visual_model,
+                    sample_visual_input,
+                    onnx_visual_path,
+                    input_names=visual_input_names,
+                    output_names=visual_output_names,
+                    opset_version=17,
+                    dynamo=False,
+                )
 
-        print("Loading ONNX model...")
-        model = onnx.load(onnx_model_path)
+        print("Loading ONNX model(s)...")
+        model = onnx.load(onnx_backbone_path)
+        if visual_model_exists:
+            visual_model = onnx.load(onnx_visual_path)
 
         # Clean up multiple weights files
-        for file in glob.glob(
-            os.path.join(os.path.dirname(onnx_model_path), "*.weight")
-        ):
-            os.remove(file)
-        for file in glob.glob(
-            os.path.join(os.path.dirname(onnx_model_path), "onnx__*")
-        ):
-            os.remove(file)
-        for file in glob.glob(
-            os.path.join(os.path.dirname(onnx_model_path), "*__value")
-        ):
-            os.remove(file)
+        for model_path in [onnx_backbone_path, onnx_visual_path]:
+            for extension in ["*.weight", "*.bias", "onnx__*", "*__value"]:
+                for file in glob.glob(
+                    os.path.join(os.path.dirname(model_path), extension)
+                ):
+                    os.remove(file)
 
         onnx.save_model(
             model,
-            onnx_model_path,
+            onnx_backbone_path,
             save_as_external_data=True,
             all_tensors_to_one_file=True,
             location="model.data",
         )
+        if visual_model_exists:
+            onnx.save_model(
+                visual_model,
+                onnx_visual_path,
+                save_as_external_data=True,
+                all_tensors_to_one_file=True,
+                location="model.data",
+            )
 
         onnx.external_data_helper.load_external_data_for_model(
-            model, os.path.dirname(onnx_model_path)
+            model, os.path.dirname(onnx_backbone_path)
         )
+        if visual_model_exists:
+            onnx.external_data_helper.load_external_data_for_model(
+                visual_model, os.path.dirname(onnx_visual_path)
+            )
+        return model, visual_model if visual_model_exists else None
     else:
         print("Loading cached ONNX model...")
-        model = onnx.load(onnx_model_path)
-
-    return model
+        backbone, visual, *_ = load_model_components_from_disk(
+            checkpoint, context_length=context_length, sequence_length=sequence_length
+        )
+        return backbone, visual

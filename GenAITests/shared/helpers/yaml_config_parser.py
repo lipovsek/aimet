@@ -60,8 +60,6 @@ class YAMLConfigParser:
     def validate_config(cls, doc):
         if "model" not in doc:
             raise RuntimeError("Model not specified.")
-        if "dataset" not in doc:
-            raise RuntimeError("Dataset not specified.")
         if "recipe" not in doc:
             raise RuntimeError("Recipe not specified.")
         if "metrics" not in doc:
@@ -71,10 +69,6 @@ class YAMLConfigParser:
             raise RuntimeError(
                 "Multiple models cannot be specified in a single document."
             )
-        if not isinstance(doc["dataset"], dict):
-            raise RuntimeError(
-                "Multiple datasets cannot be specified in a single document."
-            )
         if not isinstance(doc["recipe"], dict):
             raise RuntimeError(
                 "Multiple recipes cannot be specified in a single document."
@@ -82,15 +76,32 @@ class YAMLConfigParser:
 
         if "name" not in doc["model"]:
             raise RuntimeError("Model name not specified.")
-        if "name" not in doc["dataset"]:
-            raise RuntimeError("Dataset name not specified.")
-        if "name" not in doc["recipe"]:
-            raise RuntimeError("Quantization recipe name not specified.")
 
         if "sequence_length" not in doc["model"]:
             raise RuntimeError("Sequence length not specified.")
         if "context_length" not in doc["model"]:
             raise RuntimeError("Context length not specified.")
+
+        # Normalize single recipe to component format
+        has_recipe_name = "name" in doc["recipe"]
+        has_backbone = "backbone" in doc["recipe"]
+        if not has_recipe_name and not has_backbone:
+            raise RuntimeError(
+                "Recipe must have either 'name' or 'backbone' specified."
+            )
+        elif has_recipe_name and has_backbone:
+            raise RuntimeError(
+                "Recipe cannot have both 'name' and 'backbone' specified."
+            )
+        elif has_recipe_name:
+            doc["recipe"] = {"backbone": doc["recipe"]}
+
+        # Backward compatibility: migrate top-level dataset into backbone component
+        if "dataset" in doc:
+            if "dataset" not in doc["recipe"]["backbone"]:
+                doc["recipe"]["backbone"]["dataset"] = doc.pop("dataset")
+            else:
+                doc.pop("dataset")  # Component has its own dataset, discard top-level
 
         metrics = (
             doc["metrics"] if isinstance(doc["metrics"], list) else [doc["metrics"]]
@@ -135,27 +146,32 @@ class YAMLConfigParser:
                 f"Specified model name ({model_name}) not found."
             ) from exc
 
-        dataset_name = doc["dataset"]["name"]
-        try:
-            dataset_cls = cls.get_dataset(dataset_name)
-            task_params["dataset"] = doc.pop("dataset")
-            task_params["dataset"]["class"] = dataset_cls
-            del task_params["dataset"]["name"]
-        except LookupError as exc:
-            raise LookupError(
-                f"Specified dataset name ({dataset_name}) not found."
-            ) from exc
+        task_params["recipe"] = {}
+        for component_name, component_config in doc["recipe"].items():
+            recipe_name = component_config["name"]
+            try:
+                recipe_cls = cls.get_recipe(recipe_name)
+                task_params["recipe"][component_name] = component_config.copy()
+                task_params["recipe"][component_name]["class"] = recipe_cls
+                del task_params["recipe"][component_name]["name"]
+            except LookupError as exc:
+                raise LookupError(
+                    f"Specified quantization recipe name ({recipe_name}) not found."
+                ) from exc
 
-        recipe_name = doc["recipe"]["name"]
-        try:
-            recipe_cls = cls.get_recipe(recipe_name)
-            task_params["recipe"] = doc.pop("recipe")
-            task_params["recipe"]["class"] = recipe_cls
-            del task_params["recipe"]["name"]
-        except LookupError as exc:
-            raise LookupError(
-                f"Specified quantization recipe name ({recipe_name}) not found."
-            ) from exc
+            # Parse dataset within component
+            if "dataset" in component_config:
+                dataset_config = task_params["recipe"][component_name]["dataset"]
+                dataset_name = dataset_config["name"]
+                try:
+                    dataset_cls = cls.get_dataset(dataset_name)
+                    dataset_config["class"] = dataset_cls
+                    del dataset_config["name"]
+                except LookupError as exc:
+                    raise LookupError(
+                        f"Specified dataset name ({dataset_name}) not found."
+                    ) from exc
+        del doc["recipe"]
 
         metrics = (
             doc["metrics"] if isinstance(doc["metrics"], list) else [doc["metrics"]]
@@ -188,12 +204,3 @@ class YAMLConfigParser:
             docs = yaml.safe_load_all(file)
             for doc in docs:
                 yield cls.parse_document(doc)
-
-    @classmethod
-    def save_parameters_to_config(cls, task_parameters, location):
-        data = {
-            "model": None,
-            "dataset": None,
-            "recipe": None,
-            "metrics": None,
-        }

@@ -2,9 +2,6 @@ model:
   name: Llama_32
   sequence_length: 2048
   context_length: 4096
-dataset:
-  name: Wikitext
-  split: train
 recipe:
   name: RemoveQuantization
 metrics:
@@ -15,11 +12,11 @@ model:
   name: Llama_32
   sequence_length: 2048
   context_length: 4096
-dataset:
-  name: Wikitext
-  split: train
 recipe:
   name: LPBQ
+  dataset:
+    name: Wikitext
+    split: train
 metrics:
   - name: TinyMMLU
   - name: PPL
@@ -28,11 +25,11 @@ model:
   name: Llama_32
   sequence_length: 2048
   context_length: 4096
-dataset:
-  name: Wikitext
-  split: train
 recipe:
   name: PCQ
+  dataset:
+    name: Wikitext
+    split: train
 metrics:
   - name: TinyMMLU
   - name: PPL
@@ -41,11 +38,11 @@ model:
   name: Llama_32
   sequence_length: 2048
   context_length: 4096
-dataset:
-  name: Wikitext
-  split: train
 recipe:
   name: SeqMSE
+  dataset:
+    name: Wikitext
+    split: train
 metrics:
   - name: TinyMMLU
   - name: PPL
@@ -54,11 +51,11 @@ model:
   name: Llama_32
   sequence_length: 2048
   context_length: 4096
-dataset:
-  name: Wikitext
-  split: train
 recipe:
   name: AdaScale
+  dataset:
+    name: Wikitext
+    split: train
 metrics:
   - name: TinyMMLU
   - name: PPL
@@ -67,11 +64,11 @@ model:
   name: Llama_32
   sequence_length: 2048
   context_length: 4096
-dataset:
-  name: Wikitext
-  split: train
 recipe:
   name: SpinQuant
+  dataset:
+    name: Wikitext
+    split: train
 metrics:
   - name: TinyMMLU
   - name: PPL

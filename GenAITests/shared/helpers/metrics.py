@@ -20,7 +20,11 @@ from .datasets import (
 
 
 class EvaluationMetric(ABC):
-    """Generic GenAI evaluation metric"""
+    pass
+
+
+class TextEvaluationMetric(EvaluationMetric):
+    """Generic GenAI text evaluation metric"""
 
     @classmethod
     @abstractmethod
@@ -31,7 +35,7 @@ class EvaluationMetric(ABC):
 
 
 @YAMLConfigParser.register_metric
-class PPL(EvaluationMetric):
+class PPL(TextEvaluationMetric):
     """PPL evaluation metric"""
 
     @staticmethod
@@ -87,7 +91,7 @@ class PPL(EvaluationMetric):
         return float(ppl)
 
 
-class GenericMMLU(EvaluationMetric):
+class GenericMMLU(TextEvaluationMetric):
     """Generic MMLU evaluation metric. Should work with any MMLU dataset."""
 
     @staticmethod
@@ -201,7 +205,7 @@ class MMMLU(GenericMMLU):
 
 
 @YAMLConfigParser.register_metric
-class Interactive(EvaluationMetric):
+class Interactive(TextEvaluationMetric):
     @staticmethod
     def get_system_prompt() -> str:
         return "You are a helpful AI assistant."

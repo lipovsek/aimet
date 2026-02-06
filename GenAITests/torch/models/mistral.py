@@ -13,8 +13,8 @@ from aimet_torch.v2.nn.transformers.models.mistral.modeling_mistral import (
 )
 
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
+from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.models.mistral import Mistral_03
-from GenAITests.shared.models.generator import Generator
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 
@@ -31,7 +31,7 @@ class Mistral_03_Torch(Mistral_03):
         kv_bits: int = 8,
         *args,
         **kwargs,
-    ) -> QuantizationSimModel:
+    ) -> SimCollection:
         warnings.warn(
             f"kv_bits parameter (value: {kv_bits}) is ignored in Torch GenAI framework. "
             f"KV Cache quantization is not simulated. If you would like this setting to be "
@@ -43,23 +43,12 @@ class Mistral_03_Torch(Mistral_03):
 
         # Need to wrap model in this in order to enable JIT trace
         traceable_model = ONNXExportableModuleWithCache(model)
-
-        dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
-        dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
-
-        assembled_dummy_inputs = Generator.prepare_inputs(
-            model=traceable_model,
-            input_ids=dummy_input_ids,
-            attention_mask=dummy_attention_mask,
-            past_key_values=[],
-            context_length=context_length,
-            sequence_length=sequence_length,
-        )
-
         quantsim = QuantizationSimModel(
             model=traceable_model,
             quant_scheme=QuantScheme.post_training_tf,
-            dummy_input=assembled_dummy_inputs,
+            dummy_input=cls.get_sample_backbone_inputs(
+                traceable_model, context_length, sequence_length
+            ),
             default_output_bw=16,
             default_param_bw=4,
             in_place=True,
@@ -71,4 +60,4 @@ class Mistral_03_Torch(Mistral_03):
             if isinstance(module, QuantizedMistralRMSNorm):
                 module.param_quantizers["weight"].bitwidth = 16
 
-        return quantsim
+        return SimCollection(quantsim)

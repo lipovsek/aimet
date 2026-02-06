@@ -78,9 +78,10 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
     context_length = 32
     sequence_length = 16
     model_id = "Qwen/Qwen2.5-0.5B"
-    sim = Qwen_25_ONNX.instantiate_quantsim(
+    collection = Qwen_25_ONNX.instantiate_quantsim(
         "Qwen/Qwen2.5-0.5B", 32, 16, small_model=small_model
     )
+    sim = collection.backbone
     llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     if small_model:
         llm_config.num_hidden_layers = 2

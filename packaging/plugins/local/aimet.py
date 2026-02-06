@@ -258,7 +258,7 @@ def optional_dependencies() -> dict[str, list[str]]:
                 "onnxsim",
                 "accelerate<1.10.0",
                 "safetensors<=0.5.3",
-                "transformers<4.52.2",
+                "transformers",
                 "peft",
             ]
         )
