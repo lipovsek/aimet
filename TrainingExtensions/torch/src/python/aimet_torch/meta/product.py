@@ -4,7 +4,7 @@
 from typing import Optional
 
 from aimet_torch.common.connected_graph.product import Product as _Product
-from ..nn import QuantizationMixin
+from ..nn import BaseQuantizationMixin
 from .operation import Op
 
 _V2 = True
@@ -29,7 +29,7 @@ class Product(_Product):
                 # must have been quantized by the previous layer.
                 # This doesn't cover all cases, but it's a reasonable assumption
                 # for a short-term fix.
-                return isinstance(producer_module, QuantizationMixin) or (
+                return isinstance(producer_module, BaseQuantizationMixin) or (
                     producer.is_grid_preserving_op()
                     and (
                         producer.inputs[0].is_quantized()

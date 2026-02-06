@@ -37,6 +37,7 @@ from aimet_torch.nn import (
     QuantizedLinear,
     QuantizedReLU,
 )
+from aimet_torch.v2.nn.fake_quant import _legacy_impl
 import aimet_torch.nn.modules.custom as custom
 from ..models_ import test_models
 
@@ -2627,3 +2628,34 @@ def test_reused_conv():
     model = torch.nn.Sequential(conv, conv)  # conv1 is used multiple times
     sim = aimet_torch.QuantizationSimModel(model, torch.randn(1, 3, 10, 10))
     assert sim.model[0].param_quantizers["weight"].shape == (3, 1, 1, 1)
+
+
+def test_input_quantizer_with_legacy_impl():
+    """
+    When: Model contains legacy FakeQuantized module
+    Then: Redundant reshape input quantizer should not be added by quantsim
+    """
+
+    class Square(torch.nn.Module):
+        def forward(self, x):
+            return x**2
+
+    @_legacy_impl.FakeQuantizationMixin.implements(Square)
+    class QuantizedSquare(_legacy_impl._FakeQuantizedUnaryOpMixin, Square): ...
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super(Model, self).__init__()
+            self.square = Square()
+            self.reshape = custom.Reshape()
+
+        def forward(self, x):
+            x = self.square(x)
+            x = self.reshape(x, (-1,))
+            return x
+
+    model = Model()
+    x = torch.randn(4, 4)
+
+    sim = aimet_torch.QuantizationSimModel(model, (x,), config_file="htp_v81")
+    assert sim.model.reshape.input_quantizers[0] is None
