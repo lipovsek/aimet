@@ -17,7 +17,7 @@ from aimet_torch.v2.quantization.encoding_analyzer import MinMaxEncodingAnalyzer
 from aimet_torch.v2.quantization import DequantizedTensor
 from aimet_torch.v2.quantization.float import FloatQuantizeDequantize, FloatEncoding
 from aimet_torch.v2.quantization.float.quantizer import _fake_cast_to_ieee_float
-from aimet_torch.v2.quantization.float._finfo import _finfo
+from aimet_torch.v2.quantization.float._finfo import _finfo, _float8_e4m3fn
 
 
 @pytest.fixture(autouse=True)
@@ -315,41 +315,26 @@ def test_allow_overwrite(x):
     assert torch.equal(q.maxval, q_max * 2)
 
 
-@pytest.mark.parametrize(
-    "exponent_1, mantissa_1, encoding_analyzer_1",
-    [(1, 2, MinMaxEncodingAnalyzer((1, 3))), (3, 4, None)],
-)
-@pytest.mark.parametrize(
-    "exponent_2, mantissa_2, encoding_analyzer_2",
-    [(5, 6, MinMaxEncodingAnalyzer((1, 3))), (7, 8, None)],
-)
-def test_save_and_load_state_dict(
-    exponent_1,
-    mantissa_1,
-    encoding_analyzer_1,
-    exponent_2,
-    mantissa_2,
-    encoding_analyzer_2,
-):
-    qtzr_1 = FloatQuantizeDequantize(
-        exponent_1, mantissa_1, encoding_analyzer=encoding_analyzer_1
+def test_save_and_load_state_dict():
+    float8_e5m2_qtzr = FloatQuantizeDequantize(dtype=torch.float8_e5m2)
+    float8_e4m3fn_qtzr = FloatQuantizeDequantize(
+        dtype=torch.float8_e4m3fn, shape=(20, 20), block_size=(5, 5)
     )
-    dummy_input = torch.randn(1, 3)
-    with qtzr_1.compute_encodings():
-        qtzr_1(dummy_input)
 
-    qtzr_2 = FloatQuantizeDequantize(
-        exponent_2, mantissa_2, encoding_analyzer=encoding_analyzer_2
-    )
-    with qtzr_2.compute_encodings():
-        qtzr_2(dummy_input)
+    dummy_input = torch.randn(100, 100)
+    with float8_e5m2_qtzr.compute_encodings(), float8_e4m3fn_qtzr.compute_encodings():
+        _ = float8_e5m2_qtzr(dummy_input)
+        _ = float8_e4m3fn_qtzr(dummy_input)
+
     assert not torch.allclose(
-        qtzr_1(dummy_input), qtzr_2(dummy_input), atol=1e-7, rtol=1e-7
+        float8_e5m2_qtzr(dummy_input), float8_e4m3fn_qtzr(dummy_input)
     )
 
-    qtzr_1_state_dict = qtzr_1.state_dict()
-    qtzr_2.load_state_dict(qtzr_1_state_dict)
-    assert torch.equal(qtzr_1(dummy_input), qtzr_2(dummy_input))
+    float8_e5m2_qtzr.load_state_dict(float8_e4m3fn_qtzr.state_dict())
+    assert float8_e5m2_qtzr._finfo == float8_e4m3fn_qtzr._finfo == _float8_e4m3fn
+    assert float8_e5m2_qtzr.shape == float8_e4m3fn_qtzr.shape == (20, 20)
+    assert float8_e5m2_qtzr.block_size == float8_e4m3fn_qtzr.block_size == (5, 5)
+    assert torch.equal(float8_e5m2_qtzr(dummy_input), float8_e4m3fn_qtzr(dummy_input))
 
 
 def test_extreme_values_warning():

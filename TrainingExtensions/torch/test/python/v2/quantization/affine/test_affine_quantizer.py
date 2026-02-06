@@ -1013,6 +1013,56 @@ def test_is_initialized(x, assign: bool):
     assert qdq.is_initialized()
     assert torch.equal(qdq(x.view(-1, 10)), out_before)
 
+    """
+    When: Load state dict of quantizer with different config (bitwidth, block_size, etc.)
+    Then: Quantizer should be set to the same config after load_state_dict
+    """
+    qdq = QuantizeDequantize(
+        (10, 4),
+        bitwidth=4,
+        symmetric=True,
+        block_size=(2, 2),
+        zero_point_shift=0.5,
+    )
+    state_dict = qdq.state_dict()
+    qdq_ = QuantizeDequantize(
+        (),
+        bitwidth=8,
+        symmetric=False,
+        block_size=None,
+        zero_point_shift=0.0,
+    )
+    qdq_.load_state_dict(state_dict, strict=False, assign=assign)
+    assert qdq_.shape == (10, 4)
+    assert qdq_.bitwidth == 4
+    assert qdq_.symmetric
+    assert qdq_.block_size == (2, 2)
+    assert qdq_.zero_point_shift == 0.5
+
+    """
+    When: Load state dict of scale/offset quantizer to min/max quantizer
+    Then: Should throw runtime error
+    """
+    min_max_qdq = QuantizeDequantize(
+        (10, 4),
+        bitwidth=4,
+        symmetric=True,
+        block_size=(2, 2),
+        zero_point_shift=0.5,
+    )
+    scale_offset_qdq = copy.deepcopy(min_max_qdq)
+    scale_offset_qdq._reparametrize_to_scale_offset()
+
+    with pytest.raises(RuntimeError):
+        min_max_qdq.load_state_dict(
+            scale_offset_qdq.state_dict(), strict=False, assign=assign
+        )
+
+    with pytest.raises(RuntimeError):
+        scale_offset_qdq.load_state_dict(
+            min_max_qdq.state_dict(), strict=False, assign=assign
+        )
+
 
 @pytest.mark.cuda
 @pytest.mark.parametrize(

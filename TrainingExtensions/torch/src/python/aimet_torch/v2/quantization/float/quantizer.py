@@ -198,14 +198,40 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         self._finfo = _finfo(exponent_bits, mantissa_bits, finite, unsigned_zero)
 
     def get_extra_state(self):
+        if torch.onnx.is_in_onnx_export():
+            # Bypass get_extra_state during ONNX export.
+            # ONNX export doesn't support non-tensor objects in state_dict
+            # Return empty tensor since extra state is unnecessary for ONNX export anyway
+            return torch.tensor([])
+
         extra_state_dict = super().get_extra_state()
-        extra_state_dict["exponent_bits"] = torch.tensor(self.exponent_bits)
-        extra_state_dict["mantissa_bits"] = torch.tensor(self.mantissa_bits)
+        finfo = self._finfo
+        extra_state_dict.update(
+            {
+                "exponent_bits": torch.tensor(finfo.exponent_bits),
+                "mantissa_bits": torch.tensor(finfo.mantissa_bits),
+                "finite": torch.tensor(finfo.finite),
+                "unsigned_zero": torch.tensor(finfo.unsigned_zero),
+                "block_size": torch.tensor(self.block_size or ()),
+            }
+        )
         return extra_state_dict
 
     def set_extra_state(self, state):
-        self.exponent_bits = state["exponent_bits"].item()
-        self.mantissa_bits = state["mantissa_bits"].item()
+        block_size = tuple(state.get("block_size", self.block_size or ()))
+        self.block_size = block_size or None
+
+        exponent_bits = state.get("exponent_bits", self._finfo.exponent_bits)
+        mantissa_bits = state.get("mantissa_bits", self._finfo.mantissa_bits)
+        finite = state.get("finite", self._finfo.finite)
+        unsigned_zero = state.get("unsigned_zero", self._finfo.unsigned_zero)
+
+        self._finfo = _finfo(
+            exponent_bits=int(exponent_bits),
+            mantissa_bits=int(mantissa_bits),
+            finite=bool(finite),
+            unsigned_zero=bool(unsigned_zero),
+        )
         super().set_extra_state(state)
 
     def load_state_dict(self, state_dict, *args, **kwargs):
@@ -218,6 +244,10 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
             self.register_buffer("maxval", None)
 
         ret = super().load_state_dict(state_dict, *args, **kwargs)
+
+        if self.maxval is not None:
+            self.shape = tuple(self.maxval.shape)
+
         return ret
 
     @property

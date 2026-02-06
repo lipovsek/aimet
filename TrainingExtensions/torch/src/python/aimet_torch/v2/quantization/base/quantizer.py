@@ -10,11 +10,9 @@ from collections import OrderedDict
 import contextlib
 import weakref
 from typing import Optional, List, Dict, TYPE_CHECKING, overload
-import functools
 
 import torch
 from torch import nn
-from torch.utils._pytree import tree_map
 
 from packaging import version
 from aimet_torch.common.utils import deprecated
@@ -193,22 +191,16 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
         """
         Get extra state that describes which parameters are initialized.
         """
-        extra_state_dict = OrderedDict(
-            {
-                param_name: torch.tensor(self._is_initialized(param_name, param))
-                for param_name, param in self.named_parameters()
-            }
-        )
+        if torch.onnx.is_in_onnx_export():
+            # Bypass get_extra_state during ONNX export.
+            # ONNX export doesn't support non-tensor objects in state_dict
+            # Return empty tensor since extra state is unnecessary for ONNX export anyway
+            return torch.tensor([])
 
-        # NOTE: This is a hack to bypass a bug in PyTorch onnx export
-        #       where it assumes state dict is always Mapping[str, Tensor]
-        #       and tries to `.detach()` all the values in the state dict.
-        setattr(
-            extra_state_dict,
-            "detach",
-            functools.partial(tree_map, torch.Tensor.detach, extra_state_dict),
-        )
-        return extra_state_dict
+        return {
+            param_name: torch.tensor(self._is_initialized(param_name, param))
+            for param_name, param in self.named_parameters()
+        }
 
     @torch.no_grad()
     def set_extra_state(self, state):

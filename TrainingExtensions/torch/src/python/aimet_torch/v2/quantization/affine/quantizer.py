@@ -666,6 +666,96 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
 
         self.set_range(enc_min, enc_max)
 
+    def load_state_dict(self, state_dict, strict: bool = True, **kwargs):  # pylint:disable=arguments-differ
+        # pylint: disable=attribute-defined-outside-init, access-member-before-definition
+        if strict:
+            return super().load_state_dict(state_dict, strict, **kwargs)
+
+        if "min" in state_dict or "max" in state_dict:
+            is_minmax_state_dict = True
+        elif "scale" in state_dict or "offset" in state_dict:
+            is_minmax_state_dict = False
+        else:
+            # Mal-formed state dict; call super() to raise error
+            return super().load_state_dict(state_dict, strict, **kwargs)
+
+        if self._is_min_max_quantizer() != is_minmax_state_dict:
+            raise RuntimeError
+
+        if self._is_min_max_quantizer():
+            new_min = state_dict.get("min")
+            new_max = state_dict.get("max")
+
+            if new_min is not None and new_min.shape != self.min.shape:
+                self.min = torch.nn.Parameter(
+                    new_min.clone().to(device=self.min.device, dtype=self.min.dtype)
+                )
+
+            if new_max is not None and new_max.shape != self.max.shape:
+                self.max = torch.nn.Parameter(
+                    new_max.clone().to(device=self.max.device, dtype=self.max.dtype)
+                )
+        else:
+            new_scale = state_dict.get("scale")
+            new_offset = state_dict.get("offset")
+
+            if new_scale is not None and new_scale.shape != self.scale.shape:
+                self.scale = torch.nn.Parameter(
+                    new_scale.clone().to(
+                        device=self.scale.device, dtype=self.scale.dtype
+                    )
+                )
+
+            if new_offset is not None and (
+                self.offset is None or new_offset.shape != self.offset.shape
+            ):
+                device = (
+                    self.scale.device if self.offset is None else self.offset.device
+                )
+                dtype = self.scale.dtype if self.offset is None else self.offset.device
+                self.offset = torch.nn.Parameter(
+                    new_offset.clone().to(device=device, dtype=dtype)
+                )
+
+        return super().load_state_dict(state_dict, strict, **kwargs)
+
+    def get_extra_state(self):
+        if torch.onnx.is_in_onnx_export():
+            # Bypass get_extra_state during ONNX export.
+            # ONNX export doesn't support non-tensor objects in state_dict
+            # Return empty tensor since extra state is unnecessary for ONNX export anyway
+            return torch.tensor([])
+
+        extra_state = super().get_extra_state()
+        extra_state.update(
+            {
+                "qmin": torch.tensor(self.qmin),
+                "qmax": torch.tensor(self.qmax),
+                "symmetric": torch.tensor(self.symmetric),
+                "block_size": torch.tensor(self.block_size or ()),
+                "zero_point_shift": torch.tensor(self.zero_point_shift),
+            }
+        )
+        return extra_state
+
+    def set_extra_state(self, state):
+        super().set_extra_state(state)
+
+        if "qmin" in state:
+            self.qmin = state.pop("qmin").item()
+        if "qmax" in state:
+            self.qmax = state.pop("qmax").item()
+        if "symmetric" in state:
+            self.symmetric = state.pop("symmetric").item()
+        if "block_size" in state:
+            self.block_size = tuple(state.pop("block_size")) or None
+        if "zero_point_shift" in state:
+            self.zero_point_shift = state.pop("zero_point_shift").item()
+
+        self.shape = tuple(
+            self.min.shape if self._is_min_max_quantizer() else self.scale.shape
+        )
+
 
 def _get_symmetric_offset(qmin, qmax, shape, dtype, device):
     return torch.full(
