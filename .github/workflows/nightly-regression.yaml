@@ -244,6 +244,7 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
       INPUT_SUITE: ${{ github.event.inputs.suite || 'nightly' }}-torch
       WORKFLOW_FILE: "nightly-regression.yaml"
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
@@ -292,6 +293,12 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           uv pip install downloads/*.whl
           python -c "import aimet_torch; print('AIMET Torch version:', aimet_torch.__version__)"
+
+      - name: Pin numpy (avoid ml_dtypes segfault with numpy 2.x)
+        run: |
+          . .venv/bin/activate
+          export PATH="$HOME/.local/bin:$PATH"
+          uv pip install "numpy<2"
 
       - name: Verify PyTorch GPU
         run: |

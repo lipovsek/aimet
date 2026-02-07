@@ -24,7 +24,6 @@ Key design decisions:
 from __future__ import annotations
 import time
 import threading
-import psutil
 import os
 from typing import Optional, Callable, Tuple, List, TypeVar, Union
 
@@ -219,6 +218,9 @@ class _CPUPeakSampler:
             """Background thread that continuously samples RAM usage"""
 
             try:
+                # Lazy import to avoid segfault during module-level import in containers
+                import psutil  # pylint: disable=import-outside-toplevel
+
                 # Get process info for current process from psutil
                 proc = psutil.Process(os.getpid())
 

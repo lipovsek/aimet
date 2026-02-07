@@ -32,11 +32,13 @@ Design:
 """
 
 import argparse
+import gc
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any
 
+import torch
 import yaml
 
 from ONNXRegression.config_loader import load_config, list_tests, validate_config
@@ -325,6 +327,24 @@ Suite files location: ONNXRegression/suites/
             f"  Samples: calib={config.get('calib_samples')}, eval={config.get('eval_samples')}"
         )
         print(f"  QNN: {'Enabled' if config.get('qnn_options') else 'Disabled'}")
+
+        # Clean up memory before each test to prevent accumulation
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Clean up fiftyone COCO datasets to prevent conflicts between
+        # detection (coco) and segmentation (coco_seg) models.
+        # These share the same fiftyone dataset name but expect different
+        # annotation types, causing crashes when one reuses the other's cache.
+        try:
+            import fiftyone as fo
+
+            for dataset_name in fo.list_datasets():
+                if "coco" in dataset_name.lower():
+                    fo.delete_dataset(dataset_name)
+        except ImportError:
+            pass  # fiftyone not installed
 
         try:
             # Install model extras before running (comment out to disable)

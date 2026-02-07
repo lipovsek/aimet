@@ -13,13 +13,13 @@ profile: nightly
 framework: torch
 
 models:
+  - models/yolov5.yaml
+  - models/yolov8_seg.yaml
   - models/resnet50.yaml
   - models/mobilenetv2.yaml
   - models/efficientnet_b0.yaml
   - models/densenet121.yaml
   - models/mobilenet_v3_large.yaml
-  - models/yolov5.yaml
-  - models/yolov8_seg.yaml
 
 
 compare_to_baseline: true
