@@ -63,7 +63,6 @@ runs:
 
         if [ "${{ inputs.VER_ONNXRUNTIME }}" != "" ]; then
             AIMET_ONNX="aimet-onnx[test]"
-            AIMET_TORCH="aimet-torch[test]"  # Install aimet-torch for joint testing
         else
             AIMET_ONNX=""
             AIMET_TORCH="aimet-torch[test,v1-deps]"

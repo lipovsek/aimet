@@ -243,6 +243,10 @@ def optional_dependencies() -> dict[str, list[str]]:
 
     aimet_variant = get_aimet_variant()
 
+    # TODO: #6211 Remove aimet-onnx should not depend on aimet-torch for testing
+    if aimet_variant in ("onnx-cpu", "onnx-gpu"):
+        optional_dependencies["test"].extend(["aimet-torch[test]>2.20.0"])
+
     if aimet_variant in ("onnx-qnn",):
         optional_dependencies["test"].extend(
             [
