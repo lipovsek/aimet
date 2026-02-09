@@ -294,7 +294,7 @@ class AffineEncoding(EncodingBase, _GridMixin):
         # Legacy behavior is to shift offset by qmin
         offset = self.offset.flatten() + self.qmin
 
-        return [
+        encodings = [
             {
                 "min": float(min_),
                 "max": float(max_),
@@ -306,6 +306,11 @@ class AffineEncoding(EncodingBase, _GridMixin):
             }
             for min_, max_, scale_, offset_ in zip(min, max, scale, offset)
         ]
+        if self.zero_point_shift:
+            encodings = [
+                {**enc, "zero_point_shift": self.zero_point_shift} for enc in encodings
+            ]
+        return encodings
 
     def _get_additional_properties(self) -> Dict[str, Any]:
         return {}

@@ -2256,6 +2256,31 @@ class TestEncodingPropagation:
             out_2 = qsim_2.model(dummy_input)
             assert torch.allclose(out_1, out_2, atol=1e-7)
 
+    def test_load_encodings_with_zero_point_shift(self, tmp_path):
+        torch.manual_seed(0)
+
+        dummy_input = torch.randn(1, 3, 4, 4)
+        model = ConvModel()
+        qsim = QuantizationSimModel(model, dummy_input, config_file="htp_v73")
+        qsim.model.conv.param_quantizers["weight"] = QuantizeDequantize(
+            shape=qsim.model.conv.param_quantizers["weight"].shape,
+            bitwidth=2,
+            symmetric=True,
+            zero_point_shift=0.5,
+        )
+        qsim.compute_encodings(lambda m: m(dummy_input))
+        out_1 = qsim.model(dummy_input)
+        qsim.export(tmp_path, "model", dummy_input)
+
+        qsim2 = QuantizationSimModel(model, dummy_input, config_file="htp_v73")
+        encoding_file = os.path.join(tmp_path, "model_torch.encodings")
+        qsim2.load_encodings(encoding_file, strict=False, partial=False)
+        out_2 = qsim2.model(dummy_input)
+        assert qsim2.model.conv.param_quantizers["weight"].bitwidth == 2
+        assert qsim2.model.conv.param_quantizers["weight"].symmetric == True
+        assert qsim2.model.conv.param_quantizers["weight"].zero_point_shift == 0.5
+        assert torch.allclose(out_1, out_2)
+
     def test_dynamo_export(self, tmp_path):
         model = test_models.BasicConv2d(kernel_size=3)
         dummy_input = torch.rand(1, 64, 16, 16)

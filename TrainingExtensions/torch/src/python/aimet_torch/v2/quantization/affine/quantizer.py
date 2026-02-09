@@ -508,6 +508,8 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
         # We support two quantization modes: (unsigned) asymmetric and signed-symmetric
         self.qmin, self.qmax = _derive_qmin_qmax(bitwidth=bitwidth, signed=symmetric)
         self.symmetric = symmetric
+        zero_point_shift = encodings[0].get("zero_point_shift", 0.0)
+        self.zero_point_shift = zero_point_shift
         # Note: We can only accurately infer signed-ness in the symmetric case, but AIMET uses unsigned for asymmetric
         min_ = torch.tensor([e["min"] for e in encodings]).view(self.shape)
         max_ = torch.tensor([e["max"] for e in encodings]).view(self.shape)
