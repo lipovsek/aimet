@@ -582,13 +582,15 @@ class SequentialMse:
                     for node_name, b_loss in batched_loss.items():
                         accumulated_loss[node_name] += b_loss
 
+                    del binding, fp_outputs, sim_outputs, shared_outputs
+
                 # After all batches, append the accumulated loss for this candidate
                 for node_name, loss in accumulated_loss.items():
                     total_loss[node_name].append(loss)
 
                 _logger.debug(f"Finished candidate {candidate_index}")
 
-        del sim_inputs, fp_outputs, sim_outputs, shared_outputs
+        del sim_inputs
 
         # Postprocessing (not vectorized)
         for dep_node in dep_nodes_to_parallelize:
