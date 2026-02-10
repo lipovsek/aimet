@@ -1064,7 +1064,7 @@ def _create_quantized_module(module):
         (lambda: nn.Softplus(), lambda: randn(100)),
         (lambda: nn.Softshrink(), lambda: randn(100)),
         (lambda: nn.Softsign(), lambda: randn(100)),
-        # (lambda: nn.SyncBatchNorm(...),                      lambda: ...),
+        (lambda: nn.SyncBatchNorm(10), lambda: randn(5, 10, 3, 2)),
         (lambda: nn.Tanh(), lambda: randn(100)),
         (lambda: nn.Tanhshrink(), lambda: randn(100)),
         (lambda: nn.Threshold(0.1, 20), lambda: randn(100)),

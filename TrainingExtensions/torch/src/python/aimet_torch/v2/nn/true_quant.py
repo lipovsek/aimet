@@ -2265,9 +2265,21 @@ class QuantizedSoftsign(_DispatchMixin, QuantizationMixin, nn.Softsign):
     __quant_init__ = QuantizationMixin.__unary__
 
 
-# @QuantizationMixin.implements(nn.SyncBatchNorm)
-# class QuantizedSyncBatchNorm(_DispatchMixin, QuantizationMixin, nn.SyncBatchNorm):
-#     _builtin_torch_fn = ...
+@QuantizationMixin.implements(nn.SyncBatchNorm)
+class QuantizedSyncBatchNorm(QuantizationMixin, nn.SyncBatchNorm):
+    __doc__ = _generate_docstring(parent_cls=nn.SyncBatchNorm)
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # pylint: disable=arguments-differ
+        if self.input_quantizers[0]:
+            input = self.input_quantizers[0](input)
+
+        with self._patch_quantized_parameters():
+            output = super().forward(input)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output
 
 
 @QuantizationMixin.implements(nn.Tanh)
