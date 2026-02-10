@@ -239,6 +239,7 @@ def _add_onnx_qdq_nodes(
                     block_size,
                     output_dtype,
                     per_block_int_scale=per_block_int_scale,
+                    opset=opset,
                     base_dir=base_dir,
                 )
 
@@ -304,20 +305,12 @@ def _quantize_const(
     block_size: Optional[int],
     output_dtype: str,
     per_block_int_scale: Optional[np.ndarray],
+    opset,
     base_dir: Optional[str] = None,
 ) -> TensorProto:
     const = to_array(const, base_dir=base_dir).astype(np.float32)
-    unsigned, bitwidth = output_dtype.split("int")
-    bitwidth = int(bitwidth)
     # Always quantize in float32
     y_scale = y_scale.astype(np.float32)
-
-    if unsigned:
-        clip_min = 0
-        clip_max = 2**bitwidth - 1
-    else:
-        clip_min = -(2 ** (bitwidth - 1))
-        clip_max = -clip_min - 1
 
     if per_block_int_scale is not None:
         block_axis = axis
@@ -335,9 +328,22 @@ def _quantize_const(
     )
 
     y_scale = y_scale.astype(np.float32)
-    const_q = (const / y_scale + y_zero_point).round()
-    const_q = const_q.clip(clip_min, clip_max)
-    return opset10.DequantizeLinear.make_int_arr(const_q, dtype=output_dtype, name=name)
+    const_q = const / y_scale + y_zero_point
+
+    if "int" in output_dtype:
+        unsigned, bitwidth = output_dtype.split("int")
+        bitwidth = int(bitwidth)
+
+        if unsigned:
+            clip_min = 0
+            clip_max = 2**bitwidth - 1
+        else:
+            clip_min = -(2 ** (bitwidth - 1))
+            clip_max = -clip_min - 1
+
+        const_q = const_q.round().clip(clip_min, clip_max)
+
+    return opset.DequantizeLinear.make_arr(const_q, dtype=output_dtype, name=name)
 
 
 def _dequantize_const(

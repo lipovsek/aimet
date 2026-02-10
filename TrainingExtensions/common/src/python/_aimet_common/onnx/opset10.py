@@ -3,9 +3,11 @@
 
 
 # pylint: disable=no-member
+from packaging.version import parse
 from abc import ABC, abstractmethod
 from typing import Iterable, Mapping, Optional
 import numpy as np
+import onnx
 from onnx import helper, numpy_helper, TensorProto
 
 
@@ -101,10 +103,15 @@ class _QdqNodeFactory(ABC):
                 "no zero point or all zero points should be 0"
             )
 
+        if dtype.startswith("float"):
+            return cls._make_float_zeros(zero_point, dtype, name)
+
         return cls.make_arr(zero_point, dtype, name)
 
     @classmethod
     def make_arr(cls, arr: np.ndarray, dtype: str, name: str) -> TensorProto:
+        cls._check_dtype(dtype)
+
         if dtype.startswith("float"):
             return cls.make_float_arr(arr, dtype, name)
 
@@ -112,6 +119,21 @@ class _QdqNodeFactory(ABC):
 
     @classmethod
     def make_float_arr(cls, arr: np.ndarray, dtype: str, name: str) -> TensorProto:
+        if parse(onnx.__version__) < parse("1.19.0"):
+            raise RuntimeError(
+                f"{cls.__name__}.make_float_arr requires onnx>=1.19.0; got {onnx.__version__}"
+            )
+
+        cls._check_dtype(dtype)
+
+        onnx_dtype = cls.SUPPORTED_DTYPES[dtype]
+        np_dtype = helper.tensor_dtype_to_np_dtype(onnx_dtype)
+        return numpy_helper.from_array(arr.astype(np_dtype), name=name)
+
+    @classmethod
+    def _make_float_zeros(cls, arr: np.ndarray, dtype: str, name: str) -> TensorProto:
+        cls._check_dtype(dtype)
+
         if not dtype.startswith("float4"):
             arr = np.zeros(arr.shape, dtype=np.uint8)
             tensor = numpy_helper.from_array(arr, name=name)
@@ -128,6 +150,8 @@ class _QdqNodeFactory(ABC):
 
     @classmethod
     def make_int_arr(cls, arr: np.ndarray, dtype: str, name: str) -> TensorProto:
+        cls._check_dtype(dtype)
+
         if dtype not in ("int4", "uint4"):
             arr = arr.astype(dtype)
             return numpy_helper.from_array(arr, name=name)

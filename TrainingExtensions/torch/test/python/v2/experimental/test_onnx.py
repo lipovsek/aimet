@@ -18,6 +18,8 @@ import onnx
 from onnx import helper, TensorProto
 import tempfile
 from unittest.mock import patch
+
+from aimet_torch.v2.quantization._utils import concretize_block_size
 from ..models_ import test_models
 
 from aimet_common.quantsim_config.utils import (
@@ -30,6 +32,9 @@ from aimet_torch.v2.quantization.float._finfo import (
     _finfo,
     _float4_e2m1fn,
     _float8_e5m2,
+    _float8_e5m2fnuz,
+    _float8_e4m3fn,
+    _float8_e4m3fnuz,
 )
 from aimet_torch.v2.quantsim.quantsim import QuantizationSimModel
 from aimet_torch.onnx import (
@@ -1801,8 +1806,18 @@ def test_activation_uint(tmp_path: pathlib.Path):
 
 @torch.no_grad()
 @pytest.mark.parametrize("dynamo", [False])
+@pytest.mark.parametrize("prequantize_constants", [True, False])
 @pytest.mark.parametrize("fold_param_quantizers", [True, False])
-@pytest.mark.parametrize("finfo", [_float8_e5m2, _float4_e2m1fn])
+@pytest.mark.parametrize(
+    "finfo",
+    [
+        _float8_e5m2,
+        _float8_e5m2fnuz,
+        _float8_e4m3fn,
+        _float8_e4m3fnuz,
+        _float4_e2m1fn,
+    ],
+)
 @pytest.mark.parametrize(
     "shape, block_size",
     [
@@ -1818,6 +1833,7 @@ def test_export_float8_and_float4(
     finfo: _finfo,
     block_size: tuple[int, ...] | None,
     fold_param_quantizers: bool,
+    prequantize_constants: bool,
     dynamo: bool,
     tmp_path: pathlib.Path,
 ):
@@ -1856,7 +1872,7 @@ def test_export_float8_and_float4(
 
     sim.onnx.export(
         (x,),
-        tmp_path / "float8_linear.onnx",
+        tmp_path / f"{finfo.to_str()}_linear.onnx",
         opset_version=19,
         input_names=["input"],
         output_names=["output"],
@@ -1864,13 +1880,14 @@ def test_export_float8_and_float4(
         encoding_version="2.0.0",
     )
 
-    with open(tmp_path / "float8_linear.encodings") as f:
+    with open(tmp_path / f"{finfo.to_str()}_linear.encodings") as f:
         encodings = json.load(f)["encodings"]
 
+    _, expected_dtype = (
+        helper.tensor_dtype_to_string(finfo.to_onnx_dtype()).lower().split(".")
+    )
     for e in encodings:
-        assert e["output_dtype"] == (
-            "float8e5m2" if finfo == _float8_e5m2 else "float4e2m1"
-        )
+        assert e["output_dtype"] == expected_dtype
 
         if e["name"] == "input":
             assert e.keys() == {"name", "y_scale", "output_dtype"}
@@ -1910,15 +1927,16 @@ def test_export_float8_and_float4(
     aimet_torch.onnx.export(
         sim.model,
         (x,),
-        tmp_path / "float8_linear_qdq.onnx",
+        tmp_path / f"{finfo.to_str()}_linear_qdq.onnx",
         opset_version=(
             23 if finfo == _float4_e2m1fn else 19 if block_size is None else 21
         ),
         input_names=["input"],
         output_names=["output"],
         dynamo=dynamo,
+        prequantize_constants=prequantize_constants,
     )
-    onnx_qdq_model = onnx.load_model(tmp_path / "float8_linear_qdq.onnx")
+    onnx_qdq_model = onnx.load_model(tmp_path / f"{finfo.to_str()}_linear_qdq.onnx")
     onnx.checker.check_model(onnx_qdq_model)
 
     q_nodes = [
@@ -1927,10 +1945,15 @@ def test_export_float8_and_float4(
     dq_nodes = [
         node for node in onnx_qdq_model.graph.node if node.op_type == "DequantizeLinear"
     ]
-    assert len(q_nodes) == len(dq_nodes) == 3
+
+    if prequantize_constants:
+        assert len(q_nodes) == 2
+        assert len(dq_nodes) == 3
+    else:
+        assert len(q_nodes) == len(dq_nodes) == 3
 
     for node in onnx_qdq_model.graph.node:
-        if node.op_type != "QuantizeLinear":
+        if node.op_type != "DequantizeLinear":
             continue
 
         scale_name, zp_name = node.input[1:3]
@@ -1951,15 +1974,15 @@ def test_export_float8_and_float4(
                 if init.name == scale_name
             )
         )
-        if node.output == "0.weight_q":
+        if node.output == "0.weight_qdq":
             expected_scale = (
                 sim.model[0].weight.encoding.scale
                 if fold_param_quantizers
                 else sim.model[0].param_quantizers["weight"].get_scale()
             )
-        elif node.input == "input_q":
+        elif node.input == "input_qdq":
             expected_scale = sim.model[0].input_quantizers[0].get_scale()
-        elif node.output == "output_q":
+        elif node.output == "output":
             expected_scale = sim.model[0].output_quantizers[0].get_scale()
         else:
             continue
@@ -1968,6 +1991,38 @@ def test_export_float8_and_float4(
             torch.from_numpy(scale_array).reshape(expected_scale.shape),
             expected_scale,
         )
+
+    if prequantize_constants:
+        weight_q = onnx.numpy_helper.to_array(
+            next(
+                init
+                for init in onnx_qdq_model.graph.initializer
+                if init.name == "0.weight_q"
+            )
+        )
+        weight = sim.model[0].weight
+
+        if isinstance(weight, Q.DequantizedTensor):
+            weight_qtzr = Q.float.FloatQuantizeDequantize.from_encodings(
+                weight.encoding
+            )
+        else:
+            weight_qtzr = sim.model[0].param_quantizers["weight"]
+
+        scale_w = weight_qtzr.get_scale()
+
+        if weight_qtzr.block_size:
+            block_size = concretize_block_size(
+                weight.shape, scale_w.shape, weight_qtzr.block_size
+            )
+            for axis, blk_size in enumerate(block_size):
+                scale_w = scale_w.repeat_interleave(blk_size, axis=axis)
+
+        expected_weight_q = (weight_qtzr(weight) / scale_w).detach().numpy()
+        assert np.all(weight_q == expected_weight_q.astype(weight_q.dtype))
+        # without downcasting, weight_q and expected_weight_q can slightly differ
+        # like 128.0 vs. 127.999 due to floating point precision
+        assert np.allclose(weight_q, expected_weight_q)
 
     if finfo == _float4_e2m1fn:
         # Onnxruntime doesn't support float4 yet
