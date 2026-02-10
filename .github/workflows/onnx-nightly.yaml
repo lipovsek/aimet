@@ -1,7 +1,6 @@
 name: ONNX Nightly
 
 on:
-
   workflow_dispatch:
     inputs:
       run_mode:

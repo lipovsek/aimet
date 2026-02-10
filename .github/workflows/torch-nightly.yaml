@@ -1,7 +1,6 @@
 name: Torch Nightly
 
 on:
-
   workflow_dispatch:
     inputs:
       suite:

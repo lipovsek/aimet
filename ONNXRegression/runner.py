@@ -661,7 +661,7 @@ def run_single_config(
         "FP32_vs_AIMET": fp32_vs_aimet_formatted,
         "Max_Accuracy_Drop": max_drop,
         "QDQ Accuracy": float(qdq_acc) if qdq_acc is not None else None,
-        "QNN Accuracy": float(qnn_acc) if qnn_acc is not None else None,
+        "QNN Accuracy": float(qnn_acc * 100) if qnn_acc is not None else None,
         "QNN Latency": f"{qnn_latency_ms:.3f} ms"
         if qnn_latency_ms is not None
         else None,

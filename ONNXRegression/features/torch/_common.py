@@ -40,6 +40,7 @@ from ONNXRegression.features.torch.utils import ensure_device_patch
 from aimet_torch.quantsim import QuantizationSimModel
 from aimet_torch.common.defs import QuantScheme
 from aimet_torch.model_preparer import prepare_model
+from aimet_torch.batch_norm_fold import fold_all_batch_norms
 import aimet_torch
 from torch.utils.data import DataLoader
 from qai_hub_models.datasets import DatasetSplit, get_dataset_from_name
@@ -164,10 +165,8 @@ def _register_ignored_modules() -> None:
 
         QuantizationMixin.ignore(Concat)
         print(f"[QuantSim Torch] Ignoring ultralytics.Concat for quantization")
-    except ImportError as e:
-        print(f"[QuantSim Torch] Could not import ultralytics.Concat: {e}")
-    except Exception as e:
-        print(f"[QuantSim Torch] Error registering ultralytics.Concat: {e}")
+    except ImportError:
+        pass
 
     try:
         from torchvision.ops.stochastic_depth import StochasticDepth
@@ -220,6 +219,11 @@ def build_quantsim_torch(
         model = model.to(device).eval()
 
     model.eval()
+
+    # Fold BatchNorm layers into preceding Conv/Linear layers before quantization
+    # This is critical for QNN compatibility - QNN cannot handle unfused BN nodes
+    print(f"[QuantSim Torch] Folding BatchNorm layers...")
+    fold_all_batch_norms(model, input_shapes=(tuple(dummy_input.shape),))
 
     scheme_enum = map_quant_scheme(quant_scheme)
 
@@ -304,12 +308,18 @@ def export_torch_bundle(
     bundle_dir.mkdir(parents=True, exist_ok=True)
     bundle_onnx_path = bundle_dir / f"{model_name}.onnx"
 
+    # Get expected input name from input_spec for QNN compatibility
+    expected_input_name = next(iter(input_spec.keys())) if input_spec else None
+    input_names = [expected_input_name] if expected_input_name else None
+    if input_names:
+        print(f"[AIMET Torch] Using input name: {input_names[0]}")
+
     sim.onnx.export(
         (dummy_input_cpu,),
         str(bundle_onnx_path),
         dynamo=False,
         opset_version=20,
-        encoding_version="1.0.0",
+        input_names=input_names,
     )
 
     print(f"[AIMET Torch] AIMET bundle: {bundle_dir}")
@@ -338,57 +348,12 @@ def export_torch_bundle(
         actual_files = list(bundle_dir.glob("*"))
         raise RuntimeError(f"Encodings file not found\nBundle contents: {actual_files}")
 
-    # Rename ONNX inputs to match input_spec for QNN compatibility
-    expected_input_name = next(iter(input_spec.keys())) if input_spec else None
-    if expected_input_name:
-        _rename_onnx_input(qdq_path, expected_input_name)
-        _rename_onnx_input(bundle_onnx, expected_input_name)
-
     print(f"[AIMET Torch] ✅ Export validation passed")
     print(f"  QDQ: {qdq_path.name}")
     print(f"  Bundle ONNX: {bundle_onnx.name}")
     print(f"  Encodings: {enc_path.name}")
 
     return qdq_path, bundle_dir
-
-
-def _rename_onnx_input(onnx_path: Path, new_input_name: str) -> None:
-    """
-    Rename the first input of an ONNX model to match expected name.
-
-    AIMET export may rename inputs (e.g., "image_tensor" -> "t.1").
-    This renames them back for QNN inference compatibility.
-
-    Args:
-        onnx_path: Path to ONNX model file
-        new_input_name: Expected input name from input_spec
-    """
-    try:
-        onnx_model = onnx.load(str(onnx_path))
-
-        if not onnx_model.graph.input:
-            return
-
-        old_name = onnx_model.graph.input[0].name
-
-        if old_name == new_input_name:
-            return
-
-        print(f"[AIMET Torch] Renaming ONNX input: '{old_name}' -> '{new_input_name}'")
-
-        # Update input name
-        onnx_model.graph.input[0].name = new_input_name
-
-        # Update all nodes that reference this input
-        for node in onnx_model.graph.node:
-            for i, input_name in enumerate(node.input):
-                if input_name == old_name:
-                    node.input[i] = new_input_name
-
-        onnx.save(onnx_model, str(onnx_path))
-
-    except Exception as e:
-        print(f"[AIMET Torch] Warning: Could not rename input: {e}")
 
 
 def clean_extra_bundle_files(bundle_dir: Path, model_name: str) -> None:

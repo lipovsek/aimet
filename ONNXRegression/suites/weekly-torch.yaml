@@ -1,0 +1,22 @@
+# Weekly Regression Suite - AIMET Torch
+#
+# Purpose: Comprehensive weekly regression with QNN on-device testing
+# Target Duration: 4-6 hours
+# When: Every Saturday at 6 AM UTC (parallel with weekly-onnx)
+
+suite_name: weekly-torch
+
+profile: weekly
+
+framework: torch
+
+models:
+  - models/resnet50.yaml
+  - models/mobilenetv2.yaml
+  - models/efficientnet_b0.yaml
+  - models/densenet121.yaml
+  - models/mobilenet_v3_large.yaml
+  - models/yolov5.yaml
+
+compare_to_baseline: true
+baseline_file: "baselines/weekly-torch_latest.json"

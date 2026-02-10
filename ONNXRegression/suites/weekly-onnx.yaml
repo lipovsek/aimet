@@ -1,0 +1,23 @@
+# Weekly Regression Suite - AIMET ONNX
+#
+# Purpose: Comprehensive weekly regression with QNN on-device testing
+# Target Duration: 4-6 hours
+# When: Every Saturday at 6 AM UTC (parallel with weekly-torch)
+
+suite_name: weekly-onnx
+
+profile: weekly
+
+framework: onnx
+
+models:
+  - models/resnet50.yaml
+  - models/mobilenetv2.yaml
+  - models/efficientnet_b0.yaml
+  - models/densenet121.yaml
+  - models/mobilenet_v3_large.yaml
+  - models/vit.yaml
+  - models/swin_tiny.yaml
+
+compare_to_baseline: true
+baseline_file: "baselines/weekly-onnx_latest.json"

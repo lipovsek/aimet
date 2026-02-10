@@ -1,0 +1,33 @@
+# Weekly Profile - Comprehensive Regression Testing
+#
+# Purpose: Thorough weekly regression with on-device QNN testing
+# Target Duration: 6-8 hours
+# When: Every Saturday at 6 AM UTC
+# Focus: Full evaluation including QNN on-device testing
+#
+# Philosophy:
+# - Comprehensive accuracy validation
+# - On-device testing via QNN/AI Hub
+# - Catches issues that slip through nightly
+
+# NOTE: This file is merged on top of _defaults.yaml
+# Only values that differ from defaults are specified here
+
+# ==================== Sample Counts ====================
+# Full sample counts for thorough evaluation
+
+fp32_eval_samples: 3925      # Full imagenette validation set
+quant_eval_samples: 3925     # Full imagenette validation set
+calib_samples: 1000          # Calibration samples
+eval_samples: 3925           # Full imagenette validation set
+
+# ==================== Performance Measurement ====================
+metrics_samples: 64
+metrics_runs: 3
+metrics_warmup: 1
+
+# ==================== QNN On-Device Testing ====================
+# Enable QNN compilation and on-device evaluation
+
+qnn_options: "--target_runtime qnn_dlc"
+qnn_eval_samples: 100

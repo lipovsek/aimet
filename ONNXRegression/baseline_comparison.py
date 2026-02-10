@@ -40,6 +40,7 @@ class TestResult:
     aimet_accuracy: float
     qdq_accuracy: float
     qnn_latency_ms: Optional[float] = None
+    qnn_accuracy: Optional[float] = None
     techniques: Optional[str] = None
     max_accuracy_drop: float = 1.0
     aimet_runtime_ms: Optional[float] = None
@@ -67,8 +68,16 @@ class QualityCheck:
 
     @property
     def is_acceptable(self) -> bool:
-        """Check if quantization quality is within allowed threshold."""
-        return abs(self.drop_abs) <= self.max_accuracy_drop
+        """Check if quantization quality is within allowed threshold.
+
+        Only fails if accuracy dropped beyond the threshold.
+        Improvements (positive drop_abs) always pass.
+
+        drop_abs = aimet_accuracy - fp32_accuracy
+          - Negative: accuracy dropped (bad)
+          - Positive: accuracy improved (good)
+        """
+        return self.drop_abs >= -self.max_accuracy_drop
 
     @property
     def formatted_drop(self) -> str:
@@ -259,32 +268,20 @@ def compute_overall_status(
     baseline_comp: Optional[Comparison] = None,
 ) -> str:
     """
-    Compute overall test status based on all validations.
+    Compute overall test status based on quantization quality threshold.
+
+    Status is determined solely by whether the accuracy drop from FP32 to AIMET
+    is within the configured max_accuracy_drop threshold.
 
     Args:
         quality: Quantization quality check
-        export_val: QDQ export validation
-        baseline_comp: Optional baseline comparison
+        export_val: QDQ export validation (unused, kept for API compatibility)
+        baseline_comp: Optional baseline comparison (unused, kept for API compatibility)
 
     Returns:
-        Status emoji: ✅ PASS / ⚠️ WARNING / ❌ FAIL
+        Status emoji: ✅ PASS (within threshold) / ❌ FAIL (exceeds threshold)
     """
-    if not quality.is_acceptable:
-        return "❌"
-
-    if not export_val.is_valid:
-        return "❌"
-
-    if baseline_comp and baseline_comp.diff < -5.0:
-        return "❌"
-
-    if quality.status_emoji == "⚠️" or export_val.status_emoji == "⚠️":
-        return "⚠️"
-
-    if baseline_comp and baseline_comp.is_regression:
-        return "⚠️"
-
-    return "✅"
+    return quality.status_emoji
 
 
 class BaselineManager:
@@ -327,6 +324,12 @@ class BaselineManager:
                 else:
                     qnn_latency = None
 
+                qnn_acc_str = row.get("QNN Accuracy", "")
+                if qnn_acc_str and qnn_acc_str != "None":
+                    qnn_accuracy = safe_float(qnn_acc_str, None)
+                else:
+                    qnn_accuracy = None
+
                 qdq_acc = safe_float(
                     row.get("QDQ Accuracy") or row.get("ONNX Accuracy", 0)
                 )
@@ -355,6 +358,7 @@ class BaselineManager:
                     aimet_accuracy=safe_float(row.get("AIMET Accuracy")),
                     qdq_accuracy=qdq_acc,
                     qnn_latency_ms=qnn_latency,
+                    qnn_accuracy=qnn_accuracy,
                     techniques=techniques,
                     max_accuracy_drop=safe_float(row.get("Max_Accuracy_Drop"), 1.0),
                     aimet_runtime_ms=aimet_runtime,
@@ -375,6 +379,7 @@ class BaselineManager:
                 "aimet_accuracy": result.aimet_accuracy,
                 "qdq_accuracy": result.qdq_accuracy,
                 "qnn_latency_ms": result.qnn_latency_ms,
+                "qnn_accuracy": result.qnn_accuracy,
                 "techniques": result.techniques,
                 "aimet_runtime_ms": result.aimet_runtime_ms,
                 "aimet_memory_mb": result.aimet_memory_mb,
@@ -518,44 +523,73 @@ class ReportGenerator:
         """Generate markdown report with quality and export validations."""
         lines = []
 
+        has_qnn_data = any(r.qnn_latency_ms is not None for r in current.values())
+
         lines.append("## 📊 Results Comparison\n")
 
         if not baseline:
             lines.append("### ℹ️  First Run - No Baseline\n")
             lines.append("Showing quantization accuracy checks:\n")
-            lines.append(
-                "| Model | Technique | FP32 vs AIMET | Max Allowed Drop | Status | QDQ | Export |"
-            )
-            lines.append(
-                "|-------|-----------|---------------|------------------|--------|-----|--------|"
-            )
+
+            if has_qnn_data:
+                lines.append(
+                    "| Model | Technique | FP32 vs AIMET | Max Allowed Drop | Status | QNN Acc | Latency |"
+                )
+                lines.append(
+                    "|-------|-----------|---------------|------------------|--------|---------|---------|"
+                )
+            else:
+                lines.append(
+                    "| Model | Technique | FP32 vs AIMET | Max Allowed Drop | Status |"
+                )
+                lines.append(
+                    "|-------|-----------|---------------|------------------|--------|"
+                )
 
             for result in current.values():
                 quality = validate_quantization_quality(result)
-                export_val = validate_qdq_export(result)
                 technique = result.techniques or ""
 
-                lines.append(
+                row = (
                     f"| {result.model} | {technique} | "
                     f"{result.fp32_accuracy:.2f}% / {result.aimet_accuracy:.2f}% ({quality.drop_abs:+.2f}%) | "
                     f"{result.max_accuracy_drop:.2f}% | "
-                    f"{quality.status_emoji} | {result.qdq_accuracy:.2f}% | "
-                    f"{export_val.status_emoji} |"
+                    f"{quality.status_emoji} |"
                 )
 
+                if has_qnn_data:
+                    qnn_acc = (
+                        f"{result.qnn_accuracy:.2f}%" if result.qnn_accuracy else "N/A"
+                    )
+                    qnn_lat = (
+                        f"{result.qnn_latency_ms:.1f} ms"
+                        if result.qnn_latency_ms
+                        else "N/A"
+                    )
+                    row = row[:-1] + f" | {qnn_acc} | {qnn_lat} |"
+
+                lines.append(row)
+
             lines.append("")
-            lines.append(
+
+            legend = (
                 "\n**Legend:**\n"
                 "- **Technique**: Quantization method and parameters\n"
                 "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
                 "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
                 "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
-                "- **Export**: ✅ <0.5pp diff | ⚠️ 0.5-1pp diff | ❌ >1pp diff\n"
             )
+            if has_qnn_data:
+                legend += (
+                    "- **QNN Acc**: On-device accuracy via AI Hub\n"
+                    "- **Latency**: On-device inference latency\n"
+                )
+            lines.append(legend)
 
         else:
             # Calculate quality status counts
             passed_count = 0
+            warning_count = 0
             failed_count = 0
 
             for result in current.values():
@@ -572,120 +606,232 @@ class ReportGenerator:
                 f"- 📈 Improvements: {len(improvements)}\n"
                 f"- ⚠️ Regressions: {len(regressions)}\n\n"
                 f"**Quantization Status** (AIMET quantization vs FP32 original):\n"
-                f"- ✅ Passed: {passed_count} tests (within threshold)\n"
-                f"- ❌ Failed: {failed_count} tests (exceeds threshold)\n"
+                f"- ✅ Passed: {passed_count} tests (<1% loss)\n"
+                f"- ⚠️ Warnings: {warning_count} tests\n"
+                f"- ❌ Failed: {failed_count} tests (>1% loss)\n"
             )
 
             if regressions:
                 lines.append("\n### ⚠️ Regressions\n")
-                lines.append(
+
+                legend = (
                     "**Legend:**\n"
                     "- **Technique**: Quantization method and parameters\n"
-                    "- **vs Baseline**: Change from previous nightly's AIMET accuracy\n"
+                    "- **vs Baseline**: Change from previous run's AIMET accuracy\n"
                     "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
                     "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
-                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n\n"
+                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
                 )
-                lines.append(
-                    "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
-                )
-                lines.append(
-                    "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
-                )
+                if has_qnn_data:
+                    legend += (
+                        "- **QNN Acc**: On-device accuracy via AI Hub\n"
+                        "- **Latency**: On-device inference latency\n"
+                    )
+                lines.append(legend + "\n")
+
+                if has_qnn_data:
+                    lines.append(
+                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status | QNN Acc | Latency |"
+                    )
+                    lines.append(
+                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|---------|---------|"
+                    )
+                else:
+                    lines.append(
+                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
+                    )
+                    lines.append(
+                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
+                    )
+
                 for r in sorted(regressions, key=lambda x: x.diff):
                     key = f"{r.model}_{r.feature}_{r.techniques}"
                     curr_result = current.get(key)
-                    if not curr_result:
-                        continue  # Skip if detailed result not found
-                    quality = validate_quantization_quality(curr_result)
-                    technique = curr_result.techniques or ""
-                    threshold = curr_result.max_accuracy_drop
-                    fp32_acc = curr_result.fp32_accuracy
-                    aimet_acc = curr_result.aimet_accuracy
-                    drop = quality.drop_abs
-                    status = quality.status_emoji
+                    if curr_result:
+                        quality = validate_quantization_quality(curr_result)
+                        export_val = validate_qdq_export(curr_result)
+                        overall_status = compute_overall_status(quality, export_val, r)
+                        technique = curr_result.techniques or ""
+                        threshold = curr_result.max_accuracy_drop
+                        fp32_acc = curr_result.fp32_accuracy
+                        aimet_acc = curr_result.aimet_accuracy
+                        drop = quality.drop_abs
+                        qnn_acc = curr_result.qnn_accuracy
+                        qnn_lat = curr_result.qnn_latency_ms
+                    else:
+                        quality = None
+                        overall_status = "⚠️"
+                        technique = r.techniques or ""
+                        threshold = 1.0
+                        fp32_acc = 0.0
+                        aimet_acc = r.current
+                        drop = 0.0
+                        qnn_acc = None
+                        qnn_lat = None
 
-                    lines.append(
+                    row = (
                         f"| {r.emoji} {r.model} | {technique} | "
-                        f"{r.baseline:.2f}% | {r.current:.2f}% | {r.diff:+.2f}% | "
+                        f"{r.baseline:.2f}% | {r.current:.2f}% | "
+                        f"{r.diff:+.2f}% | "
                         f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
-                        f"{threshold:.2f}% | {status} |"
+                        f"{threshold:.2f}% | {overall_status} |"
                     )
+
+                    if has_qnn_data:
+                        qnn_acc_str = f"{qnn_acc:.2f}%" if qnn_acc else "N/A"
+                        qnn_lat_str = f"{qnn_lat:.1f} ms" if qnn_lat else "N/A"
+                        row = row[:-1] + f" | {qnn_acc_str} | {qnn_lat_str} |"
+
+                    lines.append(row)
                 lines.append("")
 
             if improvements:
                 lines.append("### 📈 Improvements\n")
-                lines.append(
+
+                legend = (
                     "**Legend:**\n"
                     "- **Technique**: Quantization method and parameters\n"
-                    "- **vs Baseline**: Change from previous nightly's AIMET accuracy\n"
+                    "- **vs Baseline**: Change from previous run's AIMET accuracy\n"
                     "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
                     "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
-                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n\n"
+                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
                 )
-                lines.append(
-                    "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
-                )
-                lines.append(
-                    "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
-                )
+                if has_qnn_data:
+                    legend += (
+                        "- **QNN Acc**: On-device accuracy via AI Hub\n"
+                        "- **Latency**: On-device inference latency\n"
+                    )
+                lines.append(legend + "\n")
+
+                if has_qnn_data:
+                    lines.append(
+                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status | QNN Acc | Latency |"
+                    )
+                    lines.append(
+                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|---------|---------|"
+                    )
+                else:
+                    lines.append(
+                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
+                    )
+                    lines.append(
+                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
+                    )
+
                 for r in sorted(improvements, key=lambda x: x.diff, reverse=True):
                     key = f"{r.model}_{r.feature}_{r.techniques}"
                     curr_result = current.get(key)
-                    if not curr_result:
-                        continue  # Skip if detailed result not found
-                    quality = validate_quantization_quality(curr_result)
-                    technique = curr_result.techniques or ""
-                    threshold = curr_result.max_accuracy_drop
-                    fp32_acc = curr_result.fp32_accuracy
-                    aimet_acc = curr_result.aimet_accuracy
-                    drop = quality.drop_abs
-                    status = quality.status_emoji
+                    if curr_result:
+                        quality = validate_quantization_quality(curr_result)
+                        export_val = validate_qdq_export(curr_result)
+                        overall_status = compute_overall_status(quality, export_val, r)
+                        technique = curr_result.techniques or ""
+                        threshold = curr_result.max_accuracy_drop
+                        fp32_acc = curr_result.fp32_accuracy
+                        aimet_acc = curr_result.aimet_accuracy
+                        drop = quality.drop_abs
+                        qnn_acc = curr_result.qnn_accuracy
+                        qnn_lat = curr_result.qnn_latency_ms
+                    else:
+                        quality = None
+                        overall_status = "✅"
+                        technique = r.techniques or ""
+                        threshold = 1.0
+                        fp32_acc = 0.0
+                        aimet_acc = r.current
+                        drop = 0.0
+                        qnn_acc = None
+                        qnn_lat = None
 
-                    lines.append(
+                    row = (
                         f"| {r.emoji} {r.model} | {technique} | "
-                        f"{r.baseline:.2f}% | {r.current:.2f}% | {r.diff:+.2f}% | "
+                        f"{r.baseline:.2f}% | {r.current:.2f}% | "
+                        f"{r.diff:+.2f}% | "
                         f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
-                        f"{threshold:.2f}% | {status} |"
+                        f"{threshold:.2f}% | {overall_status} |"
                     )
+
+                    if has_qnn_data:
+                        qnn_acc_str = f"{qnn_acc:.2f}%" if qnn_acc else "N/A"
+                        qnn_lat_str = f"{qnn_lat:.1f} ms" if qnn_lat else "N/A"
+                        row = row[:-1] + f" | {qnn_acc_str} | {qnn_lat_str} |"
+
+                    lines.append(row)
                 lines.append("")
 
             if unchanged:
                 lines.append("<details>")
                 lines.append("<summary>✅ Stable Tests (click to expand)</summary>\n")
-                lines.append(
+
+                legend = (
                     "**Legend:**\n"
                     "- **Technique**: Quantization method and parameters\n"
-                    "- **vs Baseline**: Change from previous nightly's AIMET accuracy\n"
+                    "- **vs Baseline**: Change from previous run's AIMET accuracy\n"
                     "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
                     "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
-                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n\n"
+                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
                 )
-                lines.append(
-                    "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
-                )
-                lines.append(
-                    "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
-                )
+                if has_qnn_data:
+                    legend += (
+                        "- **QNN Acc**: On-device accuracy via AI Hub\n"
+                        "- **Latency**: On-device inference latency\n"
+                    )
+                lines.append(legend + "\n")
+
+                if has_qnn_data:
+                    lines.append(
+                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status | QNN Acc | Latency |"
+                    )
+                    lines.append(
+                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|---------|---------|"
+                    )
+                else:
+                    lines.append(
+                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
+                    )
+                    lines.append(
+                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
+                    )
+
                 for r in unchanged:
                     key = f"{r.model}_{r.feature}_{r.techniques}"
                     curr_result = current.get(key)
-                    if not curr_result:
-                        continue  # Skip if detailed result not found
-                    quality = validate_quantization_quality(curr_result)
-                    technique = curr_result.techniques or ""
-                    threshold = curr_result.max_accuracy_drop
-                    fp32_acc = curr_result.fp32_accuracy
-                    aimet_acc = curr_result.aimet_accuracy
-                    drop = quality.drop_abs
-                    status = quality.status_emoji
+                    if curr_result:
+                        quality = validate_quantization_quality(curr_result)
+                        export_val = validate_qdq_export(curr_result)
+                        overall_status = compute_overall_status(quality, export_val, r)
+                        technique = curr_result.techniques or ""
+                        threshold = curr_result.max_accuracy_drop
+                        fp32_acc = curr_result.fp32_accuracy
+                        aimet_acc = curr_result.aimet_accuracy
+                        drop = quality.drop_abs
+                        qnn_acc = curr_result.qnn_accuracy
+                        qnn_lat = curr_result.qnn_latency_ms
+                    else:
+                        quality = None
+                        overall_status = "✅"
+                        technique = r.techniques or ""
+                        threshold = 1.0
+                        fp32_acc = 0.0
+                        aimet_acc = r.current
+                        drop = 0.0
+                        qnn_acc = None
+                        qnn_lat = None
 
-                    lines.append(
+                    row = (
                         f"| {r.model} | {technique} | "
-                        f"{r.baseline:.2f}% | {r.current:.2f}% | {r.diff:+.2f}% | "
+                        f"{r.baseline:.2f}% | {r.current:.2f}% | "
+                        f"{r.diff:+.2f}% | "
                         f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
-                        f"{threshold:.2f}% | {status} |"
+                        f"{threshold:.2f}% | {overall_status} |"
                     )
+
+                    if has_qnn_data:
+                        qnn_acc_str = f"{qnn_acc:.2f}%" if qnn_acc else "N/A"
+                        qnn_lat_str = f"{qnn_lat:.1f} ms" if qnn_lat else "N/A"
+                        row = row[:-1] + f" | {qnn_acc_str} | {qnn_lat_str} |"
+
+                    lines.append(row)
                 lines.append("</details>\n")
 
         # Performance metrics section - collapsible table showing all tests

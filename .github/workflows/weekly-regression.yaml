@@ -1,0 +1,436 @@
+name: Weekly Regression
+
+on:
+  schedule:
+    - cron: '0 6 * * 6'  # Saturday 6 AM UTC
+
+  workflow_dispatch:
+    inputs:
+      framework:
+        description: 'Framework to run'
+        required: false
+        type: choice
+        options:
+          - all
+          - onnx
+          - torch
+        default: 'all'
+
+env:
+  VER_PYTHON: "3.10"
+
+jobs:
+  #=============================================================================
+  # Build AIMET wheels (parallel builds)
+  #=============================================================================
+  build-aimet-onnx-gpu:
+    name: Build AIMET (ONNX + GPU)
+    if: ${{ github.event.inputs.framework != 'torch' }}
+    uses: ./.github/workflows/build-wheels.yml
+    with:
+      variants: >
+        {"include":[{
+          "id":"onnx-gpu",
+          "runs-on":"k8s-gpu",
+          "VER_PYTHON":"3.10",
+          "VER_ONNXRUNTIME":"1.19.2",
+          "VER_CUDA":"12.1.0",
+          "ENABLE_TESTS":"ON",
+          "PIP_INDEX":""
+        }]}
+      image-tag: latest
+    secrets: inherit
+
+  build-aimet-torch-gpu:
+    name: Build AIMET (Torch + GPU)
+    if: ${{ github.event.inputs.framework != 'onnx' }}
+    uses: ./.github/workflows/build-wheels.yml
+    with:
+      variants: >
+        {"include":[{
+          "id":"torch-gpu",
+          "runs-on":"k8s-gpu",
+          "VER_PYTHON":"3.10",
+          "VER_TORCH":"2.*",
+          "VER_CUDA":"12.1.1",
+          "ENABLE_TESTS":"OFF",
+          "PIP_INDEX":""
+        }]}
+      image-tag: latest
+    secrets: inherit
+
+  #=============================================================================
+  # ONNX Weekly Regression (GPU Runner 1)
+  #=============================================================================
+  onnx-weekly:
+    name: Run ONNX Weekly (GPU)
+    if: ${{ github.event.inputs.framework != 'torch' }}
+    needs: build-aimet-onnx-gpu
+    runs-on: k8s-gpu
+
+    container:
+      image: "${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-onnx-gpu:latest"
+      credentials:
+        username: ${{ secrets.DOCKER_LOGIN }}
+        password: ${{ secrets.DOCKER_CREDENTIALS }}
+      options: --gpus all
+
+    timeout-minutes: 720
+
+    env:
+      CUDA_VISIBLE_DEVICES: "0"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache models and datasets
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache
+            ~/.qai_hub_cache
+            ~/.qaihm
+            ~/.cache/huggingface
+            ~/.cache/torch
+          key: aimet-weekly-onnx-cache-${{ runner.os }}-${{ hashFiles('ONNXRegression/**') }}
+          restore-keys: aimet-weekly-onnx-cache-${{ runner.os }}-
+
+      - name: Download AIMET wheel
+        uses: actions/download-artifact@v3
+        with:
+          name: onnx-gpu-wheel
+          path: downloads
+
+      - name: Install system dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y \
+            libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 \
+            libxrender-dev libgomp1 git openssh-client unzip curl
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Setup Python environment with UV
+        run: |
+          set -e
+          apt-get update -qq
+          apt-get install -y python${{ env.VER_PYTHON }} python${{ env.VER_PYTHON }}-venv python${{ env.VER_PYTHON }}-dev
+
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$PATH"
+
+          uv venv .venv --python python${{ env.VER_PYTHON }}
+          . .venv/bin/activate
+
+          uv pip install qai-hub qai-hub-models==0.43.0 # TODO: Remove after next QAI Hub Models release
+          uv pip install onnxruntime-gpu==1.19.2
+          uv pip install pynvml pytest requests
+
+      - name: Install AIMET
+        run: |
+          . .venv/bin/activate
+          export PATH="$HOME/.local/bin:$PATH"
+          uv pip install downloads/*.whl
+          python -c "import aimet_onnx; print('AIMET version:', aimet_onnx.__version__)"
+
+      - name: Verify ONNX Runtime GPU
+        run: |
+          . .venv/bin/activate
+          python -c "
+          import onnxruntime as ort
+          providers = ort.get_available_providers()
+          print('ONNX Runtime providers:', providers)
+          assert 'CUDAExecutionProvider' in providers
+          "
+
+      - name: Configure AI Hub
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.AIMET_BOT_AIHUB_DEV_TOKEN }}
+        run: |
+          . .venv/bin/activate
+          python -m ONNXRegression.workflow.utils configure-aihub
+
+      - name: Download baseline from previous runs
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          . .venv/bin/activate
+          python -m ONNXRegression.workflow.artifacts download-baseline \
+            --output-dir ONNXRegression/baselines/downloaded
+
+      - name: Setup baseline for comparison
+        run: |
+          . .venv/bin/activate
+          python -m ONNXRegression.workflow.utils setup-baseline \
+            --suite "weekly-onnx"
+
+      - name: Run test suite
+        run: |
+          . .venv/bin/activate
+          python -m ONNXRegression.suite_runner --suite weekly-onnx
+
+      - name: Compare with baseline and generate report
+        run: |
+          . .venv/bin/activate
+
+          SUITE="weekly-onnx"
+          RESULTS_CSV="ONNXRegression/reports/results_${SUITE}.csv"
+
+          if [ ! -f "$RESULTS_CSV" ]; then
+            echo "Results CSV not found: $RESULTS_CSV"
+            exit 1
+          fi
+
+          python ONNXRegression/baseline_comparison.py run \
+            --results "$RESULTS_CSV" \
+            --suite-name "$SUITE" \
+            --baselines-dir "ONNXRegression/baselines" \
+            --github-summary
+
+      - name: Generate environment lockfile
+        if: always()
+        run: |
+          . .venv/bin/activate
+          export PATH="$HOME/.local/bin:$PATH"
+          python -m ONNXRegression.workflow.utils generate-lockfile \
+            --run-id "${{ github.run_id }}"
+
+      - name: Generate timestamp for artifacts
+        if: always()
+        id: timestamp
+        run: |
+          echo "datetime=$(date '+%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Generate baseline artifact name
+        id: artifact_name
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          . .venv/bin/activate
+          ARTIFACT_NAME=$(python -c "
+          from ONNXRegression.workflow.artifacts import ArtifactManager, WorkflowConfig
+          config = WorkflowConfig.from_env()
+          manager = ArtifactManager(config)
+          print(manager.get_artifact_name('${{ github.ref_name }}', 'weekly-onnx'))
+          ")
+          echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "Generated artifact name: $ARTIFACT_NAME"
+
+      - name: Upload baseline artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ steps.artifact_name.outputs.name }}
+          path: ONNXRegression/baselines/latest.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: onnx-weekly-reports-${{ steps.timestamp.outputs.datetime }}-${{ github.run_id }}
+          path: ONNXRegression/reports/**/*
+          retention-days: 30
+
+  #=============================================================================
+  # Torch Weekly Regression (GPU Runner 2, runs in PARALLEL)
+  #=============================================================================
+  torch-weekly:
+    name: Run Torch Weekly (GPU)
+    if: ${{ github.event.inputs.framework != 'onnx' }}
+    needs: build-aimet-torch-gpu
+    runs-on: k8s-gpu
+
+    container:
+      image: "${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-torch-gpu:latest"
+      credentials:
+        username: ${{ secrets.DOCKER_LOGIN }}
+        password: ${{ secrets.DOCKER_CREDENTIALS }}
+      options: --gpus all
+
+    timeout-minutes: 720
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache models and datasets
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache
+            ~/.qai_hub_cache
+            ~/.qaihm
+            ~/.cache/huggingface
+            ~/.cache/torch
+          key: aimet-weekly-torch-cache-${{ runner.os }}-${{ hashFiles('ONNXRegression/**') }}
+          restore-keys: aimet-weekly-torch-cache-${{ runner.os }}-
+
+      - name: Download AIMET wheel
+        uses: actions/download-artifact@v3
+        with:
+          name: torch-gpu-wheel
+          path: downloads
+
+      - name: Install system dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y \
+            libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 \
+            libxrender-dev libgomp1 git openssh-client unzip curl
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Setup Python environment with UV
+        run: |
+          set -e
+          apt-get update -qq
+          apt-get install -y python${{ env.VER_PYTHON }} python${{ env.VER_PYTHON }}-venv python${{ env.VER_PYTHON }}-dev
+
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$PATH"
+
+          uv venv .venv --python python${{ env.VER_PYTHON }}
+          . .venv/bin/activate
+
+          uv pip install torch==2.* torchvision --index-url https://download.pytorch.org/whl/cu121
+          uv pip install qai-hub qai-hub-models==0.43.0 # TODO: Remove after next QAI Hub Models release
+          uv pip install pynvml pytest requests object-detection-metrics
+
+      - name: Install AIMET
+        run: |
+          . .venv/bin/activate
+          export PATH="$HOME/.local/bin:$PATH"
+          uv pip install downloads/*.whl
+          python -c "import aimet_torch; print('AIMET Torch version:', aimet_torch.__version__)"
+
+      - name: Verify PyTorch GPU
+        run: |
+          . .venv/bin/activate
+          python -c "
+          import torch
+          print('PyTorch version:', torch.__version__)
+          print('CUDA available:', torch.cuda.is_available())
+          if torch.cuda.is_available():
+              print('CUDA device:', torch.cuda.get_device_name(0))
+              print('CUDA version:', torch.version.cuda)
+          assert torch.cuda.is_available(), 'CUDA not available!'
+          "
+
+      - name: Configure AI Hub
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.AIMET_BOT_AIHUB_DEV_TOKEN }}
+        run: |
+          . .venv/bin/activate
+          python -m ONNXRegression.workflow.utils configure-aihub
+
+      - name: Download baseline from previous runs
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          . .venv/bin/activate
+          python -m ONNXRegression.workflow.artifacts download-baseline \
+            --output-dir ONNXRegression/baselines/downloaded
+
+      - name: Setup baseline for comparison
+        run: |
+          . .venv/bin/activate
+          python -m ONNXRegression.workflow.utils setup-baseline \
+            --suite "weekly-torch"
+
+      - name: Run test suite
+        run: |
+          . .venv/bin/activate
+          python -m ONNXRegression.suite_runner --suite weekly-torch
+
+      - name: Compare with baseline and generate report
+        run: |
+          . .venv/bin/activate
+
+          SUITE="weekly-torch"
+          RESULTS_CSV="ONNXRegression/reports/results_${SUITE}.csv"
+
+          if [ ! -f "$RESULTS_CSV" ]; then
+            echo "Results CSV not found: $RESULTS_CSV"
+            exit 1
+          fi
+
+          python ONNXRegression/baseline_comparison.py run \
+            --results "$RESULTS_CSV" \
+            --suite-name "$SUITE" \
+            --baselines-dir "ONNXRegression/baselines" \
+            --github-summary
+
+      - name: Generate environment lockfile
+        if: always()
+        run: |
+          . .venv/bin/activate
+          export PATH="$HOME/.local/bin:$PATH"
+          python -m ONNXRegression.workflow.utils generate-lockfile \
+            --run-id "${{ github.run_id }}"
+
+      - name: Generate timestamp for artifacts
+        if: always()
+        id: timestamp
+        run: |
+          echo "datetime=$(date '+%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Generate baseline artifact name
+        id: artifact_name
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          . .venv/bin/activate
+          ARTIFACT_NAME=$(python -c "
+          from ONNXRegression.workflow.artifacts import ArtifactManager, WorkflowConfig
+          config = WorkflowConfig.from_env()
+          manager = ArtifactManager(config)
+          print(manager.get_artifact_name('${{ github.ref_name }}', 'weekly-torch'))
+          ")
+          echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "Generated artifact name: $ARTIFACT_NAME"
+
+      - name: Upload baseline artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ steps.artifact_name.outputs.name }}
+          path: ONNXRegression/baselines/latest.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: torch-weekly-reports-${{ steps.timestamp.outputs.datetime }}-${{ github.run_id }}
+          path: ONNXRegression/reports/**/*
+          retention-days: 30
+
+  #=============================================================================
+  # Summary Job (waits for both ONNX and Torch to complete)
+  #=============================================================================
+  summary:
+    name: Weekly Summary
+    needs: [onnx-weekly, torch-weekly]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## 📊 Weekly Regression Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Framework | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ONNX | ${{ needs.onnx-weekly.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Torch | ${{ needs.torch-weekly.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See individual job summaries above for detailed results." >> $GITHUB_STEP_SUMMARY
