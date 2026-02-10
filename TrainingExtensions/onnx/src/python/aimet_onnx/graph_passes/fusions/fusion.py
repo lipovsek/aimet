@@ -39,7 +39,9 @@ def fuse_supergroups(
         return model
 
     # Create rewrite rule set to match specified patterns into onnx functions
-    fusion_rules = [FUSION_PASS_REGISTRY[p].rule(as_function=True) for p in patterns]
+    fusion_rules = [
+        pattern for name in patterns for pattern in FUSION_PASS_REGISTRY[name]
+    ]
     rule_set = pattern.RewriteRuleSet(fusion_rules)
 
     # Apply the rewrite rules to the model

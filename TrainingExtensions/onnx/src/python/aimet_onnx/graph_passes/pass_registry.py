@@ -28,7 +28,7 @@ class BaseRegistry(Generic[PassType]):
         return Graph Pass class associated with given pass name
         """
         if name in self.passes:
-            return self.passes[name]()
+            return self.passes[name]
         raise KeyError(f"Pass {name} not found.")
 
     def __contains__(self, name: str) -> bool:
@@ -60,6 +60,12 @@ class PassRegistry(BaseRegistry[GraphPass]):
     """
     Registry for Graph passes.
     """
+
+    def __getitem__(self, name: str) -> GraphPass:
+        """
+        return Graph Pass object associated with given pass name
+        """
+        return super().__getitem__(name)()
 
 
 # Global Pass Registry to hold all graph passes

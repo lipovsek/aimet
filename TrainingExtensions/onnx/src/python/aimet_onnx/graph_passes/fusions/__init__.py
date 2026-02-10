@@ -6,3 +6,4 @@
 from .fusion import fuse_supergroups
 from .fusion_registry import AIMET_SUPERGROUP_DOMAIN
 from .layernorm import LayerNormFusion
+from .matmul_add import MatmulAddFusion

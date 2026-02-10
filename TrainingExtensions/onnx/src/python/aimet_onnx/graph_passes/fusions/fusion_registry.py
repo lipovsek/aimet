@@ -13,17 +13,33 @@ from aimet_onnx.graph_passes.pass_registry import BaseRegistry
 AIMET_SUPERGROUP_DOMAIN = "aimet.supergroup"
 
 
-class FusionPassRegistry(BaseRegistry[pattern.RewriteRuleClassBase]):
+class FusionPassRegistry(BaseRegistry[list[pattern.RewriteRule]]):
     """
     Registry for onnxscript RewriteRule passes.
     """
+
+    def register(
+        self, pass_cls: pattern.RewriteRule, name: str, override: bool = False
+    ):
+        """
+        Register Graph Pass
+
+        Args:
+            pass_cls (pattern.RewriteRule): Rewrite rule being registered.
+            name (str): Pass name to register graph pass with.
+            override (bool, optional): Override existing passes if set. Otherwise extends the existing rule list.
+        """
+        if name in self.passes and not override:
+            self.passes[name].append(pass_cls)
+        else:
+            self.passes[name] = [pass_cls]
 
 
 # Global Pass Registry to hold all onnxscript rewrite rule passes
 FUSION_PASS_REGISTRY = FusionPassRegistry()
 
 
-def register_fusion(name: str, override: bool = False):
+def register_fusion(name: str, override: bool = False, **kwargs):
     """
     Decorator to register an onnxscript rewrite rule pass.
 
@@ -35,7 +51,8 @@ def register_fusion(name: str, override: bool = False):
     def wrapper(
         pass_cls: Type[pattern.RewriteRuleClassBase],
     ) -> Type[pattern.RewriteRuleClassBase]:
-        FUSION_PASS_REGISTRY.register(pass_cls, name, override)
+        rule = pass_cls.rule(as_function=True, **kwargs)
+        FUSION_PASS_REGISTRY.register(rule, name, override)
         return pass_cls
 
     return wrapper

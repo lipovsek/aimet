@@ -3042,7 +3042,7 @@ def matmul_add_model():
     return model
 
 
-def matmul_bias_add_model():
+def matmul_bias_add_model(bias_first=False):
     opset = OperatorSetIdProto()
     opset.version = 18
     model = make_model(
@@ -3075,7 +3075,9 @@ def matmul_bias_add_model():
                 ),
                 helper.make_node(
                     "Add",
-                    inputs=["matmul_out", "add.bias"],
+                    inputs=["add.bias", "matmul_out"]
+                    if bias_first
+                    else ["matmul_out", "add.bias"],
                     outputs=["output"],
                     name="add",
                 ),
@@ -3083,6 +3085,59 @@ def matmul_bias_add_model():
         ),
         opset_imports=[opset],
     )
+    onnx.checker.check_model(model)
+    return model
+
+
+def matmul_add_with_transpose(include_perm_attr=False, dynamic_weight=False):
+    """Create a model with explicit Transpose node (transB should be 1)."""
+    from onnx import helper, TensorProto
+
+    in_feat, out_feat = 64, 128
+
+    # Create graph: input -> MatMul(input, Transpose(weight)) -> Add(bias, matmul) -> output
+    input_tensor = helper.make_tensor_value_info(
+        "input", TensorProto.FLOAT, [1, 32, in_feat]
+    )
+    output_tensor = helper.make_tensor_value_info(
+        "output", TensorProto.FLOAT, [1, 32, out_feat]
+    )
+
+    bias = np.random.randn(out_feat).astype(np.float32)
+    bias_init = onnx.numpy_helper.from_array(bias, "bias")
+
+    if dynamic_weight:
+        weight = helper.make_tensor_value_info(
+            "weight", TensorProto.FLOAT, [out_feat, in_feat]
+        )
+        inputs = [input_tensor, weight]
+        inits = [bias_init]
+    else:
+        weight_np = np.random.randn(out_feat, in_feat).astype(np.float32)
+        weight_init = onnx.numpy_helper.from_array(weight_np, "weight")
+        inputs = [input_tensor]
+        inits = [weight_init, bias_init]
+
+    if include_perm_attr:
+        transpose_node = helper.make_node(
+            "Transpose", ["weight"], ["weight_t"], perm=[1, 0]
+        )
+    else:
+        # Defaults to swapping axes
+        transpose_node = helper.make_node("Transpose", ["weight"], ["weight_t"])
+
+    matmul_node = helper.make_node("MatMul", ["input", "weight_t"], ["matmul_out"])
+    add_node = helper.make_node("Add", ["bias", "matmul_out"], ["output"])
+
+    graph = helper.make_graph(
+        [transpose_node, matmul_node, add_node],
+        "matmuladd_with_transpose",
+        inputs=inputs,
+        outputs=[output_tensor],
+        initializer=inits,
+    )
+
+    model = make_model(graph)
     onnx.checker.check_model(model)
     return model
 

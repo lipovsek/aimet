@@ -10,7 +10,7 @@ import torch
 import onnx
 import onnx_ir
 import onnxruntime
-from aimet_onnx.utils import make_dummy_input
+from aimet_onnx.utils import make_dummy_input, get_node_attribute
 from aimet_onnx import QuantizationSimModel
 
 from aimet_onnx.graph_passes.fusions import fuse_supergroups
@@ -286,6 +286,253 @@ class TestLayerNormFusion:
         sim.compute_encodings([make_dummy_input(model_proto)])
 
 
+def create_simple_linear_model(tmpdir):
+    """Create a simple model with a single Linear layer (Matmul + Add)."""
+    input_shape = [1, 32, 64]
+
+    class LinearModel(torch.nn.Module):
+        def __init__(self):
+            super(LinearModel, self).__init__()
+            self.linear = torch.nn.Linear(64, 128)
+
+        def forward(self, x):
+            return self.linear(x)
+
+    model = LinearModel()
+    dummy_input = torch.randn(*input_shape)
+    model_path = os.path.join(tmpdir, "linear.onnx")
+    torch.onnx.export(
+        model,
+        dummy_input,
+        model_path,
+        opset_version=13,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+    )
+    return onnx.load(model_path)
+
+
+def matmuladd_with_3d_weight(tmpdir):
+    """Create a model with 3D weight (should not match)."""
+    model_proto = create_simple_linear_model(tmpdir)
+
+    # Find the weight tensor and modify it to be 3D
+    for init in model_proto.graph.initializer:
+        if "MatMul" in init.name:
+            # Get the current weight data
+            weight_array = np.frombuffer(init.raw_data, dtype=np.float32).reshape(
+                init.dims
+            )
+            # Change shape from [in, out] to [1, in, out]
+            new_array = np.expand_dims(weight_array, axis=0)
+            # Update the initializer
+            init.dims[:] = new_array.shape
+            init.raw_data = new_array.tobytes()
+            break
+
+    return model_proto
+
+
+def matmuladd_with_2d_bias(tmpdir):
+    """Create a model with 2D bias (should not match)."""
+    model_proto = create_simple_linear_model(tmpdir)
+
+    # Find the bias tensor and modify it to be 2D
+    for init in model_proto.graph.initializer:
+        if "bias" in init.name:
+            bias_array = np.frombuffer(init.raw_data, dtype=np.float32).reshape(
+                init.dims
+            )
+            new_array = np.expand_dims(bias_array, axis=0)
+            init.dims[:] = new_array.shape
+            init.raw_data = new_array.tobytes()
+            break
+
+    return model_proto
+
+
+class TestMatmulAddFusion:
+    @pytest.mark.parametrize(
+        "model_factory, expected_matches",
+        [
+            (lambda path: models_for_tests.matmul_bias_add_model(bias_first=True), 1),
+            (lambda path: models_for_tests.matmul_bias_add_model(bias_first=False), 1),
+            (lambda path: models_for_tests.matmul_add_model(), 0),  # Not a bias add
+            (lambda path: models_for_tests.unfusable_matmul_add().model, 0),
+            (
+                lambda _: models_for_tests.matmul_add_with_transpose(
+                    True, dynamic_weight=False
+                ),
+                1,
+            ),
+            (
+                lambda _: models_for_tests.matmul_add_with_transpose(
+                    False, dynamic_weight=False
+                ),
+                1,
+            ),
+            # Dynamic weight: should not be matched into Gemm
+            (
+                lambda _: models_for_tests.matmul_add_with_transpose(
+                    True, dynamic_weight=True
+                ),
+                0,
+            ),
+            (
+                lambda _: models_for_tests.matmul_add_with_transpose(
+                    False, dynamic_weight=True
+                ),
+                0,
+            ),
+            (create_simple_linear_model, 1),
+            (create_layernorm_model, 2),
+            # Invalid patterns:
+            (matmuladd_with_3d_weight, 0),
+            (matmuladd_with_2d_bias, 0),
+        ],
+    )
+    def test_fuses_matmul_add(self, tmp_path, model_factory, expected_matches):
+        onnx_model = model_factory(tmp_path)
+
+        model = onnx_ir.from_proto(onnx_model)
+        inputs = make_dummy_input(onnx_model)
+
+        session = onnxruntime.InferenceSession(onnx_model.SerializeToString())
+        output_pre_fusion = session.run(None, inputs)
+
+        fused_model = fuse_supergroups(model, patterns=["MatmulAdd"])
+
+        model_proto = onnx_ir.to_proto(fused_model)
+        supergroups = [
+            node
+            for node in model_proto.graph.node
+            if node.op_type == "Gemm" and node.domain == "aimet.supergroup"
+        ]
+        assert len(supergroups) == expected_matches
+
+        functions = {(f.domain, f.name, f.overload): f for f in model_proto.functions}
+        # Verify transB attribute is properly set
+        for supergroup in supergroups:
+            func_key = supergroup.domain, supergroup.op_type, supergroup.overload
+            assert func_key in functions
+            function = functions[func_key]
+            transposed = any(node.op_type == "Transpose" for node in function.node)
+            assert transposed == bool(get_node_attribute(supergroup, "transB"))
+
+        session = onnxruntime.InferenceSession(model_proto.SerializeToString())
+        output_post_fusion = session.run(None, inputs)
+
+        assert np.allclose(output_pre_fusion[0], output_post_fusion[0], atol=1e-5)
+
+    def test_transb_attribute_with_transpose(self):
+        """Test that transB=1 when pattern has Transpose node."""
+        onnx_model = models_for_tests.matmul_add_with_transpose()
+        model = onnx_ir.from_proto(onnx_model)
+
+        fused_model = fuse_supergroups(model, patterns=["MatmulAdd"])
+        model_proto = onnx_ir.to_proto(fused_model)
+
+        gemm_nodes = [
+            node
+            for node in model_proto.graph.node
+            if node.op_type == "Gemm" and node.domain == "aimet.supergroup"
+        ]
+        assert len(gemm_nodes) == 1
+
+        # Check transB attribute
+        gemm_node = gemm_nodes[0]
+        trans_b_attr = next(
+            (attr for attr in gemm_node.attribute if attr.name == "transB"), None
+        )
+        assert trans_b_attr is not None, "transB attribute not found"
+        assert trans_b_attr.i == 1, f"Expected transB=1, got transB={trans_b_attr.i}"
+
+    def test_transb_attribute_without_transpose(self):
+        """Test that transB=0 when pattern has no Transpose node."""
+        onnx_model = models_for_tests.matmul_bias_add_model()
+        model = onnx_ir.from_proto(onnx_model)
+
+        fused_model = fuse_supergroups(model, patterns=["MatmulAdd"])
+        model_proto = onnx_ir.to_proto(fused_model)
+
+        gemm_nodes = [
+            node
+            for node in model_proto.graph.node
+            if node.op_type == "Gemm" and node.domain == "aimet.supergroup"
+        ]
+        assert len(gemm_nodes) == 1
+
+        # Check transB attribute
+        gemm_node = gemm_nodes[0]
+        trans_b_attr = next(
+            (attr for attr in gemm_node.attribute if attr.name == "transB"), None
+        )
+        assert trans_b_attr is None or trans_b_attr.i == 0
+
+    @pytest.mark.parametrize("trans_b", [True, False])
+    def test_matmul_add_pattern_with_quantsim(self, trans_b):
+        """Test that QuantSim works with fused MatmulAdd nodes."""
+        if trans_b:
+            onnx_model = models_for_tests.matmul_add_with_transpose()
+        else:
+            onnx_model = models_for_tests.matmul_bias_add_model()
+
+        model = onnx_ir.from_proto(onnx_model)
+
+        fused_model = fuse_supergroups(model, patterns=["MatmulAdd"])
+        model_proto = onnx_ir.to_proto(fused_model)
+
+        """
+        When: Creating a QuantizationSimModel with the fused MatmulAdd model
+        Then: 1) Weight and bias parameters are correctly identified
+              2) Per-channel quantization is enabled for the layer
+              3) Quantization axis is correctly set based on transB attribute
+              4) sim.compute_encodings runs without error
+        """
+        sim = QuantizationSimModel(
+            model_proto,
+            param_type="int8",
+            activation_type="int16",
+            config_file="htp_v81",
+        )
+        assert len(sim.connected_graph.ordered_ops) == 1
+        (matmul,) = sim.connected_graph.ordered_ops
+        assert len(matmul.parameters) == 2
+
+        # Check that weight and bias are correctly identified
+        weight = next(
+            (
+                param
+                for param, param_type in matmul.parameters.values()
+                if param_type == "weight"
+            ),
+            None,
+        )
+        bias = next(
+            (
+                param
+                for param, param_type in matmul.parameters.values()
+                if param_type == "bias"
+            ),
+            None,
+        )
+        assert weight and bias
+
+        # Check that weight quantizer is correctly configured based on transB attribute
+        weight_quantizer = sim.qc_quantize_op_dict[weight.name]
+        assert weight_quantizer.quant_info.usePerChannelMode
+        assert weight_quantizer.quant_info.channelAxis == 0 if trans_b else 1
+
+        sim.compute_encodings([make_dummy_input(model_proto)])
+
+        # Check that bias is properly concretized
+        with sim._concretize_int32_bias_quantizers():
+            assert bias.name in sim.qc_quantize_op_dict
+            assert sim.qc_quantize_op_dict[bias.name].enabled
+            assert sim.qc_quantize_op_dict[bias.name].bitwidth == 32
+
+
 class TestFusion:
     def test_unknown_pattern_raises_error(self, tmp_path):
         """Test that unknown pattern names raise ValueError."""
@@ -321,7 +568,9 @@ class TestFusion:
 
         # Apply fusion
         model = onnx_ir.from_proto(model_proto)
-        fused_model = fuse_supergroups(model, patterns=["LayerNormalization"])
+        fused_model = fuse_supergroups(
+            model, patterns=["LayerNormalization", "MatmulAdd"]
+        )
 
         # Ensure the fused model can be converted back to proto
         model_proto = onnx_ir.to_proto(fused_model)
