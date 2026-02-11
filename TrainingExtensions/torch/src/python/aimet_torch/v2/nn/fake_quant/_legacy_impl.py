@@ -162,16 +162,23 @@ class _FakeQuantizedBinaryOpMixin(FakeQuantizationMixin):  # pylint: disable=abs
         self.input_quantizers = nn.ModuleList([None, None])
 
     def forward(self, *args, **kwargs) -> Tensor:  # pylint: disable=missing-function-docstring
-        x, y, *others = args
+        x, *others = args
 
         if isinstance(x, Tensor) and x.is_floating_point() and self.input_quantizers[0]:
             x = self.input_quantizers[0](x)
 
-        if isinstance(y, Tensor) and y.is_floating_point() and self.input_quantizers[1]:
-            y = self.input_quantizers[1](y)
+        if others:
+            y, *others = others
+            if (
+                isinstance(y, Tensor)
+                and y.is_floating_point()
+                and self.input_quantizers[1]
+            ):
+                y = self.input_quantizers[1](y)
+            others = (y, *others)
 
         with self._patch_quantized_parameters():
-            output = super().forward(x, y, *others, **kwargs)
+            output = super().forward(x, *others, **kwargs)
 
         if (
             isinstance(output, Tensor)
@@ -731,7 +738,6 @@ _AIMET_V1_UNARY_MODULES = [
     custom.Argmax,
     custom.Gather,
     custom.Reshape,
-    custom.RoiAlign,
     custom.Permute,
     custom.IndexSelect,
     custom.TopK,
@@ -745,6 +751,7 @@ _AIMET_V1_UNARY_MODULES = [
     custom.Expand,
     custom.StridedSlice,
     custom.RmsNorm,
+    custom.Select,
 ]
 _AIMET_V1_BINARY_MODULES = [
     custom.MatMul,
@@ -773,6 +780,7 @@ _AIMET_V1_BINARY_MODULES = [
     custom.GatherNd,
     custom.GridSample,
     custom.Outer,
+    custom.RoiAlign,
 ]
 _AIMET_V1_TERNARY_MODULES = [
     custom.Baddbmm,
@@ -1039,22 +1047,29 @@ class FakeQuantizedMaskedFill(FakeQuantizationMixin, custom.MaskedFill):  # pyli
     def __quant_init__(self):
         super().__quant_init__()
         # pylint: disable=attribute-defined-outside-init
-        self.input_quantizers = nn.ModuleList([None, None])
+        self.input_quantizers = nn.ModuleList([None, None, None])
         self.output_quantizers = nn.ModuleList([None])
 
     # pylint: disable=arguments-differ
-    def forward(self, mask: Tensor, value) -> Tensor:
+    def forward(self, tensor: torch.Tensor, mask: Tensor, value) -> Tensor:
         """
         Quantized forward impl for custom.MaskedFill.
         """
         if (
+            isinstance(tensor, Tensor)
+            and tensor.is_floating_point()
+            and self.input_quantizers[0]
+        ):
+            tensor = self.input_quantizers[0](tensor)
+
+        if (
             isinstance(value, Tensor)
             and value.is_floating_point()
-            and self.input_quantizers[1]
+            and self.input_quantizers[2]
         ):
-            value = self.input_quantizers[1](value)
+            value = self.input_quantizers[2](value)
 
-        output = super().forward(mask, value)
+        output = super().forward(tensor, mask, value)
 
         if output.is_floating_point() and self.output_quantizers[0]:
             output = self.output_quantizers[0](output)

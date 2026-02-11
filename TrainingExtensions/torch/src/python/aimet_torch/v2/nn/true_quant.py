@@ -1417,9 +1417,7 @@ class QuantizedHuberLoss(_DispatchMixin, QuantizationMixin, nn.HuberLoss):
     __quant_init__ = QuantizationMixin.__binary__
 
 
-# @QuantizationMixin.implements(nn.Identity)
-# class QuantizedIdentity(_DispatchMixin, QuantizationMixin, nn.Identity):
-#     _builtin_torch_fn = ...
+QuantizationMixin.ignore(nn.Identity)
 
 
 @QuantizationMixin.implements(nn.InstanceNorm1d)
