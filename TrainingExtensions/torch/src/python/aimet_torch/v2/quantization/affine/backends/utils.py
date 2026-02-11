@@ -52,6 +52,7 @@ _SUPPORTED_BACKENDS = {
 
 if _triton.is_available():
     _SUPPORTED_BACKENDS["triton"] = _triton
+    _CURRENT_BACKEND = "triton"
 
 
 def set_backend(name: str) -> _ContextManager:

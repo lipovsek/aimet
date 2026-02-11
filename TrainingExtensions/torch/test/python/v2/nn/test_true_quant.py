@@ -63,6 +63,12 @@ def manual_seed():
     torch.manual_seed(724)
 
 
+@pytest.fixture
+def use_torch_builtin_backend():
+    with aimet_torch.quantization.set_backend("torch_builtins"):
+        yield
+
+
 def affine_quantize(
     tensor: torch.Tensor, scale: torch.Tensor, offset: torch.Tensor, bitwidth: int
 ) -> QuantizedTensor:
@@ -579,7 +585,7 @@ class TestQuantizedLayers:
 
     @pytest.mark.cuda
     @pytest.mark.usefixtures("register_int_linear")
-    def test_layers_with_recompute(self):
+    def test_layers_with_recompute(self, use_torch_builtin_backend):
         qlinear = QuantizedLinear(4096, 4096)
         qlinear.input_quantizers[0] = Quantize(shape=(), bitwidth=8, symmetric=False)
         qlinear.output_quantizers[0] = Quantize(shape=(), bitwidth=8, symmetric=False)

@@ -7,7 +7,14 @@ import torch
 import pytest
 from collections import namedtuple
 from aimet_torch.v2.quantization import affine
-from aimet_torch.v2.quantization.affine.backends import torch_builtins
+from aimet_torch.v2.quantization.affine.backends import (
+    torch_builtins,
+    triton as _triton,
+)
+from aimet_torch.v2.quantization.affine.backends.torch_builtins import (
+    _validate_arguments,
+)
+from aimet_torch.v2.quantization.affine.backends.utils import _SUPPORTED_BACKENDS
 from aimet_torch.v2.utils import ste_round
 from aimet_torch.experimental import pgs
 from aimet_torch.v2.quantization._utils import interleave, concretize_block_size
@@ -252,7 +259,7 @@ else:
             yield
 
 
-@pytest.mark.parametrize("backend_module", [torch_builtins])
+@pytest.mark.parametrize("backend_module", _SUPPORTED_BACKENDS.values())
 class TestQuantizationBackends:
     @pytest.mark.parametrize("qmin, qmax", [(0, 255), (-128, 127)])
     @pytest.mark.parametrize("scale_shape", [(4), (2,), (3, 1), (2, 1, 1)])
@@ -474,6 +481,9 @@ class TestQuantizationBackends:
         input_requires_grad,
         use_compiled_impl,
     ):
+        if backend_module == _triton:
+            pytest.skip(reason="Triton backend doesn't implement quantize backward")
+
         qmin, qmax = 0, 255
         scale = torch.rand([])
         scale[scale == 0.0] = 0.1
@@ -533,6 +543,11 @@ class TestQuantizationBackends:
         expected_tensor_q = test_set.tensor_q
         assert torch.all(tensor_q == expected_tensor_q)
         grad_in = torch.randn_like(test_set.tensor)
+
+        if backend_module == _triton:
+            # Triton backend doesn't implement quantize backward
+            return
+
         tensor_q.backward(grad_in)
         assert torch.all(test_set.tensor.grad[test_set.mask] == 0)
         assert torch.allclose(
@@ -610,7 +625,19 @@ class TestQuantizationBackends:
             test_set.qmin,
             test_set.qmax,
         )
-        assert torch.all(tensor_q == test_set.tensor_q)
+        is_on_rounding_boundary = (
+            test_set.tensor.float() / test_set.delta.float() - test_set.offset.float()
+        ) % 1 == 0.5
+        assert torch.where(
+            is_on_rounding_boundary,
+            torch.isclose(tensor_q, test_set.tensor_q, atol=1),
+            tensor_q == test_set.tensor_q,
+        ).all()
+
+        if backend_module == _triton:
+            # Triton backend doesn't implement quantize backward
+            return
+
         grad_in = torch.randn_like(test_set.tensor)
         tensor_q.backward(grad_in)
         assert torch.all(test_set.tensor.grad[test_set.mask] == 0)
@@ -655,7 +682,16 @@ class TestQuantizationBackends:
             test_set.qmin,
             test_set.qmax,
         )
-        assert torch.allclose(tensor_qdq, test_set.tensor_qdq)
+        # assert torch.allclose(tensor_qdq, test_set.tensor_qdq)
+        is_on_rounding_boundary = (
+            test_set.tensor.float() / test_set.delta.float() - test_set.offset.float()
+        ) % 1 == 0.5
+        assert torch.where(
+            is_on_rounding_boundary,
+            torch.isclose(tensor_qdq, test_set.tensor_qdq, atol=1),
+            tensor_qdq == test_set.tensor_qdq,
+        ).all()
+
         grad_in = torch.randn_like(test_set.tensor)
         tensor_qdq.backward(grad_in)
         assert torch.all(test_set.tensor.grad[test_set.mask] == 0)
@@ -667,6 +703,9 @@ class TestQuantizationBackends:
     def test_compare_quantize_gradients_with_autograd_results(
         self, backend_module, offset, qmin, qmax, use_compiled_impl
     ):
+        if backend_module == _triton:
+            pytest.skip(reason="Triton backend doesn't implement quantize backward")
+
         scale = torch.rand([])
         scale[scale == 0.0] = 0.1
         offset = offset.detach().clone()
@@ -701,6 +740,9 @@ class TestQuantizationBackends:
     def test_compare_dequantize_gradients_with_autograd_results(
         self, backend_module, offset, qmin, qmax, use_compiled_impl
     ):
+        if backend_module == _triton:
+            pytest.skip(reason="Triton backend doesn't implement dequantize backward")
+
         scale = torch.rand([])
         scale[scale == 0.0] = 0.1
         offset = offset.detach().clone()
@@ -922,42 +964,43 @@ class TestQuantizationBackends:
                             ),
                         )
 
-    def test_invalid_block_size(self, backend_module):
-        # Block size length must match scale
-        with pytest.raises(RuntimeError):
-            backend_module._validate_arguments(
-                torch.randn(4, 8),
-                torch.randn(2, 2),
-                torch.randn(2, 2),
-                block_size=[2, 4, 1],
-            )
-        backend_module._validate_arguments(
-            torch.randn(4, 8), torch.randn(2, 2), torch.randn(2, 2), block_size=[2, 4]
-        )
 
-        # Scale dimension must divide evenly with input dimension
-        with pytest.raises(RuntimeError):
-            backend_module._validate_arguments(
-                torch.randn(1, 4),
-                torch.randn(1, 3),
-                torch.randn(1, 2),
-                block_size=[1, -1],
-            )
-        backend_module._validate_arguments(
-            torch.randn(1, 4), torch.randn(1, 2), torch.randn(1, 2), block_size=[1, -1]
+def test_invalid_block_size():
+    # Block size length must match scale
+    with pytest.raises(RuntimeError):
+        _validate_arguments(
+            torch.randn(4, 8),
+            torch.randn(2, 2),
+            torch.randn(2, 2),
+            block_size=[2, 4, 1],
         )
+    _validate_arguments(
+        torch.randn(4, 8), torch.randn(2, 2), torch.randn(2, 2), block_size=[2, 4]
+    )
 
-        # Block dim size * scale dim size must equal input dim size
-        with pytest.raises(RuntimeError):
-            backend_module._validate_arguments(
-                torch.randn(1, 4),
-                torch.randn(1, 4),
-                torch.randn(1, 2),
-                block_size=[1, 3],
-            )
-        backend_module._validate_arguments(
-            torch.randn(1, 4), torch.randn(1, 2), torch.randn(1, 2), block_size=[1, 2]
+    # Scale dimension must divide evenly with input dimension
+    with pytest.raises(RuntimeError):
+        _validate_arguments(
+            torch.randn(1, 4),
+            torch.randn(1, 3),
+            torch.randn(1, 2),
+            block_size=[1, -1],
         )
+    _validate_arguments(
+        torch.randn(1, 4), torch.randn(1, 2), torch.randn(1, 2), block_size=[1, -1]
+    )
+
+    # Block dim size * scale dim size must equal input dim size
+    with pytest.raises(RuntimeError):
+        _validate_arguments(
+            torch.randn(1, 4),
+            torch.randn(1, 4),
+            torch.randn(1, 2),
+            block_size=[1, 3],
+        )
+    _validate_arguments(
+        torch.randn(1, 4), torch.randn(1, 2), torch.randn(1, 2), block_size=[1, 2]
+    )
 
 
 @pytest.mark.parametrize(

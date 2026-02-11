@@ -2,39 +2,38 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 # pylint: disable=redefined-builtin, import-error, abstract-method, arguments-differ, no-member
+from __future__ import annotations
 from packaging.version import parse
 from typing import Optional, Sequence
 import numpy as np
 import torch
 from aimet_torch.experimental import pgs
 from . import torch_builtins
+from .torch_builtins import (
+    _validate_arguments,
+    _is_grid_representable,
+    _is_numerically_stable,
+)
+
 
 try:
     import triton
     import triton.language as tl
-except ImportError:
-    triton = tl = None
 
-
-_is_triton_available: bool = bool(
-    torch.cuda.is_available() and triton and parse(triton.__version__) >= parse("3.0.0")
-)
-
-
-def is_available() -> bool:
-    return _is_triton_available
-
-
-if is_available():
+    _is_triton_available: bool = bool(
+        torch.cuda.is_available()
+        and triton
+        and parse(triton.__version__) >= parse("3.0.0")
+    )
 
     @triton.jit
     def quantize_per_tensor(
-        input_ptr,
-        scale: tl.float32,
-        offset: tl.float32,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
-        output_ptr,
+        output_ptr: tl.pointer_type,
         n_elements: tl.uint64,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
@@ -43,6 +42,8 @@ if is_available():
         idx = start_index + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < n_elements
         input = tl.load(input_ptr + idx, mask=mask)
+        scale = tl.load(scale_ptr)
+        offset = tl.load(offset_ptr)
         input = input / scale - offset
         rounded = tl.floor(input + 0.5)
         clamped = tl.clamp(rounded, qmin, qmax)
@@ -50,12 +51,12 @@ if is_available():
 
     @triton.jit
     def quantize_per_channel(
-        input_ptr,
-        scale_ptr,
-        offset_ptr,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
-        output_ptr,
+        output_ptr: tl.pointer_type,
         I: tl.uint64,
         J: tl.uint64,
         K: tl.uint64,
@@ -101,12 +102,12 @@ if is_available():
 
     @triton.jit
     def quantize_per_block(
-        input_ptr,
-        scale_ptr,
-        offset_ptr,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
-        output_ptr,
+        output_ptr: tl.pointer_type,
         I: tl.uint64,
         J: tl.uint64,
         K: tl.uint64,
@@ -168,14 +169,14 @@ if is_available():
 
     @triton.jit
     def quantize_dequantize_per_tensor(
-        input_ptr,
-        scale: tl.float32,
-        offset: tl.float32,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
-        zero_point_shift: tl.float32,
-        output_ptr,
-        mask_ptr,
+        zero_point_shift,
+        output_ptr: tl.pointer_type,
+        mask_ptr: tl.pointer_type,
         n_elements: tl.uint64,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
@@ -196,6 +197,8 @@ if is_available():
         idx = start_index + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < n_elements
         input = tl.load(input_ptr + idx, mask=mask)
+        scale = tl.load(scale_ptr)
+        offset = tl.load(offset_ptr)
         input = input / scale - (zero_point_shift + offset)
         rounded = tl.floor(input + 0.5)
         clamped = tl.clamp(rounded, qmin, qmax)
@@ -208,14 +211,14 @@ if is_available():
 
     @triton.jit
     def quantize_dequantize_per_channel(
-        input_ptr,
-        scale_ptr,
-        offset_ptr,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
-        zero_point_shift: tl.float32,
-        output_ptr,
-        mask_ptr,
+        zero_point_shift,
+        output_ptr: tl.pointer_type,
+        mask_ptr: tl.pointer_type,
         I: tl.uint64,
         J: tl.uint64,
         K: tl.uint64,
@@ -267,14 +270,14 @@ if is_available():
 
     @triton.jit
     def quantize_dequantize_per_block(
-        input_ptr,
-        scale_ptr,
-        offset_ptr,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
-        zero_point_shift: tl.float32,
-        output_ptr,
-        mask_ptr,
+        zero_point_shift,
+        output_ptr: tl.pointer_type,
+        mask_ptr: tl.pointer_type,
         I: tl.uint64,
         J: tl.uint64,
         K: tl.uint64,
@@ -341,15 +344,15 @@ if is_available():
 
     @triton.jit
     def quantize_dequantize_per_tensor_backward(
-        output_grad_ptr,
-        input_ptr,
-        scale_ptr,
-        offset_ptr,
-        zero_point_shift: tl.float32,
-        mask_ptr,
-        input_grad_ptr,
-        scale_grad_ptr,
-        offset_grad_ptr,
+        output_grad_ptr: tl.pointer_type,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
+        zero_point_shift,
+        mask_ptr: tl.pointer_type,
+        input_grad_ptr: tl.pointer_type,
+        scale_grad_ptr: tl.pointer_type,
+        offset_grad_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
         n_elements: tl.uint64,
@@ -405,15 +408,15 @@ if is_available():
 
     @triton.jit
     def quantize_dequantize_per_channel_backward(
-        output_grad_ptr,
-        input_ptr,
-        scale_ptr,
-        offset_ptr,
-        zero_point_shift: tl.float32,
-        mask_ptr,
-        input_grad_ptr,
-        scale_grad_ptr,
-        offset_grad_ptr,
+        output_grad_ptr: tl.pointer_type,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
+        zero_point_shift,
+        mask_ptr: tl.pointer_type,
+        input_grad_ptr: tl.pointer_type,
+        scale_grad_ptr: tl.pointer_type,
+        offset_grad_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
         I: tl.uint64,
@@ -470,15 +473,15 @@ if is_available():
 
     @triton.jit
     def quantize_dequantize_per_block_backward(
-        output_grad_ptr,
-        input_ptr,
-        scale_ptr,
-        offset_ptr,
-        zero_point_shift: tl.float32,
-        mask_ptr,
-        input_grad_ptr,
-        scale_grad_ptr,
-        offset_grad_ptr,
+        output_grad_ptr: tl.pointer_type,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
+        zero_point_shift,
+        mask_ptr: tl.pointer_type,
+        input_grad_ptr: tl.pointer_type,
+        scale_grad_ptr: tl.pointer_type,
+        offset_grad_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
         I: tl.uint64,
@@ -545,10 +548,10 @@ if is_available():
 
     @triton.jit
     def dequantize_per_tensor(
-        input_ptr,
-        scale: tl.float32,
-        offset: tl.float32,
-        output_ptr,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
+        output_ptr: tl.pointer_type,
         n_elements: tl.uint64,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
@@ -557,14 +560,16 @@ if is_available():
         idx = start_index + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < n_elements
         input = tl.load(input_ptr + idx, mask=mask)
+        scale = tl.load(scale_ptr)
+        offset = tl.load(offset_ptr)
         tl.store(output_ptr + idx, (input + offset) * scale, mask=mask)
 
     @triton.jit
     def dequantize_per_channel(
-        input_ptr,
-        scale_ptr,
-        offset_ptr,
-        output_ptr,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
+        output_ptr: tl.pointer_type,
         I: tl.uint64,
         J: tl.uint64,
         K: tl.uint64,
@@ -605,10 +610,10 @@ if is_available():
 
     @triton.jit
     def dequantize_per_block(
-        input_ptr,
-        scale_ptr,
-        offset_ptr,
-        output_ptr,
+        input_ptr: tl.pointer_type,
+        scale_ptr: tl.pointer_type,
+        offset_ptr: tl.pointer_type,
+        output_ptr: tl.pointer_type,
         I: tl.uint64,
         J: tl.uint64,
         K: tl.uint64,
@@ -662,6 +667,12 @@ if is_available():
         scale = tl.load(scale_ptr + scale_idx)
         offset = tl.load(offset_ptr + scale_idx)
         tl.store(output_ptr + idx, (input + offset) * scale, mask=mask)
+except ImportError:
+    _is_triton_available = False
+
+
+def is_available() -> bool:
+    return _is_triton_available
 
 
 class _NotSupportedError(RuntimeError): ...
@@ -797,6 +808,13 @@ class TritonQuantize(torch.autograd.Function):
 
         return output
 
+    def backward(self, grad):
+        raise NotImplementedError(
+            "Triton quantize kernel does not support backward. "
+            "Please fall back to torch builtin implementation with "
+            "`aimet_torch.quantization.set_backend('torch_builtins')`."
+        )
+
 
 class TritonDequantize(torch.autograd.Function):
     @staticmethod
@@ -863,6 +881,13 @@ class TritonDequantize(torch.autograd.Function):
             raise RuntimeError
 
         return output
+
+    def backward(self, grad):
+        raise NotImplementedError(
+            "Triton dequantize kernel does not support backward. "
+            "Please fall back to torch builtin implementation with "
+            "`aimet_torch.quantization.set_backend('torch_builtins')`."
+        )
 
 
 class TritonQuantizeDequantize(torch.autograd.Function):
@@ -1163,8 +1188,28 @@ def quantize(
         # Fall back to aten impl if triton is not available or inputs are not on cuda
         return torch_builtins.quantize(tensor, scale, offset, qmin, qmax, block_size)
 
+    _validate_arguments(tensor, scale, qmin, qmax, block_size)
+
+    output_dtype = internal_dtype = tensor.dtype
+
+    if not _is_grid_representable(tensor.dtype, qmin, qmax):
+        msg = f"{tensor.dtype} is unable to represent quantized output of range [{qmin}, {qmax}]."
+        raise RuntimeError(msg)
+
+    if not _is_numerically_stable(internal_dtype, qmin, qmax):
+        internal_dtype = torch.float32
+        if not _is_numerically_stable(internal_dtype, qmin, qmax):
+            internal_dtype = torch.float64
+
     try:
-        return TritonQuantize.apply(tensor, scale, offset, qmin, qmax, block_size)
+        return TritonQuantize.apply(
+            tensor.to(internal_dtype),
+            scale.to(internal_dtype),
+            offset.to(internal_dtype),
+            qmin,
+            qmax,
+            block_size,
+        ).to(output_dtype)
     except _NotSupportedError:
         return torch_builtins.quantize(tensor, scale, offset, qmin, qmax, block_size)
 
@@ -1207,10 +1252,29 @@ def quantize_dequantize(
             zero_point_shift,
         )
 
+    _validate_arguments(tensor, scale, qmin, qmax, block_size)
+
+    output_dtype = internal_dtype = tensor.dtype
+
+    if not _is_numerically_stable(internal_dtype, qmin, qmax):
+        internal_dtype = torch.float32
+        if not _is_numerically_stable(internal_dtype, qmin, qmax):
+            internal_dtype = torch.float64
+
+    if not _is_grid_representable(internal_dtype, qmin, qmax):
+        msg = f"{internal_dtype} is unable to represent quantized output of range [{qmin}, {qmax}]."
+        raise RuntimeError(msg)
+
     try:
         return TritonQuantizeDequantize.apply(
-            tensor, scale, offset, qmin, qmax, block_size, zero_point_shift
-        )
+            tensor.to(internal_dtype),
+            scale.to(internal_dtype),
+            offset.to(internal_dtype),
+            qmin,
+            qmax,
+            block_size,
+            zero_point_shift,
+        ).to(output_dtype)
     except _NotSupportedError:
         return torch_builtins.quantize_dequantize(
             tensor,
@@ -1247,6 +1311,8 @@ def dequantize(
     if not (tensor.is_cuda and scale.is_cuda and offset.is_cuda):
         # Fall back to aten impl if triton is not available or inputs are not on cuda
         return torch_builtins.dequantize(tensor, scale, offset, block_size)
+
+    _validate_arguments(tensor, scale, block_size=block_size)
 
     try:
         return TritonDequantize.apply(tensor, scale, offset, block_size)
