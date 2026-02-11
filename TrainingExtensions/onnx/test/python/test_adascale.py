@@ -653,22 +653,13 @@ def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
         adascale_model_config_dict["qwen2"],
         num_iterations=2,
     )
-    param_list = [
-        "onnx::MatMul_571",
-        "onnx::MatMul_587",
-        "onnx::MatMul_588",
-        "onnx::MatMul_643",
-        "onnx::MatMul_644",
-        "onnx::MatMul_645",
-        "onnx::MatMul_646",
-        "onnx::MatMul_647",
-        "onnx::MatMul_663",
-        "onnx::MatMul_664",
-        "onnx::MatMul_719",
-        "onnx::MatMul_720",
-        "onnx::MatMul_721",
-        "onnx::MatMul_722",
+
+    linear_list = [
+        key for key in sim.qc_quantize_op_dict.keys() if "onnx::MatMul" in key
     ]
+
+    # Dropping the last linear layers since that is always the LM head, which is not modified by adascale
+    param_list = linear_list[:-1]
 
     # Verify that the encodings are frozen for the parameters modified by AdaScale
     for param in param_list:

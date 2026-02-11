@@ -5,4 +5,4 @@
 
 """Base directory to hold quantized transformers Mistral modules"""
 
-from .modeling_mistral import QuantizedMistralRMSNorm, QuantizedMistralRotaryEmbedding
+from .modeling_mistral import QuantizedMistralRMSNorm

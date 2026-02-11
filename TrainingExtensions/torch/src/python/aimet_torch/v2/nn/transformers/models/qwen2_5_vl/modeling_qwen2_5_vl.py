@@ -25,33 +25,6 @@ QuantizationMixin.ignore(modeling_qwen2_5_vl.Qwen2_5_VLRotaryEmbedding)
 QuantizationMixin.ignore(modeling_qwen2_5_vl.Qwen2_5_VisionRotaryEmbedding)
 
 
-try:
-    from transformers.activations import SiLUActivation
-
-    @QuantizationMixin.implements(SiLUActivation)
-    class QuantizedSiLU(QuantizationMixin, SiLUActivation):
-        """Quantized CustomSiLU"""
-
-        __quant_init__ = QuantizationMixin.__unary__
-
-        def forward(self, x: torch.Tensor) -> torch.Tensor:  # pylint: disable=arguments-differ
-            (input_qtzr,) = self.input_quantizers
-            (output_qtzr,) = self.output_quantizers
-
-            if input_qtzr:
-                x = input_qtzr(x)
-
-            out = super().forward(x)
-
-            if output_qtzr:
-                out = output_qtzr(out)
-
-            return out
-except ImportError:
-    # Older version of transformers use torch.nn.SiLu directly
-    pass
-
-
 @QuantizationMixin.implements(modeling_qwen2_5_vl.Qwen2RMSNorm)
 class QuantizedQwen2RMSNorm(QuantizationMixin, modeling_qwen2_5_vl.Qwen2RMSNorm):
     """Implement Quantized Qwen RMSNorm"""

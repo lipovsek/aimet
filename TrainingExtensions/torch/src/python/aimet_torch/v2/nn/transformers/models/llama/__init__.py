@@ -5,4 +5,4 @@
 
 """Base directory to hold quantized transformers Llama modules"""
 
-from .modeling_llama import QuantizedLlamaRMSNorm, QuantizedLlamaRotaryEmbedding
+from .modeling_llama import QuantizedLlamaRMSNorm

@@ -30,6 +30,7 @@ from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
 import aimet_onnx
 from aimet_onnx.utils import make_dummy_input
 import aimet_torch
+from aimet_torch.v2.nn.transformers import *
 
 from .utils import tmp_dir, add_genai_tests_path
 
@@ -63,7 +64,6 @@ def test_hf_torch_to_onnx_workflow(
         num_attention_heads=32,
         num_hidden_layers=1,
         pad_token_id=999,
-        return_dict=False,
     )
     model = ONNXExportableModuleWithCache(model_cls(config))
     input_ids = torch.randint(0, config.vocab_size, (1, 128))

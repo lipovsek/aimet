@@ -156,12 +156,19 @@ class ExportableBase(torch.nn.Module):
             past_key_values=kv_cache,
         )
 
-        out_cache = out["past_key_values"]
+        new_past_key_values = out["past_key_values"]
         flat_output_past_key_values = []
-        for layer in range(len(out_cache)):
-            k = out_cache.key_cache[layer][:, :, -128:, :].permute(1, 0, 3, 2)
-            v = out_cache.value_cache[layer][:, :, -128:, :].permute(1, 0, 2, 3)
-            flat_output_past_key_values += [k, v]
+        for layer in range(len(new_past_key_values)):
+            if hasattr(new_past_key_values, "value_cache"):
+                keys = new_past_key_values.key_cache[layer]
+                values = new_past_key_values.value_cache[layer]
+            elif hasattr(new_past_key_values.layers[layer], "keys"):
+                keys = new_past_key_values.layers[layer].keys
+                values = new_past_key_values.layers[layer].values
+            else:
+                keys = new_past_key_values.layers[layer][0]
+                values = new_past_key_values.layers[layer][1]
+            flat_output_past_key_values += [keys, values]
 
         return [out["logits"]] + flat_output_past_key_values
 

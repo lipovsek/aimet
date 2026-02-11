@@ -23,6 +23,9 @@ from aimet_torch.onnx_utils import map_torch_types_to_onnx
 # quantsim config for RMSNormalization will be applied to Phi3RMSNorm
 map_torch_types_to_onnx[modeling_phi3.Phi3RMSNorm] = ["RMSNormalization"]
 
+# Don't simulate quantization on rotary embedding layers
+QuantizationMixin.ignore(modeling_phi3.Phi3RotaryEmbedding)
+
 
 @QuantizationMixin.implements(modeling_phi3.Phi3RMSNorm)
 class QuantizedPhi3RMSNorm(QuantizationMixin, modeling_phi3.Phi3RMSNorm):
@@ -48,18 +51,3 @@ class QuantizedPhi3RMSNorm(QuantizationMixin, modeling_phi3.Phi3RMSNorm):
             ret = self.output_quantizers[0](ret)
 
         return ret
-
-
-@QuantizationMixin.implements(modeling_phi3.Phi3RotaryEmbedding)
-class QuantizedPhi3RotaryEmbedding(
-    QuantizationMixin, modeling_phi3.Phi3RotaryEmbedding
-):
-    """Implement Quantized Phi-3 Rotary Embedding"""
-
-    def __quant_init__(self):
-        # pylint: disable=useless-parent-delegation
-        super().__quant_init__()
-
-    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
-        # pylint: disable=arguments-differ
-        return super().forward(x, position_ids)

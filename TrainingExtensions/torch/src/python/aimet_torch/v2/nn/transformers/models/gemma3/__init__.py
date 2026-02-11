@@ -7,7 +7,5 @@
 
 from .modeling_gemma3 import (
     QuantizedGemma3RMSNorm,
-    QuantizedQwen2RotaryEmbedding,
-    QuantizedGemma3TextScaledWordEmbedding,
     QuantizedPytorchGELUTanh,
 )

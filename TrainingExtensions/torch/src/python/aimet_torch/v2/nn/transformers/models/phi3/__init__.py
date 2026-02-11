@@ -5,4 +5,4 @@
 
 """Base directory to hold quantized transformers Phi-3 modules"""
 
-from .modeling_phi3 import QuantizedPhi3RMSNorm, QuantizedPhi3RotaryEmbedding
+from .modeling_phi3 import QuantizedPhi3RMSNorm

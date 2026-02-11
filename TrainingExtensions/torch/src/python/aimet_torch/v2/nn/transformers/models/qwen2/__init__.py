@@ -5,4 +5,4 @@
 
 """Base directory to hold quantized transformers Qwen2 modules"""
 
-from .modeling_qwen2 import QuantizedQwen2RotaryEmbedding, QuantizedQwen2RMSNorm
+from .modeling_qwen2 import QuantizedQwen2RMSNorm

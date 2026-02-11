@@ -6,3 +6,4 @@
 """Base directory to hold quantized transformers modules"""
 
 from .models import *
+from .activations import *

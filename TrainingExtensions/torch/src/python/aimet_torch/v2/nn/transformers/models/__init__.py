@@ -14,5 +14,6 @@ from .mistral import *
 
 try:
     from .qwen3 import *
+    from .qwen3_vl import *
 except ImportError:
     pass

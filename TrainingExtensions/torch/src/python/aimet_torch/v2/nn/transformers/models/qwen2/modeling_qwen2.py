@@ -23,6 +23,9 @@ from aimet_torch.onnx_utils import map_torch_types_to_onnx
 # quantsim config for RMSNormalization will be applied to Qwen2RMSNorm
 map_torch_types_to_onnx[modeling_qwen2.Qwen2RMSNorm] = ["RMSNormalization"]
 
+# Don't simulate quantization on rotary embedding layers
+QuantizationMixin.ignore(modeling_qwen2.Qwen2RotaryEmbedding)
+
 
 @QuantizationMixin.implements(modeling_qwen2.Qwen2RMSNorm)
 class QuantizedQwen2RMSNorm(QuantizationMixin, modeling_qwen2.Qwen2RMSNorm):
@@ -48,18 +51,3 @@ class QuantizedQwen2RMSNorm(QuantizationMixin, modeling_qwen2.Qwen2RMSNorm):
             ret = self.output_quantizers[0](ret)
 
         return ret
-
-
-@QuantizationMixin.implements(modeling_qwen2.Qwen2RotaryEmbedding)
-class QuantizedQwen2RotaryEmbedding(
-    QuantizationMixin, modeling_qwen2.Qwen2RotaryEmbedding
-):
-    """Implement Quantized Qwen Rotary Embedding"""
-
-    def __quant_init__(self):
-        # pylint: disable=useless-parent-delegation
-        super().__quant_init__()
-
-    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
-        # pylint: disable=arguments-differ
-        return super().forward(x, position_ids)

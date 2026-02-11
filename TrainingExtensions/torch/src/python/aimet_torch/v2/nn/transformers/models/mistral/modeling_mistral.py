@@ -23,6 +23,9 @@ from aimet_torch.onnx_utils import map_torch_types_to_onnx
 # quantsim config for RMSNormalization will be applied to MistralRMSNorm
 map_torch_types_to_onnx[modeling_mistral.MistralRMSNorm] = ["RMSNormalization"]
 
+# Don't simulate quantization on rotary embedding layers
+QuantizationMixin.ignore(modeling_mistral.MistralRotaryEmbedding)
+
 
 @QuantizationMixin.implements(modeling_mistral.MistralRMSNorm)
 class QuantizedMistralRMSNorm(QuantizationMixin, modeling_mistral.MistralRMSNorm):
@@ -48,18 +51,3 @@ class QuantizedMistralRMSNorm(QuantizationMixin, modeling_mistral.MistralRMSNorm
             ret = self.output_quantizers[0](ret)
 
         return ret
-
-
-@QuantizationMixin.implements(modeling_mistral.MistralRotaryEmbedding)
-class QuantizedMistralRotaryEmbedding(
-    QuantizationMixin, modeling_mistral.MistralRotaryEmbedding
-):
-    """Implement Quantized Mistral Rotary Embedding"""
-
-    def __quant_init__(self):
-        # pylint: disable=useless-parent-delegation
-        super().__quant_init__()
-
-    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
-        # pylint: disable=arguments-differ
-        return super().forward(x, position_ids)

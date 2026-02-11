@@ -24,6 +24,10 @@ from aimet_torch.onnx_utils import map_torch_types_to_onnx
 # quantsim config for RMSNormalization will be applied to Gemma3RMSNorm
 map_torch_types_to_onnx[modeling_gemma3.Gemma3RMSNorm] = ["RMSNormalization"]
 
+# Don't simulate quantization on rotary embedding layers
+QuantizationMixin.ignore(modeling_gemma3.Gemma3RotaryEmbedding)
+QuantizationMixin.ignore(modeling_gemma3.Gemma3TextScaledWordEmbedding)
+
 
 @QuantizationMixin.implements(modeling_gemma3.Gemma3RMSNorm)
 class QuantizedGemma3RMSNorm(QuantizationMixin, modeling_gemma3.Gemma3RMSNorm):
@@ -49,36 +53,6 @@ class QuantizedGemma3RMSNorm(QuantizationMixin, modeling_gemma3.Gemma3RMSNorm):
             ret = self.output_quantizers[0](ret)
 
         return ret
-
-
-@QuantizationMixin.implements(modeling_gemma3.Gemma3RotaryEmbedding)
-class QuantizedQwen2RotaryEmbedding(
-    QuantizationMixin, modeling_gemma3.Gemma3RotaryEmbedding
-):
-    """Implement Quantized Gemma Rotary Embedding"""
-
-    def __quant_init__(self):
-        # pylint: disable=useless-parent-delegation
-        super().__quant_init__()
-
-    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
-        # pylint: disable=arguments-differ
-        return super().forward(x, position_ids)
-
-
-@QuantizationMixin.implements(modeling_gemma3.Gemma3TextScaledWordEmbedding)
-class QuantizedGemma3TextScaledWordEmbedding(
-    QuantizationMixin, modeling_gemma3.Gemma3TextScaledWordEmbedding
-):
-    """Implement Quantized Gemma Text Scaled Word Embedding"""
-
-    def __quant_init__(self):
-        # pylint: disable=useless-parent-delegation
-        super().__quant_init__()
-
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        # pylint: disable=arguments-differ
-        return super().forward(input_ids)
 
 
 @QuantizationMixin.implements(PytorchGELUTanh)
