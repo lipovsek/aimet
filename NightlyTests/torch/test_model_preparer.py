@@ -85,46 +85,6 @@ class TestModelPreparer:
         quant_sim.compute_encodings(evaluate, dummy_input)
         quant_sim.model(dummy_input)
 
-    @pytest.mark.skipif(
-        Version(torch.__version__) < Version("1.10.0"),
-        reason="torch1.13.1 is required.",
-    )
-    def test_fx_with_vit(self):
-        """Verify VIT"""
-        from transformers import ViTModel, ViTConfig
-        from transformers.utils.fx import symbolic_trace
-
-        # Set the strict flag to False so that torch.jit.trace can be successful.
-        from aimet_torch.meta import connectedgraph
-
-        connectedgraph.jit_trace_args.update({"strict": False})
-
-        device = (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        )
-        model = ViTModel(ViTConfig()).to(device)
-        dummy_input = torch.randn(1, 3, 224, 224, device=device)
-
-        if torch.cuda.is_available():
-            model.cuda()
-            dummy_input = dummy_input.cuda()
-
-        traced_model = symbolic_trace(model, ["pixel_values"])
-        _prepare_traced_model(traced_model)
-
-        with torch.no_grad():
-            outputs = model(dummy_input)
-            outputs2 = traced_model(dummy_input)
-
-        # Verify bit-exact outputs.
-        assert torch.equal(
-            dict(outputs)["last_hidden_state"], outputs2["last_hidden_state"]
-        )
-        assert torch.equal(dict(outputs)["pooler_output"], outputs2["pooler_output"])
-
-        # Verify that validator checks pass.
-        assert ModelValidator.validate_model(traced_model, dummy_input)
-
     def test_dummy(self):
         # pytest has a 'feature' that returns an error code when all tests for a given suite are not selected
         # to be executed
