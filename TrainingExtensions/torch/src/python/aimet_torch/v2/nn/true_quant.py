@@ -514,14 +514,27 @@ class _DispatchMixin(metaclass=_DispatchMeta):
     def _quantize_if_param(self, args):
         params = {
             param: self.param_quantizers[name]
-            for name, param in self.named_parameters(recurse=False)
             if name in self.param_quantizers and self.param_quantizers[name]
+            else None
+            for name, param in self.named_parameters(recurse=False)
         }
 
         def quantize_if_param(tensor: torch.Tensor):
             param_qtzr = params.get(tensor, None)
+
+            if (
+                tensor in params
+                and isinstance(tensor, QuantizedTensorBase)
+                and torch.onnx.is_in_onnx_export()
+            ):
+                # Quantize-dequantize an already-quantized tensor in a possibly duplicate fashion.
+                # If duplicate, the duplicate back-to-back QDQs will be removed by the graph pass
+                # within aimet_torch.onnx.export
+                tensor = tensor.encoding.quantize_dequantize(tensor)
+
             if param_qtzr:
                 return param_qtzr(tensor)
+
             return tensor
 
         return tree_map(quantize_if_param, args)

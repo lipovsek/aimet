@@ -22,7 +22,11 @@ from aimet_torch.v2.quantization.tensor import DequantizedTensor
 from aimet_torch.v2.utils import StatisticsNotFoundError, patch_attr, _is_expandable
 from aimet_torch.fp_quantization import fake_cast_to_ieee_float
 from ._finfo import _finfo, _torch_dtype_to_finfo, _float4_e2m1fn
-from aimet_torch.v2.quantization._utils import interleave, concretize_block_size
+from aimet_torch.v2.quantization._utils import (
+    interleave,
+    concretize_block_size,
+    blockwise,
+)
 import aimet_torch.v2.experimental.onnx._export as _onnx
 
 
@@ -412,7 +416,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
-        output = _fake_cast(
+        output = _float_quantize_dequantize(
             input.as_subclass(torch.Tensor),
             self._finfo,
             encoding.scale,
@@ -450,8 +454,14 @@ class QuantizeDequantize(FloatQuantizeDequantize):
     """
 
 
+def blockwise_mul(input, other, block_size):
+    block_size = concretize_block_size(input.shape, other.shape, block_size)
+    input = input.reshape(-1, *interleave(other.shape, block_size))
+    other = other.view(interleave(other.shape, 1))
+
+
 @_onnx.register_symbolic(_onnx.float_quantize_dequantize_symbolic)
-def _fake_cast(
+def _float_quantize_dequantize(
     input: torch.Tensor,
     finfo: _finfo,
     scale: torch.Tensor,
@@ -465,16 +475,21 @@ def _fake_cast(
       finfo: Target float dtype
       scale: Scaling factor
     """
-    output_shape = input.shape
+    input_q = _float_quantize(input, finfo, scale, block_size)
+    return blockwise(
+        torch.mul,
+        input_q,
+        scale,
+        block_size=block_size,
+    )
 
-    if block_size is not None:
-        if scale is None:
-            raise ValueError("Block-wise float QDQ requires scale.")
 
-        block_size = concretize_block_size(input.shape, scale.shape, block_size)
-        input = input.reshape(-1, *interleave(scale.shape, block_size))
-        scale = scale.view(interleave(scale.shape, 1))
-
+def _float_quantize(
+    input: torch.Tensor,
+    finfo: _finfo,
+    scale: torch.Tensor,
+    block_size: Optional[tuple[int, ...]] = None,
+) -> torch.Tensor:
     if finfo.to_torch_dtype():
         # Well knwon data types. Use cast-decast for better performance
         fake_cast = _cast_decast
@@ -486,12 +501,9 @@ def _fake_cast(
             f"Fake-casting to {finfo.to_str()} is not implemented"
         )
 
-    input = input / scale
+    input = blockwise(torch.div, input, scale, block_size=block_size)
     input = input.clamp(-finfo.max, finfo.max)
-    input = fake_cast(input, finfo)
-    input = input * scale
-
-    return input.reshape(output_shape)
+    return fake_cast(input, finfo)
 
 
 def _cast_decast(input: torch.Tensor, finfo: _finfo):

@@ -3,6 +3,7 @@
 
 
 import copy
+from math import e
 import os
 import itertools
 import json
@@ -45,13 +46,14 @@ from torchvision.models import resnet18, mobilenet_v3_small
 from aimet_torch.v2.experimental.onnx._export import export as _export
 from aimet_torch.batch_norm_fold import fold_all_batch_norms
 from aimet_torch.utils import get_all_quantizers
-from aimet_torch.v2.utils import remove_activation_quantizers
+from aimet_torch.v2.utils import remove_activation_quantizers, patch_attr
 from aimet_torch.model_preparer import prepare_model
 from aimet_torch.v2.quantsim.config_utils import (
     set_blockwise_quantization_for_weights,
     set_grouped_blockwise_quantization_for_weights,
 )
 import aimet_torch
+from aimet_torch.nn import QuantizationMixin
 
 
 @pytest.fixture(autouse=True, params=range(1))
@@ -1181,7 +1183,7 @@ def test_data_movement_op_encoding_generation_edge_case():
 
 
 @pytest.mark.parametrize("dynamo", [False, True])
-def test_back_to_back_qdq(tmp_path, dynamo: bool):
+def test_back_to_back_qdq(tmp_path: pathlib.Path, dynamo: bool):
     class Model(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -1214,37 +1216,29 @@ def test_back_to_back_qdq(tmp_path, dynamo: bool):
     When: Export to onnx QDQ
     Then: Raises NotImplementedError
     """
-    with pytest.raises(NotImplementedError):
-        aimet_torch.onnx.export(
-            sim.model,
-            input,
-            "qdq_model.onnx",
-            input_names=["input"],
-            output_names=["output"],
-            opset_version=21,
-            dynamo=dynamo,
-        )
-
-    with pytest.raises(NotImplementedError):
-        sim.onnx.export(
-            input,
-            "qdq_model.onnx",
-            input_names=["input"],
-            output_names=["output"],
-            dynamo=dynamo,
-        )
+    aimet_torch.onnx.export(
+        sim.model,
+        input,
+        tmp_path / "qdq_model.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+        dynamo=dynamo,
+    )
 
     # TODO: Uncomment this when AIMET begins to support exporting back-to-back QDQ
-    # """
-    # Then: onnx graph should look like this:
+    """
+    Then: onnx graph should look like this:
 
-    #     weight -> QDQ ---V
-    #     input --> QDQ -> Gemm -> QDQ ----> QDQ -> Softmax -> QDQ -> output
-    #     bias_q -> DQ ----^     (8-bit)   (16-bit)
-    # """
-    # onnx_model = onnx.load_model("qdq_model.onnx")
-    # num_dq = len([dq for dq in onnx_model.graph.node if dq.op_type == "DequantizeLinear"])
-    # assert num_dq == 6, f"Expected 6 DequantizeLinear nodes, but got {num_dq}"
+        weight -> QDQ ---V
+        input --> QDQ -> Gemm -> QDQ ----> QDQ -> Softmax -> QDQ -> output
+        bias_q -> DQ ----^     (8-bit)   (16-bit)
+    """
+    onnx_model = onnx.load_model(tmp_path / "qdq_model.onnx")
+    num_dq = len(
+        [dq for dq in onnx_model.graph.node if dq.op_type == "DequantizeLinear"]
+    )
+    assert num_dq == 6, f"Expected 6 DequantizeLinear nodes, but got {num_dq}"
 
     """
     Given: Sim that contains redundant back-to-back qdq
@@ -2003,22 +1997,11 @@ def test_export_float8_and_float4(
         weight = sim.model[0].weight
 
         if isinstance(weight, Q.DequantizedTensor):
-            weight_qtzr = Q.float.FloatQuantizeDequantize.from_encodings(
-                weight.encoding
-            )
+            expected_weight_q = weight.quantize().detach().numpy()
         else:
             weight_qtzr = sim.model[0].param_quantizers["weight"]
+            expected_weight_q = weight_qtzr(weight).quantize().detach().numpy()
 
-        scale_w = weight_qtzr.get_scale()
-
-        if weight_qtzr.block_size:
-            block_size = concretize_block_size(
-                weight.shape, scale_w.shape, weight_qtzr.block_size
-            )
-            for axis, blk_size in enumerate(block_size):
-                scale_w = scale_w.repeat_interleave(blk_size, axis=axis)
-
-        expected_weight_q = (weight_qtzr(weight) / scale_w).detach().numpy()
         assert np.all(weight_q == expected_weight_q.astype(weight_q.dtype))
         # without downcasting, weight_q and expected_weight_q can slightly differ
         # like 128.0 vs. 127.999 due to floating point precision
@@ -2038,3 +2021,121 @@ def test_export_float8_and_float4(
     (out,) = sess.run(None, {"input": x.detach().numpy()})
     expected_out = sim.model(x)
     assert torch.allclose(torch.from_numpy(out), expected_out)
+
+
+@pytest.mark.parametrize("dynamo", [False])
+def test_export_fp4_int8(tmp_path: pathlib.Path, dynamo: bool):
+    """
+    Given: Model with float4 DequantizedTensor weight
+    When: Create quantsim with per-channel W8 and export to onnx QDQ
+    Then: Exported onnx QDQ should have float4 encoding for the first weight QDQ
+          and int8 encoding for the second weight QDQ, and both encodings should
+          match the sim quantizers' encodings
+    """
+    tmp_path = pathlib.Path(".")
+    fp4_qdq = Q.float.FloatQuantizeDequantize(
+        *_float4_e2m1fn,
+        shape=(10, 2),
+        block_size=(1, 5),
+    )
+    model = torch.nn.Sequential(torch.nn.Linear(10, 10))
+    weight = model[0].weight
+    model[0].weight = torch.nn.Parameter(
+        fp4_qdq(weight), requires_grad=weight.requires_grad
+    )
+    x = torch.randn(10, 10)
+    sim = aimet_torch.QuantizationSimModel(model, x, default_param_bw=8)
+    sim.model[0].param_quantizers["weight"] = Q.affine.QuantizeDequantize(
+        shape=(10, 1), bitwidth=8, symmetric=True
+    )
+    sim.compute_encodings(lambda model: model(x))
+
+    sim.onnx.export(
+        (x,),
+        tmp_path / "float4_int8.onnx",
+        opset_version=23,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=dynamo,
+        encoding_version="2.0.0",
+    )
+    onnx.checker.check_model(onnx.load(tmp_path / "float4_int8.onnx"))
+
+    with open(tmp_path / "float4_int8.encodings") as f:
+        encodings = {e["name"]: e for e in json.load(f)["encodings"]}
+
+    assert encodings.keys() == {
+        "input",
+        "output",
+        "0.weight",
+        "0.bias",
+        "/0/FloatQuantizeDequantize_output_0_alias",
+    }
+
+    fp4_weight_encoding = encodings["0.weight"]
+    assert fp4_weight_encoding["output_dtype"] == "float4e2m1"
+    assert torch.equal(
+        torch.tensor(fp4_weight_encoding["y_scale"]).reshape(10, 2),
+        fp4_qdq.get_scale(),
+    )
+    assert "y_zero_point" not in fp4_weight_encoding
+    assert fp4_weight_encoding.get("axis") == 1
+    assert fp4_weight_encoding.get("block_size") == 5
+
+    int8_weight_encoding = encodings["/0/FloatQuantizeDequantize_output_0_alias"]
+    assert int8_weight_encoding["output_dtype"] == "int8"
+    assert torch.equal(
+        torch.tensor(int8_weight_encoding["y_scale"]).reshape(10, 1),
+        sim.model[0].param_quantizers["weight"].get_scale(),
+    )
+    assert "y_zero_point" not in int8_weight_encoding
+    assert int8_weight_encoding.get("axis") == 0
+    assert "block_size" not in int8_weight_encoding
+
+    aimet_torch.onnx.export(
+        sim.model,
+        (x,),
+        tmp_path / "float4_int8_qdq.onnx",
+        opset_version=23,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=dynamo,
+    )
+    onnx_qdq_model = onnx.load_model(tmp_path / "float4_int8_qdq.onnx")
+    onnx.checker.check_model(onnx_qdq_model)
+    consumers = {}
+    for node in onnx_qdq_model.graph.node:
+        for input in node.input:
+            consumers.setdefault(input, []).append(node)
+
+    (fp4_q,) = consumers["0.weight"]
+    scale_name, zp_name = fp4_q.input[1:3]
+    scale_array = onnx.numpy_helper.to_array(
+        next(
+            init for init in onnx_qdq_model.graph.initializer if init.name == scale_name
+        )
+    )
+    assert torch.allclose(
+        torch.from_numpy(scale_array).reshape(10, 2),
+        fp4_qdq.get_scale(),
+    )
+    zp_array = onnx.numpy_helper.to_array(
+        next(init for init in onnx_qdq_model.graph.initializer if init.name == zp_name)
+    )
+    assert (zp_array == 0).all()
+
+    (int8_q,) = consumers["0.weight_qdq"]
+    scale_name, zp_name = int8_q.input[1:3]
+    scale_array = onnx.numpy_helper.to_array(
+        next(
+            init for init in onnx_qdq_model.graph.initializer if init.name == scale_name
+        )
+    )
+    assert torch.allclose(
+        torch.from_numpy(scale_array).reshape(10, 1),
+        sim.model[0].param_quantizers["weight"].get_scale(),
+    )
+    zp_array = onnx.numpy_helper.to_array(
+        next(init for init in onnx_qdq_model.graph.initializer if init.name == zp_name)
+    )
+    assert (zp_array == 0).all()

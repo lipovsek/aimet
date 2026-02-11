@@ -18,6 +18,7 @@ from aimet_torch.v2.quantization.base import EncodingBase
 from aimet_torch.v2.quantization.affine.backends import (
     quantize,
     dequantize,
+    quantize_dequantize,
     _derive_qmin_qmax,
 )
 from ._utils import _GridMixin, _register_signature
@@ -284,6 +285,27 @@ class AffineEncoding(EncodingBase, _GridMixin):
             scale.to(input.dtype).as_subclass(torch.Tensor),
             offset.to(input.dtype).as_subclass(torch.Tensor),
             block_size=block_size,
+        )
+
+    def quantize_dequantize(self, input: torch.Tensor) -> torch.Tensor:
+        scale = self.scale
+        offset = self.offset
+        qmin = self.qmin
+        qmax = self.qmax
+        block_size = self.block_size
+        zero_point_shift = self.zero_point_shift
+
+        # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
+        # is known to introduce substantial CPU overhead.
+        # Cast types of the inputs to plain torch.Tensor for faster execution.
+        return quantize_dequantize(
+            input.as_subclass(torch.Tensor),
+            scale.to(input.dtype).as_subclass(torch.Tensor),
+            offset.to(input.dtype).as_subclass(torch.Tensor),
+            qmin,
+            qmax,
+            block_size=block_size,
+            zero_point_shift=zero_point_shift,
         )
 
     def _to_legacy_format(self):

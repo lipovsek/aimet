@@ -143,10 +143,34 @@ class FloatEncoding(EncodingBase):
         )
 
     def quantize(self, input: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError
+        from .quantizer import _float_quantize
+
+        return _float_quantize(
+            input.as_subclass(torch.Tensor),
+            self._finfo,
+            self.scale,
+            self.block_size,
+        )
 
     def dequantize(self, input: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError
+        from aimet_torch.v2.quantization._utils import blockwise
+
+        return blockwise(
+            torch.mul,
+            input,
+            self.scale,
+            block_size=self.block_size,
+        )
+
+    def quantize_dequantize(self, input: torch.Tensor) -> torch.Tensor:
+        from .quantizer import _float_quantize_dequantize
+
+        return _float_quantize_dequantize(
+            input.as_subclass(torch.Tensor),
+            self._finfo,
+            self.scale,
+            self.block_size,
+        )
 
     def to_qnn_encoding_dict(self, encoding_version=None) -> Union[List, Dict]:
         """

@@ -54,6 +54,7 @@ from aimet_torch.v2.nn import (
 from aimet_torch.v2.nn.fake_quant import _legacy_impl
 from aimet_torch.v2._builder import _V2LazyQuantizeWrapper
 from aimet_torch.v2.quantization.base import QuantizerBase, EncodingBase
+from aimet_torch.v2.quantization.tensor import QuantizedTensorBase
 from aimet_torch.v2.quantization.affine import AffineQuantizerBase
 from aimet_torch.v2.quantization.encoding_analyzer import PercentileEncodingAnalyzer
 from aimet_torch.v2.utils import patch_attr
@@ -601,12 +602,28 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
         """
         stack = contextlib.ExitStack()
         for module in model.modules():
-            if isinstance(module, BaseQuantizationMixin):
-                # pylint: disable=protected-access
-                stack.enter_context(module._patch_quantized_parameters())
-                if isinstance(module, QuantizationMixin):
-                    stack.enter_context(module._patch_dequantized_parameters())
-                stack.enter_context(cls._update_parameters_by_attr(module))
+            if not isinstance(module, BaseQuantizationMixin):
+                continue
+
+            encodings = {
+                param_name: param.encoding
+                for param_name, param in module.named_parameters(recurse=False)
+                if isinstance(param, QuantizedTensorBase) and param.encoding is not None
+            }
+
+            # pylint: disable=protected-access
+            stack.enter_context(module._patch_quantized_parameters())
+            if isinstance(module, QuantizationMixin):
+                stack.enter_context(module._patch_dequantized_parameters())
+            stack.enter_context(cls._update_parameters_by_attr(module))
+
+            # Restore the original encodings which might have been
+            # overwritten by _patch_quantized_parameters
+            for param_name, encoding in encodings.items():
+                qparam = getattr(module, param_name)
+                if isinstance(qparam, QuantizedTensorBase):
+                    qparam.encoding = encoding
+
         return stack
 
     def qmodules(self):
@@ -904,6 +921,7 @@ class QuantizationSimModelOnnxExporter:
             _check_unsupported_args,
             _concretize_int32_bias_quantizers,
             _remove_fp16_quantizers,
+            _remove_fp16_quantized_parameters,
             _to_onnx,
             _temporarily_unfold_param_quantizers,
         )
@@ -930,6 +948,7 @@ class QuantizationSimModelOnnxExporter:
 
             # Remove [b]float16 quantizers
             stack.enter_context(_remove_fp16_quantizers(self.sim.model))
+            stack.enter_context(_remove_fp16_quantized_parameters(self.sim.model))
 
             onnx_model, tensor_to_encoding_map = _to_onnx(
                 self.sim.model, args, f, **kwargs

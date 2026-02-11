@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 import itertools
-from typing import Sequence
+from typing import Callable, Sequence
+import torch
 
 
 def interleave(
@@ -42,3 +43,19 @@ def concretize_block_size(
         block_size[i] if block_size[i] != -1 else input_shape[i] // scale_shape[i]
         for i, _ in enumerate(scale_shape)
     )
+
+
+def blockwise(
+    op: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    input: torch.Tensor,  # pylint: disable=redefined-builtin
+    other: torch.Tensor,
+    block_size: Sequence[int] | None,
+) -> torch.Tensor:
+    if not block_size:
+        return op(input, other)
+
+    output_shape = input.shape
+    block_size = concretize_block_size(input.shape, other.shape, block_size)
+    input = input.reshape(-1, *interleave(other.shape, block_size))
+    other = other.view(interleave(other.shape, 1))
+    return op(input, other).reshape(output_shape)

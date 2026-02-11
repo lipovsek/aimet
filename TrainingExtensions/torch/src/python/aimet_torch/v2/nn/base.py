@@ -854,38 +854,54 @@ class BaseQuantizationMixin(abc.ABC):
             )
             self.param_quantizers[param_name] = None
 
+    @contextlib.contextmanager
     def _unfold_param_quantizers(self):
         """
         Re-instantiate param quantizers for ease of export
         """
-        for param_name, qdq_param in self.named_parameters():
-            if not isinstance(qdq_param, DequantizedTensor):
-                continue
+        unfolded_param_encodings = {}
 
-            if qdq_param.encoding is None:
-                continue
+        try:
+            for param_name, qdq_param in self.named_parameters(recurse=False):
+                if not isinstance(qdq_param, DequantizedTensor):
+                    continue
 
-            if isinstance(qdq_param.encoding, GroupedBlockEncoding):
-                param_qtzr = GroupedBlockQuantizeDequantize.from_encodings(
-                    qdq_param.encoding
+                if qdq_param.encoding is None:
+                    continue
+
+                if self.param_quantizers[param_name] is not None:
+                    continue
+
+                if isinstance(qdq_param.encoding, GroupedBlockEncoding):
+                    param_qtzr = GroupedBlockQuantizeDequantize.from_encodings(
+                        qdq_param.encoding
+                    )
+                elif isinstance(qdq_param.encoding, AffineEncoding):
+                    param_qtzr = QuantizeDequantize.from_encodings(qdq_param.encoding)
+                elif isinstance(qdq_param.encoding, FloatEncoding):
+                    param_qtzr = FloatQuantizeDequantize.from_encodings(
+                        qdq_param.encoding
+                    )
+                else:
+                    raise ValueError
+
+                unfolded_param_encodings[param_name] = qdq_param.encoding
+                param = qdq_param.as_subclass(torch.Tensor)
+                setattr(
+                    self,
+                    param_name,
+                    torch.nn.Parameter(param, requires_grad=param.requires_grad),
                 )
-            elif isinstance(qdq_param.encoding, AffineEncoding):
-                param_qtzr = QuantizeDequantize.from_encodings(qdq_param.encoding)
-            elif isinstance(qdq_param.encoding, FloatEncoding):
-                param_qtzr = FloatQuantizeDequantize.from_encodings(qdq_param.encoding)
-            else:
-                raise ValueError
+                self.param_quantizers[param_name] = param_qtzr
 
-            if not param_qtzr:
-                continue
-
-            param = qdq_param.as_subclass(torch.Tensor)
-            setattr(
-                self,
-                param_name,
-                torch.nn.Parameter(param, requires_grad=param.requires_grad),
-            )
-            self.param_quantizers[param_name] = param_qtzr
+            yield
+        finally:
+            for param_name, orig_encoding in unfolded_param_encodings.items():
+                self.param_quantizers[param_name] = None
+                param = getattr(self, param_name)
+                param = param.as_subclass(DequantizedTensor)
+                param.encoding = orig_encoding
+                setattr(self, param_name, torch.nn.Parameter(param))
 
     @classmethod
     def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:

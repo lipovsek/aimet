@@ -7,7 +7,7 @@
 import contextlib
 import io
 import itertools
-from aimet_torch.v2.quantization.affine.encoding import AffineEncoding
+from aimet_torch.v2.utils import patch_attr
 from packaging import version
 import traceback
 from typing import Any, Mapping, Tuple, Union
@@ -28,8 +28,9 @@ from aimet_torch.common.onnx._utils import (
 from .nn import QuantizationMixin
 from .quantization import DequantizedTensor
 from .quantization.base import EncodingBase
-from .quantization.affine import AffineQuantizerBase
-from .quantization.float import FloatQuantizeDequantize
+from .quantization.affine import AffineQuantizerBase, AffineEncoding
+from .quantization.float import FloatQuantizeDequantize, FloatEncoding
+from .v2.quantization.float._finfo import _finfo
 from .quantsim import QuantizationSimModel
 from .v2.experimental import onnx as _onnx
 
@@ -137,6 +138,7 @@ def export(
 
         # Remove [b]float16 quantizers
         stack.enter_context(_remove_fp16_quantizers(model))
+        stack.enter_context(_remove_fp16_quantized_parameters(model))
 
         onnx_model, tensor_to_encoding_map = _to_onnx(model, args, f, **kwargs)
 
@@ -173,6 +175,7 @@ def export(
         prequantize_constants=prequantize_constants,
         base_dir=base_dir,
     )
+    _remove_intermediate_identity_nodes(onnx_qdq_model)
     onnx.save(onnx_qdq_model, f)
 
 
@@ -382,15 +385,252 @@ def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> dict[str, str]:
     return aliases
 
 
+def _decouple_back_to_back_qdqs(onnx_model: onnx.ModelProto) -> dict[str, str]:
+    """
+    Insert Identity node between back-to-back QDQ nodes to avoid name collision
+    when one tensor is associated with multiple encodings.
+    For example,
+
+    Before: One tensor associated with multiple encodings
+
+        "conv1.weight" -> QDQ -------------> QDQ -> Conv
+                       (float4)            (int8)
+
+    After: Duplicate QDQ nodes for each usage
+
+        "conv1.weight" -> QDQ -> Identity -> QDQ -> Conv
+                       (float4)            (int8)
+    """
+    producers: dict[str, onnx.NodeProto] = {
+        node.output[0]: node for node in onnx_model.graph.node
+    }
+
+    qdq_nodes = [
+        node
+        for node in onnx_model.graph.node
+        if f"{node.domain}::{node.op_type}"
+        in (
+            "aimet::quantize_dequantize",
+            "aimet::QuantizeDequantize",
+            "aimet::FloatQuantizeDequantize",
+        )
+    ]
+    new_identity_nodes: dict[str, onnx.NodeProto] = {}
+
+    for qdq_node in qdq_nodes:
+        producer = producers.get(qdq_node.input[0], None)
+
+        if not producer:
+            continue
+
+        if f"{producer.domain}::{producer.op_type}" not in (
+            "aimet::quantize_dequantize",
+            "aimet::QuantizeDequantize",
+            "aimet::FloatQuantizeDequantize",
+        ):
+            continue
+
+        identity_node = onnx.helper.make_node(
+            "Identity",
+            inputs=[qdq_node.input[0]],
+            outputs=[f"{qdq_node.input[0]}_alias"],
+            name=f"Identity_{qdq_node.input[0]}_alias",
+        )
+        qdq_node.input[0] = identity_node.output[0]
+        new_identity_nodes[identity_node.input[0]] = identity_node
+
+    # Insert Identity nodes to the graph in topological order
+    all_nodes = []
+    for node in onnx_model.graph.node:
+        all_nodes.append(node)
+        if node.output[0] in new_identity_nodes:
+            identity_node = new_identity_nodes[node.output[0]]
+            all_nodes.append(identity_node)
+
+    onnx_model.graph.ClearField("node")
+    onnx_model.graph.node.extend(all_nodes)
+
+
+def _remove_intermediate_identity_nodes(onnx_model: onnx.ModelProto):
+    """
+    Remove temporarily added Identity nodes between DequantizeLinear and QuantizeLinear nodes.
+
+    Before:
+        (weight) -> Q -> DQ -> Identity -> Q -> DQ -> MatMul
+
+    After:
+        (weight) -> Q -> DQ -------------> Q -> DQ -> MatMul
+    """
+    producers: dict[str, onnx.NodeProto] = {}
+    consumers: dict[str, list[onnx.NodeProto]] = {}
+
+    for node in onnx_model.graph.node:
+        producers[node.output[0]] = node
+        for inp in node.input:
+            consumers.setdefault(inp, []).append(node)
+
+    removable: dict[str, onnx.NodeProto] = {}
+    for identity in onnx_model.graph.node:
+        if identity.op_type != "Identity":
+            continue
+
+        producer = producers.get(identity.input[0], None)
+        if not (producer and producer.op_type == "DequantizeLinear"):
+            continue
+
+        if len(consumers.get(identity.output[0], [])) != 1:
+            continue
+
+        (consumer,) = consumers[identity.output[0]]
+
+        if consumer.op_type != "QuantizeLinear":
+            continue
+
+        removable[identity.name] = identity
+
+    for identity in removable.values():
+        for consumer in consumers.get(identity.output[0], []):
+            for i, inp in enumerate(consumer.input):
+                if inp == identity.output[0]:
+                    consumer.input[i] = identity.input[0]
+
+    # Remove removable Identity nodes
+    all_nodes = [node for node in onnx_model.graph.node if node.name not in removable]
+    onnx_model.graph.ClearField("node")
+    onnx_model.graph.node.extend(all_nodes)
+
+
+def _remove_redundant_qdqs(onnx_model: onnx.ModelProto, base_dir):
+    from onnx.external_data_helper import _get_all_tensors
+
+    constants = {
+        const.name: const for const in _get_all_tensors(onnx_model) if const.name
+    }
+    constants |= {
+        const_node.output[0]: attr.t
+        for const_node in onnx_model.graph.node
+        if const_node.op_type == "Constant"
+        for attr in const_node.attribute
+        if attr.HasField("t")
+    }
+    producers: dict[str, onnx.NodeProto] = {}
+    consumers: dict[str, list[onnx.NodeProto]] = {}
+
+    for node in onnx_model.graph.node:
+        producers[node.output[0]] = node
+        for inp in node.input:
+            consumers.setdefault(inp, []).append(node)
+
+    qdq_nodes = [
+        node
+        for node in onnx_model.graph.node
+        if f"{node.domain}::{node.op_type}"
+        in (
+            "aimet::quantize_dequantize",
+            "aimet::QuantizeDequantize",
+            "aimet::FloatQuantizeDequantize",
+        )
+    ]
+
+    removable: dict[str, onnx.NodeProto] = {}
+
+    def get_attributes(qdq_node: onnx.NodeProto):
+        finfo = None
+        qmin = None
+        qmax = None
+        block_size = None
+        zero_point_shift = None
+
+        for attr in qdq_node.attribute:
+            if attr.name == "qmin":
+                qmin = attr.i
+            if attr.name == "qmax":
+                qmax = attr.i
+            if attr.name == "block_size":
+                block_size = tuple(attr.ints) or None
+            if attr.name == "zero_point_shift":
+                zero_point_shift = attr.f
+            if attr.name == "dtype":
+                finfo = _finfo.from_onnx_dtype(attr.i)
+
+        if finfo:
+            dtype = finfo
+        else:
+            dtype = (qmin, qmax)
+
+        return dtype, block_size, zero_point_shift
+
+    def get_scale(qdq_node: onnx.NodeProto) -> np.ndarray:
+        scale_proto = constants.get(qdq_node.input[1])
+        if scale_proto is None:
+            raise RuntimeError(
+                f"Cannot find constant with name {qdq_node.input[1]} in onnx model"
+            )
+        return onnx.numpy_helper.to_array(scale_proto, base_dir=base_dir)
+
+    def get_offset(qdq_node: onnx.NodeProto) -> np.ndarray | None:
+        if len(qdq_node.input) < 3:
+            return None
+
+        offset_proto = constants.get(qdq_node.input[2])
+
+        if offset_proto is None:
+            raise RuntimeError(
+                f"Cannot find constant with name {qdq_node.input[2]} in onnx model"
+            )
+
+        offset = onnx.numpy_helper.to_array(offset_proto, base_dir=base_dir)
+
+        if np.all(offset == 0):
+            offset = None
+
+        return offset
+
+    for qdq_node in qdq_nodes:
+        prev_qdq = producers.get(qdq_node.input[0], None)
+
+        if not prev_qdq:
+            continue
+
+        if f"{prev_qdq.domain}::{prev_qdq.op_type}" not in (
+            "aimet::quantize_dequantize",
+            "aimet::QuantizeDequantize",
+            "aimet::FloatQuantizeDequantize",
+        ):
+            continue
+
+        if (
+            get_attributes(qdq_node) == get_attributes(prev_qdq)
+            and np.all(get_scale(qdq_node) == get_scale(prev_qdq))
+            and np.all(get_offset(qdq_node) == get_offset(prev_qdq))
+        ):
+            removable[qdq_node.name] = qdq_node
+
+    # Redirect consumers of redundant QDQ nodes to the previous QDQ nodes
+    for qdq_node in removable.values():
+        for consumer in consumers.get(qdq_node.output[0], []):
+            for i, inp in enumerate(consumer.input):
+                if inp == qdq_node.output[0]:
+                    consumer.input[i] = qdq_node.input[0]
+
+    # Remove removable qdq nodes
+    all_nodes = [node for node in onnx_model.graph.node if node.name not in removable]
+    onnx_model.graph.ClearField("node")
+    onnx_model.graph.node.extend(all_nodes)
+
+
 def _to_onnx(
     model: torch.nn.Module,
     args: Union[Tuple[Any, ...], torch.Tensor],
     f: Union[str, io.BytesIO],
     **kwargs,
 ) -> Tuple[onnx.ModelProto, dict]:
+    base_dir = str(Path(str(f)).absolute().parent)
     _onnx.export(model, args, f, **kwargs)
     onnx_model = onnx.load(f, load_external_data=False)
     aliases = _duplicate_shared_qdq_inputs(onnx_model)
+    _remove_redundant_qdqs(onnx_model, base_dir)
+    _decouple_back_to_back_qdqs(onnx_model)
 
     param_names = {
         f"{layer_name}.{param_name}"
@@ -400,7 +640,6 @@ def _to_onnx(
         if quantizer
     }
 
-    base_dir = str(Path(str(f)).absolute().parent)
     tensor_to_encoding_map: Mapping[str, Tuple[EncodingBase, bool]]
     tensor_to_encoding_map = {
         name: (encoding, name in param_names or aliases.get(name) in param_names)
@@ -473,20 +712,35 @@ def _temporarily_unfold_param_quantizers(model: torch.nn.Module):
     """
     Temporarily re-instantiate param quantizers for ease of export
     """
-    modules_with_folded_parameters = [
-        qmodule
-        for qmodule in model.modules()
-        if isinstance(qmodule, QuantizationMixin)
-        and any(isinstance(param, DequantizedTensor) for param in qmodule.parameters())
-    ]
-
-    try:
-        for qmodule in modules_with_folded_parameters:
-            qmodule._unfold_param_quantizers()
+    with contextlib.ExitStack() as stack:
+        for qmodule in model.modules():
+            if isinstance(qmodule, QuantizationMixin):
+                stack.enter_context(qmodule._unfold_param_quantizers())
         yield
-    finally:
-        for qmodule in modules_with_folded_parameters:
-            qmodule._fold_param_quantizers()
+
+
+@contextlib.contextmanager
+def _remove_fp16_quantized_parameters(model: torch.nn.Module):
+    """
+    Temporarily detach [b]float16 encodings from pre-quantized parameters
+    """
+    # pylint: disable=protected-access
+    with contextlib.ExitStack() as stack:
+        for qmodule in model.modules():
+            if not isinstance(qmodule, QuantizationMixin):
+                continue
+
+            for name, param in qmodule.named_parameters(recurse=False):
+                if (
+                    isinstance(param, DequantizedTensor)
+                    and isinstance(param.encoding, FloatEncoding)
+                    and param.encoding._finfo.to_torch_dtype()
+                    in (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+                ):
+                    param = torch.nn.Parameter(param.as_subclass(torch.Tensor))
+                    stack.enter_context(patch_attr(qmodule, name, param))
+
+        yield
 
 
 @contextlib.contextmanager

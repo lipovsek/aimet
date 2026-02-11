@@ -73,6 +73,15 @@ class EncodingBase(abc.ABC):
         :return: Dequantized tensor
         """
 
+    @abc.abstractmethod
+    def quantize_dequantize(self, input: torch.Tensor) -> torch.Tensor:
+        """
+        Quantize-dequantize the input with the encoding
+
+        :param input: Tensor to be dequantized
+        :return: Quantize-dequantized tensor
+        """
+
     def _detach(self) -> "EncodingBase":
         """
         Returns a new encoding object with all tensors attributes detached from the current graph
