@@ -66,7 +66,8 @@ jobs:
                  "RUN_UNIT_TESTS":    "OFF",
                  "RUN_ACCEPTANCE_TESTS":    "OFF",
                  "BUILD_TARGETS":   "all",
-                 "PIP_INDEX":       "pypi"
+                 "PIP_INDEX":       "pypi",
+                 "DOCKER_BASE_IMAGE": "nvidia/cuda:12.1.0-devel-ubuntu22.04"
               }
             ]')
           elif [ "${{ inputs.variant-id }}" == "onnx-gpu" ] ; then
@@ -81,7 +82,8 @@ jobs:
                  "RUN_UNIT_TESTS":    "OFF",
                  "RUN_ACCEPTANCE_TESTS":    "OFF",
                  "BUILD_TARGETS":   "all",
-                 "PIP_INDEX":       "pypi"
+                 "PIP_INDEX":       "pypi",
+                 "DOCKER_BASE_IMAGE": "nvidia/cuda:12.1.0-devel-ubuntu22.04"
               }
             ]')
           fi
@@ -141,6 +143,7 @@ jobs:
       run_acceptance_tests: ${{ matrix.RUN_ACCEPTANCE_TESTS == 'OFF' }}
       runs_on: ${{ matrix.runs-on }}
       include_windows_tests: false
+      docker_base_image: ${{ matrix.DOCKER_BASE_IMAGE }}
     secrets: inherit
 
   publish:

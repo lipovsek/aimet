@@ -26,4 +26,17 @@ runs:
       run: |
         uv venv --python "${{ inputs.VER_PYTHON }}" "${{ inputs.ENV_NAME }}"
         .\"${{ inputs.ENV_NAME }}"\Scripts\Activate.ps1
+    - name: Install uv (Linux)
+      if: runner.os != 'Windows'
+      shell: bash
+      id: linux_init
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+
+    - name: Create uv environment (Linux)
+      shell: bash
+      if: runner.os != 'Windows'
+      run: |
+        uv venv --python "${{ inputs.VER_PYTHON }}" "${{ inputs.ENV_NAME }}"
+        . "./${{ inputs.ENV_NAME }}/bin/activate"
 
