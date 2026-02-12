@@ -75,6 +75,7 @@ def run_quantsim(
     metrics_runs = int(config.get("metrics_runs", 1))
     metrics_warmup = int(config.get("metrics_warmup", 0))
     apply_prepare_model = config.get("apply_prepare_model", False)
+    apply_bn_fold = config.get("apply_bn_fold", True)
     use_cuda = torch.cuda.is_available()
 
     print(f"[AIMET Torch QuantSim] Configuration:")
@@ -113,6 +114,7 @@ def run_quantsim(
         config_file=aimet_cfg_file,
         use_cuda=use_cuda,
         apply_prepare_model=apply_prepare_model,
+        apply_bn_fold=apply_bn_fold,
     )
 
     print(

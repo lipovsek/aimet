@@ -189,6 +189,7 @@ def build_quantsim_torch(
     default_output_bw: int = 8,
     config_file: Optional[str] = None,
     apply_prepare_model: bool = False,
+    apply_bn_fold: bool = True,
     use_cuda: bool = True,
 ) -> QuantizationSimModel:
     """
@@ -222,8 +223,11 @@ def build_quantsim_torch(
 
     # Fold BatchNorm layers into preceding Conv/Linear layers before quantization
     # This is critical for QNN compatibility - QNN cannot handle unfused BN nodes
-    print(f"[QuantSim Torch] Folding BatchNorm layers...")
-    fold_all_batch_norms(model, input_shapes=(tuple(dummy_input.shape),))
+    if apply_bn_fold:
+        print(f"[QuantSim Torch] Folding BatchNorm layers...")
+        fold_all_batch_norms(model, input_shapes=(tuple(dummy_input.shape),))
+    else:
+        print(f"[QuantSim Torch] Skipping BatchNorm folding (apply_bn_fold=False)")
 
     scheme_enum = map_quant_scheme(quant_scheme)
 

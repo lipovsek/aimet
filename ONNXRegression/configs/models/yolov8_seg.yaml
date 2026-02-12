@@ -1,5 +1,10 @@
 model_name: yolov8_seg
 apply_prepare_model: False
+apply_bn_fold: False
+fp32_eval_samples: 1963
+quant_eval_samples: 1963
+calib_samples: 500
+eval_samples: 1963
 
 tests:
   - name: quantsim_int8_int16
