@@ -12,6 +12,7 @@ import torch
 
 from .conftest import skip_module_on_windows_arm64
 
+pytest.skip(allow_module_level=True, reason="TODO: #6483: Requires aimet-torch==2.25.0")
 skip_module_on_windows_arm64("transformers is not available on Windows ARM64")
 
 from transformers.models.llama.modeling_llama import LlamaForCausalLM
