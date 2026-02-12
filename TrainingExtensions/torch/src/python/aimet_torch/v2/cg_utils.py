@@ -38,6 +38,7 @@ class ConnectedGraphTraverser:
     """
 
     def __init__(self, sim: QuantizationSimModel):
+        sim.connected_graph.assert_safe()
         self._sim = sim
 
     def get_leaf_modules(

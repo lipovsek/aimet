@@ -7,6 +7,8 @@
 
 from abc import ABC, abstractmethod
 from itertools import chain
+import io
+import traceback
 import os
 import copy
 from collections import OrderedDict, defaultdict
@@ -296,9 +298,29 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
             self.model = copy.deepcopy(model)
 
         try:
-            self.connected_graph = ConnectedGraph(self.model, dummy_input)
-        except (torch.jit.TracingCheckError, AssertionError):
-            self.connected_graph = None
+            self.connected_graph = ConnectedGraph(self.model, dummy_input, strict=False)
+        except torch.jit.TracingCheckError:
+            raise
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            f = io.StringIO()
+            traceback.print_exc(file=f)
+
+            msg = (
+                "Failed to build torchscript-based computation graph of the model due to following error:\n\n"
+                "==============================================================\n"
+                f"{f.getvalue()}"
+                "==============================================================\n\n"
+                "This means torch.jit.trace or AIMET has failed to capture the model's computation graph correctly.\n"
+                "Common reasons include (most common to least common):\n"
+                "  1. Reused module that is called mulitple times in the forward pass.\n"
+                "     👉 Advice: Create separate instances of the same module for each call\n"
+                "  2. In-place operations that distort the torchscript computation graph.\n"
+                "     👉 Advice: Avoid in-place operations in the model definition\n"
+                "  3. Custom kernels that are not traceable by torch.jit.trace.\n"
+                "     👉 Advice: Register custom kernel with torch::jit::RegisterOperators,\n"
+                "                or rewrite the kernel with PyTorch native operations if possible."
+            )
+            raise RuntimeError(msg) from e
 
         if isinstance(quant_scheme, str):
             quant_scheme = QuantScheme.from_str(quant_scheme)
@@ -427,15 +449,6 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         :param default_data_type: default data type
         :return: QuantSimConfigurator object
         """
-        if self.connected_graph is None:
-            error_msg = (
-                "A connected graph failed to be built.\n"
-                "Unable to proceed with automatically configuring quantization ops using the config file.\n"
-                "Please configure quantization ops manually by redefining "
-                "QuantizationSimModel.configure_quantization_ops()"
-            )
-            logger.error(error_msg)
-            raise AssertionError(error_msg)
         return QuantSimConfigurator(
             self.model,
             self.connected_graph,

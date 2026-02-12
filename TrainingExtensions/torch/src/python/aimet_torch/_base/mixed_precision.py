@@ -82,6 +82,8 @@ def choose_mixed_precision(
              100% then a user can use the pareto front curve to pick points and re-run,
              None if we early exit the mixed precision algorithm.
     """
+    sim.connected_graph.assert_safe()
+
     mixed_precision_algo = GreedyMixedPrecisionAlgo(
         sim,
         dummy_input,

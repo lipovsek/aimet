@@ -112,6 +112,7 @@ class ReduceConvertOps(BaseReduceConvertOps):
         G = self.get_networkx_graph()
 
         # pylint: disable=protected-access
+        self._sim.connected_graph.assert_safe()
         ops_dict = self._sim.connected_graph._ops
         dotted_name2output_shape, dotted_name2op_name = self.fetch_op_info(ops_dict)
 

@@ -20,6 +20,7 @@ from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
 from aimet_common.defs import QuantizationDataType, QuantScheme
 import aimet_torch
 from aimet_torch import onnx_utils
+from aimet_torch.meta.connectedgraph import _UnsafeGraphError
 from aimet_torch.v2.quantsim import QuantizationSimModel, load_encodings_to_sim
 from aimet_torch.v2.quantization import DequantizedTensor
 from aimet_torch.v2.quantization.encoding_analyzer import PercentileEncodingAnalyzer
@@ -39,6 +40,9 @@ from aimet_torch.nn import (
 )
 from aimet_torch.v2.nn.fake_quant import _legacy_impl
 import aimet_torch.nn.modules.custom as custom
+from aimet_torch.v2.batch_norm_fold import fold_all_batch_norms_to_scale
+from aimet_torch.mixed_precision import choose_mixed_precision
+from aimet_torch.v2.mixed_precision import MixedPrecisionConfigurator
 from ..models_ import test_models
 
 
@@ -2684,3 +2688,81 @@ def test_input_quantizer_with_legacy_impl():
 
     sim = aimet_torch.QuantizationSimModel(model, (x,), config_file="htp_v81")
     assert sim.model.reshape.input_quantizers[0] is None
+
+
+def test_cg_non_catastrophic_failure():
+    """
+    Given: A model with reused module taking different number of inputs in each invocation
+           (Not correctly capturable with torch.jit.trace, but not catastrophic for most features)
+    """
+
+    class ReduceSum(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.add = torch.nn.ModuleList([custom.Add() for _ in range(3)])
+
+        def forward(self, *inputs):
+            input = inputs[0]
+            others = inputs[1:]
+
+            for i, other in enumerate(others):
+                input = self.add[i](input, other)
+
+            return input
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.reduce_sum = ReduceSum()
+
+        def forward(self, x, y, z):
+            x = self.reduce_sum(x, y)
+            x = self.reduce_sum(x, y, z)
+            return x
+
+    model = Model()
+    dummy_input = (torch.randn(10), torch.randn(10), torch.randn(10))
+
+    """
+    When: Create QuantizationSimModel
+    Then:
+      1. Quantsim should be created successfully without any error
+      2. The connected graph should marked as not safe
+      3. Some qmodules may not have input quantizers, but all qmodules must have output quantizers
+    """
+    sim = aimet_torch.QuantizationSimModel(model, dummy_input)
+    assert not sim.connected_graph.is_safe()
+    assert isinstance(
+        sim.model.reduce_sum.add[0].input_quantizers[0], QuantizeDequantize
+    )
+    assert isinstance(
+        sim.model.reduce_sum.add[0].input_quantizers[1], QuantizeDequantize
+    )
+    assert isinstance(
+        sim.model.reduce_sum.add[0].output_quantizers[0], QuantizeDequantize
+    )
+    assert isinstance(
+        sim.model.reduce_sum.add[1].output_quantizers[0], QuantizeDequantize
+    )
+
+    """
+    When: Invoke CG-dependent features
+    Then: Should throw error
+    """
+    # output encoding propagation (aka tie-encoding)
+    with pytest.raises(_UnsafeGraphError):
+        propagate_output_encodings(sim, custom.Add)
+
+    # BNF to scale
+    with pytest.raises(_UnsafeGraphError):
+        fold_all_batch_norms_to_scale(sim)
+
+    # AMP
+    with pytest.raises(_UnsafeGraphError):
+        choose_mixed_precision(
+            sim, dummy_input, None, None, None, None, None, None, None
+        )
+
+    # MMP
+    with pytest.raises(_UnsafeGraphError):
+        _ = MixedPrecisionConfigurator(sim)

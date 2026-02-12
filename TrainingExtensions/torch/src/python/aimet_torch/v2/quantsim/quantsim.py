@@ -829,6 +829,9 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
 
     def _propagate_encodings(self):
         # pylint: disable=import-outside-toplevel
+        if not self.connected_graph.is_safe():
+            return
+
         from aimet_torch.onnx_utils import map_torch_types_to_onnx
         from aimet_torch.v2.experimental.quantsim_utils import (
             propagate_output_encodings,

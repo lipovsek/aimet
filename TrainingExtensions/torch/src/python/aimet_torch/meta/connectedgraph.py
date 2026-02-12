@@ -10,6 +10,7 @@ result of an operation. Furthermore the graph representation is bi-directional."
 
 import copy
 from collections import defaultdict
+from dataclasses import dataclass
 from types import SimpleNamespace
 import inspect
 from itertools import islice
@@ -138,30 +139,32 @@ class OpWithMultipleOutputs(Op):
         self.output_products = []
 
 
+@dataclass
 class GetAttrNodeInfo:
     """
     Holds information for GetAttr node types.
+
+    Ex. GetAttr node: %1 : ... prim::GetAttr[name="model"](%self.1)
+    node_alias: %1, node_name: model, node_input: %self.1
+    :param node_alias: String representing an alias for this node (used as input in other nodes)
+    :param node_name: Name of this node as it is referred to in trace attributes
+    :param node_input: Inputs to this node. Will be node aliases of other nodes. If this node is a direct descendant
+        of the current trace graph being parsed, node_input will point to the current module. Otherwise, it points
+        to the direct parent of this node in the trace (following parents upwards will eventually lead to the
+        current module).
     """
 
-    def __init__(self, node_alias: str, node_name: str, node_input: Union[None, str]):
-        """
-        Ex. GetAttr node: %1 : ... prim::GetAttr[name="model"](%self.1)
-        node_alias: %1, node_name: model, node_input: %self.1
-        :param node_alias: String representing an alias for this node (used as input in other nodes)
-        :param node_name: Name of this node as it is referred to in trace attributes
-        :param node_input: Inputs to this node. Will be node aliases of other nodes. If this node is a direct descendant
-            of the current trace graph being parsed, node_input will point to the current module. Otherwise, it points
-            to the direct parent of this node in the trace (following parents upwards will eventually lead to the
-            current module).
-        """
-        self.node_alias = node_alias
-        self.node_name = node_name
-        self.node_input = node_input
+    node_alias: str
+    node_name: str
+    node_input: Union[None, str]
 
 
 ModuleTensorShapeMapType = Dict[
     torch.nn.Module, Tuple[List[Union[List, torch.Size]], List[Union[List, torch.Size]]]
 ]
+
+
+class _UnsafeGraphError(RuntimeError): ...
 
 
 class ConnectedGraph(AimetCommonConnectedGraph):
@@ -171,7 +174,12 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         Note that the graph has two kinds of nodes: operations and products."""
 
     # pylint: disable=too-many-instance-attributes
-    def __init__(self, model: torch.nn.Module, model_input: Union[torch.Tensor, Tuple]):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        model_input: Union[torch.Tensor, Tuple],
+        strict: bool = True,
+    ):
         """
         Init function for connected graph.
 
@@ -179,6 +187,8 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         :param model_input: Example input to model.  Can be a single tensor or a list/tuple of input tensors
         """
         super().__init__()
+        self._strict = strict
+        self._is_safe = True
         self._model_name = type(model).__name__
         # Maps pytorch module names to modules
         self._name_to_module = {}
@@ -211,6 +221,44 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         self.ordered_ops = self._get_ordered_ops()
         # Maps pytorch modules to connected graph ops
         self._module_to_op_dict = _create_module_to_op_dict(self.ordered_ops)
+
+        if not self._is_safe:
+            logger.warning(self._unsafe_err_msg())
+
+    def is_safe(self) -> bool:
+        return self._is_safe
+
+    def _unsafe_err_msg(self) -> str | None:
+        if self._is_safe:
+            return None
+
+        return (
+            "ConnectedGraph failed to accurately capture the graph structure. "
+            "While most essential features will remain functional, several auxiliary "
+            "features that rely on computation graph will not be supported.\n\n"
+            "Full list of features:\n"
+            + "\n".join(
+                [
+                    "  - Encoding alibration ✔️",
+                    "  - Quantization-Aware Inference/Training ✔️",
+                    "  - AdaScale ✔️",
+                    "  - Sequential MSE ✔️",
+                    "  - BQ / LPBQ ✔️",
+                    "  - AdaRound ✔️",
+                    "  - SpintQuant ✔️",
+                    "  - QuantAnalyzer ✔️",
+                    "  - Manual/Automatic Mixed Precision ❌",
+                    "  - Encoding Propagation ❌",
+                    "  - BatchNorm Folding ❌",
+                    "  - Cross-Layer Equalization ❌",
+                ]
+            )
+        )
+
+    def assert_safe(self):
+        if self._is_safe:
+            return
+        raise _UnsafeGraphError(self._unsafe_err_msg())
 
     # List of math invariant op types which can remain as functional in pytorch model definition without affecting the
     # outcome of AIMET features.
@@ -423,17 +471,24 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         """
         # pylint: disable=unnecessary-comprehension
         curr_inputs = [inp for inp in trace.graph.inputs()]
+        is_leaf = next(model.children(), None) is None
+        is_quantized = isinstance(model, BaseQuantizationMixin)
 
         # curr_inputs[0] corresponds to an identifier for the current graph node.
-        assert len(curr_inputs) == len(higher_level_inputs) + 1
+        if len(curr_inputs) != len(higher_level_inputs) + 1:
+            if is_leaf or is_quantized or self._strict:
+                raise RuntimeError(
+                    f"Failed to trace computation graph for module {type(model)}. "
+                    f"Expected {len(curr_inputs) - 1} inputs, "
+                    f"but actually invoked with {len(higher_level_inputs)}."
+                )
+            self._is_safe = False
 
         # Inputs to the current trace level will correspond to higher level inputs passed in from an upper trace level.
         # Replace entries of higher level inputs in the output_map with corresponding current level inputs.
-        for idx, higher_level_inp in enumerate(higher_level_inputs):
+        for curr_inp, higher_level_inp in zip(curr_inputs[1:], higher_level_inputs):
             if higher_level_inp in output_map:
-                temp_product = output_map[higher_level_inp]
-                del output_map[higher_level_inp]
-                output_map[curr_inputs[idx + 1]] = temp_product
+                output_map[curr_inp] = output_map.pop(higher_level_inp)
 
         # A map of sub-graph models and node name that requires recursive parsing
         node_name_to_subgraph_model = {}
@@ -463,8 +518,6 @@ class ConnectedGraph(AimetCommonConnectedGraph):
 
             # invoking forward method
             elif "CallMethod" in node.kind():
-                # In the case of parsing the interior of an elementwise op, we never expect to see any CallMethod nodes
-                assert not elementwise_info
                 submodule_outputs = self._parse_callmethod_node(
                     node,
                     trace,
@@ -474,7 +527,15 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                     model,
                     module_to_jit_trace,
                 )
-                assert len(submodule_outputs) == len(outputs)
+                if len(submodule_outputs) != len(outputs):
+                    module = node_name_to_module[next(node.inputs()).debugName()]
+                    if is_leaf or is_quantized or self._strict:
+                        raise RuntimeError(
+                            f"Failed to trace computation graph for module {type(module)}. "
+                            f"Expected to return {len(submodule_outputs)} outputs, "
+                            f"but actually returned {len(outputs)}."
+                        )
+                    self._is_safe = False
 
                 # Output map contains outputs from the parsed callmethod node, which can be different than the outputs
                 # listed in the current trace level, if the callmethod node is not a leaf module. Replace the entries
@@ -488,12 +549,9 @@ class ConnectedGraph(AimetCommonConnectedGraph):
 
             # functional operations e.g. cat, size etc
             else:
-                try:
-                    is_elementwise = bool(elementwise_info) and node == next(
-                        self._find_aten_nodes_in_forward_pass(trace)
-                    )
-                except StopIteration:
-                    is_elementwise = False
+                is_elementwise = bool(elementwise_info) and node == next(
+                    self._find_aten_nodes_in_forward_pass(trace), None
+                )
 
                 if is_elementwise:
                     # Aten op that corresponds to the elementwise op
@@ -521,11 +579,9 @@ class ConnectedGraph(AimetCommonConnectedGraph):
 
         # replace entries in output_map for current level inputs back to the higher_level_inputs entries, so that other
         # callmethod nodes in the higher level trace graph can make use of those inputs.
-        for idx, higher_level_inp in enumerate(higher_level_inputs):
-            if curr_inputs[idx + 1] in output_map:
-                temp_product = output_map[curr_inputs[idx + 1]]
-                del output_map[curr_inputs[idx + 1]]
-                output_map[higher_level_inp] = temp_product
+        for curr_inp, higher_level_inp in zip(curr_inputs[1:], higher_level_inputs):
+            if curr_inp in output_map:
+                output_map[higher_level_inp] = output_map.pop(curr_inp)
 
         # Any entries in the output_map which don't show up in the returned tensors for the current graph level will not
         # be used again. Remove them from output_map. Not removing entries will cause us to run into issues if a
@@ -579,7 +635,6 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         :param curr_level_tensors: output tensors generated from the current trace level
         """
         # For GetAttr lines, the output name will be referring to the module, and not the module's output(s)
-        assert len(outputs) == 1
         getattr_node_info = ConnectedGraph._get_getattr_node_info(node)
         if getattr_node_info.node_input == inputs[0].debugName():
             getattr_node_info.node_input = None
@@ -692,12 +747,9 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             # For elementwise ops, we need to parse the callmethod interior, but want to retain information about the
             # elementwise op's residing module and torch module
             if self._is_multi_input_op_to_parse(subgraph_model):
-                try:
-                    aten_node = next(
-                        self._find_aten_nodes_in_forward_pass(subgraph_trace)
-                    )
-                except StopIteration:
-                    aten_node = None
+                aten_node = next(
+                    self._find_aten_nodes_in_forward_pass(subgraph_trace), None
+                )
 
                 if aten_node:
                     elementwise_info = (
@@ -979,7 +1031,6 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 op.type in self.passthrough_graph_nodes
                 or op.type in self.input_graph_nodes_to_ignore
             ):
-                assert len(op.output_products) == 1
                 # pylint: disable=unnecessary-comprehension
                 consumers = [consumer for consumer in op.output_products[0].consumers]
 
@@ -1007,7 +1058,6 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                             consumer.inputs[product_index] = constant_product
 
                 else:
-                    assert len(op.inputs) == 1
                     for consumer in consumers:
                         # Index of consumer's input list corresponding to this op's output product
                         consumer_input_index = consumer.inputs.index(
@@ -1035,7 +1085,6 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         ops_to_remove = []
         for op in self.get_all_ops().values():
             if op.type in ["TupleConstruct", "ListConstruct"]:
-                assert len(op.output_products) == 1
                 output = op.output_products[0]
                 # pylint: disable=unnecessary-comprehension
                 consumers = [consumer for consumer in output.consumers]

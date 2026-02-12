@@ -72,6 +72,7 @@ def propagate_output_encodings(sim: QuantizationSimModel, arg):
         )
         raise RuntimeError(msg)
 
+    sim.connected_graph.assert_safe()
     _propagate_output_encodings(sim, condition)
 
 

@@ -52,6 +52,7 @@ class BatchNormFold(BatchNormFoldBase):
         # pylint: disable=protected-access
         assert sim.model is not None
         assert sim.connected_graph is not None
+        sim.connected_graph.assert_safe()
 
         model = sim.model
         connected_graph = sim.connected_graph

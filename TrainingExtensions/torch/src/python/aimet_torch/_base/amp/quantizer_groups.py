@@ -336,11 +336,7 @@ def find_quantizer_group(
     """
     # Get connected graph from quantsim for model without wrappers
     connected_graph = sim.connected_graph
-
-    if connected_graph is None:
-        raise AssertionError(
-            "Aborting Auto Mixed Precision, connected graph needs to exist for Auto Mixed precision"
-        )
+    connected_graph.assert_safe()
 
     quantizer_groups = []
 

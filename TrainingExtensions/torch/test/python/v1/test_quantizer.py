@@ -1996,7 +1996,7 @@ class TestQuantizationSimStaticGrad:
             with unittest.mock.patch.object(
                 ConnectedGraph, "__del__", lambda _self: None
             ):
-                with pytest.raises(AssertionError):
+                with pytest.raises(RuntimeError):
                     _ = QuantizationSimModel(
                         model, dummy_input=torch.rand(1, 1, 28, 28)
                     )
