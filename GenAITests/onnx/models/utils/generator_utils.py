@@ -11,13 +11,16 @@ from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
 
 def generator_factory(
     sim_collection: SimCollection,
+    generator_cls: type[Generator],
     tokenizer,
     sequence_length,
     context_length,
+    visual_output_names=None,
     **model_kwargs,
 ) -> Generator:
     if sim_collection.is_vlm():
-        return VLM_Generator(
+        assert issubclass(generator_cls, VLM_Generator)
+        return generator_cls(
             backbone_model=TorchONNXInterface(
                 sim_collection.backbone, sim_collection.config.text_config
             ),
@@ -30,10 +33,11 @@ def generator_factory(
             sequence_length=sequence_length,
             context_length=context_length,
             config=sim_collection.config,
+            visual_output_names=visual_output_names,
             **model_kwargs,
         )
     else:
-        return Generator(
+        return generator_cls(
             model=TorchONNXInterface(sim_collection.backbone, sim_collection.config),
             tokenizer=tokenizer,
             sequence_length=sequence_length,

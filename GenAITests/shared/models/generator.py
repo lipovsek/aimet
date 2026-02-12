@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import itertools
-import math
+import typing
 from typing import Union
 import types
 
@@ -174,7 +174,10 @@ class Generator(GenerationMixin, torch.nn.Module):
         attention_mask: torch.Tensor,
         sequence_length: int,
         position_ids: torch.Tensor | None = None,
-    ) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor | None], None, None]:
+        **kwargs,
+    ) -> typing.Generator[
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict | None], None, None
+    ]:
         input_length = inputs.shape[1]
         for idx in range(0, input_length, sequence_length)[::-1]:
             idx = input_length - idx
@@ -187,27 +190,8 @@ class Generator(GenerationMixin, torch.nn.Module):
                 inputs[:, max(0, idx - sequence_length) : idx],
                 attention_mask[:, max(0, idx - sequence_length) : idx],
                 position_ids_slice,
+                kwargs,
             )
-
-    @staticmethod
-    def get_input_names(num_layers: int) -> tuple[str, ...]:
-        names = ["input_ids", "attention_mask", "position_ids"]
-        kv_names = zip(
-            [f"past_key_{i}_in" for i in range(num_layers)],
-            [f"past_value_{i}_in" for i in range(num_layers)],
-        )
-
-        return tuple(names + list(itertools.chain.from_iterable(kv_names)))
-
-    @staticmethod
-    def get_output_names(num_layers: int) -> tuple[str, ...]:
-        names = ["logits"]
-        kv_names = zip(
-            [f"past_key_{i}_out" for i in range(num_layers)],
-            [f"past_value_{i}_out" for i in range(num_layers)],
-        )
-
-        return tuple(names + list(itertools.chain.from_iterable(kv_names)))
 
     @classmethod
     def prepare_inputs(
@@ -363,6 +347,7 @@ class Generator(GenerationMixin, torch.nn.Module):
             cm_attention_mask.to(dtype=model.dtype),
             position_ids,
             *padded_past_key_values,
+            *[kwargs[k] for k in kwargs],
         )
 
     def combine_local_and_global_outputs(
@@ -446,8 +431,9 @@ class Generator(GenerationMixin, torch.nn.Module):
             input_slice,
             attention_mask_slice,
             position_ids_slice,
+            kwargs_slice,
         ) in self.slice_inputs_for_inference(
-            input_tokens, attention_mask, self.sequence_length, position_ids
+            input_tokens, attention_mask, self.sequence_length, position_ids, **kwargs
         ):
             prepared_inputs = self.prepare_inputs(
                 model=self.model,
@@ -460,7 +446,7 @@ class Generator(GenerationMixin, torch.nn.Module):
                 attention_mask_min=self.attention_mask_min,
                 inputs_embeds=input_slice if inputs_embeds is not None else None,
                 position_ids=position_ids_slice,
-                **kwargs,
+                **kwargs_slice,
             )
 
             local_outputs = self.model(*prepared_inputs)
@@ -494,7 +480,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         inputs_embeds: torch.FloatTensor | None = None,
         position_ids: torch.Tensor | None = None,
         **kwargs,
-    ) -> Generator[tuple[torch.Tensor, ...], None, None]:
+    ) -> typing.Generator[tuple[torch.Tensor, ...], None, None]:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
                 "You must specify exactly one of input_ids or inputs_embeds"
@@ -511,35 +497,30 @@ class Generator(GenerationMixin, torch.nn.Module):
                 device=input_tokens.device,
             )
 
-        # slice input tokens and attention mask to drop last few tokens
-        total_num_inferences = math.ceil(input_tokens.shape[1] / self.sequence_length)
-        num_tokens_to_preconsume = (total_num_inferences - 1) * self.sequence_length
-
-        input_tokens_to_preconsume = input_tokens[:, :num_tokens_to_preconsume]
-        attention_mask_to_preconsume = attention_mask[:, :num_tokens_to_preconsume]
-        # Slice position_ids to match the tokens to preconsume (slice last dimension)
-        position_ids_to_preconsume = (
-            position_ids[..., :num_tokens_to_preconsume]
-            if position_ids is not None
-            else None
-        )
-
         preconsumed_outputs: dict[str, Union[torch.Tensor | list[torch.Tensor]]] = {
             "past_key_values": []
             if past_key_values is None or past_key_values.get_seq_length() == 0
             else list(itertools.chain.from_iterable(past_key_values.to_legacy_cache()))
         }
 
-        for (
-            input_slice,
-            attention_mask_slice,
-            position_ids_slice,
-        ) in self.slice_inputs_for_inference(
-            input_tokens_to_preconsume,
-            attention_mask_to_preconsume,
+        slices_iter = self.slice_inputs_for_inference(
+            input_tokens,
+            attention_mask,
             self.sequence_length,
-            position_ids_to_preconsume,
-        ):
+            position_ids,
+            **kwargs,
+        )
+
+        # Get first slice
+        current_slice = next(slices_iter, None)
+        if current_slice is None:
+            return
+
+        # Iterate with lookahead - process current while peeking at next
+        for next_slice in slices_iter:
+            input_slice, attention_mask_slice, position_ids_slice, kwargs_slice = (
+                current_slice
+            )
             prepared_inputs = self.prepare_inputs(
                 model=self.model,
                 input_ids=input_slice if input_ids is not None else None,
@@ -551,7 +532,7 @@ class Generator(GenerationMixin, torch.nn.Module):
                 attention_mask_min=self.attention_mask_min,
                 inputs_embeds=input_slice if inputs_embeds is not None else None,
                 position_ids=position_ids_slice,
-                **kwargs,
+                **kwargs_slice,
             )
 
             yield prepared_inputs
@@ -563,28 +544,25 @@ class Generator(GenerationMixin, torch.nn.Module):
                 preconsumed_outputs,
             )
 
-        remaining_input_tokens = input_tokens[:, num_tokens_to_preconsume:]
-        remaining_attention_mask = attention_mask[:, num_tokens_to_preconsume:]
-        # Slice remaining position_ids (slice last dimension)
-        remaining_position_ids = (
-            position_ids[..., num_tokens_to_preconsume:]
-            if position_ids is not None
-            else None
-        )
+            current_slice = next_slice
 
+        # current_slice is now the last - no model inference
+        input_slice, attention_mask_slice, position_ids_slice, kwargs_slice = (
+            current_slice
+        )
         prefilled_inputs = self.prepare_inputs(
             model=self.model,
-            input_ids=remaining_input_tokens if input_ids is not None else None,
-            attention_mask=remaining_attention_mask,
+            input_ids=input_slice if input_ids is not None else None,
+            attention_mask=attention_mask_slice,
             past_key_values=preconsumed_outputs["past_key_values"],
             sequence_length=self.sequence_length,
             context_length=self.context_length,
             pad_token=getattr(self.tokenizer, "eos_token_id", 0),
             attention_mask_min=self.attention_mask_min,
-            inputs_embeds=remaining_input_tokens if inputs_embeds is not None else None,
-            position_ids=remaining_position_ids,
+            inputs_embeds=input_slice if inputs_embeds is not None else None,
+            position_ids=position_ids_slice,
+            **kwargs_slice,
         )
-
         yield prefilled_inputs
 
 
@@ -600,6 +578,7 @@ class VLM_Generator(Generator):
         position_id_processor=None,
         config: Union[PretrainedConfig | None] = None,
         attention_mask_min: int = -100,
+        visual_output_names: tuple[str, ...] = ("image_embeddings",),
         *args,
         **kwargs,
     ):
@@ -621,14 +600,7 @@ class VLM_Generator(Generator):
             if position_id_processor
             else None
         )
-
-    @staticmethod
-    def get_visual_input_names() -> tuple[str, ...]:
-        return "pixel_values", "image_grid_thw"
-
-    @staticmethod
-    def get_visual_output_names() -> tuple[str, ...]:
-        return ("image_embeddings",)
+        self.visual_output_names = visual_output_names
 
     def fuse_text_image_video(
         self,
@@ -637,38 +609,44 @@ class VLM_Generator(Generator):
         pixel_values_videos: torch.Tensor | None = None,
         image_grid_thw: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
-    ):
+    ) -> tuple[torch.Tensor, dict]:
         # 1) Convert input_ids to input embeddings using self.embedding
         inputs_embeds = self.embedding(input_ids)
+        extra_kwargs = {}
 
         # 2) Process images and videos through vision model to get image embeddings
-        if pixel_values is not None:
-            image_embeddings = self.vision_model(
-                pixel_values=pixel_values,
-                image_grid_thw=image_grid_thw,
-            ).to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
-            image_mask = (
-                (input_ids == self.config.image_token_id)
-                .unsqueeze(-1)
-                .expand_as(inputs_embeds)
-                .to(inputs_embeds.device)
+        image_mask = (
+            (input_ids == self.config.image_token_id)
+            .unsqueeze(-1)
+            .expand_as(inputs_embeds)
+            .to(inputs_embeds.device)
+        )
+
+        vision_output = self.vision_model(
+            pixel_values=pixel_values,
+            grid_thw=image_grid_thw,
+            mask=image_mask,
+        )
+
+        # Handle tuple vs single tensor output
+        if isinstance(vision_output, tuple):
+            image_embeddings = vision_output[0]
+            # Map remaining outputs to kwargs using visual_output_names
+            for name, value in zip(self.visual_output_names[1:], vision_output[1:]):
+                extra_kwargs[name] = value
+        else:
+            image_embeddings = vision_output
+
+        if image_embeddings is not None:
+            image_embeddings = image_embeddings.to(
+                device=inputs_embeds.device, dtype=inputs_embeds.dtype
             )
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeddings)
 
-        if pixel_values_videos is not None:
-            video_embeddings = self.vision_model(
-                pixel_values=pixel_values_videos,
-                image_grid_thw=video_grid_thw,
-            ).to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
-            video_mask = (
-                (input_ids == self.config.video_token_id)
-                .unsqueeze(-1)
-                .expand_as(inputs_embeds)
-                .to(inputs_embeds.device)
-            )
-            inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeddings)
+        if pixel_values_videos is not None or video_grid_thw is not None:
+            raise RuntimeError("No support for video yet.")
 
-        return inputs_embeds
+        return inputs_embeds, extra_kwargs
 
     def forward(
         self,
@@ -681,8 +659,8 @@ class VLM_Generator(Generator):
         video_grid_thw: torch.Tensor | None = None,
         **kwargs,
     ) -> CausalLMOutputWithPast:
-        # 1) Obtain fused input embeddings
-        inputs_embeds = self.fuse_text_image_video(
+        # 1) Obtain fused input embeddings and extra vision outputs
+        inputs_embeds, extra_kwargs = self.fuse_text_image_video(
             input_ids=input_ids,
             pixel_values=pixel_values,
             pixel_values_videos=pixel_values_videos,
@@ -702,14 +680,14 @@ class VLM_Generator(Generator):
             else None
         )
 
-        # 3) call super().forward() with concatenated embeddings
+        # 3) call super().forward() with concatenated embeddings and extra vision outputs
         return super().forward(
             input_ids=None,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
-            **kwargs,
+            **{**kwargs, **extra_kwargs},
         )
 
     def prefill(
@@ -724,9 +702,9 @@ class VLM_Generator(Generator):
         image_grid_thw: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
         **kwargs,
-    ) -> Generator[tuple[torch.Tensor, ...], None, None]:
-        # 1) Obtain fused input embeddings
-        inputs_embeds = self.fuse_text_image_video(
+    ) -> typing.Generator[tuple[torch.Tensor, ...], None, None]:
+        # 1) Obtain fused input embeddings and extra vision outputs
+        inputs_embeds, extra_kwargs = self.fuse_text_image_video(
             input_ids=input_ids,
             pixel_values=pixel_values,
             pixel_values_videos=pixel_values_videos,
@@ -746,12 +724,12 @@ class VLM_Generator(Generator):
             else None
         )
 
-        # 3) call super().prefill() with concatenated embeddings
+        # 3) call super().prefill() with concatenated embeddings and extra vision outputs
         yield from super().prefill(
             input_ids=None,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
-            **kwargs,
+            **{**kwargs, **extra_kwargs},
         )

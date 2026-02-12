@@ -12,11 +12,7 @@ from pathlib import Path
 
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
-from GenAITests.shared.models.base import SimCollection, LLM, VLM
-from GenAITests.shared.models.generator import (
-    Generator,
-    VLM_Generator,
-)
+from GenAITests.shared.models.base import LLM, VLM
 from GenAITests.shared.helpers.profiler import (
     GPUMeter,
     MetricResult,
@@ -95,9 +91,13 @@ def test_llm_quantization(test_parameters):
     tokenizer = model_cls.instantiate_tokenizer(model_id)
     generator = generator_factory(
         sim_collection,
+        model_cls.get_generator_cls(),
         tokenizer,
         sequence_length,
         context_length,
+        visual_output_names=model_cls.get_visual_output_names()
+        if issubclass(model_cls, VLM)
+        else None,
         **model_kwargs,
     )
 
@@ -193,10 +193,10 @@ def test_llm_quantization(test_parameters):
                 context_length=context_length,
                 sequence_length=sequence_length,
             ),
-            input_names=Generator.get_input_names(
+            input_names=model_cls.get_backbone_input_names(
                 sim_collection.backbone.model.model.config.num_hidden_layers
             ),
-            output_names=Generator.get_output_names(
+            output_names=model_cls.get_backbone_output_names(
                 sim_collection.backbone.model.model.config.num_hidden_layers
             ),
             opset_version=17,
@@ -212,8 +212,8 @@ def test_llm_quantization(test_parameters):
             sim_collection.visual.onnx.export(
                 f=os.path.join(test_parameters["export"], "visual", "model.onnx"),
                 args=model_cls.get_sample_vision_inputs(sim_collection.config),
-                input_names=VLM_Generator.get_visual_input_names(),
-                output_names=VLM_Generator.get_visual_output_names(),
+                input_names=model_cls.get_visual_input_names(),
+                output_names=model_cls.get_visual_output_names(),
                 opset_version=17,
                 dynamo=False,
                 export_int32_bias=False,
@@ -308,7 +308,9 @@ def test_llm_quantization(test_parameters):
             "backbone": ComponentRecipeStats(
                 recipe_name=backbone_recipe_cls.__name__,
                 recipe_kwargs=backbone_recipe_kwargs,
-                dataset_name=backbone_dataset_cls.__name__,
+                dataset_name=backbone_dataset_cls.__name__
+                if backbone_dataset_cls
+                else "",
                 dataset_kwargs=backbone_dataset_kwargs,
             )
         }

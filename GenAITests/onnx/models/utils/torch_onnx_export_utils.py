@@ -10,6 +10,8 @@ import glob
 from transformers import AutoConfig
 from huggingface_hub import HfApi
 
+ONNX_OPSET_VERSION = 17
+
 
 def is_huggingface_ckpt(model_id: str) -> bool:
     hf_api = HfApi()
@@ -53,6 +55,23 @@ def equivalent_configs(config_a, config_b) -> bool:
     del config_dict_a["_name_or_path"]
     del config_dict_b["_name_or_path"]
     return config_dict_a == config_dict_b
+
+
+def get_opset(filepath):
+    if not os.path.exists(filepath):
+        raise RuntimeError(f"File `{filepath}` does not exist.")
+
+    model = onnx.ModelProto()
+    with open(filepath, "rb") as f:
+        # Only parse specific fields (field number 8 = opset_import)
+        model.MergeFromString(f.read())
+
+    return {op.domain or "ai.onnx": op.version for op in model.opset_import}
+
+
+def check_opset_equal_to(filepath, opset_version: int) -> bool:
+    opset = get_opset(filepath)
+    return opset.get("ai.onnx", -1) == opset_version
 
 
 def load_model_components_from_disk(
@@ -119,6 +138,11 @@ def get_onnx_model(
             AutoConfig.from_pretrained(config_path), fp_backbone_model.config
         )
         or (visual_model_exists and not os.path.exists(onnx_visual_path))
+        or not check_opset_equal_to(onnx_backbone_path, ONNX_OPSET_VERSION)
+        or (
+            visual_model_exists
+            and not check_opset_equal_to(onnx_visual_path, ONNX_OPSET_VERSION)
+        )
     ):
         print("Exporting model(s) to ONNX...")
         fp_backbone_model.to(torch.device("cpu"))
@@ -132,7 +156,7 @@ def get_onnx_model(
                 onnx_backbone_path,
                 input_names=input_names,
                 output_names=output_names,
-                opset_version=17,
+                opset_version=ONNX_OPSET_VERSION,
                 dynamo=False,
             )
             if visual_model_exists:
@@ -143,7 +167,7 @@ def get_onnx_model(
                     onnx_visual_path,
                     input_names=visual_input_names,
                     output_names=visual_output_names,
-                    opset_version=17,
+                    opset_version=ONNX_OPSET_VERSION,
                     dynamo=False,
                 )
 

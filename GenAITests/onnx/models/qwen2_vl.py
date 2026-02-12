@@ -16,11 +16,10 @@ from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.qwen2_vl import (
     Qwen_25_VL,
-    VisualWrapper,
+    Qwen2VLVisualWrapper,
     Qwen2_5_VL_FastExportable_Mixin,
 )
-from GenAITests.shared.models.generator import VLM_Generator
-from GenAITests.shared.models.utils.model_utils import ONNXExportableBackboneWithCache
+from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
     get_onnx_model,
@@ -57,10 +56,12 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
             model = cls.instantiate_model(model_id, small_model).to(dtype=torch.float32)
             config = model.config
 
-            traceable_backbone = ONNXExportableBackboneWithCache(
-                model.model.language_model, model.lm_head
+            traceable_backbone = ONNXExportableModuleWithCache(
+                model.model.language_model,
+                lm_head=model.lm_head,
+                use_inputs_embeds=True,
             )
-            traceable_visual = VisualWrapper(model.model.visual)
+            traceable_visual = Qwen2VLVisualWrapper(model.model.visual)
 
             backbone_onnx_model, visual_onnx_model = get_onnx_model(
                 checkpoint=get_model_checkpoint_path(model_id),
@@ -70,16 +71,16 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
                 sample_input=cls.get_sample_backbone_inputs(
                     traceable_backbone, context_length, sequence_length
                 ),
-                input_names=VLM_Generator.get_input_names(
+                input_names=cls.get_backbone_input_names(
                     model.config.text_config.num_hidden_layers
                 ),
-                output_names=VLM_Generator.get_output_names(
+                output_names=cls.get_backbone_output_names(
                     model.config.text_config.num_hidden_layers
                 ),
                 fp_visual_model=traceable_visual,
                 sample_visual_input=cls.get_sample_vision_inputs(config),
-                visual_input_names=VLM_Generator.get_visual_input_names(),
-                visual_output_names=VLM_Generator.get_visual_output_names(),
+                visual_input_names=cls.get_visual_input_names(),
+                visual_output_names=cls.get_visual_output_names(),
             )
 
             embedding = model.model.language_model.embed_tokens

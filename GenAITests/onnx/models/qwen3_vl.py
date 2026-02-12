@@ -1,11 +1,9 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Qwen-2.5 ONNX model class"""
+"""Qwen-2.5-VL model class"""
 
 import torch
-import onnx
-import os
 from transformers import AutoConfig
 
 from aimet_onnx import quantsim
@@ -13,7 +11,10 @@ from aimet_onnx.quantsim import QuantizationSimModel
 
 from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
-from GenAITests.shared.models.qwen2 import Qwen_25
+from GenAITests.shared.models.qwen3_vl import (
+    Qwen_3_VL,
+    Qwen3VLVisualWrapper,
+)
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
@@ -32,7 +33,7 @@ from GenAITests.onnx.models.utils.quantsim_utils import (
 
 
 @YAMLConfigParser.register_model
-class Qwen_25_ONNX(Qwen_25):
+class Qwen_3_VL_ONNX(Qwen_3_VL):
     @classmethod
     def instantiate_quantsim(
         cls,
@@ -49,30 +50,50 @@ class Qwen_25_ONNX(Qwen_25):
 
         if is_huggingface_ckpt(model_id):
             model = cls.instantiate_model(model_id, small_model).to(dtype=torch.float32)
-            exportable_model = ONNXExportableModuleWithCache(model)
-            onnx_model, *_ = get_onnx_model(
+            config = model.config
+
+            traceable_backbone = ONNXExportableModuleWithCache(
+                model.model.language_model,
+                lm_head=model.lm_head,
+                use_inputs_embeds=True,
+                extra_input_names=cls.get_visual_output_names()[1:],
+            )
+            traceable_visual = Qwen3VLVisualWrapper(model.model.visual)
+
+            backbone_onnx_model, visual_onnx_model = get_onnx_model(
                 checkpoint=get_model_checkpoint_path(model_id),
-                fp_backbone_model=exportable_model,
+                fp_backbone_model=traceable_backbone,
                 context_length=context_length,
                 sequence_length=sequence_length,
                 sample_input=cls.get_sample_backbone_inputs(
-                    exportable_model, context_length, sequence_length
+                    traceable_backbone, context_length, sequence_length
                 ),
                 input_names=cls.get_backbone_input_names(
-                    model.config.num_hidden_layers
+                    model.config.text_config.num_hidden_layers
                 ),
                 output_names=cls.get_backbone_output_names(
-                    model.config.num_hidden_layers
+                    model.config.text_config.num_hidden_layers
                 ),
+                fp_visual_model=traceable_visual,
+                sample_visual_input=cls.get_sample_vision_inputs(config),
+                visual_input_names=cls.get_visual_input_names(),
+                visual_output_names=cls.get_visual_output_names(),
             )
-            config = model.config
+
+            embedding = model.model.language_model.embed_tokens
         else:
-            onnx_model, *_ = load_model_components_from_disk(
-                model_id,
-                context_length=context_length,
-                sequence_length=sequence_length,
-            )
             config = AutoConfig.from_pretrained(get_model_checkpoint_path(model_id))
+            backbone_onnx_model, visual_onnx_model, embedding = (
+                load_model_components_from_disk(
+                    model_id,
+                    context_length=context_length,
+                    sequence_length=sequence_length,
+                )
+            )
+            if visual_onnx_model is None or embedding is None:
+                raise ValueError(
+                    "Required model components could not be loaded from disk."
+                )
 
         with (
             AttributePatch(quantsim, "op_types_to_tie_qtzrs", ["Concat"]),
@@ -83,8 +104,20 @@ class Qwen_25_ONNX(Qwen_25):
                 quantsim.op_outputs_to_ignore + ["Slice", "Constant"],
             ),
         ):
-            quant_sim = QuantizationSimModel(
-                model=onnx_model,
+            backbone_quantsim = QuantizationSimModel(
+                model=backbone_onnx_model,
+                quant_scheme="min_max",
+                default_activation_bw=16,
+                default_param_bw=4,
+                config_file=cls.get_quantsim_config(),
+                providers=get_ort_providers(
+                    torch.device("cuda")
+                    if torch.cuda.is_available()
+                    else torch.device("cpu")
+                ),
+            )
+            visual_quantsim = QuantizationSimModel(
+                model=visual_onnx_model,
                 quant_scheme="min_max",
                 default_activation_bw=16,
                 default_param_bw=4,
@@ -97,10 +130,16 @@ class Qwen_25_ONNX(Qwen_25):
             )
 
         # Setting kv_cache and some other layers to 8-bit
-        _set_tensors_to_output_n_bit_symmmetric(quant_sim, kv_bits)
+        _set_tensors_to_output_n_bit_symmmetric(backbone_quantsim, kv_bits)
         # Setting the LM head weights to 8-bit.
-        _set_lm_head_to_8b(quant_sim)
+        _set_lm_head_to_8b(backbone_quantsim)
         # Tie kv_cache
-        _tie_quantizers_for_kv_cache(quant_sim)
+        _tie_quantizers_for_kv_cache(backbone_quantsim)
 
-        return SimCollection(quant_sim, config=config)
+        return SimCollection(
+            backbone=backbone_quantsim,
+            visual=visual_quantsim,
+            embedding=embedding,
+            config=config,
+            position_id_processor=cls.generate_position_ids,
+        )

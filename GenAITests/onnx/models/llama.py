@@ -12,7 +12,6 @@ from aimet_onnx.quantsim import QuantizationSimModel
 from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.llama import Llama_32, Llama_32_SHA_Mixin
-from GenAITests.shared.models.generator import Generator
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
@@ -57,8 +56,12 @@ class Llama_32_ONNX(Llama_32):
                 sample_input=cls.get_sample_backbone_inputs(
                     exportable_model, context_length, sequence_length
                 ),
-                input_names=Generator.get_input_names(model.config.num_hidden_layers),
-                output_names=Generator.get_output_names(model.config.num_hidden_layers),
+                input_names=cls.get_backbone_input_names(
+                    model.config.num_hidden_layers
+                ),
+                output_names=cls.get_backbone_output_names(
+                    model.config.num_hidden_layers
+                ),
             )
             config = model.config
         else:

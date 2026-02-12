@@ -267,3 +267,99 @@ class Qwen2dot5VLBackboneBlockInterface(
         _SeparatedProjAttentionInterface.__init__(self, block.self_attn)
         _SeparatedProjMLPInterface.__init__(self, block.mlp)
         _NormInterface.__init__(self, block)
+
+
+class Qwen3VLBackboneBlockInterface(
+    _SeparatedProjAttentionInterface, _SeparatedProjMLPInterface, _NormInterface
+):
+    def __init__(self, block):
+        _SeparatedProjAttentionInterface.__init__(self, block.self_attn)
+        _SeparatedProjMLPInterface.__init__(self, block.mlp)
+        _NormInterface.__init__(self, block)
+
+
+class MergerInterface:
+    """Base interface for VLM patch merger modules."""
+
+    def __init__(self, merger):
+        self._merger = merger
+
+    @property
+    def norm(self):
+        raise NotImplementedError()
+
+    @norm.setter
+    def norm(self, value):
+        raise NotImplementedError()
+
+    @property
+    def linear1(self):
+        raise NotImplementedError()
+
+    @linear1.setter
+    def linear1(self, value):
+        raise NotImplementedError()
+
+    @property
+    def linear2(self):
+        raise NotImplementedError()
+
+    @linear2.setter
+    def linear2(self, value):
+        raise NotImplementedError()
+
+
+class Qwen25VLMergerInterface(MergerInterface):
+    """Merger interface for Qwen2.5-VL: ln_q, mlp[0], mlp[2]"""
+
+    @property
+    def norm(self):
+        return self._merger.ln_q
+
+    @norm.setter
+    def norm(self, value):
+        self._merger.ln_q = value
+
+    @property
+    def linear1(self):
+        return self._merger.mlp[0]
+
+    @linear1.setter
+    def linear1(self, value):
+        self._merger.mlp[0] = value
+
+    @property
+    def linear2(self):
+        return self._merger.mlp[2]
+
+    @linear2.setter
+    def linear2(self, value):
+        self._merger.mlp[2] = value
+
+
+class Qwen3VLMergerInterface(MergerInterface):
+    """Merger interface for Qwen3-VL: norm, linear_fc1, linear_fc2"""
+
+    @property
+    def norm(self):
+        return self._merger.norm
+
+    @norm.setter
+    def norm(self, value):
+        self._merger.norm = value
+
+    @property
+    def linear1(self):
+        return self._merger.linear_fc1
+
+    @linear1.setter
+    def linear1(self, value):
+        self._merger.linear_fc1 = value
+
+    @property
+    def linear2(self):
+        return self._merger.linear_fc2
+
+    @linear2.setter
+    def linear2(self, value):
+        self._merger.linear_fc2 = value

@@ -286,6 +286,7 @@ class BlockwiseSampler:
         forward_fn: Callable = default_forward_fn,
         keep_unused_blocks_on_cpu: bool = True,
         cache_activations_on_disk: bool = True,
+        disable_caching_until_block: int = 0,
     ):
         self.sim = sim
         self.blocks = blocks
@@ -293,6 +294,7 @@ class BlockwiseSampler:
         self.forward_fn = forward_fn
         self.keep_unused_blocks_on_cpu = keep_unused_blocks_on_cpu
         self.cache_activations_on_disk = cache_activations_on_disk
+        self.disable_caching_until_block = disable_caching_until_block
 
     @torch.no_grad()
     def run_inference(self, sample) -> Generator[CachedBlockInput, None, None]:
@@ -312,24 +314,31 @@ class BlockwiseSampler:
                 deepcopy(CachedBlockInput(args, kwargs))
             )
 
-        hook = self.blocks[0].register_forward_pre_hook(hook_fn, with_kwargs=True)
-        try:
-            placed_sample = change_tensor_and_cache_device_placement(
-                inputs=sample, device=get_device(self.sim.model)
+        next_block_input = None
+        for block_idx in range(self.disable_caching_until_block + 1):
+            hook = self.blocks[block_idx].register_forward_pre_hook(
+                hook_fn, with_kwargs=True
             )
-            self.forward_fn(self.sim.model, placed_sample)
-        except StopForwardExceptionWithInput as e:
-            # pylint: disable=used-before-assignment
-            hook.remove()
-            next_block_input = e.captured_input
-            next_block_input.to("cpu")
+            try:
+                placed_sample = change_tensor_and_cache_device_placement(
+                    inputs=sample, device=get_device(self.sim.model)
+                )
+                self.forward_fn(self.sim.model, placed_sample)
+            except StopForwardExceptionWithInput as e:
+                # pylint: disable=used-before-assignment
+                hook.remove()
+                del (
+                    next_block_input
+                )  # Clean up next_block_input from previous loop if necessary
+                next_block_input = e.captured_input
+                next_block_input.to("cpu")
 
-            if self.cache_activations_on_disk:
-                next_block_input.enable_disk_caching()
+                if self.cache_activations_on_disk:
+                    next_block_input.enable_disk_caching()
 
-            yield next_block_input
+                yield next_block_input
 
-        for block in self.blocks[:-1]:
+        for block in self.blocks[self.disable_caching_until_block : -1]:
             with next_block_input.load():
                 next_block_input.to(utils.get_device(block))
                 next_block_input.args = block(
@@ -370,37 +379,32 @@ class BlockwiseSampler:
         if self.keep_unused_blocks_on_cpu:
             self.sim.model.to("cpu")
 
-        blocks = iter(self.blocks)
-        prev_block = self.blocks[0]
-        with tqdm(total=len(self.blocks), desc=desc) as pbar:
-            while True:
-                try:
-                    block = next(blocks)
-
-                    if self.keep_unused_blocks_on_cpu:
-                        prev_block.to(device)
-
-                    # Quantizers must be ENABLED when calculating quantized block inputs
-                    qt_block_inputs = [
-                        next(block_input) for block_input in qt_inferences
-                    ]
-
-                    # Quantizers must be DISABLED when calculating FP block inputs
-                    with utils.disable_all_quantizers(self.sim.model):
-                        fp_block_inputs = [
-                            next(block_input) for block_input in fp_inferences
-                        ]
-
-                    if self.keep_unused_blocks_on_cpu:
-                        prev_block.to("cpu")
-                        block.to(device)
-
-                    yield block, fp_block_inputs, qt_block_inputs
-
-                    pbar.update(1)
-                    prev_block = block
-                except StopIteration:
-                    break
-
+        for block_idx, block in enumerate(tqdm(self.blocks, desc=desc)):
+            # Move blocks to device for inference
             if self.keep_unused_blocks_on_cpu:
-                block.to("cpu")
+                if block_idx == 0:
+                    # Move all early blocks together for hook-based inference
+                    for b in self.blocks[: self.disable_caching_until_block + 1]:
+                        b.to(device)
+                elif block_idx > self.disable_caching_until_block:
+                    block.to(device)
+
+            # Quantizers must be ENABLED when calculating quantized block inputs
+            qt_block_inputs = [next(block_input) for block_input in qt_inferences]
+
+            # Quantizers must be DISABLED when calculating FP block inputs
+            with utils.disable_all_quantizers(self.sim.model):
+                fp_block_inputs = [next(block_input) for block_input in fp_inferences]
+
+            yield block, fp_block_inputs, qt_block_inputs
+
+            # Move blocks to CPU after yielding
+            if self.keep_unused_blocks_on_cpu:
+                if block_idx == self.disable_caching_until_block:
+                    # Last early block - move all early blocks except the last one to CPU
+                    for b in self.blocks[: self.disable_caching_until_block]:
+                        b.to("cpu")
+                elif block_idx > self.disable_caching_until_block:
+                    # Move block N-1 to CPU, since it is no longer needed
+                    # Note that block N is still needed for the next loop
+                    self.blocks[block_idx - 1].to("cpu")

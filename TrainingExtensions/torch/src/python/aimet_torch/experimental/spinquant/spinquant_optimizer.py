@@ -15,12 +15,22 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLDecoderLayer,
     Qwen2_5_VisionTransformerPretrainedModel,
     Qwen2_5_VLVisionBlock,
+    Qwen2_5_VLPatchMerger,
 )
 
 try:
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Model, Qwen3DecoderLayer
 except ImportError:
     Qwen3Model = Qwen3DecoderLayer = None
+
+try:
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import (
+        Qwen3VLTextModel,
+        Qwen3VLTextDecoderLayer,
+        Qwen3VLVisionPatchMerger,
+    )
+except ImportError:
+    Qwen3VLTextModel = Qwen3VLTextDecoderLayer = Qwen3VLVisionPatchMerger = None
 
 from aimet_torch.experimental.spinquant.hadamard_utils import get_hadamard_matrix
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
@@ -33,6 +43,10 @@ from aimet_torch.experimental.transforms.transform_config import (
     Phi3BlockInterface,
     Qwen2dot5VLViTBlockInterface,
     Qwen2dot5VLBackboneBlockInterface,
+    Qwen3VLBackboneBlockInterface,
+    MergerInterface,
+    Qwen25VLMergerInterface,
+    Qwen3VLMergerInterface,
 )
 
 
@@ -40,6 +54,14 @@ from aimet_torch.experimental.transforms.transform_config import (
 class SpinQuantConfig:
     block_type: Type = None  # block types to use in a given model
     block_interface: Type = None  # interface class describing block layout
+
+
+@dataclass
+class VLMSpinQuantConfig(SpinQuantConfig):
+    merger_type: Type = None  # merger type to use for VLMs, if applicable
+    merger_interface: Type[MergerInterface] = (
+        None  # interface class describing merger layout for VLMs
+    )
 
 
 class SpinQuant:
@@ -53,9 +75,11 @@ class SpinQuant:
         Phi3Model: SpinQuantConfig(
             block_type=Phi3DecoderLayer, block_interface=Phi3BlockInterface
         ),
-        Qwen2_5_VLTextModel: SpinQuantConfig(
+        Qwen2_5_VLTextModel: VLMSpinQuantConfig(
             block_type=Qwen2_5_VLDecoderLayer,
             block_interface=Qwen2dot5VLBackboneBlockInterface,
+            merger_type=Qwen2_5_VLPatchMerger,
+            merger_interface=Qwen25VLMergerInterface,
         ),
         Qwen2_5_VisionTransformerPretrainedModel: SpinQuantConfig(
             block_type=Qwen2_5_VLVisionBlock,
@@ -69,6 +93,17 @@ class SpinQuant:
                 Qwen3Model: SpinQuantConfig(
                     block_type=Qwen3DecoderLayer,
                     block_interface=Qwen3BlockInterface,
+                )
+            }
+        )
+    if Qwen3VLTextModel is not None and Qwen3VLTextDecoderLayer is not None:
+        model_config_dict.update(
+            {
+                Qwen3VLTextModel: VLMSpinQuantConfig(
+                    block_type=Qwen3VLTextDecoderLayer,
+                    block_interface=Qwen3VLBackboneBlockInterface,
+                    merger_type=Qwen3VLVisionPatchMerger,
+                    merger_interface=Qwen3VLMergerInterface,
                 )
             }
         )
@@ -125,9 +160,8 @@ class SpinQuant:
         # Fuse RMS norm layers into linears
         SpinQuant._fuse_norm_layer_into_linears(language_backbone.norm, [model.lm_head])
         if hasattr(model.model, "visual"):
-            SpinQuant._fuse_norm_layer_into_linears(
-                model.model.visual.merger.ln_q, [model.model.visual.merger.mlp[0]]
-            )
+            for merger in SpinQuant._get_mergers(model):
+                SpinQuant._fuse_norm_layer_into_linears(merger.norm, [merger.linear1])
 
         for block_interface in SpinQuant._get_blocks(model):
             SpinQuant._fuse_norm_layer_into_linears(
@@ -157,65 +191,71 @@ class SpinQuant:
 
             # If SpinQuant is being applied to a VLM we need to separately transform the ViT
             if hasattr(model.model, "visual"):
-                # Apply R1 to ViT
-                vit_hidden_size = model.model.visual.patch_embed.proj.weight.shape[0]
-                SpinQuant._apply_r1_to_decoder_stack(
-                    hidden_size=vit_hidden_size,
-                    embedding_layer=None,
-                    lm_head=None,
-                    blocks=SpinQuant._get_blocks(model.model.visual),
-                    device=model.device,
-                )
-
-                # todo: switch this to use TransformedConv3d once implementation is tested
-                patch_embed_shape = model.model.visual.patch_embed.proj.weight.shape
-                patch_embed_hadamard_rotation = get_hadamard_matrix(
-                    vit_hidden_size
-                ) / torch.sqrt(torch.tensor(vit_hidden_size))
-                new_patch_embed_weight = (
-                    model.model.visual.patch_embed.proj.weight.data.clone()
-                    .detach()
-                    .to(torch.float64)
-                    .reshape([vit_hidden_size, -1])
-                )
-                new_patch_embed_weight = (
-                    patch_embed_hadamard_rotation.T.to(
-                        device=model.device, dtype=torch.float64
+                # Only apply SpinQuant on the decoder stack of the ViT if the type is registered
+                if len(SpinQuant._get_blocks(model.model.visual)) > 0:
+                    # Apply R1 to ViT
+                    vit_hidden_size = model.model.visual.patch_embed.proj.weight.shape[
+                        0
+                    ]
+                    SpinQuant._apply_r1_to_decoder_stack(
+                        hidden_size=vit_hidden_size,
+                        embedding_layer=None,
+                        lm_head=None,
+                        blocks=SpinQuant._get_blocks(model.model.visual),
+                        device=model.device,
                     )
-                    @ new_patch_embed_weight
-                ).to(torch.float32)
-                model.model.visual.patch_embed.proj.weight = torch.nn.Parameter(
-                    new_patch_embed_weight.reshape(patch_embed_shape)
-                )
 
-                # ViT MLP layer is sized differently so we need to handle it separately
-                mlp0_shape = model.model.visual.merger.mlp[0].weight.data.shape
-                new_mlp0_weight = (
-                    model.model.visual.merger.mlp[0]
-                    .weight.data.clone()
-                    .detach()
-                    .to(torch.float64)
-                    .reshape(-1, vit_hidden_size)
-                )
-                new_mlp0_weight = (
-                    new_mlp0_weight
-                    @ patch_embed_hadamard_rotation.T.to(
-                        device=model.device, dtype=torch.float64
+                    # todo: switch this to use TransformedConv3d once implementation is tested
+                    patch_embed_shape = model.model.visual.patch_embed.proj.weight.shape
+                    patch_embed_hadamard_rotation = get_hadamard_matrix(
+                        vit_hidden_size
+                    ) / torch.sqrt(torch.tensor(vit_hidden_size))
+                    new_patch_embed_weight = (
+                        model.model.visual.patch_embed.proj.weight.data.clone()
+                        .detach()
+                        .to(torch.float64)
+                        .reshape([vit_hidden_size, -1])
                     )
-                ).to(dtype=torch.float32)
-                model.model.visual.merger.mlp[0].weight = torch.nn.Parameter(
-                    new_mlp0_weight.reshape(mlp0_shape)
-                )
+                    new_patch_embed_weight = (
+                        patch_embed_hadamard_rotation.T.to(
+                            device=model.device, dtype=torch.float64
+                        )
+                        @ new_patch_embed_weight
+                    ).to(torch.float32)
+                    model.model.visual.patch_embed.proj.weight = torch.nn.Parameter(
+                        new_patch_embed_weight.reshape(patch_embed_shape)
+                    )
 
+                    # ViT MLP layer is sized differently so we need to handle it separately
+                    for merger in SpinQuant._get_mergers(model):
+                        mlp0_shape = merger.linear1.weight.data.shape
+                        new_mlp0_weight = (
+                            merger.linear1.weight.data.clone()
+                            .detach()
+                            .to(torch.float64)
+                            .reshape(-1, vit_hidden_size)
+                        )
+                        new_mlp0_weight = (
+                            new_mlp0_weight
+                            @ patch_embed_hadamard_rotation.T.to(
+                                device=model.device, dtype=torch.float64
+                            )
+                        ).to(dtype=torch.float32)
+                        merger.linear1.weight = torch.nn.Parameter(
+                            new_mlp0_weight.reshape(mlp0_shape)
+                        )
+
+                # This part needs to happen even if SpinQuant is not applied on the ViT blocks
                 post_mlp_hadamard_rotation = get_hadamard_matrix(
                     language_backbone_hidden_size
                 ) / torch.sqrt(torch.tensor(language_backbone_hidden_size))
                 post_mlp_hadamard_rotation = post_mlp_hadamard_rotation.to(
                     device=model.device, dtype=torch.float32
                 )
-                model.model.visual.merger.mlp[-1].add_right_hand_transform(
-                    MatrixTransformOp(matrix=post_mlp_hadamard_rotation)
-                )
+                for merger in SpinQuant._get_mergers(model):
+                    merger.linear2.add_right_hand_transform(
+                        MatrixTransformOp(matrix=post_mlp_hadamard_rotation)
+                    )
 
         if SpinQuant._enable_r2:
             raise NotImplementedError("R2 transform is not yet implemented.")
@@ -275,12 +315,14 @@ class SpinQuant:
             # model.model.visual.patch_embed.proj = TransformationMixin.from_module(
             #    model.model.visual.patch_embed.proj
             # )
-            model.model.visual.merger.mlp[0] = TransformationMixin.from_module(
-                model.model.visual.merger.mlp[0]
-            )
-            model.model.visual.merger.mlp[2] = TransformationMixin.from_module(
-                model.model.visual.merger.mlp[2]
-            )
+            if hasattr(model.model.visual, "pos_embed"):
+                model.model.visual.pos_embed = TransformationMixin.from_module(
+                    model.model.visual.pos_embed
+                )
+
+            for merger in SpinQuant._get_mergers(model):
+                merger.linear1 = TransformationMixin.from_module(merger.linear1)
+                merger.linear2 = TransformationMixin.from_module(merger.linear2)
 
         for block_interface in SpinQuant._get_blocks(model):
             layer_names = (
@@ -319,16 +361,19 @@ class SpinQuant:
             #        model.model.visual.patch_embed.proj
             #    )
             # )
-            model.model.visual.merger.mlp[0] = (
-                SpinQuant._merge_transforms_and_recover_original_layer(
-                    model.model.visual.merger.mlp[0]
+            for merger in SpinQuant._get_mergers(model):
+                merger.linear1 = SpinQuant._merge_transforms_and_recover_original_layer(
+                    merger.linear1
                 )
-            )
-            model.model.visual.merger.mlp[2] = (
-                SpinQuant._merge_transforms_and_recover_original_layer(
-                    model.model.visual.merger.mlp[2]
+                merger.linear2 = SpinQuant._merge_transforms_and_recover_original_layer(
+                    merger.linear2
                 )
-            )
+            if hasattr(model.model.visual, "pos_embed"):
+                model.model.visual.pos_embed = (
+                    SpinQuant._merge_transforms_and_recover_original_layer(
+                        model.model.visual.pos_embed
+                    )
+                )
 
         for block_interface in SpinQuant._get_blocks(model):
             layer_names = (
@@ -385,21 +430,46 @@ class SpinQuant:
         """Helper function to merge RMS Norm weights into linear layer"""
         for linear in linears:
             W = linear.weight.data
+            B = linear.bias.data if linear.bias is not None else None
             dtype = linear.weight.dtype
 
             if norm.weight.data.shape[0] != W.shape[1]:
                 norm_weight = norm.weight.data.repeat(
                     W.shape[1] // norm.weight.data.shape[0]
                 )
+                norm_bias = (
+                    norm.bias.data.repeat(B.shape[0] // norm.bias.data.shape[0])
+                    if hasattr(norm, "bias")
+                    else None
+                )
             else:
                 norm_weight = norm.weight.data
+                norm_bias = norm.bias.data if hasattr(norm, "bias") else None
 
             linear.weight.data = (W.double() * norm_weight.double()).to(dtype=dtype)
             if hasattr(norm, "bias") and linear.bias is not None:
-                linear.bias.data = (
-                    linear.bias.data.double() + (W.double() @ norm.bias.data.double())
-                ).to(dtype=dtype)
+                linear.bias.data = (B.double() + (W.double() @ norm_bias.double())).to(
+                    dtype=dtype
+                )
         norm.weight.data = torch.ones_like(norm.weight.data)
+
+    @staticmethod
+    def _find_vlm_config(model: torch.nn.Module) -> VLMSpinQuantConfig | None:
+        target_types = SpinQuant._screen_for_target_type(model)
+        for target_type in target_types:
+            config = SpinQuant.model_config_dict.get(target_type)
+            if config is not None and isinstance(config, VLMSpinQuantConfig):
+                return config
+        return None
+
+    @staticmethod
+    def _get_mergers(model: torch.nn.Module) -> list[MergerInterface]:
+        vlm_config = SpinQuant._find_vlm_config(model)
+        return [
+            vlm_config.merger_interface(m)
+            for m in model.modules()
+            if isinstance(m, vlm_config.merger_type)
+        ]
 
 
 apply_spinquant = SpinQuant.apply_spinquant

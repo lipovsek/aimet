@@ -20,6 +20,7 @@ from GenAITests.shared.helpers.profiler import (
     write_stats_to_disk,
 )
 from GenAITests.shared.helpers.determinism import set_seed
+from GenAITests.shared.models.base import LLM, VLM
 
 from GenAITests.shared.helpers import datasets, metrics
 from GenAITests.onnx import models
@@ -46,7 +47,7 @@ def test_llm_quantization(test_parameters):
 
     print(test_parameters)
     model_kwargs = test_parameters.pop("model")
-    model_cls = model_kwargs.pop("class")
+    model_cls: type[LLM] = model_kwargs.pop("class")
     context_length = model_kwargs.pop("context_length")
     sequence_length = model_kwargs.pop("sequence_length")
     model_id = model_kwargs.pop("model_id", None)
@@ -79,9 +80,13 @@ def test_llm_quantization(test_parameters):
     tokenizer = model_cls.instantiate_tokenizer(model_id)
     generator = generator_factory(
         sim_collection,
+        model_cls.get_generator_cls(),
         tokenizer,
         sequence_length,
         context_length,
+        visual_output_names=model_cls.get_visual_output_names()
+        if issubclass(model_cls, VLM)
+        else None,
         **model_kwargs,
     )
 
@@ -238,7 +243,7 @@ def test_llm_quantization(test_parameters):
                 recipe_kwargs=backbone_recipe_kwargs,
                 dataset_name=backbone_dataset_cls.__name__
                 if backbone_dataset_cls
-                else "None",
+                else "",
                 dataset_kwargs=backbone_dataset_kwargs,
             )
         }

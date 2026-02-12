@@ -5,6 +5,7 @@
 
 """AdaScale implementation"""
 
+import functools
 from copy import deepcopy
 from dataclasses import dataclass
 from types import NoneType
@@ -31,6 +32,13 @@ try:
 except ImportError:
     Qwen3Model = Qwen3DecoderLayer = None
 
+try:
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import (
+        Qwen3VLTextModel,
+        Qwen3VLTextDecoderLayer,
+    )
+except ImportError:
+    Qwen3VLTextModel = Qwen3VLTextDecoderLayer = None
 
 from aimet_torch.common.utils import AimetLogger
 from aimet_torch import QuantizationSimModel
@@ -59,6 +67,9 @@ class AdaScaleModelConfig:
     block_type: Type = None  # block types to use in a given model
     beta_gamma_lr: float = 1e-3  # lr for beta and gamma
     scales_lr: float = 5e-4  # lr for s2, s3, [s4]
+    enable_caching_after_block: int = 0
+    # for models with ops in between blocks (ex: Qwen3VL), intermediate activations cannot be cached accurately.
+    # This param can be used to disable caching for initial blocks until the caching strategy can be used.
 
 
 # mapping of model type and the corresponding adascale config
@@ -88,6 +99,18 @@ if Qwen3Model is not None and Qwen3DecoderLayer is not None:
             )
         }
     )
+if Qwen3VLTextModel is not None and Qwen3VLTextDecoderLayer is not None:
+    adascale_model_config_dict.update(
+        {
+            Qwen3VLTextModel: AdaScaleModelConfig(
+                block_type=Qwen3VLTextDecoderLayer,
+                beta_gamma_lr=1e-3,
+                scales_lr=5e-4,
+                enable_caching_after_block=3,
+            )
+        }
+    )
+
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
@@ -176,6 +199,9 @@ class AdaScale:
             forward_fn,
             keep_unused_blocks_on_cpu=True,
             cache_activations_on_disk=True,
+            disable_caching_until_block=cls._model_specific_blocks_to_disable_caching(
+                qsim
+            ),
         )
 
         qsim.model.requires_grad_(False)
@@ -339,6 +365,15 @@ class AdaScale:
                 m for m in qsim.model.modules() if isinstance(m, block_type)
             ]
         return target_modules
+
+    @staticmethod
+    def _model_specific_blocks_to_disable_caching(qsim: QuantizationSimModel) -> int:
+        """helper function to get the number of initial blocks for which caching should be disabled"""
+        target_type = AdaScale._screen_for_target_type(qsim.model)
+        num_blocks_to_disable_caching = adascale_model_config_dict.get(
+            target_type, AdaScaleModelConfig()
+        ).enable_caching_after_block
+        return num_blocks_to_disable_caching
 
     @staticmethod
     def _model_specific_lr(qsim: QuantizationSimModel) -> tuple[float, float]:

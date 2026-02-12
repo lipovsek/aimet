@@ -3,12 +3,15 @@
 
 """LLM base class for GenAI test framework"""
 
+import itertools
 import types
 from abc import abstractmethod, ABC
 from pathlib import Path
 import torch
 from dataclasses import dataclass
 from transformers import PreTrainedTokenizerBase, PreTrainedModel, PretrainedConfig
+
+from .generator import Generator, VLM_Generator
 
 
 @dataclass
@@ -72,6 +75,30 @@ class LLM(ABC):
         config_path = Path(__file__).parent / "config/default_config.json"
         return str(config_path.resolve())
 
+    @staticmethod
+    def get_backbone_input_names(num_layers: int) -> tuple[str, ...]:
+        """Get input names for the backbone model"""
+        names = ["input_ids", "attention_mask", "position_ids"]
+        kv_names = zip(
+            [f"past_key_{i}_in" for i in range(num_layers)],
+            [f"past_value_{i}_in" for i in range(num_layers)],
+        )
+        return tuple(names + list(itertools.chain.from_iterable(kv_names)))
+
+    @staticmethod
+    def get_backbone_output_names(num_layers: int) -> tuple[str, ...]:
+        """Get output names for the backbone model"""
+        names = ["logits"]
+        kv_names = zip(
+            [f"past_key_{i}_out" for i in range(num_layers)],
+            [f"past_value_{i}_out" for i in range(num_layers)],
+        )
+        return tuple(names + list(itertools.chain.from_iterable(kv_names)))
+
+    @staticmethod
+    def get_generator_cls() -> type[Generator]:
+        return Generator
+
 
 class VLM(LLM):
     @classmethod
@@ -86,3 +113,29 @@ class VLM(LLM):
     ) -> tuple[torch.Tensor, ...]:
         """Get sample inputs for visual model QuantSim instantiation or ONNX export"""
         pass
+
+    @staticmethod
+    def get_backbone_input_names(num_layers: int) -> tuple[str, ...]:
+        """Get input names for the backbone model"""
+        names = ["inputs_embeds", "attention_mask", "position_ids"]
+        kv_names = zip(
+            [f"past_key_{i}_in" for i in range(num_layers)],
+            [f"past_value_{i}_in" for i in range(num_layers)],
+        )
+        return tuple(names + list(itertools.chain.from_iterable(kv_names)))
+
+    @staticmethod
+    @abstractmethod
+    def get_visual_input_names() -> tuple[str, ...]:
+        """Get input names for the visual model"""
+        pass
+
+    @staticmethod
+    @abstractmethod
+    def get_visual_output_names() -> tuple[str, ...]:
+        """Get output names for the visual model"""
+        pass
+
+    @staticmethod
+    def get_generator_cls() -> type[VLM_Generator]:
+        return VLM_Generator

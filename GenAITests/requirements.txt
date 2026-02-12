@@ -4,3 +4,4 @@ datasets
 peft
 pytest
 nvidia-ml-py
+qwen_vl_utils

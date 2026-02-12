@@ -68,6 +68,7 @@ class Qwen_25_VL(VLM):
 
     @classmethod
     def get_sample_vision_inputs(cls, config):
+        # todo: need to make this more generic, and dependent on user configured image width and height
         dummy_pixel_values = torch.ones((14308, 1176), dtype=torch.float32)
         dummy_grid_thw = torch.Tensor([[1, 98, 146]]).to(dtype=torch.int64)
         return dummy_pixel_values, dummy_grid_thw
@@ -78,21 +79,36 @@ class Qwen_25_VL(VLM):
         )
         return position_ids.to(dtype=torch.int32)
 
+    @staticmethod
+    def get_visual_input_names() -> tuple[str, ...]:
+        return ("pixel_values", "image_grid_thw")
 
-class VisualWrapper(torch.nn.Module):
+    @staticmethod
+    def get_visual_output_names() -> tuple[str, ...]:
+        return ("image_embeddings",)
+
+
+class Qwen2VLVisualWrapper(torch.nn.Module):
     # Not moving this into shared code since this is pretty model specific
     def __init__(self, visual):
         super().__init__()
         self.visual = visual
 
     def forward(
-        self, pixel_values: torch.Tensor, grid_thw: torch.Tensor
+        self, pixel_values: torch.Tensor, grid_thw: torch.Tensor, _: torch.Tensor
     ) -> torch.Tensor:
-        pixel_values = pixel_values.type(self.visual.dtype)
-        vision_outputs = self.visual(pixel_values, grid_thw=grid_thw, return_dict=True)
-        split_sizes = (grid_thw.prod(-1) // self.visual.spatial_merge_size**2).tolist()
-        image_embeds = torch.split(vision_outputs.pooler_output, split_sizes)
-        return torch.cat(image_embeds, dim=0)
+        if pixel_values is not None:
+            pixel_values = pixel_values.type(self.visual.dtype)
+            vision_outputs = self.visual(
+                pixel_values, grid_thw=grid_thw, return_dict=True
+            )
+            split_sizes = (
+                grid_thw.prod(-1) // self.visual.spatial_merge_size**2
+            ).tolist()
+            image_embeds = torch.split(vision_outputs.pooler_output, split_sizes)
+            return torch.cat(image_embeds, dim=0)
+        else:
+            return None
 
 
 #################################  Exportable Vision Attention for ONNX  #################################

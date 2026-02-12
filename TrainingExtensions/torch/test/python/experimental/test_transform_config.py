@@ -13,12 +13,33 @@ from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer, Qwen3RMS
 from transformers.models.qwen3 import Qwen3Config
 from transformers.models.phi3.modeling_phi3 import Phi3DecoderLayer, Phi3RMSNorm
 from transformers.models.phi3.modeling_phi3 import Phi3Config
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
+    Qwen2_5_VLDecoderLayer,
+    Qwen2_5_VLPatchMerger,
+)
+from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
+    Qwen2_5_VLTextConfig,
+    Qwen2_5_VLVisionConfig,
+)
+from transformers.models.qwen3_vl.modeling_qwen3_vl import (
+    Qwen3VLTextDecoderLayer,
+    Qwen3VLTextRMSNorm,
+    Qwen3VLVisionPatchMerger,
+)
+from transformers.models.qwen3_vl.configuration_qwen3_vl import (
+    Qwen3VLTextConfig,
+    Qwen3VLVisionConfig,
+)
 
 from aimet_torch.experimental.transforms.transform_config import (
     LlamaBlockInterface,
     Qwen2BlockInterface,
     Qwen3BlockInterface,
     Phi3BlockInterface,
+    Qwen2dot5VLBackboneBlockInterface,
+    Qwen3VLBackboneBlockInterface,
+    Qwen25VLMergerInterface,
+    Qwen3VLMergerInterface,
 )
 
 
@@ -29,6 +50,18 @@ from aimet_torch.experimental.transforms.transform_config import (
         (Qwen2DecoderLayer, Qwen2RMSNorm, Qwen2Config, Qwen2BlockInterface),
         (Qwen3DecoderLayer, Qwen3RMSNorm, Qwen3Config, Qwen3BlockInterface),
         (Phi3DecoderLayer, Phi3RMSNorm, Phi3Config, Phi3BlockInterface),
+        (
+            Qwen2_5_VLDecoderLayer,
+            Qwen2RMSNorm,
+            Qwen2_5_VLTextConfig,
+            Qwen2dot5VLBackboneBlockInterface,
+        ),
+        (
+            Qwen3VLTextDecoderLayer,
+            Qwen3VLTextRMSNorm,
+            Qwen3VLTextConfig,
+            Qwen3VLBackboneBlockInterface,
+        ),
     ],
 )
 def test_builtin_block_interface(
@@ -50,3 +83,25 @@ def test_builtin_block_interface(
     assert isinstance(block_interface.down_proj, torch.nn.Linear)
     assert isinstance(block_interface.input_norm, norm_cls)
     assert isinstance(block_interface.post_attention_norm, norm_cls)
+
+
+@pytest.mark.parametrize(
+    "merger_cls, norm_cls, config_cls, merger_interface_cls",
+    [
+        (
+            Qwen3VLVisionPatchMerger,
+            torch.nn.LayerNorm,
+            Qwen3VLVisionConfig,
+            Qwen3VLMergerInterface,
+        ),
+    ],
+)
+def test_builtin_merger_interface(
+    merger_cls, norm_cls, config_cls, merger_interface_cls
+):
+    config = config_cls()
+    merger = merger_cls(config=config)
+    merger_interface = merger_interface_cls(merger)
+    assert isinstance(merger_interface.linear1, torch.nn.Linear)
+    assert isinstance(merger_interface.linear2, torch.nn.Linear)
+    assert isinstance(merger_interface.norm, norm_cls)

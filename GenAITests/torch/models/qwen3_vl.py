@@ -6,27 +6,24 @@
 import warnings
 import torch
 
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModel
-
 from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.nn.true_quant import QuantizationMixin
-from aimet_torch.v2.nn.transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
-    QuantizedQwen2RMSNorm,
+from aimet_torch.v2.nn.transformers.models.qwen3_vl.modeling_qwen3_vl import (
+    QuantizedQwen3VLTextRMSNorm,
 )
 
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.base import SimCollection
-from GenAITests.shared.models.qwen2_vl import (
-    Qwen_25_VL,
-    Qwen2VLVisualWrapper,
-    Qwen2_5_VL_FastExportable_Mixin,
+from GenAITests.shared.models.qwen3_vl import (
+    Qwen_3_VL,
+    Qwen3VLVisualWrapper,
 )
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 
 @YAMLConfigParser.register_model
-class Qwen_25_VL_Torch(Qwen_25_VL):
+class Qwen_3_VL_Torch(Qwen_3_VL):
     @classmethod
     def instantiate_quantsim(
         cls,
@@ -54,6 +51,7 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
             model.model.language_model,
             lm_head=model.lm_head,
             use_inputs_embeds=True,
+            extra_input_names=cls.get_visual_output_names()[1:],
         )
         language_sim = QuantizationSimModel(
             model=traceable_backbone,
@@ -71,11 +69,11 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
 
         language_sim.model.lm_head.param_quantizers["weight"].bitwidth = 8
         for _, module in language_sim.model.named_modules():
-            if isinstance(module, QuantizedQwen2RMSNorm):
+            if isinstance(module, QuantizedQwen3VLTextRMSNorm):
                 module.param_quantizers["weight"].bitwidth = 16
 
         # 2) Wrap visual model to make it traceable
-        traceable_visual = Qwen2VLVisualWrapper(model.model.visual)
+        traceable_visual = Qwen3VLVisualWrapper(model.model.visual)
         visual_sim = QuantizationSimModel(
             model=traceable_visual,
             quant_scheme=QuantScheme.post_training_tf,
@@ -101,10 +99,3 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
             config=model.config,
             position_id_processor=cls.generate_position_ids,
         )
-
-
-@YAMLConfigParser.register_model
-class Qwen_25_VL_FastExportable_Torch(
-    Qwen_25_VL_Torch, Qwen2_5_VL_FastExportable_Mixin
-):
-    pass
