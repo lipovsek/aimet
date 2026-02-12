@@ -135,6 +135,11 @@ class AdaScale:
                 sim, adascale_model_config.model_type
             )
 
+            device = get_torch_device(sim.session)
+            del sim.session
+            gc.collect()
+            torch.cuda.empty_cache()
+
             with tempfile.TemporaryDirectory() as tempdir:
                 fp32_model = copy.deepcopy(sim.model.model)
                 fp32_model = QuantizationSimModel.remove_quantizers(fp32_model)
@@ -217,6 +222,7 @@ class AdaScale:
                         adascale_model_config.beta_gamma_lr,
                         adascale_model_config.scales_lr,
                         num_iterations,
+                        device,
                     )
                     del fp_input_list, qsim_input_list, fp_inputs, qsim_inputs
                     gc.collect()
@@ -246,9 +252,9 @@ class AdaScale:
         beta_gamma_lr: float = 1e-3,
         scales_lr: float = 5e-4,
         num_iterations: int = 1500,
+        device: torch.device = torch.device("cpu"),
     ):
         """
-        :param fp32_model_path: ONNX model path with original FP32 model weights
         :param sim: QuantizationSimModel object created using the fp32 model
         :param fp_inputs: List of input tensors to the block
         :param quantized_inputs: List of quantized input tensors to the block
@@ -256,6 +262,7 @@ class AdaScale:
         :param beta_gamma_lr: learning rate to use for beta/gamma params
         :param scales_lr: learning rate to use for scales params
         :param num_iterations: Number of iterations to optimize for during AdaScale
+        :param device: torch device to use for optimization
 
         This API performs adascale on the block through the following steps:
             - Using the block input and output tensor names, get the onnx block
@@ -277,8 +284,7 @@ class AdaScale:
         torch_fp_input = convert_to_torch(fp_inputs)
         torch_quant_input = convert_to_torch(quantized_inputs)
 
-        torch_device = get_torch_device(sim.session)
-        pytorch_block.to(torch_device)
+        pytorch_block.to(device)
         fp_out = []
         with torch.no_grad():
             for input_tensor in torch_fp_input:
@@ -286,7 +292,7 @@ class AdaScale:
                     input_tensor = [input_tensor]
 
                 for i, in_t in enumerate(input_tensor):
-                    input_tensor[i] = in_t.to(device=torch_device)
+                    input_tensor[i] = in_t.to(device=device)
                 out = pytorch_block(*input_tensor).detach()
 
                 out.requires_grad_(False)
@@ -320,6 +326,9 @@ class AdaScale:
             optimizer, T_max=num_iterations, eta_min=0.0
         )
 
+        gc.collect()
+        torch.cuda.empty_cache()
+
         with torch.set_grad_enabled(True):
             for iteration in tqdm.tqdm(range(num_iterations)):
                 fp_input = torch_fp_input[iteration % len(torch_fp_input)]
@@ -335,15 +344,15 @@ class AdaScale:
                         quant_input,
                         fp_input,
                     )
-                pytorch_block.to(torch_device)
+                pytorch_block.to(device)
                 if isinstance(input_tensor, torch.Tensor):
-                    input_tensor = input_tensor.to(device=torch_device)
+                    input_tensor = input_tensor.to(device=device)
                     quant_out = pytorch_block(input_tensor)
                 else:
                     for i, in_t in enumerate(input_tensor):
-                        input_tensor[i] = in_t.to(device=torch_device)
+                        input_tensor[i] = in_t.to(device=device)
                     quant_out = pytorch_block(*input_tensor)
-                batch_fp_out = fp_out[iteration % len(torch_fp_input)].to(torch_device)
+                batch_fp_out = fp_out[iteration % len(torch_fp_input)].to(device)
                 loss = _LOSS_FN(
                     quant_out,
                     batch_fp_out,
@@ -354,6 +363,9 @@ class AdaScale:
                 scheduler.step()
                 optimizer.zero_grad()
                 del quant_out, batch_fp_out, loss, input_tensor, fp_input, quant_input
+
+                gc.collect()
+                torch.cuda.empty_cache()
 
         copy_pt_weights_to_onnx(
             pytorch_block, sim.model.model, pt_weights_to_onnx_initializers
