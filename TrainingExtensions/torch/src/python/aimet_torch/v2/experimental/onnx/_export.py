@@ -954,6 +954,20 @@ def _remove_constants(onnx_model: onnx.ModelProto, constant_names: Iterable[str]
             onnx_model.graph.node.remove(node)
 
 
+def _iterate_graph_nodes_recursive(graph: onnx.GraphProto) -> Iterable[onnx.NodeProto]:
+    for node in graph.node:
+        yield node
+
+        if node.op_type == "If":
+            for attr in node.attribute:
+                # then/else branch subgraphs
+                yield from _iterate_graph_nodes_recursive(attr.g)
+
+        elif node.op_type in ("Loop", "Scan"):
+            body = next(attr for attr in node.attribute if attr.name == "body")
+            yield from _iterate_graph_nodes_recursive(body.g)
+
+
 def _get_producer_consumer_info_from_onnx_graph(onnx_model: onnx.ModelProto):
     """
     Get producer and consumer information from ONNX graph for graph traversal.
@@ -963,7 +977,7 @@ def _get_producer_consumer_info_from_onnx_graph(onnx_model: onnx.ModelProto):
     name_to_producer = {}
     name_to_consumer = defaultdict(list)
 
-    for node in onnx_model.graph.node:
+    for node in _iterate_graph_nodes_recursive(onnx_model.graph):
         for output_name in node.output:
             name_to_producer[output_name] = node
 

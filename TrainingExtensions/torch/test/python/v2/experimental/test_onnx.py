@@ -2139,3 +2139,64 @@ def test_export_fp4_int8(tmp_path: pathlib.Path, dynamo: bool):
         next(init for init in onnx_qdq_model.graph.initializer if init.name == zp_name)
     )
     assert (zp_array == 0).all()
+
+
+def test_control_flow_op_export(tmp_path: pathlib.Path):
+    """
+    Given: Model with control flow op (If, Loop, and Scan)
+    When: Export to onnx QDQ
+    Then: Should export successfully and the exported onnx model should be valid
+    """
+
+    class Model(torch.nn.Module):
+        """
+        torch.Tensor.squeeze(0) is a conditional operator which only takes
+        effect if axis 0 is singleton axis. Assuming axis 0 is dynamic
+        batch dimension, torch.Tensor.squeeze(0) will be exported to onnx as
+        control flow operator If which looks like this:
+
+        output = If(
+            condition=Eq(Shape(input)[0], 1),
+            then_branch=Squeeze(input, axes=0),
+            else_branch=Identity(input),
+        )
+        """
+
+        def __init__(self):
+            super(Model, self).__init__()
+            self.linear = torch.nn.Linear(10, 10)
+
+        def forward(self, x):
+            x = self.linear(x)
+            return x.squeeze(0)
+
+    model = Model()
+    input = torch.randn(10, 10)
+    sim = aimet_torch.QuantizationSimModel(model, input)
+    sim.compute_encodings(lambda model: model(input))
+
+    aimet_torch.onnx.export(
+        sim.model,
+        input,
+        tmp_path / "squeeze.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        dynamo=False,
+    )
+    onnx_qdq_model = onnx.load(tmp_path / "squeeze.onnx")
+    # Sanity check
+    assert any(node.op_type == "If" for node in onnx_qdq_model.graph.node)
+    onnx.checker.check_model(onnx_qdq_model)
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_qdq_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out,) = sess.run(None, {"input": input.detach().numpy()})
+    expected_out = sim.model(input)
+    atol = sim.model.linear.output_quantizers[0].get_scale().item()
+    assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
