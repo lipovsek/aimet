@@ -599,9 +599,16 @@ class OrtInferenceSession(InferenceSession):
                 self.model_dir = tempfile.mkdtemp()
                 path = self.model_dir
             model_path = os.path.join(path, "model.onnx")
-            save_model_with_external_weights(
-                model, model_path, location=Path(model_path).name + ".data"
+            # Use a deep copy to avoid memory accumulation in the original model.
+            # See LazyExtractor.__init__ for detailed explanation of protobuf memory behavior.
+            model_copy = copy.deepcopy(model)
+            onnx.save_model(
+                model_copy,
+                model_path,
+                save_as_external_data=True,
+                location=Path(model_path).name + ".data",
             )
+            del model_copy
         else:
             model_path = model
 
@@ -683,16 +690,21 @@ class LazyExtractor(Extractor):
         self.model_dir = tempfile.mkdtemp()
         model_path = os.path.join(self.model_dir, "model.onnx")
 
-        # Writes the .onnx file and external weight files to disk and
-        # the same model object is restored with weights embedded so that it is fully self-contained again.
-        save_model_with_external_weights(
-            model,
+        # Use a deep copy to avoid memory accumulation in the original model.
+        # Protobuf doesn't release memory when fields are cleared - it allocates new memory on reload.
+        # This causes the ModelProto to grow by the weight size on each call. By operating on a
+        # disposable copy, we take a temporary memory hit but avoid permanent growth in the original.
+        model_copy = copy.deepcopy(model)
+        onnx.save_model(
+            model_copy,
             model_path,
             location=Path(model_path).name + ".data",
             size_threshold=1024**2,
             all_tensors_to_one_file=False,
             convert_attribute=True,
+            save_as_external_data=True,
         )
+        del model_copy
 
         # Load model without external data for extraction
         self.model_with_no_data = onnx.load_model(model_path, load_external_data=False)

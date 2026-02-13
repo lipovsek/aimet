@@ -163,7 +163,7 @@ class AdaScale:
 
                     qsim_sess = ActivationSampler(
                         blocks_end_points[idx][0].inputs[0].name,
-                        copy.deepcopy(sim.model.model),
+                        sim.model.model,
                         sim.providers,
                     )
 

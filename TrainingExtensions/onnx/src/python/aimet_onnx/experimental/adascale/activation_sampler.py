@@ -40,7 +40,7 @@ class ActivationSampler:
         :param activation_name: tensor name of the module whose output we want to retrieve
         :param model_or_path: ONNX ModelProto or path to an ONNX model file
         :param providers: List of providers to use
-        :path: path of stored fp model
+        :param path: path of stored fp model
         :return: Input data to quant op, Output data from original op
         """
         self._activation_name = activation_name
@@ -63,15 +63,7 @@ class ActivationSampler:
         :param model_or_path: ONNX ModelProto or path to an ONNX model file
         :param activation: activation to add a hook to
         :param providers: List of providers to use
-        :path: path to store the onnx model
-
-        Note:
-        Aimet wrapper for OrtInferenceSession is saving and loading the onnx-model before creating a session.
-        Each time load_external_data_for_model is called, it is allocating new memory for the weights and not reusing the existing memory
-        Workaround:
-        1. QuantSim: Pass a copy of the model when creating ActivationSampler
-        2. FP : Save the fp model to disk with save_as_external_data = True. Load the model , add hooks and create session with model path,
-            (will load the saved weights from disk)
+        :param path: path to store the onnx model
         """
         if isinstance(model_or_path, str):
             model = onnx.load(model_or_path, load_external_data=False)

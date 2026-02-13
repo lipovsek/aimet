@@ -3,6 +3,8 @@
 
 # /usr/bin/env python
 
+import gc
+import psutil
 import time
 import pytest
 from unittest.mock import MagicMock
@@ -268,6 +270,11 @@ def _timed_run(fn, *args, runs=5):
         fn(*args)
         times.append(time.time() - start)
     return sum(times) / len(times)
+
+
+def _get_rss_mb():
+    """Get current CPU RAM RSS in MB."""
+    return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
 
 
 @pytest.mark.parametrize(
@@ -1239,6 +1246,84 @@ def test_bq_lpbq_functional(swap_quantizer_func, model_factory, block_size):
         if param_name is not None:
             quantizer = sim.qc_quantize_op_dict[param_name]
             assert quantizer.is_encoding_frozen()
+
+
+def test_add_value_info_no_memory_leak():
+    """
+    Test that _add_value_info does not cause memory growth.
+
+    The fix ensures that when we copy the model and clear raw_data from initializers,
+    we operate on a copy rather than temporarily modifying the original model.
+    This prevents memory leaks caused by protobuf not releasing memory when fields are cleared.
+    """
+
+    def _create_dummy_model(weight_size_mb: int = 100):
+        """
+        Create an ONNX model with large matmul weight
+        """
+        num_floats = (weight_size_mb * 1024 * 1024) // 4
+        dim = int(np.sqrt(num_floats))
+        weight = np.random.randn(dim, dim).astype(np.float32)
+
+        input_tensor = onnx.helper.make_tensor_value_info(
+            "input", onnx.TensorProto.FLOAT, [1, dim]
+        )
+        output_tensor = onnx.helper.make_tensor_value_info(
+            "output", onnx.TensorProto.FLOAT, [1, dim]
+        )
+        weight_initializer = onnx.numpy_helper.from_array(weight, name="weight")
+        matmul_node = onnx.helper.make_node(
+            "MatMul",
+            inputs=["input", "weight"],
+            outputs=["output"],
+            name="matmul",
+        )
+        graph = onnx.helper.make_graph(
+            [matmul_node],
+            "matmul_graph",
+            inputs=[input_tensor],
+            outputs=[output_tensor],
+            initializer=[weight_initializer],
+        )
+        model = onnx.helper.make_model(
+            graph, ir_version=10, opset_imports=[onnx.helper.make_opsetid("", 20)]
+        )
+        return model
+
+    weight_size_mb = 100
+    model = _create_dummy_model(weight_size_mb)
+
+    sim = QuantizationSimModel(
+        model=model,
+        providers=["CPUExecutionProvider"],
+        default_param_bw=4,
+    )
+
+    # Warm up
+    gc.collect()
+    with _add_value_info(sim.model.model):
+        pass
+    gc.collect()
+
+    rss_before = _get_rss_mb()
+
+    # Run multiple iterations to amplify any memory leak
+    num_iterations = 5
+    for _ in range(num_iterations):
+        with _add_value_info(sim.model.model):
+            pass
+        gc.collect()
+
+    rss_after = _get_rss_mb()
+
+    # If there was a leak, we expect growth of weight_size_mb * num_iterations
+    memory_growth = rss_after - rss_before
+    max_allowed_growth_mb = 20  # Allow small fluctuations
+
+    print(
+        f"RSS before: {rss_before:.1f} MB, RSS after: {rss_after:.1f} MB, Growth: {memory_growth:.1f} MB"
+    )
+    assert memory_growth < max_allowed_growth_mb
 
 
 class TestDependencyGraph:
