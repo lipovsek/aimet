@@ -33,12 +33,13 @@ jobs:
     if: github.server_url != 'https://github.com'
     uses: ./.github/workflows/pre-commit.yml
 
-  set_ref_name:
-    name: Set ref_name to run nightly pipeline on
+  set_vars:
+    name: Set pipeline variables
     runs-on: ubuntu-latest
     needs: pre-commit-check
     outputs:
       ref_name: ${{ steps.set_branch_name.outputs.REF_BRANCH }}
+      build_docker_images: ${{ steps.set_build_docker_images.outputs.BUILD_DOCKER_IMAGES }}
     steps:
       - name: Set input ref_name if provided, otherwise current working ref
         id: set_branch_name
@@ -52,24 +53,38 @@ jobs:
           echo "REF_BRANCH=${REF_BRANCH}" >> "$GITHUB_OUTPUT"
           echo "Using ref_name: ${REF_BRANCH} for nightly."
 
+      - name: Set build_docker_images from input or default to true for schedule
+        id: set_build_docker_images
+        run: |
+          if [[ -n "${{ inputs.build_docker_images }}" ]]; then
+            BUILD_DOCKER_IMAGES="${{ inputs.build_docker_images }}"
+          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+            BUILD_DOCKER_IMAGES="true"
+          else
+            BUILD_DOCKER_IMAGES="false"
+          fi
+
+          echo "BUILD_DOCKER_IMAGES=${BUILD_DOCKER_IMAGES}" >> "$GITHUB_OUTPUT"
+          echo "build_docker_images: ${BUILD_DOCKER_IMAGES}"
+
   docker-tag:
     name: Check if 'latest' tag could be used (no build docker images)
     runs-on: ubuntu-latest
-    needs: set_ref_name
+    needs: set_vars
     outputs:
       tag: ${{ steps.tag.outputs.value }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.set_ref_name.outputs.ref_name }}
+          ref: ${{ needs.set_vars.outputs.ref_name }}
       - name: "Set a docker image tag"
         id: tag
         shell: bash
         run: |
           set -x
 
-          # Build docker images if specified.
-          if [[ -n "${{ inputs.build_docker_images }}" ]]; then
+          # Build docker images if specified (defaults to true for schedule events).
+          if [[ "${{ needs.set_vars.outputs.build_docker_images }}" == "true" ]]; then
             tag="$(git rev-parse --short HEAD)"
           else
             tag="latest"
@@ -79,13 +94,13 @@ jobs:
   variants:
     name: Define supported AIMET variants
     runs-on: ubuntu-latest
-    needs: set_ref_name
+    needs: set_vars
     outputs:
       matrix: ${{ steps.final.outputs.value }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.set_ref_name.outputs.ref_name }}
+          ref: ${{ needs.set_vars.outputs.ref_name }}
       - name: Torch variants
         run: |
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
@@ -170,14 +185,14 @@ jobs:
   docker-build-image:
     name: Docker image ${{ matrix.id }}
     runs-on: ubuntu-latest
-    needs: [ docker-tag, variants, set_ref_name ]
+    needs: [ docker-tag, variants, set_vars ]
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.set_ref_name.outputs.ref_name }}
+          ref: ${{ needs.set_vars.outputs.ref_name }}
       - uses: ./.github/actions/docker-build-image
         with:
           dockerfile: Jenkins/fast-release/Dockerfile.ci
@@ -205,7 +220,7 @@ jobs:
 
   call-unit-acceptance-tests:
     name: Run unit and acceptance tests
-    needs: [ variants, call-build-wheels ]
+    needs: [ call-build-wheels ]
     uses: ./.github/workflows/run-unit-acceptance-tests.yml
     strategy:
       matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
@@ -222,8 +237,28 @@ jobs:
       include_windows_tests: true
     secrets: inherit
 
+  docker-push-latest:
+    needs: [ call-unit-acceptance-tests ]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
+    steps:
+      - run: sudo sh -c "cp /tmp/certs/* /usr/local/share/ca-certificates/ && update-ca-certificates"
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_LOGIN }}
+          password: ${{ secrets.DOCKER_CREDENTIALS }}
+      - name: Create the 'latest' docker image tag
+        if: ${{ github.ref_name == github.event.repository.default_branch && needs.set_vars.outputs.build_docker_images == 'true' && needs.docker-tag.outputs.tag != 'latest' }}
+        run: docker buildx imagetools create ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}:${{ needs.docker-tag.outputs.tag }} --tag ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}:latest
+
   cleanup:
-    needs: [ docker-tag, variants, call-build-wheels ]
+    needs: [ docker-push-latest ]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
