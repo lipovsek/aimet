@@ -29,7 +29,7 @@ inputs:
     required: false
     default: "latest"
   build-args:
-    description: "Docker build arguments"
+    description: "Docker build argunebts"
     required: false
     default: ""
 

@@ -36,6 +36,7 @@ from aimet_torch.v2.quantization.affine import (
 )
 from aimet_torch.v2.quantization import affine
 import aimet_torch.v2.quantization as Q
+from ...test_deepspeed import CustomMPU
 
 
 @pytest.fixture(autouse=True)
@@ -1075,7 +1076,6 @@ def test_is_initialized_with_deepspeed_zero3(
     init_process_group, deepspeed_zero3_config, params
 ):
     import deepspeed as ds
-    from ...test_deepspeed import CustomMPU
 
     """
     When: Partition a quantizer with deepspeed zero 3

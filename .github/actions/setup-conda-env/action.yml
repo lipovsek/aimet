@@ -1,0 +1,78 @@
+name: Setup Conda environment
+
+description: Creates a Conda environment and installs AIMET wheels with retry logic
+
+inputs:
+  ENV_NAME:
+    description: "Conda environment name"
+    required: true
+  VER_PYTHON:
+    description: "Python version"
+    required: true
+  VER_CUDA:
+    description: "CUDA version"
+    required: true
+  VER_TORCH:
+    description: "torch version"
+    required: true
+  VER_ONNXRUNTIME:
+    description: "onnxruntime version"
+    required: true
+  PIP_INDEX:
+    description: "PyPI or GitHub release"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Conda and Install AIMET
+      shell: bash
+      run: |
+        set -x
+
+        MAX_TRIES=2 # adjust based on failures
+        RETRY_DELAY=10 # adjust based on failures
+        COUNT=0
+
+        curl -o ./conda.sh -L "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname -s)-$(uname -m).sh"
+        bash ./conda.sh -u -b -p ./.conda
+
+        until [ $COUNT -ge $MAX_TRIES ]
+        do
+            # torch-gpu: create conda environment with CUDA packages (needed for deepspeed related tests)
+            # onnx-gpu: create conda environment with only cudart
+            # tf-gpu: create basic conda environment, since correct combination for CUDA and CuDNN isn't available on CUDA-11.8 channel, we are not testing tf-gpu on CUDA device
+            if [ "${{ inputs.VER_TORCH }}" != "" ] && [ "${{ inputs.VER_CUDA }}" != "" ]; then
+                ./.conda/bin/conda create --name "${{ inputs.ENV_NAME }}" python="${{ inputs.VER_PYTHON }}" cuda-runtime cuda-libraries-dev cuda-compiler --channel nvidia/label/cuda-${{ inputs.VER_CUDA }} && break
+            elif [ "${{ inputs.VER_ONNXRUNTIME }}" != "" ] && [ "${{ inputs.VER_CUDA }}" != "" ]; then
+                ./.conda/bin/conda create --name "${{ inputs.ENV_NAME }}" python="${{ inputs.VER_PYTHON }}" cuda-runtime --channel nvidia/label/cuda-${{ inputs.VER_CUDA }} && break
+            else
+                ./.conda/bin/conda create --name "${{ inputs.ENV_NAME }}" python="${{ inputs.VER_PYTHON }}" && break
+            fi
+            COUNT=$((COUNT+1))
+            echo "Retry $COUNT failed, Retrying in $RETRY_DELAY seconds..."
+            sleep $RETRY_DELAY
+        done
+        if [ $COUNT -eq $MAX_RETRIES ] ; then
+            echo "Setup Conda environment creation failed after $MAX_RETRIES attempts."
+            exit 1 # gracefully exit if all retries fail
+        fi
+        ./.conda/bin/conda run --live-stream --name "${{ inputs.ENV_NAME }}" python3 -m pip install uv
+
+        cu=$(echo "${{ inputs.VER_CUDA }}" | awk -F'.' '{print ($1!="")? "cu"$1$2 : "cpu"}')
+
+        if [ "${{ inputs.VER_ONNXRUNTIME }}" != "" ]; then
+            AIMET_ONNX="aimet-onnx[test]"
+        else
+            AIMET_ONNX=""
+            AIMET_TORCH="aimet-torch[test,v1-deps]"
+        fi
+
+        # torch-cpu: requires an additional package index for installation
+        # torch-cpu: using the 'unsafe-best-match' strategy allows uv to select the best match across both indexes
+        # other packages: can be resolved using the default PyPI index alone
+        ./.conda/bin/conda run --live-stream --name "${{ inputs.ENV_NAME }}" \
+            uv pip install ${AIMET_ONNX} ${AIMET_TORCH} \
+               -f downloads \
+               --extra-index-url="https://download.pytorch.org/whl/${cu}" \
+               --index-strategy unsafe-best-match
