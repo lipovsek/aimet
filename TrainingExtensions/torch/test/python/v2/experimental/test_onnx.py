@@ -1739,7 +1739,8 @@ def test_triton(
     assert torch_builtin_export == triton_export
 
 
-def test_activation_uint(tmp_path: pathlib.Path):
+@pytest.mark.parametrize("force_activation_as", ["unsigned", "signed", None])
+def test_activation_uint(tmp_path: pathlib.Path, force_activation_as: str | None):
     """
     Given: Model with symmetric activation encoding
     When: Export to onnx QDQ
@@ -1771,6 +1772,7 @@ def test_activation_uint(tmp_path: pathlib.Path):
         opset_version=21,
         input_names=["x", "y"],
         output_names=["output"],
+        force_activation_as=force_activation_as,
     )
 
     onnx_model = onnx.load(tmp_path / "model.onnx")
@@ -1780,7 +1782,19 @@ def test_activation_uint(tmp_path: pathlib.Path):
     for node in onnx_model.graph.node:
         if node.op_type in ("QuantizeLinear", "DequantizeLinear"):
             zero_point = node.input[2]
-            assert initializers[zero_point].data_type == TensorProto.UINT16
+
+            if force_activation_as == "unsigned":
+                expected_dtype = TensorProto.UINT16
+            elif force_activation_as == "signed":
+                expected_dtype = TensorProto.INT16
+            else:
+                expected_dtype = (
+                    TensorProto.INT16
+                    if node.input[0] in ("y", "y_q")
+                    else TensorProto.UINT16
+                )
+
+            assert initializers[zero_point].data_type == expected_dtype
 
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL

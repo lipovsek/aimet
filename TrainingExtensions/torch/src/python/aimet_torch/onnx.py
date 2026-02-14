@@ -10,7 +10,7 @@ import itertools
 from aimet_torch.v2.utils import patch_attr
 from packaging import version
 import traceback
-from typing import Any, Mapping, Tuple, Union
+from typing import Any, Mapping, Tuple, Union, Literal
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +52,7 @@ def export(
     *,
     export_int32_bias: bool = True,
     prequantize_constants: bool = False,
+    force_activation_as: Literal["unsigned"] | Literal["signed"] | None = "unsigned",
     **kwargs,
 ):
     """
@@ -65,10 +66,13 @@ def export(
         args: Same as `torch.onnx.export()`
         f: Same as `torch.onnx.export()`
         export_int32_bias (bool, optional):
-            If true, generate and export int32 bias encoding on the fly (default: `True`)
+            If true, generate and export int32 bias encoding on the fly (default: `True`).
         prequantize_constants (bool):
-            If True, weights will be represented as quantized weight followed by DequantizeLinear nodes.
-            If False, weights will be represented as float tensors followed by QuantizeLinear and DequantizeLinear nodes.
+            If True, quantized weights will be represented as quantized weight followed by DequantizeLinear.
+            If False, they will be represented as floating point weight followed by
+            QuantizeLinear and DequantizeLinear (default: `False`).
+        force_activation_as (str):
+            Force representing quantized activations as signed or unsigned integers (default: `"unsigned"`)
         **kwargs: Same as `torch.onnx.export()`
 
 
@@ -112,7 +116,7 @@ def export(
     base_dir = str(Path(str(f)).absolute().parent)
 
     _check_opset_version(kwargs)
-    _check_unsupported_args(model, kwargs)
+    _check_unsupported_args(model, force_activation_as, kwargs)
     _check_non_standard_quantizer(model)
 
     target_version = kwargs.pop("opset_version", _TORCH_DEFAULT_OPSET)
@@ -133,7 +137,12 @@ def export(
 
         # Export quantize-dequantized weight
         # pylint: disable=protected-access
-        stack.enter_context(_temporarily_convert_activation_to_uint(model))
+        if force_activation_as in ("unsigned", "signed"):
+            signed = force_activation_as == "signed"
+            stack.enter_context(
+                _temporarily_convert_activation_to(model, signed=signed)
+            )
+
         stack.enter_context(QuantizationSimModel._apply_qdq_to_model_parameters(model))
 
         # Remove [b]float16 quantizers
@@ -259,7 +268,7 @@ def _check_opset_version(kwargs):
         raise ValueError(f"Unsupported ONNX opset version: {opset_version}")
 
 
-def _check_unsupported_args(model, kwargs):
+def _check_unsupported_args(model, force_activation_as, kwargs):
     if _TORCH_VERSION >= version.parse("2.0.0") and isinstance(
         model,
         torch._dynamo.OptimizedModule,  # pylint: disable=protected-access
@@ -269,6 +278,11 @@ def _check_unsupported_args(model, kwargs):
                 "Exporting a torch.compile-d quantsim model is only supported in torch >= 2.11.0. "
                 "For more information, see https://github.com/pytorch/pytorch/issues/171674"
             )
+
+    if force_activation_as not in ("unsigned", "signed", None):
+        raise ValueError(
+            f"force_activation_as must be either 'unsigned', 'signed' or None; got {force_activation_as}"
+        )
 
     dynamo = kwargs.get("dynamo", _TORCH_VERSION >= version.parse("2.9.0"))
 
@@ -939,7 +953,7 @@ def _absorb_zero_point_shift(model: torch.nn.Module):
 
 
 @contextlib.contextmanager
-def _temporarily_convert_activation_to_uint(model: torch.nn.Module):
+def _temporarily_convert_activation_to(model: torch.nn.Module, signed: bool):
     """
     Temporarily convert all signed activation quantizers to unsigned ones for onnx export.
 
@@ -947,18 +961,18 @@ def _temporarily_convert_activation_to_uint(model: torch.nn.Module):
           Remove this once the bug is fixed.
           (https://github.qualcomm.com/qualcomm-ai/aimet/issues/5236)
     """
-    signed_int_activation_quantizers = [
+    target_activation_quantizers = [
         qtzr
         for module in model.modules()
         if isinstance(module, QuantizationMixin)
         for qtzr in itertools.chain(module.input_quantizers, module.output_quantizers)
-        if isinstance(qtzr, AffineQuantizerBase) and qtzr.signed
+        if isinstance(qtzr, AffineQuantizerBase) and qtzr.signed != signed
     ]
 
     try:
-        for qtzr in signed_int_activation_quantizers:
-            qtzr.signed = False
+        for qtzr in target_activation_quantizers:
+            qtzr.signed = signed
         yield
     finally:
-        for qtzr in signed_int_activation_quantizers:
-            qtzr.signed = True
+        for qtzr in target_activation_quantizers:
+            qtzr.signed = not signed

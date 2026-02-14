@@ -18,6 +18,7 @@ from typing import (
     Type,
     TypeVar,
     Union,
+    Literal,
 )
 import warnings
 import itertools
@@ -883,7 +884,9 @@ class QuantizationSimModelOnnxExporter:
             Version of the encoding format to use. (default: {quantsim.encoding_version})
             Supported versions are: {sorted(list(quantsim.VALID_ENCODING_VERSIONS))}
         export_int32_bias (bool, optional):
-            If true, generate and export int32 bias encoding on the fly (default: `True`)
+            If true, generate and export int32 bias encoding on the fly (default: `True`).
+        force_activation_as (str):
+            Force representing quantized activations as signed or unsigned integers (default: `"unsigned"`)
         **kwargs: Same as `torch.onnx.export()`
 
     .. _torch.onnx.export(): https://docs.pytorch.org/docs/stable/onnx_torchscript.html#torch.onnx.export
@@ -909,6 +912,9 @@ class QuantizationSimModelOnnxExporter:
         *,
         encoding_version: Optional[str] = None,
         export_int32_bias: bool = True,
+        force_activation_as: Literal["unsigned"]
+        | Literal["signed"]
+        | None = "unsigned",
         **kwargs,
     ):
         encoding_version = encoding_version or quantsim.encoding_version
@@ -920,7 +926,7 @@ class QuantizationSimModelOnnxExporter:
             )
 
         from aimet_torch.onnx import (
-            _temporarily_convert_activation_to_uint,
+            _temporarily_convert_activation_to,
             _check_unsupported_args,
             _concretize_int32_bias_quantizers,
             _remove_fp16_quantizers,
@@ -929,7 +935,7 @@ class QuantizationSimModelOnnxExporter:
             _temporarily_unfold_param_quantizers,
         )
 
-        _check_unsupported_args(self.sim.model, kwargs)
+        _check_unsupported_args(self.sim.model, force_activation_as, kwargs)
 
         with contextlib.ExitStack() as stack:
             # Unfold all param quantizers to incorporate QuantizeLinear/DequantizeLinear
@@ -946,7 +952,12 @@ class QuantizationSimModelOnnxExporter:
 
             # Export quantize-dequantized weight
             # pylint: disable=protected-access
-            stack.enter_context(_temporarily_convert_activation_to_uint(self.sim.model))
+            if force_activation_as in ("unsigned", "signed"):
+                signed = force_activation_as == "signed"
+                stack.enter_context(
+                    _temporarily_convert_activation_to(self.sim.model, signed=signed)
+                )
+
             stack.enter_context(self.sim._apply_qdq_to_model_parameters(self.sim.model))
 
             # Remove [b]float16 quantizers
