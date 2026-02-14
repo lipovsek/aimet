@@ -430,22 +430,26 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         """
         :meta private:
         """
-        if self.maxval is None:
-            torch_dtype = self._finfo.to_torch_dtype()
+        torch_dtype = self._finfo.to_torch_dtype()
 
-            if torch_dtype is not None:
-                return f"dtype={torch_dtype}"
-
-        exponent_bits, mantissa_bits, finite, unsigned_zero = self._finfo
-
-        return " ".join(
-            [
+        if torch_dtype is not None:
+            extra_repr = [f"dtype={torch_dtype}"]
+        else:
+            exponent_bits, mantissa_bits, finite, unsigned_zero = self._finfo
+            extra_repr = [
                 f"exponent_bits={exponent_bits}",
                 f"mantissa_bits={mantissa_bits}",
                 f"finite={finite}",
                 f"unsigned_zero={unsigned_zero}",
             ]
-        )
+
+        if self.shape:
+            extra_repr.append(f"shape={self.shape}")
+
+        if self.block_size:
+            extra_repr.append(f"block_size={self.block_size}")
+
+        return ", ".join(extra_repr)
 
 
 class QuantizeDequantize(FloatQuantizeDequantize):

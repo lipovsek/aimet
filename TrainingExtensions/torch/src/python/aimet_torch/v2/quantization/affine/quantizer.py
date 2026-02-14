@@ -516,15 +516,19 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
         self.set_range(min_, max_)
 
     def extra_repr(self) -> str:
-        extra_repr = f"shape={self.shape}"
+        extra_repr = [f"shape={self.shape}"]
 
-        if self.block_size is not None:
-            extra_repr += f", block_size={self.block_size}"
+        if self.block_size:
+            extra_repr.append(f"block_size={self.block_size}")
 
-        extra_repr += (
-            f", qmin={self.qmin}, qmax={self.qmax}, symmetric={self.symmetric}"
-        )
-        return extra_repr
+        extra_repr.append(f"qmin={self.qmin}")
+        extra_repr.append(f"qmax={self.qmax}")
+        extra_repr.append(f"symmetric={self.symmetric}")
+
+        if self.zero_point_shift:
+            extra_repr.append(f"zero_point_shift={self.zero_point_shift}")
+
+        return ", ".join(extra_repr)
 
     @property
     def symmetric(self) -> bool:
