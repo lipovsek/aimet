@@ -10,12 +10,16 @@ from aimet_torch.v2.nn.true_quant import QuantizationMixin
 
 try:
     from transformers.models.gemma3 import modeling_gemma3
-    from transformers.activations import PytorchGELUTanh
 except ImportError as exc:
     raise ImportError(
         "aimet_torch.v2.nn.transformers.models.gemma3.modeling_gemma3 cannot be imported. Please make "
         "sure that you have transformers installed in your environment."
     ) from exc
+
+try:
+    from transformers.activations import PytorchGELUTanh
+except ImportError:
+    from transformers.activations import GELUTanh as PytorchGELUTanh
 
 from aimet_torch.onnx_utils import map_torch_types_to_onnx
 
