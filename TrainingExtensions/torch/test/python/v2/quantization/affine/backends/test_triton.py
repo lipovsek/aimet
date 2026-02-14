@@ -3,7 +3,7 @@
 
 from packaging.version import parse
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import itertools
 import torch
 import numpy as np
@@ -960,3 +960,43 @@ class TestTritonBackend:
         )
         assert torch.allclose(scale.grad, scale_.grad)
         assert torch.allclose(offset.grad, offset_.grad)
+
+    def test_compile_error_fallback(self):
+        from aimet_torch.v2.quantization.affine.backends.triton import _compile_success
+
+        _orig = _compile_success.copy()
+        input = torch.randn((10, 10), device="cuda", requires_grad=True)
+        scale = torch.tensor(0.01, device="cuda", requires_grad=True)
+        offset = torch.tensor(0.0, device="cuda", requires_grad=True)
+
+        try:
+            with (
+                patch(
+                    "aimet_torch.v2.quantization.affine.backends.triton.TritonQuantizeDequantize.apply",
+                    side_effect=triton.CompilationError(None, None),
+                ) as triton_mock,
+                patch(
+                    "aimet_torch.v2.quantization.affine.backends.torch_builtins.QuantDequantFunc.apply"
+                ) as torch_builtin_mock,
+                set_backend("triton"),
+            ):
+                """
+                When: Triton kernel failed to compile in the first call
+                Then: It should fall back to PyTorch built-in implementation
+                """
+                _ = quantize_dequantize(input, scale, offset, -128, 127)
+                assert torch_builtin_mock.call_count == 1
+                assert triton_mock.call_count == 1
+
+                """
+                When: Call triton kernel again after initial compilation failure
+                Then: It should fall back to PyTorch built-in implementation without
+                      trying to compile Triton kernel again
+                """
+                _ = quantize_dequantize(input, scale, offset, -128, 127)
+                assert torch_builtin_mock.call_count == 2
+                assert triton_mock.call_count == 1
+
+        finally:
+            for k, v in _orig.items():
+                _compile_success[k] = v

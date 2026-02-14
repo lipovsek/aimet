@@ -14,6 +14,10 @@ from .torch_builtins import (
     _is_grid_representable,
     _is_numerically_stable,
 )
+from aimet_torch.common.utils import AimetLogger
+
+
+logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
 
 
 try:
@@ -34,7 +38,7 @@ try:
         qmin: tl.int32,
         qmax: tl.int32,
         output_ptr: tl.pointer_type,
-        n_elements: tl.uint64,
+        n_elements: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(0)
@@ -57,9 +61,9 @@ try:
         qmin: tl.int32,
         qmax: tl.int32,
         output_ptr: tl.pointer_type,
-        I: tl.uint64,
-        J: tl.uint64,
-        K: tl.uint64,
+        I: tl.int32,
+        J: tl.int32,
+        K: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
         """
@@ -89,7 +93,7 @@ try:
             COMPUTE_BLOCK_SIZE: Number of elements to process per block.
         """
         pid = tl.program_id(0)
-        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE).to(tl.uint64)
+        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < (I * J * K)
         j = (idx % (J * K)) // K
         input = tl.load(input_ptr + idx, mask=mask)
@@ -108,11 +112,11 @@ try:
         qmin: tl.int32,
         qmax: tl.int32,
         output_ptr: tl.pointer_type,
-        I: tl.uint64,
-        J: tl.uint64,
-        K: tl.uint64,
-        BLK_SIZE_J: tl.uint64,
-        BLK_SIZE_K: tl.uint64,
+        I: tl.int32,
+        J: tl.int32,
+        K: tl.int32,
+        BLK_SIZE_J: tl.int32,
+        BLK_SIZE_K: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
         """
@@ -145,7 +149,7 @@ try:
             BLK_SIZE_K: Block size along dimension K. (BLK_SIZE_K = K / M)
         """
         pid = tl.program_id(0)
-        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE).to(tl.uint64)
+        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < (I * J * K)
 
         j = (idx % (J * K)) // K
@@ -177,7 +181,7 @@ try:
         zero_point_shift,
         output_ptr: tl.pointer_type,
         mask_ptr: tl.pointer_type,
-        n_elements: tl.uint64,
+        n_elements: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
         """
@@ -219,9 +223,9 @@ try:
         zero_point_shift,
         output_ptr: tl.pointer_type,
         mask_ptr: tl.pointer_type,
-        I: tl.uint64,
-        J: tl.uint64,
-        K: tl.uint64,
+        I: tl.int32,
+        J: tl.int32,
+        K: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
         """
@@ -252,7 +256,7 @@ try:
             COMPUTE_BLOCK_SIZE: Number of elements to process per block.
         """
         pid = tl.program_id(0)
-        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE).to(tl.uint64)
+        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < (I * J * K)
         j = (idx % (J * K)) // K
         input = tl.load(input_ptr + idx, mask=mask)
@@ -278,11 +282,11 @@ try:
         zero_point_shift,
         output_ptr: tl.pointer_type,
         mask_ptr: tl.pointer_type,
-        I: tl.uint64,
-        J: tl.uint64,
-        K: tl.uint64,
-        BLK_SIZE_J: tl.uint64,
-        BLK_SIZE_K: tl.uint64,
+        I: tl.int32,
+        J: tl.int32,
+        K: tl.int32,
+        BLK_SIZE_J: tl.int32,
+        BLK_SIZE_K: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
         """
@@ -315,7 +319,7 @@ try:
             BLK_SIZE_K: Block size along dimension K. (BLK_SIZE_K = K / M)
         """
         pid = tl.program_id(0)
-        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE).to(tl.uint64)
+        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < (I * J * K)
 
         j = (idx % (J * K)) // K
@@ -355,7 +359,7 @@ try:
         offset_grad_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
-        n_elements: tl.uint64,
+        n_elements: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
         pgs_eps: tl.constexpr = 0.0,
         pgs_multiplier: tl.constexpr = 1.0,
@@ -419,15 +423,15 @@ try:
         offset_grad_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
-        I: tl.uint64,
-        J: tl.uint64,
-        K: tl.uint64,
+        I: tl.int32,
+        J: tl.int32,
+        K: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
         pgs_eps: tl.constexpr = 0.0,
         pgs_multiplier: tl.constexpr = 1.0,
     ):
         pid = tl.program_id(0)
-        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE).to(tl.uint64)
+        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < (I * J * K)
         j = (idx % (J * K)) // K
 
@@ -484,17 +488,17 @@ try:
         offset_grad_ptr: tl.pointer_type,
         qmin: tl.int32,
         qmax: tl.int32,
-        I: tl.uint64,
-        J: tl.uint64,
-        K: tl.uint64,
-        BLK_SIZE_J: tl.uint64,
-        BLK_SIZE_K: tl.uint64,
+        I: tl.int32,
+        J: tl.int32,
+        K: tl.int32,
+        BLK_SIZE_J: tl.int32,
+        BLK_SIZE_K: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
         pgs_eps: tl.constexpr = 0.0,
         pgs_multiplier: tl.constexpr = 1.0,
     ):
         pid = tl.program_id(0)
-        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE).to(tl.uint64)
+        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < (I * J * K)
 
         output_grad = tl.load(output_grad_ptr + idx, mask=mask)
@@ -552,7 +556,7 @@ try:
         scale_ptr: tl.pointer_type,
         offset_ptr: tl.pointer_type,
         output_ptr: tl.pointer_type,
-        n_elements: tl.uint64,
+        n_elements: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(0)
@@ -570,9 +574,9 @@ try:
         scale_ptr: tl.pointer_type,
         offset_ptr: tl.pointer_type,
         output_ptr: tl.pointer_type,
-        I: tl.uint64,
-        J: tl.uint64,
-        K: tl.uint64,
+        I: tl.int32,
+        J: tl.int32,
+        K: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
         """
@@ -600,7 +604,7 @@ try:
             COMPUTE_BLOCK_SIZE: Number of elements to process per block.
         """
         pid = tl.program_id(0)
-        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE).to(tl.uint64)
+        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < (I * J * K)
         j = (idx % (J * K)) // K
         input = tl.load(input_ptr + idx, mask=mask)
@@ -614,11 +618,11 @@ try:
         scale_ptr: tl.pointer_type,
         offset_ptr: tl.pointer_type,
         output_ptr: tl.pointer_type,
-        I: tl.uint64,
-        J: tl.uint64,
-        K: tl.uint64,
-        BLK_SIZE_J: tl.uint64,
-        BLK_SIZE_K: tl.uint64,
+        I: tl.int32,
+        J: tl.int32,
+        K: tl.int32,
+        BLK_SIZE_J: tl.int32,
+        BLK_SIZE_K: tl.int32,
         COMPUTE_BLOCK_SIZE: tl.constexpr,
     ):
         """
@@ -649,7 +653,7 @@ try:
             BLK_SIZE_K: Block size along dimension K. (BLK_SIZE_K = K / M)
         """
         pid = tl.program_id(0)
-        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE).to(tl.uint64)
+        idx = pid * COMPUTE_BLOCK_SIZE + tl.arange(0, COMPUTE_BLOCK_SIZE)
         mask = idx < (I * J * K)
 
         j = (idx % (J * K)) // K
@@ -1184,6 +1188,10 @@ def quantize(
             "Please ensure triton>=3.0.0 is installed and CUDA is available."
         )
 
+    if not _compile_success[quantize]:
+        # Fall back to aten impl
+        return torch_builtins.quantize(tensor, scale, offset, qmin, qmax, block_size)
+
     if not (tensor.is_cuda and scale.is_cuda and offset.is_cuda):
         # Fall back to aten impl if triton is not available or inputs are not on cuda
         return torch_builtins.quantize(tensor, scale, offset, qmin, qmax, block_size)
@@ -1212,6 +1220,13 @@ def quantize(
         ).to(output_dtype)
     except _NotSupportedError:
         return torch_builtins.quantize(tensor, scale, offset, qmin, qmax, block_size)
+    except Exception:  # pylint: disable=broad-except
+        _compile_success[quantize] = False
+        logger.warning(
+            "Triton quantize kernel failed to compile. "
+            "Falling back to torch builtin implementation."
+        )
+        return torch_builtins.quantize(tensor, scale, offset, qmin, qmax, block_size)
 
 
 def quantize_dequantize(
@@ -1238,6 +1253,18 @@ def quantize_dequantize(
         raise RuntimeError(
             "Triton backend is not available. "
             "Please ensure triton>=3.0.0 is installed and CUDA is available."
+        )
+
+    if not _compile_success[quantize_dequantize]:
+        # Fall back to aten impl
+        return torch_builtins.quantize_dequantize(
+            tensor,
+            scale,
+            offset,
+            qmin,
+            qmax,
+            block_size,
+            zero_point_shift,
         )
 
     if not (tensor.is_cuda and scale.is_cuda and offset.is_cuda):
@@ -1285,6 +1312,23 @@ def quantize_dequantize(
             block_size,
             zero_point_shift,
         )
+    except Exception:  # pylint: disable=broad-except
+        _compile_success[quantize_dequantize] = False
+        logger.warning(
+            "Triton quantize_dequantize kernel failed to compile. "
+            "Falling back to torch builtin implementation."
+        )
+        return torch_builtins.quantize_dequantize(
+            tensor,
+            scale,
+            offset,
+            qmin,
+            qmax,
+            block_size,
+            zero_point_shift,
+        )
+    else:
+        raise RuntimeError
 
 
 def dequantize(
@@ -1308,6 +1352,10 @@ def dequantize(
             "Please ensure triton>=3.0.0 is installed and CUDA is available."
         )
 
+    if not _compile_success[dequantize]:
+        # Fall back to aten impl
+        return torch_builtins.dequantize(tensor, scale, offset, block_size)
+
     if not (tensor.is_cuda and scale.is_cuda and offset.is_cuda):
         # Fall back to aten impl if triton is not available or inputs are not on cuda
         return torch_builtins.dequantize(tensor, scale, offset, block_size)
@@ -1318,3 +1366,17 @@ def dequantize(
         return TritonDequantize.apply(tensor, scale, offset, block_size)
     except _NotSupportedError:
         return torch_builtins.dequantize(tensor, scale, offset, block_size)
+    except Exception:  # pylint: disable=broad-except
+        _compile_success[dequantize] = False
+        logger.warning(
+            "Triton dequantize kernel failed to compile. "
+            "Falling back to torch builtin implementation."
+        )
+        return torch_builtins.dequantize(tensor, scale, offset, block_size)
+
+
+_compile_success = {
+    quantize: True,
+    quantize_dequantize: True,
+    dequantize: True,
+}
