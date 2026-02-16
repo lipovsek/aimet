@@ -49,47 +49,47 @@ jobs:
       - name: "Exclude Torch libraries from dependencies for manylinux"
         if: matrix.VER_TORCH || matrix.VER_ONNXRUNTIME
         run: |
-          . /etc/profile.d/conda.sh
-          TORCH_DIR=$(python3 -c 'import torch; print(f"{torch.utils.cmake_prefix_path}/../../lib")')
+          . ${VIRTUAL_ENV}/bin/activate
+          TORCH_DIR=$(python -c 'import torch; print(f"{torch.utils.cmake_prefix_path}/../../lib")')
           MANYLINUX_EXCLUDE_LIBS="$MANYLINUX_EXCLUDE_LIBS $(find $TORCH_DIR -name '*.so*' | xargs -r patchelf --print-soname | xargs -r printf -- '--exclude %s ')"
           set -x
           echo "MANYLINUX_EXCLUDE_LIBS=$MANYLINUX_EXCLUDE_LIBS" >> $GITHUB_ENV
       - name: "Exclude CUDA libraries from dependencies for manylinux"
         if: matrix.VER_CUDA
         run: |
-          . /etc/profile.d/conda.sh
-          CUDART_DIR=$(python3 -c 'import sysconfig ; from pathlib import Path; print(Path(sysconfig.get_config_var("prefix"), "lib"))')
+          . ${VIRTUAL_ENV}/bin/activate
+          CUDART_DIR=$(python -c 'import sysconfig ; from pathlib import Path; print(Path(sysconfig.get_config_var("prefix"), "lib"))')
           MANYLINUX_EXCLUDE_LIBS="$MANYLINUX_EXCLUDE_LIBS $(find $CUDART_DIR -name 'libcu*.so*' -o -name 'libnv*.so*' -o -name 'libnp*.so*' | xargs -r patchelf --print-soname | xargs -r printf -- '--exclude %s ')"
           set -x
           echo "MANYLINUX_EXCLUDE_LIBS=$MANYLINUX_EXCLUDE_LIBS" >> $GITHUB_ENV
       - name: "Exclude libpython libraries from dependencies for manylinux"
         run: |
-          . /etc/profile.d/conda.sh
-          LIBS_DIR=$(python3 -c 'import sysconfig ; from pathlib import Path; print(Path(sysconfig.get_config_var("prefix"), "lib"))')
+          . ${VIRTUAL_ENV}/bin/activate
+          LIBS_DIR=$(python -c 'import sysconfig ; from pathlib import Path; print(Path(sysconfig.get_config_var("prefix"), "lib"))')
           MANYLINUX_EXCLUDE_LIBS="$MANYLINUX_EXCLUDE_LIBS $(find $LIBS_DIR -name 'libpython*.so*' | xargs -r patchelf --print-soname | xargs -r printf -- '--exclude %s ')"
           set -x
           echo "MANYLINUX_EXCLUDE_LIBS=$MANYLINUX_EXCLUDE_LIBS" >> $GITHUB_ENV
       - name: "Build AIMET wheel package"
         run: |
           set -x
+          . ${VIRTUAL_ENV}/bin/activate
           rm -rf build dist
-          . /etc/profile.d/conda.sh
           export CMAKE_ARGS="$AIMET_CMAKE_ARGS"
           export SKBUILD_BUILD_TARGETS="$AIMET_BUILD_TARGETS"
 
-          python3 -m build --wheel --no-isolation .
+          python -m build --wheel --no-isolation .
           auditwheel repair --plat manylinux_2_34_x86_64 $MANYLINUX_EXCLUDE_LIBS dist/aimet*.whl
 
           if [ "${{ matrix.id }}" == "onnx-torch-cpu" ] ; then
             # Unzip aimet*.whl in current directory to upload Docs
-            python3 -m pip install -t wheelhouse --no-deps wheelhouse/aimet*.whl
+            uv pip install -t wheelhouse --no-deps wheelhouse/aimet*.whl
           fi
       - name: "Re-tag aimet-torch wheel files"
         if: matrix.VER_TORCH
         run: |
           set -x
-          . /etc/profile.d/conda.sh
-          python3 -m pip install --force-reinstall wheel
+          . ${VIRTUAL_ENV}/bin/activate
+          uv pip install --force-reinstall wheel
           wheel tags --remove --python-tag=py310 --abi-tag=none --platform-tag=any wheelhouse/aimet*.whl
           ls -al wheelhouse/
       - name: Upload AIMET wheel file

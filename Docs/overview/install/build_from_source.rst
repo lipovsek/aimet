@@ -6,40 +6,63 @@
 Building from source
 ####################
 
-This page describes how to install AIMET from source in a conda environment and within docker container.
+This page describes how to install AIMET from source in a uv environment and within docker container.
 
 You can also use a virtual environment (venv), provided your system has the required Python version and necessary dependencies that aren't available via pip, such as CUDA and cuDNN.
 
-Conda environment
+UV environment
 =================
 
-Create a new conda environment with Python 3.10
+Install uv
+----------
+
+Following https://docs.astral.sh/uv/getting-started/installation/ to isntall UV
+
+On Linux/MacOS, you can run the following command to install UV:
+
+.. code-block:: bash
+
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+
+Create a new uv environment with Python 3.10
 -----------------------------------------------
 
 An example of conda environment setup is shown below:
 
 .. code-block:: bash
 
-    # Setup conda environment using Miniconda/Miniforge
-    source <CONDA_INSTALL_DIR>/bin/activate
-    conda create --name <CONDA_ENV_NAME> python=3.10 -y
-    conda activate <CONDA_ENV_NAME>
+    # Create new uv environment with Python 3.10
+    uv venv --python=3.10 aimet-dev
 
-    # Install general dependencies from conda-forge
-    conda install -c conda-forge pip-tools eigen pandoc
+    # Activate the environment
+    . aimet-dev/bin/activate
 
 NVIDIA CUDA support
 -------------------
 
-Skip the following step, if you don't want to compile with CUDA support.
+Skip the following step, if you don't want to compile with CUDA support or already have CUDA installed.
+
+Here, we show how to install CUDA Toolkit 12.1 on Ubuntu 22.04.
+You can find instructions for other versions and platforms in NVIDIA's documentation: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html
 
 .. code-block:: bash
+    # Download and install the CUDA repository keyring
+    wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.0-1_all.deb
+    sudo dpkg -i cuda-keyring_1.0-1_all.deb
 
-    # Set desired CUDA version
-    VER_CUDA=12.1.0
+    # Update package lists
+    sudo apt update
 
-    # Install CUDA Toolkit and cuDNN from NVIDIA's CUDA channel
-    conda install -c "nvidia/label/cuda-${VER_CUDA}" cuda-toolkit cudnn
+    # Install CUDA Toolkit 12.1
+    sudo apt install -y cuda-toolkit-12-1 libcudnn9-cuda-12 libcudnn9-dev-cuda-12
+
+    # Add CUDA to PATH (add these lines to ~/.bashrc)
+    export PATH=/usr/local/cuda-12.1/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/local/cuda-12.1/lib64:$LD_LIBRARY_PATH
+    # Add the above lines into your ~/.bashrc or ~/.zshrc file to make the changes permanent
+
+    # Verify installation
+    nvcc --version
 
 Set environment variables to build desired AIMET wheel
 ------------------------------------------------------
@@ -81,10 +104,10 @@ Compile and install pip package dependencies
     cd aimet/
 
     # Compile requirements from pyproject.toml with constraints
-    python3 -m piptools compile pyproject.toml -v --extra=dev,test --output-file=/tmp/requirements.txt
+    uv pip compile pyproject.toml --extra=dev --extra=test --output-file=/tmp/requirements.txt
 
     # Install the compiled dependencies
-    python3 -m pip install -r /tmp/requirements.txt
+    uv pip install -r /tmp/requirements.txt
 
 Build AIMET wheel and run unit tests
 ------------------------------------
@@ -118,7 +141,7 @@ Build AIMET documentation
     echo "torch==2.1.2" >> /tmp/constraints.txt
 
     # Compile requirements from pyproject.toml with constraints
-    python3 -m piptools compile pyproject.toml -v --constraint=/tmp/constraints.txt --extra=dev,test,docs --output-file=/tmp/requirements.txt
+    uv pip compile pyproject.toml -v --constraint=/tmp/constraints.txt --extra=dev --extra=test,docs --output-file=/tmp/requirements.txt
 
     # Install the compiled dependencies
     python3 -m pip install -r /tmp/requirements.txt
@@ -157,7 +180,7 @@ Docker build argument examples for AIMET Variants.
     docker run -it -v /local/mnt/workspace:/local/mnt/workspace/ --gpus all --user root onnx-gpu:1.0
 
     # Set up the conda environment inside the container
-    source /etc/profile.d/conda.sh
+    . ${VIRTUAL_ENV}/bin/activate
 
 Set environment variables to build desired AIMET wheel
 ------------------------------------------------------
