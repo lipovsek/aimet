@@ -2285,7 +2285,8 @@ def test_affine_encoding_schema_2_0_0(
     if axis is None:
         assert "axis" not in encoding
     else:
-        assert encoding["axis"] == axis
+        # either positive axis or negative axis
+        assert encoding["axis"] in (axis, axis - len(shape))
 
     if block_size is None:
         assert "block_size" not in encoding
@@ -2502,7 +2503,8 @@ def test_lpbq_encoding_schema_2_0_0(
         ),
     )
     assert "y_zero_point" not in encoding
-    assert encoding["axis"] == axis
+    # either positive axis or negative axis
+    assert encoding["axis"] in (axis, axis - len(shape))
     assert encoding["block_size"] == next(iter(blk for blk in block_size if blk != 1))
     assert encoding["output_dtype"] == f"int{compressed_bw}"
 

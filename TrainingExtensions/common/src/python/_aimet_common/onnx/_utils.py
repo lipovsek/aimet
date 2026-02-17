@@ -122,6 +122,16 @@ def _add_onnx_qdq_nodes(
         inputs_to_rename[input_name] = output_name
         output_dtype = encoding["output_dtype"]
         axis = encoding.get("axis", None)
+
+        if input_name in constants:
+            input_shape = constants[input_name].dims
+
+            # Convert to positive index. Not strictly necessary; just for convenience
+            if axis is not None:
+                axis = (axis + len(input_shape)) % len(input_shape)
+        else:
+            input_shape = None
+
         block_size = encoding.get("block_size", None)
         y_zero_point = encoding.get("y_zero_point", None)
 
@@ -166,22 +176,14 @@ def _add_onnx_qdq_nodes(
                     f"LPBQ can be only exported with int4; got {output_dtype}"
                 )
 
-            try:
-                weight_dims = next(
-                    init for init in model.graph.initializer if init.name == input_name
-                ).dims
-            except StopIteration:
-                weight_dims = None
-
             channel_axis = axis - 1  # Assume channel_axis = block_axis - 1 by default
 
-            if weight_dims is not None:
+            if input_shape is not None:
                 # Convert to positive index
-                axis = (axis + len(weight_dims)) % len(weight_dims)
-                channel_axis = (channel_axis + len(weight_dims)) % len(weight_dims)
+                channel_axis = (channel_axis + len(input_shape)) % len(input_shape)
 
                 non_singleton_axes = tuple(
-                    i for i, dim in enumerate(weight_dims) if dim != 1
+                    i for i, dim in enumerate(input_shape) if dim != 1
                 )
 
                 if len(non_singleton_axes) > 2 or (
@@ -191,7 +193,7 @@ def _add_onnx_qdq_nodes(
                         "When exported to onnx QDQ, LPBQ can be only applied to tensors with "
                         "at most two non-singleton dimensions, "
                         "each representing channel and block axes. "
-                        f'Got "{input_name}" with shape {weight_dims} and block axis {axis}'
+                        f'Got "{input_name}" with shape {input_shape} and block axis {axis}'
                     )
 
                 try:

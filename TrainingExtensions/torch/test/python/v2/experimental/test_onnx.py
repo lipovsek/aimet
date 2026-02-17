@@ -597,7 +597,13 @@ def test_quantsim_export_resnet18(
         for e in onnx_encodings["encodings"]:
             name = e.pop("name")
             if name in expected_encodings:
-                assert e == expected_encodings[name]
+                expected = expected_encodings[name]
+                if name in expected_param_encodings and "axis" in expected:
+                    weight_dim = sim.model.get_parameter(name).dim()
+                    # Make positive
+                    expected["axis"] = (expected["axis"] + weight_dim) % weight_dim
+
+                assert e == expected
                 continue
 
             assert any(
@@ -1827,19 +1833,22 @@ def test_activation_uint(tmp_path: pathlib.Path, force_activation_as: str | None
     ],
 )
 @pytest.mark.parametrize(
-    "shape, block_size",
+    "shape, block_size, channel_axis, block_axis",
     [
-        [(), None],  # per-tensor
-        [(1,), None],  # per-tensor
-        [(1, 10), None],  # per-channel
-        [(10, 1), None],  # per-channel
-        [(10, 2), (-1, 5)],  # blockwise
+        [(), None, None, None],  # per-tensor
+        [(1,), None, None, None],  # per-tensor
+        [(10,), None, 1, None],  # per-channel
+        [(1, 10), None, 1, None],  # per-channel
+        [(10, 1), None, 0, None],  # per-channel
+        [(10, 2), (-1, 5), 0, 1],  # blockwise
     ],
 )
 def test_export_float8_and_float4(
     shape: tuple[int, ...],
     finfo: _finfo,
     block_size: tuple[int, ...] | None,
+    channel_axis: int | None,
+    block_axis: int | None,
     fold_param_quantizers: bool,
     prequantize_constants: bool,
     dynamo: bool,
@@ -1913,7 +1922,9 @@ def test_export_float8_and_float4(
                     "output_dtype",
                     "axis",
                 }
-                assert e["axis"] == (0 if shape[0] > 1 else 1)
+                assert e["axis"] == (
+                    block_axis if block_axis is not None else channel_axis
+                )
             else:
                 assert e.keys() == {
                     "name",

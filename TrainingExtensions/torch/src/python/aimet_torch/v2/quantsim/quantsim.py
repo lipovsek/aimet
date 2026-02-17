@@ -31,7 +31,7 @@ import onnx
 
 from aimet_torch.common import quantsim
 from aimet_torch.common.defs import QuantScheme, QuantizationDataType
-from aimet_torch.common.onnx._utils import _is_htp_interpolation_op
+from aimet_torch.common.onnx._utils import _is_htp_interpolation_op, _get_all_constants
 from aimet_torch.common.quantsim_config.quantsim_config import _config_file_aliases
 from aimet_torch.common.utils import deprecated, _red, docstring
 from aimet_torch._base.quantsim import (
@@ -973,7 +973,10 @@ class QuantizationSimModelOnnxExporter:
             f,
             save_as_external_data=_onnx_model_size_larger_than_max_protobuf(onnx_model),
         )
-        encodings_dict = self._to_json(tensor_to_encoding_map, encoding_version)
+        constants = _get_all_constants(onnx_model)
+        encodings_dict = self._to_json(
+            tensor_to_encoding_map, encoding_version, constants
+        )
 
         # export weight encodings to output json file
         onnx_file_path = str(f)
@@ -985,6 +988,7 @@ class QuantizationSimModelOnnxExporter:
         self,
         tensor_to_encoding_map: Mapping[str, Tuple[EncodingBase, bool]],
         encoding_version: str,
+        constants: Mapping[str, onnx.TensorProto],
     ):
         qnn_encodings = {
             name: (encoding.to_qnn_encoding_dict(encoding_version), is_param)
@@ -1006,6 +1010,14 @@ class QuantizationSimModelOnnxExporter:
                     ]
                 }
             )
+
+            for enc in encodings_dict["encodings"]:
+                name = enc["name"]
+                axis = enc.get("axis", None)
+
+                # Convert to positive index. Not strictly necessary; just for convenience
+                if axis is not None and axis < 0 and name in constants:
+                    enc["axis"] = axis + len(constants[name].dims)
         else:
             if encoding_version >= "1.0.0":
                 param_encodings = [

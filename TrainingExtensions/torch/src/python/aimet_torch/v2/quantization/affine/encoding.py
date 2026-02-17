@@ -658,7 +658,7 @@ class GroupedBlockEncoding(AffineEncoding):
 
         block_axis = encoding._get_block_axis()
         block_grouping = tuple(
-            s_dim if axis == block_axis else 1
+            s_dim if block_axis in (axis, axis - encoding.scale.dim()) else 1
             for axis, s_dim in enumerate(encoding.scale.shape)
         )
         qtzr = GroupedBlockQuantizeDequantize(

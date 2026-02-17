@@ -138,8 +138,9 @@ class EncodingBase(abc.ABC):
             # Per-channel encoding that happens to have only one output channel
             # In this case, fall back to per-tensor encoding since we aren't fully
             # sure about the channel axis
-            channel_axis = None
-        return channel_axis
+            return None
+
+        return channel_axis - self.scale.dim()  # Convert to negative axis
 
     def _get_block_axis(self) -> int | None:
         # NOTE: DO NOT USE THIS FUNCTION except for QNN encoding export.
@@ -151,6 +152,6 @@ class EncodingBase(abc.ABC):
 
         for axis, blk in enumerate(self.block_size[:2]):
             if blk != 1:
-                return axis
+                return axis - self.scale.dim()  # Convert to negative axis
 
         return None
