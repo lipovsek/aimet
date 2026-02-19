@@ -16,6 +16,9 @@ from transformers import PretrainedConfig
 from transformers.cache_utils import DynamicCache
 from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
+
+
+# TODO: #6523 Update AttentionMaskConverter in transformers to new transformers.masking_utils
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 
 

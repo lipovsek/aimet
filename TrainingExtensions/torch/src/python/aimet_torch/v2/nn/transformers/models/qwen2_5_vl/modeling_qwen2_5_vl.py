@@ -15,19 +15,26 @@ except ImportError as exc:
 
 from aimet_torch.onnx_utils import map_torch_types_to_onnx
 
+# Handle transformers version differences
+# transformers >= 5.0 renamed Qwen2RMSNorm to Qwen2_5_VLRMSNorm
+try:
+    _BaseRMSNorm = modeling_qwen2_5_vl.Qwen2_5_VLRMSNorm
+except AttributeError:
+    # Fall back to old name for transformers < 5.0
+    _BaseRMSNorm = modeling_qwen2_5_vl.Qwen2RMSNorm
 
-# Map Qwen2_5_VLRMSNorm to ONNX RMSNormalization so that
-# quantsim config for RMSNormalization will be applied to Qwen2_5_VLRMSNorm
-map_torch_types_to_onnx[modeling_qwen2_5_vl.Qwen2RMSNorm] = ["RMSNormalization"]
+# Map to ONNX RMSNormalization so that
+# quantsim config for RMSNormalization will be applied to Qwen RMSNorm
+map_torch_types_to_onnx[_BaseRMSNorm] = ["RMSNormalization"]
 
 # Don't simulate quantization on rotary embedding layers
 QuantizationMixin.ignore(modeling_qwen2_5_vl.Qwen2_5_VLRotaryEmbedding)
 QuantizationMixin.ignore(modeling_qwen2_5_vl.Qwen2_5_VisionRotaryEmbedding)
 
 
-@QuantizationMixin.implements(modeling_qwen2_5_vl.Qwen2RMSNorm)
-class QuantizedQwen2RMSNorm(QuantizationMixin, modeling_qwen2_5_vl.Qwen2RMSNorm):
-    """Implement Quantized Qwen RMSNorm"""
+@QuantizationMixin.implements(_BaseRMSNorm)
+class QuantizedQwen2_5_VLRMSNorm(QuantizationMixin, _BaseRMSNorm):
+    """Implement Quantized Qwen RMSNorm (supports both transformers < 5.0 and >= 5.0)"""
 
     def __quant_init__(self):
         # pylint: disable=useless-parent-delegation

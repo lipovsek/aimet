@@ -1,13 +1,34 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
+import logging
 import platform
 import sys
 
 import pytest
 
 
+# TODO: #6523 Update AttentionMaskConverter in transformers to new transformers.masking_utils
+class TransformersDeprecationFilter(logging.Filter):
+    """Filter to suppress malformed deprecation warnings from transformers.modeling_attn_mask_utils.
+
+    Transformers 5.x has a bug where logger.warning_once() is called with
+    (message, FutureWarning) but the message has no % placeholders,
+    causing 'TypeError: not all arguments converted during string formatting'.
+    """
+
+    def filter(self, record):
+        if record.name == "transformers.modeling_attn_mask_utils":
+            return False
+        return True
+
+
+# TODO: #6523 Update AttentionMaskConverter in transformers to new transformers.masking_utils
 def pytest_configure(config):
+    # Add filter to suppress malformed transformers deprecation warnings
+    logging.getLogger("transformers.modeling_attn_mask_utils").addFilter(
+        TransformersDeprecationFilter()
+    )
     config.addinivalue_line(
         "markers",
         "skip_on_windows_arm64(reason): skip test on Windows ARM64 with specified reason",

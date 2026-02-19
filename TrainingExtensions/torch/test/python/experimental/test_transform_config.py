@@ -17,6 +17,19 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLDecoderLayer,
     Qwen2_5_VLPatchMerger,
 )
+
+# Handle transformers version differences
+# transformers >= 5.0 renamed Qwen2RMSNorm to Qwen2_5_VLRMSNorm
+try:
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
+        Qwen2_5_VLRMSNorm as Qwen25RMSNorm,
+    )
+except AttributeError:
+    # Fall back to old name for transformers < 5.0
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
+        Qwen2RMSNorm as Qwen25RMSNorm,
+    )
+
 from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
     Qwen2_5_VLTextConfig,
     Qwen2_5_VLVisionConfig,
@@ -30,6 +43,7 @@ from transformers.models.qwen3_vl.configuration_qwen3_vl import (
     Qwen3VLTextConfig,
     Qwen3VLVisionConfig,
 )
+
 
 from aimet_torch.experimental.transforms.transform_config import (
     LlamaBlockInterface,
@@ -52,7 +66,7 @@ from aimet_torch.experimental.transforms.transform_config import (
         (Phi3DecoderLayer, Phi3RMSNorm, Phi3Config, Phi3BlockInterface),
         (
             Qwen2_5_VLDecoderLayer,
-            Qwen2RMSNorm,
+            Qwen25RMSNorm,
             Qwen2_5_VLTextConfig,
             Qwen2dot5VLBackboneBlockInterface,
         ),

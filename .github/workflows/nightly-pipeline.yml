@@ -221,7 +221,7 @@ jobs:
 
   call-unit-acceptance-tests:
     name: Run unit and acceptance tests
-    needs: [ call-build-wheels ]
+    needs: [ variants, call-build-wheels ]
     uses: ./.github/workflows/run-unit-acceptance-tests.yml
     strategy:
       matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
@@ -239,7 +239,7 @@ jobs:
     secrets: inherit
 
   docker-push-latest:
-    needs: [ call-unit-acceptance-tests ]
+    needs: [ variants, docker-tag, call-unit-acceptance-tests ]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -259,7 +259,7 @@ jobs:
         run: docker buildx imagetools create ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}:${{ needs.docker-tag.outputs.tag }} --tag ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}:latest
 
   cleanup:
-    needs: [ docker-push-latest ]
+    needs: [ variants, docker-tag, docker-push-latest ]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -272,7 +272,7 @@ jobs:
   notify_failure:
     if: ${{ failure() && github.event_name == 'schedule' }}
     name: Notify failure on slack
-    needs: [ call-build-wheels, call-unit-acceptance-tests ]
+    needs: [ call-build-wheels, call-unit-acceptance-tests, cleanup ]
     runs-on: ubuntu-latest
     steps:
     - uses: slackapi/slack-github-action@v1.25.0
