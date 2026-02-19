@@ -6,6 +6,41 @@
 Release notes
 #############
 
+2.25.0
+======
+
+* Bug fixes and Improvements
+    * ONNX
+        * Reduced peak CPU memory usage for AdaScale and SeqMSE techniques (`28f89a7`_)
+        * Reduced peak CUDA memory usage for AdaScale technique (`a29f44f`_)
+        * Added support for Qwen3 VL models in GenAITests  (`c014961`_)
+        * ONNX-IR based supergroup pattern detection and replacement (`9972c1b`_)
+        * Tie concat and interpolation ops by default (`a8ac6f4`_)
+
+    * Torch
+        * Bug fix for onnx qdq export with control flow ops (`ae1abd1`_)
+        * Use Triton kernels by default if available (`3adcbee`_)
+        * Introduces `block_size` parameter to EncodingAnalyzer (`e250abd`_)
+        * Always export encodings as uint (`ae7d5ef`_)
+        * float4/8 QDQ export support (`135a0af`_)
+        * Support loading zero_point_shift with sim.load_encodings() (`624ba30`_)
+        * Support built-in quantization of SyncBatchNorm (`1e8eceb`_)
+
+
+.. _28f89a7: https://github.com/quic/aimet/commit/28f89a7b4a212d651c62f4a25433ee4a41e25d55
+.. _a29f44f: https://github.com/quic/aimet/commit/a29f44ff6fa1c268da37c71ed0bf44014161d43e
+.. _c014961: https://github.com/quic/aimet/commit/c0149612d5b2d1ee629f6183a5c023ed9e9f09fd
+.. _ae1abd1: https://github.com/quic/aimet/commit/ae1abd1462de8d958fde33df122603300790d31f
+.. _3adcbee: https://github.com/quic/aimet/commit/3adcbeeed4b85845eeb523a50cc9e371b03d96fb
+.. _9972c1b: https://github.com/quic/aimet/commit/9972c1b5bfabcfa1b1487fecbe2aee16e94ca591
+.. _e250abd: https://github.com/quic/aimet/commit/e250abd61d0a95c120aa755e87b51d0270cee95c
+.. _ae7d5ef: https://github.com/quic/aimet/commit/ae7d5ef19b3071dde90d5564ae81907c95f17101
+.. _a8ac6f4: https://github.com/quic/aimet/commit/a8ac6f412b2266fb4043a4d18db7475ab6289140
+.. _135a0af: https://github.com/quic/aimet/commit/135a0afca6250556a363291c1df8c17682645b16
+.. _624ba30: https://github.com/quic/aimet/commit/624ba30ac50a36159ea21b90293ddfa25d79fe6b
+.. _1e8eceb: https://github.com/quic/aimet/commit/1e8eceb320189fd37dc7f1b75f86a47c9ab8d52c
+
+
 2.24.0
 ======
 
