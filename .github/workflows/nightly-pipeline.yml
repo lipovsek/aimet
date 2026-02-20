@@ -239,7 +239,7 @@ jobs:
     secrets: inherit
 
   docker-push-latest:
-    needs: [ variants, docker-tag, call-unit-acceptance-tests ]
+    needs: [ set_vars, variants, docker-tag, call-unit-acceptance-tests ]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
