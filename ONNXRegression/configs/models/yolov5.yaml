@@ -1,6 +1,5 @@
 model_name: yolov5
 apply_prepare_model: False
-apply_bn_fold: False
 
 tests:
   - name: quantsim_int8_int16

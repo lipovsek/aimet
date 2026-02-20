@@ -455,6 +455,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         module_to_jit_trace: Dict[torch.nn.Module, torch.jit.TracedModule],
         elementwise_info: Optional[Tuple[torch.nn.Module, torch.nn.Module]] = None,
         top_level_model_output_node: Optional[torch._C.Node] = None,
+        parent_node_name_to_module: Optional[Dict[str, torch.nn.Module]] = None,
     ):
         """
         Implements a depth-first graph extraction to create ops and products.
@@ -467,6 +468,8 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         :param module_to_jit_trace: Dictionary mapping torch modules to their traces
         :param elementwise_info: If not None, contains a tuple with the residing module and module of the elementwise
             node currently being processed
+        :param parent_node_name_to_module: If not None, module mapping from the parent trace level, used to resolve
+            shared modules passed as extra subgraph inputs instead of being accessed via GetAttr
         :return: the outputs of the traced module
         """
         # pylint: disable=unnecessary-comprehension
@@ -494,6 +497,25 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         node_name_to_subgraph_model = {}
         # modules that are being referenced within the sub-graph
         node_name_to_module = {curr_inputs[0].debugName(): model}
+
+        # When multiple layers share the same module (e.g. a single SiLU activation used by several Conv layers),
+        # torch.jit.trace may pass that shared module as an extra input to each layer's subgraph rather than
+        # letting the layer access it internally via GetAttr. Resolve these extra module inputs using the parent
+        # level's module mapping.
+        if parent_node_name_to_module is not None:
+            for curr_inp, higher_level_inp in zip(curr_inputs[1:], higher_level_inputs):
+                parent_name = higher_level_inp.debugName()
+                if parent_name in parent_node_name_to_module:
+                    resolved = parent_node_name_to_module[parent_name]
+                    if not isinstance(resolved, torch.nn.Module):
+                        raise RuntimeError(
+                            f"Expected a module for shared input '{parent_name}', "
+                            f"but got {type(resolved)}."
+                        )
+                    curr_inp_name = curr_inp.debugName()
+                    if curr_inp_name not in node_name_to_module:
+                        node_name_to_module[curr_inp_name] = resolved
+
         # Keep track of output tensors generated from this current trace level. After parsing all nodes, remove all
         # entries in output_map that are contained in this list, except for tensors that are outputted from this graph.
         curr_level_tensors = []
@@ -774,6 +796,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 inputs[1:],
                 module_to_jit_trace=module_to_jit_trace,
                 elementwise_info=elementwise_info,
+                parent_node_name_to_module=node_name_to_module,
             )
             return submodule_outputs
 

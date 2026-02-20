@@ -854,3 +854,51 @@ class TestTrainingExtensionBnFold:
         assert len(bn_modules) == 1
         assert isinstance(model.bn1, torch.nn.Identity)
         assert isinstance(model.bn2, torch.nn.BatchNorm3d)
+
+    def test_bn_fold_with_shared_activation_module(self):
+        """Test BN fold on a model where a single activation module is shared across
+        multiple conv+bn blocks. This pattern (e.g. one SiLU reused by several layers)
+        causes torch.jit.trace to pass the shared module as an extra subgraph input
+        instead of accessing it via GetAttr, which previously caused a KeyError in
+        ConnectedGraph."""
+
+        class SharedActBlock(torch.nn.Module):
+            def __init__(self, shared_act):
+                super().__init__()
+                self.conv1 = torch.nn.Conv2d(16, 16, 3, padding=1)
+                self.bn1 = torch.nn.BatchNorm2d(16)
+                self.conv2 = torch.nn.Conv2d(16, 16, 3, padding=1)
+                self.bn2 = torch.nn.BatchNorm2d(16)
+                self.act = shared_act
+
+            def forward(self, x):
+                x = self.act(self.bn1(self.conv1(x)))
+                x = self.act(self.bn2(self.conv2(x)))
+                return x
+
+        class ModelWithSharedAct(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                shared_silu = torch.nn.SiLU()
+                self.block1 = SharedActBlock(shared_silu)
+                self.block2 = SharedActBlock(shared_silu)
+
+            def forward(self, x):
+                x = self.block1(x)
+                x = self.block2(x)
+                return x
+
+        torch.manual_seed(10)
+        model = ModelWithSharedAct().eval()
+        _initialize_bn_params(model)
+
+        inp = torch.randn(1, 16, 32, 32)
+        baseline_output = model(inp)
+
+        # This should not raise KeyError
+        folded_pairs = fold_all_batch_norms(model, (1, 16, 32, 32))
+
+        output_after_fold = model(inp)
+
+        assert len(folded_pairs) == 4
+        assert torch.allclose(baseline_output, output_after_fold, atol=1e-4)
