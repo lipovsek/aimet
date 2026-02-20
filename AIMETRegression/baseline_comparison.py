@@ -289,8 +289,8 @@ class BaselineManager:
 
     def __init__(
         self,
-        results_csv: str = "ONNXRegression/reports/results.csv",
-        baselines_dir: str = "ONNXRegression/baselines",
+        results_csv: str = "AIMETRegression/reports/results.csv",
+        baselines_dir: str = "AIMETRegression/baselines",
     ):
         self.results_csv = Path(results_csv)
         self.baselines_dir = Path(baselines_dir)
@@ -954,7 +954,7 @@ def main():
     parser.add_argument(
         "--baselines-dir",
         dest="baselines_dir",
-        default="ONNXRegression/baselines",
+        default="AIMETRegression/baselines",
         help="Directory for baseline files",
     )
 
@@ -972,7 +972,7 @@ def main():
     print("=" * 60)
 
     if not args.results:
-        reports_dir = Path("ONNXRegression/reports")
+        reports_dir = Path("AIMETRegression/reports")
 
         if not reports_dir.exists():
             print(f"❌ Reports directory not found: {reports_dir}")

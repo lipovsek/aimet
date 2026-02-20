@@ -49,14 +49,14 @@ import onnxruntime as ort
 from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 import aimet_onnx  # For top-level AdaRound API (AIMET 2.15+)
 
-from ONNXRegression.evaluation.metrics_utils import measure_inference_metrics
-from ONNXRegression.features._common import (
+from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
+from AIMETRegression.features.onnx._common import (
     build_quantsim,
     export_aimet_bundle,
 )
 
 # Output directory for AIMET artifacts
-_ARTIFACTS_DIR = Path("./ONNXRegression/artifacts")
+_ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -199,7 +199,7 @@ def run_adaround(
             export_dir = Path(export_dir)
         else:
             # Fallback to default location with model subdirectory
-            export_dir = Path("./ONNXRegression/artifacts") / model_name
+            export_dir = Path("./AIMETRegression/artifacts") / model_name
             export_dir.mkdir(parents=True, exist_ok=True)
     else:
         export_dir = Path(export_dir)
@@ -255,9 +255,7 @@ def run_adaround(
         )
 
     # Compute initial encodings (before AdaRound)
-    sim.compute_encodings(
-        forward_pass_callback=calibration_callback, forward_pass_callback_args=None
-    )
+    sim.compute_encodings(forward_pass_callback=calibration_callback)
 
     # ============ Step 3: Capture Unlabeled Data for AdaRound ============
     print(f"[AdaRound] Capturing {adaround_samples} samples for optimization...")
@@ -285,9 +283,7 @@ def run_adaround(
 
     # AdaRound changes weight values, so we need to recompute encodings
     # This ensures activation quantization parameters are correct
-    sim.compute_encodings(
-        forward_pass_callback=calibration_callback, forward_pass_callback_args=None
-    )
+    sim.compute_encodings(forward_pass_callback=calibration_callback)
 
     # ============ Step 6: Evaluate Optimized Model ============
     print(f"[AdaRound] Evaluating accuracy with {eval_samples} samples...")

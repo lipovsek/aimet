@@ -4,7 +4,7 @@
 # pylint: disable=missing-module-docstring
 
 """
-Lightweight QNN (AI Hub) integration utilities used by ONNXRegression.
+Lightweight QNN (AI Hub) integration utilities used by AIMETRegression.
 
 This module does two things:
 

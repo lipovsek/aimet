@@ -12,7 +12,7 @@
 # Weekly suite provides comprehensive testing with QNN
 
 # ==================== Suite Metadata ====================
-suite_name: nightly
+suite_name: nightly-onnx
 
 description: >
   Fast daily regression to catch AIMET bugs early.
@@ -72,17 +72,17 @@ accuracy_threshold:
 # Detect accuracy regressions between AIMET versions
 
 compare_to_baseline: true
-baseline_file: "baselines/nightly_latest.json"
+baseline_file: "baselines/nightly-onnx_latest.json"
 
 # ==================== Execution Notes ====================
 # To run manually:
-#   python ONNXRegression/suite_runner.py --suite nightly
+#   python AIMETRegression/suite_runner.py --suite nightly-onnx
 #
 # To run with filters:
-#   python ONNXRegression/suite_runner.py --suite nightly --filter-model resnet
-#   python ONNXRegression/suite_runner.py --suite nightly --filter-test quantsim_int8
+#   python AIMETRegression/suite_runner.py --suite nightly-onnx --filter-model resnet
+#   python AIMETRegression/suite_runner.py --suite nightly-onnx --filter-test quantsim_int8
 #
 # Output:
-#   - CSV report: ONNXRegression/reports/results_nightly.csv
-#   - HTML report: ONNXRegression/reports/results_nightly.html
-#   - Baseline: ONNXRegression/baselines/nightly_latest.json
+#   - CSV report: AIMETRegression/reports/results_nightly-onnx.csv
+#   - HTML report: AIMETRegression/reports/results_nightly-onnx.html
+#   - Baseline: AIMETRegression/baselines/nightly_latest.json

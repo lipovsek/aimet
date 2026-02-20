@@ -28,7 +28,7 @@ class BaselineSetup:
 
     def __init__(self, suite: str):
         self.suite = suite
-        self.baselines_dir = Path("ONNXRegression/baselines")
+        self.baselines_dir = Path("AIMETRegression/baselines")
         self.downloaded_dir = self.baselines_dir / "downloaded"
 
     def setup(self) -> bool:
@@ -79,7 +79,7 @@ class LockfileGenerator:
 
     def __init__(self, run_id: str):
         self.run_id = run_id
-        self.reports_dir = Path("ONNXRegression/reports")
+        self.reports_dir = Path("AIMETRegression/reports")
 
     def generate(self) -> tuple[Path, Path]:
         """
@@ -287,7 +287,7 @@ class ModelDependencyInstaller:
 
     NOTE: This class installs ALL model extras from a suite file upfront.
     Use this for:
-    - CLI: `python -m ONNXRegression.workflow.utils install-deps --suite nightly-torch`
+    - CLI: `python -m AIMETRegression.workflow.utils install-deps --suite nightly-torch`
     - Workflow pre-install step (before running tests)
 
     For per-model installation inside test loops, use `install_model_extras()` instead.
@@ -458,7 +458,7 @@ def main():
         exit(0 if success else 1)
 
     elif args.command == "install-deps":
-        suite_path = f"ONNXRegression/suites/{args.suite}.yaml"
+        suite_path = f"AIMETRegression/suites/{args.suite}.yaml"
         installer = ModelDependencyInstaller(suite_path)
         installer.install()
         exit(0)

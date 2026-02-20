@@ -15,7 +15,7 @@ handle device transfers automatically. The patch is applied globally to ALL
 modules that have imported the target functions.
 
 Usage:
-    from ONNXRegression.features.torch.utils import ensure_device_patch
+    from AIMETRegression.features.torch.utils import ensure_device_patch
 
     # Call early in your code, after model imports
     ensure_device_patch()

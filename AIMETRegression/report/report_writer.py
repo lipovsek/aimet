@@ -337,7 +337,7 @@ def write_html(
 
     Template System:
         Uses Jinja2 with auto-escaping for security. The template is expected
-        at ONNXRegression/report/templates/report_template.html
+        at AIMETRegression/report/templates/report_template.html
 
     Example:
         >>> write_html(
@@ -405,7 +405,7 @@ def write_html(
         ordered_keys = key_seen_order
 
     # Set up Jinja2 template environment
-    template_dir = "ONNXRegression/report/templates"
+    template_dir = "AIMETRegression/report/templates"
     template_name = "report_template.html"
 
     env = Environment(

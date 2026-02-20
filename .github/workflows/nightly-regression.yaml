@@ -86,7 +86,7 @@ jobs:
     env:
       CUDA_VISIBLE_DEVICES: "0"
       PYTHONUNBUFFERED: "1"
-      INPUT_SUITE: ${{ github.event.inputs.suite || 'nightly' }}
+      INPUT_SUITE: ${{ github.event.inputs.suite || 'nightly' }}-onnx
       WORKFLOW_FILE: "nightly-regression.yaml"
 
     steps:
@@ -147,37 +147,34 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           . .venv/bin/activate
-          python -m ONNXRegression.workflow.artifacts download-baseline \
-            --output-dir ONNXRegression/baselines/downloaded
+          python -m AIMETRegression.workflow.artifacts download-baseline \
+            --output-dir AIMETRegression/baselines/downloaded
 
       - name: Setup baseline
         run: |
           . .venv/bin/activate
-          python -m ONNXRegression.workflow.utils setup-baseline \
-            --suite "${{ github.event.inputs.suite || 'nightly' }}"
+          python -m AIMETRegression.workflow.utils setup-baseline --suite "$INPUT_SUITE"
 
       - name: Run test suite
         run: |
           . .venv/bin/activate
-          python -m ONNXRegression.suite_runner \
-            --suite "${{ github.event.inputs.suite || 'nightly' }}"
+          python -m AIMETRegression.suite_runner --suite "$INPUT_SUITE"
 
       - name: Compare with baseline
         run: |
           . .venv/bin/activate
 
-          SUITE="${{ github.event.inputs.suite || 'nightly' }}"
-          RESULTS_CSV="ONNXRegression/reports/results_${SUITE}.csv"
+          RESULTS_CSV="AIMETRegression/reports/results_${INPUT_SUITE}.csv"
 
           if [ ! -f "$RESULTS_CSV" ]; then
             echo "Results CSV not found: $RESULTS_CSV"
             exit 1
           fi
 
-          python ONNXRegression/baseline_comparison.py run \
+          python AIMETRegression/baseline_comparison.py run \
             --results "$RESULTS_CSV" \
-            --suite-name "$SUITE" \
-            --baselines-dir "ONNXRegression/baselines" \
+            --suite-name "$INPUT_SUITE" \
+            --baselines-dir "AIMETRegression/baselines" \
             --github-summary
 
       - name: Generate lockfile
@@ -185,7 +182,7 @@ jobs:
         run: |
           . .venv/bin/activate
           export PATH="$HOME/.local/bin:$PATH"
-          python -m ONNXRegression.workflow.utils generate-lockfile \
+          python -m AIMETRegression.workflow.utils generate-lockfile \
             --run-id "${{ github.run_id }}"
 
       - name: Generate timestamp
@@ -201,10 +198,10 @@ jobs:
         run: |
           . .venv/bin/activate
           ARTIFACT_NAME=$(python -c "
-          from ONNXRegression.workflow.artifacts import ArtifactManager, WorkflowConfig
+          from AIMETRegression.workflow.artifacts import ArtifactManager, WorkflowConfig
           config = WorkflowConfig.from_env()
           manager = ArtifactManager(config)
-          print(manager.get_artifact_name('${{ github.ref_name }}', '${{ github.event.inputs.suite || 'nightly' }}'))
+          print(manager.get_artifact_name('${{ github.ref_name }}', '$INPUT_SUITE'))
           ")
           echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
 
@@ -212,7 +209,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: ${{ steps.artifact_name.outputs.name }}
-          path: ONNXRegression/baselines/latest.json
+          path: AIMETRegression/baselines/latest.json
           retention-days: 30
           if-no-files-found: error
 
@@ -221,7 +218,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: onnx-reports-${{ steps.timestamp.outputs.datetime }}-${{ github.run_id }}
-          path: ONNXRegression/reports/**/*
+          path: AIMETRegression/reports/**/*
           retention-days: 30
 
   #=============================================================================
@@ -318,37 +315,34 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           . .venv/bin/activate
-          python -m ONNXRegression.workflow.artifacts download-baseline \
-            --output-dir ONNXRegression/baselines/downloaded
+          python -m AIMETRegression.workflow.artifacts download-baseline \
+            --output-dir AIMETRegression/baselines/downloaded
 
       - name: Setup baseline
         run: |
           . .venv/bin/activate
-          SUITE="${{ github.event.inputs.suite || 'nightly' }}-torch"
-          python -m ONNXRegression.workflow.utils setup-baseline --suite "$SUITE"
+          python -m AIMETRegression.workflow.utils setup-baseline --suite "$INPUT_SUITE"
 
       - name: Run test suite
         run: |
           . .venv/bin/activate
-          SUITE="${{ github.event.inputs.suite || 'nightly' }}-torch"
-          python -m ONNXRegression.suite_runner --suite "$SUITE"
+          python -m AIMETRegression.suite_runner --suite "$INPUT_SUITE"
 
       - name: Compare with baseline
         run: |
           . .venv/bin/activate
 
-          SUITE="${{ github.event.inputs.suite || 'nightly' }}-torch"
-          RESULTS_CSV="ONNXRegression/reports/results_${SUITE}.csv"
+          RESULTS_CSV="AIMETRegression/reports/results_${INPUT_SUITE}.csv"
 
           if [ ! -f "$RESULTS_CSV" ]; then
             echo "Results CSV not found: $RESULTS_CSV"
             exit 1
           fi
 
-          python ONNXRegression/baseline_comparison.py run \
+          python AIMETRegression/baseline_comparison.py run \
             --results "$RESULTS_CSV" \
-            --suite-name "$SUITE" \
-            --baselines-dir "ONNXRegression/baselines" \
+            --suite-name "$INPUT_SUITE" \
+            --baselines-dir "AIMETRegression/baselines" \
             --github-summary
 
       - name: Generate lockfile
@@ -356,7 +350,7 @@ jobs:
         run: |
           . .venv/bin/activate
           export PATH="$HOME/.local/bin:$PATH"
-          python -m ONNXRegression.workflow.utils generate-lockfile \
+          python -m AIMETRegression.workflow.utils generate-lockfile \
             --run-id "${{ github.run_id }}"
 
       - name: Generate timestamp
@@ -371,12 +365,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           . .venv/bin/activate
-          SUITE="${{ github.event.inputs.suite || 'nightly' }}-torch"
           ARTIFACT_NAME=$(python -c "
-          from ONNXRegression.workflow.artifacts import ArtifactManager, WorkflowConfig
+          from AIMETRegression.workflow.artifacts import ArtifactManager, WorkflowConfig
           config = WorkflowConfig.from_env()
           manager = ArtifactManager(config)
-          print(manager.get_artifact_name('${{ github.ref_name }}', '$SUITE'))
+          print(manager.get_artifact_name('${{ github.ref_name }}', '$INPUT_SUITE'))
           ")
           echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
 
@@ -384,7 +377,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: ${{ steps.artifact_name.outputs.name }}
-          path: ONNXRegression/baselines/latest.json
+          path: AIMETRegression/baselines/latest.json
           retention-days: 30
           if-no-files-found: error
 
@@ -393,7 +386,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: torch-reports-${{ steps.timestamp.outputs.datetime }}-${{ github.run_id }}
-          path: ONNXRegression/reports/**/*
+          path: AIMETRegression/reports/**/*
           retention-days: 30
 
   #=============================================================================

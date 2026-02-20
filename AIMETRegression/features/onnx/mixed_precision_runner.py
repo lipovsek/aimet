@@ -51,10 +51,10 @@ from aimet_onnx.mixed_precision import choose_mixed_precision
 from aimet_onnx.common.amp.utils import AMPSearchAlgo
 from aimet_onnx.common.defs import CallbackFunc, QuantizationDataType
 
-from ONNXRegression.evaluation.metrics_utils import measure_inference_metrics
-from ONNXRegression.features._common import build_quantsim, export_aimet_bundle
+from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
+from AIMETRegression.features.onnx._common import build_quantsim, export_aimet_bundle
 
-_ARTIFACTS_DIR = Path("./ONNXRegression/artifacts")
+_ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -203,7 +203,7 @@ def run_mixed_precision(
         if export_dir:
             export_dir = Path(export_dir)
         else:
-            export_dir = Path("./ONNXRegression/artifacts") / model_name
+            export_dir = Path("./AIMETRegression/artifacts") / model_name
             export_dir.mkdir(parents=True, exist_ok=True)
     else:
         export_dir = Path(export_dir)
@@ -256,9 +256,7 @@ def run_mixed_precision(
             sess, model, dataset_name, num_samples=calib_samples
         )
 
-    sim.compute_encodings(
-        forward_pass_callback=calibration_callback, forward_pass_callback_args=None
-    )
+    sim.compute_encodings(forward_pass_callback=calibration_callback)
 
     print(f"[AMP] Step 3: Preparing evaluation callbacks...")
 

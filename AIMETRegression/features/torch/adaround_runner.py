@@ -39,9 +39,9 @@ from qai_hub_models.utils.evaluate import get_deterministic_sample
 from aimet_torch.adaround.adaround_weight import Adaround, AdaroundParameters
 from aimet_torch.model_preparer import prepare_model
 
-from ONNXRegression.evaluation.eval_torch import eval_pytorch_model
-from ONNXRegression.evaluation.metrics_utils import measure_inference_metrics
-from ONNXRegression.features.torch._common import (
+from AIMETRegression.evaluation.eval_torch import eval_pytorch_model
+from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
+from AIMETRegression.features.torch._common import (
     bitwidth_from_token,
     build_quantsim_torch,
     export_torch_bundle,
@@ -50,7 +50,7 @@ from ONNXRegression.features.torch._common import (
     create_calibration_dataloader,
 )
 
-_ARTIFACTS_DIR = Path("./ONNXRegression/artifacts")
+_ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -110,7 +110,7 @@ def run_adaround(
         if export_dir:
             export_dir = Path(export_dir)
         else:
-            export_dir = Path("./ONNXRegression/artifacts") / model_name
+            export_dir = Path("./AIMETRegression/artifacts") / model_name
             export_dir.mkdir(parents=True, exist_ok=True)
     else:
         export_dir = Path(export_dir)

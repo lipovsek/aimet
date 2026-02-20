@@ -10,10 +10,11 @@ import collections
 import sys
 from dataclasses import dataclass
 
-# Import GPUMeter from ONNXRegression evaluation module
+# Import GPUMeter from AIMETRegression evaluation module
 sys.path.append(
     os.path.join(
-        os.path.abspath(os.path.dirname(__file__)), "../../../ONNXRegression/evaluation"
+        os.path.abspath(os.path.dirname(__file__)),
+        "../../../AIMETRegression/evaluation",
     )
 )
 from metrics_utils import GPUMeter

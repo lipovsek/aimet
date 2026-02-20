@@ -40,7 +40,7 @@ jobs:
           DOC_SRC_CODE:                     "Docs/"
           EXAMPLES_SRC_CODE:                "Examples/"
           GENAI_TEST_CODE:                  "GenAITests/"
-          ONNXREGRESSION_TEST_CODE:         "ONNXRegression/"
+          ONNXREGRESSION_TEST_CODE:         "AIMETRegression/"
         shell: bash
         run: |
           set -x
@@ -60,7 +60,7 @@ jobs:
             elif [[ "$file" == "$GENAI_TEST_CODE"* ]]; then
               : # GenAI tests change doesn't require running unit tests
             elif [[ "$file" == "$ONNXREGRESSION_TEST_CODE"* ]]; then
-              : # ONNXRegression tests change doesn't require running unit tests
+              : # AIMETRegression tests change doesn't require running unit tests
             else
               TORCH_TEST_REQUIRED='true'
               ONNX_TEST_REQUIRED='true'

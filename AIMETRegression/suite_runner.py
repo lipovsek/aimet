@@ -41,10 +41,10 @@ from typing import Dict, List, Any
 import torch
 import yaml
 
-from ONNXRegression.config_loader import load_config, list_tests, validate_config
-from ONNXRegression.runner import run_single_config
-from ONNXRegression.report.report_writer import write_csv, write_html
-from ONNXRegression.workflow.utils import install_model_extras
+from AIMETRegression.config_loader import load_config, list_tests, validate_config
+from AIMETRegression.runner import run_single_config
+from AIMETRegression.report.report_writer import write_csv, write_html
+from AIMETRegression.workflow.utils import install_model_extras
 
 
 TORCH_UNSUPPORTED_FEATURES = {"lite_mp"}
@@ -127,7 +127,7 @@ Examples:
   python suite_runner.py --suite nightly --filter-test quantsim_int8
   python suite_runner.py --suite nightly --filter-model resnet --filter-test quantsim
 
-Suite files location: ONNXRegression/suites/
+Suite files location: AIMETRegression/suites/
         """,
     )
 
@@ -161,8 +161,8 @@ Suite files location: ONNXRegression/suites/
 
     args = parser.parse_args()
 
-    suites_dir = Path("ONNXRegression/suites")
-    reports_dir = Path("ONNXRegression/reports")
+    suites_dir = Path("AIMETRegression/suites")
+    reports_dir = Path("AIMETRegression/reports")
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     suite_path = suites_dir / f"{args.suite}.yaml"

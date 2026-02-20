@@ -4,7 +4,7 @@
 # pylint: disable=missing-module-docstring
 
 """
-ONNXRegression Pipeline Runner - Single Test Execution
+AIMETRegression Pipeline Runner - Single Test Execution
 
 This module orchestrates the complete AIMET quantization evaluation pipeline
 for a single test configuration using the hierarchical config system.
@@ -42,18 +42,18 @@ from typing import Dict, Any
 from qai_hub import Device
 from qai_hub_models.utils.input_spec import make_torch_inputs
 
-from ONNXRegression.models.ai_hub_loader import load_model_data
-from ONNXRegression.evaluation.eval_onnx import resolve_dataset_name, eval_onnx_model
-from ONNXRegression.evaluation.eval_torch import eval_pytorch_model
-from ONNXRegression.evaluation.eval_qnn import (
+from AIMETRegression.models.ai_hub_loader import load_model_data
+from AIMETRegression.evaluation.eval_onnx import resolve_dataset_name, eval_onnx_model
+from AIMETRegression.evaluation.eval_torch import eval_pytorch_model
+from AIMETRegression.evaluation.eval_qnn import (
     compile_and_profile_aimet_bundle,
     eval_qnn_accuracy,
 )
-from ONNXRegression.features.torch.utils import ensure_device_patch
+from AIMETRegression.features.torch.utils import ensure_device_patch
 
-from ONNXRegression.report.report_writer import write_csv, write_html
-from ONNXRegression.config_loader import load_config, validate_config
-from ONNXRegression.baseline_comparison import (
+from AIMETRegression.report.report_writer import write_csv, write_html
+from AIMETRegression.config_loader import load_config, validate_config
+from AIMETRegression.baseline_comparison import (
     validate_quantization_quality,
     validate_qdq_export,
     TestResult,
@@ -62,8 +62,8 @@ from ONNXRegression.baseline_comparison import (
 os.environ.setdefault("TORCH_HOME", "./torch_cache")
 os.environ.setdefault("QAIHM_CACHE_DIR", "./qaihm_cache")
 
-ARTIFACTS_DIR = Path("./ONNXRegression/artifacts")
-REPORTS_DIR = Path("./ONNXRegression/reports")
+ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
+REPORTS_DIR = Path("./AIMETRegression/reports")
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -351,10 +351,12 @@ def run_single_config(
     framework = config.get("framework", "onnx").strip().lower()
 
     if framework == "onnx":
-        from ONNXRegression.features.quantsim_runner import run_quantsim
-        from ONNXRegression.features.lite_mp_runner import run_lite_mp
-        from ONNXRegression.features.adaround_runner import run_adaround
-        from ONNXRegression.features.mixed_precision_runner import run_mixed_precision
+        from AIMETRegression.features.onnx.quantsim_runner import run_quantsim
+        from AIMETRegression.features.onnx.lite_mp_runner import run_lite_mp
+        from AIMETRegression.features.onnx.adaround_runner import run_adaround
+        from AIMETRegression.features.onnx.mixed_precision_runner import (
+            run_mixed_precision,
+        )
 
         FEATURE_RUNNERS = {
             "quantsim": run_quantsim,
@@ -369,13 +371,13 @@ def run_single_config(
                 f"Supported: {list(FEATURE_RUNNERS.keys())}"
             )
     elif framework == "torch":
-        from ONNXRegression.features.torch.quantsim_runner import (
+        from AIMETRegression.features.torch.quantsim_runner import (
             run_quantsim as run_quantsim_torch,
         )
-        from ONNXRegression.features.torch.adaround_runner import (
+        from AIMETRegression.features.torch.adaround_runner import (
             run_adaround as run_adaround_torch,
         )
-        from ONNXRegression.features.torch.mixed_precision_runner import (
+        from AIMETRegression.features.torch.mixed_precision_runner import (
             run_mixed_precision as run_mixed_precision_torch,
         )
 

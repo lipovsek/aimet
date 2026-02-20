@@ -26,14 +26,14 @@ from typing import Any, Dict, Tuple
 import onnxruntime as ort
 from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 
-from ONNXRegression.evaluation.metrics_utils import measure_inference_metrics
-from ONNXRegression.features._common import (
+from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
+from AIMETRegression.features.onnx._common import (
     build_quantsim,
     export_aimet_bundle,
 )
 
 # Output directory for artifacts
-_ARTIFACTS_DIR = Path("./ONNXRegression/artifacts")
+_ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -104,7 +104,7 @@ def run_quantsim(
             export_dir = Path(export_dir)
         else:
             # Fallback to default location with model subdirectory
-            export_dir = Path("./ONNXRegression/artifacts") / model_name
+            export_dir = Path("./AIMETRegression/artifacts") / model_name
             export_dir.mkdir(parents=True, exist_ok=True)
     else:
         export_dir = Path(export_dir)
@@ -156,9 +156,7 @@ def run_quantsim(
         )
 
     # Compute optimal quantization encodings
-    sim.compute_encodings(
-        forward_pass_callback=calibration_callback, forward_pass_callback_args=None
-    )
+    sim.compute_encodings(forward_pass_callback=calibration_callback)
 
     print(f"[QuantSim] Calibration complete")
 

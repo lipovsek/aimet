@@ -35,13 +35,13 @@ from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 from aimet_onnx import analyze_per_layer_sensitivity, int4, int8, int16, float16
 from aimet_onnx.lite_mp import flip_layers_to_higher_precision
 
-from ONNXRegression.evaluation.metrics_utils import measure_inference_metrics
-from ONNXRegression.features._common import (
+from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
+from AIMETRegression.features.onnx._common import (
     build_quantsim,
     export_aimet_bundle,
 )
 
-_ARTIFACTS_DIR = Path("./ONNXRegression/artifacts")
+_ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -172,7 +172,7 @@ def run_lite_mp(
             export_dir = Path(export_dir)
         else:
             # Fallback to default location with model subdirectory
-            export_dir = Path("./ONNXRegression/artifacts") / model_name
+            export_dir = Path("./AIMETRegression/artifacts") / model_name
             export_dir.mkdir(parents=True, exist_ok=True)
     else:
         export_dir = Path(export_dir)
@@ -248,9 +248,7 @@ def run_lite_mp(
         )
 
     # Compute initial encodings for INT8 quantization
-    sim.compute_encodings(
-        forward_pass_callback=calibration_callback, forward_pass_callback_args=None
-    )
+    sim.compute_encodings(forward_pass_callback=calibration_callback)
 
     # ============ Step 3: Sensitivity Analysis ============
     print(f"[Lite-MP] Analyzing per-layer sensitivity...")
@@ -294,9 +292,7 @@ def run_lite_mp(
     print(f"[Lite-MP] Re-calibrating after precision changes...")
 
     # Re-compute encodings with mixed precision configuration
-    sim.compute_encodings(
-        forward_pass_callback=calibration_callback, forward_pass_callback_args=None
-    )
+    sim.compute_encodings(forward_pass_callback=calibration_callback)
 
     # ============ Step 6: Evaluate Mixed-Precision Model ============
     print(f"[Lite-MP] Evaluating mixed-precision model with {eval_samples} samples...")

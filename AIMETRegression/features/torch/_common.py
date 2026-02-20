@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import onnx
 
-from ONNXRegression.features.torch.utils import ensure_device_patch
+from AIMETRegression.features.torch.utils import ensure_device_patch
 
 from aimet_torch.quantsim import QuantizationSimModel
 from aimet_torch.common.defs import QuantScheme

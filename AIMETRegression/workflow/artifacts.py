@@ -292,7 +292,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Manage workflow artifacts")
     parser.add_argument("action", choices=["download-baseline"])
-    parser.add_argument("--output-dir", default="ONNXRegression/baselines/downloaded")
+    parser.add_argument("--output-dir", default="AIMETRegression/baselines/downloaded")
 
     args = parser.parse_args()
 

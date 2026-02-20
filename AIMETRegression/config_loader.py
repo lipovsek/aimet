@@ -18,7 +18,7 @@ Key Features:
 
 
 Usage:
-    from ONNXRegression.config_loader import load_config, list_tests
+    from AIMETRegression.config_loader import load_config, list_tests
 
     # Load a specific test configuration
     config = load_config("models/resnet50.yaml", "quantsim_int8", "nightly")
@@ -77,7 +77,7 @@ def load_config(
         >>> config = load_config("models/resnet50.yaml", "quantsim_int8")
         >>> print(config['calib_samples'])  # 256 (from defaults)
     """
-    base_dir = Path("ONNXRegression/configs")
+    base_dir = Path("AIMETRegression/configs")
 
     # Step 1: Load defaults (foundation for all configs)
     defaults_path = base_dir / "_defaults.yaml"
@@ -191,7 +191,7 @@ def list_tests(model_yaml: str) -> List[str]:
         >>> print(tests)
         ['quantsim_int8', 'quantsim_int8_int16', 'lite_mp_25', 'adaround_500']
     """
-    base_dir = Path("ONNXRegression/configs")
+    base_dir = Path("AIMETRegression/configs")
     model_path = base_dir / model_yaml
 
     if not model_path.exists():
@@ -221,7 +221,7 @@ def list_models() -> List[str]:
         models/resnet50.yaml: 4 tests
         models/mobilenetv2.yaml: 2 tests
     """
-    base_dir = Path("ONNXRegression/configs/models")
+    base_dir = Path("AIMETRegression/configs/models")
 
     if not base_dir.exists():
         return []
