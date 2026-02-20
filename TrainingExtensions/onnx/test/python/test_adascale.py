@@ -591,6 +591,113 @@ class TestAdascaleQuantizer:
                 ]
                 assert consolidated_delta_updated_enc != consolidated_delta_orig_enc
 
+    @pytest.mark.cuda
+    def test_adascale_gpu_memory_leak(self):
+        """
+        Test that GPU memory doesn't leak during AdaScale optimization loop.
+        """
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+
+        class ModelWithTwoInputs(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear1 = torch.nn.Linear(1024, 512)
+                self.linear2 = torch.nn.Linear(512, 256)
+
+            def forward(self, x1, x2):
+                combined = x1 + x2
+                out = self.linear1(combined)
+                out = torch.nn.functional.relu(out)
+                return self.linear2(out)
+
+        model = ModelWithTwoInputs().eval()
+        input_shape = (2, 512, 1024)
+        torch.random.manual_seed(1)
+
+        # Each sample is a LIST of tensors (multiple inputs)
+        fp_inputs = [
+            [torch.rand(input_shape), torch.rand(input_shape)],
+            [torch.rand(input_shape), torch.rand(input_shape)],
+        ]
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            torch.onnx.export(
+                model,
+                (fp_inputs[0][0], fp_inputs[0][1]),
+                tempdir + "/model.onnx",
+                input_names=["input1", "input2"],
+                output_names=["output"],
+                dynamo=False,
+            )
+            onnx_model = load_model(tempdir + "/model.onnx")
+            sim = QuantizationSimModel(
+                onnx_model,
+                fp_inputs[0],
+            )
+            sim._compute_param_encodings(overwrite=False)
+
+            quantized_inputs = []
+            for inputs in fp_inputs:
+                quantized_inputs.append([inp * 0.3 for inp in inputs])
+
+            # Clear memory before test
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+
+            # Monitor memory during optimization by monkey-patching
+            memory_samples = []
+            original_adam_step = torch.optim.Adam.step
+            iteration_counter = [0]
+
+            def step_with_memory_tracking(self, *args, **kwargs):
+                result = original_adam_step(self, *args, **kwargs)
+                iteration_counter[0] += 1
+                if iteration_counter[0] in [1, 5, 10, 15]:
+                    torch.cuda.synchronize()
+                    memory_samples.append(
+                        {
+                            "iteration": iteration_counter[0],
+                            "memory_mb": torch.cuda.memory_allocated() / 1e6,
+                        }
+                    )
+                return result
+
+            torch.optim.Adam.step = step_with_memory_tracking
+            try:
+                block_input_output_names = (["input1", "input2"], ["output"])
+                AdaScale.optimize_adascale_block(
+                    sim,
+                    fp_inputs,
+                    quantized_inputs,
+                    block_input_output_names=block_input_output_names,
+                    beta_gamma_lr=1e-3,
+                    scales_lr=5e-4,
+                    num_iterations=15,
+                    device=torch.device("cuda:0"),
+                )
+            finally:
+                torch.optim.Adam.step = original_adam_step
+
+            assert len(memory_samples) == 4
+
+            # Check that memory is stable across all iterations stamps
+            mem_at_iter_1 = memory_samples[0]["memory_mb"]
+            mem_at_iter_5 = memory_samples[1]["memory_mb"]
+            mem_at_iter_10 = memory_samples[2]["memory_mb"]
+            mem_at_iter_15 = memory_samples[3]["memory_mb"]
+
+            # Check each iteration against baseline
+            max_allowed_diff_pct = 0.05
+
+            for idx, (iteration, memory) in enumerate(
+                [(5, mem_at_iter_5), (10, mem_at_iter_10), (15, mem_at_iter_15)]
+            ):
+                if idx == 0:
+                    continue
+                diff_pct = abs(memory - mem_at_iter_1) / mem_at_iter_1
+                assert diff_pct < max_allowed_diff_pct
+
 
 @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
 def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):

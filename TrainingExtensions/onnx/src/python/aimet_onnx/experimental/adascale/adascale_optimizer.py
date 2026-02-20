@@ -226,6 +226,7 @@ class AdaScale:
                     )
                     del fp_input_list, qsim_input_list, fp_inputs, qsim_inputs
                     gc.collect()
+                    torch.cuda.empty_cache()
 
                 sim._rebuild_session()  # pylint: disable=protected-access
 
@@ -291,8 +292,9 @@ class AdaScale:
                 if isinstance(input_tensor, torch.Tensor):
                     input_tensor = [input_tensor]
 
-                for i, in_t in enumerate(input_tensor):
-                    input_tensor[i] = in_t.to(device=device)
+                input_tensor = [
+                    inp_t.to(device=device) for inp_t in input_tensor
+                ]  # Create a new tensor
                 out = pytorch_block(*input_tensor).detach()
 
                 out.requires_grad_(False)
@@ -329,6 +331,7 @@ class AdaScale:
         gc.collect()
         torch.cuda.empty_cache()
 
+        pytorch_block.to(device)
         with torch.set_grad_enabled(True):
             for iteration in tqdm.tqdm(range(num_iterations)):
                 fp_input = torch_fp_input[iteration % len(torch_fp_input)]
@@ -344,14 +347,12 @@ class AdaScale:
                         quant_input,
                         fp_input,
                     )
-                pytorch_block.to(device)
                 if isinstance(input_tensor, torch.Tensor):
-                    input_tensor = input_tensor.to(device=device)
-                    quant_out = pytorch_block(input_tensor)
-                else:
-                    for i, in_t in enumerate(input_tensor):
-                        input_tensor[i] = in_t.to(device=device)
-                    quant_out = pytorch_block(*input_tensor)
+                    input_tensor = [input_tensor]
+                input_tensor = [
+                    inp_t.to(device=device) for inp_t in input_tensor
+                ]  # Create a new tensor
+                quant_out = pytorch_block(*input_tensor)
                 batch_fp_out = fp_out[iteration % len(torch_fp_input)].to(device)
                 loss = _LOSS_FN(
                     quant_out,
@@ -363,9 +364,6 @@ class AdaScale:
                 scheduler.step()
                 optimizer.zero_grad()
                 del quant_out, batch_fp_out, loss, input_tensor, fp_input, quant_input
-
-                gc.collect()
-                torch.cuda.empty_cache()
 
         copy_pt_weights_to_onnx(
             pytorch_block, sim.model.model, pt_weights_to_onnx_initializers
@@ -382,9 +380,6 @@ class AdaScale:
             fp_inputs,
             quantized_inputs,
         )
-
-        gc.collect()
-        torch.cuda.empty_cache()
 
     @staticmethod
     @contextlib.contextmanager
