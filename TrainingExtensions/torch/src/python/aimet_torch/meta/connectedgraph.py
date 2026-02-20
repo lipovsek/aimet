@@ -477,7 +477,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         # curr_inputs[0] corresponds to an identifier for the current graph node.
         if len(curr_inputs) != len(higher_level_inputs) + 1:
             if is_leaf or is_quantized or self._strict:
-                raise RuntimeError(
+                raise _UnsafeGraphError(
                     f"Failed to trace computation graph for module {type(model)}. "
                     f"Expected {len(curr_inputs) - 1} inputs, "
                     f"but actually invoked with {len(higher_level_inputs)}."
@@ -530,7 +530,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 if len(submodule_outputs) != len(outputs):
                     module = node_name_to_module[next(node.inputs()).debugName()]
                     if is_leaf or is_quantized or self._strict:
-                        raise RuntimeError(
+                        raise _UnsafeGraphError(
                             f"Failed to trace computation graph for module {type(module)}. "
                             f"Expected to return {len(submodule_outputs)} outputs, "
                             f"but actually returned {len(outputs)}."
@@ -656,7 +656,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         if getattr_node_info.node_alias not in node_name_to_module:
             node_name_to_module[getattr_node_info.node_alias] = subgraph_model
         else:
-            raise ValueError(
+            raise _UnsafeGraphError(
                 "duplicate model for {0} -> {1} and {2}".format(
                     getattr_node_info.node_alias,
                     node_name_to_module[getattr_node_info.node_alias],
@@ -1124,20 +1124,19 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 # Two possibilities: 1) The op comes after a module with multiple outputs, given as one torch graph
                 # tensor, or 2) The op op comes after a Tuple/List construct op that was already processed, so this op's
                 # inputs had already been replaced with multiple constituent products.
-                assert len(op.inputs) == len(op.output_products) or len(op.inputs) == 1
+                if not (
+                    len(op.inputs) == len(op.output_products) or len(op.inputs) == 1
+                ):
+                    raise _UnsafeGraphError
                 # The op sits after a module that has multiple outputs
                 if len(op.inputs) == 1:
                     inp_op = op.inputs[0].producer
                     if not inp_op:
                         # TupleUnpack is taking in a tuple model input and unpacking it, no parent op exists.
-                        assert op.inputs[0].is_model_input
+                        if not op.inputs[0].is_model_input:
+                            raise _UnsafeGraphError
                         inp_name = op.inputs[0].name
                     else:
-                        assert len(inp_op.output_products) == 1, (
-                            "TupleUnpack with one input product has parent op "
-                            "with multiple output products. This is currently "
-                            "unhandled."
-                        )
                         inp_op.output_products = []
                         inp_name = inp_op.name
 
@@ -1388,7 +1387,8 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         for op in self.get_all_ops().values():
             op_module = op.get_module()
             if op_module:
-                assert op_module in module_tensor_shapes_map
+                if op_module not in module_tensor_shapes_map:
+                    raise _UnsafeGraphError
                 input_tensor_shapes, output_tensor_shapes = module_tensor_shapes_map[
                     op_module
                 ]
@@ -1557,7 +1557,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                         deleted_product.name
                     )
                 except ValueError as e:
-                    raise AssertionError(
+                    raise _UnsafeGraphError(
                         f"Product {deleted_product.name} not found in producer_to_product_name_map"
                     ) from e
 
@@ -1595,7 +1595,8 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         :param shape: Shape of product
         :return: Product that was created
         """
-        assert name not in self._products
+        if name in self._products:
+            raise _UnsafeGraphError
         product = Product(name, shape)
         self._products[name] = product
         return product
@@ -1727,7 +1728,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             missing_modules = ", ".join(
                 [self._module_to_name[module] for module in missing_modules]
             )
-            raise RuntimeError(
+            raise _UnsafeGraphError(
                 f"Couldn't find corresponding JIT trace for modules: {missing_modules}"
             )
 

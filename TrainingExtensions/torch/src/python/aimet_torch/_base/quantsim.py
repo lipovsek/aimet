@@ -63,7 +63,7 @@ from aimet_torch.common.utils import deprecated, _red
 from aimet_torch.common import quantsim
 
 from aimet_torch import torchscript_utils, utils, onnx_utils
-from aimet_torch.meta.connectedgraph import ConnectedGraph, Op
+from aimet_torch.meta.connectedgraph import ConnectedGraph, Op, _UnsafeGraphError
 from aimet_torch._base.nn.modules.custom import Outer
 from aimet_torch.quantsim_config.quantsim_config import QuantSimConfigurator
 from aimet_torch._base.nn.modules.custom import MatMul, Cast
@@ -299,9 +299,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
 
         try:
             self.connected_graph = ConnectedGraph(self.model, dummy_input, strict=False)
-        except torch.jit.TracingCheckError:
-            raise
-        except Exception as e:  # pylint: disable=broad-exception-caught
+        except _UnsafeGraphError as e:
             f = io.StringIO()
             traceback.print_exc(file=f)
 

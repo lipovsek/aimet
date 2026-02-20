@@ -1987,7 +1987,7 @@ class TestQuantizationSimStaticGrad:
     def test_connected_graph_is_none(self):
         """Test that an assertion is thrown when connected graph is not able to be built."""
 
-        def raise_trace_error(_self, _model, _inputs):
+        def raise_trace_error(_self, _model, _inputs, **kwargs):
             raise torch.jit.TracingCheckError(None, None)
 
         model = SmallMnist()
@@ -1996,7 +1996,7 @@ class TestQuantizationSimStaticGrad:
             with unittest.mock.patch.object(
                 ConnectedGraph, "__del__", lambda _self: None
             ):
-                with pytest.raises(RuntimeError):
+                with pytest.raises(torch.jit.TracingCheckError):
                     _ = QuantizationSimModel(
                         model, dummy_input=torch.rand(1, 1, 28, 28)
                     )
