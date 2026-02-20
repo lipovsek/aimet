@@ -1458,6 +1458,7 @@ def test_output_split(tmp_path, dynamo: bool):
 
 
 @torch.no_grad()
+@pytest.mark.parametrize("prequantize_constants", [False, True])
 @pytest.mark.parametrize(
     "compile, dynamo",
     [
@@ -1472,6 +1473,7 @@ def test_quantsim_export_int2(
     zero_point_shift: float,
     dynamo: bool,
     compile: bool,
+    prequantize_constants: bool,
 ):
     """
     When: Export quantized model with int2 weights using sim.onnx.export
@@ -1511,6 +1513,74 @@ def test_quantsim_export_int2(
     y_zero_point = weight_encoding.get("y_zero_point", 0)
     assert np.all(np.array(y_zero_point) == -zero_point_shift)
 
+    aimet_torch.onnx.export(
+        sim.model,
+        x,
+        tmp_path / "int2_conv_qdq.onnx",
+        opset_version=25,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=dynamo,
+        prequantize_constants=prequantize_constants,
+    )
+    onnx_qdq_model = onnx.load_model(tmp_path / "int2_conv_qdq.onnx")
+    onnx.checker.check_model(onnx_qdq_model)
+
+    q_nodes = [
+        node for node in onnx_qdq_model.graph.node if node.op_type == "QuantizeLinear"
+    ]
+    dq_nodes = [
+        node for node in onnx_qdq_model.graph.node if node.op_type == "DequantizeLinear"
+    ]
+    if prequantize_constants:
+        assert len(q_nodes) == 2
+        assert len(dq_nodes) == 4
+    else:
+        assert len(q_nodes) == 3
+        assert len(dq_nodes) == 4
+
+    for node in onnx_qdq_model.graph.node:
+        if node.op_type != "DequantizeLinear":
+            continue
+
+        scale_name, zp_name = node.input[1:3]
+
+        scale_array = onnx.numpy_helper.to_array(
+            next(
+                init
+                for init in onnx_qdq_model.graph.initializer
+                if init.name == scale_name
+            )
+        )
+        zp_array = onnx.numpy_helper.to_array(
+            next(
+                init
+                for init in onnx_qdq_model.graph.initializer
+                if init.name == zp_name
+            )
+        )
+        if node.output == "0.weight_qdq":
+            expected_scale = (
+                sim.model[0].weight.encoding.scale
+                if fold_param_quantizers
+                else sim.model[0].param_quantizers["weight"].get_scale()
+            )
+            expected_zp = 0
+        elif node.input == "input_qdq":
+            expected_scale = sim.model[0].input_quantizers[0].get_scale()
+            expected_zp = -sim.model[0].input_quantizers[0].get_offset()
+        elif node.output == "output":
+            expected_scale = sim.model[0].output_quantizers[0].get_scale()
+            expected_zp = -sim.model[0].output_quantizers[0].get_offset()
+        else:
+            continue
+
+        assert torch.allclose(
+            torch.from_numpy(scale_array).reshape(expected_scale.shape),
+            expected_scale,
+        )
+        assert np.all(zp_array == expected_zp)
+
     if zero_point_shift == 0.0:
         return
 
@@ -1533,7 +1603,6 @@ def test_quantsim_export_int2(
         weight = sim.model[0].weight
 
     w_int4 = weight_qtzr(weight).quantize()
-
     assert torch.all((w_int4 == -3) | (w_int4 == -1) | (w_int4 == 1) | (w_int4 == 3))
 
     aimet_torch.onnx.export(
@@ -1544,7 +1613,7 @@ def test_quantsim_export_int2(
         input_names=["input"],
         output_names=["output"],
         dynamo=dynamo,
-        prequantize_constants=True,
+        prequantize_constants=prequantize_constants,
     )
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL

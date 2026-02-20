@@ -41,7 +41,7 @@ _TORCH_MIN_OPSET = _constants.ONNX_MIN_OPSET
 _TORCH_MAX_OPSET = _constants.ONNX_MAX_OPSET
 
 # Allow at least up to opset 21 to enable [u]int16 QDQ export
-_AIMET_MAX_OPSET = max(_TORCH_MAX_OPSET, 23)
+_AIMET_MAX_OPSET = max(_TORCH_MAX_OPSET, 25)
 
 
 @torch.no_grad()
@@ -322,13 +322,16 @@ def _check_unsupported_args(model, force_activation_as, kwargs):
 
 
 def _check_non_standard_quantizer(model: torch.nn.Module):
+    supported_bitwdiths = (2, 4, 8, 16, 32)
+
     for name, qtzr in model.named_modules():
         if not isinstance(qtzr, AffineQuantizerBase):
             continue
 
-        if qtzr.bitwidth not in (4, 8, 16, 32):
+        if qtzr.bitwidth not in supported_bitwdiths:
+            supported_bitwdiths = "/".join(str(b) for b in supported_bitwdiths)
             raise RuntimeError(
-                "torch.onnx.export only supports 4/8/16/32-bit integers; "
+                f"torch.onnx.export only supports {supported_bitwdiths}-bit integers; "
                 f"got '{name}' with bitwidth={qtzr.bitwidth}"
             )
 

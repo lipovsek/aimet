@@ -20,23 +20,47 @@ def pack_int8_to_int4x2(arr: np.ndarray) -> np.ndarray:
             f"Only 1D vector can be packed to int4x2; got N-D array of shape {arr.shape}"
         )
 
-    if arr.size % 2 == 1:
-        # Add 0 padding to enable int4x2 packing
-        arr = np.concatenate((arr, np.array([0], dtype=arr.dtype)))
+    signed = arr.dtype == np.int8
+    arr = arr.astype(np.uint8)
+
+    # Add 0 padding to enable int2x4 packing
+    arr = np.concatenate((arr, np.zeros(arr.size % 2, dtype=arr.dtype)))
+
+    if signed:
+        # If the int8 value is negative, set the sign bit in the corresponding int4.
+        int8_sign_bit = 0b10000000
+        int4_sign_bit = 0b00001000
+        arr = np.where(arr & int8_sign_bit, arr | int4_sign_bit, arr)
+
+    arr &= 0b00001111
+    int4x2 = arr[0::2] << 0 | arr[1::2] << 4
+    return int4x2
+
+
+def pack_int8_to_int2x4(arr: np.ndarray) -> np.ndarray:
+    if arr.dtype not in (np.int8, np.uint8):
+        raise RuntimeError(f"Only [u]int8 can be packed to int4x2; got {arr.dtype}")
+
+    if arr.ndim > 1:
+        raise RuntimeError(
+            f"Only 1D vector can be packed to int4x2; got N-D array of shape {arr.shape}"
+        )
 
     signed = arr.dtype == np.int8
     arr = arr.astype(np.uint8)
 
-    int4x2 = np.zeros(arr.size // 2, dtype=np.uint8)
-    int4x2 |= arr[1::2] << 4
+    # Add 0 padding to enable int2x4 packing
+    arr = np.concatenate((arr, np.zeros(4 - (arr.size % 4), dtype=arr.dtype)))
 
     if signed:
-        int4x2 |= arr[::2] & 0x07
-        int4x2 |= (arr[::2] & 0x80) >> 4
-    else:
-        int4x2 |= arr[::2] & 0x0F
+        # If the int8 value is negative, set the sign bit in the corresponding int2.
+        int8_sign_bit = 0b10000000
+        int2_sign_bit = 0b00000010
+        arr = np.where(arr & int8_sign_bit, arr | int2_sign_bit, arr)
 
-    return int4x2
+    arr &= 0b00000011
+    int2x4 = arr[0::4] << 0 | arr[1::4] << 2 | arr[2::4] << 4 | arr[3::4] << 6
+    return int2x4
 
 
 def unpack_int4x2_to_int8(arr: np.ndarray, dtype) -> np.ndarray:
@@ -152,18 +176,20 @@ class _QdqNodeFactory(ABC):
     def make_int_arr(cls, arr: np.ndarray, dtype: str, name: str) -> TensorProto:
         cls._check_dtype(dtype)
 
-        if dtype not in ("int4", "uint4"):
+        if dtype not in ("int2", "uint2", "int4", "uint4"):
             arr = arr.astype(dtype)
             return numpy_helper.from_array(arr, name=name)
 
         target_shape = arr.shape
-        arr_int4x2 = pack_int8_to_int4x2(
-            arr.flatten().astype(np.int8 if dtype == "int4" else np.uint8)
+        arr = arr.flatten().astype(np.int8 if dtype in ("int2", "int4") else np.uint8)
+        tensor = numpy_helper.from_array(
+            pack_int8_to_int4x2(arr)
+            if dtype in ("int4", "uint4")
+            else pack_int8_to_int2x4(arr),
+            name=name,
         )
-        tensor = numpy_helper.from_array(arr_int4x2, name=name)
-
-        # Restore data_type to INT4/UINT4
-        tensor.data_type = TensorProto.INT4 if dtype == "int4" else TensorProto.UINT4
+        # Restore data_type to INT2/INT4
+        tensor.data_type = cls.SUPPORTED_DTYPES[dtype]
         tensor.ClearField("dims")
         tensor.dims.extend(target_shape)
 
