@@ -2225,3 +2225,47 @@ def test_control_flow_op_export(tmp_path: pathlib.Path):
     expected_out = sim.model(input)
     atol = sim.model.linear.output_quantizers[0].get_scale().item()
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
+
+
+def test_concat(tmp_path: pathlib.Path):
+    """
+    Given: Concat with only output encoding but without input encoding
+    When: Export to onnx QDQ
+    Then: Exported concat inputs must reuse the output encoding
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super(Model, self).__init__()
+            self.conv = torch.nn.Conv2d(6, 6, 3, padding=1)
+
+        def forward(self, img, input_uv):
+            out = torch.cat((img, input_uv), dim=1)
+            return self.conv(out)
+
+    model = Model()
+    img = torch.randn(1, 3, 224, 224)
+    input_uv = torch.randn(1, 3, 224, 224)
+    sim = aimet_torch.QuantizationSimModel(model, (img, input_uv))
+    sim.compute_encodings(lambda model: model(img, input_uv))
+    sim.onnx.export(
+        (img, input_uv),
+        tmp_path / "concat.onnx",
+        input_names=["img", "input_uv"],
+        output_names=["output"],
+        dynamo=False,
+        encoding_version="2.0.0",
+    )
+
+    with open(tmp_path / "concat.encodings") as f:
+        encodings = {enc.pop("name"): enc for enc in json.load(f)["encodings"]}
+
+    assert encodings.keys() == {
+        "img",
+        "input_uv",
+        "/Concat_output_0",
+        "conv.weight",
+        "conv.bias",
+        "output",
+    }
+    assert encodings["input_uv"] == encodings["img"] == encodings["/Concat_output_0"]

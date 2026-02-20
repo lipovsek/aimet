@@ -1228,7 +1228,9 @@ def _derive_data_movement_op_encodings(
     encodings: Mapping[str, Mapping],
 ) -> Dict[str, Dict]:
     data_movement_ops = [
-        node for node in model.graph.node if _is_grid_preserving_op(node.op_type)
+        node
+        for node in model.graph.node
+        if _is_grid_preserving_op(node.op_type) or node.op_type == "Concat"
     ]
 
     new_encodings = {}
