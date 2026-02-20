@@ -899,37 +899,28 @@ def map_torch_dtype_to_np(torch_dtype: torch.dtype) -> np.dtype:
 
 
 @contextmanager
-def _remove_initializer_data(model: onnx.ModelProto):
-    # Hacky way to get around onnx.shape_inference.infer_shapes call as it doesn't work for model >2GB
-    raw_data = {}
-
-    try:
-        # Store and clear raw_data from initializers
-        for initializer in model.graph.initializer:
-            if initializer.HasField("raw_data"):
-                raw_data[initializer.name] = initializer.raw_data
-                initializer.ClearField("raw_data")
-
-        yield
-
-    finally:
-        for initializer in model.graph.initializer:
-            if initializer.name in raw_data:
-                initializer.raw_data = raw_data[initializer.name]
-
-
-@contextmanager
-def add_value_info(model: onnx.ModelProto):
+def _add_value_info(model: onnx.ModelProto):
     """
-    Context manager to add value_info to model graph by performing shape inference.
-    :param model: ONNX ModelProto
+    Context manager that temporarily populates the model's value_info via shape inference.
+
+    Shape inference requires stripping weight data (models > 2GB fail otherwise) and replacing
+    custom quantizer ops with Identity. We perform these modifications on a copy rather than
+    the original model to avoid memory accumulation: protobuf doesn't release memory when
+    fields are cleared, so clearing and restoring raw_data on the original would cause the
+    ModelProto to grow by the total weight size on each call.
+
+    :param model: The ONNX model to temporarily add value info to.
     """
     initial_value_info = model.graph.value_info
 
     # Remove weight data to allow shape inference (fails for models > 2GB)
-    with _remove_initializer_data(model):
-        model_copy = onnx.ModelProto()
-        model_copy.CopyFrom(model)
+    model_copy = onnx.ModelProto()
+    model_copy.CopyFrom(model)
+
+    # Store and clear raw_data from initializers
+    for initializer in model_copy.graph.initializer:
+        if initializer.HasField("raw_data"):
+            initializer.ClearField("raw_data")
 
     # Replace quantizers with Identity ops to allow shape inference
     for node in model_copy.graph.node:

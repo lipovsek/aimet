@@ -10,7 +10,7 @@ from onnx import numpy_helper
 from onnx.utils import Extractor
 from onnx2torch import convert
 from aimet_onnx.experimental.adascale.onnx2torch_ext import *  # pylint: disable=wildcard-import, unused-wildcard-import
-from aimet_onnx.utils import add_value_info
+from aimet_onnx.utils import _add_value_info
 from aimet_onnx.quantsim import QuantizationSimModel
 from onnx2torch.onnx_graph import OnnxGraph
 from typing import Tuple, List, Dict, Collection
@@ -70,7 +70,7 @@ def get_pt_block(
     :param block_input_output_names: input/output names for block end points
     """
     # As of onnx 1.18, value info must be populated prior to instantiating Extractor
-    with add_value_info(model):
+    with _add_value_info(model):
         extractor = Extractor(model)
         onnx_block = _get_onnx_subgraph(extractor, block_input_output_names)
         onnx_block = QuantizationSimModel.remove_quantizers(onnx_block)

@@ -34,6 +34,7 @@ from aimet_onnx.utils import (
     get_torch_device,
     map_np_dtype_to_torch,
     LazyExtractor,
+    _add_value_info,
 )
 from aimet_onnx.sequential_mse.dependency_graph import DependencyNode
 from aimet_onnx.sequential_mse.transform import (
@@ -842,57 +843,6 @@ def _disable_onnx_shape_inference():
         yield
     finally:
         onnx.shape_inference.infer_shapes = infer_shapes
-
-
-@contextmanager
-def _add_value_info(model: onnx.ModelProto):
-    """
-    Context manager that temporarily populates the model's value_info via shape inference.
-
-    Shape inference requires stripping weight data (models > 2GB fail otherwise) and replacing
-    custom quantizer ops with Identity. We perform these modifications on a copy rather than
-    the original model to avoid memory accumulation: protobuf doesn't release memory when
-    fields are cleared, so clearing and restoring raw_data on the original would cause the
-    ModelProto to grow by the total weight size on each call.
-
-    :param model: The ONNX model to temporarily add value info to.
-    """
-    initial_value_info = model.graph.value_info
-
-    # Remove weight data to allow shape inference (fails for models > 2GB)
-    model_copy = onnx.ModelProto()
-    model_copy.CopyFrom(model)
-
-    # Store and clear raw_data from initializers
-    for initializer in model_copy.graph.initializer:
-        if initializer.HasField("raw_data"):
-            initializer.ClearField("raw_data")
-
-    # Replace quantizers with Identity ops to allow shape inference
-    for node in model_copy.graph.node:
-        if node.op_type != "QcQuantizeOp":
-            continue
-
-        node.op_type = "Identity"
-        node.ClearField("attribute")
-        node.ClearField("domain")
-
-    # Model must be topologically sorted prior to shape inference
-    ONNXModel(model_copy).topological_sort()
-    inferred_model = onnx.shape_inference.infer_shapes(model_copy)
-
-    value_info = inferred_model.graph.value_info
-    del model_copy, inferred_model
-
-    try:
-        # Update model's value info
-        model.graph.ClearField("value_info")
-        model.graph.value_info.extend(value_info)
-        yield
-    finally:
-        # Restore original value info
-        model.graph.ClearField("value_info")
-        model.graph.value_info.extend(initial_value_info)
 
 
 @contextmanager

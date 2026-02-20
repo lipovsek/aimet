@@ -31,7 +31,6 @@ from aimet_onnx.sequential_mse.dependency_graph import (
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.sequential_mse.seq_mse import (
     SeqMseParams,
-    _add_value_info,
     SequentialMse,
     _temporarily_disable_block_grouping,
 )
@@ -46,7 +45,7 @@ from aimet_onnx.quantsim import (
     set_blockwise_quantization_for_weights,
     set_grouped_blockwise_quantization_for_weights,
 )
-from aimet_onnx.utils import make_dummy_input
+from aimet_onnx.utils import make_dummy_input, _add_value_info
 from aimet_onnx.qc_quantize_op import (
     QcQuantizeOp,
     OpMode,
