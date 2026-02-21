@@ -195,7 +195,7 @@ def quantize_dequantize(
     :param block_size: Block sizes per dimension
     :param zero_point_shift: Shift tensor by an amount proportional to scale during quantize dequantize
     """
-    # Skip execution of actual Q/DQ logic during ONNX expor to speed up export
+    # Skip execution of actual Q/DQ logic during ONNX export to speed up export
     if torch.onnx.is_in_onnx_export():
         return tensor
 

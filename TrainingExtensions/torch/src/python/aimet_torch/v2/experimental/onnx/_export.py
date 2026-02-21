@@ -670,11 +670,11 @@ def remove_quantization_nodes_from_onnx_graph(
     name_to_producer, name_to_consumer = _get_producer_consumer_info_from_onnx_graph(
         model
     )
-    qtzr_nodes = list(
-        node
+    qtzr_nodes = {
+        node.name: node
         for node in model.graph.node
         if node.domain == "aimet" and node.op_type in ONNX_QUANTIZER_OP_TYPES
-    )
+    }
     constants = {const.name: const for const in _get_all_tensors(model) if const.name}
     constants |= {
         const_node.output[0]: attr.t
@@ -684,8 +684,8 @@ def remove_quantization_nodes_from_onnx_graph(
         if attr.HasField("t")
     }
 
-    back_to_back_qdq_tensors = set(qdq.input[0] for qdq in qtzr_nodes) & set(
-        qdq.output[0] for qdq in qtzr_nodes
+    back_to_back_qdq_tensors = set(qdq.input[0] for qdq in qtzr_nodes.values()) & set(
+        qdq.output[0] for qdq in qtzr_nodes.values()
     )
     if back_to_back_qdq_tensors:
         msg = []
@@ -756,7 +756,7 @@ def remove_quantization_nodes_from_onnx_graph(
             if attr.HasField("t"):
                 constants[const_node.output[0]] = attr.t
 
-    for node in qtzr_nodes:
+    for node in qtzr_nodes.values():
         # Get quantizer name in torch model
         encoding = _get_encoding_from_onnx_node(constants, node, base_dir)
         producer = name_to_producer.get(node.input[0])
@@ -815,23 +815,33 @@ def remove_quantization_nodes_from_onnx_graph(
                 if out == node.input[0]:
                     producer.output[i] = new_name
 
-    for node in qtzr_nodes:
-        # Remove qdq node from graph
-        model.graph.node.remove(node)
+    all_nodes = [
+        node
+        for node in model.graph.node
+        if node.name not in qtzr_nodes
+        and not (
+            node.op_type == "Constant"
+            and all(
+                consumer.name in qtzr_nodes
+                for consumer in name_to_consumer[node.output[0]]
+            )
+        )
+    ]
+    model.graph.ClearField("node")
+    model.graph.node.extend(all_nodes)
 
-        # Remove scale and offset from onnx graph
-        _remove_constants(model, node.input[1:])
-
-    # Remove custom quantize-dequantize functions since it's not needed anymore
-    for func in list(model.functions):
-        if func.name in ONNX_QUANTIZER_OP_TYPES:
-            model.functions.remove(func)
+    all_functions = [
+        func for func in model.functions if func.name not in ONNX_QUANTIZER_OP_TYPES
+    ]
+    model.ClearField("functions")
+    model.functions.extend(all_functions)
 
     # Remove aimet opset from imports since it's not needed anymore
-    for opset in model.opset_import:
-        if opset.domain == "aimet":
-            model.opset_import.remove(opset)
-            break
+    all_opset_imports = [
+        opset for opset in model.opset_import if opset.domain != "aimet"
+    ]
+    model.ClearField("opset_import")
+    model.opset_import.extend(all_opset_imports)
 
     return tensor_to_encoding_map
 
@@ -965,16 +975,6 @@ def _get_affine_encoding_from_onnx_node(
             pass
 
     return encoding
-
-
-def _remove_constants(onnx_model: onnx.ModelProto, constant_names: Iterable[str]):
-    """
-    Remove constants from onnx model.
-    """
-    constant_names = set(constant_names)
-    for node in onnx_model.graph.node[::-1]:
-        if node.op_type == "Constant" and node.output[0] in constant_names:
-            onnx_model.graph.node.remove(node)
 
 
 def _iterate_graph_nodes_recursive(graph: onnx.GraphProto) -> Iterable[onnx.NodeProto]:
