@@ -21,6 +21,7 @@ import onnxscript
 from onnxscript import opset15, opset16, opset17, opset18, opset19, opset20, opset21
 import torch
 from torch.onnx import is_in_onnx_export, symbolic_helper
+from torch import _C
 
 try:
     # torch <2.9
@@ -633,7 +634,29 @@ def export(
     with _precompute_encodings(model):
         # Precompute scale/offset before entering torch.onnx.export so that
         # scale/offset are always represented as a leaf inputs in the onnx graphs
-        return torch.onnx.export(model, args, f, **kwargs)
+        with _disable_torch_C_jit_pass_lint():
+            return torch.onnx.export(model, args, f, **kwargs)
+
+
+@contextmanager
+def _disable_torch_C_jit_pass_lint():
+    """
+    Temporarily disable torch._C._jit_pass_lint.
+
+    This is to work around O(N*B) loop in torch._C._jit_pass_lint,
+    where N = # nodes, B = # blocks. While B = 1 for most fp models,
+    in most quantized models B ∝ N, leading to O(N^2) time complexity.
+    This is because qdq export will contain one autograd.Function ("SymbolicHelper"),
+    and torchscript onnx exporter represents each autograd.Function as a single block.
+
+    To avoid this quadratic loop, we disable _C._jit_pass_lint with the following reasoning:
+      - _C._jit_pass_lint is just a graph sanity check and does not affect the exported onnx graph
+      - There are other types of lint passes for graph sanity check in torch.onnx.export,
+        such as _C._jit_pass_onnx_lint
+    """
+    # TODO: Remove this workaround after torch._C._jit_pass_lint is optimized.
+    with patch_attr(_C, "_jit_pass_lint", lambda _: None):
+        yield
 
 
 def remove_quantization_nodes_from_onnx_graph(
