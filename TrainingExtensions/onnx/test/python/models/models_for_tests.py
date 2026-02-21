@@ -1879,7 +1879,6 @@ def _convert_to_onnx_no_fold(
 def _convert_to_onnx(
     model: torch.nn.Module,
     dummy_input,
-    filename="temp_model.onnx",
     opset_version=_DEFAULT_OPSET_VERSION,
 ):
     buffer = io.BytesIO()

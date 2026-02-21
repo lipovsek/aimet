@@ -12,6 +12,7 @@ import numpy as np
 import torchvision
 import pytest
 import torch
+import tempfile
 
 from aimet_onnx.batch_norm_fold import (
     _find_conv_bn_pairs,
@@ -41,45 +42,50 @@ from .models.models_for_tests import (
     initialize_bn_params,
     BNAfterConvTranspose1d,
 )
+from .utils import tmp_dir
+
 
 providers = ["CPUExecutionProvider"]
 
 
 def get_outputs_after_fold(model, test_data):
     onnx.checker.check_model(model.model)
-    filename = "./onnx_test_model.onnx"
-    onnx.save(model.model, filename)
-    conv_bn, bn_conv = fold_all_batch_norms_to_weight(model.model)
-    pairs = conv_bn + bn_conv
-    onnx.checker.check_model(model.model)
-    folded_filename = "./onnx_test_model_folded.onnx"
-    onnx.save(model.model, folded_filename)
 
-    sess = rt.InferenceSession(filename, providers=providers)
-    fold_sess = rt.InferenceSession(folded_filename, providers=providers)
+    with tempfile.TemporaryDirectory() as tmp_onnx_dir:
+        filename = f"{tmp_onnx_dir}/onnx_test_model.onnx"
+        onnx.save(model.model, filename)
+        conv_bn, bn_conv = fold_all_batch_norms_to_weight(model.model)
+        pairs = conv_bn + bn_conv
+        onnx.checker.check_model(model.model)
+        folded_filename = f"{tmp_onnx_dir}/onnx_test_model_folded.onnx"
+        onnx.save(model.model, folded_filename)
 
-    input_name = sess.get_inputs()[0].name
-    baseline_output = sess.run(None, {input_name: test_data})
-    input_name = fold_sess.get_inputs()[0].name
-    folded_output = fold_sess.run(None, {input_name: test_data})
+        sess = rt.InferenceSession(filename, providers=providers)
+        fold_sess = rt.InferenceSession(folded_filename, providers=providers)
+
+        input_name = sess.get_inputs()[0].name
+        baseline_output = sess.run(None, {input_name: test_data})
+        input_name = fold_sess.get_inputs()[0].name
+        folded_output = fold_sess.run(None, {input_name: test_data})
     return baseline_output, folded_output, pairs
 
 
 class TestBatchNormFold:
     """Test methods for BatchNormFold"""
 
-    def test_find_batch_norms_to_fold(self):
+    def test_find_batch_norms_to_fold(self, tmp_dir):
         model = MyModel().eval()
         initialize_bn_params(model)
 
         input_shape = (2, 10, 24, 24)
         x = torch.randn(*input_shape, requires_grad=True)
 
+        model_path = f"{tmp_dir}/model_single_residual.onnx"
         # Export the model
         torch.onnx.export(
             model,  # model being run
             x,  # model input (or a tuple for multiple inputs)
-            "./model_single_residual.onnx",
+            model_path,
             # where to save the model (can be a file or file-like object),
             training=torch.onnx.TrainingMode.TRAINING,
             export_params=True,  # store the trained parameter weights inside the model file
@@ -89,7 +95,7 @@ class TestBatchNormFold:
             output_names=["output"],
             dynamo=False,
         )
-        model = ONNXModel(load_model("./model_single_residual.onnx"))
+        model = ONNXModel(load_model(model_path))
 
         connected_graph = ConnectedGraph(model)
         bn_info = _find_conv_bn_pairs(connected_graph)
