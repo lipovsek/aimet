@@ -5,7 +5,7 @@
 
 import onnx_ir
 from onnxscript.rewriter import pattern
-from .fusion_registry import FUSION_PASS_REGISTRY
+from .fusion_registry import FUSION_PASS_REGISTRY, AIMET_SUPERGROUP_DOMAIN
 
 
 def fuse_supergroups(
@@ -47,6 +47,25 @@ def fuse_supergroups(
     # Apply the rewrite rules to the model
     count = rule_set.apply_to_model(model, verbose=verbose)
     if count:
+        # Note: ORT shape inference cannot handle nested functions, unroll anything nested
+        _inline_nested_functions(model)
         onnx_ir.passes.common.RemoveUnusedNodesPass().call(model)
 
     return model
+
+
+def _inline_nested_functions(model: onnx_ir.Model):
+    functions_to_unroll = set()
+    for function in model.functions.values():
+        for node in function.graph.all_nodes():
+            if node.domain != AIMET_SUPERGROUP_DOMAIN:
+                continue
+
+            functions_to_unroll.add(model.functions[_get_function_key(node)])
+
+    inliner = onnx_ir.passes.common.InlinePass(lambda func: func in functions_to_unroll)
+    return inliner.call(model)
+
+
+def _get_function_key(node: onnx_ir.Node) -> tuple[str, str, str]:
+    return node.domain, node.op_type, node.overload

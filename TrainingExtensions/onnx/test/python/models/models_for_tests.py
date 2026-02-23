@@ -4637,3 +4637,174 @@ def conv_matmul_model():
     )
     onnx.checker.check_model(model, True)
     return model
+
+
+def rmsnorm_model(tmpdir, elementwise_affine=True, eps=None, opset=17):
+    class RmsNormModel(torch.nn.Module):
+        def __init__(self, elementwise_affine, eps):
+            super().__init__()
+            self.rms_norm = torch.nn.RMSNorm(
+                (10), eps=eps, elementwise_affine=elementwise_affine
+            )
+            self.linear = torch.nn.Linear(10, 10)
+
+        def forward(self, x):
+            return self.linear(self.rms_norm(x))
+
+    dummy_input = torch.randn(1, 5, 10)
+    model = RmsNormModel(elementwise_affine, eps)
+    fname = os.path.join(tmpdir, "rmsnorm.onnx")
+    torch.onnx.export(
+        model.eval(),
+        dummy_input,
+        fname,
+        opset_version=opset,
+        dynamo=True,
+        input_names=["input"],
+        output_names=["output"],
+    )
+    model = onnx.load(fname)
+    model.graph.ClearField("value_info")
+    return model
+
+
+def llama_rmsnorm_model(tmpdir, opset=17, dtype=torch.float32):
+    from transformers.models.llama.modeling_llama import LlamaRMSNorm
+
+    hidden_size = 32
+
+    model = LlamaRMSNorm(hidden_size).to(dtype)
+    dummy_input = torch.randn(1, 10, hidden_size).to(dtype)
+    fname = os.path.join(tmpdir, "llama_rmsnorm.onnx")
+    torch.onnx.export(
+        model.eval(),
+        dummy_input,
+        fname,
+        opset_version=opset,
+        dynamo=True,
+        input_names=["input"],
+        output_names=["output"],
+    )
+    return onnx.load(fname)
+
+
+def rmsnorm_invalid_multiple_axes(tmpdir, dim: int = 32, opset=16):
+    """RMSNorm with multiple axes in ReduceMean - should NOT match"""
+
+    class InvalidRMSNormMultipleAxes(torch.nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.weight = torch.randn(dim, dim)
+            self.variance_epsilon = 0.003
+
+        def forward(self, x):
+            # Use mean over multiple axes instead of just the last one
+            variance = x.pow(2).mean(dim=(-1, -2), keepdim=True)
+            x = x / torch.sqrt(variance + self.variance_epsilon)
+            return x * self.weight
+
+    model = InvalidRMSNormMultipleAxes(dim=dim)
+    fname = os.path.join(tmpdir, "rmsnorm_invalid_multiple_axes.onnx")
+    x = torch.randn((1, 3, dim, dim))
+    torch.onnx.export(
+        model,
+        x,
+        fname,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=opset,
+        dynamo=False,
+    )
+    return onnx.load(fname)
+
+
+def rmsnorm_invalid_negative_epsilon(tmpdir, dim: int = 32, opset=16):
+    """RMSNorm with negative epsilon - should NOT match"""
+
+    class InvalidRMSNormNegativeEpsilon(torch.nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.weight = torch.randn(dim)
+            self.variance_epsilon = -0.003  # Negative epsilon
+
+        def forward(self, x):
+            variance = x.pow(2).mean(-1, keepdim=True)
+            x = x / torch.sqrt(variance + self.variance_epsilon)
+            return x * self.weight
+
+    model = InvalidRMSNormNegativeEpsilon(dim=dim)
+    fname = os.path.join(tmpdir, "rmsnorm_invalid_negative_epsilon.onnx")
+    x = torch.randn((1, 3, dim, dim))
+    torch.onnx.export(
+        model,
+        x,
+        fname,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=opset,
+        dynamo=False,
+    )
+    return onnx.load(fname)
+
+
+def rmsnorm_invalid_wrong_power(tmpdir, dim: int = 32, opset=16):
+    """RMSNorm with power 3 instead of 2 - should NOT match"""
+
+    class InvalidRMSNormWrongPower(torch.nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.weight = torch.randn(dim)
+            self.variance_epsilon = 0.003
+
+        def forward(self, x):
+            # Use power of 3 instead of 2
+            variance = x.pow(3).mean(-1, keepdim=True)
+            x = x / torch.sqrt(variance + self.variance_epsilon)
+            return x * self.weight
+
+    model = InvalidRMSNormWrongPower(dim=dim)
+    fname = os.path.join(tmpdir, "rmsnorm_invalid_wrong_power.onnx")
+    x = torch.randn((1, 3, dim, dim))
+    torch.onnx.export(
+        model,
+        x,
+        fname,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=opset,
+        dynamo=False,
+    )
+    return onnx.load(fname)
+
+
+def rmsnorm_invalid_intermediate_output(tmpdir, dim: int = 32, opset=16):
+    """RMSNorm where intermediate variance is used elsewhere - should NOT match"""
+
+    class InvalidRMSNormIntermediateOutput(torch.nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.weight = torch.randn(dim)
+            self.variance_epsilon = 0.003
+
+        def forward(self, x):
+            variance = x.pow(2).mean(-1, keepdim=True)
+            x = x / torch.sqrt(variance + self.variance_epsilon)
+            output = x * self.weight
+            # Add the variance to the output (consuming intermediate result)
+            # Broadcast variance to match output shape
+            return output + variance
+
+    torch.manual_seed(10)
+    model = InvalidRMSNormIntermediateOutput(dim=dim)
+    fname = os.path.join(tmpdir, "rmsnorm_invalid_intermediate_output.onnx")
+    x = torch.randn((1, 3, dim, dim))
+    torch.onnx.export(
+        model,
+        x,
+        fname,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=opset,
+        dynamo=False,
+    )
+    return onnx.load(fname)

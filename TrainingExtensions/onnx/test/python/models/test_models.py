@@ -387,6 +387,7 @@ def rmsnorm_model(
     elementwise_affine: bool = True,
     mul_for_pow: bool = False,
     mul_rsqrt_pattern: str = "mul_rsqrt",
+    opset=16,
 ):
     torch.manual_seed(10)
     model = RMSNorm(
@@ -403,7 +404,7 @@ def rmsnorm_model(
         buffer,
         input_names=["input"],
         output_names=["output"],
-        opset_version=16,
+        opset_version=opset,
         dynamo=False,
     )
     buffer.seek(0)

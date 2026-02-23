@@ -15,6 +15,7 @@ from aimet_onnx import QuantizationSimModel
 
 from aimet_onnx.graph_passes.fusions import fuse_supergroups
 from ..models import models_for_tests
+from ..models.test_models import rmsnorm_model
 
 
 def create_layernorm_model(
@@ -113,8 +114,9 @@ class TestLayerNormFusion:
     @pytest.mark.parametrize("affine", [True])
     @pytest.mark.parametrize("opset_version", range(13, 17))
     @pytest.mark.parametrize("epsilon", [1e-1, 1e-3, 1e-5])
+    @pytest.mark.parametrize("include_rmsnorm_pattern", [True, False])
     def test_fuses_single_layernorm(
-        self, tmp_path, opset_version, bias, affine, epsilon
+        self, tmp_path, opset_version, bias, affine, epsilon, include_rmsnorm_pattern
     ):
         layernorm_model = create_layernorm_model(
             tmp_path,
@@ -129,7 +131,12 @@ class TestLayerNormFusion:
         session = onnxruntime.InferenceSession(layernorm_model.SerializeToString())
         output_pre_fusion = session.run(None, inputs)
 
-        fused_model = fuse_supergroups(model, patterns=["LayerNormalization"])
+        patterns = (
+            ["LayerNormalization", "RMSNormalization"]
+            if include_rmsnorm_pattern
+            else ["LayerNormalization"]
+        )
+        fused_model = fuse_supergroups(model, patterns=patterns, verbose=True)
 
         model_proto = onnx_ir.to_proto(fused_model)
         layernorms = [
@@ -533,6 +540,114 @@ class TestMatmulAddFusion:
             assert sim.qc_quantize_op_dict[bias.name].bitwidth == 32
 
 
+class TestRMSNormFusion:
+    @pytest.mark.parametrize("opset", [13, 17, 22])
+    @pytest.mark.parametrize("elementwise_affine", [True, False])
+    @pytest.mark.parametrize("mul_for_pow", [True, False])
+    @pytest.mark.parametrize(
+        "mul_rsqrt_pattern", ["mul_rsqrt", "div_sqrt", "mul_reciprocal_sqrt"]
+    )
+    def test_rmsnorm_fusion_variants(
+        self, elementwise_affine, mul_for_pow, mul_rsqrt_pattern, opset
+    ):
+        dim = 32
+        model = rmsnorm_model(
+            dim=dim,
+            elementwise_affine=elementwise_affine,
+            mul_for_pow=mul_for_pow,
+            mul_rsqrt_pattern=mul_rsqrt_pattern,
+            opset=opset,
+        )
+        dummy_input = make_dummy_input(model)
+        session = onnxruntime.InferenceSession(model.SerializeToString())
+        original_output = session.run(None, dummy_input)[0]
+
+        ir_model = onnx_ir.from_proto(model)
+        fused_model = fuse_supergroups(
+            ir_model, patterns=["RMSNormalization"], verbose=True
+        )
+
+        model_proto = onnx_ir.to_proto(fused_model)
+
+        op_name = "RMSNormalization"
+        rmsnorm_nodes = [
+            node for node in model_proto.graph.node if node.op_type == op_name
+        ]
+        num_inputs = 2 if elementwise_affine else 1
+        assert len(rmsnorm_nodes) == 1
+        assert all(len(node.input) == num_inputs for node in rmsnorm_nodes)
+
+        session = onnxruntime.InferenceSession(model_proto.SerializeToString())
+        fused_output = session.run(None, dummy_input)[0]
+        assert np.allclose(original_output, fused_output)
+
+    @pytest.mark.parametrize("elementwise_affine", [True, False])
+    @pytest.mark.parametrize("eps", [None, 1e-3])
+    @pytest.mark.parametrize("opset", [13, 17, 22])
+    def test_torch_rmsnorm(self, tmp_path, elementwise_affine, eps, opset):
+        model = models_for_tests.rmsnorm_model(
+            tmp_path, eps=eps, elementwise_affine=elementwise_affine, opset=opset
+        )
+        dummy_input = make_dummy_input(model)
+        session = onnxruntime.InferenceSession(model.SerializeToString())
+        original_output = session.run(None, dummy_input)[0]
+
+        ir_model = onnx_ir.from_proto(model)
+        fused_model = fuse_supergroups(
+            ir_model, patterns=["RMSNormalization"], verbose=True
+        )
+
+        model_proto = onnx_ir.to_proto(fused_model)
+
+        op_name = "RMSNormalization"
+        rmsnorm_nodes = [
+            node for node in model_proto.graph.node if node.op_type == op_name
+        ]
+        assert len(rmsnorm_nodes) == 1
+        num_inputs = 2 if elementwise_affine else 1
+        assert all(len(node.input) == num_inputs for node in rmsnorm_nodes)
+
+        session = onnxruntime.InferenceSession(model_proto.SerializeToString())
+        fused_output = session.run(None, dummy_input)[0]
+        assert np.allclose(original_output, fused_output)
+
+    @pytest.mark.parametrize(
+        "model_factory, expected_matches",
+        [
+            (lambda path: models_for_tests.llama_rmsnorm_model(path, opset=16), 1),
+            (lambda path: models_for_tests.llama_rmsnorm_model(path, opset=22), 1),
+            (create_layernorm_model, 1),  # Layernorm contains RMSNorm internally
+            # Invalid patterns - should not match
+            (models_for_tests.rmsnorm_invalid_multiple_axes, 0),
+            (models_for_tests.rmsnorm_invalid_negative_epsilon, 0),
+            (models_for_tests.rmsnorm_invalid_wrong_power, 0),
+            (models_for_tests.rmsnorm_invalid_intermediate_output, 0),
+        ],
+    )
+    def test_rmsnorm_fusion(self, tmp_path, model_factory, expected_matches):
+        model = model_factory(tmp_path)
+        dummy_input = make_dummy_input(model)
+        session = onnxruntime.InferenceSession(model.SerializeToString())
+        original_output = session.run(None, dummy_input)[0]
+
+        ir_model = onnx_ir.from_proto(model)
+        fused_model = fuse_supergroups(
+            ir_model, patterns=["RMSNormalization"], verbose=True
+        )
+
+        model_proto = onnx_ir.to_proto(fused_model)
+        rmsnorm_nodes = [
+            node
+            for node in model_proto.graph.node
+            if node.op_type == "RMSNormalization"
+        ]
+        assert len(rmsnorm_nodes) == expected_matches
+
+        session = onnxruntime.InferenceSession(model_proto.SerializeToString())
+        fused_output = session.run(None, dummy_input)[0]
+        assert np.allclose(original_output, fused_output)
+
+
 class TestFusion:
     def test_unknown_pattern_raises_error(self, tmp_path):
         """Test that unknown pattern names raise ValueError."""
@@ -569,7 +684,9 @@ class TestFusion:
         # Apply fusion
         model = onnx_ir.from_proto(model_proto)
         fused_model = fuse_supergroups(
-            model, patterns=["LayerNormalization", "MatmulAdd"]
+            model,
+            patterns=["LayerNormalization", "MatmulAdd", "RMSNormalization"],
+            verbose=True,
         )
 
         # Ensure the fused model can be converted back to proto
