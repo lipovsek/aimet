@@ -145,8 +145,11 @@ class FloatEncoding(EncodingBase):
     def quantize(self, input: torch.Tensor) -> torch.Tensor:
         from .quantizer import _float_quantize
 
+        if type(input) != torch.Tensor:
+            input = input.as_subclass(torch.Tensor)
+
         return _float_quantize(
-            input.as_subclass(torch.Tensor),
+            input,
             self._finfo,
             self.scale,
             self.block_size,
@@ -154,6 +157,9 @@ class FloatEncoding(EncodingBase):
 
     def dequantize(self, input: torch.Tensor) -> torch.Tensor:
         from aimet_torch.v2.quantization._utils import blockwise
+
+        if type(input) != torch.Tensor:
+            input = input.as_subclass(torch.Tensor)
 
         return blockwise(
             torch.mul,
@@ -165,8 +171,11 @@ class FloatEncoding(EncodingBase):
     def quantize_dequantize(self, input: torch.Tensor) -> torch.Tensor:
         from .quantizer import _float_quantize_dequantize
 
+        if type(input) != torch.Tensor:
+            input = input.as_subclass(torch.Tensor)
+
         return _float_quantize_dequantize(
-            input.as_subclass(torch.Tensor),
+            input,
             self._finfo,
             self.scale,
             self.block_size,

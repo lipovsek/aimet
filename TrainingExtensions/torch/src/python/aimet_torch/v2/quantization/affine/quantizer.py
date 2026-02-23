@@ -960,7 +960,8 @@ class Quantize(AffineQuantizerBase):
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
-        input = input.as_subclass(torch.Tensor)
+        if not _torch_compiler_is_exporting() and type(input) != torch.Tensor:
+            input = input.as_subclass(torch.Tensor)
 
         output = quantize(
             input,
@@ -970,8 +971,11 @@ class Quantize(AffineQuantizerBase):
             encoding.qmax,
             block_size=self.block_size,
         )
-        output = output.as_subclass(QuantizedTensor)
-        output.encoding = encoding
+
+        if not _torch_compiler_is_exporting() and not torch.onnx.is_in_onnx_export():
+            output = output.as_subclass(QuantizedTensor)
+            output.encoding = encoding
+
         return output
 
 
@@ -1097,7 +1101,7 @@ class QuantizeDequantize(AffineQuantizerBase):
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
-        if not _torch_compiler_is_exporting():
+        if not _torch_compiler_is_exporting() and type(input) != torch.Tensor:
             input = input.as_subclass(torch.Tensor)
 
         output = quantize_dequantize(
@@ -1109,9 +1113,11 @@ class QuantizeDequantize(AffineQuantizerBase):
             block_size=self.block_size,
             zero_point_shift=self.zero_point_shift,
         )
-        if not _torch_compiler_is_exporting():
+
+        if not _torch_compiler_is_exporting() and not torch.onnx.is_in_onnx_export():
             output = output.as_subclass(DequantizedTensor)
             output.encoding = encoding
+
         return output
 
 
@@ -1131,13 +1137,17 @@ class Dequantize(AffineQuantizerBase):  # pylint: disable=missing-class-docstrin
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
-        input = input.as_subclass(torch.Tensor)
+        if not _torch_compiler_is_exporting() and type(input) != torch.Tensor:
+            input = input.as_subclass(torch.Tensor)
 
         output = dequantize(
             input, encoding.scale, encoding.offset, block_size=self.block_size
         )
-        output = output.as_subclass(DequantizedTensor)
-        output.encoding = encoding
+
+        if not _torch_compiler_is_exporting() and not torch.onnx.is_in_onnx_export():
+            output = output.as_subclass(DequantizedTensor)
+            output.encoding = encoding
+
         return output
 
 

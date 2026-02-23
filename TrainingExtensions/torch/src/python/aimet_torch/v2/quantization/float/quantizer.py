@@ -19,7 +19,12 @@ from aimet_torch.v2.quantization.encoding_analyzer import (
 from aimet_torch.v2.quantization.base import QuantizerBase
 from aimet_torch.v2.quantization.float import FloatEncoding
 from aimet_torch.v2.quantization.tensor import DequantizedTensor
-from aimet_torch.v2.utils import StatisticsNotFoundError, patch_attr, _is_expandable
+from aimet_torch.v2.utils import (
+    StatisticsNotFoundError,
+    patch_attr,
+    _is_expandable,
+    _torch_compiler_is_exporting,
+)
 from aimet_torch.fp_quantization import fake_cast_to_ieee_float
 from ._finfo import _finfo, _torch_dtype_to_finfo, _float4_e2m1fn
 from aimet_torch.v2.quantization._utils import (
@@ -413,17 +418,23 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         encoding = self.get_encodings()
         assert encoding is not None
 
+        if not _torch_compiler_is_exporting() and type(input) != torch.Tensor:
+            input = input.as_subclass(torch.Tensor)
+
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
         output = _float_quantize_dequantize(
-            input.as_subclass(torch.Tensor),
+            input,
             self._finfo,
             encoding.scale,
             self.block_size,
         )
-        output = output.as_subclass(DequantizedTensor)
-        output.encoding = encoding
+
+        if not _torch_compiler_is_exporting() and not torch.onnx.is_in_onnx_export():
+            output = output.as_subclass(DequantizedTensor)
+            output.encoding = encoding
+
         return output
 
     def extra_repr(self):

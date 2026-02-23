@@ -256,13 +256,22 @@ class AffineEncoding(EncodingBase, _GridMixin):
                 "Nonzero quant shift not supported in AffineEncoding quantize"
             )
 
+        if type(input) != torch.Tensor:
+            input = input.as_subclass(torch.Tensor)
+
+        if type(scale) != torch.Tensor:
+            scale = scale.as_subclass(torch.Tensor)
+
+        if type(offset) != torch.Tensor:
+            offset = offset.as_subclass(torch.Tensor)
+
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
         return quantize(
-            input.as_subclass(torch.Tensor),
-            scale.to(input.dtype).as_subclass(torch.Tensor),
-            offset.to(input.dtype).as_subclass(torch.Tensor),
+            input,
+            scale.to(input.dtype),
+            offset.to(input.dtype),
             qmin,
             qmax,
             block_size=block_size,
@@ -277,13 +286,22 @@ class AffineEncoding(EncodingBase, _GridMixin):
                 "Nonzero quant shift not supported in AffineEncoding dequantize"
             )
 
+        if type(input) != torch.Tensor:
+            input = input.as_subclass(torch.Tensor)
+
+        if type(scale) != torch.Tensor:
+            scale = scale.as_subclass(torch.Tensor)
+
+        if type(offset) != torch.Tensor:
+            offset = offset.as_subclass(torch.Tensor)
+
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
         return dequantize(
-            input.as_subclass(torch.Tensor),
-            scale.to(input.dtype).as_subclass(torch.Tensor),
-            offset.to(input.dtype).as_subclass(torch.Tensor),
+            input,
+            scale.to(input.dtype),
+            offset.to(input.dtype),
             block_size=block_size,
         )
 
@@ -295,13 +313,22 @@ class AffineEncoding(EncodingBase, _GridMixin):
         block_size = self.block_size
         zero_point_shift = self.zero_point_shift
 
+        if type(input) != torch.Tensor:
+            input = input.as_subclass(torch.Tensor)
+
+        if type(scale) != torch.Tensor:
+            scale = scale.as_subclass(torch.Tensor)
+
+        if type(offset) != torch.Tensor:
+            offset = offset.as_subclass(torch.Tensor)
+
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
         return quantize_dequantize(
-            input.as_subclass(torch.Tensor),
-            scale.to(input.dtype).as_subclass(torch.Tensor),
-            offset.to(input.dtype).as_subclass(torch.Tensor),
+            input,
+            scale.to(input.dtype),
+            offset.to(input.dtype),
             qmin,
             qmax,
             block_size=block_size,
