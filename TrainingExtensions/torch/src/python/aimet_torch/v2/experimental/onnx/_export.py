@@ -666,23 +666,28 @@ def remove_quantization_nodes_from_onnx_graph(
     Remove quantization nodes from ONNX graph with quantization nodes
     :param model: ONNX model with quantization nodes
     """
-    tensor_to_encoding_map = {}
-    name_to_producer, name_to_consumer = _get_producer_consumer_info_from_onnx_graph(
-        model
-    )
-    qtzr_nodes = {
-        node.name: node
-        for node in model.graph.node
-        if node.domain == "aimet" and node.op_type in ONNX_QUANTIZER_OP_TYPES
+    tensor_to_encoding_map: dict[str, EncodingBase] = {}
+    constants: dict[str, onnx.TensorProto] = {
+        const.name: const for const in _get_all_tensors(model) if const.name
     }
-    constants = {const.name: const for const in _get_all_tensors(model) if const.name}
-    constants |= {
-        const_node.output[0]: attr.t
-        for const_node in model.graph.node
-        if const_node.op_type == "Constant"
-        for attr in const_node.attribute
-        if attr.HasField("t")
-    }
+    producers: dict[str, onnx.NodeProto] = {}
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    qtzr_nodes: dict[str, onnx.NodeProto] = {}
+
+    for node in _iterate_graph_nodes_recursive(model.graph):
+        for output_name in node.output:
+            producers[output_name] = node
+
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+        if node.domain == "aimet" and node.op_type in ONNX_QUANTIZER_OP_TYPES:
+            qtzr_nodes[node.name] = node
+
+        if node.op_type == "Constant":
+            for attr in node.attribute:
+                if attr.HasField("t"):
+                    constants[node.output[0]] = attr.t
 
     back_to_back_qdq_tensors = set(qdq.input[0] for qdq in qtzr_nodes.values()) & set(
         qdq.output[0] for qdq in qtzr_nodes.values()
@@ -690,7 +695,7 @@ def remove_quantization_nodes_from_onnx_graph(
     if back_to_back_qdq_tensors:
         msg = []
         for tensor in back_to_back_qdq_tensors:
-            producer = name_to_producer[tensor]
+            producer = producers[tensor]
 
             if producer.input[1] in constants:
                 scale = onnx.numpy_helper.to_array(
@@ -709,7 +714,7 @@ def remove_quantization_nodes_from_onnx_graph(
                     f"Cannot find constant with name {producer.input[2]} in onnx model"
                 )
 
-            for consumer in name_to_consumer[tensor]:
+            for consumer in consumers[tensor]:
                 if consumer.op_type not in ONNX_QUANTIZER_OP_TYPES:
                     continue
 
@@ -748,19 +753,10 @@ def remove_quantization_nodes_from_onnx_graph(
 
     graph_outputs = set(output.name for output in model.graph.output)
 
-    constants = {const.name: const for const in _get_all_tensors(model) if const.name}
-    for const_node in model.graph.node:
-        if const_node.op_type != "Constant":
-            continue
-        for attr in const_node.attribute:
-            if attr.HasField("t"):
-                constants[const_node.output[0]] = attr.t
-
     for node in qtzr_nodes.values():
         # Get quantizer name in torch model
         encoding = _get_encoding_from_onnx_node(constants, node, base_dir)
-        producer = name_to_producer.get(node.input[0])
-        consumers = name_to_consumer.get(node.output[0], [])
+        producer = producers.get(node.input[0])
 
         if node.output[0] in graph_outputs and not producer:
             # Edge case: This means the model was in form of:
@@ -806,7 +802,7 @@ def remove_quantization_nodes_from_onnx_graph(
 
         tensor_to_encoding_map[new_name] = encoding
 
-        for consumer in consumers:
+        for consumer in consumers[node.output[0]]:
             for i, inp in enumerate(consumer.input):
                 if inp == node.output[0]:
                     consumer.input[i] = new_name
@@ -822,8 +818,7 @@ def remove_quantization_nodes_from_onnx_graph(
         and not (
             node.op_type == "Constant"
             and all(
-                consumer.name in qtzr_nodes
-                for consumer in name_to_consumer[node.output[0]]
+                consumer.name in qtzr_nodes for consumer in consumers[node.output[0]]
             )
         )
     ]
@@ -989,25 +984,6 @@ def _iterate_graph_nodes_recursive(graph: onnx.GraphProto) -> Iterable[onnx.Node
         elif node.op_type in ("Loop", "Scan"):
             body = next(attr for attr in node.attribute if attr.name == "body")
             yield from _iterate_graph_nodes_recursive(body.g)
-
-
-def _get_producer_consumer_info_from_onnx_graph(onnx_model: onnx.ModelProto):
-    """
-    Get producer and consumer information from ONNX graph for graph traversal.
-    :param onnx_model: ONNX model
-    :return: Tuple of name to producer mappings and name to consumer mappings
-    """
-    name_to_producer = {}
-    name_to_consumer = defaultdict(list)
-
-    for node in _iterate_graph_nodes_recursive(onnx_model.graph):
-        for output_name in node.output:
-            name_to_producer[output_name] = node
-
-        for input_name in node.input:
-            name_to_consumer[input_name].append(node)
-
-    return name_to_producer, name_to_consumer
 
 
 @contextmanager
