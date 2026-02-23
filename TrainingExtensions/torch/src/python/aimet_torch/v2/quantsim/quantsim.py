@@ -607,9 +607,8 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
                 continue
 
             encodings = {
-                param_name: param.encoding
+                param_name: getattr(param, "encoding", None)
                 for param_name, param in module.named_parameters(recurse=False)
-                if isinstance(param, QuantizedTensorBase) and param.encoding is not None
             }
 
             # pylint: disable=protected-access
@@ -622,8 +621,14 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
             # overwritten by _patch_quantized_parameters
             for param_name, encoding in encodings.items():
                 qparam = getattr(module, param_name)
-                if isinstance(qparam, QuantizedTensorBase):
+                if isinstance(qparam, QuantizedTensorBase) and encoding:
                     qparam.encoding = encoding
+                else:
+                    setattr(
+                        module,
+                        param_name,
+                        torch.nn.Parameter(qparam.as_subclass(torch.Tensor)),
+                    )
 
         return stack
 

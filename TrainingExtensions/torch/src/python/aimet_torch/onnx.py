@@ -712,8 +712,22 @@ def _concretize_int32_bias_quantizers(model, args, kwargs=None):
                     type(qmodule)._create_int32_bias_quantizer
                 )
                 handles.append(handle)
+
         try:
-            model(*args, **kwargs)
+            with contextlib.ExitStack() as stack:
+                for qmodule in model.modules():
+                    if not isinstance(qmodule, QuantizationMixin):
+                        continue
+
+                    # bias_scale will be derived as input_scale * weight_scale.
+                    # Here, weight_scale is statically available in the weight quantizer,
+                    # and we don't need to perform actual weight Q/DQ to capture weight_scale.
+                    # Therefore, we temporarily set weight quantizers to "pass-through" mode
+                    # to speed up export.
+                    for qtzr in qmodule.param_quantizers.children():
+                        stack.enter_context(patch_attr(qtzr, "forward", lambda _: _))
+
+                model(*args, **kwargs)
         finally:
             for handle in handles:
                 handle.remove()
