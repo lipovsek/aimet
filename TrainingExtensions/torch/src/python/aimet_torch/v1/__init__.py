@@ -10,6 +10,8 @@ import platform
 
 import torch as _torch
 from aimet_torch.common import _version
+from aimet_torch.common.utils import _red
+import warnings
 
 
 def _is_torch_compatible(current: str, required: str):
@@ -96,3 +98,15 @@ def _check_requirements():
 
 
 _check_requirements()
+
+_msg = " ".join(
+    [
+        "⚠️",
+        _red(
+            "aimet_torch.v1 is deprecated since aimet 2.0 and will be removed in 2.30. "
+            "Please switch to aimet_torch.v2 instead (default since 2.0)",
+        ),
+        "⚠️",
+    ]
+)
+warnings.warn(_msg, DeprecationWarning, stacklevel=2)
