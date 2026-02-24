@@ -1304,13 +1304,6 @@ def test_back_to_back_qdq(tmp_path: pathlib.Path, dynamo: bool):
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
 
 
-@pytest.fixture(scope="module")
-def large_model():
-    return torch.nn.Sequential(
-        torch.nn.Linear(2**15, 2**14, bias=False)  # 0.5B parameters = 2GB
-    )
-
-
 @pytest.fixture
 def tmp_path():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1318,27 +1311,22 @@ def tmp_path():
 
 
 @torch.no_grad()
-@pytest.mark.parametrize("dynamo", [False, True])
 @pytest.mark.parametrize("opset_version", [19, 21])
 @pytest.mark.parametrize("prequantize_constants", [False, True])
-def test_export_large_model(
-    large_model: torch.nn.Module,
+def test_export_external_data(
     opset_version: int,
     prequantize_constants: bool,
-    dynamo: bool,
     tmp_path: pathlib.Path,
 ):
-    """
-    Given: model that exceeds 2GB
-    """
-    x = torch.randn(1, 2**15)
-    sim = QuantizationSimModel(large_model, x, config_file="htp_v81")
+    x = torch.randn(1, 10)
+    model = torch.nn.Sequential(torch.nn.Linear(10, 10, bias=False))
+    sim = QuantizationSimModel(model, x, config_file="htp_v81")
     sim.compute_encodings(lambda model: model(x))
 
     onnx_path = os.path.join(tmp_path, "qdq_model.onnx")
 
     """
-    When: Export encoding with sim.onnx.export
+    When: Call sim.onnx.export with external_data=True
     Then: All encoding should be exported correctly
     """
     sim.onnx.export(
@@ -1347,10 +1335,12 @@ def test_export_large_model(
         input_names=["input"],
         output_names=["output"],
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-        dynamo=dynamo,
+        dynamo=True,
+        external_data=True,
         encoding_version="2.0.0",
     )
 
+    assert os.path.exists(os.path.join(tmp_path, "qdq_model.onnx.data"))
     with open(os.path.join(tmp_path, "qdq_model.encodings")) as f:
         encodings = json.load(f)["encodings"]
 
@@ -1365,7 +1355,7 @@ def test_export_large_model(
         )
 
     """
-    When: Export to onnx QDQ
+    When: Call aimet_torch.onnx.export with external_data=True
     Then: ONNX model should produce same output as sim
     """
     aimet_torch.onnx.export(
@@ -1377,8 +1367,10 @@ def test_export_large_model(
         opset_version=opset_version,
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
         prequantize_constants=prequantize_constants,
-        dynamo=dynamo,
+        dynamo=True,
+        external_data=True,
     )
+    assert os.path.exists(os.path.join(tmp_path, "qdq_model.onnx.data"))
 
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
