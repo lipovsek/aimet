@@ -21,6 +21,8 @@ from GenAITests.shared.models.utils.attention_mask import (
     convert_2d_attention_mask_to_4d,
 )
 
+from GenAITests.shared.models.utils.rope_embedding import RopeEmbedding
+
 
 def get_past_keyval_with_shift(
     past_key_vals: list[torch.Tensor],
@@ -563,6 +565,93 @@ class Generator(GenerationMixin, torch.nn.Module):
             **kwargs_slice,
         )
         yield prefilled_inputs
+
+
+class HubCompatibleGenerator(Generator):
+    def prepare_inputs(
+        cls,
+        model: torch.nn.Module,
+        input_ids: torch.Tensor | None,
+        attention_mask: torch.Tensor,
+        past_key_values: list[torch.Tensor],
+        sequence_length: int,
+        context_length: int,
+        pad_token: int = 0,
+        attention_mask_min: int = -100,
+        inputs_embeds: torch.FloatTensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, ...]:
+        assert len(kwargs) == 0, (
+            "HubCompatibleGenerator does not support extra kwargs yet."
+        )
+        padded_input_tokens, cm_attention_mask, position_ids, *past_key_values = (
+            super().prepare_inputs(
+                model,
+                input_ids,
+                attention_mask,
+                past_key_values,
+                sequence_length,
+                context_length,
+                pad_token,
+                attention_mask_min,
+                inputs_embeds,
+                position_ids,
+            )
+        )
+
+        # todo: refactor this to belong to the model, rather than recomputing the same thing every iteration (slow)
+        # alternatively, use functools cache to make sure that this only happens once per model / config
+        embedding = RopeEmbedding(model=model, context_length=context_length)
+        position_ids_cos, position_ids_sin = embedding.get_embedding(position_ids)
+
+        # (batch_size, num_heads, sequence_length, head_dim) -> (num_heads, batch_size, sequence_length, head_dim)
+        hf_to_hub_v_tensor_permutation = (1, 0, 2, 3)
+        # (batch_size, num_heads, sequence_length, head_dim) -> (num_heads, batch_size, head_dim, sequence_length)
+        hf_to_hub_k_tensor_permutation = (1, 0, 3, 2)
+
+        hub_format_past_key_values = []
+        for i in range(0, len(past_key_values), 2):
+            hub_format_past_key_values.append(
+                past_key_values[i].permute(*hf_to_hub_k_tensor_permutation)
+            )
+            hub_format_past_key_values.append(
+                past_key_values[i + 1].permute(*hf_to_hub_v_tensor_permutation)
+            )
+
+        return (
+            padded_input_tokens,
+            cm_attention_mask,
+            position_ids_cos,
+            position_ids_sin,
+            *hub_format_past_key_values,
+        )
+
+    def combine_local_and_global_outputs(
+        self,
+        num_valid_input_tokens: int,
+        local_outputs: tuple[torch.Tensor, ...],
+        global_outputs: dict[str, Union[torch.Tensor | list[torch.Tensor]]],
+    ):
+        # (num_heads, batch_size, head_dim, sequence_length) -> (batch_size, num_heads, sequence_length, head_dim)
+        hub_to_hf_k_tensor_permutation = (1, 0, 3, 2)
+        # (num_heads, batch_size, sequence_length, head_dim) -> (batch_size, num_heads, sequence_length, head_dim)
+        hub_to_hf_v_tensor_permutation = (1, 0, 2, 3)
+
+        local_past_key_values = local_outputs[1:]
+        hf_format_local_past_key_values = []
+        for i in range(0, len(local_past_key_values), 2):
+            hf_format_local_past_key_values.append(
+                local_past_key_values[i].permute(*hub_to_hf_k_tensor_permutation)
+            )
+            hf_format_local_past_key_values.append(
+                local_past_key_values[i + 1].permute(*hub_to_hf_v_tensor_permutation)
+            )
+
+        hf_format_local_outputs = (local_outputs[0], *hf_format_local_past_key_values)
+        return super().combine_local_and_global_outputs(
+            num_valid_input_tokens, hf_format_local_outputs, global_outputs
+        )
 
 
 class VLM_Generator(Generator):

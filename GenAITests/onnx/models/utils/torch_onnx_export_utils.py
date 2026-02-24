@@ -4,6 +4,7 @@
 """Utilities for exporting models from ONNX to Torch"""
 
 import os
+from pathlib import Path
 import torch
 import onnx
 import glob
@@ -22,9 +23,11 @@ def is_huggingface_ckpt(model_id: str) -> bool:
         return False
 
 
-def get_model_checkpoint_path(model_id: str) -> str:
+def get_model_checkpoint_path(model_id: str, classname: str | None = None) -> str:
     if is_huggingface_ckpt(model_id):
         # user has passed in a huggingface checkpoint, use default framework cache path
+        if classname is not None:
+            return f"onnx_checkpoints/{model_id}/{classname}"
         return f"onnx_checkpoints/{model_id}"
     else:
         # user has passed in a local path, verify that .onnx file and .config files exist and just return the path
@@ -33,15 +36,16 @@ def get_model_checkpoint_path(model_id: str) -> str:
                 f"Provided model_id '{model_id}' is not a valid HuggingFace model ID or a local directory."
             )
 
-        for filename in os.listdir(model_id):
-            if filename.endswith(".onnx"):
-                break
-        else:
+        if not any(
+            filename.name.endswith(".onnx") for filename in Path(model_id).rglob("*")
+        ):
             raise RuntimeError(
                 f"No .onnx file found in the provided local directory '{model_id}'.'"
             )
 
-        if not os.path.exists(os.path.join(model_id, "config.json")):
+        if not any(
+            filename.name == "config.json" for filename in Path(model_id).rglob("*")
+        ):
             raise RuntimeError(
                 f"No config.json file found in the provided local directory '{model_id}'.'"
             )
@@ -79,10 +83,17 @@ def load_model_components_from_disk(
     context_length: int,
     sequence_length: int,
 ) -> tuple[onnx.ModelProto, onnx.ModelProto | None, torch.nn.Embedding | None]:
+    aihm_format_backbone_path = os.path.join(
+        checkpoint, f"model_seqlen{sequence_length}_cl{context_length}.onnx"
+    )
+    genaitests_format_backbone_path = os.path.join(
+        checkpoint, "backbone", f"model_sl{sequence_length}_cl{context_length}.onnx"
+    )
+
     backbone = onnx.load(
-        os.path.join(
-            checkpoint, "backbone", f"model_sl{sequence_length}_cl{context_length}.onnx"
-        )
+        aihm_format_backbone_path
+        if os.path.exists(aihm_format_backbone_path)
+        else genaitests_format_backbone_path
     )
 
     visual_path = os.path.join(checkpoint, "visual", "model.onnx")

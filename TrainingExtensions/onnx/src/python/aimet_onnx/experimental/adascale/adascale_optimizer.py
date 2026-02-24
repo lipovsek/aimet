@@ -48,6 +48,8 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 _QT_SAMPLING_PROB = 1.0
 _LOSS_FN = torch.nn.MSELoss()
 _DEBUG_NUM_PARTIAL_ITERATIONS = None
+_DEBUG_NUM_PARTIAL_ITERATIONS_START = None
+_DEBUG_NUM_PARTIAL_ITERATIONS_END = None
 
 
 @dataclass
@@ -172,6 +174,16 @@ class AdaScale:
                         and idx >= _DEBUG_NUM_PARTIAL_ITERATIONS
                     ):
                         break
+
+                    if (
+                        _DEBUG_NUM_PARTIAL_ITERATIONS_START is not None
+                        and _DEBUG_NUM_PARTIAL_ITERATIONS_END is not None
+                        and (
+                            idx < _DEBUG_NUM_PARTIAL_ITERATIONS_START
+                            or idx >= _DEBUG_NUM_PARTIAL_ITERATIONS_END
+                        )
+                    ):
+                        continue
 
                     _logger.info("Optimizing block: %d", idx)
 
@@ -358,11 +370,14 @@ class AdaScale:
                 elif _QT_SAMPLING_PROB == 0.0:
                     input_tensor = fp_input
                 else:
-                    input_tensor = torch.where(
-                        torch.rand_like(quant_input, dtype=quant_input.dtype)
+                    input_tensor = quant_input
+                    input_tensor[0] = torch.where(
+                        torch.rand_like(quant_input[0], dtype=quant_input[0].dtype).to(
+                            device=device
+                        )
                         < _QT_SAMPLING_PROB,
-                        quant_input,
-                        fp_input,
+                        quant_input[0].to(device=device),
+                        fp_input[0].to(device=device),
                     )
                 if isinstance(input_tensor, torch.Tensor):
                     input_tensor = [input_tensor]

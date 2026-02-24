@@ -99,22 +99,14 @@ class RemoveQuantization(QuantizationTechnique):
 
 
 @YAMLConfigParser.register_recipe
-class LoadEncodings(QuantizationTechnique):
-    """Load encodings from file"""
+class Skip(QuantizationTechnique):
+    """Do nothing. Useful for testing fully precomputed encodings."""
 
     @staticmethod
     def apply(
-        quantsim: QuantizationSimModel,
-        generator: Generator,
-        dataloader: DataLoader,
-        **recipe_kwargs,
+        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
     ):
-        if "path" not in recipe_kwargs:
-            raise ValueError(
-                "Encodings path must be provided for LoadEncodings recipe as 'path'."
-            )
-
-        quantsim.load_encodings(recipe_kwargs["path"], partial=False)
+        pass
 
 
 @YAMLConfigParser.register_recipe

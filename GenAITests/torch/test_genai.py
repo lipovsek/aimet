@@ -182,6 +182,7 @@ def test_llm_quantization(test_parameters):
         tokenizer.save_pretrained(test_parameters["export"])
 
         sim_collection.backbone.model.config.save_pretrained(test_parameters["export"])
+        os.mkdir(os.path.join(test_parameters["export"], "backbone"))
         sim_collection.backbone.onnx.export(
             f=os.path.join(
                 test_parameters["export"],
@@ -206,6 +207,7 @@ def test_llm_quantization(test_parameters):
 
         if sim_collection.visual is not None:
             assert isinstance(model_cls, VLM)
+            os.mkdir(os.path.join(test_parameters["export"], "visual"))
             sim_collection.visual.model.config.save_pretrained(
                 test_parameters["export"]
             )

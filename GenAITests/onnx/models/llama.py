@@ -10,6 +10,7 @@ from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel
 
 from GenAITests.shared.models.base import SimCollection
+from GenAITests.shared.models.generator import HubCompatibleGenerator
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.llama import Llama_32, Llama_32_SHA_Mixin
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
@@ -107,3 +108,14 @@ class Llama_32_ONNX(Llama_32):
 @YAMLConfigParser.register_model
 class Llama_32_SHA_ONNX(Llama_32_SHA_Mixin, Llama_32_ONNX):
     pass
+
+
+@YAMLConfigParser.register_model
+class Llama_32_AIHM_ONNX(Llama_32_ONNX):
+    @classmethod
+    def instantiate_model(cls, *args, **kwargs):
+        raise RuntimeError("Please generate a quantized checkpoint using AIHM.")
+
+    @staticmethod
+    def get_generator_cls():
+        return HubCompatibleGenerator

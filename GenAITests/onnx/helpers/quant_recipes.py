@@ -102,6 +102,17 @@ class RemoveQuantization(QuantizationTechnique):
 
 
 @YAMLConfigParser.register_recipe
+class Skip(QuantizationTechnique):
+    """Do nothing. Useful for testing fully precomputed encodings."""
+
+    @staticmethod
+    def apply(
+        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
+    ):
+        pass
+
+
+@YAMLConfigParser.register_recipe
 class PCQ(QuantizationTechnique):
     """Apply vanilla PCQ to model"""
 

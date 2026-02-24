@@ -14,7 +14,11 @@ from aimet_torch.v2.nn.transformers.models.qwen3.modeling_qwen3 import (
 
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.base import SimCollection
-from GenAITests.shared.models.qwen3 import Qwen_3
+from GenAITests.shared.models.qwen3 import (
+    Qwen_3,
+    Qwen_3_SHA_Mixin,
+    Qwen_3_SHA_Conv_Mixin,
+)
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 
@@ -61,3 +65,13 @@ class Qwen_3_Torch(Qwen_3):
                 module.param_quantizers["weight"].bitwidth = 16
 
         return SimCollection(quantsim)
+
+
+@YAMLConfigParser.register_model
+class Qwen_3_SHA_Torch(Qwen_3_SHA_Mixin, Qwen_3_Torch):
+    pass
+
+
+@YAMLConfigParser.register_model
+class Qwen_3_SHA_Conv_Torch(Qwen_3_SHA_Conv_Mixin, Qwen_3_Torch):
+    pass

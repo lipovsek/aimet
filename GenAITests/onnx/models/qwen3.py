@@ -4,16 +4,19 @@
 """Qwen 3 ONNX model class"""
 
 import torch
-import onnx
-import os
-from transformers import AutoConfig
+from transformers import AutoConfig, PreTrainedModel
 
 from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel
 
 from GenAITests.shared.models.base import SimCollection
+from GenAITests.shared.models.generator import HubCompatibleGenerator
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
-from GenAITests.shared.models.qwen3 import Qwen_3
+from GenAITests.shared.models.qwen3 import (
+    Qwen_3,
+    Qwen_3_SHA_Mixin,
+    Qwen_3_SHA_Conv_Mixin,
+)
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
@@ -51,7 +54,7 @@ class Qwen_3_ONNX(Qwen_3):
             model = cls.instantiate_model(model_id, small_model).to(dtype=torch.float32)
             exportable_model = ONNXExportableModuleWithCache(model)
             onnx_model, *_ = get_onnx_model(
-                checkpoint=get_model_checkpoint_path(model_id),
+                checkpoint=get_model_checkpoint_path(model_id, cls.__name__),
                 fp_backbone_model=exportable_model,
                 context_length=context_length,
                 sequence_length=sequence_length,
@@ -72,11 +75,7 @@ class Qwen_3_ONNX(Qwen_3):
                 context_length=context_length,
                 sequence_length=sequence_length,
             )
-            config = AutoConfig.from_pretrained(
-                get_model_checkpoint_path(
-                    model_id if model_id is not None else cls.DEFAULT_MODEL_ID
-                )
-            )
+            config = AutoConfig.from_pretrained(get_model_checkpoint_path(model_id))
 
         with (
             AttributePatch(quantsim, "op_types_to_tie_qtzrs", ["Concat"]),
@@ -108,3 +107,35 @@ class Qwen_3_ONNX(Qwen_3):
         _tie_quantizers_for_kv_cache(quant_sim)
 
         return SimCollection(quant_sim, config=config)
+
+
+@YAMLConfigParser.register_model
+class Qwen_3_SHA_ONNX(Qwen_3_SHA_Mixin, Qwen_3_ONNX):
+    pass
+
+
+@YAMLConfigParser.register_model
+class Qwen_3_SHA_Conv_ONNX(Qwen_3_SHA_Conv_Mixin, Qwen_3_ONNX):
+    pass
+
+
+@YAMLConfigParser.register_model
+class Qwen_3_AIHM_ONNX(Qwen_3_ONNX):
+    @classmethod
+    def instantiate_model(cls, *args, **kwargs):
+        raise RuntimeError("Please generate a quantized checkpoint using AIHM.")
+
+    @classmethod
+    def instantiate_quantsim(
+        cls,
+        *args,
+        **kwargs,
+    ):
+        from aimet_onnx.graph_passes.passes.decoder_block import DecoderBlockQwen3
+
+        DecoderBlockQwen3.NUM_RMSNORM_PER_BLK = 41
+        return super().instantiate_quantsim(*args, **kwargs)
+
+    @staticmethod
+    def get_generator_cls():
+        return HubCompatibleGenerator
