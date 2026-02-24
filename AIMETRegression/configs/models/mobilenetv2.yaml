@@ -20,16 +20,16 @@ tests:
     max_accuracy_drop_torch: 7.0
 
   # --------------------------------------------------------------------------
-  # Test 2: Lite Mixed-Precision (25% FP16)
+  # Test 2: Lite Mixed-Precision (10% FP16)
   # --------------------------------------------------------------------------
 
-  - name: lite_mp_25
+  - name: lite_mp_10
     feature: lite_mp
     quant_scheme: min_max
     param_type: int8
     activation_type: int8
     config_file: htp_v79
     lite_mp:
-      percent_flip: 25
+      percent_flip: 10
       override_precision: float16
     max_accuracy_drop_onnx: 4.5

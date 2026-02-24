@@ -25,7 +25,7 @@ promoted to higher precision.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, List
 
 import onnx
 import onnxruntime as ort
@@ -34,6 +34,7 @@ from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 # AIMET imports - these symbols are required objects, not strings
 from aimet_onnx import analyze_per_layer_sensitivity, int4, int8, int16, float16
 from aimet_onnx.lite_mp import flip_layers_to_higher_precision
+from aimet_onnx.utils import make_psnr_eval_fn
 
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.onnx._common import (
@@ -59,6 +60,22 @@ def _extract_bitwidth(value) -> int:
     if "4" in s:
         return 4
     return 8
+
+
+def _collect_inputs(
+    sess: ort.InferenceSession, model, dataset_name, num_samples: int
+) -> List[Dict]:
+    inputs = []
+    run = sess.run
+
+    def wrapper(output_names, input_feed, *args, **kwargs):
+        inputs.append(input_feed)
+        return run(output_names, input_feed, *args, **kwargs)
+
+    sess.run = wrapper
+    evaluate_session_on_dataset(sess, model, dataset_name, num_samples=num_samples)
+    sess.run = run
+    return inputs
 
 
 def _resolve_override_precision(val: Any):
@@ -192,6 +209,7 @@ def run_lite_mp(
         "override_precision",
         config.get("lite_mp", {}).get("override_precision", "float16"),
     )
+    lite_mp_samples = int(config.get("lite_mp", {}).get("eval_samples", 5))
 
     # Convert precision string to AIMET symbol
     override_sym = _resolve_override_precision(override_cfg)
@@ -252,21 +270,10 @@ def run_lite_mp(
 
     # ============ Step 3: Sensitivity Analysis ============
     print(f"[Lite-MP] Analyzing per-layer sensitivity...")
-
-    def accuracy_evaluator(sess: ort.InferenceSession) -> float:
-        """
-        Evaluate model accuracy for sensitivity analysis.
-
-        Uses a smaller subset for efficiency since we need to evaluate
-        many times (once per layer) during sensitivity analysis.
-        """
-        acc, *_ = evaluate_session_on_dataset(
-            sess,
-            model,
-            dataset_name,
-            num_samples=min(64, calib_samples),  # Use fewer samples for speed
-        )
-        return float(acc)
+    inputs = _collect_inputs(
+        sim.session, model, dataset_name, num_samples=lite_mp_samples
+    )
+    accuracy_evaluator = make_psnr_eval_fn(fp32_sess, inputs, output_indices=None)
 
     # Analyze which layers contribute most to quantization error
     layer_sensitivity = analyze_per_layer_sensitivity(sim, eval_fn=accuracy_evaluator)

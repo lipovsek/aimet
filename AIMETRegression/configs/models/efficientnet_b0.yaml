@@ -6,11 +6,15 @@ model_name: efficientnet_b0
 # ==================== Test Definitions ====================
 tests:
   # --------------------------------------------------------------------------
-  # Test: Standard INT8 Quantization V79 config
+  # Test: LiteMP w8a8 + 15% int16
   # --------------------------------------------------------------------------
 
-  - name: quantsim_int8_v79
-    feature: quantsim
+  - name: lite_mp_15
+    feature: lite_mp
+    lite_mp:
+      percent_flip: 15
+      override_precision: int16
+      eval_samples: 5
     quant_scheme: min_max
     param_type: int8
     activation_type: int8
