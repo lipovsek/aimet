@@ -17,9 +17,9 @@ from transformers.cache_utils import DynamicCache
 from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-
-# TODO: #6523 Update AttentionMaskConverter in transformers to new transformers.masking_utils
-from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+from GenAITests.shared.models.utils.attention_mask import (
+    convert_2d_attention_mask_to_4d,
+)
 
 
 def get_past_keyval_with_shift(
@@ -313,13 +313,9 @@ class Generator(GenerationMixin, torch.nn.Module):
             (kv_cache_attention_mask, padded_attention_mask), dim=-1
         )
 
-        # Convert attention mask from 1D to 4D and clip values
-        attention_mask_converter = AttentionMaskConverter(True)
-        cm_attention_mask = attention_mask_converter.to_4d(
-            padded_attention_mask,
-            query_length=sequence_length,
-            key_value_length=context_length,
-            dtype=torch.float32,
+        # Convert attention mask from 2D to 4D and clip values
+        cm_attention_mask = convert_2d_attention_mask_to_4d(
+            padded_attention_mask, sequence_length, context_length
         )
         cm_attention_mask = cm_attention_mask.clip(attention_mask_min, 0)
 

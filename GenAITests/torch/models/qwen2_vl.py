@@ -6,13 +6,11 @@
 import warnings
 import torch
 
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModel
-
 from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.nn.true_quant import QuantizationMixin
 from aimet_torch.v2.nn.transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
-    QuantizedQwen2RMSNorm,
+    QuantizedQwen2_5_VLRMSNorm,
 )
 
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
@@ -71,7 +69,7 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
 
         language_sim.model.lm_head.param_quantizers["weight"].bitwidth = 8
         for _, module in language_sim.model.named_modules():
-            if isinstance(module, QuantizedQwen2RMSNorm):
+            if isinstance(module, QuantizedQwen2_5_VLRMSNorm):
                 module.param_quantizers["weight"].bitwidth = 16
 
         # 2) Wrap visual model to make it traceable
