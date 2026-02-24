@@ -5,7 +5,7 @@
 """Utility APIs for onnx export"""
 
 from __future__ import annotations
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, nullcontext
 from collections import defaultdict
 from dataclasses import dataclass
 from packaging import version
@@ -634,7 +634,10 @@ def export(
     with _precompute_encodings(model):
         # Precompute scale/offset before entering torch.onnx.export so that
         # scale/offset are always represented as a leaf inputs in the onnx graphs
-        with _disable_torch_C_jit_pass_lint():
+        with (
+            _disable_torch_C_jit_pass_lint(),
+            _maybe_disable_C_jit_pass_onnx_deduplicate_initializers(model),
+        ):
             return torch.onnx.export(model, args, f, **kwargs)
 
 
@@ -650,12 +653,47 @@ def _disable_torch_C_jit_pass_lint():
     and torchscript onnx exporter represents each autograd.Function as a single block.
 
     To avoid this quadratic loop, we disable _C._jit_pass_lint with the following reasoning:
+
       - _C._jit_pass_lint is just a graph sanity check and does not affect the exported onnx graph
       - There are other types of lint passes for graph sanity check in torch.onnx.export,
         such as _C._jit_pass_onnx_lint
     """
     # TODO: Remove this workaround after torch._C._jit_pass_lint is optimized.
     with patch_attr(_C, "_jit_pass_lint", lambda _: None):
+        yield
+
+
+# Heuristic threshold of 5B was chosen based on internal experiments
+_LARGE_MODEL_THRESHOLD = 5 * (1024**3)
+
+
+@contextmanager
+def _maybe_disable_C_jit_pass_onnx_deduplicate_initializers(model: torch.nn.Module):
+    """
+    Temporarily disable torch._C._jit_pass_onnx_deduplicate_initializers.
+
+    This is to work around O(N^2) loop in torch._C._jit_pass_onnx_deduplicate_initializers,
+    where N = # parameters.
+
+    To avoid this quadratic loop, we disable _C._jit_pass_onnx_deduplicate_initializers
+    for large models with the following reasoning:
+
+      - Keeping duplicate initializers doesn't hurt onnx export correctness
+      - Duplicate initializers are rare
+    """
+
+    # pylint:disable=unused-argument
+    def no_op(graph, params_dict, *args, **kwargs):
+        return params_dict
+
+    model_size = sum(param.numel() for param in model.parameters())
+
+    if model_size >= _LARGE_MODEL_THRESHOLD:
+        ctx = patch_attr(_C, "_jit_pass_onnx_deduplicate_initializers", no_op)
+    else:
+        ctx = nullcontext()
+
+    with ctx:
         yield
 
 
