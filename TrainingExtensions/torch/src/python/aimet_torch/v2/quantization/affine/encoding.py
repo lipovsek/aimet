@@ -61,8 +61,8 @@ class AffineEncoding(EncodingBase, _GridMixin):
     ): ...
 
     def __init__(self, scale: torch.Tensor, offset: torch.Tensor, *args, **kwargs):  # pylint: disable=too-many-locals
-        self._scale = scale
-        self._offset = offset
+        self.scale = scale
+        self.offset = offset
         full_args = (scale, offset, *args)
 
         # Pad positional args with None's such that len(args) == 5
@@ -118,20 +118,6 @@ class AffineEncoding(EncodingBase, _GridMixin):
         Returns the mapping method for this encoding
         """
         return "affine"
-
-    @property
-    def scale(self) -> torch.Tensor:
-        """
-        Returns the scale of the quantizer encoding
-        """
-        return self._scale
-
-    @property
-    def offset(self) -> torch.Tensor:
-        """
-        Returns the offset of the quantizer encoding
-        """
-        return self._offset
 
     @property
     def num_steps(self) -> int:
@@ -227,9 +213,9 @@ class AffineEncoding(EncodingBase, _GridMixin):
         """
         to_args = parse_to_args(*args, **kwargs)
         device, dtype, _, _ = to_args
-        dtype = dtype if dtype else self._scale.dtype
-        device = device if device else self._scale.device
-        if dtype is self._scale.dtype and device is self._scale.device:
+        dtype = dtype if dtype else self.scale.dtype
+        device = device if device else self.scale.device
+        if dtype is self.scale.dtype and device is self.scale.device:
             return self
 
         if not dtype.is_floating_point:
@@ -238,8 +224,8 @@ class AffineEncoding(EncodingBase, _GridMixin):
                 "only floating point data types are supported"
             )
 
-        scale = self._scale.to(dtype=dtype, device=device)
-        offset = self._offset.to(dtype=dtype, device=device)
+        scale = self.scale.to(dtype=dtype, device=device)
+        offset = self.offset.to(dtype=dtype, device=device)
         properties = self._get_additional_properties()
         return type(self)(
             scale, offset, self.qmin, self.qmax, self._symmetry, **properties

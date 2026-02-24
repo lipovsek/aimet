@@ -663,8 +663,13 @@ def _disable_torch_C_jit_pass_lint():
         yield
 
 
-# Heuristic threshold of 5B was chosen based on internal experiments
-_LARGE_MODEL_THRESHOLD = 5 * (1024**3)
+# Heuristic: Include all LLMs starting from 0.5B models
+_LARGE_MODEL_THRESHOLD_NUM_PARAMS = 0.5 * (1024**3)
+
+# Heuristic: Even if it's not an LLM, _C._jit_pass_onnx_deduplicate_initializers
+# starts to dominate the export time when the number of nn.Parameter objects
+# is larger than certain threshold due to quadratic time complexity.
+_LARGE_MODEL_THRESHOLD_NUM_NN_PARAMETER_OBJECTS = 2048
 
 
 @contextmanager
@@ -673,7 +678,7 @@ def _maybe_disable_C_jit_pass_onnx_deduplicate_initializers(model: torch.nn.Modu
     Temporarily disable torch._C._jit_pass_onnx_deduplicate_initializers.
 
     This is to work around O(N^2) loop in torch._C._jit_pass_onnx_deduplicate_initializers,
-    where N = # parameters.
+    where N = # nn.Parameter objects in the model.
 
     To avoid this quadratic loop, we disable _C._jit_pass_onnx_deduplicate_initializers
     for large models with the following reasoning:
@@ -687,14 +692,56 @@ def _maybe_disable_C_jit_pass_onnx_deduplicate_initializers(model: torch.nn.Modu
         return params_dict
 
     model_size = sum(param.numel() for param in model.parameters())
+    num_nn_param_objects = len(list(model.named_parameters(remove_duplicate=False)))
 
-    if model_size >= _LARGE_MODEL_THRESHOLD:
+    if (
+        model_size >= _LARGE_MODEL_THRESHOLD_NUM_PARAMS
+        or num_nn_param_objects >= _LARGE_MODEL_THRESHOLD_NUM_NN_PARAMETER_OBJECTS
+    ):
         ctx = patch_attr(_C, "_jit_pass_onnx_deduplicate_initializers", no_op)
     else:
         ctx = nullcontext()
 
     with ctx:
         yield
+
+
+def _get_all_constants(
+    model: onnx.ModelProto, consumers: dict[str, list[onnx.NodeProto]] | None = None
+) -> dict[str, onnx.TensorProto]:
+    """
+    Get all constants in the ONNX model, including
+      * Initializers
+      * Output of Constant nodes.
+      * Output of Identity nodes that takes initializers or Constant nodes as input (recursively).
+    """
+    if consumers is None:
+        consumers = {}
+        for node in _iterate_graph_nodes_recursive(model.graph):
+            for input_name in node.input:
+                consumers.setdefault(input_name, []).append(node)
+
+    constants: dict[str, onnx.TensorProto] = {
+        const.name: const for const in _get_all_tensors(model)
+    }
+
+    constants |= {
+        const_node.output[0]: attr.t
+        for const_node in _iterate_graph_nodes_recursive(model.graph)
+        if const_node.op_type == "Constant"
+        for attr in const_node.attribute
+        if attr.HasField("t")
+    }
+
+    for const in constants.copy().values():
+        queue = consumers.get(const.name, []).copy()
+        while queue:
+            consumer = queue.pop()
+            if consumer.op_type == "Identity":
+                constants[consumer.output[0]] = const
+                queue += consumers.get(consumer.output[0], [])
+
+    return constants
 
 
 def remove_quantization_nodes_from_onnx_graph(
@@ -705,9 +752,7 @@ def remove_quantization_nodes_from_onnx_graph(
     :param model: ONNX model with quantization nodes
     """
     tensor_to_encoding_map: dict[str, EncodingBase] = {}
-    constants: dict[str, onnx.TensorProto] = {
-        const.name: const for const in _get_all_tensors(model) if const.name
-    }
+    constants: dict[str, onnx.TensorProto]
     producers: dict[str, onnx.NodeProto] = {}
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     qtzr_nodes: dict[str, onnx.NodeProto] = {}
@@ -722,10 +767,7 @@ def remove_quantization_nodes_from_onnx_graph(
         if node.domain == "aimet" and node.op_type in ONNX_QUANTIZER_OP_TYPES:
             qtzr_nodes[node.name] = node
 
-        if node.op_type == "Constant":
-            for attr in node.attribute:
-                if attr.HasField("t"):
-                    constants[node.output[0]] = attr.t
+    constants = _get_all_constants(model, consumers)
 
     back_to_back_qdq_tensors = set(qdq.input[0] for qdq in qtzr_nodes.values()) & set(
         qdq.output[0] for qdq in qtzr_nodes.values()
@@ -849,17 +891,7 @@ def remove_quantization_nodes_from_onnx_graph(
                 if out == node.input[0]:
                     producer.output[i] = new_name
 
-    all_nodes = [
-        node
-        for node in model.graph.node
-        if node.name not in qtzr_nodes
-        and not (
-            node.op_type == "Constant"
-            and all(
-                consumer.name in qtzr_nodes for consumer in consumers[node.output[0]]
-            )
-        )
-    ]
+    all_nodes = [node for node in model.graph.node if node.name not in qtzr_nodes]
     model.graph.ClearField("node")
     model.graph.node.extend(all_nodes)
 
@@ -868,6 +900,16 @@ def remove_quantization_nodes_from_onnx_graph(
     ]
     model.ClearField("functions")
     model.functions.extend(all_functions)
+
+    # Remove dangling initializers
+    all_input_names = set(inp.name for inp in model.graph.input) | set(
+        inp for node in model.graph.node for inp in node.input
+    )
+    all_initializers = [
+        init for init in model.graph.initializer if init.name in all_input_names
+    ]
+    model.graph.ClearField("initializer")
+    model.graph.initializer.extend(all_initializers)
 
     # Remove aimet opset from imports since it's not needed anymore
     all_opset_imports = [
@@ -1024,43 +1066,16 @@ def _iterate_graph_nodes_recursive(graph: onnx.GraphProto) -> Iterable[onnx.Node
             yield from _iterate_graph_nodes_recursive(body.g)
 
 
+@torch.no_grad()
 @contextmanager
 def _precompute_encodings(model: torch.nn.Module):
-    # pylint: disable=import-outside-toplevel
+    # pylint: disable=import-outside-toplevel, protected-access
     from aimet_torch.quantization.base import QuantizerBase
-
-    with torch.no_grad():
-        encodings = {
-            q: q.get_encodings()
-            for q in model.modules()
-            if isinstance(q, QuantizerBase)
-        }
-
-    def is_initialized(q: QuantizerBase):
-        return encodings[q] is not None
-
-    def get_cached_encodings(q: QuantizerBase):
-        return encodings[q]
-
-    def get_cached_scale(q: QuantizerBase):
-        enc = get_cached_encodings(q)
-        if enc:
-            return enc.scale
-        return None
 
     with ExitStack() as stack:
         for q in model.modules():
             if isinstance(q, QuantizerBase):
-                ctx = patch_attr(
-                    q, "get_encodings", functools.partial(get_cached_encodings, q)
-                )
+                ctx = q._precompute_encodings()
                 stack.enter_context(ctx)
 
-                ctx = patch_attr(
-                    q, "is_initialized", functools.partial(is_initialized, q)
-                )
-                stack.enter_context(ctx)
-
-                ctx = patch_attr(q, "get_scale", functools.partial(get_cached_scale, q))
-                stack.enter_context(ctx)
         yield

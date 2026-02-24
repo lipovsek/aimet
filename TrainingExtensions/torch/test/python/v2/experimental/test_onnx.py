@@ -3,7 +3,6 @@
 
 
 import copy
-from math import e
 import os
 import itertools
 import json
@@ -20,7 +19,6 @@ from onnx import helper, TensorProto
 import tempfile
 from unittest.mock import patch
 
-from aimet_torch.v2.quantization._utils import concretize_block_size
 from ..models_ import test_models
 
 from aimet_common.quantsim_config.utils import (
@@ -43,17 +41,20 @@ from aimet_torch.onnx import (
     _derive_data_movement_op_encodings,
 )
 from torchvision.models import resnet18, mobilenet_v3_small
-from aimet_torch.v2.experimental.onnx._export import export as _export
+from aimet_torch.v2.experimental.onnx._export import (
+    export as _export,
+    _get_all_constants,
+)
+import aimet_torch.v2.experimental.onnx._export
 from aimet_torch.batch_norm_fold import fold_all_batch_norms
 from aimet_torch.utils import get_all_quantizers
-from aimet_torch.v2.utils import remove_activation_quantizers, patch_attr
+from aimet_torch.v2.utils import patch_attr, remove_activation_quantizers
 from aimet_torch.model_preparer import prepare_model
 from aimet_torch.v2.quantsim.config_utils import (
     set_blockwise_quantization_for_weights,
     set_grouped_blockwise_quantization_for_weights,
 )
 import aimet_torch
-from aimet_torch.nn import QuantizationMixin
 
 
 @pytest.fixture(autouse=True, params=range(1))
@@ -140,19 +141,11 @@ def test_quantize_torch_ort_equal(
         Then: The saved onnx model should contain exactly one graph node in "aimet" domain
               with proper scale and offset values
         """
-        const_map = {
-            node.output[0]: node
-            for node in model.graph.node
-            if node.op_type == "Constant"
-        }
-        assert node.input[1] in const_map
-        assert node.input[2] in const_map
-        onnx_scale = torch.tensor(
-            onnx.numpy_helper.to_array(const_map[node.input[1]].attribute[0].t)
-        )
-        onnx_offset = torch.tensor(
-            onnx.numpy_helper.to_array(const_map[node.input[2]].attribute[0].t)
-        )
+        constants = _get_all_constants(model)
+        assert node.input[1] in constants
+        assert node.input[2] in constants
+        onnx_scale = torch.tensor(onnx.numpy_helper.to_array(constants[node.input[1]]))
+        onnx_offset = torch.tensor(onnx.numpy_helper.to_array(constants[node.input[2]]))
         if scale_shape == []:
             onnx_scale.squeeze_(0)
             onnx_offset.squeeze_(0)
@@ -305,14 +298,10 @@ def test_export_torchvision_models(model_factory, input_shape):
         """
         Then: The quant nodes in the onnx model should have constant scale and offset values
         """
-        const_map = {
-            node.output[0]: node
-            for node in onnx_model.graph.node
-            if node.op_type == "Constant"
-        }
+        constants = _get_all_constants(onnx_model)
         for node in nodes:
-            assert node.input[1] in const_map
-            assert node.input[2] in const_map
+            assert node.input[1] in constants
+            assert node.input[2] in constants
 
         """
         Then: The onnx model should produce output close enough to the original pytorch model
@@ -2330,3 +2319,79 @@ def test_concat(tmp_path: pathlib.Path):
         "output",
     }
     assert encodings["input_uv"] == encodings["img"] == encodings["/Concat_output_0"]
+
+
+def test_disable_C_jit_pass_onnx_deduplicate_initializers(tmp_path: pathlib.Path):
+    """
+    Given: Model with shared parameters
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super(Model, self).__init__()
+            self.linear1 = torch.nn.Linear(10, 10)
+            self.linear2 = torch.nn.Linear(10, 10)
+            # Make linear2's weight and bias share the same initializer with linear1
+            self.linear2.weight = self.linear1.weight
+            self.linear2.bias = self.linear1.bias
+
+        def forward(self, x):
+            return self.linear2(self.linear1(x))
+
+    model = Model()
+    x = torch.randn(1, 10)
+
+    """
+    When: Export to onnx QDQ with C-jit pass "onnx_deduplicate_initializers" disabled
+    Then:
+      1) Export should work normally
+      2) The exported onnx model should have duplicated initializers for shared parameters
+      3) The exported model should produce same output as sim
+    """
+    sim = aimet_torch.QuantizationSimModel(model, x)
+    sim.compute_encodings(lambda model: model(x))
+
+    # Temporarily patch the threshold to 0 to disable onnx_deduplicate_initializers pass
+    with patch_attr(
+        aimet_torch.v2.experimental.onnx._export,
+        "_LARGE_MODEL_THRESHOLD_NUM_NN_PARAMETER_OBJECTS",
+        0,
+    ):
+        aimet_torch.onnx.export(
+            sim.model,
+            x,
+            tmp_path / "model.onnx",
+            input_names=["input"],
+            output_names=["output"],
+            dynamo=False,
+        )
+    onnx_qdq_model = onnx.load(tmp_path / "model.onnx")
+    onnx.checker.check_model(onnx_qdq_model)
+
+    initializer_names = set(init.name for init in onnx_qdq_model.graph.initializer)
+    assert initializer_names >= {
+        "linear1.weight",
+        "linear1.bias_q",
+        "linear1.weight_scale",
+        "linear1.weight_zero_point",
+        "linear1.bias_scale",
+        "linear1.bias_zero_point",
+        "linear2.weight",
+        "linear2.bias_q",
+        "linear2.weight_scale",
+        "linear2.weight_zero_point",
+        "linear2.bias_scale",
+        "linear2.bias_zero_point",
+    }
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_qdq_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out,) = sess.run(None, {"input": x.detach().numpy()})
+    expected_out = sim.model(x)
+    atol = sim.model.linear2.output_quantizers[0].get_scale().item()
+    assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)

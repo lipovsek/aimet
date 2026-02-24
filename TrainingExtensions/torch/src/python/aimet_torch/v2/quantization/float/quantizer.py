@@ -5,7 +5,7 @@
 # pylint: disable=redefined-builtin
 """Float quantizers"""
 
-import contextlib
+from contextlib import contextmanager, nullcontext
 import functools
 from typing import Dict, List, Optional
 import math
@@ -343,7 +343,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
 
         return qtzr
 
-    @contextlib.contextmanager
+    @contextmanager
     def compute_encodings(self):
         """
         Observe inputs and update quantization parameters based on the input statistics.
@@ -461,6 +461,27 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
             extra_repr.append(f"block_size={self.block_size}")
 
         return ", ".join(extra_repr)
+
+    @contextmanager
+    def _precompute_encodings(self):
+        enc = self.get_encodings()
+
+        if enc:
+            enc.scale = torch.nn.Parameter(enc.scale, requires_grad=False)
+
+        def get_cache_encodings(*args, **kwargs):  # pylint: disable=unused-argument
+            return enc
+
+        def is_initialized(*args, **kwargs):  # pylint: disable=unused-argument
+            return enc is not None
+
+        with (
+            patch_attr(self, "_parameters", {}) if enc else nullcontext(),
+            patch_attr(self, "get_encodings", get_cache_encodings),
+            patch_attr(self, "is_initialized", is_initialized),
+            patch_attr(self, "scale", enc.scale) if enc else nullcontext(),
+        ):
+            yield
 
 
 class QuantizeDequantize(FloatQuantizeDequantize):

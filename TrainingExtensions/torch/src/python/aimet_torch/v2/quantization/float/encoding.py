@@ -40,7 +40,7 @@ class FloatEncoding(EncodingBase):
         if block_size is not None:
             block_size = tuple(block_size)
 
-        self._scale = scale
+        self.scale = scale
         self._block_size = block_size or None
 
     @property
@@ -79,18 +79,11 @@ class FloatEncoding(EncodingBase):
         return self._finfo.unsigned_zero
 
     @property
-    def scale(self) -> torch.Tensor:
-        """
-        Returns the scale of the quantizer encoding
-        """
-        return self._scale
-
-    @property
     def maxval(self) -> torch.Tensor:
         """
         Returns the maximum representable value of the dequantized tensor
         """
-        return self._scale * self._finfo.max
+        return self.scale * self._finfo.max
 
     @property
     def block_size(self) -> tuple[int, ...] | None:
@@ -111,11 +104,11 @@ class FloatEncoding(EncodingBase):
         Changes dtype of data in quantizer encoding or device where the data is.
         Behaves similar to torch.Tensor.to
         """
-        if self._scale is None:
+        if self.scale is None:
             return self
 
-        current_dtype = self._scale.dtype
-        current_device = self._scale.device
+        current_dtype = self.scale.dtype
+        current_device = self.scale.device
 
         to_args = parse_to_args(*args, **kwargs)
         device, dtype, _, _ = to_args
@@ -132,7 +125,7 @@ class FloatEncoding(EncodingBase):
                 "only floating point data types are supported"
             )
 
-        scale = self._scale.to(dtype=dtype, device=device)
+        scale = self.scale.to(dtype=dtype, device=device)
 
         return type(self)(
             self.mantissa_bits,

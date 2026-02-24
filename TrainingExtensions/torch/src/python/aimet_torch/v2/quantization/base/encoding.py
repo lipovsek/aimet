@@ -19,12 +19,7 @@ class EncodingBase(abc.ABC):
     Quantizer encoding base class
     """
 
-    @property
-    @abc.abstractmethod
-    def scale(self) -> torch.Tensor:
-        """
-        Returns quantization scale
-        """
+    scale: torch.Tensor
 
     @property
     @abc.abstractmethod

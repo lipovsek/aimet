@@ -285,3 +285,7 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
     @deprecated(f"Use {allow_overwrite.__qualname__} function instead")
     def _allow_overwrite(self, mode: bool):
         self.allow_overwrite(mode)
+
+    @contextlib.contextmanager
+    def _precompute_encodings(self):
+        yield

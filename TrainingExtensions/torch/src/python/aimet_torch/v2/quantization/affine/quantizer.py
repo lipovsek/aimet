@@ -16,7 +16,7 @@ from typing import (
     runtime_checkable,
     Tuple,
 )
-import contextlib
+from contextlib import contextmanager, nullcontext
 import functools
 
 import torch
@@ -581,7 +581,7 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
     def signed(self, signed: bool):
         self._set_signed(signed)
 
-    @contextlib.contextmanager
+    @contextmanager
     def compute_encodings(self):
         """
         Observe inputs and update quantization parameters based on the input statistics.
@@ -761,6 +761,29 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
         self.shape = tuple(
             self.min.shape if self._is_min_max_quantizer() else self.scale.shape
         )
+
+    @contextmanager
+    def _precompute_encodings(self):
+        enc = self.get_encodings()
+
+        if enc:
+            enc.scale = torch.nn.Parameter(enc.scale, requires_grad=False)
+            enc.offset = torch.nn.Parameter(enc.offset, requires_grad=False)
+
+        def get_cache_encodings(*args, **kwargs):  # pylint: disable=unused-argument
+            return enc
+
+        def is_initialized(*args, **kwargs):  # pylint: disable=unused-argument
+            return enc is not None
+
+        with (
+            patch_attr(self, "_parameters", {}) if enc else nullcontext(),
+            patch_attr(self, "get_encodings", get_cache_encodings),
+            patch_attr(self, "is_initialized", is_initialized),
+            patch_attr(self, "scale", enc.scale) if enc else nullcontext(),
+            patch_attr(self, "offset", enc.offset) if enc else nullcontext(),
+        ):
+            yield
 
 
 def _get_symmetric_offset(qmin, qmax, shape, dtype, device):

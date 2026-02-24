@@ -33,6 +33,7 @@ from .quantization.float import FloatQuantizeDequantize, FloatEncoding
 from .v2.quantization.float._finfo import _finfo
 from .quantsim import QuantizationSimModel
 from .v2.experimental import onnx as _onnx
+from .v2.experimental.onnx._export import _get_all_constants
 
 
 _TORCH_VERSION = version.parse(torch.__version__)
@@ -518,18 +519,7 @@ def _remove_intermediate_identity_nodes(onnx_model: onnx.ModelProto):
 
 
 def _remove_redundant_qdqs(onnx_model: onnx.ModelProto, base_dir):
-    from onnx.external_data_helper import _get_all_tensors
-
-    constants = {
-        const.name: const for const in _get_all_tensors(onnx_model) if const.name
-    }
-    constants |= {
-        const_node.output[0]: attr.t
-        for const_node in onnx_model.graph.node
-        if const_node.op_type == "Constant"
-        for attr in const_node.attribute
-        if attr.HasField("t")
-    }
+    constants: dict[str, onnx.TensorProto]
     producers: dict[str, onnx.NodeProto] = {}
     consumers: dict[str, list[onnx.NodeProto]] = {}
 
@@ -537,6 +527,8 @@ def _remove_redundant_qdqs(onnx_model: onnx.ModelProto, base_dir):
         producers[node.output[0]] = node
         for inp in node.input:
             consumers.setdefault(inp, []).append(node)
+
+    constants = _get_all_constants(onnx_model, consumers)
 
     qdq_nodes = [
         node
