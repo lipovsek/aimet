@@ -8,6 +8,8 @@ import json
 import csv
 import collections
 import sys
+import fcntl
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 # Import GPUMeter from AIMETRegression evaluation module
@@ -18,6 +20,22 @@ sys.path.append(
     )
 )
 from metrics_utils import GPUMeter
+
+
+@contextmanager
+def _file_lock(filepath: str):
+    """Context manager for process-safe file locking.
+
+    Uses a separate .lock file to coordinate access between processes.
+    """
+    lock_path = filepath + ".lock"
+    lock_file = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
 
 
 def convert_gpu_meter_to_dict(
@@ -48,12 +66,13 @@ class MetricResult:
 
 @dataclass
 class ComponentRecipeStats:
-    """Dataclass to hold recipe and dataset info for a model component"""
+    """Dataclass to hold recipe, dataset, and profiling info for a model component"""
 
     recipe_name: str
     recipe_kwargs: dict
     dataset_name: str
     dataset_kwargs: dict
+    profiler: GPUMeter = None
 
 
 def recursive_update(d, u):
@@ -69,32 +88,29 @@ def recursive_update(d, u):
 def write_stats_to_disk(
     output_folder: str,
     filename: str,
-    model_family: str,
+    model_type: str,
     model_id: str,
     model_modifiers: dict[str, str],
     components: dict[str, ComponentRecipeStats],
-    quantization_results: GPUMeter,
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
 ):
     _write_stats_to_json(
         str(os.path.join(output_folder, filename + ".json")),
-        model_family,
+        model_type,
         model_id,
         model_modifiers,
         components,
-        quantization_results,
         accuracy_results,
         export_location,
     )
 
     _write_stats_to_csv(
         str(os.path.join(output_folder, filename + ".csv")),
-        model_family,
+        model_type,
         model_id,
         model_modifiers,
         components,
-        quantization_results,
         accuracy_results,
         export_location,
     )
@@ -102,11 +118,10 @@ def write_stats_to_disk(
 
 def _write_stats_to_csv(
     filename: str,
-    model_cls: str,
+    model_type: str,
     model_id: str,
     model_modifiers: dict[str, str],
     components: dict[str, ComponentRecipeStats],
-    quantization_results: GPUMeter,
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
 ):
@@ -121,100 +136,74 @@ def _write_stats_to_csv(
         for result in accuracy_results
     }
 
-    # Convert components to serializable dict
+    # Convert components to serializable dict with resource_utilization
     components_dict = {
         name: {
             "recipe_name": stats.recipe_name,
             "recipe_kwargs": stats.recipe_kwargs,
             "dataset_name": stats.dataset_name,
             "dataset_kwargs": stats.dataset_kwargs,
+            "resource_utilization": convert_gpu_meter_to_dict(
+                stats.profiler, remove_finegrained=True
+            ),
         }
         for name, stats in components.items()
     }
 
     stats = [
-        model_cls,
+        model_type,
         model_id,
         dict_to_postgres_csv_json_field(model_modifiers),
         dict_to_postgres_csv_json_field(components_dict),
-        dict_to_postgres_csv_json_field(
-            convert_gpu_meter_to_dict(quantization_results, remove_finegrained=True)
-        ),
         dict_to_postgres_csv_json_field(accuracy_table),
         export_location if export_location is not None else "",
     ]
 
-    if not os.path.exists(filename):
-        with open(filename, "w", newline="") as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(
-                [
-                    "model_family",
-                    "model_id",
-                    "model_modifiers",
-                    "components",
-                    "quantization_results",
-                    "accuracy_results",
-                    "export",
-                ]
-            )
+    # Use file lock to ensure process-safe writes
+    with _file_lock(filename):
+        if not os.path.exists(filename):
+            with open(filename, "w", newline="") as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(
+                    [
+                        "model_type",
+                        "model_id",
+                        "model_modifiers",
+                        "components",
+                        "accuracy_results",
+                        "export",
+                    ]
+                )
 
-    with open(filename, "a", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(stats)
+        with open(filename, "a", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(stats)
 
 
 def _write_stats_to_json(
     filename: str,
-    model_family: str,
+    model_type: str,
     model_id: str,
     model_modifiers: dict[str, str],
     components: dict[str, ComponentRecipeStats],
-    quantization_results: GPUMeter,
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
 ):
-    """Helper function to write collected stats to disk, only overwriting newly collected fields"""
+    """Helper function to write collected stats to disk, only overwriting newly collected fields.
 
-    # Check if the file exists
-    if os.path.exists(filename):
-        # Open the file and load the existing data
-        with open(filename, "r") as f:
-            data = json.load(f)
-    else:
-        # If the file does not exist, create an empty dictionary
-        data = {}
-
-    model_params_string_formatted = ", ".join(
-        [f"{key}={value}" for key, value in model_modifiers.items()]
-        + [f"model_id={model_id}"]
-    )
-
-    # Build component key string (e.g., "backbone:AdaScale+Wikitext, visual:PCQ+Wikitext")
-    component_strings = []
-    for comp_name, comp_stats in components.items():
-        component_strings.append(
-            f"{comp_name}:{comp_stats.recipe_name}+{comp_stats.dataset_name}"
-        )
-    components_key = ", ".join(component_strings)
-
-    # Build recipe params string from all components
-    recipe_params = []
-    for comp_name, comp_stats in components.items():
-        for key, value in comp_stats.recipe_kwargs.items():
-            recipe_params.append(f"{comp_name}.{key}={value}")
-    recipe_params_string_formatted = (
-        ", ".join(recipe_params) if recipe_params else "default"
-    )
-
+    This function is process-safe and uses file locking to prevent race conditions
+    when multiple processes write to the same file.
+    """
     stats = {
-        "quantization": convert_gpu_meter_to_dict(quantization_results),
+        "model_id": model_id,
+        "model_modifiers": model_modifiers,
         "components": {
             comp_name: {
                 "recipe": comp_stats.recipe_name,
                 "recipe_kwargs": comp_stats.recipe_kwargs,
                 "dataset": comp_stats.dataset_name,
                 "dataset_kwargs": comp_stats.dataset_kwargs,
+                "resource_utilization": convert_gpu_meter_to_dict(comp_stats.profiler),
             }
             for comp_name, comp_stats in components.items()
         },
@@ -227,13 +216,22 @@ def _write_stats_to_json(
     if export_location is not None:
         stats["export"] = export_location
 
-    # Update the dictionary with nested structure
-    x = {recipe_params_string_formatted: stats}
-    x = {components_key: x}
-    x = {model_params_string_formatted: x}
-    x = {model_family: x}
-    recursive_update(data, x)
+    # Use file lock to ensure process-safe read-modify-write
+    with _file_lock(filename):
+        # Check if the file exists
+        if os.path.exists(filename):
+            # Open the file and load the existing data
+            with open(filename, "r") as f:
+                data = json.load(f)
+        else:
+            # If the file does not exist, create an empty dictionary
+            data = {}
 
-    # Write the updated dictionary back to the file
-    with open(filename, "w") as f:
-        json.dump(data, f, indent=4)
+        # Append to list of results for this model_type
+        if model_type not in data:
+            data[model_type] = []
+        data[model_type].append(stats)
+
+        # Write the updated dictionary back to the file
+        with open(filename, "w") as f:
+            json.dump(data, f, indent=4)

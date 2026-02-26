@@ -702,13 +702,13 @@ class TestAdascaleQuantizer:
 @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
 def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     from transformers import AutoConfig
-    from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
+    from GenAITests.onnx.models.llm import LLM_ONNX
     import random
 
     context_length = 32
     sequence_length = 16
     model_id = "Qwen/Qwen2-0.5B"
-    model_cls = Qwen_25_ONNX
+    model_cls = LLM_ONNX
 
     SEED = 20
     random.seed(SEED)
@@ -794,7 +794,7 @@ def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
         new=2,
     ):
         from transformers import AutoConfig
-        from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
+        from GenAITests.onnx.models.llm import LLM_ONNX
         from GenAITests.shared.models.generator import Generator
         from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
         from GenAITests.onnx.helpers.quant_recipes import _prefill_inputs
@@ -804,7 +804,7 @@ def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
         context_length = 512
         sequence_length = 512
         model_id = "Qwen/Qwen2.5-0.5B"
-        model_cls = Qwen_25_ONNX
+        model_cls = LLM_ONNX
 
         llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
         if small_model:
@@ -815,7 +815,7 @@ def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
         )
         sim = collection.backbone
 
-        tokenizer = Qwen_25_ONNX.instantiate_tokenizer(model_id)
+        tokenizer = LLM_ONNX.instantiate_tokenizer(model_id)
 
         train_dataset = Wikitext.load_encoded_dataset(
             tokenizer, context_length, "train"

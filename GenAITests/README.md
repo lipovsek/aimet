@@ -1,125 +1,349 @@
 # AIMET GenAI Test Framework
 
-AIMET's GenAI framework provides an easy way to evaluate large models against quantization techniques provided by both
-AIMET-ONNX and AIMET-Torch. You can use a config file and have the framework take care of running it all for you, or
-you can use the utilities provided to write an ad-hoc script that highlight all the quantization settings used.
+AIMET's GenAI framework provides an easy way to evaluate large models against quantization techniques provided by both AIMET-ONNX and AIMET-Torch. You can use a config file and have the framework take care of running it all for you, or you can use the utilities provided to write an ad-hoc script.
 
 ## Prerequisites
 
 - Either AIMET-Torch or AIMET-ONNX
 - pytest
-- Huggingface transformers and datasets
+- HuggingFace transformers and datasets
+- See `requirements.txt` for full list
 
-## Setting up a YAML config file
+## Quick Start
 
-This is an example config file that tells the framework to: instantiate Llama 3.2, quantize it using regular per-channel
-quantization, and then evaluate the perplexity and TinyMMLU score of the quantized model. Please note that the same
-config files can be used between Torch and ONNX (assuming that the specified quantization technique is available in
-both AIMET-Torch and AIMET-ONNX)
+```bash
+# Set up PYTHONPATH
+source GenAITests/update_pythonpath.sh
+
+# Run with Torch
+pytest -s GenAITests/torch/test_genai.py --config GenAITests/example_config.yaml
+
+# Run with ONNX
+pytest -s GenAITests/onnx/test_genai.py --config GenAITests/example_config.yaml
+```
+
+## Config File Format
+
+Config files use YAML format. Here's a basic example:
 
 ```yaml
 model:
-  name: Llama_32
+  model_id: meta-llama/Llama-3.2-1B-Instruct
   sequence_length: 2048
   context_length: 4096
-dataset:
-  name: Wikitext
-  split: train
 recipe:
   name: PCQ
+  dataset:
+    name: Wikitext
+    split: train
 metrics:
   - name: TinyMMLU
   - name: PPL
 ```
 
-There are four mandatory sections in each config file, as outlined below.
+### Multi-Document Configs
 
-### `model`
-
-This section allows users to specify which model to use. Supported models include but are not limited to Llama 3.2,
-Qwen 2.5, and Phi 3.5. You can specify which model family you would like via the `name` argument as shown above. If you
-would like to know the exact string that should be used, please use the class name as specified in `GenAITests/shared/models`.
-Although each family has a default HuggingFace model ID, you can customize this by specifying the `model_id` field. For
-example, the framework can be instructed to use Llama 3.2 3B instead of Llama 3.2 1B (the default for the Llama 3.2 family)
-as follows:
+A single config file can contain multiple test configurations separated by `---`:
 
 ```yaml
 model:
-  name: Llama_32
-  model_id: meta-llama/Llama-3.2-3B
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  sequence_length: 2048
+  context_length: 4096
+recipe:
+  name: PCQ
+  dataset:
+    name: Wikitext
+    split: train
+metrics:
+  - name: PPL
+---
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  sequence_length: 2048
+  context_length: 4096
+recipe:
+  name: SeqMSE
+  dataset:
+    name: Wikitext
+    split: train
+metrics:
+  - name: PPL
+```
+
+## Config Sections
+
+### `model` (required)
+
+Specifies which model to load and how to configure it.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `model_id` | Yes | HuggingFace model ID (e.g., `meta-llama/Llama-3.2-1B-Instruct`) or local checkpoint path |
+| `sequence_length` | Yes | Number of tokens the model processes in a single inference |
+| `context_length` | Yes | Maximum number of tokens the model can retain |
+| `model_type` | No | HuggingFace model type (auto-detected from `model_id` if not specified) |
+| `adaptations` | No | List of adaptations to apply (see Adaptations section) |
+
+Example with adaptations:
+
+```yaml
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  adaptations:
+    - SHA
   sequence_length: 2048
   context_length: 4096
 ```
 
-Users should also specify sequence length (the number of tokens the model can consume on a single inference), and
-context length (the maximum number of tokens the model can consume and retain context).
+### `recipe` (required)
 
-Please note that the `model` section, along with the `name`, `sequence_length`, and `context_length` fields are mandatory.
+Specifies the quantization technique to apply.
 
-### `dataset`
-
-This section allows users to specify which dataset should be used for applying the specified quantization technique. It
-has two fields: `name` and `split`, which are both mandatory. `name` refers to the class name of the dataset as it is
-implemented in `GenAITests/shared/helpers/datasets.py`. `split` is, as the name suggests, which split of the dataset
-to use.
-
-### `recipe`
-
-This section allows users to specify which quantization technique should be applied to the model. There is only one
-mandatory field here - `name` - although individual quantization techniques may accept different parameters based on
-their implementations. `name` refers to the class name of the desired technique as it is implemented in
-`GenAITests/torch/helpers/quant_recipes.py` or `GenAITests/torch/helpers/quant_recipes.py`. Please also consult these
-files to learn more about what parameters can be controlled via the YAML config file.
-
-For example, a user who wants to run AdaScale using AIMET-Torch could also specify the number of iterations that the
-algorith uses as follows:
+**Simple format:**
 
 ```yaml
 recipe:
-  name: AdaScale
-  num_iterations: 3000
+  name: PCQ
+  dataset:
+    name: Wikitext
+    split: train
 ```
 
-### `metric`
-
-This section allows users to specify which evaluation metrics to run after applying the specified quantization technique.
-Users can specify which metrics they would like to run by adding a list in this section. Each entry in the list only
-has one mandatory field - `name` - referring to the class name of the desired metric as specified in
-`GenAITests/shared/helpers/metrics.py`, although additional parameters can be provided as well.
-
-For example, a user would like to run PPL evaluation and MMLU evaluation can do so as follows:
+**Component format (for advanced recipes):**
 
 ```yaml
-  - name: MMLU
-  - name: PPL
+recipe:
+  backbone:
+    name: AdaScale
+    num_batches: 128
+    num_iterations: 1024
+    dataset:
+      name: Wikitext
+      split: train
 ```
 
-## Starting the framework with a YAML config file
+#### Available Recipes
 
-1. Set up your PYTHONPATH with `bash GenAITests/update_pythonpath.sh`. This only needs to be run once
-2. Invoke the genAI test framework either in Torch or ONNX
-    * Torch: `pytest -s GenAITests/torch/test_genai.py --config <path to config file>`
-    * ONNX: `pytest -s GenAITests/onnx/test_genai.py --config <path to config file>`
+| Recipe | Torch | ONNX | Description |
+|--------|-------|------|-------------|
+| `RemoveQuantization` | Yes | Yes | Remove all quantization (FP baseline) |
+| `Skip` | Yes | Yes | Do nothing (for precomputed encodings) |
+| `PCQ` | Yes | Yes | Per-channel quantization |
+| `LPBQ` | Yes | Yes | Low-precision blockwise quantization |
+| `SeqMSE` | Yes | Yes | Sequential MSE optimization |
+| `LPBQ_SeqMSE` | Yes | Yes | LPBQ + SeqMSE |
+| `AdaScale` | Yes | Yes | AdaScale optimization |
+| `OmniQuant` | Yes | No | OmniQuant optimization |
+| `SpinQuant` | Yes | No | SpinQuant rotation |
+| `SpinQuant_AdaScale` | Yes | No | SpinQuant + AdaScale |
 
+Recipe-specific parameters can be passed directly in the config:
 
-## Writing an ad-hoc script
+```yaml
+recipe:
+  backbone:
+    name: AdaScale
+    num_batches: 20
+    num_iterations: 1500
+    dataset:
+      name: Wikitext
+      split: train
+```
 
-If you would rather have a single script that accomplishes some task using the framework rather than using the YAML config,
-most utilities are designed to be flattened such that all huggingface API calls and AIMET API calls are visible from the
-top level. For an example on how to do this, please consult `GenAITests/torch/example_custom_script.py`
+### `metrics` (required)
 
-## How it all works
+List of evaluation metrics to run after quantization.
 
-Under the hood, inference on Torch and ONNX models is done with the same driver code - contained in
-`GenAITests/shared/models/generator.py`. Essentially, the `Generator` class is used to restore the regular HuggingFace API
-to models with static shape requirements. The framework follows the same set of steps (with minor differences) in both
-Torch and ONNX which are:
-1. Instantiate the model
-    * For Torch models, this just involves pulling the model from HuggingFace and wrapping in an IO class that makes it JIT traceable
-    * For ONNX models, this includes the same steps as Torch plus calling `torch.onnx.export`, loading the model, and wrapping it in a class that mimics Torch model semantics
-2. Instantiate the tokenizer
-3. Instantiate a `QuantizationSimModel` using the loaded model and tokenizer
-4. Create a `Generator` object using the `QuantizationSimModel` and tokenizer
-5. Load and tokenize the user-specified dataset
-6. Apply the user-specified quantization technique (using the `QuantizationSimModel`, `Generator`, and dataset)
-7. Run the user-specified evals (using the `Generator`)
+```yaml
+metrics:
+  - name: PPL
+  - name: TinyMMLU
+  - name: MMLU
+    num_fewshot: 5
+```
+
+#### Available Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `PPL` | Perplexity on Wikitext test set |
+| `TinyMMLU` | TinyMMLU benchmark (fast) |
+| `MMLU` | Full MMLU benchmark (5-shot by default) |
+| `MMLU1000` | First 1000 samples of MMLU |
+| `MMMLU` | Multilingual MMLU |
+| `Interactive` | Interactive chat mode |
+| `Prompts` | Run predefined prompts |
+| `TrickyPrompts` | Model-specific edge case prompts |
+
+### `export` (optional)
+
+Export the quantized model to ONNX format.
+
+```yaml
+export: true  # Export to default artifacts directory
+# or
+export: /path/to/output  # Export to specific directory
+```
+
+### `eval_in_onnx` (optional)
+
+Evaluate the exported ONNX model (requires `export` to be enabled):
+
+```yaml
+export: true
+eval_in_onnx: true
+```
+
+## Adaptations
+
+Adaptations modify how models are loaded or structured. They are applied via the `adaptations` field in the model config.
+
+### Available Adaptations
+
+| Adaptation | Model Types | Description |
+|------------|-------------|-------------|
+| `SHA` | llama, qwen3 | Split-Head Attention - splits projection layers per head |
+| `SHA_Conv` | llama, qwen3 | SHA + replaces Linear layers with Conv2d |
+| `FastExportable` | qwen2_vl | Uses attention masks for cleaner ONNX export |
+| `AIHM` | * (ONNX only) | Load AI Hub Models checkpoints |
+
+### SHA Example
+
+```yaml
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  adaptations:
+    - SHA
+  sequence_length: 2048
+  context_length: 4096
+```
+
+### AIHM Example (ONNX)
+
+```yaml
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  adaptations:
+    - AIHM
+  sequence_length: 2048
+  context_length: 4096
+```
+
+Note: `AIHM` is exclusive and cannot be combined with other adaptations.
+
+## Datasets
+
+Datasets are specified within recipe configurations.
+
+| Dataset | Description |
+|---------|-------------|
+| `Wikitext` | Wikitext-2 dataset |
+| `TinyMMLU` | TinyMMLU benchmark dataset |
+| `MMLU` | Full MMLU dataset |
+| `MMMLU` | Multilingual MMLU dataset |
+
+```yaml
+recipe:
+  name: PCQ
+  dataset:
+    name: Wikitext
+    split: train  # or test
+```
+
+## Supported Models
+
+The framework automatically detects model type from the HuggingFace model ID. Supported model families include:
+
+**LLMs (via default LLM class):**
+- Llama (llama)
+- Qwen3 (qwen3)
+- Phi (phi3)
+- And other HuggingFace transformer models.
+
+Any LLM with standard IO supported by aimet-torch or aimet-onnx should be
+supported by GenAITests out of the box. Note: some techniques and model components may require AIMET updates.
+
+**VLMs (specialized classes):**
+- Qwen2-VL (qwen2_vl)
+- Qwen3-VL (qwen3_vl)
+
+## Running Tests
+
+### Basic Usage
+
+```bash
+# Torch
+pytest -s GenAITests/torch/test_genai.py --config <config.yaml>
+
+# ONNX
+pytest -s GenAITests/onnx/test_genai.py --config <config.yaml>
+```
+
+### Example Configs
+
+See the `configs/` directory for regression test configs and `example_config*.yaml` files for usage examples.
+
+## Writing Custom Scripts
+
+For more control, you can use the framework utilities directly:
+
+```python
+from GenAITests.torch.models import LLM_Torch
+from GenAITests.shared.helpers.datasets import Wikitext
+from GenAITests.shared.helpers.metrics import PPL
+
+# Load model
+model_cls = LLM_Torch
+model = model_cls.instantiate_model("meta-llama/Llama-3.2-1B-Instruct")
+tokenizer = model_cls.get_tokenizer("meta-llama/Llama-3.2-1B-Instruct")
+
+# Create quantsim and generator
+quantsim = model_cls.get_quantsim(model, ...)
+generator = model_cls.get_generator(quantsim.model, tokenizer, ...)
+
+# Run evaluation
+ppl = PPL.evaluate(generator, tokenizer, context_length=4096)
+```
+
+See `GenAITests/torch/example_custom_script.py` for a complete example.
+
+## Architecture
+
+```
+GenAITests/
+├── shared/                    # Shared utilities
+│   ├── helpers/
+│   │   ├── datasets.py       # Dataset implementations
+│   │   ├── metrics.py        # Evaluation metrics
+│   │   ├── yaml_config_parser.py  # Config parsing
+│   │   └── export.py         # Export utilities
+│   └── models/
+│       ├── generator.py      # Generator class for inference
+│       ├── base.py           # Base model class
+│       └── adaptations/      # Model adaptations
+├── torch/                     # PyTorch-specific
+│   ├── models/               # Torch model classes
+│   ├── helpers/
+│   │   └── quant_recipes.py  # Torch quantization recipes
+│   └── test_genai.py         # Test entry point
+├── onnx/                      # ONNX-specific
+│   ├── models/
+│   │   └── adaptations/
+│   │       └── hub_models.py # AIHM adaptation
+│   ├── helpers/
+│   │   └── quant_recipes.py  # ONNX quantization recipes
+│   └── test_genai.py         # Test entry point
+└── configs/                   # Regression test configs
+```
+
+## How It Works
+
+1. **Model Instantiation**: Load the model from HuggingFace, optionally applying adaptations
+2. **Tokenizer Setup**: Load the corresponding tokenizer
+3. **QuantizationSimModel**: Wrap the model for quantization simulation
+4. **Generator**: Create a Generator object for inference with static shapes
+5. **Dataset Loading**: Load and tokenize the calibration dataset
+6. **Recipe Application**: Apply the specified quantization technique
+7. **Evaluation**: Run the specified metrics on the quantized model
+8. **Export** (optional): Export to ONNX format

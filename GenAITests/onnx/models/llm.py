@@ -1,19 +1,16 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Mistral ONNX model class"""
+"""Generic ONNX LLM class"""
 
 import torch
-import onnx
-import os
 from transformers import AutoConfig
 
 from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel
 
-from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
-from GenAITests.shared.models.mistral import Mistral_03
+from GenAITests.shared.models.base import LLM, SimCollection
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
@@ -31,8 +28,10 @@ from GenAITests.onnx.models.utils.quantsim_utils import (
 )
 
 
-@YAMLConfigParser.register_model
-class Mistral_03_ONNX(Mistral_03):
+@YAMLConfigParser.register_default_llm
+class LLM_ONNX(LLM):
+    """Generic LLM for AIMET-ONNX quantization."""
+
     @classmethod
     def instantiate_quantsim(
         cls,
@@ -43,13 +42,21 @@ class Mistral_03_ONNX(Mistral_03):
         kv_bits: int = 8,
         *args,
         **kwargs,
-    ):
-        if model_id is None:
-            model_id = cls.DEFAULT_MODEL_ID
+    ) -> SimCollection:
+        instantiated_model = (
+            cls.instantiate_model(model_id, small_model)
+            if is_huggingface_ckpt(model_id)
+            else None
+        )
+        if isinstance(instantiated_model, str):
+            model_id = instantiated_model
 
-        if is_huggingface_ckpt(model_id):
-            model = cls.instantiate_model(model_id, small_model).to(dtype=torch.float32)
-            exportable_model = ONNXExportableModuleWithCache(model)
+        if instantiated_model is not None and isinstance(
+            instantiated_model, torch.nn.Module
+        ):
+            assert isinstance(instantiated_model, torch.nn.Module)
+            instantiated_model = instantiated_model.to(dtype=torch.float32)
+            exportable_model = ONNXExportableModuleWithCache(instantiated_model)
             onnx_model, *_ = get_onnx_model(
                 checkpoint=get_model_checkpoint_path(model_id),
                 fp_backbone_model=exportable_model,
@@ -59,13 +66,13 @@ class Mistral_03_ONNX(Mistral_03):
                     exportable_model, context_length, sequence_length
                 ),
                 input_names=cls.get_backbone_input_names(
-                    model.config.num_hidden_layers
+                    instantiated_model.config.num_hidden_layers
                 ),
                 output_names=cls.get_backbone_output_names(
-                    model.config.num_hidden_layers
+                    instantiated_model.config.num_hidden_layers
                 ),
             )
-            config = model.config
+            config = instantiated_model.config
         else:
             onnx_model, *_ = load_model_components_from_disk(
                 model_id,
@@ -98,7 +105,7 @@ class Mistral_03_ONNX(Mistral_03):
 
         # Setting kv_cache and some other layers to 8-bit
         _set_tensors_to_output_n_bit_symmmetric(quant_sim, kv_bits)
-        # Setting the LM head weights to 8-bit.
+        # Setting the LM head weights to 8-bit
         _set_lm_head_to_8b(quant_sim)
         # Tie kv_cache
         _tie_quantizers_for_kv_cache(quant_sim)

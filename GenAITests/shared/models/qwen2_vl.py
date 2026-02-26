@@ -235,16 +235,3 @@ def enable_fast_exportable_vision_attention():
         yield
     finally:
         modeling_qwen2_5_vl.Qwen2_5_VLVisionAttention = original
-
-
-class Qwen2_5_VL_FastExportable_Mixin(Qwen_25_VL):
-    """Mixin class to convert instantiated llama model to use fast exportable version"""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    @classmethod
-    def instantiate_model(cls, *args, **kwargs) -> PreTrainedModel:
-        with enable_fast_exportable_vision_attention():
-            model = Qwen_25_VL.instantiate_model(*args, **kwargs)
-        return model

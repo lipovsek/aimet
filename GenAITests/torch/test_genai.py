@@ -9,8 +9,9 @@ import gc
 import os
 import yaml
 from pathlib import Path
+from transformers.processing_utils import ProcessorMixin
 
-from transformers import PreTrainedTokenizer, ProcessorMixin
+from aimet_torch.v2.nn import QuantizationMixin
 
 from GenAITests.shared.models.base import LLM, VLM
 from GenAITests.shared.helpers.profiler import (
@@ -21,13 +22,10 @@ from GenAITests.shared.helpers.profiler import (
 )
 from GenAITests.shared.helpers.determinism import set_seed
 from GenAITests.shared.helpers.metrics import TextEvaluationMetric
-
 from GenAITests.shared.helpers import datasets, metrics
 from GenAITests.torch import models
 from GenAITests.torch.helpers import quant_recipes
-
 from GenAITests.torch.models.utils import place_collection, generator_factory
-from aimet_torch.v2.nn import QuantizationMixin
 
 
 def _extract_recipe_config(recipe_dict):
@@ -69,7 +67,8 @@ def test_llm_quantization(test_parameters):
     model_cls: type[LLM] = model_kwargs.pop("class")
     context_length = model_kwargs.pop("context_length")
     sequence_length = model_kwargs.pop("sequence_length")
-    model_id = model_kwargs.pop("model_id", None)
+    model_id = model_kwargs.pop("model_id")
+    model_type = model_kwargs.pop("model_type")
     precomputed_encodings = model_kwargs.pop("encodings", None)
 
     if "dtype" in model_kwargs:
@@ -122,28 +121,28 @@ def test_llm_quantization(test_parameters):
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     with place_collection(sim_collection, device):
+        # Apply backbone recipe with its own profiler
+        (
+            backbone_recipe_cls,
+            backbone_recipe_kwargs,
+            backbone_dataset_cls,
+            backbone_dataset_kwargs,
+        ) = _extract_recipe_config(all_recipes["backbone"])
+        backbone_train_dataset = (
+            backbone_dataset_cls.load_encoded_dataset(
+                tokenizer.tokenizer
+                if isinstance(tokenizer, ProcessorMixin)
+                else tokenizer,
+                context_length,
+                **backbone_dataset_kwargs,
+            )
+            if backbone_dataset_cls
+            else None
+        )
         with GPUMeter(
             **profiler_kwargs,
             capture_intermediate_data=profiler_capture_intermediate_data,
-        ) as quantization_profiler:
-            # Apply backbone recipe
-            (
-                backbone_recipe_cls,
-                backbone_recipe_kwargs,
-                backbone_dataset_cls,
-                backbone_dataset_kwargs,
-            ) = _extract_recipe_config(all_recipes["backbone"])
-            backbone_train_dataset = (
-                backbone_dataset_cls.load_encoded_dataset(
-                    tokenizer.tokenizer
-                    if isinstance(tokenizer, ProcessorMixin)
-                    else tokenizer,
-                    context_length,
-                    **backbone_dataset_kwargs,
-                )
-                if backbone_dataset_cls
-                else None
-            )
+        ) as backbone_profiler:
             backbone_recipe_cls.apply(
                 sim_collection.backbone,
                 generator,
@@ -151,23 +150,28 @@ def test_llm_quantization(test_parameters):
                 **backbone_recipe_kwargs,
             )
 
-            # Apply visual recipe if specified
-            if "visual" in all_recipes and sim_collection.visual is not None:
-                (
-                    visual_recipe_cls,
-                    visual_recipe_kwargs,
-                    visual_dataset_cls,
-                    visual_dataset_kwargs,
-                ) = _extract_recipe_config(all_recipes["visual"])
-                visual_train_dataset = (
-                    visual_dataset_cls.load_encoded_dataset(
-                        tokenizer,
-                        context_length,
-                        **visual_dataset_kwargs,
-                    )
-                    if visual_dataset_cls
-                    else None
+        # Apply visual recipe if specified, with its own profiler
+        visual_profiler = None
+        if "visual" in all_recipes and sim_collection.visual is not None:
+            (
+                visual_recipe_cls,
+                visual_recipe_kwargs,
+                visual_dataset_cls,
+                visual_dataset_kwargs,
+            ) = _extract_recipe_config(all_recipes["visual"])
+            visual_train_dataset = (
+                visual_dataset_cls.load_encoded_dataset(
+                    tokenizer,
+                    context_length,
+                    **visual_dataset_kwargs,
                 )
+                if visual_dataset_cls
+                else None
+            )
+            with GPUMeter(
+                **profiler_kwargs,
+                capture_intermediate_data=profiler_capture_intermediate_data,
+            ) as visual_profiler:
                 visual_recipe_cls.apply(
                     sim_collection.visual,
                     generator,
@@ -305,37 +309,33 @@ def test_llm_quantization(test_parameters):
     output_folder = Path(os.getcwd()) / "genai_test_artifacts"
     output_folder.mkdir(parents=True, exist_ok=True)
 
-    components = (
-        {
-            "backbone": ComponentRecipeStats(
-                recipe_name=backbone_recipe_cls.__name__,
-                recipe_kwargs=backbone_recipe_kwargs,
-                dataset_name=backbone_dataset_cls.__name__
-                if backbone_dataset_cls
-                else "",
-                dataset_kwargs=backbone_dataset_kwargs,
-            )
-        }
-        | {
+    components = {
+        "backbone": ComponentRecipeStats(
+            recipe_name=backbone_recipe_cls.__name__,
+            recipe_kwargs=backbone_recipe_kwargs,
+            dataset_name=backbone_dataset_cls.__name__ if backbone_dataset_cls else "",
+            dataset_kwargs=backbone_dataset_kwargs,
+            profiler=backbone_profiler,
+        )
+    }
+    if "visual" in all_recipes:
+        components |= {
             "visual": ComponentRecipeStats(
                 recipe_name=visual_recipe_cls.__name__,
                 recipe_kwargs=visual_recipe_kwargs,
                 dataset_name=visual_dataset_cls.__name__ if visual_dataset_cls else "",
                 dataset_kwargs=visual_dataset_kwargs,
+                profiler=visual_profiler,
             )
         }
-        if "visual" in all_recipes
-        else {}
-    )
 
     write_stats_to_disk(
-        output_folder=output_folder,
+        output_folder=str(output_folder),
         filename="profiling_data",
-        model_family=model_cls.__name__,
-        model_id=model_id if model_id is not None else model_cls.DEFAULT_MODEL_ID,
+        model_type=model_type,
+        model_id=model_id,
         model_modifiers=model_kwargs,
         components=components,
-        quantization_results=quantization_profiler,
         accuracy_results=evaluation_results,
         export_location=test_parameters["export"]
         if test_parameters["export"]

@@ -17,7 +17,6 @@ from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.qwen2_vl import (
     Qwen_25_VL,
     Qwen2VLVisualWrapper,
-    Qwen2_5_VL_FastExportable_Mixin,
 )
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
@@ -36,7 +35,7 @@ from GenAITests.onnx.models.utils.quantsim_utils import (
 )
 
 
-@YAMLConfigParser.register_model
+@YAMLConfigParser.register_model("qwen2_5_vl")
 class Qwen_25_VL_ONNX(Qwen_25_VL):
     @classmethod
     def instantiate_quantsim(
@@ -146,8 +145,3 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
             config=config,
             position_id_processor=cls.generate_position_ids,
         )
-
-
-@YAMLConfigParser.register_model
-class Qwen_25_VL_FastExportable_ONNX(Qwen_25_VL_ONNX, Qwen2_5_VL_FastExportable_Mixin):
-    pass

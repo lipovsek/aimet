@@ -22,7 +22,7 @@ from GenAITests.shared.models.qwen3_vl import (
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 
-@YAMLConfigParser.register_model
+@YAMLConfigParser.register_model("qwen3_vl")
 class Qwen_3_VL_Torch(Qwen_3_VL):
     @classmethod
     def instantiate_quantsim(

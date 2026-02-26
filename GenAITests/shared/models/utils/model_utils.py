@@ -3,7 +3,6 @@
 
 """Utils for building GenAI models"""
 
-from abc import abstractmethod
 import torch
 from transformers import PreTrainedModel, DynamicCache
 

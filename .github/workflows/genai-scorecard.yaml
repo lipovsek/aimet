@@ -245,20 +245,13 @@ jobs:
           . .venv/bin/activate
           pip install --upgrade pip wheel setuptools
 
-      # Install all Python dependencies
-      # - onnxruntime-gpu: For GPU inference (version matches AIMET build)
-      # - transformers, tokenizers: For GenAI models
-      - name: Install dependencies
+      # Install AIMET and all Python dependencies together so pip resolver
+      # considers all version constraints at once
+      - name: Install AIMET and dependencies
         run: |
           . .venv/bin/activate
-          pip install onnxruntime-gpu==1.19.2
-          pip install -U "huggingface_hub"
+          pip install qai_hub_models
           pip install -r GenAITests/requirements.txt
-
-      # Install AIMET from the wheel and verify
-      - name: Install AIMET
-        run: |
-          . .venv/bin/activate
           pip install downloads/*.whl
           python -c "import aimet_${{ matrix.variant }}; print('AIMET version:', aimet_${{ matrix.variant }}.__version__)"
 

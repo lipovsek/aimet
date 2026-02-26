@@ -5,25 +5,143 @@
 
 import os
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
+
 import yaml
+from transformers import AutoConfig
+
 from .export import get_test_artifacts_path
+
+
+@dataclass
+class AdaptationInfo:
+    """Metadata about an adaptation."""
+
+    mixin_cls: type
+    exclusive: bool = False  # If True, cannot combine with other adaptations
 
 
 class YAMLConfigParser:
     recipe_lookup: dict = {}
-    model_lookup: dict = {}
+    model_lookup: dict = {}  # {model_type: model_cls} for VLMs and other special models
     dataset_lookup: dict = {}
     metrics_lookup: dict = {}
+    adaptation_lookup: dict = {}  # {(model_type, adaptation_name): AdaptationInfo}
+
+    _default_llm_cls: type = None
+
+    # ========================
+    # Default LLM registration
+    # ========================
 
     @classmethod
-    def register_model(cls, model_cls):
-        model_name = model_cls.__name__
-        if not model_name.endswith("_ONNX") and not model_name.endswith("_Torch"):
-            return
-        model_name = model_name.removesuffix("_ONNX").removesuffix("_Torch")
-        cls.model_lookup[model_name] = model_cls
-        return model_cls
+    def register_default_llm(cls, llm_cls: type):
+        """Register the default LLM class.
+
+        Called by framework-specific modules on import.
+        Fails if a different framework has already registered.
+
+        Usage (in torch/models/llm.py):
+            @YAMLConfigParser.register_default_llm
+            class LLM_Torch(LLM):
+                ...
+
+        Usage (in onnx/models/llm.py):
+            @YAMLConfigParser.register_default_llm
+            class LLM_ONNX(LLM):
+                ...
+        """
+        if cls._default_llm_cls is not None and cls._default_llm_cls is not llm_cls:
+            raise RuntimeError(
+                f"LLM class ({cls._default_llm_cls.__name__}) is already registered. "
+                f"Only one framework can be active at a time."
+            )
+        cls._default_llm_cls = llm_cls
+        return llm_cls
+
+    @classmethod
+    def get_default_llm(cls) -> type:
+        """Get the registered default LLM class."""
+        if cls._default_llm_cls is None:
+            raise RuntimeError(
+                "No default LLM class registered. "
+                "Ensure you import the framework module before parsing configs."
+            )
+        return cls._default_llm_cls
+
+    # ========================
+    # Adaptation registration
+    # ========================
+
+    @classmethod
+    def register_adaptation(
+        cls,
+        adaptation_name: str,
+        model_type: str = "*",
+        *,
+        exclusive: bool = False,
+    ):
+        """Register an adaptation mixin.
+
+        Args:
+            adaptation_name: Name used in config (e.g., "SHA", "AIHM")
+            model_type: HuggingFace model_type this applies to, or "*" for all
+            exclusive: If True, cannot combine with other adaptations
+
+        Usage:
+            @YAMLConfigParser.register_adaptation("SHA", model_type="llama")
+            class LlamaSHAMixin:
+                ...
+
+            @YAMLConfigParser.register_adaptation("AIHM", model_type="*", exclusive=True)
+            class AIHMMixin:
+                ...
+        """
+
+        def decorator(mixin_cls):
+            info = AdaptationInfo(mixin_cls=mixin_cls, exclusive=exclusive)
+            cls.adaptation_lookup[(model_type, adaptation_name)] = info
+            return mixin_cls
+
+        return decorator
+
+    # ========================
+    # Model registration (for VLMs and special models)
+    # ========================
+
+    @classmethod
+    def register_model(cls, model_type: str):
+        """Register a model class by its model_type.
+
+        Used for VLMs and other special models that need custom handling.
+        Regular LLMs use the default LLM class instead.
+
+        Args:
+            model_type: HuggingFace model_type this class handles (e.g., "qwen2_vl")
+
+        Usage:
+            @YAMLConfigParser.register_model("qwen2_vl")
+            class Qwen_25_VL_Torch(VLM):
+                ...
+        """
+
+        def decorator(model_cls):
+            if model_type in cls.model_lookup:
+                existing_cls = cls.model_lookup[model_type]
+                raise RuntimeError(
+                    f"Model type '{model_type}' is already registered by {existing_cls.__name__}. "
+                    f"Cannot register {model_cls.__name__} under the same model_type."
+                )
+            cls.model_lookup[model_type] = model_cls
+            return model_cls
+
+        return decorator
+
+    # ========================
+    # Other registrations
+    # ========================
 
     @classmethod
     def register_recipe(cls, recipe_cls):
@@ -40,9 +158,9 @@ class YAMLConfigParser:
         cls.metrics_lookup[metric_cls.__name__] = metric_cls
         return metric_cls
 
-    @classmethod
-    def get_model(cls, model_name):
-        return cls.model_lookup[model_name]
+    # ========================
+    # Lookups
+    # ========================
 
     @classmethod
     def get_recipe(cls, recipe_name):
@@ -57,9 +175,91 @@ class YAMLConfigParser:
         return cls.metrics_lookup[metrics_name]
 
     @classmethod
+    def detect_model_type(cls, model_id: str) -> str:
+        """Detect model type from HuggingFace model_id or local checkpoint."""
+        try:
+            config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+            return config.model_type
+        except Exception as e:
+            raise ValueError(
+                f"Could not detect model type from '{model_id}'. "
+                f"Ensure the model_id is valid or config.json is present in checkpoint. "
+                f"Error: {e}"
+            )
+
+    # ========================
+    # Adaptation handling
+    # ========================
+
+    @classmethod
+    def _get_adaptation_info(
+        cls, model_type: str, adaptation_name: str
+    ) -> AdaptationInfo:
+        """Find the AdaptationInfo for this model type and adaptation."""
+        # Try model-specific first, then universal
+        if (model_type, adaptation_name) in cls.adaptation_lookup:
+            return cls.adaptation_lookup[(model_type, adaptation_name)]
+        if ("*", adaptation_name) in cls.adaptation_lookup:
+            return cls.adaptation_lookup[("*", adaptation_name)]
+
+        raise LookupError(
+            f"No '{adaptation_name}' adaptation registered for model_type='{model_type}'."
+        )
+
+    @classmethod
+    def _validate_adaptations(cls, model_type: str, adaptations: list[str]):
+        """Validate that the requested adaptations are compatible."""
+        if not adaptations:
+            return
+
+        for name in adaptations:
+            info = cls._get_adaptation_info(model_type, name)
+            if info.exclusive and len(adaptations) > 1:
+                raise ValueError(
+                    f"Adaptation '{name}' is exclusive and cannot be combined with "
+                    f"other adaptations: {[a for a in adaptations if a != name]}"
+                )
+
+    @classmethod
+    def get_model_class(
+        cls,
+        model_type: str,
+        adaptations: Optional[list[str]] = None,
+    ) -> type:
+        """Get the final model class with adaptations applied.
+
+        First checks model_lookup for a registered model (e.g., VLMs),
+        then falls back to the default LLM class.
+        """
+        # Check for registered model first (VLMs, special models)
+        if model_type in cls.model_lookup:
+            base_cls = cls.model_lookup[model_type]
+        else:
+            # Fall back to default LLM
+            base_cls = cls.get_default_llm()
+
+        if not adaptations:
+            return base_cls
+
+        cls._validate_adaptations(model_type, adaptations)
+
+        # Apply each adaptation
+        result_cls = base_cls
+        for adaptation_name in adaptations:
+            info = cls._get_adaptation_info(model_type, adaptation_name)
+            new_name = f"{result_cls.__name__}_{adaptation_name}"
+            result_cls = type(new_name, (info.mixin_cls, result_cls), {})
+
+        return result_cls
+
+    # ========================
+    # Config validation & parsing
+    # ========================
+
+    @classmethod
     def validate_config(cls, doc):
         if "model" not in doc:
-            raise RuntimeError("Model not specified.")
+            raise RuntimeError("Model section not specified.")
         if "recipe" not in doc:
             raise RuntimeError("Recipe not specified.")
         if "metrics" not in doc:
@@ -74,9 +274,8 @@ class YAMLConfigParser:
                 "Multiple recipes cannot be specified in a single document."
             )
 
-        if "name" not in doc["model"]:
-            raise RuntimeError("Model name not specified.")
-
+        if "model_id" not in doc["model"]:
+            raise RuntimeError("Model 'model_id' not specified.")
         if "sequence_length" not in doc["model"]:
             raise RuntimeError("Sequence length not specified.")
         if "context_length" not in doc["model"]:
@@ -116,36 +315,48 @@ class YAMLConfigParser:
         task_params = {}
 
         task_params["export"] = doc.pop("export", False)
-        if not isinstance(task_params["export"], bool):
-            raise ValueError("Export field must be a boolean value.")
+        if not isinstance(task_params["export"], (bool, str)):
+            raise ValueError("Export field must be a boolean or a string path.")
 
         task_params["eval_in_onnx"] = doc.pop("eval_in_onnx", False)
-        if not isinstance(task_params["export"], bool):
-            raise ValueError("Export field must be a boolean value.")
+        if not isinstance(task_params["eval_in_onnx"], bool):
+            raise ValueError("eval_in_onnx field must be a boolean value.")
 
         if task_params["eval_in_onnx"] and not task_params["export"]:
             warnings.warn(
                 "eval_in_onnx is enabled, but export is disabled. Overriding export to True."
             )
-            task_params["export"] = True
 
-        if task_params["export"]:
-            task_params["export"] = get_test_artifacts_path(doc)
+        if task_params["export"] or task_params["eval_in_onnx"]:
+            task_params["export"] = (
+                get_test_artifacts_path(doc)
+                if isinstance(task_params["export"], bool)
+                else task_params["export"]
+            )
             Path(task_params["export"]).mkdir(parents=True, exist_ok=True)
             with open(os.path.join(task_params["export"], "config.yaml"), "w") as file:
                 yaml.dump(doc, file)
 
-        model_name = doc["model"]["name"]
+        # Model setup
+        model_id = doc["model"]["model_id"]
+        adaptations = doc["model"].pop("adaptations", [])
+        model_type = cls.detect_model_type(model_id)
+
         try:
-            model_cls = cls.get_model(model_name)
+            model_cls = cls.get_model_class(model_type, adaptations)
             task_params["model"] = doc.pop("model")
             task_params["model"]["class"] = model_cls
-            del task_params["model"]["name"]
+            task_params["model"]["model_type"] = model_type
+            task_params["model"]["adaptations"] = (
+                adaptations  # Preserve for profiler output
+            )
         except LookupError as exc:
             raise LookupError(
-                f"Specified model name ({model_name}) not found."
+                f"Failed to configure model for model_id='{model_id}', "
+                f"adaptations={adaptations}."
             ) from exc
 
+        # Recipe parsing
         task_params["recipe"] = {}
         for component_name, component_config in doc["recipe"].items():
             recipe_name = component_config["name"]
@@ -173,6 +384,7 @@ class YAMLConfigParser:
                     ) from exc
         del doc["recipe"]
 
+        # Metrics parsing
         metrics = (
             doc["metrics"] if isinstance(doc["metrics"], list) else [doc["metrics"]]
         )

@@ -32,7 +32,7 @@ from GenAITests.onnx.models.utils.quantsim_utils import (
 )
 
 
-@YAMLConfigParser.register_model
+@YAMLConfigParser.register_model("qwen3_vl")
 class Qwen_3_VL_ONNX(Qwen_3_VL):
     @classmethod
     def instantiate_quantsim(

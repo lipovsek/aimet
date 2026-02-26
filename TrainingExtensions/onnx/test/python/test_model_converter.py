@@ -71,14 +71,14 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
     from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
     from GenAITests.onnx.helpers.quant_recipes import _prefill_inputs
     from GenAITests.shared.helpers.datasets import Wikitext
-    from GenAITests.onnx.models.qwen2 import Qwen_25_ONNX
+    from GenAITests.onnx.models.llm import LLM_ONNX
     from transformers import AutoConfig
 
     small_model = True
     context_length = 32
     sequence_length = 16
     model_id = "Qwen/Qwen2.5-0.5B"
-    collection = Qwen_25_ONNX.instantiate_quantsim(
+    collection = LLM_ONNX.instantiate_quantsim(
         "Qwen/Qwen2.5-0.5B", 32, 16, small_model=small_model
     )
     sim = collection.backbone
@@ -86,7 +86,7 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
     if small_model:
         llm_config.num_hidden_layers = 2
     ################ Input for qwen2.5
-    tokenizer = Qwen_25_ONNX.instantiate_tokenizer(model_id)
+    tokenizer = LLM_ONNX.instantiate_tokenizer(model_id)
 
     train_dataset = Wikitext.load_encoded_dataset(tokenizer, context_length, "train")
     quantsim_with_torch_interface = TorchONNXInterface(sim, llm_config)
