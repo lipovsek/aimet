@@ -44,6 +44,11 @@ reestimate_bn_stats(sim.model, data_loader)
 fold_all_batch_norms_to_scale(sim)
 
 # [step_4]
-path = './'
-filename = 'mobilenet'
-sim.export(path=path, filename_prefix=filename, dummy_input=dummy_input.cpu())
+import aimet_torch
+aimet_torch.onnx.export(
+    sim.model,
+    dummy_input,
+    "quantized_mobilenet.onnx",
+    dynamo=False,
+    opset_version=21,
+)

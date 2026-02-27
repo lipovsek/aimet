@@ -109,7 +109,12 @@ sim.compute_encodings(calibration_wrapper, dataloader = train_dataloader, max_it
 
 # [export]
 # Export the model for on-target inference
-path = './'
-filename = 'dummy_model'
-sim.export(path=path, filename_prefix="quantized_" + filename, dummy_input=dummy_input.cpu())
+import aimet_torch
+aimet_torch.onnx.export(
+    sim.model,
+    dummy_input,
+    "quantized_llama.onnx",
+    dynamo=False,
+    opset_version=21,
+)
 # End of [export]

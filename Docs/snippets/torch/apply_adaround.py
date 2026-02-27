@@ -46,4 +46,12 @@ sim.compute_encodings(forward_pass)
 evaluator = evaluator("image-classification")
 accuracy = evaluator.compute(model_or_pipeline=model, data=data, metric="accuracy")
 # [step_4]
-sim.export(path=path, filename_prefix="quantized_" + filename, dummy_input=dummy_input.cpu())
+import os
+import aimet_torch
+aimet_torch.onnx.export(
+    sim.model,
+    dummy_input,
+    os.path.join(path, f"quantized_{filename}.onnx"),
+    dynamo=False,
+    opset_version=21,
+)

@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 # Dataloaders
 from torch.utils.data import DataLoader, random_split
-from torchvision import datasets, transforms
+from torchvision import transforms
 
 BATCH_SIZE = 32
 NUM_CALIBRATION_SAMPLES = 1024
@@ -38,8 +38,8 @@ def get_calibration_and_eval_data_loaders(dataset_path: str, batch_size: int):
         dataset, [.9, 0.1]
     )
 
-    calibration_data_loader = torch.utils.data.DataLoader(calibration_dataset, shuffle=True, batch_size=batch_size)
-    eval_data_loader = torch.utils.data.DataLoader(eval_dataset, shuffle=True, batch_size=batch_size)
+    calibration_data_loader = DataLoader(calibration_dataset, shuffle=True, batch_size=batch_size)
+    eval_data_loader = DataLoader(eval_dataset, shuffle=True, batch_size=batch_size)
     return calibration_data_loader, eval_data_loader
 
 PATH_TO_IMAGENET = './imagenet_dataset'
@@ -110,5 +110,12 @@ with torch.no_grad():
 # Export the model for on-target inference.
 # Export the model which saves pytorch model without any simulation nodes and saves encodings file for both
 # activations and parameters in JSON format at provided path.
-sim.export(path='./', filename_prefix='quantized_mobilenet_v2', dummy_input=dummy_input.cpu())
+import aimet_torch
+aimet_torch.onnx.export(
+    sim.model,
+    dummy_input,
+    "quantized_mobilenet_v2.onnx",
+    dynamo=False,
+    opset_version=21,
+)
 # End of export

@@ -100,5 +100,12 @@ print(f"Quantized accuracy: {accuracy}")
 
 # Export
 # Export the model for on-target inference.
-sim.export(path=".", filename_prefix="quantized_mobilenet_v2", dummy_input=dummy_input.cpu())
+import aimet_torch
+aimet_torch.onnx.export(
+    sim.model,
+    dummy_input,
+    "quantized_mobilenet_v2.onnx",
+    dynamo=False,
+    opset_version=21,
+)
 # End of export
