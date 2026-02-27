@@ -4060,6 +4060,25 @@ class TestEncodingPropagation:
             is not sim.qc_quantize_op_dict["relu_output"]
         )
 
+    def test_propagation_retains_relu_constraints(self):
+        """
+        Given the model:
+
+        [input] -> BatchNorm -> Relu -> [output]
+        """
+        model = models_for_tests.simple_relu_model()
+        with _apply_constraints(True):
+            sim = QuantizationSimModel(model, config_file="htp_v79")
+
+        assert sim.qc_quantize_op_dict["output"]._encoding_min_max_fixed_vals == (
+            0.0,
+            None,
+        )
+        assert sim.qc_quantize_op_dict["input"]._encoding_min_max_fixed_vals == (
+            0.0,
+            None,
+        )
+
     def test_quantsim_skips_unsafe_concat_tie_quantizers_2(self):
         """
         Given the pattern:
