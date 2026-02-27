@@ -27,6 +27,8 @@ description: >
 # - Minimal performance profiling
 profile: nightly
 
+framework: onnx
+
 # ==================== Models to Test ====================
 # Tier-1 models: Most commonly used, highest priority
 # These represent a good cross-section of architectures:
@@ -43,6 +45,19 @@ models:
   - models/mobilenet_v3_large.yaml
   - models/vit.yaml
   - models/swin_tiny.yaml
+  - models/squeezenet1_1.yaml
+  - models/levit.yaml
+  - models/inception_v3.yaml
+  - models/convnext_tiny.yaml
+  - models/regnetx_004.yaml
+  - models/wideresnet50.yaml
+  - models/deeplabv3_plus_mobilenet.yaml
+  - models/yolov5.yaml
+  - models/yolov8_seg.yaml
+  - models/yolov8_det.yaml
+  - models/hrnet_pose.yaml
+  - models/fcn_resnet50.yaml
+  - models/segformer_base.yaml
 
 # ==================== Test Filter ====================
 # Only run these tests from each model

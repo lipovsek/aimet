@@ -11,6 +11,7 @@ profile: weekly
 framework: onnx
 
 models:
+  # Tier-1 (nightly models)
   - models/resnet50.yaml
   - models/mobilenetv2.yaml
   - models/efficientnet_b0.yaml
@@ -18,6 +19,21 @@ models:
   - models/mobilenet_v3_large.yaml
   - models/vit.yaml
   - models/swin_tiny.yaml
+  - models/squeezenet1_1.yaml
+  - models/levit.yaml
+  # Detection & segmentation
+  - models/yolov5.yaml
+  - models/yolov8_seg.yaml
+  - models/yolov8_det.yaml
+  - models/deeplabv3_plus_mobilenet.yaml
+  - models/fcn_resnet50.yaml
+  - models/segformer_base.yaml
+  # Additional architectures
+  - models/inception_v3.yaml
+  - models/convnext_tiny.yaml
+  - models/regnetx_004.yaml
+  - models/wideresnet50.yaml
+  - models/hrnet_pose.yaml
 
 compare_to_baseline: true
 baseline_file: "baselines/weekly-onnx_latest.json"

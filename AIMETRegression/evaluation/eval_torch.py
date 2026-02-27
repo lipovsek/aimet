@@ -152,6 +152,11 @@ def eval_pytorch_model(
                     local_model_inputs = local_model_inputs.to(device)
                     batch_output = model(local_model_inputs)
 
+                # Unwrap single-element tuples (e.g., HuggingFace models
+                # with return_dict=False return (logits,) instead of logits)
+                if isinstance(batch_output, tuple) and len(batch_output) == 1:
+                    batch_output = batch_output[0]
+
                 # --- Addition: Move outputs to CPU for evaluator ---
                 if isinstance(batch_output, torch.Tensor):
                     batch_output = batch_output.cpu()

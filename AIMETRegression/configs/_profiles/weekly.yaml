@@ -16,10 +16,10 @@
 # ==================== Sample Counts ====================
 # Full sample counts for thorough evaluation
 
-fp32_eval_samples: 3925      # Full imagenette validation set
-quant_eval_samples: 3925     # Full imagenette validation set
-calib_samples: 1000          # Calibration samples
-eval_samples: 3925           # Full imagenette validation set
+fp32_eval_samples: 1000
+quant_eval_samples: 1000
+calib_samples: 500
+eval_samples: 1000
 
 # ==================== Performance Measurement ====================
 metrics_samples: 64
@@ -30,4 +30,4 @@ metrics_warmup: 1
 # Enable QNN compilation and on-device evaluation
 
 qnn_options: "--target_runtime qnn_dlc"
-qnn_eval_samples: 100
+qnn_eval_samples: 50

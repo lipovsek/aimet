@@ -20,6 +20,19 @@ models:
   - models/efficientnet_b0.yaml
   - models/densenet121.yaml
   - models/mobilenet_v3_large.yaml
+  - models/vit.yaml
+  - models/swin_tiny.yaml
+  - models/squeezenet1_1.yaml
+  - models/levit.yaml
+  - models/inception_v3.yaml
+  - models/convnext_tiny.yaml
+  - models/regnetx_004.yaml
+  - models/wideresnet50.yaml
+  - models/deeplabv3_plus_mobilenet.yaml
+  - models/yolov8_det.yaml
+  - models/hrnet_pose.yaml
+  - models/fcn_resnet50.yaml
+  - models/segformer_base.yaml
 
 
 compare_to_baseline: true

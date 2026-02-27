@@ -176,6 +176,30 @@ def _register_ignored_modules() -> None:
     except ImportError:
         pass
 
+    try:
+        from torchvision.models.convnext import LayerNorm2d
+
+        QuantizationMixin.ignore(LayerNorm2d)
+        print(f"[QuantSim Torch] Ignoring torchvision LayerNorm2d for quantization")
+    except ImportError:
+        pass
+
+    try:
+        from torchvision.ops.misc import Permute
+
+        QuantizationMixin.ignore(Permute)
+        print(f"[QuantSim Torch] Ignoring torchvision Permute for quantization")
+    except ImportError:
+        pass
+
+    try:
+        from transformers.models.levit.modeling_levit import LevitSubsample
+
+        QuantizationMixin.ignore(LevitSubsample)
+        print(f"[QuantSim Torch] Ignoring LevitSubsample for quantization")
+    except ImportError:
+        pass
+
 
 # ==================== AIMET QuantSim Construction ====================
 

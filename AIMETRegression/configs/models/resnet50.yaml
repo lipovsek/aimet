@@ -82,3 +82,19 @@ tests:
     calib_samples: 256
     eval_samples: 256
     max_accuracy_drop: 1.0
+
+  # --------------------------------------------------------------------------
+  # Test 6: Automatic Mixed-Precision (INT4 + INT8 + FP16)
+  # --------------------------------------------------------------------------
+
+  - name: amp_int4_int8_fp16
+    feature: mixed_precision
+    candidates: int4_int8_fp16
+    enable_sqnr_pruning: true
+    phase1_samples: 64
+    phase2_samples: 256
+    allowed_accuracy_drop: 0.02
+    config_file: htp_v79
+    calib_samples: 256
+    eval_samples: 256
+    max_accuracy_drop: 1.0

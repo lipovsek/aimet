@@ -30,3 +30,12 @@ tests:
     config_file: htp_v79
     max_accuracy_drop_onnx: 1.5
     max_accuracy_drop_torch: 4.0
+
+  - name: quantsim_int8_int16
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int16
+    config_file: htp_v81
+    max_accuracy_drop_onnx: 1.5
+    max_accuracy_drop_torch: 4.0

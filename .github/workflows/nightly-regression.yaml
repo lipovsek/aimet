@@ -123,6 +123,7 @@ jobs:
           uv pip install qai-hub qai-hub-models
           uv pip install onnxruntime-gpu==1.19.2
           uv pip install pynvml pytest requests
+          uv pip install mmpose --no-deps  # Required by hrnet_pose (not in qai-hub-models extras)
 
       - name: Install AIMET
         run: |
@@ -130,6 +131,12 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           uv pip install downloads/*.whl
           python -c "import aimet_onnx; print('AIMET version:', aimet_onnx.__version__)"
+
+      - name: Pin numpy (avoid ml_dtypes segfault with numpy 2.x)
+        run: |
+          . .venv/bin/activate
+          export PATH="$HOME/.local/bin:$PATH"
+          uv pip install "numpy<2"
 
       - name: Verify ONNX Runtime GPU
         run: |
@@ -283,6 +290,7 @@ jobs:
           uv pip install torch==${{ env.VER_TORCH }} torchvision --index-url https://download.pytorch.org/whl/${{ env.VER_CUDA_SHORT }}
           uv pip install qai-hub qai-hub-models
           uv pip install pynvml pytest requests object-detection-metrics
+          uv pip install mmpose --no-deps  # Required by hrnet_pose (not in qai-hub-models extras)
 
       - name: Install AIMET
         run: |

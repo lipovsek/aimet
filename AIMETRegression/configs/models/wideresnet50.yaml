@@ -1,0 +1,28 @@
+model_name: wideresnet50
+qnn_options: null
+
+tests:
+  - name: quantsim_int8
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+
+  - name: adaround_500
+    feature: adaround
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+    adaround_iters: 500
+
+  - name: lite_mp_25
+    feature: lite_mp
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+    lite_mp:
+      percent_flip: 25
+      override_precision: float16

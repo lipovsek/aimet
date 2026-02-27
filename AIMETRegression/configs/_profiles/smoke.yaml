@@ -1,0 +1,29 @@
+# Smoke Profile - PR-Level Validation
+#
+# Purpose: Quick sanity check that AIMET quantization is not broken
+# Target Duration: ~5 minutes
+# When: On every PR
+# Focus: Minimal samples, no QNN, no profiling
+#
+# Philosophy:
+# - Fastest possible feedback
+# - Just verify quantsim runs end-to-end without errors
+# - Reduced sample counts for speed
+
+# NOTE: This file is merged on top of _defaults.yaml
+# Only values that differ from defaults are specified here
+
+# ==================== Minimal Sample Counts ====================
+fp32_eval_samples: 50
+quant_eval_samples: 50
+calib_samples: 25
+eval_samples: 50
+
+# ==================== Minimal Profiling ====================
+metrics_samples: 1
+metrics_runs: 1
+metrics_warmup: 0
+
+# ==================== Disable QNN On-Device Testing ====================
+qnn_options: null
+qnn_eval_samples: 0

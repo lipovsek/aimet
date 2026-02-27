@@ -414,6 +414,24 @@ def run_single_config(
     dataset_name = resolve_dataset_name(model)
     print(f"Dataset: {dataset_name}")
 
+    # Clamp sample counts to dataset size so profiles with large values
+    # (e.g., weekly eval_samples=3925) don't crash on smaller datasets
+    # (e.g., pascal_voc=1449, ade20k=2000).
+    dataset_len = len(_dataset)
+    _SAMPLE_KEYS = [
+        "fp32_eval_samples",
+        "quant_eval_samples",
+        "eval_samples",
+        "calib_samples",
+        "metrics_samples",
+        "qnn_eval_samples",
+    ]
+    for key in _SAMPLE_KEYS:
+        val = int(config.get(key, 0))
+        if val > dataset_len:
+            print(f"[Config] Clamping {key} from {val} to {dataset_len} (dataset size)")
+            config[key] = dataset_len
+
     config["_export_dir"] = str(model_artifacts_dir)
 
     if framework == "onnx":

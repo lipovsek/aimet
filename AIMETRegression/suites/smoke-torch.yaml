@@ -1,0 +1,20 @@
+# Smoke Test Suite - AIMET Torch
+#
+# Lightweight suite for PR-level validation.
+# Runs all models with quantsim_int8 only to verify loading and quantization work.
+
+suite_name: smoke-torch
+
+description: >
+  Torch smoke test — runs quantsim_int8 on all models to verify nothing is broken.
+
+profile: smoke
+
+framework: torch
+
+models:
+  - models/resnet50.yaml
+
+test_filter:
+  - quantsim_int8
+  - quantsim_int8_int16
