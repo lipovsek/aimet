@@ -1236,6 +1236,8 @@ def quantize(
             qmax,
             block_size,
         ).to(output_dtype)
+    except torch.cuda.OutOfMemoryError:
+        raise
     except _NotSupportedError:
         return torch_builtins.quantize(tensor, scale, offset, qmin, qmax, block_size)
     except Exception:  # pylint: disable=broad-except
@@ -1320,6 +1322,8 @@ def quantize_dequantize(
             block_size,
             zero_point_shift,
         ).to(output_dtype)
+    except torch.cuda.OutOfMemoryError:
+        raise
     except _NotSupportedError:
         return torch_builtins.quantize_dequantize(
             tensor,
@@ -1382,6 +1386,8 @@ def dequantize(
 
     try:
         return TritonDequantize.apply(tensor, scale, offset, block_size)
+    except torch.cuda.OutOfMemoryError:
+        raise
     except _NotSupportedError:
         return torch_builtins.dequantize(tensor, scale, offset, block_size)
     except Exception:  # pylint: disable=broad-except
