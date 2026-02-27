@@ -183,7 +183,8 @@ jobs:
             --results "$RESULTS_CSV" \
             --suite-name "$INPUT_SUITE" \
             --baselines-dir "AIMETRegression/baselines" \
-            --github-summary
+            --github-summary \
+            --output-file "AIMETRegression/reports/comparison_summary.json"
 
       - name: Generate lockfile
         if: always()
@@ -220,6 +221,15 @@ jobs:
           path: AIMETRegression/baselines/latest.json
           retention-days: 30
           if-no-files-found: error
+
+      - name: Upload comparison summary
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: onnx-comparison-summary
+          path: AIMETRegression/reports/comparison_summary.json
+          retention-days: 10
+          if-no-files-found: warn
 
       - name: Upload test reports
         if: always()
@@ -353,7 +363,8 @@ jobs:
             --results "$RESULTS_CSV" \
             --suite-name "$INPUT_SUITE" \
             --baselines-dir "AIMETRegression/baselines" \
-            --github-summary
+            --github-summary \
+            --output-file "AIMETRegression/reports/comparison_summary.json"
 
       - name: Generate lockfile
         if: always()
@@ -391,6 +402,15 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Upload comparison summary
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: torch-comparison-summary
+          path: AIMETRegression/reports/comparison_summary.json
+          retention-days: 10
+          if-no-files-found: warn
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v3
@@ -400,44 +420,42 @@ jobs:
           retention-days: 30
 
   #=============================================================================
-  # Summary
+  # Results
   #=============================================================================
-  summary:
-    name: Summary
+  results:
+    name: Results
     needs: [onnx-regression, torch-regression]
     if: always()
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download ONNX comparison summary
+        if: ${{ needs.onnx-regression.result == 'success' }}
+        uses: actions/download-artifact@v3
+        with:
+          name: onnx-comparison-summary
+          path: summaries/onnx
+
+      - name: Download Torch comparison summary
+        if: ${{ needs.torch-regression.result == 'success' }}
+        uses: actions/download-artifact@v3
+        with:
+          name: torch-comparison-summary
+          path: summaries/torch
+
       - name: Generate summary
         run: |
-          echo "## Nightly Regression Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Framework | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
-
-          ONNX_STATUS="${{ needs.onnx-regression.result }}"
-          TORCH_STATUS="${{ needs.torch-regression.result }}"
-
-          if [ "$ONNX_STATUS" = "success" ]; then
-            echo "| ONNX | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
-          elif [ "$ONNX_STATUS" = "skipped" ]; then
-            echo "| ONNX | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| ONNX | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          if [ "$TORCH_STATUS" = "success" ]; then
-            echo "| Torch | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
-          elif [ "$TORCH_STATUS" = "skipped" ]; then
-            echo "| Torch | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| Torch | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Suite:** ${{ github.event.inputs.suite || 'nightly' }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          python3 -m AIMETRegression.workflow.summary \
+            --onnx-status "${{ needs.onnx-regression.result }}" \
+            --torch-status "${{ needs.torch-regression.result }}" \
+            --onnx-summary "summaries/onnx/comparison_summary.json" \
+            --torch-summary "summaries/torch/comparison_summary.json" \
+            --suite "${{ github.event.inputs.suite || 'nightly' }}" \
+            --trigger "${{ github.event_name }}" \
+            >> $GITHUB_STEP_SUMMARY
 
       - name: Set exit status
         run: |

@@ -189,7 +189,8 @@ jobs:
             --results "$RESULTS_CSV" \
             --suite-name "$SUITE" \
             --baselines-dir "AIMETRegression/baselines" \
-            --github-summary
+            --github-summary \
+            --output-file "AIMETRegression/reports/comparison_summary.json"
 
       - name: Generate environment lockfile
         if: always()
@@ -227,6 +228,15 @@ jobs:
           path: AIMETRegression/baselines/latest.json
           retention-days: 30
           if-no-files-found: error
+
+      - name: Upload comparison summary
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: onnx-weekly-comparison-summary
+          path: AIMETRegression/reports/comparison_summary.json
+          retention-days: 10
+          if-no-files-found: warn
 
       - name: Upload test reports
         if: always()
@@ -369,7 +379,8 @@ jobs:
             --results "$RESULTS_CSV" \
             --suite-name "$SUITE" \
             --baselines-dir "AIMETRegression/baselines" \
-            --github-summary
+            --github-summary \
+            --output-file "AIMETRegression/reports/comparison_summary.json"
 
       - name: Generate environment lockfile
         if: always()
@@ -408,6 +419,15 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Upload comparison summary
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: torch-weekly-comparison-summary
+          path: AIMETRegression/reports/comparison_summary.json
+          retention-days: 10
+          if-no-files-found: warn
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v3
@@ -417,22 +437,49 @@ jobs:
           retention-days: 30
 
   #=============================================================================
-  # Summary Job (waits for both ONNX and Torch to complete)
+  # Results
   #=============================================================================
-  summary:
-    name: Weekly Summary
+  results:
+    name: Results
     needs: [onnx-weekly, torch-weekly]
     if: always()
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download ONNX comparison summary
+        if: ${{ needs.onnx-weekly.result == 'success' }}
+        uses: actions/download-artifact@v3
+        with:
+          name: onnx-weekly-comparison-summary
+          path: summaries/onnx
+
+      - name: Download Torch comparison summary
+        if: ${{ needs.torch-weekly.result == 'success' }}
+        uses: actions/download-artifact@v3
+        with:
+          name: torch-weekly-comparison-summary
+          path: summaries/torch
+
       - name: Generate summary
         run: |
-          echo "## 📊 Weekly Regression Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Framework | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| ONNX | ${{ needs.onnx-weekly.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Torch | ${{ needs.torch-weekly.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "See individual job summaries above for detailed results." >> $GITHUB_STEP_SUMMARY
+          python3 -m AIMETRegression.workflow.summary \
+            --onnx-status "${{ needs.onnx-weekly.result }}" \
+            --torch-status "${{ needs.torch-weekly.result }}" \
+            --onnx-summary "summaries/onnx/comparison_summary.json" \
+            --torch-summary "summaries/torch/comparison_summary.json" \
+            --suite "weekly" \
+            --trigger "${{ github.event_name }}" \
+            >> $GITHUB_STEP_SUMMARY
+
+      - name: Set exit status
+        run: |
+          ONNX_STATUS="${{ needs.onnx-weekly.result }}"
+          TORCH_STATUS="${{ needs.torch-weekly.result }}"
+
+          if [ "$ONNX_STATUS" = "failure" ] || [ "$TORCH_STATUS" = "failure" ]; then
+            echo "One or more regression jobs failed"
+            exit 1
+          fi

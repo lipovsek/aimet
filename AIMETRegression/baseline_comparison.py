@@ -925,6 +925,45 @@ class ReportGenerator:
         print("✔ Report written to GitHub step summary")
 
 
+def _write_summary_json(
+    output_path: str,
+    current: Dict[str, "TestResult"],
+    regressions: list,
+    improvements: list,
+    unchanged: list,
+) -> None:
+    """Write a compact JSON summary for the workflow results job."""
+    import json
+
+    passed, warnings, failed, failed_tests = 0, 0, 0, []
+    for key, result in current.items():
+        quality = validate_quantization_quality(result)
+        if quality.is_acceptable:
+            passed += 1
+        else:
+            failed += 1
+            failed_tests.append(f"{result.model}/{result.techniques}")
+
+    regression_tests = [f"{r.model}/{r.techniques}" for r in regressions]
+
+    summary = {
+        "total": len(current),
+        "stable": len(unchanged),
+        "improvements": len(improvements),
+        "regressions": len(regressions),
+        "passed": passed,
+        "warnings": warnings,
+        "failed": failed,
+        "failed_tests": failed_tests,
+        "regression_tests": regression_tests,
+    }
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(summary, indent=2))
+    print(f"✔ Summary JSON written to: {out}")
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -963,6 +1002,13 @@ def main():
         dest="github_summary",
         action="store_true",
         help="Write report to GitHub step summary",
+    )
+
+    parser.add_argument(
+        "--output-file",
+        dest="output_file",
+        default=None,
+        help="Write markdown report to this file (for cross-job sharing)",
     )
 
     args = parser.parse_args()
@@ -1080,6 +1126,15 @@ def main():
             else:
                 print("\n" + markdown)
 
+            if args.output_file:
+                _write_summary_json(
+                    args.output_file,
+                    current,
+                    regressions,
+                    improvements,
+                    unchanged,
+                )
+
             print(f"\n{'=' * 60}")
             print(f"📊 Comparison Summary")
             print(f"{'=' * 60}")
@@ -1112,6 +1167,15 @@ def main():
                 ReportGenerator.write_github_summary(markdown)
             else:
                 print("\n" + markdown)
+
+            if args.output_file:
+                _write_summary_json(
+                    args.output_file,
+                    current,
+                    regressions=[],
+                    improvements=[],
+                    unchanged=[],
+                )
 
             print("\nℹ️  Baseline saved. Next run will compare against this baseline.")
 
