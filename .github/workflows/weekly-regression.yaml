@@ -80,6 +80,7 @@ jobs:
     env:
       CUDA_VISIBLE_DEVICES: "0"
       PYTHONUNBUFFERED: "1"
+      UV_LINK_MODE: "symlink"
 
     steps:
       - name: Checkout code
@@ -256,6 +257,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      UV_LINK_MODE: "symlink"
 
     steps:
       - name: Checkout code

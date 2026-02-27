@@ -32,6 +32,7 @@ runs:
       id: linux_init
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "UV_LINK_MODE=symlink" >> $GITHUB_ENV
 
     - name: Create uv environment (Linux)
       shell: bash
