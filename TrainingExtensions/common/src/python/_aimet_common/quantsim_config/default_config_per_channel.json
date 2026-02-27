@@ -11,7 +11,7 @@
       "is_symmetric": "True"
     },
     "strict_symmetric": "False",
-    "per_channel_quantization": "True"
+    "per_channel_quantization": "False"
   },
 
   "params":
@@ -24,6 +24,26 @@
 
   "op_type":
   {
+    "Conv":
+    {
+      "per_channel_quantization": "True"
+    },
+    "ConvTranspose":
+    {
+      "per_channel_quantization": "True"
+    },
+    "Gemm":
+    {
+      "per_channel_quantization": "True"
+    },
+    "MatMul":
+    {
+      "per_channel_quantization": "True"
+    },
+    "PRelu":
+    {
+      "per_channel_quantization": "True"
+    },
     "BatchNormalization":
     {
       "params": {
@@ -43,10 +63,6 @@
     {
       "is_output_quantized": "False"
     },
-    "LayerNormalization":
-    {
-      "per_channel_quantization": "False"
-    },
     "Shape":
     {
       "is_output_quantized" : "False"
@@ -54,18 +70,6 @@
     "If":
     {
       "is_output_quantized" : "False"
-    },
-    "RNN":
-    {
-      "per_channel_quantization": "False"
-    },
-    "GRU":
-    {
-      "per_channel_quantization": "False"
-    },
-    "LSTM":
-    {
-      "per_channel_quantization": "False"
     }
   },
 

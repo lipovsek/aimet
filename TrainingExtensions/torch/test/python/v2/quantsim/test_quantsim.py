@@ -2766,3 +2766,62 @@ def test_cg_non_catastrophic_failure():
     # MMP
     with pytest.raises(_UnsafeGraphError):
         _ = MixedPrecisionConfigurator(sim)
+
+
+def test_custom_module_no_pcq():
+    """
+    When: Create quantsim with custom modules containing nn.Parameter
+    Then: Parameters of the custom module should NOT be quantized per-channel
+    """
+
+    class Scale(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.scale = torch.nn.Parameter(torch.randint(0, 10, (3, 1)).float())
+
+        def forward(self, x):
+            return x * self.scale
+
+    @QuantizationMixin.implements(Scale)
+    class QuantizedScale(QuantizationMixin, Scale):
+        def forward(self, x):
+            with self._patch_quantized_parameters():
+                return super().forward(x)
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(10, 10)
+            self.scale = Scale()
+            self.conv = torch.nn.Conv2d(10, 3, 1)
+            self.deconv = torch.nn.ConvTranspose2d(3, 10, 1)
+
+        def forward(self, x):
+            x = self.linear(x)
+            x = self.scale(x)
+            x = self.conv(x.unsqueeze(2).unsqueeze(3))
+            x = self.deconv(x)
+            return x.squeeze(3).squeeze(2)
+
+    model = Model()
+    sim = QuantizationSimModel(model, torch.randn(3, 10), config_file="htp_v81")
+    assert (
+        sim.model.scale.param_quantizers["scale"].min.shape
+        == sim.model.scale.param_quantizers["scale"].min.shape
+        == ()
+    )
+    assert (
+        sim.model.linear.param_quantizers["weight"].min.shape
+        == sim.model.linear.param_quantizers["weight"].min.shape
+        == (10, 1)
+    )
+    assert (
+        sim.model.conv.param_quantizers["weight"].min.shape
+        == sim.model.conv.param_quantizers["weight"].min.shape
+        == (3, 1, 1, 1)
+    )
+    assert (
+        sim.model.deconv.param_quantizers["weight"].min.shape
+        == sim.model.deconv.param_quantizers["weight"].min.shape
+        == (1, 10, 1, 1)
+    )

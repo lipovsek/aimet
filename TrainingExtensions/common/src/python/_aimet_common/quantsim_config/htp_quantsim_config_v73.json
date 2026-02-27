@@ -11,7 +11,7 @@
       "is_quantized": "True",
       "is_symmetric": "True"
     },
-    "per_channel_quantization": "True",
+    "per_channel_quantization": "False",
     "strict_symmetric": "False",
     "unsigned_symmetric": "False"
   },
@@ -26,6 +26,26 @@
 
   "op_type":
   {
+    "Conv":
+    {
+      "per_channel_quantization": "True"
+    },
+    "ConvTranspose":
+    {
+      "per_channel_quantization": "True"
+    },
+    "Gemm":
+    {
+      "per_channel_quantization": "True"
+    },
+    "MatMul":
+    {
+      "per_channel_quantization": "True"
+    },
+    "PRelu":
+    {
+      "per_channel_quantization": "True"
+    },
     "Cast":
     {
       "is_output_quantized": "False"
@@ -44,8 +64,7 @@
     },
     "Gather":
     {
-      "is_output_quantized": "False",
-      "per_channel_quantization": "False"
+      "is_output_quantized": "False"
     },
     "Upsample":
     {
@@ -57,7 +76,6 @@
     },
     "GroupNormalization":
     {
-      "per_channel_quantization": "False",
       "params": {
         "bias":
         {
@@ -67,7 +85,6 @@
     },
     "LayerNormalization":
     {
-      "per_channel_quantization": "False",
       "params": {
         "weight": {
           "is_symmetric": "False"
@@ -76,7 +93,6 @@
     },
     "BatchNormalization":
     {
-      "per_channel_quantization": "False",
       "params": {
         "running_mean": {
           "is_quantized": "False"
@@ -88,7 +104,6 @@
     },
     "InstanceNormalization":
     {
-      "per_channel_quantization": "False",
       "params": {
         "weight": {
           "is_symmetric": "False"
@@ -108,7 +123,6 @@
     },
     "RMSNormalization":
     {
-      "per_channel_quantization": "False",
       "params": {
         "weight": {
           "is_symmetric": "False"
@@ -146,18 +160,6 @@
     "If":
     {
       "is_output_quantized" : "False"
-    },
-    "RNN":
-    {
-      "per_channel_quantization": "False"
-    },
-    "GRU":
-    {
-      "per_channel_quantization": "False"
-    },
-    "LSTM":
-    {
-      "per_channel_quantization": "False"
     }
   },
 

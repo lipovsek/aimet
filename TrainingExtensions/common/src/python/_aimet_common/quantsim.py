@@ -372,12 +372,18 @@ def extract_global_quantizer_args(
     :return: A dictionary of quantizer arguments
     """
     quant_args = {}
-    default_dict = quantsim_configurator.quantsim_configs["defaults"]
-    param_dict = default_dict["params"]
-    is_per_channel_quant = (
-        default_dict["per_channel_quantization"]
-        if "per_channel_quantization" in default_dict
-        else False
+    quantsim_config = quantsim_configurator.quantsim_configs
+    param_dict = quantsim_config["defaults"]["params"]
+    is_per_channel_quant = quantsim_config["defaults"].get(
+        "per_channel_quantization", False
+    )
+
+    # Set per_channel_quantization=True if any of the op types have
+    # per_channel_quantization set to True in the config file,
+    # even if the default is False
+    is_per_channel_quant |= any(
+        op_config.get("per_channel_quantization", False)
+        for _, op_config in quantsim_config["op_type"].items()
     )
 
     if (
