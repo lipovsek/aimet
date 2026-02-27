@@ -255,6 +255,10 @@ class BaseQuantizationMixin(abc.ABC):
 
         return stack
 
+    # NOTE: Exclude from torch.compile as there was a bug observed
+    # when trying to compile this function with autocast enabled.
+    # TODO (kyunggeu): Triage this bug and fix it or file issue to PyTorch
+    @torch.compiler.disable
     def _compute_param_encodings(self, overwrite: bool):
         """
         :param bool overwrite: If True, the quantizers that are already initialized will also recompute encodings.

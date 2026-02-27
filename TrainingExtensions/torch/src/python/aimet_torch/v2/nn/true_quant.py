@@ -511,6 +511,10 @@ class _DispatchMixin(metaclass=_DispatchMeta):
 
         return _dequantize_if_applicable(output)
 
+    # NOTE: Exclude from torch.compile as there was a bug observed
+    # when trying to compile this function with autocast enabled.
+    # TODO (kyunggeu): Triage this bug and fix it or file issue to PyTorch
+    @torch.compiler.disable
     def _quantize_if_param(self, args):
         params = {
             param: self.param_quantizers[name]
