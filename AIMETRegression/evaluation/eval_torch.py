@@ -38,6 +38,15 @@ from qai_hub_models.utils.evaluate import (
 from AIMETRegression.features.torch.utils import ensure_device_patch
 
 
+def load_torch_dataset(qai_hub_model: BaseModel, dataset_name: str):
+    """
+    Load a dataset for torch evaluation. Call once and pass the result to
+    eval_pytorch_model(dataset=...) to avoid reloading on every call.
+    """
+    input_spec = qai_hub_model.get_input_spec()
+    return get_dataset_from_name(dataset_name, DatasetSplit.VAL, input_spec)
+
+
 def _torch_io_to_tuple(val) -> tuple[torch.Tensor, ...]:
     """
     Convert torch model I/O of any type to a tuple of tensors.
@@ -56,6 +65,8 @@ def eval_pytorch_model(
     qai_hub_model: BaseModel,
     dataset_name: str,
     num_samples: int = 200,
+    batch_size: int = 32,
+    dataset=None,
 ) -> float:
     """
     Evaluate PyTorch model accuracy on a dataset.
@@ -69,6 +80,11 @@ def eval_pytorch_model(
         qai_hub_model: QAI Hub model instance (BaseModel, provides evaluator and input_spec)
         dataset_name: Name of the dataset (e.g., "imagenet", "coco")
         num_samples: Number of samples to evaluate (default: 200)
+        batch_size: Batch size for inference (default: 32). Higher values
+            amortize CPU↔GPU transfer overhead but use more GPU memory.
+        dataset: Pre-loaded dataset from load_torch_dataset(). If provided,
+            skips dataset loading — avoids redundant disk I/O when this
+            function is called multiple times (calibration, eval, metrics).
 
     Returns:
         Top-1 accuracy as float in range [0, 1]
@@ -96,10 +112,13 @@ def eval_pytorch_model(
     )
 
     # --- From evaluate_on_dataset(): Setup dataloader ---
-    input_spec = qai_hub_model.get_input_spec()
-    source_torch_dataset = get_dataset_from_name(
-        dataset_name, DatasetSplit.VAL, input_spec
-    )
+    if dataset is not None:
+        source_torch_dataset = dataset
+    else:
+        input_spec = qai_hub_model.get_input_spec()
+        source_torch_dataset = get_dataset_from_name(
+            dataset_name, DatasetSplit.VAL, input_spec
+        )
 
     # Validate inputs
     if num_samples < 1 and num_samples != -1:
@@ -112,7 +131,7 @@ def eval_pytorch_model(
     # Create deterministic dataloader (samples_per_job=None means all in one batch)
     dataloader = get_deterministic_sample(source_torch_dataset, num_samples, None)
 
-    print(f"Evaluating on {num_samples} samples.")
+    print(f"Evaluating on {num_samples} samples (batch_size={batch_size}).")
 
     # Get evaluator from qai_hub_model
     evaluator = qai_hub_model.get_evaluator()
@@ -127,7 +146,7 @@ def eval_pytorch_model(
         device = torch.device("cpu")
 
     # --- From evaluate(): Local model evaluation loop ---
-    model_batch_size = 1  # Use batch_size=1 for inference (matches compiled models)
+    model_batch_size = batch_size
 
     with torch.no_grad():
         for sample in dataloader:

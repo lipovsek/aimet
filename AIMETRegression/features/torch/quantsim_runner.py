@@ -16,7 +16,7 @@ from typing import Any, Dict, Tuple
 
 import torch
 
-from AIMETRegression.evaluation.eval_torch import eval_pytorch_model
+from AIMETRegression.evaluation.eval_torch import eval_pytorch_model, load_torch_dataset
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.torch._common import (
     bitwidth_from_token,
@@ -117,6 +117,9 @@ def run_quantsim(
         apply_bn_fold=apply_bn_fold,
     )
 
+    # Load dataset once — reused by calibration, eval, and metrics calls
+    _dataset = load_torch_dataset(model, dataset_name)
+
     print(
         f"[AIMET Torch QuantSim] Calibrating encodings with {calib_samples} samples..."
     )
@@ -130,6 +133,7 @@ def run_quantsim(
                 model,
                 dataset_name,
                 num_samples=args,
+                dataset=_dataset,
             )
 
     sim.model.eval()
@@ -145,6 +149,7 @@ def run_quantsim(
         model,
         dataset_name,
         num_samples=eval_samples,
+        dataset=_dataset,
     )
 
     print(f"[AIMET Torch QuantSim] Quantized accuracy: {feature_acc:.4f}")
@@ -159,6 +164,7 @@ def run_quantsim(
                 model,
                 dataset_name,
                 num_samples=metrics_samples,
+                dataset=_dataset,
             )
 
     runtime_str, memory_str = measure_inference_metrics(

@@ -267,12 +267,8 @@ def _build_single_batch_loader(
         inputs_list.append(x)
 
         if label is not None:
-            if isinstance(label, torch.Tensor):
-                labels_list.append(int(label.flatten()[0].item()))
-            elif isinstance(label, np.ndarray):
-                labels_list.append(int(label.flatten()[0]))
-            else:
-                labels_list.append(int(label))
+            lbl = to_numpy(label).flatten().astype(int)
+            labels_list.extend(lbl.tolist())
 
     if not inputs_list:
         return [(np.empty((0,)), np.empty((0,), dtype=np.int64))]

@@ -86,6 +86,7 @@ jobs:
     env:
       CUDA_VISIBLE_DEVICES: "0"
       PYTHONUNBUFFERED: "1"
+      UV_LINK_MODE: "symlink"
       INPUT_SUITE: ${{ github.event.inputs.suite || 'nightly' }}-onnx
       WORKFLOW_FILE: "nightly-regression.yaml"
 
@@ -252,6 +253,7 @@ jobs:
       INPUT_SUITE: ${{ github.event.inputs.suite || 'nightly' }}-torch
       WORKFLOW_FILE: "nightly-regression.yaml"
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      UV_LINK_MODE: "symlink"
       VER_PYTHON: "3.10"
       VER_TORCH: "2.*"
       VER_CUDA_SHORT: "cu121"

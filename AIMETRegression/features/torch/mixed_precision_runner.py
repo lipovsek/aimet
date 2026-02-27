@@ -39,7 +39,7 @@ from typing import Any, Dict, Tuple
 import torch
 import torch.nn as nn
 
-from AIMETRegression.evaluation.eval_torch import eval_pytorch_model
+from AIMETRegression.evaluation.eval_torch import eval_pytorch_model, load_torch_dataset
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.torch._common import (
     bitwidth_from_token,
@@ -426,6 +426,9 @@ def run_mixed_precision(
         model, dataset_name, calib_samples, batch_size
     )
 
+    # Load dataset once — reused by calibration, eval, and metrics calls
+    _dataset = load_torch_dataset(model, dataset_name)
+
     # ============ Initial Calibration ============
     print(f"[AIMET Torch MP] Calibrating encodings with {calib_samples} samples...")
 
@@ -438,6 +441,7 @@ def run_mixed_precision(
                 model,
                 dataset_name,
                 num_samples=args,
+                dataset=_dataset,
             )
 
     sim.model.eval()
@@ -471,6 +475,7 @@ def run_mixed_precision(
         model,
         dataset_name,
         num_samples=eval_samples,
+        dataset=_dataset,
     )
 
     print(f"[AIMET Torch MP] Mixed-precision accuracy: {feature_acc:.4f}")
@@ -486,6 +491,7 @@ def run_mixed_precision(
                 model,
                 dataset_name,
                 num_samples=metrics_samples,
+                dataset=_dataset,
             )
 
     runtime_str, memory_str = measure_inference_metrics(
