@@ -4064,7 +4064,9 @@ class TestEncodingPropagation:
         """
         Given the model:
 
-        [input] -> BatchNorm -> Relu -> [output]
+        [input] -> Relu -> [output]
+
+        Relu input and output quantizers have matching encoding constraints of (0.0, None)
         """
         model = models_for_tests.simple_relu_model()
         with _apply_constraints(True):
