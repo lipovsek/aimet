@@ -24,6 +24,11 @@ from ..modules import custom
 # NOTE: Disabling due to pylint false alarm in ModuleList
 # pylint: disable=not-callable
 
+# Suppress FutureWarning when accessing nn.NLLLoss2d (deprecated in PyTorch, alias for NLLLoss)
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    _NLLLoss2d = nn.NLLLoss2d
+
 
 class FakeQuantMeta(abc.ABCMeta):
     """Sets :meth:`forward` to :meth:`quantized_forward` if only :meth:`quantized_forward` is defined"""
@@ -293,7 +298,7 @@ _TORCH_NN_UNARY_MODULES = [
     nn.MultiLabelSoftMarginLoss,
     nn.MultiMarginLoss,
     nn.NLLLoss,
-    nn.NLLLoss2d,
+    _NLLLoss2d,
     nn.modules.linear.NonDynamicallyQuantizableLinear,
     nn.PReLU,
     nn.PixelShuffle,
@@ -385,17 +390,21 @@ def _register_global_variable(var_name, obj):
 
 
 # Auto-generate quantized module definitions for regular-patterned modules
-for _module_cls in _TORCH_NN_UNARY_MODULES:
-    _quantized_cls = _FakeQuantizedUnaryOpMixin.wrap(_module_cls)
-    _register_global_variable(_quantized_cls.__name__, _quantized_cls)
+# Suppress FutureWarning emitted by PyTorch e.g. if a layer type is deprecated.
+# Note: This can disable legitimate FutureWarnings thrown by AIMET code for the FakeQuant classes
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    for _module_cls in _TORCH_NN_UNARY_MODULES:
+        _quantized_cls = _FakeQuantizedUnaryOpMixin.wrap(_module_cls)
+        _register_global_variable(_quantized_cls.__name__, _quantized_cls)
 
-for _module_cls in _TORCH_NN_BINARY_MODULES:
-    _quantized_cls = _FakeQuantizedBinaryOpMixin.wrap(_module_cls)
-    _register_global_variable(_quantized_cls.__name__, _quantized_cls)
+    for _module_cls in _TORCH_NN_BINARY_MODULES:
+        _quantized_cls = _FakeQuantizedBinaryOpMixin.wrap(_module_cls)
+        _register_global_variable(_quantized_cls.__name__, _quantized_cls)
 
-for _module_cls in _TORCH_NN_TERNARY_MODULES:
-    _quantized_cls = _FakeQuantizedTernaryOpMixin.wrap(_module_cls)
-    _register_global_variable(_quantized_cls.__name__, _quantized_cls)
+    for _module_cls in _TORCH_NN_TERNARY_MODULES:
+        _quantized_cls = _FakeQuantizedTernaryOpMixin.wrap(_module_cls)
+        _register_global_variable(_quantized_cls.__name__, _quantized_cls)
 
 
 @FakeQuantizationMixin.implements(nn.Embedding)

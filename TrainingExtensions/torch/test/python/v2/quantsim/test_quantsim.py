@@ -2648,6 +2648,37 @@ def test_model_with_constant_concat_inputs():
     assert sim.model.concat.output_quantizers[0] is sim.model.concat.input_quantizers[2]
 
 
+def test_model_without_nll_loss_2d():
+    """
+    When: Model does not contain NLLLoss2d layer
+    Then: QuantizationSimModel should be created without FutureWarning
+    """
+    import warnings
+
+    class ModelWithoutNLLLoss2d(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv2d(3, 5, 3, padding=1)
+            self.log_softmax = torch.nn.LogSoftmax(dim=1)
+            self.loss = torch.nn.Identity()
+
+        def forward(self, x, target):
+            x = self.conv(x)
+            x = self.log_softmax(x)
+            return self.loss(x)
+
+    model = ModelWithoutNLLLoss2d()
+    dummy_input = (torch.randn(1, 3, 8, 8), torch.zeros(1, 8, 8, dtype=torch.long))
+    with warnings.catch_warnings():
+        # Promote NLLLoss2d FutureWarnings to errors so the test fails if suppression regresses
+        warnings.filterwarnings("error", category=FutureWarning)
+        sim = aimet_torch.QuantizationSimModel(
+            model, dummy_input, quant_scheme=QuantScheme.min_max
+        )
+
+    assert isinstance(sim, QuantizationSimModel)
+
+
 def test_reused_conv():
     """
     When: Model contains reused Conv

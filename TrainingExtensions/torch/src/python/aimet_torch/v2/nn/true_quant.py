@@ -1870,10 +1870,16 @@ class QuantizedNLLLoss(_DispatchMixin, QuantizationMixin, nn.NLLLoss):
     __quant_init__ = QuantizationMixin.__unary__
 
 
-@QuantizationMixin.implements(nn.NLLLoss2d)
-class QuantizedNLLLoss2d(_DispatchMixin, QuantizationMixin, nn.NLLLoss2d):
+# # Suppress FutureWarning when accessing nn.NLLLoss2d (deprecated in PyTorch, alias for NLLLoss)
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    _NLLLoss2d = nn.NLLLoss2d
+
+
+@QuantizationMixin.implements(_NLLLoss2d)
+class QuantizedNLLLoss2d(_DispatchMixin, QuantizationMixin, nn.NLLLoss):
     # pylint: disable=missing-class-docstring
-    __doc__ = _generate_docstring(parent_cls=nn.NLLLoss2d)
+    __doc__ = _generate_docstring(parent_cls=nn.NLLLoss)
     _builtin_torch_fn = F.nll_loss
     __quant_init__ = QuantizationMixin.__unary__
 
