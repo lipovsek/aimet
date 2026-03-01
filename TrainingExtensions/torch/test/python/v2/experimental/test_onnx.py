@@ -2395,3 +2395,38 @@ def test_disable_C_jit_pass_onnx_deduplicate_initializers(tmp_path: pathlib.Path
     expected_out = sim.model(x)
     atol = sim.model.linear2.output_quantizers[0].get_scale().item()
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
+
+
+def test_export_creates_directory_if_not_exists(tmp_path):
+    """
+    Given: A quantized model
+    When: Export to a path where the parent directory does not exist
+    Then: The directory should be created automatically and export should succeed
+    """
+    model = torch.nn.Sequential(torch.nn.Linear(10, 10))
+    x = torch.randn(1, 10)
+
+    sim = aimet_torch.QuantizationSimModel(model, x)
+    sim.compute_encodings(lambda model: model(x))
+
+    # Create a nested path where intermediate directories don't exist
+    nested_dir = tmp_path / "nested" / "subdir" / "deep"
+    onnx_path = nested_dir / "model.onnx"
+
+    assert not nested_dir.exists()
+
+    aimet_torch.onnx.export(
+        sim.model,
+        x,
+        onnx_path,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+    )
+
+    assert nested_dir.exists()
+    assert onnx_path.exists()
+
+    # Verify the exported model is valid
+    onnx_model = onnx.load(onnx_path)
+    onnx.checker.check_model(onnx_model)

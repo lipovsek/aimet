@@ -115,6 +115,7 @@ def export(
         )
 
     base_dir = str(Path(str(f)).absolute().parent)
+    Path(base_dir).mkdir(parents=True, exist_ok=True)
 
     _check_opset_version(kwargs)
     _check_unsupported_args(model, force_activation_as, kwargs)
