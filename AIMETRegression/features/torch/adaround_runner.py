@@ -37,6 +37,7 @@ from qai_hub_models.datasets import DatasetSplit, get_dataset_from_name
 from qai_hub_models.utils.evaluate import get_deterministic_sample
 
 from aimet_torch.adaround.adaround_weight import Adaround, AdaroundParameters
+from aimet_torch.batch_norm_fold import fold_all_batch_norms
 from aimet_torch.model_preparer import prepare_model
 
 from AIMETRegression.evaluation.eval_torch import eval_pytorch_model, load_torch_dataset
@@ -165,9 +166,18 @@ def run_adaround(
     print(f"[AdaRound Torch] Creating dummy input...")
     dummy_input = create_dummy_input(input_spec, device)
 
-    print(f"[AdaRound Torch] Preparing model for AIMET...")
-    prepared_model = prepare_model(torch_model).to(device)
-    prepared_model.eval()
+    apply_prepare = config.get("apply_prepare_model", False)
+    if apply_prepare:
+        print(f"[AdaRound Torch] Preparing model for AIMET...")
+        torch_model = prepare_model(torch_model).to(device)
+        torch_model.eval()
+
+    # Fold BN before AdaRound so both AdaRound's internal QuantSim and our
+    # post-AdaRound QuantSim see the same folded module names.
+    print(f"[AdaRound Torch] Folding BatchNorm layers...")
+    fold_all_batch_norms(torch_model, input_shapes=(tuple(dummy_input.shape),))
+
+    prepared_model = torch_model
 
     # ============ Step 2: Create DataLoader for AdaRound ============
     print(f"[AdaRound Torch] Creating dataloader with {adaround_samples} samples...")
@@ -251,6 +261,8 @@ def run_adaround(
     print(f"[AdaRound Torch] Building QuantSim with optimized model...")
 
     # Build QuantSim using the adarounded model
+    # BN already folded before AdaRound — skip here to keep module names
+    # consistent with the saved encodings.
     sim = build_quantsim_torch(
         model=adarounded_model,
         dummy_input=dummy_input,
@@ -259,20 +271,18 @@ def run_adaround(
         default_output_bw=default_output_bw,
         config_file=str(aimet_cfg_file),
         apply_prepare_model=False,
+        apply_bn_fold=False,
         use_cuda=use_cuda,
     )
 
     # ============ Step 6: Load Saved Encodings and Calibrate ============
     print(f"[AdaRound Torch] Loading saved encodings and calibrating...")
 
-    # If we have saved encodings, load them
-    if encodings_file.exists():
-        try:
-            sim.set_and_freeze_param_encodings(str(encodings_file))
-            print(f"[AdaRound Torch] Loaded parameter encodings from: {encodings_file}")
-        except Exception as e:
-            print(f"[AdaRound Torch] Warning: Could not load encodings: {e}")
-            print(f"[AdaRound Torch] Will compute all encodings from scratch")
+    if not encodings_file.exists():
+        raise FileNotFoundError(f"AdaRound encodings not found: {encodings_file}")
+
+    sim.set_and_freeze_param_encodings(str(encodings_file))
+    print(f"[AdaRound Torch] Loaded parameter encodings from: {encodings_file}")
 
     # Load dataset once — reused by calibration, eval, and metrics calls
     _dataset = load_torch_dataset(model, dataset_name)
