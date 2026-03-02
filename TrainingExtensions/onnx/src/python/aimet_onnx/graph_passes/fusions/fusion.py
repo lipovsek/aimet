@@ -6,6 +6,7 @@
 import onnx_ir
 from onnxscript.rewriter import pattern
 from .fusion_registry import FUSION_PASS_REGISTRY, AIMET_SUPERGROUP_DOMAIN
+from . import ir_utils
 
 
 def fuse_supergroups(
@@ -55,17 +56,16 @@ def fuse_supergroups(
 
 
 def _inline_nested_functions(model: onnx_ir.Model):
-    functions_to_unroll = set()
-    for function in model.functions.values():
-        for node in function.graph.all_nodes():
-            if node.domain != AIMET_SUPERGROUP_DOMAIN:
-                continue
-
-            functions_to_unroll.add(model.functions[_get_function_key(node)])
-
-    inliner = onnx_ir.passes.common.InlinePass(lambda func: func in functions_to_unroll)
-    return inliner.call(model)
-
-
-def _get_function_key(node: onnx_ir.Node) -> tuple[str, str, str]:
-    return node.domain, node.op_type, node.overload
+    """Inline supergroup functions that are called inside other supergroups."""
+    # Collect all supergroup functions that are called from another function
+    nested_supergroups = set(
+        node.op_identifier()
+        for func in model.functions.values()
+        for node in func.graph.all_nodes()
+        if node.domain == AIMET_SUPERGROUP_DOMAIN
+    )
+    # Note: To get around name mangling of nested functions by InlinePass, sort functions hierarchically (outermost first)
+    ir_utils._sort_functions_hierarchically(model)  # pylint: disable=protected-access
+    onnx_ir.passes.common.InlinePass(
+        lambda f: f.identifier() in nested_supergroups
+    ).call(model)

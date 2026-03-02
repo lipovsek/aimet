@@ -13,7 +13,8 @@ import onnxruntime
 from aimet_onnx.utils import make_dummy_input, get_node_attribute
 from aimet_onnx import QuantizationSimModel
 
-from aimet_onnx.graph_passes.fusions import fuse_supergroups
+from aimet_onnx.graph_passes.fusions import fuse_supergroups, inline_all_supergroups
+from aimet_onnx.graph_passes.fusions.fusion_registry import AIMET_SUPERGROUP_DOMAIN
 from ..models import models_for_tests
 from ..models.test_models import rmsnorm_model
 
@@ -698,3 +699,100 @@ class TestFusion:
         output_post_fusion = session.run(None, dummy_input)
 
         assert np.allclose(output_pre_fusion[0], output_post_fusion[0], atol=1e-5)
+
+
+class TestInlineAllSupergroups:
+    """Tests for inline_all_supergroups: unfusing supergroup functions back to primitives."""
+
+    @pytest.mark.parametrize(
+        "model_factory",
+        [
+            create_layernorm_model,
+            create_simple_linear_model,
+            lambda p: rmsnorm_model(
+                dim=32,
+                elementwise_affine=True,
+                mul_for_pow=False,
+                mul_rsqrt_pattern="div_sqrt",
+                opset=17,
+            ),
+            lambda p: rmsnorm_model(
+                dim=32,
+                elementwise_affine=False,
+                mul_for_pow=False,
+                mul_rsqrt_pattern="div_sqrt",
+                opset=17,
+            ),
+            lambda path: models_for_tests.single_residual_model().model,
+            lambda path: models_for_tests.squeezenet1_0(path).model,
+            lambda path: models_for_tests.simple_relu_model().model,
+            lambda path: models_for_tests.standalone_layernorm([1, 32, 64]),
+            models_for_tests.llama_rmsnorm_model,
+        ],
+    )
+    def test_fuse_then_inline_restores_original_names(self, tmp_path, model_factory):
+        """Node/value names before fusion match names after fuse -> inline round-trip.
+
+        Constant nodes may be renamed by the onnxscript rewriter during fusion,
+        so those are excluded from the comparison.
+        """
+        fusion_patterns = ["LayerNormalization", "RMSNormalization", "MatmulAdd"]
+        model_proto = model_factory(tmp_path)
+        ir_model = onnx_ir.from_proto(model_proto)
+
+        # Snapshot original names (ignoring constants which may be renamed by the rewriter)
+        orig_node_names = set(
+            node.name
+            for node in ir_model.graph.all_nodes()
+            if not node.op_type == "Constant"
+        )
+        orig_value_names = set(
+            v.name
+            for node in ir_model.graph.all_nodes()
+            if node.op_type != "Constant"
+            for v in node.outputs
+        )
+
+        fuse_supergroups(ir_model, patterns=fusion_patterns)
+        inline_all_supergroups(ir_model)
+
+        # No supergroup functions remain
+        assert not any(
+            func.domain == AIMET_SUPERGROUP_DOMAIN
+            for func in ir_model.functions.values()
+        )
+
+        assert not any(
+            node.domain == AIMET_SUPERGROUP_DOMAIN
+            for node in ir_model.graph.all_nodes()
+        )
+
+        # Original non-Constant names are fully restored
+        final_node_names = [
+            n.name for n in ir_model.graph.all_nodes() if not n.op_type == "Constant"
+        ]
+        final_value_names = [
+            v.name
+            for n in ir_model.graph.all_nodes()
+            if n.op_type != "Constant"
+            for v in n.outputs
+        ]
+
+        assert set(final_node_names) == orig_node_names
+        assert set(final_value_names) == orig_value_names
+        assert len(set(final_node_names)) == len(
+            final_node_names
+        )  # No duplicate node names
+        assert len(set(final_value_names)) == len(
+            final_value_names
+        )  # No duplicate value names
+
+        # Ensure the inlined model produces the same outputs as the original
+        inputs = make_dummy_input(model_proto)
+        expected = onnxruntime.InferenceSession(model_proto.SerializeToString()).run(
+            None, inputs
+        )
+        actual = onnxruntime.InferenceSession(
+            onnx_ir.to_proto(ir_model).SerializeToString()
+        ).run(None, inputs)
+        assert np.allclose(expected[0], actual[0], atol=1e-5)

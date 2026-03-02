@@ -6,6 +6,8 @@
 import onnx_ir
 import numpy as np
 
+from .fusion_registry import AIMET_SUPERGROUP_DOMAIN
+
 
 def get_constant_singleton_value(
     value: onnx_ir.Value | onnx_ir.Attr | None,
@@ -54,3 +56,48 @@ def get_constant_or_attribute_value(
     if isinstance(value, onnx_ir.Attr):
         return np.asarray(value.value)
     raise RuntimeError(f"Received unexpected type for value: {type(value)}")
+
+
+def _sort_functions_hierarchically(model: onnx_ir.Model) -> None:
+    """Sort model functions from outermost to innermost to prevent mangling of names during inlining."""
+    # pylint: disable=protected-access
+    sorted_funcs = {}
+
+    def node_has_impl(node: onnx_ir.Node) -> bool:
+        return (
+            node.domain != AIMET_SUPERGROUP_DOMAIN
+            or node.op_identifier() in sorted_funcs
+        )
+
+    while True:
+        runnable_functions = {
+            fid: func
+            for fid, func in model.functions.items()
+            if fid not in sorted_funcs
+            and all(node_has_impl(n) for n in func.graph.all_nodes())
+        }
+        if not runnable_functions:
+            break
+        sorted_funcs.update(runnable_functions)
+
+    if not sorted_funcs.keys() == model.functions.keys():
+        raise RuntimeError(
+            f"Cycle detected among supergroup functions: {set(model.functions.keys()) - set(sorted_funcs.keys())}"
+        )
+
+    # Reverse ordering to prevent name mangling while unrolling
+    model._functions = dict(reversed(list(sorted_funcs.items())))
+
+
+def inline_all_supergroups(model: onnx_ir.Model) -> None:
+    """Inline all aimet supergroup functions, restoring original node and value names."""
+    supergroup_functions = {
+        func
+        for func in model.functions.values()
+        if func.domain == AIMET_SUPERGROUP_DOMAIN
+    }
+    if not supergroup_functions:
+        return
+
+    _sort_functions_hierarchically(model)
+    onnx_ir.passes.common.InlinePass(lambda f: f in supergroup_functions).call(model)
