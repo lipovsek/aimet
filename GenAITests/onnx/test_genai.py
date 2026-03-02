@@ -20,6 +20,9 @@ from GenAITests.shared.helpers.profiler import (
     write_stats_to_disk,
 )
 from GenAITests.shared.helpers.determinism import set_seed
+from GenAITests.shared.helpers.eval_context import EvaluationContext
+from GenAITests.shared.helpers.fp_cache import DiskBackedFPCache
+from GenAITests.shared.helpers.model_cache import DiskBackedModelCache
 from GenAITests.shared.models.base import LLM, VLM
 from GenAITests.shared.helpers import datasets, metrics
 from GenAITests.onnx import models
@@ -38,13 +41,19 @@ def _extract_recipe_config(recipe_dict):
     return recipe_cls, recipe_kwargs, dataset_cls, dataset_kwargs
 
 
-def test_llm_quantization(test_parameters):
+def test_llm_quantization(
+    test_parameters, model_cache: DiskBackedModelCache, fp_cache: DiskBackedFPCache
+):
     if test_parameters is None:
         pytest.skip("No GenAI test parameters provided.")
     set_seed(42)
 
     print(test_parameters)
     model_kwargs = test_parameters.pop("model")
+
+    # Snapshot model args before destructive pops for the EvaluationContext hash
+    eval_ctx = EvaluationContext(fp_cache=fp_cache, model_args=model_kwargs.copy())
+
     model_cls: type[LLM] = model_kwargs.pop("class")
     context_length = model_kwargs.pop("context_length")
     sequence_length = model_kwargs.pop("sequence_length")
@@ -74,7 +83,11 @@ def test_llm_quantization(test_parameters):
     torch.cuda.empty_cache()
 
     sim_collection = model_cls.instantiate_quantsim(
-        model_id, context_length, sequence_length, **model_kwargs
+        model_id,
+        context_length,
+        sequence_length,
+        model_cache=model_cache,
+        **model_kwargs,
     )
     tokenizer = model_cls.instantiate_tokenizer(model_id)
     generator = generator_factory(
@@ -221,6 +234,7 @@ def test_llm_quantization(test_parameters):
                     if isinstance(tokenizer, ProcessorMixin)
                     else tokenizer,
                     context_length,
+                    eval_ctx=eval_ctx,
                     **metric_kwargs,
                 )
                 print(f"{metric_cls.__name__} result: {result}")

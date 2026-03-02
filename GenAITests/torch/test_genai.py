@@ -21,6 +21,8 @@ from GenAITests.shared.helpers.profiler import (
     write_stats_to_disk,
 )
 from GenAITests.shared.helpers.determinism import set_seed
+from GenAITests.shared.helpers.eval_context import EvaluationContext
+from GenAITests.shared.helpers.fp_cache import DiskBackedFPCache
 from GenAITests.shared.helpers.metrics import TextEvaluationMetric
 from GenAITests.shared.helpers import datasets, metrics
 from GenAITests.torch import models
@@ -57,13 +59,17 @@ def _build_recipe_output_config(recipe_cls, dataset_cls, dataset_kwargs):
     }
 
 
-def test_llm_quantization(test_parameters):
+def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
     if test_parameters is None:
         pytest.skip("No GenAI test parameters provided.")
     set_seed(42)
 
     print(test_parameters)
     model_kwargs = test_parameters.pop("model")
+
+    # Snapshot model args before destructive pops for the EvaluationContext hash
+    eval_ctx = EvaluationContext(fp_cache=fp_cache, model_args=model_kwargs.copy())
+
     model_cls: type[LLM] = model_kwargs.pop("class")
     context_length = model_kwargs.pop("context_length")
     sequence_length = model_kwargs.pop("sequence_length")
@@ -277,16 +283,20 @@ def test_llm_quantization(test_parameters):
         with torch.no_grad():
             for metric_kwargs in metrics:
                 metric_cls = metric_kwargs.pop("class")
+                tokenizer_arg = (
+                    tokenizer.tokenizer
+                    if isinstance(tokenizer, ProcessorMixin)
+                    and issubclass(metric_cls, TextEvaluationMetric)
+                    else tokenizer
+                )
                 with GPUMeter(
                     capture_intermediate_data=False, **profiler_kwargs
                 ) as profiler:
                     result = metric_cls.evaluate(
                         generator,
-                        tokenizer.tokenizer
-                        if isinstance(tokenizer, ProcessorMixin)
-                        and issubclass(metric_cls, TextEvaluationMetric)
-                        else tokenizer,
+                        tokenizer_arg,
                         context_length,
+                        eval_ctx=eval_ctx,
                         **metric_kwargs,
                     )
                     print(f"{metric_cls.__name__} result: {result}")

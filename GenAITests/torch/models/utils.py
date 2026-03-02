@@ -9,6 +9,7 @@ import torch
 
 from aimet_torch.quantsim import QuantizationSimModel
 from aimet_torch.utils import place_model
+from aimet_torch.v2.utils import remove_all_quantizers
 
 from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.models.generator import Generator, VLM_Generator
@@ -36,6 +37,22 @@ def place_collection(models: SimCollection, device: torch.device):
         yield
 
 
+def _build_fp_mode(sim_collection: SimCollection):
+    """Build a context manager factory that temporarily disables all quantizers."""
+
+    @contextlib.contextmanager
+    def fp_mode():
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(remove_all_quantizers(sim_collection.backbone.model))
+            if sim_collection.visual is not None:
+                stack.enter_context(remove_all_quantizers(sim_collection.visual.model))
+            if sim_collection.embedding is not None:
+                stack.enter_context(remove_all_quantizers(sim_collection.embedding))
+            yield
+
+    return fp_mode
+
+
 def generator_factory(
     sim_collection: SimCollection,
     generator_cls: type[Generator],
@@ -45,6 +62,8 @@ def generator_factory(
     visual_output_names=None,
     **model_kwargs,
 ) -> Generator:
+    fp_mode = _build_fp_mode(sim_collection)
+
     if sim_collection.is_vlm():
         assert issubclass(generator_cls, VLM_Generator)
         return generator_cls(
@@ -57,6 +76,7 @@ def generator_factory(
             context_length=context_length,
             config=sim_collection.config,
             visual_output_names=visual_output_names,
+            fp_mode=fp_mode,
             **model_kwargs,
         )
     else:
@@ -65,5 +85,6 @@ def generator_factory(
             tokenizer=tokenizer,
             sequence_length=sequence_length,
             context_length=context_length,
+            fp_mode=fp_mode,
             **model_kwargs,
         )

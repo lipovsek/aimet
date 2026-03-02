@@ -206,3 +206,46 @@ class Qwen3VL_Generator(VLM_Generator):
                 position_ids_slice,
                 (kwargs or {}) | extra_kwargs,
             )
+
+    @classmethod
+    def prepare_inputs(
+        cls,
+        model: torch.nn.Module,
+        input_ids: torch.Tensor | None,
+        attention_mask: torch.Tensor,
+        past_key_values: list[torch.Tensor],
+        sequence_length: int,
+        context_length: int,
+        pad_token: int = 0,
+        attention_mask_min: int = -100,
+        inputs_embeds: torch.FloatTensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        visual_pos_masks: torch.Tensor | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, ...]:
+        if visual_pos_masks is not None:
+            visual_pos_mask_padding_size = sequence_length - visual_pos_masks.shape[1]
+            if visual_pos_mask_padding_size > 0:
+                visual_pos_masks_padding = torch.zeros(
+                    (visual_pos_masks.shape[0], visual_pos_mask_padding_size),
+                    dtype=visual_pos_masks.dtype,
+                    device=visual_pos_masks.device,
+                )
+                visual_pos_masks = torch.cat(
+                    (visual_pos_masks_padding, visual_pos_masks), dim=-1
+                )
+
+        return super().prepare_inputs(
+            model=model,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            sequence_length=sequence_length,
+            context_length=context_length,
+            pad_token=pad_token,
+            attention_mask_min=attention_mask_min,
+            inputs_embeds=inputs_embeds,
+            position_ids=position_ids,
+            visual_pos_masks=visual_pos_masks,
+            **kwargs,
+        )

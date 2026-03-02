@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import typing
 from typing import Union
@@ -95,6 +96,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         context_length: int,
         config: Union[PretrainedConfig | None] = None,
         attention_mask_min: int = -100,
+        fp_mode=None,
         *args,
         **kwargs,
     ):
@@ -107,6 +109,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         self.generation_config = None
         self._config = config
         self.attention_mask_min = attention_mask_min
+        self._fp_mode = fp_mode or contextlib.nullcontext
 
     @staticmethod
     def can_generate() -> bool:
@@ -129,6 +132,14 @@ class Generator(GenerationMixin, torch.nn.Module):
     @property
     def device(self) -> torch.device:
         return self.model.device
+
+    def fp_mode(self):
+        """Return a context manager that temporarily disables all quantizers.
+
+        The concrete implementation is injected at construction time by the
+        framework-specific ``generator_factory``.
+        """
+        return self._fp_mode()
 
     def prepare_inputs_for_generation(
         self,

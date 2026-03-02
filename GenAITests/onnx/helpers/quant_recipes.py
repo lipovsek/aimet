@@ -57,15 +57,13 @@ def _prefill_inputs(
     if num_iterations is not None:
         dataloader = itertools.islice(dataloader, num_iterations)
 
-    with quantsim._remove_quantization_nodes():
-        quantsim._rebuild_session()
+    with generator.fp_mode():
         for sample in tqdm(
             dataloader, total=num_iterations, desc="Pre-filling calibration data"
         ):
             inputs.extend(
                 list(generator.prefill(sample["input_ids"], sample["attention_mask"]))
             )
-    quantsim._rebuild_session()
 
     def convert_torch_inputs_to_numpy(
         inputs: tuple[torch.Tensor, ...],

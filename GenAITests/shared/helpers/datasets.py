@@ -4,7 +4,15 @@
 """Datasets for GenAI testing"""
 
 from abc import ABC, abstractmethod
-from datasets import load_dataset
+import ast
+import re
+
+from datasets import (
+    Dataset as HFDataset,
+    concatenate_datasets,
+    get_dataset_config_names,
+    load_dataset,
+)
 import torch
 from transformers import PreTrainedTokenizer
 
@@ -409,3 +417,125 @@ class MMMLU(Dataset):
                 "Unnamed: 0",
             ],
         )
+
+
+class LazyMMMUDataset(torch.utils.data.Dataset):
+    """Lazy MMMU dataset, to avoid ballooning memory costs once samples are processed."""
+
+    def __init__(self, raw_dataset, processor, context_length):
+        self.raw_dataset = raw_dataset
+        self.processor = processor
+        self.tokenizer = getattr(processor, "tokenizer", processor)
+        self.context_length = context_length
+
+    def __len__(self):
+        return len(self.raw_dataset)
+
+    def __getitem__(self, index):
+        sample = self.raw_dataset[index]
+
+        question = sample["question"]
+        options = (
+            ast.literal_eval(sample["options"])
+            if isinstance(sample["options"], str)
+            else sample["options"]
+        )
+
+        # Collect all images
+        images = [sample.get(f"image_{i}") for i in range(1, 8)]
+
+        # Format answer choices
+        choices_text = "\n".join(
+            f"{chr(65 + i)}. {opt}" for i, opt in enumerate(options)
+        )
+
+        # Build content blocks, splitting on <image N> placeholders
+        content = []
+        parts = re.split(r"(<image \d+>)", question)
+        for part in parts:
+            if re.match(r"<image \d+>", part):
+                content.append({"type": "image"})
+            elif part.strip():
+                content.append({"type": "text", "text": part})
+
+        # If no placeholders were found but images exist, prepend them
+        if not any(c.get("type") == "image" for c in content) and images:
+            for _ in images:
+                content.insert(0, {"type": "image"})
+
+        content.append({"type": "text", "text": f"\n{choices_text}\nAnswer:"})
+
+        # Apply chat template to get the text with image markers
+        messages = [{"role": "user", "content": content}]
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
+        # Use the full processor with images so that image placeholder tokens
+        # are expanded to match the actual image dimensions.
+        inputs = self.processor(
+            text=[text],
+            images=[image for image in images if image is not None],
+            return_tensors="pt",
+        )
+
+        # Truncate text tokens to context_length
+        inputs["input_ids"] = inputs["input_ids"][:, -self.context_length :]
+        inputs["attention_mask"] = inputs["attention_mask"][:, -self.context_length :]
+
+        # Tokenize the answer label
+        tokenized_answer = self.tokenizer(
+            sample["answer"],
+            return_token_type_ids=False,
+            add_special_tokens=False,
+        )
+        inputs["label"] = tokenized_answer["input_ids"]
+
+        return inputs
+
+
+@YAMLConfigParser.register_dataset
+class MMMU(Dataset):
+    """MMMU Dataset."""
+
+    @staticmethod
+    def load_dataset(split: str = "validation"):
+        # Necessary because all the subjects are separate datasets
+        # Some questions are free-response, but we only want to evaluate on multiple-choice
+        configs = get_dataset_config_names("MMMU/MMMU")
+        all_ds = [load_dataset("MMMU/MMMU", config, split=split) for config in configs]
+        combined = concatenate_datasets(all_ds)
+        return combined.filter(lambda x: x["question_type"] == "multiple-choice")
+
+    @classmethod
+    def load_encoded_dataset(cls, processor, context_length, split="validation"):
+        raw_dataset = cls.load_dataset(split)
+        return LazyMMMUDataset(raw_dataset, processor, context_length)
+
+
+@YAMLConfigParser.register_dataset
+class C4(Dataset):
+    """C4 dataset"""
+
+    @staticmethod
+    def load_dataset(split: str = "en", num_samples: int = 2048):
+        stream = load_dataset("allenai/c4", name=split, split="train", streaming=True)
+        return HFDataset.from_list(list(stream.take(num_samples)))
+
+    @classmethod
+    def load_encoded_dataset(
+        cls,
+        tokenizer: PreTrainedTokenizer,
+        context_length: int,
+        split: str = "en",
+        num_samples: int = 2048,
+    ):
+        dataset_split = cls.load_dataset(split, num_samples)
+        join_token = "\n\n" if tokenizer.bos_token is None else tokenizer.bos_token
+        encoded_dataset_split = tokenizer(
+            join_token.join(dataset_split["text"]),
+            return_tensors="pt",
+            add_special_tokens=True,
+        )
+
+        return ChunkedDataset(encoded_dataset_split, context_length)
