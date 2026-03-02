@@ -611,6 +611,7 @@ class TestRMSNormFusion:
         fused_output = session.run(None, dummy_input)[0]
         assert np.allclose(original_output, fused_output)
 
+    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     @pytest.mark.parametrize(
         "model_factory, expected_matches",
         [
