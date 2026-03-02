@@ -85,6 +85,8 @@ class Generator(GenerationMixin, torch.nn.Module):
     the `forward` and `generate` APIs
     """
 
+    _is_stateful = False
+
     def __init__(
         self,
         model,

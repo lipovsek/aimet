@@ -1,5 +1,5 @@
 model:
-  name: Llama_32
+  model_id: meta-llama/Llama-3.2-1B-Instruct
   sequence_length: 2048
   context_length: 4096
 recipe:
@@ -9,7 +9,7 @@ metrics:
   - name: PPL
 ---
 model:
-  name: Llama_32
+  model_id: meta-llama/Llama-3.2-1B-Instruct
   sequence_length: 2048
   context_length: 4096
 recipe:
@@ -22,7 +22,7 @@ metrics:
   - name: PPL
 ---
 model:
-  name: Llama_32
+  model_id: meta-llama/Llama-3.2-1B-Instruct
   sequence_length: 2048
   context_length: 4096
 recipe:
@@ -35,7 +35,7 @@ metrics:
   - name: PPL
 ---
 model:
-  name: Llama_32
+  model_id: meta-llama/Llama-3.2-1B-Instruct
   sequence_length: 2048
   context_length: 4096
 recipe:
