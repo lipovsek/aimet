@@ -147,6 +147,7 @@ jobs:
               PYTEST_ARGS="not cuda"
           fi
           python -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
+
       - name: Run Acceptance tests
         if: inputs.run_acceptance_tests
         run: |
@@ -170,6 +171,13 @@ jobs:
               PYTEST_ARGS="not cuda"
           fi
           python -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
+
+      - name: Clean up build artifacts and fix ownership
+        if: always() && !contains(runner.name, 'k8s-gpu')
+        run: |
+          rm -rf downloads ${{ inputs.env_name }} || true
+          # Fix ownership so runner user can clean up on next run
+          chown -R $(stat -c '%u:%g' $GITHUB_WORKSPACE/..) $GITHUB_WORKSPACE || true
 
   test_on_windows:
     name: Run AIMET unit and acceptance tests on Windows (${{ matrix.arch }})

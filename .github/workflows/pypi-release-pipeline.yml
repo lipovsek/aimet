@@ -93,7 +93,7 @@ jobs:
 
   docker-build-image:
     name: Docker image ${{ matrix.id }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-cpu
     needs: [ variants ]
     strategy:
       fail-fast: false
@@ -209,7 +209,7 @@ jobs:
 
   cleanup:
     needs: [ variants, docker-build-image, call-build-wheels ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-cpu
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}

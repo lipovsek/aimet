@@ -106,7 +106,7 @@ jobs:
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
               {
                  "id":              "torch-cpu",
-                 "runs-on":         "ubuntu-latest",
+                 "runs-on":         "ubuntu-cpu",
                  "VER_PYTHON":      "3.10",
                  "VER_TORCH":       "2.*",
                  "VER_ONNXRUNTIME": "",
@@ -135,7 +135,7 @@ jobs:
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
               {
                  "id":              "onnx-cpu",
-                 "runs-on":         "ubuntu-latest",
+                 "runs-on":         "ubuntu-cpu",
                  "VER_PYTHON":      "3.10",
                  "VER_TORCH":       "",
                  "VER_ONNXRUNTIME": "1.19.2",
@@ -165,7 +165,7 @@ jobs:
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
               {
                  "id":              "onnx-torch-cpu",
-                 "runs-on":         "ubuntu-latest",
+                 "runs-on":         "ubuntu-cpu",
                  "VER_PYTHON":      "3.10",
                  "VER_TORCH":       "2.*",
                  "VER_ONNXRUNTIME": "1.19.2",
@@ -185,7 +185,7 @@ jobs:
 
   docker-build-image:
     name: Docker image ${{ matrix.id }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-cpu
     needs: [ docker-tag, variants, set_vars ]
     strategy:
       fail-fast: false
@@ -240,7 +240,7 @@ jobs:
 
   docker-push-latest:
     needs: [ set_vars, variants, docker-tag, call-unit-acceptance-tests ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-cpu
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
@@ -260,7 +260,7 @@ jobs:
 
   cleanup:
     needs: [ variants, docker-tag, docker-push-latest ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-cpu
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}

@@ -117,6 +117,12 @@ jobs:
           path: wheelhouse/Docs/
           if-no-files-found: error
           retention-days: 30d
+      - name: Clean up build artifacts and fix ownership
+        if: always() && !contains(runner.name, 'k8s-gpu')
+        run: |
+          rm -rf build dist wheelhouse || true
+          # Fix ownership so runner user can clean up on next run
+          chown -R $(stat -c '%u:%g' $GITHUB_WORKSPACE/..) $GITHUB_WORKSPACE || true
 
   build-windows:
     runs-on: [self-hosted, Windows, X64]
