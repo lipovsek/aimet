@@ -184,8 +184,10 @@ jobs:
           git config user.name "AIMET CI"
           git commit -m "Release docs ${tag}" -s
 
-          # TODO: for point-releases, consider adding -f
-          git push public-origin ${{ github.ref_name }}
+          # Force push needed: aimet-pages is checked out at master and the release branch is created
+          # fresh from it, so it diverges from any existing remote branch of the same name.
+          # (Unlike quic/aimet, which is checked out directly on the release branch and fast-forwards.)
+          git push -f public-origin ${{ github.ref_name }}
 
           # Create PR on quic/aimet-pages
           gh pr create --repo ${{ env.DOCS_REPO }} --base master --head ${{ github.ref_name }} --title "Release ${tag}" --body "Release docs for ${tag}"
