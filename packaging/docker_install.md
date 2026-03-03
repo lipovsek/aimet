@@ -176,29 +176,6 @@ docker run -p ${port_id}:${port_id} --rm -it -u $(id -u ${USER}):$(id -g ${USER}
   --entrypoint /bin/bash -w ${WORKSPACE} --hostname ${docker_container_name} ${docker_image_name}
 ```
 
-### Build and launch docker using script
-The development docker may also be built and launched in interactive mode using the provided script as follows:
-
-> **_NOTE:_** Add the '-l' option to use the pre-built docker image.
-
-```
-cd aimet
-./buildntest.sh -e AIMET_VARIANT -i [-l]
-```
-If additional directories need to be mounted, use `-m` option with list of targeted directories separated by space **surrounded by double quotes `""`**
-```
-cd aimet
-./buildntest.sh -e AIMET_VARIANT -i -m "sample_dir_1 sample_dir2" [-l]
-```
-
-To help construct user-specific docker commands, the dry-run option (`-n`) can be used with the above script which prints out the equivalent docker command(s):
-```
-cd aimet
-./buildntest.sh -e AIMET_VARIANT -i -n [-l]
-# OR
-./buildntest.sh -e AIMET_VARIANT -i -n -m "sample_dir_1 sample_dir2" [-l]
-```
-
 # AIMET 2.0
 ## Get the code
 To obtain the code, first define a workspace and follow these instructions:
