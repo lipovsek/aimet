@@ -4,16 +4,23 @@
 AdaScale
 #########
 
+.. note::
+   This feature is currently experimental. The API may change in the future.
+
 Context
 =======
 
-AdaScale is a PTQ technique which improves the accuracy of the quantized model by computing optimal quantization parameters for weights. AdaScale is based on FlexRound: https://arxiv.org/abs/2306.00317 and integrates `Learnable Weight Clipping` from OmniQuant: https://arxiv.org/abs/2308.13137.
+AdaScale is a post-training quantization (PTQ) technique that recovers accuracy lost during INT4
+weight quantization without any fine-tuning. It works by learning optimal per-weight scaling
+parameters through Blockwise Knowledge Distillation (BKD): the quantized output of each transformer
+block is optimized to match its FP32 equivalent until the two converge.
 
-AdaScale introduces trainable parameters (gamma, beta, s2, s3) in the weight quantizers of every supported module and performs BKD (Blockwise Knowledge Distillation) by comparing quantized output of every supported block with its FP32 equivalent.
+AdaScale is based on `FlexRound <https://arxiv.org/abs/2306.00317>`_ and integrates learnable weight
+clipping from `OmniQuant <https://arxiv.org/abs/2308.13137>`_.
 
-From AdaScale perspective, a block is defined as a non-leaf module which takes in one activation input tensor and outputs one activation tensor. AdaScale also requires blocks to be contiguous to perform optimization.
-
-Warning: This feature is currently experimental.
+A *block* is a transformer decoder layer that accepts a single activation tensor as input and
+produces a single activation tensor as output. For all supported model families, decoder layers are
+contiguous by default so no special configuration is required.
 
 Workflow
 ========
@@ -21,18 +28,33 @@ Workflow
 Prerequisites
 -------------
 
-To use AdaScale, you must:
+To use AdaScale, you need:
 
-- Use PyTorch. AdaScale does not support other frameworks yet
-- Load a pre-trained model
-- Create a dataloader for the model
-- Choose a model which has contiguous blocks, and each block taking in one activation input and outputting one activation tensor. Example block: LlamaDecoderLayer in LlamaModel
+- A pre-trained model loaded from HuggingFace. Supported model families:
+  ``Llama``, ``Qwen2``, ``Mistral``, ``Phi3``, ``Qwen3``.
+  PyTorch additionally supports vision-language models: ``Qwen2.5-VL``, ``Qwen3-VL``.
+- **ONNX only**: the model must be exported to ONNX with the input naming convention required by
+  AdaScale — `Step 2`_ handles this.
+
+.. note::
+   For a complete working example including all steps below, see
+   `Examples/torch/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/torch/quantize.py>`_
+   or
+   `Examples/onnx/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/onnx/quantize.py>`_
+   (run with ``--recipe pcq_spinquant_adascale``).
+
+.. _example-script:
 
 Procedure
 ---------
 
-Setup
-~~~~~
+.. _Step 1:
+
+Step 1: Load model
+~~~~~~~~~~~~~~~~~~
+
+Load the HuggingFace model and wrap it with ``ONNXExportableModuleWithCache`` to enable JIT tracing
+with a static graph — required for both the PyTorch and ONNX workflows.
 
 .. tab-set::
     :sync-group: platform
@@ -42,23 +64,25 @@ Setup
 
         .. literalinclude:: ../snippets/torch/apply_adascale.py
             :language: python
-            :start-after: # [setup]
-            :end-before: # End of [setup]
-
-        .. literalinclude:: ../snippets/torch/apply_adascale.py
-            :language: python
-            :start-after: # [prepare-dataloader]
-            :end-before: # End of [prepare-dataloader]
+            :start-after: # [model-setup]
+            :end-before: # End of [model-setup]
 
     .. tab-item:: ONNX
         :sync: onnx
 
-        Not supported.
+        .. literalinclude:: ../snippets/onnx/apply_adascale.py
+            :language: python
+            :start-after: # [model-setup]
+            :end-before: # End of [model-setup]
 
-Step 1
-~~~~~~
+.. _Step 2:
 
-Use AIMET's :ref:`quantization simulation<quantsim-index>` to create a QuantSimModel object.
+Step 2: Create QuantizationSimModel
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Create a :ref:`QuantizationSimModel <quantsim-index>` with the desired quantization configuration.
+For ONNX, this step also exports the model to ONNX first — the ONNX tab includes the
+``torch.onnx.export`` call that produces the correctly named inputs required by AdaScale.
 
 .. tab-set::
     :sync-group: platform
@@ -74,14 +98,50 @@ Use AIMET's :ref:`quantization simulation<quantsim-index>` to create a QuantSimM
     .. tab-item:: ONNX
         :sync: onnx
 
-        Not supported.
+        .. literalinclude:: ../snippets/onnx/apply_adascale.py
+            :language: python
+            :start-after: # [create-sim]
+            :end-before: # End of [create-sim]
 
+Step 3: Apply AdaScale
+~~~~~~~~~~~~~~~~~~~~~~~
 
-Step 2
-~~~~~~
+Apply AdaScale to find optimal weight quantization encodings for each supported block.
 
-Apply AdaScale to decide optimal quantization encodings for parameters of supported layers.
-It is recommended to use a minimum of 1500 iterations when applying AdaScale regardless of the dataloader batch size.
+``_prefill_inputs`` collects the full model inputs (including KV cache tensors) from the calibration
+dataset; AdaScale derives per-block activations internally and uses them for BKD.
+This is the most time-consuming step; expect 2–6 hours depending on model size and iteration count
+(see the timing column in :ref:`Quantization recipes for LLMs <quantization-genai-recipe>`).
+
+``ADASCALE_NUM_BATCHES`` and ``ADASCALE_NUM_ITERATIONS`` trade accuracy against runtime. The values
+below are validated per model size; if your model is not listed, start from the closest row.
+See :ref:`Quantization recipes for LLMs <quantization-genai-recipe>` for full results.
+
+.. list-table::
+   :widths: 35 20 20
+   :header-rows: 1
+
+   * - Model
+     - ``num_batches``
+     - ``num_iterations``
+   * - Qwen/Qwen2.5-0.5B-Instruct
+     - 128
+     - 2048
+   * - meta-llama/Llama-3.2-1B-Instruct
+     - 128
+     - 2048
+   * - Qwen/Qwen2.5-1.5B-Instruct
+     - 128
+     - 1024
+   * - meta-llama/Llama-3.2-3B-Instruct
+     - 128
+     - 1024
+   * - Qwen/Qwen3-4B
+     - 128
+     - 512
+   * - microsoft/Phi-3.5-mini-instruct
+     - 32
+     - 256
 
 .. tab-set::
     :sync-group: platform
@@ -91,18 +151,22 @@ It is recommended to use a minimum of 1500 iterations when applying AdaScale reg
 
         .. literalinclude:: ../snippets/torch/apply_adascale.py
             :language: python
-            :start-after: # [apply-adascale]
-            :end-before: # End of [apply-adascale]
+            :start-after: # [adascale-apply]
+            :end-before: # End of [adascale-apply]
 
     .. tab-item:: ONNX
         :sync: onnx
 
-        Not supported.
+        .. literalinclude:: ../snippets/onnx/apply_adascale.py
+            :language: python
+            :start-after: # [adascale-apply]
+            :end-before: # End of [adascale-apply]
 
-Step 3
-~~~~~~
+Step 4: Compute activation encodings
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Compute encodings for remaining parameters of the model.
+AdaScale optimizes weight encodings only. This step calibrates the remaining activation quantizers
+by running the model through a representative dataset.
 
 .. tab-set::
     :sync-group: platform
@@ -112,52 +176,27 @@ Compute encodings for remaining parameters of the model.
 
         .. literalinclude:: ../snippets/torch/apply_adascale.py
             :language: python
-            :start-after: # [compute_encodings]
-            :end-before: # End of [compute_encodings]
+            :start-after: # [compute-encodings]
+            :end-before: # End of [compute-encodings]
+
     .. tab-item:: ONNX
         :sync: onnx
 
-        Not supported.
-
-Step 4
-~~~~~~
-
-Evaluate the quantized model.
-
-.. tab-set::
-    :sync-group: platform
-
-    .. tab-item:: PyTorch
-        :sync: torch
-
-        .. literalinclude:: ../snippets/torch/apply_adascale.py
+        .. literalinclude:: ../snippets/onnx/apply_adascale.py
             :language: python
-            :start-after: # [evaluation]
-            :end-before: # End of [evaluation]
-    .. tab-item:: ONNX
-        :sync: onnx
+            :start-after: # [compute-encodings]
+            :end-before: # End of [compute-encodings]
 
-        Not supported.
+After completing these steps, export the quantized model:
 
-Step 5
-~~~~~~
+- **PyTorch**: ``quantsim.onnx.export(...)``
+- **ONNX**: ``quantsim.export(...)``
 
-If the resulting quantized accuracy is satisfactory, export the model.
-
-.. tab-set::
-    :sync-group: platform
-
-    .. tab-item:: PyTorch
-        :sync: torch
-
-        .. literalinclude:: ../snippets/torch/apply_adascale.py
-            :language: python
-            :start-after: # [export]
-            :end-before: # End of [export]
-    .. tab-item:: ONNX
-        :sync: onnx
-
-        Not supported.
+See
+`Examples/torch/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/torch/quantize.py>`_
+or
+`Examples/onnx/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/onnx/quantize.py>`_
+for the export invocation.
 
 API
 ===
@@ -170,9 +209,9 @@ API
 
         .. include:: ../apiref/torch/adascale.rst
             :start-after: # start-after
+
     .. tab-item:: ONNX
         :sync: onnx
 
-        Not supported.
-
-
+        .. include:: ../apiref/onnx/adascale.rst
+            :start-after: # start-after
