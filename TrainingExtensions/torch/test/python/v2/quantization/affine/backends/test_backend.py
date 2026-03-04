@@ -1186,3 +1186,28 @@ def test_pgs(
         * pgs_multiplier,
         pgs_x_grad * (is_near_rounding_boundary & is_within_clamping_boundary),
     )
+
+
+def test_compile():
+    """
+    Given: Compiled QuantizeDequantize module
+    When: Run forward
+    Then: Output should preserve the input dtype
+    """
+    # NOTE: This test was added to test aimet-side workaround for a torch.compile bug.
+    # For more information, see https://github.com/pytorch/pytorch/issues/176347
+    qdq = affine.QuantizeDequantize((10,), qmin=-128, qmax=127, symmetric=True)
+    x = torch.randn(10, 10, dtype=torch.bfloat16)
+
+    with torch.no_grad():
+        qdq.min.copy_(-1.0)
+        qdq.max.copy_(1.0)
+
+    compiled_qdq = torch.compile(qdq)
+
+    with torch.no_grad():
+        output = compiled_qdq(x)
+    assert output.dtype == torch.bfloat16
+
+    output = compiled_qdq(x)
+    assert output.dtype == torch.bfloat16

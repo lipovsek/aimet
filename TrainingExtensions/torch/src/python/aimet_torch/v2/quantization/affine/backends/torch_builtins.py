@@ -314,9 +314,6 @@ def _torch_fake_quantize(
         # torch.fake_quantize only supports bfloat16 in >=2.6.0
         tensor_internal_dtype = torch.float32
 
-    if output_dtype == tensor_internal_dtype:
-        output_dtype = None
-
     if tensor_internal_dtype == tensor.dtype:
         tensor_internal_dtype = None
 
@@ -326,13 +323,14 @@ def _torch_fake_quantize(
         tensor = tensor.to(tensor_internal_dtype)
         scale = scale.to(scale_internal_dtype)
         zp = -offset.to(torch.int32)
-        return _call_torch_fake_quantize_per_tensor(
+        output = _call_torch_fake_quantize_per_tensor(
             tensor,
             scale.view(()) if scale.dim() > 0 else scale,
             zp.view(()) if zp.dim() > 0 else zp,
             qmin,
             qmax,
-        ).to(output_dtype)
+        )
+        return output.to(output_dtype if output.dtype != output_dtype else None)
 
     scale_shape = tuple((*(1 for _ in range(tensor.dim() - scale.dim())), *scale.shape))
     if scale_shape != scale.shape:
@@ -358,14 +356,15 @@ def _torch_fake_quantize(
                 tensor = tensor.to(tensor_internal_dtype)
                 scale = scale.to(scale_internal_dtype)
                 zp = -offset.to(torch.int32)
-                return _call_torch_fake_quantize_per_channel(
+                output = _call_torch_fake_quantize_per_channel(
                     tensor,
                     scale.flatten() if scale.dim() > 1 else scale,
                     zp.flatten() if zp.dim() > 1 else zp,
                     axis,
                     qmin,
                     qmax,
-                ).to(output_dtype)
+                )
+                return output.to(output_dtype if output.dtype != output_dtype else None)
             except RuntimeError:
                 # NOTE: torch.fake_quantize_per_channel_affine throws runtime error
                 # if zero_point is not in [qmin, qmax]. In practice, this error will
