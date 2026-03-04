@@ -465,7 +465,7 @@ jobs:
 
       - name: Generate summary
         run: |
-          python3 -m AIMETRegression.workflow.summary \
+          python3 AIMETRegression/workflow/summary.py \
             --onnx-status "${{ needs.onnx-weekly.result }}" \
             --torch-status "${{ needs.torch-weekly.result }}" \
             --onnx-summary "summaries/onnx/comparison_summary.json" \
