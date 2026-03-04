@@ -42,7 +42,10 @@ class Op(_Op):
         module = self.get_module()
 
         if not module:
-            return self.type in ConnectedGraph.math_invariant_types
+            return (
+                self.type == "CG_Split"
+                or self.type in ConnectedGraph.math_invariant_types
+            )
 
         if isinstance(module, QuantizationMixin):
             module = module.get_original_module()

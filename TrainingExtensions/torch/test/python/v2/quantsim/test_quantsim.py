@@ -2856,3 +2856,63 @@ def test_custom_module_no_pcq():
         == sim.model.deconv.param_quantizers["weight"].min.shape
         == (1, 10, 1, 1)
     )
+
+
+def test_cg_split_input_quantizer(tmp_path: pathlib.Path):
+    """
+    Given: Model containing modules that take output of torch.split as input
+
+                       +-> Linear_1 -> ...
+      (input) -> split +
+                       +-> Linear_2 -> ...
+    """
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear1 = nn.Linear(5, 10, bias=False)
+            self.linear2 = nn.Linear(5, 10, bias=False)
+
+        def forward(self, x: torch.Tensor):
+            x1, x2 = torch.split(x, 5, dim=1)
+            return self.linear1(x1), self.linear2(x2)
+
+    """
+    When: Export quantsim to ONNX QDQ
+    Then: Output of split should be properly quantized by input quantizers
+          of the following layers
+
+                       +-> QDQ -> Linear_1 -> ...
+      (input) -> split +
+                       +-> QDQ -> Linear_2 -> ...
+    """
+    model = Model()
+    x = torch.randn(10, 10)
+
+    sim = QuantizationSimModel(model, x)
+    sim.compute_encodings(lambda model: model(x))
+
+    onnx_path = str(tmp_path / "split.onnx")
+    aimet_torch.onnx.export(
+        sim.model,
+        (x,),
+        onnx_path,
+        dynamo=False,
+        input_names=["x"],
+        output_names=["y1", "y2"],
+    )
+
+    model_onnx = onnx.load(onnx_path)
+    onnx.checker.check_model(model_onnx)
+
+    producers: dict[str, onnx.NodeProto] = {
+        output_name: node
+        for node in model_onnx.graph.node
+        for output_name in node.output
+    }
+
+    matmul_nodes = [node for node in model_onnx.graph.node if node.op_type == "MatMul"]
+
+    assert len(matmul_nodes) == 2
+    for matmul in matmul_nodes:
+        assert producers[matmul.input[0]].op_type == "DequantizeLinear"
