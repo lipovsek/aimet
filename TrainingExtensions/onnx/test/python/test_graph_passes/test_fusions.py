@@ -704,6 +704,7 @@ class TestFusion:
 class TestInlineAllSupergroups:
     """Tests for inline_all_supergroups: unfusing supergroup functions back to primitives."""
 
+    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     @pytest.mark.parametrize(
         "model_factory",
         [
