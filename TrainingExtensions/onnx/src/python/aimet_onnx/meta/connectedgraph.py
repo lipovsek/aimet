@@ -321,6 +321,10 @@ def _get_matmul_add_bias_idx(cg_op: Op, model: ModelProto) -> Optional[int]:
     if cg_op.type != "MatMul":
         return None
 
+    # Dynamic MatMul does not get fused with Add
+    if not cg_op.parameters:
+        return None
+
     # Ensure MatMul has exactly one consumer
     consumers = cg_op.outputs[0].consumers
     if len(consumers) != 1:

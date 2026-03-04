@@ -6,6 +6,7 @@ import torch
 from aimet_onnx.quantsim import QuantizationSimModel
 import onnx
 from .utils import tmp_dir
+from .models import models_for_tests
 
 
 class TestDisableSupergroups:
@@ -207,3 +208,13 @@ class TestDisableSupergroups:
         assert sim.qc_quantize_op_dict["output_1"].enabled
         assert sim.qc_quantize_op_dict["/conv2/ConvTranspose_output_0"].enabled
         assert sim.qc_quantize_op_dict["output_2"].enabled
+
+    def test_dynamic_matmul_add(self):
+        """
+        When: Model contains dynamic Matmul + Add pattern
+        Then: Should not treat it as a fused matmul add
+        """
+        model = models_for_tests.matmul_add_with_transpose(dynamic_weight=True)
+        sim = QuantizationSimModel(model, config_file="htp_v79")
+        assert sim.qc_quantize_op_dict["matmul_out"].enabled
+        assert sim.qc_quantize_op_dict["bias"].enabled
