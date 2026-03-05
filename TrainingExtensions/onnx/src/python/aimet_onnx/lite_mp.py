@@ -4,6 +4,9 @@
 import math
 from typing import Dict
 from aimet_onnx import qtype, int16, float16, QuantizationSimModel
+from aimet_onnx.common.utils import AimetLogger
+
+logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
 
 
 def flip_layers_to_higher_precision(
@@ -29,7 +32,14 @@ def flip_layers_to_higher_precision(
     sqnr_list = sqnr_list[: math.ceil(len(sqnr_list) * percent_to_flip / 100)]
     cg_ops = sim.connected_graph.get_all_ops()
 
-    for layer_name, _ in sqnr_list:
+    layer_names_to_override = [layer_name for layer_name, _ in sqnr_list]
+    logger.info(
+        "Overriding the following layers to %s precision: %s",
+        override_precision,
+        layer_names_to_override,
+    )
+
+    for layer_name in layer_names_to_override:
         op = cg_ops[layer_name]
         (
             input_quantizers,
