@@ -6,6 +6,76 @@
 Release notes
 #############
 
+2.26.0
+======
+
+* Bug fixes and Improvements
+    * ONNX
+        * Implement onnxscript RMSNorm fusion for improved graph optimization (`68710d9`_)
+        * Propagate encoding through Concat during ONNX QDQ export (`4811a34`_)
+        * Export scale & offset as initializers instead of Constants in ONNX QDQ export (`ea9a619`_)
+        * Fix AdaScale (aimet-onnx) for Qwen3 models (`beac8f8`_)
+        * Fix BN fold for YOLO models (`bae9953`_)
+
+    * Torch
+        * Support int2 ONNX QDQ export (`5fa79cf`_)
+        * Significantly improve ONNX export performance by eliminating O(N^2) iterations and redundant Q/DQ operations (`695465e`_, `cb1f9ae`_, `abe0ef5`_, `c547cfb`_, `310b43d`_, `fb9629d`_, `d54efa0`_)
+        * Add native support for Qwen3 MoE models (`389d71f`_, `ab6e810`_)
+        * Fix triton kernel bug upon transposed inputs (`a1f6795`_)
+        * Fix GPU memory leak in AdaScale optimization loop (`f52f2e2`_)
+        * Fix AdaScale device error with caching disabled (`964d11f`_)
+        * Work around torch.compile bugs and exclude internal quantization methods from compilation (`b8bcb47`_, `d518f35`_)
+        * Fix tie quantizers removing relu encoding constraint (`3cc7252`_)
+        * Fail immediately without retrying upon torch.cuda.OutOfMemoryError (`4f84eb1`_)
+        * Release blockwise sampler input memory before yielding to reduce memory usage (`ee3d193`_)
+        * Add aimet_torch.v1 end-of-life warning (`8fc52c6`_)
+        * Use whitelist approach for enabling per-channel quantization in quantsim config (`817d3b1`_)
+
+    * Common
+        * Tie concat and interpolation op quantizers by default with safe edge case handling (`5ce7229`_, `5084af3`_)
+        * Implement supergroup unrolling without name mangling (`e351112`_)
+        * Treat CG_split as grid-preserving op (`738ee26`_)
+        * Handle dynamic matmul add in connected graph passes (`3c0de8e`_)
+
+* Documentation
+    * Add AdaScale documentation with HuggingFace LLM example (`c403562`_)
+    * Update doc code examples to use aimet_torch.onnx.export (`fed2a06`_)
+
+.. _68710d9: https://github.com/quic/aimet/commit/68710d9bf6cc0eeaed90b529671f8873a2f6bc56
+.. _5fa79cf: https://github.com/quic/aimet/commit/5fa79cfb394b84a7fc469134efbe322d854b2c3d
+.. _4811a34: https://github.com/quic/aimet/commit/4811a34a20d6aa209bd53178fa2cacdd9e147372
+.. _ea9a619: https://github.com/quic/aimet/commit/ea9a619539382ad9f02e8d097ad7068abd62f58e
+.. _beac8f8: https://github.com/quic/aimet/commit/beac8f80226d57adcad6a5cc7c534afbea707045
+.. _bae9953: https://github.com/quic/aimet/commit/bae99538e0043ffadc36a17cb5757687f8979edc
+.. _695465e: https://github.com/quic/aimet/commit/695465ed29923ecee3ae54a87a29ffd1c884dadb
+.. _cb1f9ae: https://github.com/quic/aimet/commit/cb1f9aee2e5f484c53bc3094a74e5243835c8bc1
+.. _abe0ef5: https://github.com/quic/aimet/commit/abe0ef597d70af7429625d0046c82df9cdef3531
+.. _c547cfb: https://github.com/quic/aimet/commit/c547cfb4d279055349e7a202a65ea692c71ad8a8
+.. _310b43d: https://github.com/quic/aimet/commit/310b43d973a7d06cc63fb632eeebf1c9cbd385d7
+.. _fb9629d: https://github.com/quic/aimet/commit/fb9629df4bdd9ccdd939cd93c78778e24165bce2
+.. _d54efa0: https://github.com/quic/aimet/commit/d54efa030dcd525cdccd3e9ecd3b71a8d5b01cb5
+.. _389d71f: https://github.com/quic/aimet/commit/389d71fc418e213e535e09bc24a413923b933a13
+.. _ab6e810: https://github.com/quic/aimet/commit/ab6e81066ff478d0c086ea401791ce0af8252b03
+.. _a1f6795: https://github.com/quic/aimet/commit/a1f6795daaafff3adca9f134b643be6b76b74a9a
+.. _f52f2e2: https://github.com/quic/aimet/commit/f52f2e247db6cb3da3f77347b8800f0cb5d9fd05
+.. _964d11f: https://github.com/quic/aimet/commit/964d11f2ea8833f7185405cfe7a7722189ed1648
+.. _b8bcb47: https://github.com/quic/aimet/commit/b8bcb4793869bbe1007bcfdd70c822b2f717072f
+.. _d518f35: https://github.com/quic/aimet/commit/d518f35a2873eacdaa941d368c028c403e76ba2d
+.. _3cc7252: https://github.com/quic/aimet/commit/3cc72529f747ab3e4355fe8cee60e92cdbd13c4c
+.. _4f84eb1: https://github.com/quic/aimet/commit/4f84eb1e481d239edeb42d6c724746374dae3d79
+.. _ee3d193: https://github.com/quic/aimet/commit/ee3d1933e80ac37c79cf52b53d5a1528b16987ea
+.. _8fc52c6: https://github.com/quic/aimet/commit/8fc52c6c7c710c1c9989e493b0f6d6936239dd0a
+.. _dfa20ee: https://github.com/quic/aimet/commit/dfa20ee4df195d853adcfff503de0f27a8eb7208
+.. _817d3b1: https://github.com/quic/aimet/commit/817d3b1f8f521750737d974f629d0cf54b29861f
+.. _5ce7229: https://github.com/quic/aimet/commit/5ce72290e2e6614e29fe3c8363695d41cb689430
+.. _5084af3: https://github.com/quic/aimet/commit/5084af38f40e297a0f73240c8ce8f9bad40880a0
+.. _e351112: https://github.com/quic/aimet/commit/e35111218ebad4b907443a0a9fb874df3d1b1dcf
+.. _738ee26: https://github.com/quic/aimet/commit/738ee26272a04d6220bb0342a259a8690dc91e28
+.. _3c0de8e: https://github.com/quic/aimet/commit/3c0de8e575fc159d4b0130def6f813c0d9f255ce
+.. _c403562: https://github.com/quic/aimet/commit/c4035624e65de059e9c11d7e201a1aab7f3b35b8
+.. _fed2a06: https://github.com/quic/aimet/commit/fed2a0600c2f45dc9b1bb31d88fc55133d2d0cd3
+
+
 2.25.1
 ======
 * Bug fixes and Improvements
