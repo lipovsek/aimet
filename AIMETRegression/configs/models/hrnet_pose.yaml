@@ -1,4 +1,5 @@
 model_name: hrnet_pose
+apply_prepare_model: true
 qnn_options: null
 
 tests:

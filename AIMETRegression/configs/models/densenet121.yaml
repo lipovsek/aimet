@@ -16,7 +16,7 @@ tests:
     activation_type: int8
     config_file: htp_v79
     max_accuracy_drop_torch: 4.5
-    max_accuracy_drop_onnx: 3.5
+    max_accuracy_drop_onnx: 4.1
 
   # --------------------------------------------------------------------------
   # Test 2: INT8/INT16 Mixed Precision

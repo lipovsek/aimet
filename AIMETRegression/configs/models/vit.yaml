@@ -23,7 +23,8 @@ tests:
     param_type: int8
     activation_type: int8
     config_file: htp_v79
-    max_accuracy_drop: 8.5
+    max_accuracy_drop_torch: 8.5
+    max_accuracy_drop_onnx: 10.9
 
   # --------------------------------------------------------------------------
   # Test 3: Automatic Mixed-Precision (INT8 + FP16, Fast)

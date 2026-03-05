@@ -67,3 +67,4 @@ tests:
     config_file: htp_v79
     calib_samples: 256
     eval_samples: 256
+    max_accuracy_drop_torch: 7.7

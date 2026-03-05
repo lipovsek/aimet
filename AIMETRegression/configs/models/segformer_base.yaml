@@ -9,6 +9,7 @@ tests:
     param_type: int8
     activation_type: int8
     config_file: htp_v79
+    max_accuracy_drop_torch: 1.2
 
   - name: quantsim_int8_int16
     feature: quantsim

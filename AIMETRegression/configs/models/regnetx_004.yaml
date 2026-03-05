@@ -17,3 +17,4 @@ tests:
     activation_type: int8
     config_file: htp_v79
     adaround_iters: 500
+    max_accuracy_drop_onnx: 1.3
