@@ -5,6 +5,8 @@
 from __future__ import annotations
 from packaging.version import parse
 from typing import Optional, Sequence
+import math
+import functools
 import numpy as np
 import torch
 from aimet_torch.experimental import pgs
@@ -682,56 +684,67 @@ def is_available() -> bool:
 class _NotSupportedError(RuntimeError): ...
 
 
+@functools.lru_cache(maxsize=4096)
 def _get_axes(
-    input: torch.Tensor,
-    scale: torch.Tensor,
-    offset: torch.Tensor,
+    input_shape: tuple[int, ...],
+    scale_shape: tuple[int, ...],
+    offset_shape: tuple[int, ...],
     block_size: Optional[Sequence[int]],
 ):
-    if scale.shape != offset.shape:
+    if scale_shape != offset_shape:
         raise RuntimeError(
             "Scale and offset must have the same shape. "
-            f"Got scale shape {scale.shape} and offset shape {offset.shape}."
+            f"Got scale shape {scale_shape} and offset shape {offset_shape}."
         )
 
     # Pad to match tensor dimensions
-    scale_shape = [
-        *(1 for _ in range(input.dim() - scale.dim())),
-        *scale.shape,
-    ]
+    scale_shape = (
+        *(1 for _ in range(len(input_shape) - len(scale_shape))),
+        *scale_shape,
+    )
 
     if block_size is None:
         block_size = [
             input_dim // scale_dim
-            for input_dim, scale_dim in zip(input.shape, scale_shape)
+            for input_dim, scale_dim in zip(input_shape, scale_shape)
         ]
 
     # Pad to match tensor dimensions
     block_size = [
-        *(1 for _ in range(input.dim() - len(block_size))),
+        *(1 for _ in range(len(input_shape) - len(block_size))),
         *block_size,
     ]
 
     # Concretize wildcard block size (-1)
     block_size = [
         input_dim // scale_dim if B == -1 else B
-        for input_dim, scale_dim, B in zip(input.shape, scale_shape, block_size)
+        for input_dim, scale_dim, B in zip(input_shape, scale_shape, block_size)
     ]
 
     block_axes = [
-        axis for axis, (dim, B) in enumerate(zip(input.shape, block_size)) if dim != B
+        axis for axis, (dim, B) in enumerate(zip(input_shape, block_size)) if dim != B
     ]
 
+    I = J = K = BLK_SIZE_J = BLK_SIZE_K = None
+
     if len(block_axes) == 0:
-        return None, None, block_size
+        return None, None, block_size, I, J, K, BLK_SIZE_J, BLK_SIZE_K
 
     if len(block_axes) == 1:
-        (axis,) = block_axes
-        return axis, None, block_size
+        (channel_axis,) = block_axes
+        I = int(np.prod(input_shape[:channel_axis]))
+        J = input_shape[channel_axis]
+        K = int(np.prod(input_shape[channel_axis + 1 :]))
+        return channel_axis, None, block_size, I, J, K, BLK_SIZE_J, BLK_SIZE_K
 
     if len(block_axes) == 2:
-        axis_0, axis_1 = block_axes
-        return axis_0, axis_1, block_size
+        blk_axis_0, blk_axis_1 = block_axes
+        I = int(np.prod(input_shape[:blk_axis_0]))
+        J = int(np.prod(input_shape[blk_axis_0:blk_axis_1]))
+        K = int(np.prod(input_shape[blk_axis_1:]))
+        BLK_SIZE_J = int(np.prod(block_size[blk_axis_0:blk_axis_1]))
+        BLK_SIZE_K = int(np.prod(block_size[blk_axis_1:]))
+        return blk_axis_0, blk_axis_1, block_size, I, J, K, BLK_SIZE_J, BLK_SIZE_K
 
     raise _NotSupportedError(
         "Triton quantization with more than 2 block dimensions is not supported"
@@ -749,13 +762,15 @@ class TritonQuantize(torch.autograd.Function):
         qmax: int,
         block_size: Optional[Sequence[int]],
     ):
-        axis_0, axis_1, block_size = _get_axes(tensor, scale, offset, block_size)
+        axis_0, axis_1, block_size, I, J, K, BLK_SIZE_J, BLK_SIZE_K = _get_axes(
+            tensor.shape, scale.shape, offset.shape, block_size
+        )
 
         output = torch.empty_like(
             tensor, memory_format=torch.contiguous_format, layout=torch.strided
         )
         COMPUTE_BLOCK_SIZE = 1024
-        NUM_COMPUTE_BLOCKS = tensor.numel() // COMPUTE_BLOCK_SIZE + 1
+        NUM_COMPUTE_BLOCKS = max(math.ceil(tensor.numel() / COMPUTE_BLOCK_SIZE), 1)
 
         if axis_0 is None:
             quantize_per_tensor[(NUM_COMPUTE_BLOCKS,)](
@@ -769,11 +784,6 @@ class TritonQuantize(torch.autograd.Function):
                 COMPUTE_BLOCK_SIZE,
             )
         elif block_size[axis_0] == 1 and axis_1 is None:
-            channel_axis = axis_0
-            I = int(np.prod(tensor.shape[:channel_axis]))
-            J = tensor.shape[channel_axis]
-            K = int(np.prod(tensor.shape[channel_axis + 1 :]))
-
             quantize_per_channel[(NUM_COMPUTE_BLOCKS,)](
                 tensor.contiguous(),
                 scale.contiguous(),
@@ -787,14 +797,6 @@ class TritonQuantize(torch.autograd.Function):
                 COMPUTE_BLOCK_SIZE,
             )
         elif axis_0 is not None and axis_1 is not None:
-            blk_axis_0 = axis_0
-            blk_axis_1 = axis_1
-            I = int(np.prod(tensor.shape[:blk_axis_0]))
-            J = int(np.prod(tensor.shape[blk_axis_0:blk_axis_1]))
-            K = int(np.prod(tensor.shape[blk_axis_1:]))
-            BLK_SIZE_J = int(np.prod(block_size[blk_axis_0:blk_axis_1]))
-            BLK_SIZE_K = int(np.prod(block_size[blk_axis_1:]))
-
             quantize_per_block[(NUM_COMPUTE_BLOCKS,)](
                 tensor.contiguous(),
                 scale.contiguous(),
@@ -831,13 +833,15 @@ class TritonDequantize(torch.autograd.Function):
         offset: torch.Tensor,
         block_size: Optional[Sequence[int]],
     ):
-        axis_0, axis_1, block_size = _get_axes(tensor, scale, offset, block_size)
+        axis_0, axis_1, block_size, I, J, K, BLK_SIZE_J, BLK_SIZE_K = _get_axes(
+            tensor.shape, scale.shape, offset.shape, block_size
+        )
 
         output = torch.empty_like(
             tensor, memory_format=torch.contiguous_format, layout=torch.strided
         )
         COMPUTE_BLOCK_SIZE = 1024
-        NUM_COMPUTE_BLOCKS = tensor.numel() // COMPUTE_BLOCK_SIZE + 1
+        NUM_COMPUTE_BLOCKS = max(math.ceil(tensor.numel() / COMPUTE_BLOCK_SIZE), 1)
 
         if axis_0 is None:
             dequantize_per_tensor[(NUM_COMPUTE_BLOCKS,)](
@@ -849,11 +853,6 @@ class TritonDequantize(torch.autograd.Function):
                 COMPUTE_BLOCK_SIZE,
             )
         elif block_size[axis_0] == 1 and axis_1 is None:
-            channel_axis = axis_0
-            I = int(np.prod(tensor.shape[:channel_axis]))
-            J = tensor.shape[channel_axis]
-            K = int(np.prod(tensor.shape[channel_axis + 1 :]))
-
             dequantize_per_channel[(NUM_COMPUTE_BLOCKS,)](
                 tensor.contiguous(),
                 scale.contiguous(),
@@ -865,14 +864,6 @@ class TritonDequantize(torch.autograd.Function):
                 COMPUTE_BLOCK_SIZE,
             )
         elif axis_0 is not None and axis_1 is not None:
-            blk_axis_0 = axis_0
-            blk_axis_1 = axis_1
-            I = int(np.prod(tensor.shape[:blk_axis_0]))
-            J = int(np.prod(tensor.shape[blk_axis_0:blk_axis_1]))
-            K = int(np.prod(tensor.shape[blk_axis_1:]))
-            BLK_SIZE_J = int(np.prod(block_size[blk_axis_0:blk_axis_1]))
-            BLK_SIZE_K = int(np.prod(block_size[blk_axis_1:]))
-
             dequantize_per_block[(NUM_COMPUTE_BLOCKS,)](
                 tensor.contiguous(),
                 scale.contiguous(),
@@ -909,10 +900,14 @@ class TritonQuantizeDequantize(torch.autograd.Function):
         qmax: int,
         block_size: Optional[Sequence[int]],
         zero_point_shift: float,
+        *,
+        requires_grad: bool = True,
     ):
-        axis_0, axis_1, block_size = _get_axes(tensor, scale, offset, block_size)
+        axis_0, axis_1, block_size, I, J, K, BLK_SIZE_J, BLK_SIZE_K = _get_axes(
+            tensor.shape, scale.shape, offset.shape, block_size
+        )
 
-        if tensor.requires_grad or scale.requires_grad or offset.requires_grad:
+        if requires_grad:
             mask = torch.empty_like(
                 tensor,
                 dtype=torch.bool,
@@ -927,7 +922,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
         )
 
         COMPUTE_BLOCK_SIZE = 1024
-        NUM_COMPUTE_BLOCKS = tensor.numel() // COMPUTE_BLOCK_SIZE + 1
+        NUM_COMPUTE_BLOCKS = max(math.ceil(tensor.numel() / COMPUTE_BLOCK_SIZE), 1)
 
         if axis_0 is None:
             quantize_dequantize_per_tensor[(NUM_COMPUTE_BLOCKS,)](
@@ -943,11 +938,6 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 COMPUTE_BLOCK_SIZE,
             )
         elif block_size[axis_0] == 1 and axis_1 is None:
-            channel_axis = axis_0
-            I = int(np.prod(tensor.shape[:channel_axis]))
-            J = tensor.shape[channel_axis]
-            K = int(np.prod(tensor.shape[channel_axis + 1 :]))
-
             quantize_dequantize_per_channel[(NUM_COMPUTE_BLOCKS,)](
                 tensor.contiguous(),
                 scale.contiguous(),
@@ -962,19 +952,8 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 K,
                 COMPUTE_BLOCK_SIZE,
             )
-            ctx.I = I
-            ctx.J = J
-            ctx.K = K
 
         elif axis_0 is not None and axis_1 is not None:
-            blk_axis_0 = axis_0
-            blk_axis_1 = axis_1
-            I = int(np.prod(tensor.shape[:blk_axis_0]))
-            J = int(np.prod(tensor.shape[blk_axis_0:blk_axis_1]))
-            K = int(np.prod(tensor.shape[blk_axis_1:]))
-            BLK_SIZE_J = int(np.prod(block_size[blk_axis_0:blk_axis_1]))
-            BLK_SIZE_K = int(np.prod(block_size[blk_axis_1:]))
-
             quantize_dequantize_per_block[(NUM_COMPUTE_BLOCKS,)](
                 tensor.contiguous(),
                 scale.contiguous(),
@@ -991,41 +970,47 @@ class TritonQuantizeDequantize(torch.autograd.Function):
                 BLK_SIZE_K,
                 COMPUTE_BLOCK_SIZE,
             )
+
+        else:
+            raise RuntimeError
+
+        if ctx:
             ctx.I = I
             ctx.J = J
             ctx.K = K
             ctx.BLK_SIZE_J = BLK_SIZE_J
             ctx.BLK_SIZE_K = BLK_SIZE_K
+            ctx.pgs_eps = pgs.get_pgs_eps()
+            ctx.pgs_multiplier = pgs.get_pgs_multiplier()
+            ctx.save_for_backward(
+                tensor
+                if scale.requires_grad
+                or (tensor.requires_grad and pgs.is_pgs_enabled())
+                else None,
+                scale
+                if scale.requires_grad
+                or offset.requires_grad
+                or (tensor.requires_grad and pgs.is_pgs_enabled())
+                else None,
+                offset
+                if scale.requires_grad
+                or (tensor.requires_grad and pgs.is_pgs_enabled())
+                else None,
+                mask,
+            )
+            ctx.qmin = qmin
+            ctx.qmax = qmax
+            ctx.zero_point_shift = zero_point_shift
+            ctx.axis_0 = axis_0
+            ctx.axis_1 = axis_1
+            ctx.block_size = block_size
+            ctx.tensor_requires_grad = tensor.requires_grad
+            ctx.scale_requires_grad = scale.requires_grad
+            ctx.offset_requires_grad = offset.requires_grad
 
-        else:
-            raise RuntimeError
-
-        ctx.pgs_eps = pgs.get_pgs_eps()
-        ctx.pgs_multiplier = pgs.get_pgs_multiplier()
-        ctx.save_for_backward(
-            tensor
-            if scale.requires_grad or (tensor.requires_grad and pgs.is_pgs_enabled())
-            else None,
-            scale
-            if scale.requires_grad
-            or offset.requires_grad
-            or (tensor.requires_grad and pgs.is_pgs_enabled())
-            else None,
-            offset
-            if scale.requires_grad or (tensor.requires_grad and pgs.is_pgs_enabled())
-            else None,
-            mask,
-        )
-        ctx.qmin = qmin
-        ctx.qmax = qmax
-        ctx.zero_point_shift = zero_point_shift
-        ctx.axis_0 = axis_0
-        ctx.axis_1 = axis_1
-        ctx.block_size = block_size
-        ctx.tensor_requires_grad = tensor.requires_grad
-        ctx.scale_requires_grad = scale.requires_grad
-        ctx.offset_requires_grad = offset.requires_grad
         return output
+
+    forward_fast_no_grad = functools.partial(forward, None, requires_grad=False)
 
     @staticmethod
     def backward(ctx, grad):
@@ -1054,7 +1039,7 @@ class TritonQuantizeDequantize(torch.autograd.Function):
         )
 
         COMPUTE_BLOCK_SIZE = 1024
-        NUM_COMPUTE_BLOCKS = grad.numel() // COMPUTE_BLOCK_SIZE + 1
+        NUM_COMPUTE_BLOCKS = max(math.ceil(grad.numel() / COMPUTE_BLOCK_SIZE), 1)
 
         pgs_eps = ctx.pgs_eps
         pgs_multiplier = ctx.pgs_multiplier
@@ -1312,8 +1297,17 @@ def quantize_dequantize(
         msg = f"{internal_dtype} is unable to represent quantized output of range [{qmin}, {qmax}]."
         raise RuntimeError(msg)
 
+    # Micro optimization to avoid CPU overhead of torch.autograd.Function.apply.
+    # This leads to significant overhead with small inputs where computation payload is near-zero
+    forward = (
+        TritonQuantizeDequantize.apply
+        if torch.is_grad_enabled()
+        and (tensor.requires_grad or scale.requires_grad or offset.requires_grad)
+        else TritonQuantizeDequantize.forward_fast_no_grad
+    )
+
     try:
-        return TritonQuantizeDequantize.apply(
+        return forward(
             tensor.to(internal_dtype),
             scale.to(internal_dtype),
             offset.to(internal_dtype),
@@ -1349,8 +1343,6 @@ def quantize_dequantize(
             block_size,
             zero_point_shift,
         )
-    else:
-        raise RuntimeError
 
 
 def dequantize(
