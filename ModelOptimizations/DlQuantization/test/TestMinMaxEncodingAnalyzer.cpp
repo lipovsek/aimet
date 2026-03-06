@@ -28,7 +28,7 @@ TYPED_TEST(TestMinMaxEncodingAnalyzer, UpdateBlockStatsSymmetric)
 
     int bitwidth = 8;
     bool symmetric = true;
-    int numElements = 12;
+    constexpr int numElements = 12;
 
     DataType in[numElements] = {
         -5.4f, 10.f, -2.f,
@@ -69,7 +69,7 @@ TYPED_TEST(TestMinMaxEncodingAnalyzer, UpdateBlockStatsAsymmetric)
 
     int bitwidth = 8;
     bool symmetric = false;
-    int numElements = 12;
+    constexpr int numElements = 12;
 
     DataType in[numElements] = {
         -5.4f, 10.f,   -2.f, 3.5f,
@@ -105,7 +105,7 @@ TYPED_TEST(TestMinMaxEncodingAnalyzer, ComputeEncodingsWithZeroPointShift)
 
     int bitwidth = 2;
     bool symmetric = true;
-    int numElements = 12;
+    constexpr int numElements = 12;
 
     DataType in[numElements] = {
         -5.4f, 10.f,   -5.f, 3.5f,

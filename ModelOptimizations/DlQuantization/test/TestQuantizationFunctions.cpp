@@ -46,7 +46,7 @@ void launchBlockQdqKernel(float* in, float* out, std::vector<DlQuantization::TfE
 
 
 TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast) {
-    int numel = 16;
+    constexpr int numel = 16;
     DlQuantization::TensorDims inputShape = {2, 2, 2, 2};
     DlQuantization::TensorDims encodingShape = {2, 1, 1, 2};
     const std::vector<int64_t> inputStrides = {8, 4, 2, 1};
@@ -107,7 +107,7 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast) {
 
 
 TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast2) {
-    int numel = 24;
+    constexpr int numel = 24;
     DlQuantization::TensorDims inputShape = {2, 3, 4};
     DlQuantization::TensorDims encodingShape = {2, 3, 1};
     const std::vector<int64_t> inputStrides = {12, 4, 1};
@@ -169,7 +169,7 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast2) {
 
 
 TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast3) {
-    int numel = 24;
+    constexpr int numel = 24;
     DlQuantization::TensorDims inputShape = {4, 2, 3};
     DlQuantization::TensorDims encodingShape = {2, 3};
     const std::vector<int64_t> inputStrides = {6, 3, 1};

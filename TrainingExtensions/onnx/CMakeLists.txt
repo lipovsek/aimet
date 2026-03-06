@@ -46,6 +46,17 @@ if (SKBUILD)
         OUTPUT_NAME "aimet_onnxrt_ops"
         )
 
+    # Set RPATH using platform-specific syntax
+    if (APPLE)
+        set_target_properties(OnnxCppOps PROPERTIES
+            INSTALL_RPATH "@loader_path"
+            )
+    elseif (NOT WIN32)
+        set_target_properties(OnnxCppOps PROPERTIES
+            INSTALL_RPATH "\$ORIGIN"
+            )
+    endif()
+
     install(TARGETS OnnxCppOps
             DESTINATION aimet_onnx/common)
 
@@ -85,6 +96,17 @@ if (SKBUILD)
         OUTPUT_NAME "quant_info"
         )
 
+    # Set RPATH using platform-specific syntax
+    if (APPLE)
+        set_target_properties(quant_info PROPERTIES
+            INSTALL_RPATH "@loader_path"
+            )
+    elseif (NOT WIN32)
+        set_target_properties(quant_info PROPERTIES
+            INSTALL_RPATH "\$ORIGIN"
+            )
+    endif()
+
     install(TARGETS quant_info
             DESTINATION aimet_onnx/common)
 else (SKBUILD)
@@ -115,7 +137,24 @@ if (WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:quant_info> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
         DEPENDS OnnxCppOps quant_info
     )
+elseif (APPLE)
+    # MacOS: Use install_name_tool to set RPATH
+    add_custom_target(whl_prep_cp_onnx
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_ONNX_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OnnxCppOps> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
+        COMMAND install_name_tool -add_rpath '@loader_path' ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:quant_info> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
+        COMMAND install_name_tool -add_rpath '@loader_path' ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
+        DEPENDS OnnxCppOps quant_info
+    )
+    add_custom_target(whl_prep_ln_onnx
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_ONNX_DIR}
+        COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:OnnxCppOps> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>
+        COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:quant_info> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:quant_info>
+        DEPENDS OnnxCppOps quant_info
+    )
 else()
+    # Linux: Use patchelf to set RPATH
     add_custom_target(whl_prep_cp_onnx
         COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_ONNX_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OnnxCppOps> ${WHL_PREP_AIMET_ONNX_DIR}/$<TARGET_FILE_NAME:OnnxCppOps>

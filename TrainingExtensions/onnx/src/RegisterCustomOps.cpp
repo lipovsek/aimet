@@ -22,8 +22,7 @@ static const char* c_OpDomainGPU = "aimet.customop.cuda";
 
 OrtStatus* ORT_API_CALL RegisterCustomOps(OrtSessionOptions* options, const OrtApiBase* api)
 {
-
-    Ort::Global<void>::api_ = api->GetApi(ORT_API_VERSION);
+    Ort::InitApi(api->GetApi(ORT_API_VERSION));
     OrtStatus* result = nullptr;
     try
     {

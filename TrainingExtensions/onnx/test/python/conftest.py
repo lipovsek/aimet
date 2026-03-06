@@ -33,10 +33,21 @@ def pytest_configure(config):
         "markers",
         "skip_on_windows_arm64(reason): skip test on Windows ARM64 with specified reason",
     )
+    config.addinivalue_line(
+        "markers",
+        "skip_on_macos(reason): skip test on MacOS with specified reason",
+    )
 
 
 def _is_windows_arm64():
     return sys.platform == "win32" and platform.machine().lower() in (
+        "aarch64",
+        "arm64",
+    )
+
+
+def _is_macos():
+    return sys.platform == "darwin" and platform.machine().lower() in (
         "aarch64",
         "arm64",
     )
@@ -51,7 +62,20 @@ def skip_on_windows_arm64(request):
             pytest.skip(reason)
 
 
+@pytest.fixture(autouse=True)
+def skip_on_macos(request):
+    marker = request.node.get_closest_marker("skip_on_macos")
+    if marker is not None:
+        if _is_macos():
+            reason = marker.args[0] if marker.args else "Not supported on MacOS"
+            pytest.skip(reason)
+
+
 def skip_module_on_windows_arm64(reason):
-    """Helper for module-level skips. Call at top of test module."""
     if _is_windows_arm64():
+        pytest.skip(allow_module_level=True, reason=reason)
+
+
+def skip_module_on_macos(reason):
+    if _is_macos():
         pytest.skip(allow_module_level=True, reason=reason)

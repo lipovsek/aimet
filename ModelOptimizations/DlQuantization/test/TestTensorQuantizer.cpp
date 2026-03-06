@@ -773,7 +773,7 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestBlockQuantizationEndToEnd)
     typedef typename TypeParam::dataType DataType;
 
     bool symmetric = true;
-    int numElements = 12;
+    constexpr int numElements = 12;
     TensorDims inputShape = {2, 6};
     TensorDims quantizerShape = {2, 2};
     BlockTensorQuantizer tensorQuantizer(quantizerShape, 8, QUANTIZATION_TF);
@@ -831,7 +831,7 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestQuantizerZeroPointShift)
     typedef typename TypeParam::dataType DataType;
 
     bool symmetric = true;
-    int numElements = 12;
+    constexpr int numElements = 12;
     TensorDims inputShape = {2, 6};
     TensorDims quantizerShape = {2, 1};
     BlockTensorQuantizer tensorQuantizer(quantizerShape, 2, QUANTIZATION_TF);
@@ -884,7 +884,7 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestZeroPointShiftTFEError)
     typedef typename TypeParam::dataType DataType;
 
     bool symmetric = true;
-    int numElements = 12;
+    constexpr int numElements = 12;
     TensorDims inputShape = {2, 6};
     TensorDims quantizerShape = {2, 1};
     BlockTensorQuantizer tensorQuantizer(quantizerShape, 2, QUANTIZATION_TF_ENHANCED);

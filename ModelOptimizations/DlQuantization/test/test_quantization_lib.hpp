@@ -167,6 +167,10 @@ static TfEncoding getTfEncoding(double min, double max, int bw)
     encoding.min    = encoding.delta * encoding.offset;
     encoding.max    = encoding.delta * steps + encoding.min;
     encoding.bw     = bw;
+    // Handle floating point precision: round values very close to zero to exactly zero
+    const double epsilon = 1e-10;
+    if (std::abs(encoding.min) < epsilon) encoding.min = 0.0;
+    if (std::abs(encoding.max) < epsilon) encoding.max = 0.0;
     return encoding;
 }
 

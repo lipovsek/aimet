@@ -1,0 +1,2 @@
+deepspeed
+spconv; sys_platform != "darwin"

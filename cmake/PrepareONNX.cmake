@@ -19,8 +19,18 @@ function(set_onnxruntime_variables)
             PATHS ${onnxruntime_headers_SOURCE_DIR}/include
             REQUIRED
             NO_CMAKE_FIND_ROOT_PATH)
+
+    # Determine library name based on platform
+    if (APPLE)
+        set(ONNXRUNTIME_LIB_NAMES libonnxruntime.dylib)
+    elseif (WIN32)
+        set(ONNXRUNTIME_LIB_NAMES onnxruntime.lib)
+    else()
+        set(ONNXRUNTIME_LIB_NAMES libonnxruntime.so)
+    endif()
+
     find_library(ONNXRUNTIME_LIBRARIES_
-            NAMES libonnxruntime.so onnxruntime.lib
+            NAMES ${ONNXRUNTIME_LIB_NAMES}
             PATHS ${onnxruntime_headers_SOURCE_DIR}/lib
             REQUIRED
             NO_CMAKE_FIND_ROOT_PATH)
@@ -33,25 +43,31 @@ function(set_onnxruntime_variables)
 endfunction()
 
 macro(update_onnx_cuda_arch_list)
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        set(CMAKE_CUDA_ARCHITECTURES 52 60 61 70 72)
-    endif()
-    message(STATUS "** Initial CMAKE_CUDA_ARCHITECTURES = ${CMAKE_CUDA_ARCHITECTURES} **")
-
-    execute_process(COMMAND nvcc --list-gpu-arch
-                    RESULT_VARIABLE NVCC_NOT_FOUND
-                    OUTPUT_VARIABLE CMAKE_CUDA_ARCHITECTURES_RAW
-                    OUTPUT_STRIP_TRAILING_WHITESPACE
-                    )
-
-    if(NVCC_NOT_FOUND)
-        message(WARNING "nvcc not found or failed to execute. Please ensure CUDA is installed and nvcc is in your PATH.")
+    # Skip CUDA architecture detection on MacOS (CUDA not supported)
+    if (APPLE)
+        message(STATUS "** MacOS detected: CUDA not supported for ONNX, skipping CUDA architecture detection **")
         set(CMAKE_CUDA_ARCHITECTURES "")
     else()
-        string(REPLACE "compute_" "" CMAKE_CUDA_ARCHITECTURES_RAW "${CMAKE_CUDA_ARCHITECTURES_RAW}")
-        # Replace newline with semicolon to form proper list
-        string(REPLACE "\n" ";" CMAKE_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES_RAW}")
-    endif()
+        if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+            set(CMAKE_CUDA_ARCHITECTURES 52 60 61 70 72)
+        endif()
+        message(STATUS "** Initial CMAKE_CUDA_ARCHITECTURES = ${CMAKE_CUDA_ARCHITECTURES} **")
 
-    message(STATUS "** Updated CMAKE_CUDA_ARCHITECTURES to ${CMAKE_CUDA_ARCHITECTURES} **")
+        execute_process(COMMAND nvcc --list-gpu-arch
+                        RESULT_VARIABLE NVCC_NOT_FOUND
+                        OUTPUT_VARIABLE CMAKE_CUDA_ARCHITECTURES_RAW
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                        )
+
+        if(NVCC_NOT_FOUND)
+            message(WARNING "nvcc not found or failed to execute. Please ensure CUDA is installed and nvcc is in your PATH.")
+            set(CMAKE_CUDA_ARCHITECTURES "")
+        else()
+            string(REPLACE "compute_" "" CMAKE_CUDA_ARCHITECTURES_RAW "${CMAKE_CUDA_ARCHITECTURES_RAW}")
+            # Replace newline with semicolon to form proper list
+            string(REPLACE "\n" ";" CMAKE_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES_RAW}")
+        endif()
+
+        message(STATUS "** Updated CMAKE_CUDA_ARCHITECTURES to ${CMAKE_CUDA_ARCHITECTURES} **")
+    endif()
 endmacro()

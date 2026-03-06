@@ -5,10 +5,16 @@ if (SKBUILD)
     macro(torch_extension extension_name extension_source)
         Python3_add_library(${extension_name} MODULE ${extension_source})
 
+        if (APPLE)
+            set(TORCH_PYTHON_LIB "${TORCH_INSTALL_PREFIX}/lib/libtorch_python.dylib")
+        else()
+            set(TORCH_PYTHON_LIB "${TORCH_INSTALL_PREFIX}/lib/libtorch_python.so")
+        endif()
+
         target_link_libraries(${extension_name}
             PUBLIC
                 torch
-                ${TORCH_INSTALL_PREFIX}/lib/libtorch_python.so
+                ${TORCH_PYTHON_LIB}
             PRIVATE
                 PyModelOptimizations
             )
@@ -18,6 +24,13 @@ if (SKBUILD)
                 TORCH_EXTENSION_NAME=${extension_name}
                 ENABLE_CUDA_PYTORCH=$<BOOL:${ENABLE_CUDA}>
             )
+
+        if (APPLE)
+            set(EXTENSION_RPATH "@loader_path:@loader_path/../torch/lib:@loader_path/../../..")
+        else()
+            set(EXTENSION_RPATH "\$ORIGIN:\$ORIGIN/../torch/lib:\$ORIGIN/../../..")
+        endif()
+
         set_target_properties(${extension_name} PROPERTIES
             CXX_STANDARD 17
             CUDA_SEPARABLE_COMPILATION ON
@@ -25,7 +38,7 @@ if (SKBUILD)
             CXX_VISIBILITY_PRESET "hidden"
             VISIBILITY_INLINES_HIDDEN ON
             PREFIX ""
-            INSTALL_RPATH "\$ORIGIN:\$ORIGIN/../torch/lib:\$ORIGIN/../../.."
+            INSTALL_RPATH "${EXTENSION_RPATH}"
             )
 
         install(TARGETS ${extension_name}
@@ -62,19 +75,29 @@ else (SKBUILD)
     # Use an absolute path RPATH because the SO file is located in the build directory. It is not
     # possible to use $ORIGIN to point to folder with torch libs.
     # Later, when a SO is copied into a wheel, RPATH will be changed to use relative paths ($ORIGIN)
+    if (APPLE)
+        # MacOS: Use @loader_path instead of $ORIGIN, no --enable-new-dtags
+        set(EXTRA_LINK_ARGS "-Wl,-rpath;-Wl,$<TARGET_FILE_DIR:PyModelOptimizations>;-Wl,-rpath;-Wl,${TORCH_DIR}/lib")
+    else()
+        # Linux: Use $ORIGIN and --enable-new-dtags
+        set(EXTRA_LINK_ARGS "-Wl,-rpath;-Wl,$<TARGET_FILE_DIR:PyModelOptimizations>;-Wl,-rpath;-Wl,${TORCH_DIR}/lib;-Wl,--enable-new-dtags")
+    endif()
+
     add_custom_command(OUTPUT ${OUTPUT}
           COMMAND ${CMAKE_COMMAND}
                   -E env
                       PYTHONPATH="${CMAKE_BINARY_DIR}/artifacts"
                       ENABLE_CUDA_PYTORCH=${ENABLE_CUDA_PYTORCH}
                       TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
-                      EXTRA_LINK_ARGS="-Wl,-rpath;-Wl,$<TARGET_FILE_DIR:PyModelOptimizations>;-Wl,-rpath;-Wl,${TORCH_DIR}/lib;-Wl,--enable-new-dtags"
+                      EXTRA_LINK_ARGS="${EXTRA_LINK_ARGS}"
                   ${Python3_EXECUTABLE} ${SETUP_PY} install  --install-base=${CMAKE_BINARY_DIR}/artifacts
                                                  --install-purelib=${CMAKE_BINARY_DIR}/artifacts
                                                  --install-platlib=${CMAKE_BINARY_DIR}/artifacts
                                                  --install-scripts=${CMAKE_BINARY_DIR}/artifacts
                                                  --install-data=${CMAKE_BINARY_DIR}/artifacts
                                                  --install-headers=${CMAKE_BINARY_DIR}/artifacts
+                                                 --single-version-externally-managed
+                                                 --record=${CMAKE_BINARY_DIR}/artifacts/install_record.txt
           COMMAND ${CMAKE_COMMAND} -E touch ${OUTPUT}
           DEPENDS ${DEPS}
           )
@@ -86,12 +109,14 @@ else (SKBUILD)
           src/AimetEncodingRescaler.cpp
           )
 
-    set(FILE_PATH_TENSOR_QUANT "${CMAKE_BINARY_DIR}/artifacts/aimet_tensor_quantizer*.egg/AimetTensorQuantizer*.so")
-    set(FILE_PATH_RESCALER "${CMAKE_BINARY_DIR}/artifacts/aimet_encoding_rescaler*.egg/AimetEncodingRescaler*.so")
+    # With --single-version-externally-managed, .so files are placed directly in artifacts/
+    set(FILE_PATH_TENSOR_QUANT "${CMAKE_BINARY_DIR}/artifacts/AimetTensorQuantizer*.so")
+    set(FILE_PATH_RESCALER "${CMAKE_BINARY_DIR}/artifacts/AimetEncodingRescaler*.so")
 
+    # Use shell to copy files since CMake's -E copy doesn't support glob patterns
     add_custom_target(BuildTorchExtensions ALL
-        COMMAND ${CMAKE_COMMAND} -E copy ${FILE_PATH_TENSOR_QUANT} ${CMAKE_BINARY_DIR}/artifacts/_aimet_common
-        COMMAND ${CMAKE_COMMAND} -E copy ${FILE_PATH_RESCALER} ${CMAKE_BINARY_DIR}/artifacts/_aimet_common)
+        COMMAND bash -c "cp ${CMAKE_BINARY_DIR}/artifacts/AimetTensorQuantizer*.so ${CMAKE_BINARY_DIR}/artifacts/_aimet_common/"
+        COMMAND bash -c "cp ${CMAKE_BINARY_DIR}/artifacts/AimetEncodingRescaler*.so ${CMAKE_BINARY_DIR}/artifacts/_aimet_common/")
 
     add_dependencies(TorchCppOps PyModelOptimizations)
     add_dependencies(BuildTorchExtensions TorchCppOps)
@@ -119,15 +144,31 @@ else (SKBUILD)
             PATTERN "Aimet*.so"
           )
 
-    add_custom_target(whl_prep_cp_torch
-          COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_TORCH_DIR}
-          COMMAND find ${CMAKE_BINARY_DIR}/artifacts -path \"*/aimet_tensor_quantizer*\" -name \"Aimet*.so\"
-                  -exec sh -c '$$0 -f $$1 ${WHL_PREP_AIMET_TORCH_DIR}/$$\(basename $$1\)' cp {} \\\;
-          COMMAND find ${WHL_PREP_AIMET_TORCH_DIR} -name 'Aimet*.so'
-                  -exec ${PATCHELF_EXE} --set-rpath '$$ORIGIN:$$ORIGIN/../torch/lib' {} \\\;
-          DEPENDS
-              TorchCppOps
-    )
+    if (APPLE)
+        # MacOS: Use install_name_tool to set RPATH
+        add_custom_target(whl_prep_cp_torch
+              COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_TORCH_DIR}
+              COMMAND find ${CMAKE_BINARY_DIR}/artifacts -path \"*/aimet_tensor_quantizer*\" -name \"Aimet*.so\"
+                      -exec sh -c '$$0 -f $$1 ${WHL_PREP_AIMET_TORCH_DIR}/$$\(basename $$1\)' cp {} \\\;
+              COMMAND find ${WHL_PREP_AIMET_TORCH_DIR} -name 'Aimet*.so'
+                      -exec install_name_tool -add_rpath '@loader_path' {} \\\;
+              COMMAND find ${WHL_PREP_AIMET_TORCH_DIR} -name 'Aimet*.so'
+                      -exec install_name_tool -add_rpath '@loader_path/../torch/lib' {} \\\;
+              DEPENDS
+                  TorchCppOps
+        )
+    else()
+        # Linux: Use patchelf to set RPATH
+        add_custom_target(whl_prep_cp_torch
+              COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_TORCH_DIR}
+              COMMAND find ${CMAKE_BINARY_DIR}/artifacts -path \"*/aimet_tensor_quantizer*\" -name \"Aimet*.so\"
+                      -exec sh -c '$$0 -f $$1 ${WHL_PREP_AIMET_TORCH_DIR}/$$\(basename $$1\)' cp {} \\\;
+              COMMAND find ${WHL_PREP_AIMET_TORCH_DIR} -name 'Aimet*.so'
+                      -exec ${PATCHELF_EXE} --set-rpath '$$ORIGIN:$$ORIGIN/../torch/lib' {} \\\;
+              DEPENDS
+                  TorchCppOps
+        )
+    endif()
     add_custom_target(whl_prep_ln_torch
           COMMAND ${CMAKE_COMMAND} -E make_directory ${WHL_PREP_AIMET_TORCH_DIR}
           COMMAND find ${CMAKE_BINARY_DIR}/artifacts -path \"*/aimet_tensor_quantizer*\" -name \"Aimet*.so\"

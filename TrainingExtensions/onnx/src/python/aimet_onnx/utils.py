@@ -556,11 +556,16 @@ def create_ort_session_options_with_aimet_custom_ops() -> SessionOptions:
 
     session_options = SessionOptions()
 
+    system = platform.system()
+    if system == "Windows":
+        lib_name = "libaimet_onnxrt_ops.dll"
+    elif system == "Darwin":
+        lib_name = "libaimet_onnxrt_ops.dylib"
+    else:
+        lib_name = "libaimet_onnxrt_ops.so"
     shared_library = os.path.join(
         os.path.dirname(libquant_info.__file__),
-        "libaimet_onnxrt_ops.dll"
-        if platform.system() == "Windows"
-        else "libaimet_onnxrt_ops.so",
+        lib_name,
     )
 
     session_options.register_custom_ops_library(shared_library)

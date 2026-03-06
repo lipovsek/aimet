@@ -2,12 +2,19 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import os
+import sys
 import unittest
 import json
 import tempfile
 from pathlib import Path
+import pytest
 import torch
 from torch import nn
+
+# spconv is Linux-only (requires CUDA), skip on macOS
+if sys.platform == "darwin":
+    pytest.skip("spconv not available on macOS", allow_module_level=True)
+
 import spconv.pytorch as spconv
 
 from aimet_common.defs import QuantScheme

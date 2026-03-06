@@ -731,20 +731,22 @@ class QuantStatsVisualizer:
     def _add_min_max_markers(
         self, datasources: DataSources, tableobjects: TableObjects
     ):
-        min_markers = self.plot.circle_x(
+        min_markers = self.plot.scatter(
             "idx",
             "marker_yminlist",
             source=datasources.data_source,
             size=10,
+            marker="circle_x",
             color="orange",
             line_color="navy",
         )
         min_markers.view = tableobjects.views.min_thresh_view
-        max_markers = self.plot.circle_x(
+        max_markers = self.plot.scatter(
             "idx",
             "marker_ymaxlist",
             source=datasources.data_source,
             size=10,
+            marker="circle_x",
             color="orange",
             line_color="navy",
         )
@@ -785,6 +787,7 @@ class QuantStatsVisualizer:
             source=datasources.selected_data_source,
             name="min_points",
             color="orange",
+            size=8,
         )
         self.boxplot.text(
             x="stridx",
@@ -802,6 +805,7 @@ class QuantStatsVisualizer:
             source=datasources.selected_data_source,
             name="max_points",
             color="orange",
+            size=8,
         )
         self.boxplot.text(
             x="stridx",
@@ -820,6 +824,7 @@ class QuantStatsVisualizer:
                 source=datasources.selected_data_source,
                 name=str(percentile) + "_" + "points",
                 color="orange",
+                size=8,
             )
             self.boxplot.text(
                 x="stridx",

@@ -11,8 +11,8 @@ include(FetchContent)
 # michof: TODO: Do we need Patchelf at all? Can't we do the RPATH fiddling with CMake built-in tools,
 # such as setting CMAKE_INSTALL_RPATH per-target?
 
-# Patchelf is only needed on Linux (not Windows)
-if (NOT WIN32)
+# Patchelf is only needed on Linux (not Windows or MacOS)
+if (NOT WIN32 AND NOT APPLE)
     find_program(PATCHELF_EXE patchelf
                  PATHS ${CMAKE_BINARY_DIR}/_deps/patchelf-src/bin)
 
@@ -45,6 +45,23 @@ if (NOT WIN32)
     endif()
 
     message(STATUS "** PATCHELF_EXE = ${PATCHELF_EXE}")
+endif()
+
+######################
+# install_name_tool
+######################
+
+# install_name_tool is only needed on macOS
+if (APPLE)
+    find_program(INSTALL_NAME_TOOL_EXE install_name_tool)
+
+    if (INSTALL_NAME_TOOL_EXE)
+        message(STATUS "install_name_tool: Found in '${INSTALL_NAME_TOOL_EXE}'")
+    else()
+        message(FATAL_ERROR "install_name_tool not found. Please install Xcode command line tools using: xcode-select --install")
+    endif()
+
+    message(STATUS "** INSTALL_NAME_TOOL_EXE = ${INSTALL_NAME_TOOL_EXE}")
 endif()
 
 ############
@@ -112,6 +129,9 @@ if (ENABLE_ONNX)
   elseif ("${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "Windows-x86_64" OR "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "Windows-AMD64")
     set(PLATFORM_TAG "win-x64")
     set(EXTENSION "zip")
+  elseif ("${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "Darwin-arm64")
+    set(PLATFORM_TAG "osx-arm64")
+    set(EXTENSION "tgz")
   else()
     message(
       FATAL_ERROR

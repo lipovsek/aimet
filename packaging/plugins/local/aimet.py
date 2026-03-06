@@ -209,8 +209,24 @@ def get_version() -> str:
     return version
 
 
+def _read_requirements_file(filename: str) -> list[str]:
+    """Read dependencies from a requirements file, filtering comments and empty lines."""
+    filepath = pathlib.Path(_PKG_ROOT, "packaging", "dependencies", filename)
+    if not filepath.exists():
+        return []
+    deps = []
+    for line in filepath.read_text(encoding="utf8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            deps.append(line)
+    return deps
+
+
 def optional_dependencies() -> dict[str, list[str]]:
-    optional_dependencies = {
+    # Read test dependencies from requirements file
+    test_deps = _read_requirements_file("reqs_pip_test.txt")
+
+    optional_deps = {
         "dev": [
             # duplicate build-system.requires for editable mode (non-isolated)
             "scikit-build-core[wheels]==0.11.1",
@@ -218,17 +234,7 @@ def optional_dependencies() -> dict[str, list[str]]:
             "auditwheel",
             # and the rest
         ],
-        "test": [
-            "beautifulsoup4",
-            "matplotlib",
-            "onnx",
-            "protobuf<7",
-            "pylint<3",
-            "pytest",
-            "pytest-xdist",
-            "pytorch-ignite",
-            "torchvision",
-        ],
+        "test": test_deps,
         "docs": [
             "furo",
             "nbsphinx",
@@ -248,46 +254,31 @@ def optional_dependencies() -> dict[str, list[str]]:
 
     # TODO: #6211 Remove aimet-onnx should not depend on aimet-torch for testing
     if aimet_variant in ("onnx-cpu", "onnx-gpu"):
-        optional_dependencies["test"].extend(["aimet-torch>2.20.0"])
+        optional_deps["test"].extend(["aimet-torch>2.20.0"])
 
     if aimet_variant in ("onnx-qnn",):
-        optional_dependencies["test"].extend(
+        optional_deps["test"].extend(
             [
                 "onnxruntime-qnn",
             ]
         )
-    else:
-        optional_dependencies["test"].extend(
-            [
-                "datasets>=2.18.0",
-                "onnxruntime",
-                "onnxruntime-extensions",
-                "onnxsim<0.6.0",
-                "accelerate<1.10.0",
-                "safetensors<=0.5.3",
-                "transformers",
-                "peft",
-            ]
-        )
 
     if aimet_variant in ("torch-gpu", "torch-cpu"):
-        optional_dependencies["test"].extend(
-            [
-                "deepspeed<0.17.5",
-                "spconv",
-            ]
-        )
+        # Read torch-specific test deps (deepspeed, spconv - Linux only)
+        torch_test_deps = _read_requirements_file("reqs_pip_test_torch.txt")
+        optional_deps["test"].extend(torch_test_deps)
+
         try:
             import torch
         except ImportError:
-            return optional_dependencies
+            return optional_deps
 
         from packaging import version
 
         v = version.parse(torch.__version__)
-        optional_dependencies["v1-deps"].append(f"torch=={v.major}.{v.minor}.*")
+        optional_deps["v1-deps"].append(f"torch=={v.major}.{v.minor}.*")
 
-    return optional_dependencies
+    return optional_deps
 
 
 def get_description() -> str:

@@ -39,7 +39,7 @@ public:
         {
             auto options = torch::TensorOptions().dtype(torch::kFloat32).device(input.device().type(),
                                                                                 input.device().index());
-            scaling_params = torch::empty({weight_scale.size()}, options);
+            scaling_params = torch::empty({static_cast<int64_t>(weight_scale.size())}, options);
         }
         else
         {
@@ -48,13 +48,13 @@ public:
             {
                 auto options = torch::TensorOptions().dtype(torch::kFloat32).device(input.device().type(),
                                                                                     input.device().index());
-                scaling_params = torch::empty({weight_scale.size()}, options);
+                scaling_params = torch::empty({static_cast<int64_t>(weight_scale.size())}, options);
             }
         }
         DlQuantization::ConvSpecArgs<float> encodingArgs = {.out_encoding_delta = static_cast<float>(out_enc.delta),
                                                               .out_encoding_offset = static_cast<float>(out_enc.offset),
                                                               .input_scale = input_scale,
-                                                              .bw = out_enc.bw,
+                                                              .bw = static_cast<uint8_t>(out_enc.bw),
                                                               .weight_scale = weight_scale.cast<std::vector<float>>(),
         };
 

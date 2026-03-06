@@ -24,7 +24,13 @@ set_target_properties(PyModelOptimizations
 add_dependencies(PyModelOptimizations generate_deps)
 
 if (SKBUILD)
-    if (NOT WIN32)
+    if (APPLE)
+        # MacOS: Use @loader_path instead of $ORIGIN
+        set_target_properties(PyModelOptimizations PROPERTIES
+            INSTALL_RPATH "@loader_path:@loader_path/../../.."
+            )
+    elseif (NOT WIN32)
+        # Linux: Use $ORIGIN
         set_target_properties(PyModelOptimizations PROPERTIES
             INSTALL_RPATH "\$ORIGIN:\$ORIGIN/../../.."
             )

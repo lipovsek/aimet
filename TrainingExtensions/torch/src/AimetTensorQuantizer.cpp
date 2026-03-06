@@ -246,7 +246,7 @@ public:
         // Create encoding tensors
         auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCPU).requires_grad(false);
         at::Tensor encodingTensor =
-            torch::from_blob(encodingVector.data(), {2, numChannel}, options).to(input.device());
+            torch::from_blob(encodingVector.data(), {2, static_cast<int64_t>(numChannel)}, options).to(input.device());
 
         at::Tensor encodingMin = encodingTensor[0];
         at::Tensor encodingMax = encodingTensor[1];

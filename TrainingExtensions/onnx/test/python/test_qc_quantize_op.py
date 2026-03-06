@@ -37,11 +37,19 @@ FLOAT32_MAX = np.finfo(np.float32).max
 
 _DEFAULT_IR_VERSION = 10
 
+
+def _get_shared_library_name():
+    if sys.platform == "win32":
+        return "libaimet_onnxrt_ops.dll"
+    elif sys.platform == "darwin":
+        return "libaimet_onnxrt_ops.dylib"
+    else:
+        return "libaimet_onnxrt_ops.so"
+
+
 shared_library = os.path.join(
     os.path.dirname(libquant_info.__file__),
-    "libaimet_onnxrt_ops.dll"
-    if platform.system() == "Windows"
-    else "libaimet_onnxrt_ops.so",
+    _get_shared_library_name(),
 )
 
 available_providers = [

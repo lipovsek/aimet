@@ -1,0 +1,17 @@
+accelerate<1.10.0
+beautifulsoup4
+datasets>=2.18.0
+matplotlib
+onnx
+onnxruntime
+onnxruntime-extensions
+onnxsim<0.6.0
+peft
+protobuf<7
+pylint<3
+pytest
+pytest-xdist
+pytorch-ignite
+safetensors<=0.5.3
+torchvision
+transformers
