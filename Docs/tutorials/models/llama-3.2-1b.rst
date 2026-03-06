@@ -46,7 +46,7 @@ Hyperparameters:
       - 13.68
       - 41.82
       - 01:53:17
-      - 46.38
+      - 21.63
     * - LPBQ + SequentialMSE
       - ``aimet-torch``
       - ``aimet-onnx``
