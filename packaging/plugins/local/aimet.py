@@ -196,16 +196,19 @@ def get_version() -> str:
         .read_text(encoding="utf8")
         .splitlines()[0]
     )
-    cuda_version = get_cuda_version()
 
     # For PyPi releases, just return the version without appending the variant string
     if is_pip_index_pypi():
         return version
 
-    # Append the variant string to the original software version that was passed in
-    variant_string = f"cu{cuda_version}" if cuda_version else "cpu"
-    version = version + "+" + variant_string
+    # Only use CUDA version if ENABLE_CUDA is set in CMAKE_ARGS
+    enable_cuda = is_cmake_option_enabled("ENABLE_CUDA")
+    variant_string = "cpu"
+    if enable_cuda:
+        cuda_version = get_cuda_version()
+        variant_string = f"cu{cuda_version}" if cuda_version else "cu"
 
+    version = version + "+" + variant_string
     return version
 
 
