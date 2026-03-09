@@ -7,6 +7,7 @@ from unittest.mock import patch
 import itertools
 import torch
 import numpy as np
+from aimet_torch.v2.quantization.affine.backends import triton as _triton_backend
 from aimet_torch.v2.quantization.affine.backends import (
     quantize,
     dequantize,
@@ -19,6 +20,16 @@ try:
     import triton
 except ImportError:
     triton = None
+
+
+@pytest.fixture(autouse=True)
+def always_use_triton_ptq():
+    orig = _triton_backend._PER_TENSOR_USE_TRITON_THRESHOLD
+    try:
+        _triton_backend._PER_TENSOR_USE_TRITON_THRESHOLD = 0
+        yield
+    finally:
+        _triton_backend._PER_TENSOR_USE_TRITON_THRESHOLD = orig
 
 
 @pytest.fixture(params=[True, False], scope="function")

@@ -1234,6 +1234,9 @@ def quantize(
         return torch_builtins.quantize(tensor, scale, offset, qmin, qmax, block_size)
 
 
+_PER_TENSOR_USE_TRITON_THRESHOLD = 2**23
+
+
 def quantize_dequantize(
     tensor: torch.Tensor,
     scale: torch.Tensor,
@@ -1260,20 +1263,27 @@ def quantize_dequantize(
             "Please ensure triton>=3.0.0 is installed and CUDA is available."
         )
 
-    if not _compile_success[quantize_dequantize]:
-        # Fall back to aten impl
-        return torch_builtins.quantize_dequantize(
-            tensor,
-            scale,
-            offset,
-            qmin,
-            qmax,
-            block_size,
-            zero_point_shift,
-        )
+    no_grad = not torch.is_grad_enabled() or not (
+        tensor.requires_grad or scale.requires_grad or offset.requires_grad
+    )
 
-    if not (tensor.is_cuda and scale.is_cuda and offset.is_cuda):
-        # Fall back to aten impl if triton is not available or inputs are not on cuda
+    if not (
+        _compile_success[quantize_dequantize]
+        and tensor.is_cuda
+        and scale.is_cuda
+        and offset.is_cuda
+    ) or (
+        no_grad
+        and scale.numel() == 1
+        and tensor.numel() < _PER_TENSOR_USE_TRITON_THRESHOLD
+    ):
+        # Fall back to aten impl if any of the following is true:
+        #  1. Failed to compile Triton kernel
+        #  2. Input, scale, or offset is not on CUDA device
+        #  3. Per-tensor QDQ upon small input without gradient computation.
+        #     This is a heuristic to get around Triton's excessive CUDA kernel
+        #     launch overhead that dominates runtime for small inputs.
+        #     (See https://github.com/triton-lang/triton/issues/459)
         return torch_builtins.quantize_dequantize(
             tensor,
             scale,
@@ -1300,10 +1310,9 @@ def quantize_dequantize(
     # Micro optimization to avoid CPU overhead of torch.autograd.Function.apply.
     # This leads to significant overhead with small inputs where computation payload is near-zero
     forward = (
-        TritonQuantizeDequantize.apply
-        if torch.is_grad_enabled()
-        and (tensor.requires_grad or scale.requires_grad or offset.requires_grad)
-        else TritonQuantizeDequantize.forward_fast_no_grad
+        TritonQuantizeDequantize.forward_fast_no_grad
+        if no_grad
+        else TritonQuantizeDequantize.apply
     )
 
     try:
