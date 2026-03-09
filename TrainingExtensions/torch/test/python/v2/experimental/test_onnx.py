@@ -55,6 +55,28 @@ from aimet_torch.v2.quantsim.config_utils import (
     set_grouped_blockwise_quantization_for_weights,
 )
 import aimet_torch
+from aimet_torch.nn.modules import custom as aimet_ops
+
+
+def _get_qdq_encoding_map(onnx_model):
+    """Build a mapping from activation tensor name to (scale, zero_point) arrays.
+
+    For each QuantizeLinear node, maps its *input* tensor to (scale, zp).
+    For each DequantizeLinear node, maps its *output* tensor to (scale, zp).
+    This covers both sides of a QDQ pair and any standalone Q or DQ.
+    """
+    constants = _get_all_constants(onnx_model)
+    encoding_map = {}
+    for node in onnx_model.graph.node:
+        if node.op_type == "QuantizeLinear":
+            scale = onnx.numpy_helper.to_array(constants[node.input[1]])
+            zp = onnx.numpy_helper.to_array(constants[node.input[2]])
+            encoding_map[node.input[0]] = (scale, zp)
+        elif node.op_type == "DequantizeLinear":
+            scale = onnx.numpy_helper.to_array(constants[node.input[1]])
+            zp = onnx.numpy_helper.to_array(constants[node.input[2]])
+            encoding_map[node.output[0]] = (scale, zp)
+    return encoding_map
 
 
 @pytest.fixture(autouse=True, params=range(1))
@@ -2430,3 +2452,385 @@ def test_export_creates_directory_if_not_exists(tmp_path):
     # Verify the exported model is valid
     onnx_model = onnx.load(onnx_path)
     onnx.checker.check_model(onnx_model)
+
+
+@pytest.mark.parametrize("activation_bw", [8, 16])
+@pytest.mark.parametrize(
+    "model_factory",
+    [
+        lambda: test_models.ModelWithPreparedConstRescale(3.0, divide=True),
+        lambda: test_models.ModelWithPreparedConstRescale(3.0, divide=False),
+        lambda: test_models.MatMulRescaleAddModel(divide=True),
+        lambda: test_models.MatMulRescaleAddModel(divide=False),
+        lambda: test_models.StandalonePreparedConstRescale(3.0, divide=True),
+        lambda: test_models.StandalonePreparedConstRescale(3.0, divide=False),
+        lambda: test_models.ModelWithFunctionalDiv(),
+        lambda: test_models.DivWithDataMovement(),
+    ],
+)
+def test_aimet_torch_export_with_propagated_rescale_encodings(
+    tmp_path, model_factory, activation_bw
+):
+    """
+    Given: Model with constant scalar Mul/Div op with no output quantizer
+    """
+    model = model_factory()
+    dummy_input = model.dummy_input()
+    sim = QuantizationSimModel(
+        model, dummy_input, default_output_bw=activation_bw, config_file="htp_v81"
+    )
+    # Disable rescale output quantizers (may be input quantizer of subsequent op)
+    for module in sim.qmodules():
+        if isinstance(module, (aimet_ops.Divide, aimet_ops.Multiply)):
+            module.output_quantizers[0] = None
+            module.input_quantizers[1] = None
+        else:
+            module.input_quantizers[0] = None
+    sim.compute_encodings(lambda m: m(*dummy_input))
+    sim_output = sim.model(*dummy_input)
+    """
+    When: Export model to onnx QDQ
+    """
+    fname = os.path.join(tmp_path, "model.onnx")
+    aimet_torch.onnx.export(
+        sim.model,
+        dummy_input,
+        fname,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        opset_version=21,
+    )
+    """
+    Then: (1) Exported model is a valid onnx model
+    """
+    onnx_model = onnx.load(fname)
+    onnx.checker.check_model(onnx_model)
+    """
+    Then: (2) onnx QDQ model output matches sim output within 1 output scale tolerance
+    """
+    encoding_map = _get_qdq_encoding_map(onnx_model)
+    constants = _get_all_constants(onnx_model)
+    output_name = onnx_model.graph.output[0].name
+    model_output_scale, _ = encoding_map[output_name]
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    onnx_input = {
+        inp.name: dummy_input[i].detach().numpy()
+        for i, inp in enumerate(onnx_model.graph.input)
+    }
+    (ort_out,) = sess.run(None, onnx_input)
+    assert np.allclose(
+        ort_out, sim_output.detach().numpy(), atol=model_output_scale.item()
+    )
+    """
+    Then: (3) A QDQ op is inserted at the Mul/Div output
+    """
+    rescale_node = next(
+        node for node in onnx_model.graph.node if node.op_type in ("Mul", "Div")
+    )
+    rescale_input = rescale_node.input[0]
+    rescale_output = rescale_node.output[0]
+    assert rescale_output in encoding_map
+    """
+    Then: (4) The scale of the inserted QDQ matches input_scale * scale_factor
+    """
+    assert rescale_input in encoding_map
+    input_scale, input_zp = encoding_map[rescale_input]
+    output_scale, output_zp = encoding_map[rescale_output]
+    producers = {out: n for n in onnx_model.graph.node for out in n.output}
+    # Propagate through QDQ to get constant factor
+    const_factor_name = producers[producers[rescale_node.input[1]].input[0]].input[0]
+    const_factor = onnx.numpy_helper.to_array(constants[const_factor_name])
+    exp_out_scale = (
+        input_scale / const_factor
+        if rescale_node.op_type == "Div"
+        else input_scale * const_factor
+    )
+    assert np.isclose(output_scale, exp_out_scale, rtol=1e-5)
+    """
+    Then: (5) The zero point and dtype of the inserted QDQ match the input encoding
+    """
+    assert np.array_equal(output_zp, input_zp)
+    assert output_zp.dtype == input_zp.dtype
+    """
+    Then: (6) The scale factor has a QDQ encoding and incurs no quantization noise
+    """
+    assert const_factor_name in encoding_map
+    factor_scale_arr, factor_zp_arr = encoding_map[const_factor_name]
+    assert factor_zp_arr == 0
+    assert np.round(const_factor / factor_scale_arr) * factor_scale_arr == const_factor
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("activation_bw", [8, 16])
+@pytest.mark.parametrize(
+    "model_factory",
+    [
+        lambda: test_models.ModelWithPreparedConstRescale(3.0, divide=True),
+        lambda: test_models.ModelWithPreparedConstRescale(3.0, divide=False),
+        lambda: test_models.MatMulRescaleAddModel(divide=True),
+        lambda: test_models.MatMulRescaleAddModel(divide=False),
+        lambda: test_models.StandalonePreparedConstRescale(3.0, divide=True),
+        lambda: test_models.StandalonePreparedConstRescale(3.0, divide=False),
+        lambda: test_models.ModelWithFunctionalDiv(),
+        lambda: test_models.DivWithDataMovement(),
+        lambda: test_models.ModelWithReversedMulOrdering(),
+    ],
+)
+def test_sim_onnx_export_with_propagated_rescale_encodings(
+    tmp_path, model_factory, activation_bw, dtype
+):
+    """
+    Given: Model with constant scalar Mul/Div op with no output quantizer
+    """
+    model = model_factory().to(dtype)
+    dummy_input = tuple(t.to(dtype) for t in model.dummy_input())
+    sim = QuantizationSimModel(model, dummy_input, default_output_bw=activation_bw)
+    # Disable rescale output quantizers
+    for module in sim.qmodules():
+        if isinstance(module, (aimet_ops.Divide, aimet_ops.Multiply)):
+            module.output_quantizers[0] = None
+            module.input_quantizers[1] = None
+        else:
+            module.input_quantizers[0] = None
+    sim.compute_encodings(lambda m: m(*dummy_input))
+    """
+    When: Export model via sim.onnx.export
+    """
+    fname = os.path.join(tmp_path, "model.onnx")
+    encoding_path = os.path.join(tmp_path, "model.encodings")
+    sim.onnx.export(
+        dummy_input,
+        fname,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        encoding_version="2.0.0",
+    )
+    """
+    Then: (1) Exported model is a valid onnx model
+    """
+    onnx_model = onnx.load(fname)
+    onnx.checker.check_model(onnx_model)
+    with open(encoding_path) as f:
+        encodings = json.load(f)
+    """
+    Then: (2) The encoding file contains an encoding for the Mul/Div output tensor
+    """
+    rescale_node = next(
+        node for node in onnx_model.graph.node if node.op_type in ("Mul", "Div")
+    )
+    rescale_output_name = rescale_node.output[0]
+    encoding_dict = {enc["name"]: enc for enc in encodings["encodings"]}
+    assert rescale_output_name in encoding_dict
+    """
+    Then: (3) The propagated encoding scale matches input_scale * scale_factor
+    """
+    constants = _get_all_constants(onnx_model)
+    inp_idx, scale_idx = (0, 1) if rescale_node.input[1] in constants else (1, 0)
+    input_encoding = encoding_dict[rescale_node.input[inp_idx]]
+    output_encoding = encoding_dict[rescale_output_name]
+    const_factor_name = rescale_node.input[scale_idx]
+    const_factor = onnx.numpy_helper.to_array(constants[const_factor_name])
+    if rescale_node.op_type == "Div":
+        expected_scale = input_encoding["y_scale"] / const_factor.item()
+    else:
+        expected_scale = input_encoding["y_scale"] * const_factor.item()
+    assert np.isclose(output_encoding["y_scale"], expected_scale, rtol=1e-5)
+    """
+    Then: (4) The zero point is preserved in the output encoding
+    """
+    assert output_encoding.get("y_zero_point") == input_encoding.get("y_zero_point")
+    """
+    Then: (5) The dtype is preserved in the output encoding
+    """
+    assert output_encoding.get("dtype") == input_encoding.get("dtype")
+    """
+    Then: (6) The encoding file contains an encoding for the scale factor
+    """
+    assert const_factor_name in encoding_dict
+    factor_encoding = encoding_dict[const_factor_name]
+    """
+    Then: (7) The factor encoding has the same bitwidth as input/output encodings
+    """
+    assert factor_encoding.get("dtype") == input_encoding.get("dtype")
+    """
+    Then: (8) The factor encoding incurs no quantization noise:
+    """
+    factor_scale = factor_encoding["y_scale"]
+    assert factor_encoding.get("y_zero_point", 0) == 0
+    q_float = np.round(const_factor.item() / factor_scale) * factor_scale
+    assert np.isclose(q_float, np.round(q_float), atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "model_factory",
+    [
+        lambda: test_models.ModelWithPreparedConstRescale(-3.0, divide=True),
+        lambda: test_models.ModelWithPreparedConstRescale(-2.0, divide=False),
+        lambda: test_models.ModelWithPreparedConstRescale(0.0, divide=True),
+        lambda: test_models.ModelWithPreparedConstRescale(0.0, divide=False),
+        lambda: test_models.ModelWithPreparedConstRescale(float("inf"), divide=True),
+        lambda: test_models.ModelWithPreparedConstRescale(float("nan"), divide=True),
+        lambda: test_models.RescaleWithVectorConst(divide=True),
+        lambda: test_models.RescaleWithVectorConst(divide=False),
+        lambda: test_models.ModelWithDynamicRescale(divide=True),
+        lambda: test_models.ModelWithDynamicRescale(divide=False),
+    ],
+)
+def test_no_propagation_for_unsafe_rescale(tmp_path, model_factory):
+    """
+    Given: Model with Mul/Div op where propagation would be unsafe
+           (negative constant, zero constant, or non-scalar constant, dynamic constant)
+    When: Export model to onnx QDQ
+    Then: No QDQ is inserted at the Mul/Div output (propagation is skipped)
+    """
+    model = model_factory()
+    dummy_input = model.dummy_input()
+    sim = QuantizationSimModel(model, dummy_input)
+    # Disable rescale output quantizers
+    for module in sim.model.modules():
+        if isinstance(module, (aimet_ops.Divide, aimet_ops.Multiply)):
+            module.output_quantizers[0] = None
+    sim.compute_encodings(lambda m: m(*dummy_input))
+    fname = os.path.join(tmp_path, "model.onnx")
+    aimet_torch.onnx.export(
+        sim.model,
+        dummy_input,
+        fname,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        opset_version=21,
+    )
+    onnx_model = onnx.load(fname)
+    encoding_map = _get_qdq_encoding_map(onnx_model)
+    rescale_nodes = [
+        node for node in onnx_model.graph.node if node.op_type in ("Mul", "Div")
+    ]
+    for rescale_node in rescale_nodes:
+        assert rescale_node.output[0] not in encoding_map
+
+
+def test_no_propagation_when_output_already_quantized(tmp_path):
+    """
+    Given: Model with Mul/Div where the output already has a quantizer
+    When: Export model to onnx QDQ
+    Then: The existing output quantizer is used, not a derived one
+    """
+    model = test_models.ModelWithPreparedConstRescale(2.0, divide=True)
+    dummy_input = model.dummy_input()
+    sim = QuantizationSimModel(model, dummy_input)
+    sim.compute_encodings(lambda m: m(*dummy_input))
+    sim.model.rescale.output_quantizers[0] = Q.affine.QuantizeDequantize(
+        (), bitwidth=8, symmetric=False
+    )
+    sim.model.rescale.output_quantizers[0].set_range(0, 255.0)
+    fname = os.path.join(tmp_path, "model.onnx")
+    aimet_torch.onnx.export(
+        sim.model,
+        dummy_input,
+        fname,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        opset_version=21,
+    )
+    onnx_model = onnx.load(fname)
+    onnx.checker.check_model(onnx_model)
+    encoding_map = _get_qdq_encoding_map(onnx_model)
+    # The Div output should have the overriden scale of 1.0,
+    rescale_node = next(
+        node for node in onnx_model.graph.node if node.op_type in ("Mul", "Div")
+    )
+    assert rescale_node.output[0] in encoding_map
+    scale, offset = encoding_map[rescale_node.output[0]]
+    assert scale == 1
+    assert offset == 0
+
+
+def test_no_propagation_when_no_input_encoding(tmp_path):
+    """
+    Given: Model with Div where the input to the Div has no quantizer encoding
+    When: Export model to onnx QDQ
+    Then: No QDQ is inserted at the Div output (no input encoding to propagate from)
+    """
+    model = test_models.StandalonePreparedConstRescale(3.0, divide=True)
+    dummy_input = model.dummy_input()
+    sim = QuantizationSimModel(model, dummy_input)
+    # Disable both input and output quantizers on the Divide
+    for module in sim.model.modules():
+        if isinstance(module, (aimet_ops.Divide, aimet_ops.Multiply)):
+            module.output_quantizers[0] = None
+            module.input_quantizers[0] = None
+    sim.compute_encodings(lambda m: m(*dummy_input))
+    fname = os.path.join(tmp_path, "model.onnx")
+    aimet_torch.onnx.export(
+        sim.model,
+        dummy_input,
+        fname,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        opset_version=21,
+    )
+    onnx_model = onnx.load(fname)
+    encoding_map = _get_qdq_encoding_map(onnx_model)
+    rescale_node = next(
+        node for node in onnx_model.graph.node if node.op_type in ("Mul", "Div")
+    )
+    assert rescale_node.output[0] not in encoding_map
+
+
+def test_exported_qdq_matches_sim_with_lossy_rescale_quantization(tmp_path):
+    """
+    Given: Model with a rescale factor that undergoes lossy quantization
+    When: Export to onnx QDQ
+    Then: The exported onnx QDQ should match sim output when executed
+    """
+    model = test_models.ModelWithPreparedConstRescale(2.0, divide=True)
+    dummy_input = model.dummy_input()
+    sim = QuantizationSimModel(model, dummy_input, default_output_bw=8)
+    sim.model.rescale.output_quantizers[0] = None
+    sim.compute_encodings(lambda m: m(*dummy_input))
+    # Rescale will get clipped to 1.5 in QDQ
+    clip_val = 1.5
+    sim.model.rescale.input_quantizers[1].set_range(0, clip_val)
+    sim_output = sim.model(*dummy_input)
+    fname = os.path.join(tmp_path, "model.onnx")
+    aimet_torch.onnx.export(
+        sim.model,
+        dummy_input,
+        fname,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        opset_version=21,
+    )
+    onnx_model = onnx.load(fname)
+    onnx.checker.check_model(onnx_model)
+
+    # Verify that QDQ output matches sim output
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    onnx_input = {
+        inp.name: dummy_input[i].detach().numpy()
+        for i, inp in enumerate(onnx_model.graph.input)
+    }
+    (ort_out,) = sess.run(None, onnx_input)
+    assert np.allclose(
+        ort_out,
+        sim_output.detach().numpy(),
+        atol=sim.model.linear_2.output_quantizers[0].get_scale().item(),
+    )

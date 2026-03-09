@@ -10,6 +10,7 @@ from collections import deque, defaultdict
 import functools
 import itertools
 from typing import Iterable, Optional, Sequence, Dict, List, Union, Mapping
+import math
 
 import os
 import tempfile
@@ -1320,3 +1321,82 @@ def _derive_data_movement_op_encodings(
         encodings |= enc
 
     return {key: enc for key, enc in new_encodings.items()}
+
+
+def _get_effective_encoding(
+    tensor: str,
+    producers: Mapping[str, onnx.NodeProto],
+    encodings: Mapping[str, Mapping],
+) -> Optional[Mapping]:
+    """
+    Returns encoding for tensor, propagating upwards through grid preserving ops if necessary
+    """
+    if tensor in encodings:
+        return encodings[tensor]
+
+    producer = producers.get(tensor)
+    if not producer:
+        return None
+
+    if _is_grid_preserving_op(producer.op_type) and producer.input:
+        return _get_effective_encoding(producer.input[0], producers, encodings)
+
+    return None
+
+
+def _is_constant_scalar(tensor_name: str, constants: Mapping[str, TensorProto]) -> bool:
+    tensor = constants.get(tensor_name)
+    if tensor is None:
+        return False
+    array = to_array(tensor)
+    return array.size == 1
+
+
+def _derive_const_rescale_op_output_encodings(
+    model: onnx.ModelProto,
+    encodings: Mapping[str, Mapping],
+) -> Dict[str, Dict]:
+    updated_encodings = encodings.copy()
+    constants = _get_all_constants(model)
+    producers = {output: node for node in model.graph.node for output in node.output}
+    for node in model.graph.node:
+        if node.op_type not in ("Mul", "Div"):
+            continue
+        if node.output[0] in updated_encodings:
+            continue
+        inp_idx, scale_idx = (0, 1)
+        if node.op_type == "Mul" and not _is_constant_scalar(node.input[1], constants):
+            inp_idx, scale_idx = scale_idx, inp_idx
+        if node.input[scale_idx] in updated_encodings:
+            continue  # Skip if rescaling factor is quantized
+        if not _is_constant_scalar(node.input[scale_idx], constants):
+            continue
+        const_factor = to_array(constants.get(node.input[scale_idx]))
+        if const_factor.item() <= 0:
+            continue
+        input_encoding = _get_effective_encoding(
+            node.input[inp_idx], producers, updated_encodings
+        )
+        if input_encoding is None:
+            continue
+        input_scale = input_encoding.get("y_scale")
+        if not isinstance(input_scale, float):
+            continue
+
+        scale_factor = (
+            1 / const_factor.item() if node.op_type == "Div" else const_factor.item()
+        )
+        if scale_factor == 0 or math.isnan(scale_factor) or math.isinf(scale_factor):
+            continue
+        output_encoding = input_encoding.copy()
+        output_encoding["y_scale"] = input_scale * scale_factor
+        updated_encodings[node.output[0]] = output_encoding
+
+        # Insert trivial encoding for constant scale factor
+        scale_encoding = input_encoding.copy()
+        scale_encoding["y_scale"] = const_factor.item()
+        scale_encoding["y_zero_point"] = 0
+        updated_encodings[node.input[scale_idx]] = scale_encoding
+
+    new_encodings = {k: v for k, v in updated_encodings.items() if k not in encodings}
+    return new_encodings

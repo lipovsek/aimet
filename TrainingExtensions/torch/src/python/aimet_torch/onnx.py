@@ -22,6 +22,7 @@ from aimet_torch.common.onnx._utils import (
     _add_onnx_qdq_nodes,
     _convert_version,
     _derive_data_movement_op_encodings,
+    _derive_const_rescale_op_output_encodings,
     contains_tensor_type,
 )
 
@@ -658,12 +659,15 @@ def _to_onnx(
             base_dir=base_dir,
         ).items()
     }
-    derived_encodings = _derive_data_movement_op_encodings(
-        onnx_model,
-        {
-            name: enc.to_qnn_encoding_dict("2.0.0")
-            for name, (enc, _) in tensor_to_encoding_map.items()
-        },
+    encoding_dict = {
+        name: enc.to_qnn_encoding_dict("2.0.0")
+        for name, (enc, _) in tensor_to_encoding_map.items()
+    }
+    derived_encodings = _derive_const_rescale_op_output_encodings(
+        onnx_model, encoding_dict
+    )
+    derived_encodings |= _derive_data_movement_op_encodings(
+        onnx_model, encoding_dict | derived_encodings
     )
     # pylint: disable=protected-access
     tensor_to_encoding_map |= {

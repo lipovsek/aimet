@@ -1528,3 +1528,176 @@ class ConstantConcatModel(torch.nn.Module):
     @staticmethod
     def dummy_input():
         return (torch.randn([1, 10, 10], dtype=torch.float32),)
+
+
+class StandalonePreparedConstRescale(torch.nn.Module):
+    """Standalone rescale op wrapped in nn.Module"""
+
+    def __init__(self, div_factor, divide=True):
+        super().__init__()
+        self.denom = torch.nn.Parameter(torch.ones(1) * div_factor)
+        self.rescale = aimet_modules.Divide() if divide else aimet_modules.Multiply()
+
+    def forward(self, x):
+        return self.rescale(x, self.denom)
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(1, 10),)
+
+
+class ModelWithPreparedConstRescale(torch.nn.Module):
+    """Model with a rescale op wrapped in nn.Module"""
+
+    def __init__(self, factor, divide=True):
+        super().__init__()
+        self.denom = torch.nn.Buffer(torch.ones(1) * factor)
+        self.linear = torch.nn.Linear(10, 10)
+        self.rescale = aimet_modules.Divide() if divide else aimet_modules.Multiply()
+        self.linear_2 = torch.nn.Linear(10, 10)
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = self.rescale(x, self.denom)
+        x = self.linear_2(x)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(1, 10),)
+
+
+class ModelWithDynamicRescale(torch.nn.Module):
+    def __init__(self, divide=True):
+        super().__init__()
+        self.linear = torch.nn.Linear(10, 10)
+        self.rescale = aimet_modules.Divide() if divide else aimet_modules.Multiply()
+        self.max = aimet_modules.Max()
+        self.linear_2 = torch.nn.Linear(10, 10)
+
+    def forward(self, x):
+        x = self.linear(x)
+        factor = self.max(x)
+        x = self.rescale(x, factor)
+        x = self.linear_2(x)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return torch.randn(1, 10)
+
+
+class ModelWithFunctionalDiv(torch.nn.Module):
+    """Model with a div that is prepared for quantization"""
+
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(10, 10)
+        self.linear_2 = torch.nn.Linear(10, 10)
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = x / 2.0
+        x = self.linear_2(x)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(1, 10),)
+
+
+class DivWithDataMovement(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(10, 100)
+        self.linear_2 = torch.nn.Linear(10, 10)
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = torch.reshape(x, (5, 2, 2, 5))
+        x = torch.transpose(x, 1, 2)
+        x = x / 2.0
+        x = torch.reshape(x, (10, 10))
+        x = torch.transpose(x, 0, 1)
+        x = self.linear_2(x)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(1, 10),)
+
+
+class RescaleWithInputFactor(torch.nn.Module):
+    def __init__(self, divide=True):
+        super().__init__()
+        self.linear = torch.nn.Linear(10, 10)
+        self.rescale = aimet_modules.Divide() if divide else aimet_modules.Multiply()
+        self.linear_2 = torch.nn.Linear(10, 10)
+
+    def forward(self, x, factor):
+        x = self.linear(x)
+        x = self.rescale(x, factor)
+        x = self.linear_2(x)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(1, 10),)
+
+
+class RescaleWithVectorConst(torch.nn.Module):
+    """Model with a non-scalar (vector) constant div/mul"""
+
+    def __init__(self, divide=True):
+        super().__init__()
+        self.linear = torch.nn.Linear(10, 10)
+        self.denom = torch.nn.Buffer(torch.randn(10).abs() + 0.1)
+        self.rescale = aimet_modules.Divide() if divide else aimet_modules.Multiply()
+        self.linear_2 = torch.nn.Linear(10, 10)
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = self.rescale(x, self.denom)
+        x = self.linear_2(x)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(1, 10),)
+
+
+class MatMulRescaleAddModel(torch.nn.Module):
+    def __init__(self, divide=True):
+        super().__init__()
+        self.matmul = aimet_modules.MatMul()
+        self.rescale = aimet_modules.Divide() if divide else aimet_modules.Multiply()
+        self.add = aimet_modules.Add()
+
+    def forward(self, x, y, z):
+        x = self.matmul(x, y)
+        x = self.rescale(x, 2.0)
+        x = self.add(x, z)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return torch.randn(1, 10), torch.randn(10, 10), torch.randn(1, 10)
+
+
+class ModelWithReversedMulOrdering(torch.nn.Module):
+    """Model with a mul that is prepared for quantization"""
+
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(10, 10)
+        self.factor = torch.nn.Parameter(torch.ones(1) * 2.0)
+        self.mul = aimet_modules.Multiply()
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = self.mul(self.factor, x)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(1, 10),)
