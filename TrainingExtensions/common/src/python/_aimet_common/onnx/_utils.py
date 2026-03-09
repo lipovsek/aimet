@@ -1040,35 +1040,54 @@ def _to_encoding(
     return encoding
 
 
-def _get_all_constants(model: ModelProto) -> Dict[str, TensorProto]:
-    constants = {
-        **{init.name: init for init in model.graph.initializer},
-        **{
-            const.output[0]: attr.t
-            for const in model.graph.node
-            for attr in const.attribute
-            if const.op_type == "Constant" and attr.name == "value"
-        },
-    }
-    identities = [
-        identity for identity in model.graph.node if identity.op_type == "Identity"
-    ]
+def _iterate_graph_nodes_recursive(graph: onnx.GraphProto) -> Iterable[onnx.NodeProto]:
+    for node in graph.node:
+        yield node
 
-    while True:
-        aliases = {
-            identity.output[0]: constants[identity.input[0]]
-            for identity in identities
-            if identity.input[0] in constants
-        }
-        if aliases:
-            constants.update(aliases)
-            identities = [
-                identity
-                for identity in identities
-                if identity.output[0] not in constants
-            ]
-        else:
-            break
+        if node.op_type == "If":
+            for attr in node.attribute:
+                # then/else branch subgraphs
+                yield from _iterate_graph_nodes_recursive(attr.g)
+
+        elif node.op_type in ("Loop", "Scan"):
+            body = next(attr for attr in node.attribute if attr.name == "body")
+            yield from _iterate_graph_nodes_recursive(body.g)
+
+
+def _get_all_constants(
+    model: onnx.ModelProto, consumers: dict[str, list[onnx.NodeProto]] | None = None
+) -> dict[str, onnx.TensorProto]:
+    """
+    Get all constants in the ONNX model, including
+      * Initializers
+      * Output of Constant nodes.
+      * Output of Identity nodes that takes initializers or Constant nodes as input (recursively).
+    """
+    if consumers is None:
+        consumers = {}
+        for node in _iterate_graph_nodes_recursive(model.graph):
+            for input_name in node.input:
+                consumers.setdefault(input_name, []).append(node)
+
+    constants: dict[str, onnx.TensorProto] = {
+        const.name: const for const in _get_all_tensors(model)
+    }
+
+    constants |= {
+        const_node.output[0]: attr.t
+        for const_node in _iterate_graph_nodes_recursive(model.graph)
+        if const_node.op_type == "Constant"
+        for attr in const_node.attribute
+        if attr.HasField("t")
+    }
+
+    for const in constants.copy().values():
+        queue = consumers.get(const.name, []).copy()
+        while queue:
+            consumer = queue.pop()
+            if consumer.op_type == "Identity":
+                constants[consumer.output[0]] = const
+                queue += consumers.get(consumer.output[0], [])
 
     return constants
 

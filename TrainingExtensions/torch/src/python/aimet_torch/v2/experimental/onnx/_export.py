@@ -13,10 +13,9 @@ import functools
 import math
 import numpy as np
 import os
-from typing import Any, Sequence, Iterable, Optional, Mapping, TYPE_CHECKING
+from typing import Any, Sequence, Optional, Mapping, TYPE_CHECKING
 
 import onnx
-from onnx.external_data_helper import _get_all_tensors
 import onnxscript
 from onnxscript import opset15, opset16, opset17, opset18, opset19, opset20, opset21
 import torch
@@ -33,6 +32,10 @@ except ImportError:
     from torch.onnx._internal.torchscript_exporter._globals import GLOBALS
 
 from aimet_torch.v2.utils import patch_attr
+from aimet_torch.common.onnx._utils import (
+    _iterate_graph_nodes_recursive,
+    _get_all_constants,
+)
 
 if TYPE_CHECKING:
     from aimet_torch.v2.quantization.base.encoding import (
@@ -43,6 +46,7 @@ if TYPE_CHECKING:
     from aimet_torch.v2.quantization.affine import AffineEncoding
     from aimet_torch.v2.quantization.float import FloatEncoding
     from aimet_torch.v2.quantization.float._finfo import _finfo
+
 
 ONNX_QUANTIZER_OP_TYPES = (
     "quantize",
@@ -706,44 +710,6 @@ def _maybe_disable_C_jit_pass_onnx_deduplicate_initializers(model: torch.nn.Modu
         yield
 
 
-def _get_all_constants(
-    model: onnx.ModelProto, consumers: dict[str, list[onnx.NodeProto]] | None = None
-) -> dict[str, onnx.TensorProto]:
-    """
-    Get all constants in the ONNX model, including
-      * Initializers
-      * Output of Constant nodes.
-      * Output of Identity nodes that takes initializers or Constant nodes as input (recursively).
-    """
-    if consumers is None:
-        consumers = {}
-        for node in _iterate_graph_nodes_recursive(model.graph):
-            for input_name in node.input:
-                consumers.setdefault(input_name, []).append(node)
-
-    constants: dict[str, onnx.TensorProto] = {
-        const.name: const for const in _get_all_tensors(model)
-    }
-
-    constants |= {
-        const_node.output[0]: attr.t
-        for const_node in _iterate_graph_nodes_recursive(model.graph)
-        if const_node.op_type == "Constant"
-        for attr in const_node.attribute
-        if attr.HasField("t")
-    }
-
-    for const in constants.copy().values():
-        queue = consumers.get(const.name, []).copy()
-        while queue:
-            consumer = queue.pop()
-            if consumer.op_type == "Identity":
-                constants[consumer.output[0]] = const
-                queue += consumers.get(consumer.output[0], [])
-
-    return constants
-
-
 def remove_quantization_nodes_from_onnx_graph(
     model: onnx.ModelProto, base_dir: Optional[str] = None
 ) -> dict[str, EncodingBase]:  # pylint: disable=too-many-locals, too-many-branches
@@ -1050,20 +1016,6 @@ def _get_affine_encoding_from_onnx_node(
             pass
 
     return encoding
-
-
-def _iterate_graph_nodes_recursive(graph: onnx.GraphProto) -> Iterable[onnx.NodeProto]:
-    for node in graph.node:
-        yield node
-
-        if node.op_type == "If":
-            for attr in node.attribute:
-                # then/else branch subgraphs
-                yield from _iterate_graph_nodes_recursive(attr.g)
-
-        elif node.op_type in ("Loop", "Scan"):
-            body = next(attr for attr in node.attribute if attr.name == "body")
-            yield from _iterate_graph_nodes_recursive(body.g)
 
 
 @torch.no_grad()
