@@ -602,35 +602,39 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
         :param model: The PyTorch model whose parameters will be quant-dequantized.
         """
         stack = contextlib.ExitStack()
-        for module in model.modules():
-            if not isinstance(module, BaseQuantizationMixin):
-                continue
+        try:
+            for module in model.modules():
+                if not isinstance(module, BaseQuantizationMixin):
+                    continue
 
-            encodings = {
-                param_name: getattr(param, "encoding", None)
-                for param_name, param in module.named_parameters(recurse=False)
-            }
+                encodings = {
+                    param_name: getattr(param, "encoding", None)
+                    for param_name, param in module.named_parameters(recurse=False)
+                }
 
-            # pylint: disable=protected-access
-            stack.enter_context(module._patch_quantized_parameters())
-            if isinstance(module, QuantizationMixin):
-                stack.enter_context(module._patch_dequantized_parameters())
-            stack.enter_context(cls._update_parameters_by_attr(module))
+                # pylint: disable=protected-access
+                stack.enter_context(module._patch_quantized_parameters())
+                if isinstance(module, QuantizationMixin):
+                    stack.enter_context(module._patch_dequantized_parameters())
+                stack.enter_context(cls._update_parameters_by_attr(module))
 
-            # Restore the original encodings which might have been
-            # overwritten by _patch_quantized_parameters
-            for param_name, encoding in encodings.items():
-                qparam = getattr(module, param_name)
-                if isinstance(qparam, QuantizedTensorBase) and encoding:
-                    qparam.encoding = encoding
-                else:
-                    setattr(
-                        module,
-                        param_name,
-                        torch.nn.Parameter(qparam.as_subclass(torch.Tensor)),
-                    )
-
-        return stack
+                # Restore the original encodings which might have been
+                # overwritten by _patch_quantized_parameters
+                for param_name, encoding in encodings.items():
+                    qparam = getattr(module, param_name)
+                    if isinstance(qparam, QuantizedTensorBase) and encoding:
+                        qparam.encoding = encoding
+                    else:
+                        setattr(
+                            module,
+                            param_name,
+                            torch.nn.Parameter(qparam.as_subclass(torch.Tensor)),
+                        )
+            return stack
+        except Exception:  # pylint: disable=broad-exception-caught
+            # In case of any exception, make sure to restore
+            # the original parameters before raising the exception
+            stack.close()
 
     def qmodules(self):
         """
