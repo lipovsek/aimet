@@ -28,6 +28,7 @@ from aimet_torch.v2.utils import (
     _is_expandable,
     StatisticsNotFoundError,
     _torch_compiler_is_exporting,
+    _is_qtensor_casting_enabled,
 )
 from aimet_torch.v2.quantization.encoding_analyzer import (
     EncodingAnalyzer,
@@ -995,7 +996,11 @@ class Quantize(AffineQuantizerBase):
             block_size=self.block_size,
         )
 
-        if not _torch_compiler_is_exporting() and not torch.onnx.is_in_onnx_export():
+        if (
+            not _torch_compiler_is_exporting()
+            and not torch.onnx.is_in_onnx_export()
+            and _is_qtensor_casting_enabled()
+        ):
             output = output.as_subclass(QuantizedTensor)
             output.encoding = encoding
 
@@ -1137,7 +1142,11 @@ class QuantizeDequantize(AffineQuantizerBase):
             zero_point_shift=self.zero_point_shift,
         )
 
-        if not _torch_compiler_is_exporting() and not torch.onnx.is_in_onnx_export():
+        if (
+            not _torch_compiler_is_exporting()
+            and not torch.onnx.is_in_onnx_export()
+            and _is_qtensor_casting_enabled()
+        ):
             output = output.as_subclass(DequantizedTensor)
             output.encoding = encoding
 
@@ -1167,7 +1176,11 @@ class Dequantize(AffineQuantizerBase):  # pylint: disable=missing-class-docstrin
             input, encoding.scale, encoding.offset, block_size=self.block_size
         )
 
-        if not _torch_compiler_is_exporting() and not torch.onnx.is_in_onnx_export():
+        if (
+            not _torch_compiler_is_exporting()
+            and not torch.onnx.is_in_onnx_export()
+            and _is_qtensor_casting_enabled()
+        ):
             output = output.as_subclass(DequantizedTensor)
             output.encoding = encoding
 

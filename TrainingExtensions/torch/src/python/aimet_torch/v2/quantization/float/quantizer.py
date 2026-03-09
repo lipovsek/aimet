@@ -24,6 +24,7 @@ from aimet_torch.v2.utils import (
     patch_attr,
     _is_expandable,
     _torch_compiler_is_exporting,
+    _is_qtensor_casting_enabled,
 )
 from aimet_torch.fp_quantization import fake_cast_to_ieee_float
 from ._finfo import _finfo, _torch_dtype_to_finfo, _float4_e2m1fn
@@ -431,7 +432,11 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
             self.block_size,
         )
 
-        if not _torch_compiler_is_exporting() and not torch.onnx.is_in_onnx_export():
+        if (
+            not _torch_compiler_is_exporting()
+            and not torch.onnx.is_in_onnx_export()
+            and _is_qtensor_casting_enabled()
+        ):
             output = output.as_subclass(DequantizedTensor)
             output.encoding = encoding
 

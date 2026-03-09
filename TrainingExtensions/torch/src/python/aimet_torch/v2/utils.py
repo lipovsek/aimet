@@ -5,6 +5,7 @@
 # pylint: disable=redefined-builtin
 """Common utility functions"""
 
+from contextlib import contextmanager, ExitStack
 from typing import Callable, Tuple, Any
 import functools
 import itertools
@@ -610,3 +611,41 @@ else:
 
     def _torch_compiler_is_exporting() -> bool:
         return False
+
+
+_qtensor_enabled = True
+
+
+@contextmanager
+def _enable_qtensor_casting(enable: bool):
+    global _qtensor_enabled  # pylint: disable=global-statement
+
+    original_value = _qtensor_enabled
+    try:
+        _qtensor_enabled = enable
+        yield
+    finally:
+        _qtensor_enabled = original_value
+
+
+def _is_qtensor_casting_enabled():
+    return _qtensor_enabled
+
+
+@contextmanager
+def _inference_mode(model: torch.nn.Module, prequantize_parameters: bool):
+    # pylint: disable=protected-access
+    from .experimental.onnx._export import _precompute_encodings
+    from .quantsim import QuantizationSimModel
+
+    with ExitStack() as stack:
+        stack.enter_context(_precompute_encodings(model))
+        stack.enter_context(_enable_qtensor_casting(False))
+
+        if prequantize_parameters:
+            stack.enter_context(
+                QuantizationSimModel._apply_qdq_to_model_parameters(model)
+            )
+            stack.enter_context(remove_param_quantizers(model))
+
+        yield
