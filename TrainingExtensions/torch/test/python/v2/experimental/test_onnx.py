@@ -2834,3 +2834,52 @@ def test_exported_qdq_matches_sim_with_lossy_rescale_quantization(tmp_path):
         sim_output.detach().numpy(),
         atol=sim.model.linear_2.output_quantizers[0].get_scale().item(),
     )
+
+
+def test_shared_weight_export(tmp_path: pathlib.Path):
+    """
+    Given: Model with shared weight and identical encodings
+    When: Export to onnx QDQ
+    Then: The shared weight should be associated with exactly one QDQ node
+    """
+    model = torch.nn.Sequential(
+        torch.nn.Linear(10, 10, bias=False),
+        torch.nn.Linear(10, 10, bias=False),
+    )
+    model[1].weight = model[0].weight
+
+    x = torch.randn(10, 10)
+    sim = aimet_torch.QuantizationSimModel(model, x)
+    sim.compute_encodings(lambda model: model(x))
+    aimet_torch.onnx.export(
+        sim.model,
+        (x,),
+        tmp_path / "model.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+    )
+    onnx_model = onnx.load(tmp_path / "model.onnx")
+    onnx.checker.check_model(onnx_model)
+
+    q_nodes = [
+        node for node in onnx_model.graph.node if node.op_type == "QuantizeLinear"
+    ]
+    assert set(q.input[0] for q in q_nodes) == {
+        "0.weight",
+        "input",
+        "/0/MatMul_output_0",
+        "output__",
+    }
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out,) = sess.run(None, {"input": x.detach().numpy()})
+    expected_out = sim.model(x)
+    atol = sim.model[1].output_quantizers[0].get_scale().item()
+    assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)

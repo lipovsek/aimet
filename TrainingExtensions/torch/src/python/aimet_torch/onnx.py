@@ -188,6 +188,7 @@ def export(
         base_dir=base_dir,
     )
     _remove_intermediate_identity_nodes(onnx_qdq_model)
+    _remove_dangling_nodes_and_initializers(onnx_qdq_model)
     onnx.save(onnx_qdq_model, f)
 
 
@@ -339,7 +340,9 @@ def _check_non_standard_quantizer(model: torch.nn.Module):
             )
 
 
-def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> dict[str, str]:
+def _duplicate_shared_qdq_inputs(
+    onnx_model: onnx.ModelProto, base_dir: str | None
+) -> dict[str, str]:
     """
     Duplicate input tensors associated with multiple QDQ nodes to avoid name collision
     For example,
@@ -350,46 +353,75 @@ def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> dict[str, str]:
                         |
                         +--------------> QDQ -> Conv
 
-    After: Duplicate QDQ nodes for each usage
+    After:
+      Case 1. Insert Identity nodes for each QDQ if QDQ nodes have different encodings
 
-                              "conv1.weight_dup_0"
-                                      ↓
-        "conv1.weight" -+-- Identity --> QDQ -> Conv
+        "conv1.weight" -+--------------> QDQ -> Conv
                         |
                         +-> Identity --> QDQ -> Conv
                                       ↑
-                              "conv1.weight_dup_1"
+                              "conv1.weight_dup_0"
+
+      Case 2. Otherwise, consolidate multiple QDQs into single QDQ
+
+        "conv1.weight" -> QDQ -+--------------> Conv
+                               |
+                               +--------------> Conv
     """
     consumers: dict[str, list[onnx.NodeProto]] = {}
+    aliases: dict[str, str] = {}
+    qdq_nodes_with_shared_input: dict[str, list[onnx.NodeProto]] = {}
 
     for node in onnx_model.graph.node:
-        if f"{node.domain}::{node.op_type}" in (
-            "aimet::quantize_dequantize",
-            "aimet::QuantizeDequantize",
-            "::QuantizeLinear",
-            "::DequantizeLinear",
+        for inp in node.input:
+            consumers.setdefault(inp, []).append(node)
+
+    for identity in onnx_model.graph.node:
+        if identity.op_type == "Identity":
+            output = identity.output[0]
+            inp = aliases.get(identity.input[0], identity.input[0])
+            aliases[output] = inp
+
+    for node in onnx_model.graph.node:
+        if (node.domain, node.op_type) not in (
+            ("aimet", "quantize_dequantize"),
+            ("aimet", "QuantizeDequantize"),
+            ("aimet", "FloatQuantizeDequantize"),
         ):
-            consumers.setdefault(node.input[0], []).append(node)
+            continue
+
+        input_name = aliases.get(node.input[0], node.input[0])
+        qdq_nodes_with_shared_input.setdefault(input_name, []).append(node)
 
     aliases: dict[str, str] = {}
     producers: dict[str, onnx.NodeProto] = {}
-    for input_name, qdq_nodes in consumers.items():
+    constants = _get_all_constants(onnx_model, consumers)
+
+    for input_name, qdq_nodes in qdq_nodes_with_shared_input.items():
         if len(qdq_nodes) <= 1:
             continue
 
-        # Duplicate QDQ nodes for each usage
-        for i, qdq_node in enumerate(qdq_nodes):
-            # Create an Identity node to duplicate the tensor
-            alias = f"{input_name}_dup_{i}"
-            aliases[alias] = input_name
-            identity_node = onnx.helper.make_node(
-                "Identity",
-                inputs=[input_name],
-                outputs=[alias],
-                name=f"Identity_{input_name}_dup_{i}",
-            )
-            qdq_node.input[0] = identity_node.output[0]
-            producers[identity_node.output[0]] = identity_node
+        for i, qdq_node in enumerate(qdq_nodes[1:]):
+            if _encoding_equal(qdq_node, qdq_nodes[0], constants, base_dir):
+                # If multiple QDQ nodes have the same encoding,
+                # we can reuse the same QDQ's output for multiple consumers.
+                for consumer in consumers.get(qdq_node.output[0], []):
+                    for j, inp in enumerate(consumer.input):
+                        if inp == qdq_node.output[0]:
+                            consumer.input[j] = qdq_nodes[0].output[0]
+            else:
+                # Duplicate QDQ nodes for each usage
+                # Create an Identity node to duplicate the tensor
+                alias = f"{input_name}_dup_{i}"
+                aliases[alias] = input_name
+                identity_node = onnx.helper.make_node(
+                    "Identity",
+                    inputs=[input_name],
+                    outputs=[alias],
+                    name=f"Identity_{input_name}_dup_{i}",
+                )
+                qdq_node.input[0] = identity_node.output[0]
+                producers[identity_node.output[0]] = identity_node
 
     # Insert Identity nodes to the graph in topological order
     all_nodes = []
@@ -403,6 +435,47 @@ def _duplicate_shared_qdq_inputs(onnx_model: onnx.ModelProto) -> dict[str, str]:
     onnx_model.graph.node.extend(all_nodes)
 
     return aliases
+
+
+def _remove_dangling_nodes_and_initializers(onnx_model: onnx.ModelProto):
+    """
+    Remove nodes and initializers that are not connected to any output.
+    """
+    producers: dict[str, onnx.NodeProto] = {
+        out: node for node in onnx_model.graph.node for out in node.output
+    }
+
+    graph_outputs = {output.name for output in onnx_model.graph.output}
+    queue = list(graph_outputs)
+    reachable = set(queue)
+
+    while queue:
+        tensor_name = queue.pop()
+        producer = producers.get(tensor_name, None)
+
+        if not producer:
+            continue
+
+        for inp in producer.input:
+            if inp not in reachable:
+                reachable.add(inp)
+                queue.append(inp)
+
+    all_nodes = [
+        node
+        for node in onnx_model.graph.node
+        if any(output in reachable for output in node.output)
+    ]
+    all_initializers = [
+        initializer
+        for initializer in onnx_model.graph.initializer
+        if initializer.name in reachable
+    ]
+
+    onnx_model.graph.ClearField("node")
+    onnx_model.graph.ClearField("initializer")
+    onnx_model.graph.node.extend(all_nodes)
+    onnx_model.graph.initializer.extend(all_initializers)
 
 
 def _decouple_back_to_back_qdqs(onnx_model: onnx.ModelProto) -> dict[str, str]:
@@ -489,7 +562,6 @@ def _remove_intermediate_identity_nodes(onnx_model: onnx.ModelProto):
         for inp in node.input:
             consumers.setdefault(inp, []).append(node)
 
-    removable: dict[str, onnx.NodeProto] = {}
     for identity in onnx_model.graph.node:
         if identity.op_type != "Identity":
             continue
@@ -506,44 +578,31 @@ def _remove_intermediate_identity_nodes(onnx_model: onnx.ModelProto):
         if consumer.op_type != "QuantizeLinear":
             continue
 
-        removable[identity.name] = identity
-
-    for identity in removable.values():
         for consumer in consumers.get(identity.output[0], []):
             for i, inp in enumerate(consumer.input):
                 if inp == identity.output[0]:
                     consumer.input[i] = identity.input[0]
 
-    # Remove removable Identity nodes
-    all_nodes = [node for node in onnx_model.graph.node if node.name not in removable]
-    onnx_model.graph.ClearField("node")
-    onnx_model.graph.node.extend(all_nodes)
 
+def _encoding_equal(
+    qdq_1: onnx.NodeProto,
+    qdq_2: onnx.NodeProto,
+    constants: dict[str, onnx.TensorProto],
+    base_dir: str | None,
+) -> bool:
+    for i, qdq in enumerate([qdq_1, qdq_2]):
+        if (qdq.domain, qdq.op_type) in (
+            ("aimet", "quantize_dequantize"),
+            ("aimet", "QuantizeDequantize"),
+            ("aimet", "FloatQuantizeDequantize"),
+        ):
+            continue
 
-def _remove_redundant_qdqs(onnx_model: onnx.ModelProto, base_dir):
-    constants: dict[str, onnx.TensorProto]
-    producers: dict[str, onnx.NodeProto] = {}
-    consumers: dict[str, list[onnx.NodeProto]] = {}
-
-    for node in onnx_model.graph.node:
-        producers[node.output[0]] = node
-        for inp in node.input:
-            consumers.setdefault(inp, []).append(node)
-
-    constants = _get_all_constants(onnx_model, consumers)
-
-    qdq_nodes = [
-        node
-        for node in onnx_model.graph.node
-        if f"{node.domain}::{node.op_type}"
-        in (
-            "aimet::quantize_dequantize",
-            "aimet::QuantizeDequantize",
-            "aimet::FloatQuantizeDequantize",
+        raise ValueError(
+            f"Expected input {i} to be one of aimet::quantize_dequantize, ",
+            "aimet::QuantizeDequantize or aimet::FloatQuantizeDequantize node; "
+            f"got {qdq.domain}::{qdq.op_type}",
         )
-    ]
-
-    removable: dict[str, onnx.NodeProto] = {}
 
     def get_attributes(qdq_node: onnx.NodeProto):
         finfo = None
@@ -597,6 +656,36 @@ def _remove_redundant_qdqs(onnx_model: onnx.ModelProto, base_dir):
 
         return offset
 
+    return bool(
+        get_attributes(qdq_1) == get_attributes(qdq_2)
+        and np.all(get_scale(qdq_1) == get_scale(qdq_2))
+        and np.all(get_offset(qdq_1) == get_offset(qdq_2))
+    )
+
+
+def _remove_redundant_qdqs(onnx_model: onnx.ModelProto, base_dir):
+    constants: dict[str, onnx.TensorProto]
+    producers: dict[str, onnx.NodeProto] = {}
+    consumers: dict[str, list[onnx.NodeProto]] = {}
+
+    for node in onnx_model.graph.node:
+        producers[node.output[0]] = node
+        for inp in node.input:
+            consumers.setdefault(inp, []).append(node)
+
+    constants = _get_all_constants(onnx_model, consumers)
+
+    qdq_nodes = [
+        node
+        for node in onnx_model.graph.node
+        if f"{node.domain}::{node.op_type}"
+        in (
+            "aimet::quantize_dequantize",
+            "aimet::QuantizeDequantize",
+            "aimet::FloatQuantizeDequantize",
+        )
+    ]
+
     for qdq_node in qdq_nodes:
         prev_qdq = producers.get(qdq_node.input[0], None)
 
@@ -610,24 +699,14 @@ def _remove_redundant_qdqs(onnx_model: onnx.ModelProto, base_dir):
         ):
             continue
 
-        if (
-            get_attributes(qdq_node) == get_attributes(prev_qdq)
-            and np.all(get_scale(qdq_node) == get_scale(prev_qdq))
-            and np.all(get_offset(qdq_node) == get_offset(prev_qdq))
-        ):
-            removable[qdq_node.name] = qdq_node
+        if not _encoding_equal(qdq_node, prev_qdq, constants, base_dir):
+            continue
 
-    # Redirect consumers of redundant QDQ nodes to the previous QDQ nodes
-    for qdq_node in removable.values():
+        # Redirect consumers of redundant QDQ nodes to the previous QDQ nodes
         for consumer in consumers.get(qdq_node.output[0], []):
             for i, inp in enumerate(consumer.input):
                 if inp == qdq_node.output[0]:
                     consumer.input[i] = qdq_node.input[0]
-
-    # Remove removable qdq nodes
-    all_nodes = [node for node in onnx_model.graph.node if node.name not in removable]
-    onnx_model.graph.ClearField("node")
-    onnx_model.graph.node.extend(all_nodes)
 
 
 def _to_onnx(
@@ -639,9 +718,10 @@ def _to_onnx(
     base_dir = str(Path(str(f)).absolute().parent)
     _onnx.export(model, args, f, **kwargs)
     onnx_model = onnx.load(f, load_external_data=False)
-    aliases = _duplicate_shared_qdq_inputs(onnx_model)
+    aliases = _duplicate_shared_qdq_inputs(onnx_model, base_dir)
     _remove_redundant_qdqs(onnx_model, base_dir)
     _decouple_back_to_back_qdqs(onnx_model)
+    _remove_dangling_nodes_and_initializers(onnx_model)
 
     param_names = {
         f"{layer_name}.{param_name}"
