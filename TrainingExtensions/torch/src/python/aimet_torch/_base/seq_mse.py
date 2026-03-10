@@ -1,8 +1,6 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-# /usr/bin/env python
-
 """Sequential MSE base"""
 
 import functools
@@ -12,12 +10,13 @@ import os
 import tempfile
 import contextlib
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Callable
+from typing import Callable, List, Optional, Set, Tuple
 import torch
 from torch.nn import functional
 from torch.utils.data import DataLoader
 
 from aimet_torch.common.utils import AimetLogger
+from safetensors.torch import save_file, load_file
 
 from aimet_torch.utils import (
     CachedDataset,
@@ -95,6 +94,7 @@ class SequentialMseBase(ABC):
         params: SeqMseParams,
         modules_to_exclude: Optional[List[torch.nn.Module]] = None,
         checkpoints_config: Optional[str] = None,
+        cache_dir: Optional[str] = None,
     ):
         """
         Sequentially minimizing activation MSE loss in layer-wise way to decide optimal param quantization encodings.
@@ -122,6 +122,7 @@ class SequentialMseBase(ABC):
         :param params: Sequential MSE parameters
         :param modules_to_exclude: List of supported type module(s) to exclude when applying Sequential MSE
         :param checkpoints_config: Config files to split fp32/quant model by checkpoints to speedup activations sampling
+        :param cache_dir: Optional directory to cache/load optimized param encodings
         """
         # disable all input/output activation quantizers and
         # param quantizers of all the non-supported modules and from modules_to_exclude list.
@@ -149,6 +150,7 @@ class SequentialMseBase(ABC):
                     cached_dataset,
                     params,
                     tempdir,
+                    cache_dir,
                 )
             else:
                 fp32_modules = get_ordered_list_of_modules(
@@ -162,27 +164,47 @@ class SequentialMseBase(ABC):
                     for name, module in fp32_modules
                     if isinstance(module, SUPPORTED_MODULES)
                 ]
-                if modules_to_exclude:
 
-                    def map_from_qt_to_fp_model(inp_module):
-                        # helper function to map all modules_to_exclude from the QT object to the FP object
-                        # if necessary
-                        for name, module in sim.model.named_modules():
-                            if module == inp_module:
-                                fp_module = functools.reduce(
-                                    getattr, [model] + name.split(".")
-                                )
-                                return fp_module
-                        return inp_module
+                def map_from_qt_to_fp_model(inp_module):
+                    # helper function to map all modules_to_exclude from the QT object to the FP object
+                    # if necessary
+                    for name, module in sim.model.named_modules():
+                        if module == inp_module:
+                            fp_module = functools.reduce(
+                                getattr, [model] + name.split(".")
+                            )
+                            return fp_module
+                    return inp_module
 
+                # Pre-compute the set of excluded FP32 modules
+                excluded_fp_modules: Set[torch.nn.Module] = (
+                    set(map(map_from_qt_to_fp_model, modules_to_exclude))
+                    if modules_to_exclude
+                    else set()
+                )
+
+                if cache_dir:
+                    cached_module_names = cls.get_module_names_from_cache(cache_dir)
+                    if excluded_fp_modules:
+                        cached_module_names = [
+                            name
+                            for name in cached_module_names
+                            if model.get_submodule(name) not in excluded_fp_modules
+                        ]
+                    cls.load_cached_optimized_params(
+                        sim.model, cached_module_names, cache_dir
+                    )
                     fp32_modules = [
                         (name, module)
                         for name, module in fp32_modules
-                        if not module
-                        in map(
-                            map_from_qt_to_fp_model,
-                            modules_to_exclude,
-                        )
+                        if name not in cached_module_names
+                    ]
+
+                if excluded_fp_modules:
+                    fp32_modules = [
+                        (name, module)
+                        for name, module in fp32_modules
+                        if module not in excluded_fp_modules
                     ]
 
                 # Find and freeze optimal param encodings candidate
@@ -194,6 +216,7 @@ class SequentialMseBase(ABC):
                     params.forward_fn,
                     cached_dataset,
                     cached_quant_dataset=None,
+                    cache_dir=cache_dir,
                 )
 
     @classmethod
@@ -206,6 +229,7 @@ class SequentialMseBase(ABC):
         cached_dataset: CachedDataset,
         params: SeqMseParams,
         tempdir: str,
+        cache_dir: Optional[str],
     ):
         """
         Apply sequential MSE using optimized sampling of intermediate data. When checkpoints_config file is provided,
@@ -221,19 +245,20 @@ class SequentialMseBase(ABC):
         :param cached_dataset: Cached dataset
         :param params: Sequential MSE parameters
         :param tempdir: temporary working directory
+        :param cache_dir: Optional directory to cache/load optimized param encodings
         """
         # pylint: disable=too-many-locals
         with open(checkpoints_config) as f:
             ckpts_file = json.load(f)
-        assert "grouped_modules" in ckpts_file.keys(), (
-            "Please provide a dictionary of grouped_modules in the file to define checkpoints"
-        )
-        assert "include_static_inputs" in ckpts_file.keys(), (
-            "Please provide a dictionary of include_static_inputs in the file to define checkpoints"
-        )
-        assert "cache_on_cpu" in ckpts_file.keys(), (
-            "Please define cache_on_cpu to determine whether to cache intermediate tensors on CPU"
-        )
+
+        # Validate required keys upfront with proper error handling (not assert, which can be
+        # disabled with the -O interpreter flag).
+        required_keys = {"grouped_modules", "include_static_inputs", "cache_on_cpu"}
+        missing_keys = required_keys - ckpts_file.keys()
+        if missing_keys:
+            raise ValueError(
+                f"Missing required keys in checkpoints config file '{checkpoints_config}': {missing_keys}"
+            )
 
         grouped_modules = ckpts_file["grouped_modules"]
         breakpoint_module_name = ckpts_file["grouped_modules"][
@@ -261,6 +286,21 @@ class SequentialMseBase(ABC):
                 x = mod(*x) if isinstance(x, (tuple, list)) else mod(x)
             return x
 
+        # helper function to map all modules_to_exclude from the QT object to the FP object
+        # if necessary
+        def map_from_qt_to_fp_model(inp_module):
+            """Map a module from the quantized model to the corresponding FP32 module."""
+            for name, module in sim.model.named_modules():
+                if module == inp_module:
+                    return functools.reduce(getattr, [model] + name.split("."))
+            return inp_module
+
+        excluded_fp_modules: Set[torch.nn.Module] = (
+            set(map(map_from_qt_to_fp_model, modules_to_exclude))
+            if modules_to_exclude
+            else set()
+        )
+
         sub_fp_models, sub_sim_models = create_modulelist_for_group_modules(
             model, sim, grouped_modules
         )
@@ -268,8 +308,17 @@ class SequentialMseBase(ABC):
             zip(sub_fp_models, sub_sim_models, include_static_inputs)
         ):
             args, kwargs = cached_fp_dataset[0]
-            assert not kwargs
-            assert len(args) == 1
+            # Use explicit error raises instead of assert, which can be silently disabled
+            # with the Python -O (optimize) flag.
+            if kwargs:
+                raise ValueError(
+                    f"Keyword arguments are not supported for block inputs, got: {list(kwargs.keys())}"
+                )
+            if len(args) != 1:
+                raise ValueError(
+                    f"Expected exactly 1 positional argument for block inputs, got {len(args)}"
+                )
+
             fp32_modules = get_ordered_list_of_modules(
                 fp_block, args[0], fwd_func=fwd_fn_modulelist, ignore_duplicates=True
             )
@@ -278,27 +327,33 @@ class SequentialMseBase(ABC):
                 for name, module in fp32_modules
                 if isinstance(module, SUPPORTED_MODULES)
             ]
-            if modules_to_exclude:
 
-                def map_from_qt_to_fp_model(inp_module):
-                    # helper function to map all modules_to_exclude from the QT object to the FP object
-                    # if necessary
-                    for name, module in sim.model.named_modules():
-                        if module == inp_module:
-                            fp_module = functools.reduce(
-                                getattr, [model] + name.split(".")
-                            )
-                            return fp_module
-                    return inp_module
+            # Use a block-scoped cache directory to avoid mutating the outer cache_dir variable,
+            # which would corrupt subsequent iterations if an exception occurs mid-loop.
+            block_cache_dir = os.path.join(cache_dir, str(i)) if cache_dir else None
 
+            if block_cache_dir:
+                cached_module_names = cls.get_module_names_from_cache(block_cache_dir)
+                if excluded_fp_modules:
+                    cached_module_names = [
+                        name
+                        for name in cached_module_names
+                        if fp_block.get_submodule(name) not in excluded_fp_modules
+                    ]
+                cls.load_cached_optimized_params(
+                    quant_sim_block, cached_module_names, block_cache_dir
+                )
                 fp32_modules = [
                     (name, module)
                     for name, module in fp32_modules
-                    if not module
-                    in map(
-                        map_from_qt_to_fp_model,
-                        modules_to_exclude,
-                    )
+                    if name not in cached_module_names
+                ]
+
+            if excluded_fp_modules:
+                fp32_modules = [
+                    (name, module)
+                    for name, module in fp32_modules
+                    if module not in excluded_fp_modules
                 ]
 
             cls.run_seq_mse(
@@ -309,6 +364,7 @@ class SequentialMseBase(ABC):
                 fwd_fn_modulelist,
                 cached_fp_dataset,
                 cached_quant_dataset=cached_quant_dataset,
+                cache_dir=block_cache_dir,
             )
 
             # Get the outputs from the current block and assign to be the inputs for next block
@@ -338,6 +394,7 @@ class SequentialMseBase(ABC):
         forward_fn: Callable,
         cached_fp_dataset: CachedDataset,
         cached_quant_dataset: Optional[CachedDataset] = None,
+        cache_dir: Optional[str] = None,
     ):
         """
         Run Sequential MSE
@@ -350,18 +407,22 @@ class SequentialMseBase(ABC):
         yielded from the data loader. The function expects model as first argument and inputs to model as second argument.
         :param cached_fp_dataset: Cached dataset object
         :param cached_quant_dataset: Cached dataset object
+        :param cache_dir: Optional directory to save optimized param encodings
         """
-        name_to_quant_module = {}
-        for name, quant_module in quant_model.named_modules():
-            name_to_quant_module[name] = quant_module
+        name_to_quant_module = {
+            name: quant_module for name, quant_module in quant_model.named_modules()
+        }
 
         if not cached_quant_dataset:
             cached_quant_dataset = cached_fp_dataset
 
         for module_qualified_name, fp32_module in fp32_modules:
-            try:
-                quant_module = name_to_quant_module[module_qualified_name]
-            except KeyError:
+            quant_module = name_to_quant_module.get(module_qualified_name)
+            if quant_module is None:
+                _logger.warning(
+                    "Module %s not found in quant model, skipping",
+                    module_qualified_name,
+                )
                 continue
 
             if quant_module.param_quantizers["weight"].bitwidth > SUPPORTED_PARAM_BW:
@@ -394,6 +455,108 @@ class SequentialMseBase(ABC):
             else:
                 raise ValueError(f"Invalid inp_symmetry: {params.inp_symmetry}")
 
+            if cache_dir:
+                cls.save_to_cache(module_qualified_name, quant_module, cache_dir)
+
+    @classmethod
+    def load_cached_optimized_params(
+        cls, quant_model: torch.nn.Module, module_names: List[str], cache_dir: str
+    ):
+        """
+        Load optimized quantizer min/max from cache
+
+        :param quant_model: Quantized wrapper model
+        :type quant_model: torch.nn.Module
+        :param module_names: name of modules to load
+        :type module_names: List[str]
+        :param cache_dir: Directory containing cached param encodings
+        :type cache_dir: str
+        """
+        # Load optimized min-max value and re-compute encoding
+        for name in module_names:
+            try:
+                qmodule = quant_model.get_submodule(name)
+            except AttributeError:
+                _logger.warning(
+                    "Module %s not found in model, skipping cached data", name
+                )
+                continue
+
+            cached_state_dict_file = f"{cache_dir}/{name}.safetensors"
+            if not os.path.exists(cached_state_dict_file):
+                _logger.debug("State dict cache file not found for %s", name)
+                continue
+
+            state_dict = load_file(cached_state_dict_file)
+            quantizer = qmodule.param_quantizers["weight"]
+            quantizer.load_state_dict(state_dict)
+            _logger.info(
+                "Loaded weight param quantizer state dict of %s from %s",
+                name,
+                cached_state_dict_file,
+            )
+            cls._freeze_quantizer_encoding(quantizer)
+
+    @classmethod
+    def get_module_names_from_cache(cls, cache_dir: str) -> List[str]:
+        """
+        Get names of running modules from cache
+
+        :param cache_dir: Directory containing the cache file
+        :type cache_dir: str
+        :return: list of running module names
+        :rtype: List[str]
+        """
+        cache_file = f"{cache_dir}/running_module_names.txt"
+        if os.path.exists(cache_file):
+            with open(cache_file, "r") as f:
+                content = f.read().strip()
+
+            if not content:
+                return []
+            return content.split("\n")
+        return []
+
+    @classmethod
+    def save_to_cache(cls, module_qualified_name: str, quant_module, cache_dir: str):
+        """
+        Save quantizer min/max to cache to reuse
+
+        :param module_qualified_name: submodule name
+        :type module_qualified_name: str
+        :param quant_module: quantize wrapper module
+        :type quant_module: QuantizationMixin
+        :param cache_dir: Directory to save cache files
+        :type cache_dir: str
+        """
+        if not cache_dir:
+            raise ValueError("cache_dir cannot be None or empty")
+
+        os.makedirs(cache_dir, exist_ok=True)
+
+        # Save running module name
+        cache_file = os.path.join(cache_dir, "running_module_names.txt")
+        with open(cache_file, "a") as f:
+            f.write(module_qualified_name)
+            f.write("\n")
+
+        # Save optimized min-max value
+        saved_state_dict_file = os.path.join(
+            cache_dir, f"{module_qualified_name}.safetensors"
+        )
+        state_dict = quant_module.param_quantizers["weight"].state_dict()
+        # TODO (vinhpham): extra_state is dict not tensor must be removed before save state with safetensor
+        if "extra_state" in state_dict:
+            state_dict.pop("extra_state")
+        if "_extra_state" in state_dict:
+            state_dict.pop("_extra_state")
+        _logger.info(
+            "Save %s weight param quantizer state dict to %s",
+            module_qualified_name,
+            saved_state_dict_file,
+        )
+        save_file(state_dict, saved_state_dict_file)
+
     @staticmethod
     def get_module_inp_acts(
         module: torch.nn.Module,
@@ -406,7 +569,6 @@ class SequentialMseBase(ABC):
 
         :param module: FP32/quant module
         :param model: FP32/quant model
-        :param params: Sequential MSE parameters
         :param forward_fn: Optional adapter function that performs forward pass given a model and inputs
         yielded from the data loader. The function expects model as first argument and inputs to model as second argument.
         :param cached_dataset: Cached dataset
@@ -417,6 +579,8 @@ class SequentialMseBase(ABC):
         def hook_fn(_, inp, __):
             if isinstance(inp, tuple):
                 inp_acts.append(inp[0])
+            else:
+                inp_acts.append(inp)
             raise StopForwardException
 
         handle = module.register_forward_hook(hook_fn)
@@ -431,6 +595,12 @@ class SequentialMseBase(ABC):
                 pass
         handle.remove()
 
+        if not inp_acts:
+            raise RuntimeError(
+                f"No input activations were captured for module {module}. "
+                "Ensure the dataset is non-empty and the module is reachable during the forward pass."
+            )
+
         inp_acts = torch.stack(inp_acts)
         return inp_acts
 
@@ -444,9 +614,9 @@ class SequentialMseBase(ABC):
         For given quantsim model, get all quantizers to be disabled before applying sequential MSE.
         """
         # pylint: disable=protected-access
-        name_to_fp32_module_dict = {}
-        for name, fp32_module in model.named_modules():
-            name_to_fp32_module_dict[name] = fp32_module
+        name_to_fp32_module_dict = {
+            name: fp32_module for name, fp32_module in model.named_modules()
+        }
 
         quantizers_to_be_disabled = []
         for name, quant_wrapper in sim.quant_wrappers():

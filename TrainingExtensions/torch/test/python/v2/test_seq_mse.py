@@ -7,6 +7,7 @@ import itertools
 import copy
 import json
 import pytest
+from unittest.mock import MagicMock
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -81,6 +82,17 @@ def save_config_file_for_checkpoints(target_dir: Path) -> Path:
     with open(target_file, "w") as f:
         json.dump(checkpoints_config, f)
     return target_file
+
+
+def run_n_time_then_stop(func: callable, n: int):
+    def f(*args, **kwargs):
+        if f._count >= n:
+            raise StopIteration
+        func(*args, **kwargs)
+        f._count += 1
+
+    f._count = 0
+    return f
 
 
 class SplittableModel(torch.nn.Module):
@@ -560,3 +572,154 @@ class TestSeqMse:
 
         # Assert both losses are close
         assert torch.allclose(fast_loss, fallback_loss)
+
+    @pytest.mark.parametrize("inp_symmetry", ["asym", "symfp", "symqt"])
+    @pytest.mark.parametrize("loss_fn", ["mse", "l1", "sqnr"])
+    @pytest.mark.parametrize(
+        "qscheme",
+        [
+            QuantScheme.post_training_tf,
+            QuantScheme.training_range_learning_with_tf_init,
+        ],
+    )
+    def test_apply_seq_mse_interupt_then_resume_from_cache(
+        self,
+        inp_symmetry,
+        loss_fn,
+        qscheme,
+    ):
+        """test apply_seq_mse end-to-end with interupting and without interupting"""
+        data_loader = create_fake_data_loader(
+            dataset_size=2, batch_size=1, image_size=(3, 32, 32)
+        )
+        model = SplittableModel().eval()
+        dummy_input = torch.randn(1, 3, 32, 32)
+        non_interupted_sim = QuantizationSimModel(
+            model, dummy_input, default_param_bw=4, quant_scheme=qscheme
+        )
+        non_interupted_sim.model.requires_grad_(True)
+        interupted_sim = QuantizationSimModel(
+            model, dummy_input, default_param_bw=4, quant_scheme=qscheme
+        )
+        interupted_sim.model.requires_grad_(True)
+
+        # Apply Sequential MSE without interuption
+        with (
+            patch_attr(SequentialMse, "loss_fn", loss_fn),
+            patch_attr(SequentialMse, "inp_symmetry", inp_symmetry),
+        ):
+            apply_seq_mse(non_interupted_sim, itertools.islice(data_loader, 2))
+        assert not non_interupted_sim.model.fc1.param_quantizers[
+            "weight"
+        ].min.requires_grad
+        assert not non_interupted_sim.model.fc1.param_quantizers[
+            "weight"
+        ].max.requires_grad
+        assert not non_interupted_sim.model.fc1.param_quantizers[
+            "weight"
+        ]._allow_overwrite
+        assert not non_interupted_sim.model.fc2.param_quantizers[
+            "weight"
+        ].min.requires_grad
+        assert not non_interupted_sim.model.fc2.param_quantizers[
+            "weight"
+        ].max.requires_grad
+        assert not non_interupted_sim.model.fc2.param_quantizers[
+            "weight"
+        ]._allow_overwrite
+        non_interupted_checkpoints_enc = non_interupted_sim.model.fc2.param_quantizers[
+            "weight"
+        ].get_encodings()
+
+        # Remove cache dir to refresh run for interupted pipeline
+        # import shutil
+
+        # shutil.rmtree(SequentialMse.cache_dir)
+
+        # Apply interupted Sequential MSE: [conv1, conv2, conv3, conv4, fc1, fc2]
+        num_layers = 4
+        interupted_func = MagicMock(
+            side_effect=run_n_time_then_stop(SequentialMse.save_to_cache, num_layers)
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with (
+                patch_attr(SequentialMse, "loss_fn", loss_fn),
+                patch_attr(SequentialMse, "inp_symmetry", inp_symmetry),
+                patch_attr(SequentialMse, "save_to_cache", interupted_func),
+            ):
+                with pytest.raises(StopIteration):
+                    apply_seq_mse(
+                        interupted_sim,
+                        itertools.islice(data_loader, 2),
+                        cache_dir=tmp_dir,
+                    )
+
+            assert interupted_func.call_count == num_layers + 1
+            assert not interupted_sim.model.fc1.param_quantizers[
+                "weight"
+            ].min.requires_grad
+            assert not interupted_sim.model.fc1.param_quantizers[
+                "weight"
+            ].max.requires_grad
+            assert not interupted_sim.model.fc1.param_quantizers[
+                "weight"
+            ]._allow_overwrite
+            assert interupted_sim.model.fc2.param_quantizers["weight"].min.requires_grad
+            assert interupted_sim.model.fc2.param_quantizers["weight"].max.requires_grad
+            assert interupted_sim.model.fc2.param_quantizers["weight"]._allow_overwrite
+
+            interupted_sim = QuantizationSimModel(
+                model, dummy_input, default_param_bw=4, quant_scheme=qscheme
+            )
+            interupted_sim.model.requires_grad_(True)
+            mock_save_func = MagicMock(side_effect=SequentialMse.save_to_cache)
+            with (
+                patch_attr(SequentialMse, "loss_fn", loss_fn),
+                patch_attr(SequentialMse, "inp_symmetry", inp_symmetry),
+                patch_attr(SequentialMse, "save_to_cache", mock_save_func),
+            ):
+                apply_seq_mse(
+                    interupted_sim,
+                    itertools.islice(data_loader, 2),
+                    cache_dir=tmp_dir,
+                )
+
+            # Number optimzie steps should be equal number of layers that are not optimized yet.
+            # We have 6 layers [conv1, conv2, conv3, conv4, fc1, fc2]
+            assert mock_save_func.call_count == 6 - num_layers
+            assert not interupted_sim.model.fc1.param_quantizers[
+                "weight"
+            ].min.requires_grad
+            assert not interupted_sim.model.fc1.param_quantizers[
+                "weight"
+            ].max.requires_grad
+            assert not interupted_sim.model.fc1.param_quantizers[
+                "weight"
+            ]._allow_overwrite
+            assert not interupted_sim.model.fc2.param_quantizers[
+                "weight"
+            ].min.requires_grad
+            assert not interupted_sim.model.fc2.param_quantizers[
+                "weight"
+            ].max.requires_grad
+            assert not interupted_sim.model.fc2.param_quantizers[
+                "weight"
+            ]._allow_overwrite
+            interupted_checkpoints_enc = interupted_sim.model.fc2.param_quantizers[
+                "weight"
+            ].get_encodings()
+
+            # # encodings should be bit-exact
+            assert torch.all(
+                non_interupted_checkpoints_enc.min == interupted_checkpoints_enc.min
+            )
+            assert torch.all(
+                non_interupted_checkpoints_enc.max == interupted_checkpoints_enc.max
+            )
+            assert torch.all(
+                non_interupted_checkpoints_enc.scale == interupted_checkpoints_enc.scale
+            )
+            assert torch.all(
+                non_interupted_checkpoints_enc.offset
+                == interupted_checkpoints_enc.offset
+            )

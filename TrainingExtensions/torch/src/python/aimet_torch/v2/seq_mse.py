@@ -50,6 +50,7 @@ def apply_seq_mse(
     forward_fn: Callable = default_forward_fn,
     modules_to_exclude: Optional[List[torch.nn.Module]] = None,
     checkpoints_config: Optional[str] = None,
+    cache_dir: Optional[str] = None,
 ): ...
 
 
@@ -61,6 +62,7 @@ def apply_seq_mse(
     params: SeqMseParams,
     modules_to_exclude: Optional[List[torch.nn.Module]] = None,
     checkpoints_config: Optional[str] = None,
+    cache_dir: Optional[str] = None,
 ):
     # Deprecated
     ...
@@ -110,6 +112,7 @@ def _apply_seq_mse(
     forward_fn: Callable = default_forward_fn,
     modules_to_exclude: Optional[List[torch.nn.Module]] = None,
     checkpoints_config: Optional[str] = None,
+    cache_dir: Optional[str] = None,
 ):
     params = SeqMseParams(
         num_batches=None,
@@ -134,6 +137,7 @@ def _apply_seq_mse(
             params=params,
             modules_to_exclude=modules_to_exclude,
             checkpoints_config=checkpoints_config,
+            cache_dir=cache_dir,
         )
 
 
@@ -154,6 +158,7 @@ class SequentialMse(SequentialMseBase):
         params: SeqMseParams,
         modules_to_exclude: Optional[List[torch.nn.Module]] = None,
         checkpoints_config: Optional[str] = None,
+        cache_dir: Optional[str] = None,
     ):
         if not modules_to_exclude:
             modules_to_exclude = []
@@ -162,7 +167,13 @@ class SequentialMse(SequentialMseBase):
         )
         with cls._handle_grouped_block_quantizers(sim):
             super().apply_seq_mse(
-                model, sim, data_loader, params, modules_to_exclude, checkpoints_config
+                model,
+                sim,
+                data_loader,
+                params,
+                modules_to_exclude,
+                checkpoints_config,
+                cache_dir,
             )
 
     @staticmethod

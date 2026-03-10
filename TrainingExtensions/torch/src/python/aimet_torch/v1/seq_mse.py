@@ -48,6 +48,7 @@ class SequentialMse(SequentialMseBase):
         params: SeqMseParams,
         modules_to_exclude: Optional[List[torch.nn.Module]] = None,
         checkpoints_config: Optional[str] = None,
+        cache_dir: Optional[str] = None,
     ):
         # pylint: disable=protected-access
         assert sim._quant_scheme in (
@@ -56,7 +57,13 @@ class SequentialMse(SequentialMseBase):
         ), "Use TF quant-scheme with sequential MSE."
 
         return super().apply_seq_mse(
-            model, sim, data_loader, params, modules_to_exclude, checkpoints_config
+            model,
+            sim,
+            data_loader,
+            params,
+            modules_to_exclude,
+            checkpoints_config,
+            cache_dir,
         )
 
     @classmethod
