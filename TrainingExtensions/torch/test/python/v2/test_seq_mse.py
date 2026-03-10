@@ -18,6 +18,7 @@ from torch.utils.data import Dataset, DataLoader
 from aimet_common.defs import QuantScheme
 from aimet_torch.utils import create_fake_data_loader
 
+import aimet_torch
 from aimet_torch.v2.utils import patch_attr
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.quantsim.config_utils import (
@@ -723,3 +724,21 @@ class TestSeqMse:
                 non_interupted_checkpoints_enc.offset
                 == interupted_checkpoints_enc.offset
             )
+
+
+def test_fp_modules():
+    """
+    When: Run seq mse with some modules in FP or without param quantizers
+    Then: Shouldn't raise runtime error and should optimize the quantized modules
+    """
+    model = torch.nn.Sequential(
+        torch.nn.Conv2d(3, 3, 3),
+        torch.nn.Conv2d(3, 3, 3),
+        torch.nn.Conv2d(3, 3, 3),
+    )
+    x = torch.randn(1, 3, 224, 224)
+    sim = aimet_torch.QuantizationSimModel(model, dummy_input=x)
+    sim.compute_encodings(lambda model: model(x))
+    sim.exclude_layers_from_quantization([sim.model[0]])
+    aimet_torch.utils.remove_all_quantizers(sim.model[1])
+    apply_seq_mse(sim, [x], num_candidates=2)

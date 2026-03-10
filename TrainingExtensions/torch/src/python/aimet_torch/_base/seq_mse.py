@@ -26,6 +26,7 @@ from aimet_torch.utils import (
     change_tensor_device_placement,
     get_device,
 )
+from aimet_torch._base.quantsim import _QuantizedModuleProtocol
 from aimet_torch._base.adaround.activation_sampler import (
     create_modulelist_for_group_modules,
     get_block_inputs,
@@ -410,7 +411,9 @@ class SequentialMseBase(ABC):
         :param cache_dir: Optional directory to save optimized param encodings
         """
         name_to_quant_module = {
-            name: quant_module for name, quant_module in quant_model.named_modules()
+            name: quant_module
+            for name, quant_module in quant_model.named_modules()
+            if isinstance(quant_module, _QuantizedModuleProtocol)
         }
 
         if not cached_quant_dataset:
@@ -418,11 +421,15 @@ class SequentialMseBase(ABC):
 
         for module_qualified_name, fp32_module in fp32_modules:
             quant_module = name_to_quant_module.get(module_qualified_name)
+
             if quant_module is None:
                 _logger.warning(
                     "Module %s not found in quant model, skipping",
                     module_qualified_name,
                 )
+                continue
+
+            if not quant_module.param_quantizers["weight"]:
                 continue
 
             if quant_module.param_quantizers["weight"].bitwidth > SUPPORTED_PARAM_BW:
