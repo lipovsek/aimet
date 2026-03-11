@@ -1245,6 +1245,24 @@ def contains_tensor_type(model: ModelProto, tensor_type: int | List[int]):
     return False
 
 
+def _encoding_equal(enc1: Mapping | None, enc2: Mapping | None) -> bool:
+    return bool(
+        enc1 is not None
+        and enc2 is not None
+        and enc1["output_dtype"] == enc2["output_dtype"]
+        and np.array_equal(enc1["y_scale"], enc2["y_scale"])
+        and np.array_equal(enc1.get("y_zero_point", 0), enc2.get("y_zero_point", 0))
+        and np.array_equal(enc1.get("axis"), enc2.get("axis"))
+        and np.array_equal(enc1.get("block_size"), enc2.get("block_size"))
+        and np.array_equal(
+            enc1.get("per_channel_float_scale"), enc2.get("per_channel_float_scale")
+        )
+        and np.array_equal(
+            enc1.get("per_block_int_scale"), enc2.get("per_block_int_scale")
+        )
+    )
+
+
 def _derive_data_movement_op_encodings(
     model: onnx.ModelProto,
     encodings: Mapping[str, Mapping],
@@ -1267,8 +1285,14 @@ def _derive_data_movement_op_encodings(
         input_names = node.input[:] if node.op_type == "Concat" else [node.input[0]]
         output_names = node.output[:] if node.op_type == "Split" else [node.output[0]]
 
-        can_propagate_forward = len(input_names) == 1
-        can_propagate_backward = len(output_names) == 1
+        can_propagate_forward = all(
+            _encoding_equal(encodings.get(inp), encodings.get(input_names[0]))
+            for inp in input_names[1:]
+        )
+        can_propagate_backward = all(
+            _encoding_equal(encodings.get(out), encodings.get(output_names[0]))
+            for out in output_names[1:]
+        )
 
         for input_name, output_name in itertools.product(input_names, output_names):
             inp_encoding = encodings.get(input_name)
@@ -1286,7 +1310,7 @@ def _derive_data_movement_op_encodings(
                 and out_encoding.get("axis") is None
                 and can_propagate_backward
             ):
-                if len(consumers[input_name]) > 1 or len(node.output) > 1:
+                if len(consumers[input_name]) > 1:
                     # If input has more than one consumer or if there are more than one output,
                     # it is NOT safe to reuse output encoding for input quantization
                     continue

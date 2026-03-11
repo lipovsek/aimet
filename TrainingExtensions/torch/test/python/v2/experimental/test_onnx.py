@@ -2798,6 +2798,73 @@ def test_no_propagation_when_no_input_encoding(tmp_path):
     assert rescale_node.output[0] not in encoding_map
 
 
+def test_concat_forward_propagation(tmp_path: pathlib.Path):
+    """
+    Given: Model with a Concat with all inputs sharing the same encoding
+           or Split with all outputs sharing the same encoding
+
+      --> QDQ ->                                          -> QDQ ->
+                Concat --------> ... or ... -------> Split
+      --> QDQ ->                                          -> QDQ ->
+
+    When: Export to onnx QDQ
+    Then: The exported onnx QDQ should reuse the input encoding for the concat outputs
+
+      --> QDQ ->                                           -> QDQ ->
+                Concat -> QDQ -> ... or ... -> QDQ -> Split
+      --> QDQ ->                                           -> QDQ ->
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super(Model, self).__init__()
+            self.conv = torch.nn.Conv2d(3, 3, 3)
+
+        def forward(self, input):
+            in1, in2 = torch.split(input, 3, dim=1)
+            out1 = self.conv(in1)
+            out2 = self.conv(in2)
+            return torch.cat((out1, out2), dim=1)
+
+    model = Model()
+    x = torch.randn(1, 6, 224, 224)
+    sim = aimet_torch.QuantizationSimModel(model, x)
+    sim.compute_encodings(lambda model: model(x))
+
+    aimet_torch.onnx.export(
+        sim.model,
+        (x,),
+        tmp_path / "concat.onnx",
+        dynamo=False,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+    )
+    onnx_model = onnx.load(tmp_path / "concat.onnx")
+    onnx.checker.check_model(onnx_model)
+    producers = {out: node for node in onnx_model.graph.node for out in node.output}
+    assert producers["output"].op_type == "DequantizeLinear"
+
+    consumers = {}
+    for node in onnx_model.graph.node:
+        for input in node.input:
+            consumers.setdefault(input, []).append(node)
+    (input_consumer,) = consumers["input"]
+    assert input_consumer.op_type == "QuantizeLinear"
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out,) = sess.run(None, {"input": x.detach().numpy()})
+    expected_out = sim.model(x)
+    atol = sim.model.conv.output_quantizers[0].get_scale().item()
+    assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
+
+
 def test_exported_qdq_matches_sim_with_lossy_rescale_quantization(tmp_path):
     """
     Given: Model with a rescale factor that undergoes lossy quantization
