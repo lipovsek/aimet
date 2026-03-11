@@ -79,7 +79,13 @@ class DiskBackedModelCache:
 
         # Staleness check: compare stored config against live HuggingFace config
         config_path = entry_dir / "config.json"
-        if config_path.exists() and "model_id" in entry_meta.get("metadata", {}):
+        # We can't do this for small models, since the live config would be different from the one on disk
+        small_model = entry_meta.get("metadata", {}).get("small_model", False)
+        if (
+            config_path.exists()
+            and "model_id" in entry_meta.get("metadata", {})
+            and not small_model
+        ):
             try:
                 stored_config = AutoConfig.from_pretrained(str(config_path))
                 live_config = AutoConfig.from_pretrained(
@@ -219,9 +225,11 @@ class DiskBackedModelCache:
 
 
 def _equivalent_configs(config_a, config_b) -> bool:
-    """Compare two HuggingFace configs by dict equality, ignoring ``_name_or_path``."""
-    config_dict_a = config_a.to_dict()
-    config_dict_b = config_b.to_dict()
-    config_dict_a.pop("_name_or_path", None)
-    config_dict_b.pop("_name_or_path", None)
+    """Compare two HuggingFace configs by dict equality, ignoring private keys."""
+    config_dict_a = {
+        k: v for k, v in config_a.to_dict().items() if not k.startswith("_")
+    }
+    config_dict_b = {
+        k: v for k, v in config_b.to_dict().items() if not k.startswith("_")
+    }
     return config_dict_a == config_dict_b

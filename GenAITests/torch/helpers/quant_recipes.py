@@ -11,10 +11,6 @@ from torch.utils.data import DataLoader, Dataset
 
 from aimet_torch.experimental.adascale.adascale_optimizer import apply_adascale
 from aimet_torch.experimental.spinquant.spinquant_optimizer import apply_spinquant
-from aimet_torch.v2.nn.true_quant import QuantizedConv2d, QuantizedLinear
-from aimet_torch.v2.quantsim.config_utils import (
-    set_grouped_blockwise_quantization_for_weights,
-)
 from aimet_torch.v2.utils import remove_all_quantizers
 from aimet_torch import QuantizationSimModel
 from aimet_torch.utils import change_tensor_device_placement
@@ -95,6 +91,7 @@ class RemoveQuantization(QuantizationTechnique):
     def apply(
         quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
     ):
+        # Remove all quantization wrappers to get an FP baseline.
         remove_all_quantizers(quantsim.model)
 
 
@@ -110,42 +107,19 @@ class Skip(QuantizationTechnique):
 
 
 @YAMLConfigParser.register_recipe
-class PCQ(QuantizationTechnique):
-    """Apply vanilla PCQ to model"""
+class Calibration(QuantizationTechnique):
+    """Calibrate quantization parameters.
+
+    Granularity (PCQ/LPBQ/BQ) is configured via the ``precision:`` section.
+    This recipe simply runs calibration.
+    """
 
     @staticmethod
     @torch.no_grad()
     def apply(
         quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
     ):
-        _compute_encodings(quantsim, generator, dataloader, num_iterations=20)
-
-
-@YAMLConfigParser.register_recipe
-class LPBQ(QuantizationTechnique):
-    """Apply LPBQ to model"""
-
-    @staticmethod
-    @torch.no_grad()
-    def apply(
-        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
-    ):
-        arg = lambda module: (
-            isinstance(module, (QuantizedConv2d, QuantizedLinear))
-            and module.param_quantizers["weight"]
-            and module.param_quantizers["weight"].bitwidth == 4
-        )
-
-        set_grouped_blockwise_quantization_for_weights(
-            sim=quantsim,
-            arg=arg,
-            bitwidth=4,
-            symmetric=True,
-            decompressed_bw=8,
-            block_size=64,
-            block_grouping=-1,
-        )
-
+        # Calibrate quantization parameters by running data through the model.
         _compute_encodings(quantsim, generator, dataloader, num_iterations=20)
 
 
@@ -158,37 +132,14 @@ class SeqMSE(QuantizationTechnique):
     def apply(
         quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
     ):
+        # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(generator, dataloader, 20, torch.device("cpu"))
+
+        # Step 2: Optimize weight quantization parameters to minimize layer-wise MSE.
         apply_seq_mse(quantsim, inputs, num_candidates=20)
+
+        # Step 3: Calibrate activation quantization parameters.
         _compute_encodings(quantsim, generator, dataloader, num_iterations=20)
-
-
-@YAMLConfigParser.register_recipe
-class LPBQ_SeqMSE(QuantizationTechnique):
-    """Apply SeqMSE to model"""
-
-    @staticmethod
-    @torch.no_grad()
-    def apply(
-        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
-    ):
-        arg = lambda module: (
-            isinstance(module, (QuantizedConv2d, QuantizedLinear))
-            and module.param_quantizers["weight"]
-            and module.param_quantizers["weight"].bitwidth == 4
-        )
-
-        set_grouped_blockwise_quantization_for_weights(
-            sim=quantsim,
-            arg=arg,
-            bitwidth=4,
-            symmetric=True,
-            decompressed_bw=8,
-            block_size=64,
-            block_grouping=-1,
-        )
-
-        SeqMSE.apply(quantsim, generator, dataloader)
 
 
 @YAMLConfigParser.register_recipe
@@ -204,15 +155,19 @@ class AdaScale(QuantizationTechnique):
         num_batches: int = 20,
         num_iterations: int = 1500,
     ):
+        # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(
             generator, dataloader, num_batches, torch.device("cpu")
         )
+
+        # Step 2: Optimize quantization parameters using AdaScale.
         apply_adascale(
             quantsim,
             inputs,
             num_iterations=num_iterations,
         )
 
+        # Step 3: Calibrate activation quantization parameters.
         _compute_encodings(quantsim, generator, dataloader, num_iterations=20)
 
 
@@ -252,6 +207,7 @@ class OmniQuant(QuantizationTechnique):
             def __len__(self):
                 return min(len(self.dataloader), self.num_batches)
 
+        # Step 1: Apply OmniQuant optimization.
         apply_omniquant(
             quant_sim=quantsim,
             dataloader=LimitedBatchDataLoader(dataloader, num_batches=num_batches),
@@ -259,6 +215,7 @@ class OmniQuant(QuantizationTechnique):
             num_iterations=num_iterations,
         )
 
+        # Step 2: Calibrate activation quantization parameters.
         _compute_encodings(quantsim, generator, dataloader, num_iterations=40)
 
 
@@ -269,7 +226,7 @@ class SpinQuant(QuantizationTechnique):
     def apply(
         quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
     ):
-        # Untie embed_tokens and lm_head if needed
+        # Step 1: Untie embed_tokens and lm_head weights if they are shared.
         if (
             quantsim.model.model.model.embed_tokens.weight
             is quantsim.model.model.lm_head.weight
@@ -281,7 +238,10 @@ class SpinQuant(QuantizationTechnique):
             )
             quantsim.model.model.lm_head.weight = new_weight
 
+        # Step 2: Apply SpinQuant rotation.
         apply_spinquant(model=quantsim.model.model)
+
+        # Step 3: Calibrate quantization parameters.
         _compute_encodings(quantsim, generator, dataloader, num_iterations=20)
 
 
@@ -296,7 +256,7 @@ class SpinQuant_AdaScale(QuantizationTechnique):
         num_batches: int = 20,
         num_iterations: int = 1500,
     ):
-        # Untie embed_tokens and lm_head if needed
+        # Step 1: Untie embed_tokens and lm_head weights if they are shared.
         if (
             quantsim.model.model.model.embed_tokens.weight
             is quantsim.model.model.lm_head.weight
@@ -308,5 +268,8 @@ class SpinQuant_AdaScale(QuantizationTechnique):
             )
             quantsim.model.model.lm_head.weight = new_weight
 
+        # Step 2: Apply SpinQuant rotation.
         apply_spinquant(model=quantsim.model.model)
+
+        # Step 3: Apply AdaScale optimization.
         AdaScale.apply(quantsim, generator, dataloader, num_batches, num_iterations)

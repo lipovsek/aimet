@@ -13,6 +13,7 @@ import yaml
 from transformers import AutoConfig
 
 from .export import get_test_artifacts_path
+from .precision_config import PrecisionConfig
 
 
 @dataclass
@@ -260,8 +261,6 @@ class YAMLConfigParser:
     def validate_config(cls, doc):
         if "model" not in doc:
             raise RuntimeError("Model section not specified.")
-        if "recipe" not in doc:
-            raise RuntimeError("Recipe not specified.")
         if "metrics" not in doc:
             raise RuntimeError("Metrics not specified.")
 
@@ -269,7 +268,7 @@ class YAMLConfigParser:
             raise RuntimeError(
                 "Multiple models cannot be specified in a single document."
             )
-        if not isinstance(doc["recipe"], dict):
+        if "recipe" in doc and not isinstance(doc["recipe"], dict):
             raise RuntimeError(
                 "Multiple recipes cannot be specified in a single document."
             )
@@ -282,18 +281,19 @@ class YAMLConfigParser:
             raise RuntimeError("Context length not specified.")
 
         # Normalize single recipe to component format
-        has_recipe_name = "name" in doc["recipe"]
-        has_backbone = "backbone" in doc["recipe"]
-        if not has_recipe_name and not has_backbone:
-            raise RuntimeError(
-                "Recipe must have either 'name' or 'backbone' specified."
-            )
-        elif has_recipe_name and has_backbone:
-            raise RuntimeError(
-                "Recipe cannot have both 'name' and 'backbone' specified."
-            )
-        elif has_recipe_name:
-            doc["recipe"] = {"backbone": doc["recipe"]}
+        if "recipe" in doc:
+            has_recipe_name = "name" in doc["recipe"]
+            has_backbone = "backbone" in doc["recipe"]
+            if not has_recipe_name and not has_backbone:
+                raise RuntimeError(
+                    "Recipe must have either 'name' or 'backbone' specified."
+                )
+            elif has_recipe_name and has_backbone:
+                raise RuntimeError(
+                    "Recipe cannot have both 'name' and 'backbone' specified."
+                )
+            elif has_recipe_name:
+                doc["recipe"] = {"backbone": doc["recipe"]}
 
         # Backward compatibility: migrate top-level dataset into backbone component
         if "dataset" in doc:
@@ -310,7 +310,7 @@ class YAMLConfigParser:
                 raise RuntimeError("Metric name not specified.")
 
     @classmethod
-    def parse_document(cls, doc):
+    def parse_document(cls, doc, export_base_dir="genai_output/exports"):
         cls.validate_config(doc)
         task_params = {}
 
@@ -329,7 +329,7 @@ class YAMLConfigParser:
 
         if task_params["export"] or task_params["eval_in_onnx"]:
             task_params["export"] = (
-                get_test_artifacts_path(doc)
+                get_test_artifacts_path(doc, base_dir=export_base_dir)
                 if isinstance(task_params["export"], bool)
                 else task_params["export"]
             )
@@ -356,33 +356,43 @@ class YAMLConfigParser:
                 f"adaptations={adaptations}."
             ) from exc
 
+        # Precision config
+        precision = PrecisionConfig.from_dict(doc.pop("precision", None))
+        task_params["precision"] = precision
+
         # Recipe parsing
         task_params["recipe"] = {}
-        for component_name, component_config in doc["recipe"].items():
-            recipe_name = component_config["name"]
-            try:
-                recipe_cls = cls.get_recipe(recipe_name)
-                task_params["recipe"][component_name] = component_config.copy()
-                task_params["recipe"][component_name]["class"] = recipe_cls
-                del task_params["recipe"][component_name]["name"]
-            except LookupError as exc:
-                raise LookupError(
-                    f"Specified quantization recipe name ({recipe_name}) not found."
-                ) from exc
-
-            # Parse dataset within component
-            if "dataset" in component_config:
-                dataset_config = task_params["recipe"][component_name]["dataset"]
-                dataset_name = dataset_config["name"]
+        if "recipe" in doc:
+            for component_name, component_config in doc["recipe"].items():
+                recipe_name = component_config["name"]
                 try:
-                    dataset_cls = cls.get_dataset(dataset_name)
-                    dataset_config["class"] = dataset_cls
-                    del dataset_config["name"]
+                    recipe_cls = cls.get_recipe(recipe_name)
+                    task_params["recipe"][component_name] = component_config.copy()
+                    task_params["recipe"][component_name]["class"] = recipe_cls
+                    del task_params["recipe"][component_name]["name"]
                 except LookupError as exc:
                     raise LookupError(
-                        f"Specified dataset name ({dataset_name}) not found."
+                        f"Specified quantization recipe name ({recipe_name}) not found."
                     ) from exc
-        del doc["recipe"]
+
+                # Parse dataset within component
+                if "dataset" in component_config:
+                    dataset_config = task_params["recipe"][component_name]["dataset"]
+                    dataset_name = dataset_config["name"]
+                    try:
+                        dataset_cls = cls.get_dataset(dataset_name)
+                        dataset_config["class"] = dataset_cls
+                        del dataset_config["name"]
+                    except LookupError as exc:
+                        raise LookupError(
+                            f"Specified dataset name ({dataset_name}) not found."
+                        ) from exc
+            del doc["recipe"]
+        else:
+            task_params["recipe"] = {
+                "backbone": {"class": cls.get_recipe("RemoveQuantization")},
+                "visual": {"class": cls.get_recipe("RemoveQuantization")},
+            }
 
         # Metrics parsing
         metrics = (
@@ -410,9 +420,9 @@ class YAMLConfigParser:
         return task_params
 
     @classmethod
-    def parse(cls, filename):
+    def parse(cls, filename, export_base_dir="genai_output/exports"):
         print(filename)
         with open(filename, "r") as file:
             docs = yaml.safe_load_all(file)
             for doc in docs:
-                yield cls.parse_document(doc)
+                yield cls.parse_document(doc, export_base_dir=export_base_dir)

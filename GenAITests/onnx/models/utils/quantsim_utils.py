@@ -5,7 +5,17 @@
 
 import torch
 import onnx
-from aimet_onnx.quantsim import QuantizationSimModel as QuantSimOnnx
+
+from aimet_onnx.common.defs import qtype, float16, float32
+from aimet_onnx.quantsim import (
+    QuantizationSimModel,
+    set_grouped_blockwise_quantization_for_weights,
+    set_blockwise_quantization_for_weights,
+    set_lpbq_for_params,
+)
+
+from GenAITests.shared.helpers.precision_config import PrecisionConfig, WeightPrecision
+from GenAITests.onnx.helpers.quant_recipes import _get_lm_head_node_names
 
 
 def get_ort_providers(
@@ -48,7 +58,18 @@ class AttributePatch:
             setattr(self.obj, self.attr_name, self.old_value)
 
 
-def _tie_quantizers_for_kv_cache(quantsim_model: QuantSimOnnx) -> None:
+def _resolve_kv_cache_quantization(
+    quantsim_model: QuantizationSimModel, precision: qtype
+) -> None:
+    if precision in (float16, float32):
+        # todo place KV cache quantizers in float mode
+        pass
+    else:
+        _tie_quantizers_for_kv_cache(quantsim_model)
+        _set_tensors_to_output_n_bit_symmmetric(quantsim_model, precision.bits)
+
+
+def _tie_quantizers_for_kv_cache(quantsim_model: QuantizationSimModel) -> None:
     quantizer_mapping = dict()
     for input_name in quantsim_model.model.graph().input:
         if "past_key" in input_name.name or "past_value" in input_name.name:
@@ -59,7 +80,9 @@ def _tie_quantizers_for_kv_cache(quantsim_model: QuantSimOnnx) -> None:
     quantsim_model.set_quantizers(quantizer_mapping)
 
 
-def _set_tensors_to_output_n_bit_symmmetric(quantsim_model: QuantSimOnnx, n: int = 8):
+def _set_tensors_to_output_n_bit_symmmetric(
+    quantsim_model: QuantizationSimModel, n: int = 8
+):
     out_tensors = []
     out_tensors.extend(
         [
@@ -80,7 +103,7 @@ def _set_tensors_to_output_n_bit_symmmetric(quantsim_model: QuantSimOnnx, n: int
 
 
 def _set_tensor_to_n_bit_symmetric(
-    quantsim_model: QuantSimOnnx, tensor_name: str, n: int = 8
+    quantsim_model: QuantizationSimModel, tensor_name: str, n: int = 8
 ):
     if tensor_name in quantsim_model.qc_quantize_op_dict:
         quantizer = quantsim_model.qc_quantize_op_dict[tensor_name]
@@ -88,14 +111,26 @@ def _set_tensor_to_n_bit_symmetric(
         quantizer.use_symmetric_encodings = True
 
 
-def _set_lm_head_to_8b(quantsim_model: QuantSimOnnx):
+def _set_lm_head_precision(
+    quantsim_model: QuantizationSimModel, precision: WeightPrecision
+):
+    # todo: update placing LM head in LPBQ/BQ if specified
     # todo: update this to support weights in O, I format (like from torch.onnx.export)
-    for weight in _get_lm_head_weights(quantsim_model.model.model):
-        quantizer = quantsim_model.qc_quantize_op_dict[weight.name]
-        quantizer.set_bitwidth(8)
-        quantizer.quant_info.blockSize = 0
-        quantizer.quant_info.blockAxis = -1
-        quantizer.enable_per_channel_quantization()
+    if precision.granularity == "LPBQ":
+        set_lpbq_for_params(
+            sim=quantsim_model,
+            op_types=("Gemm", "MatMul", "Conv"),
+            bitwidth=precision.qtype.bits,
+            block_size=precision.block_size,
+            nodes_to_include=_get_lm_head_node_names(quantsim_model),
+        )
+    elif precision.granularity == "PCQ":
+        for weight in _get_lm_head_weights(quantsim_model.model.model):
+            quantizer = quantsim_model.qc_quantize_op_dict[weight.name]
+            quantizer.set_bitwidth(precision.qtype.bits)
+            quantizer.quant_info.blockSize = 0
+            quantizer.quant_info.blockAxis = -1
+            quantizer.enable_per_channel_quantization()
 
 
 def _get_lm_head_weights(quantsim_model: onnx.ModelProto):
@@ -109,3 +144,35 @@ def _get_lm_head_weights(quantsim_model: onnx.ModelProto):
                     weight.name + "_qdq",
                 }:
                     yield weight
+
+
+def _apply_block_granularity_to_decoder_stack(
+    quantsim_model: QuantizationSimModel, precision: PrecisionConfig
+):
+    """Apply block-level granularity (LPBQ/BQ) to weight quantizers if configured."""
+    block_prec = precision.blocks["default"]
+    if block_prec.granularity == "LPBQ":
+        set_grouped_blockwise_quantization_for_weights(
+            sim=quantsim_model,
+            op_types=("Gemm", "MatMul", "Conv"),
+            bitwidth=block_prec.qtype.bits,
+            decompressed_bw=8,
+            block_size=block_prec.block_size,
+            nodes_to_exclude=_get_lm_head_node_names(quantsim_model),
+        )
+    elif block_prec.granularity == "BQ":
+        set_blockwise_quantization_for_weights(
+            sim=quantsim_model,
+            op_types=("Gemm", "MatMul", "Conv"),
+            bitwidth=block_prec.qtype.bits,
+            symmetric=True,
+            block_size=block_prec.block_size,
+            nodes_to_exclude=_get_lm_head_node_names(quantsim_model),
+        )
+
+
+def _remove_activation_quantizers(quantsim_model: QuantizationSimModel):
+    for op_name, qc_op in quantsim_model.qc_quantize_op_dict.items():
+        if op_name in quantsim_model.activation_names:
+            qc_op.reset_encoding_stats()
+            qc_op.enabled(False)

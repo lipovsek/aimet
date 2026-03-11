@@ -3,19 +3,26 @@
 
 """Generic ONNX LLM class"""
 
+from __future__ import annotations
+
 import tempfile
 import onnx
 import torch
 from transformers import AutoConfig
 
 from aimet_onnx import quantsim
-from aimet_onnx.quantsim import QuantizationSimModel
+from aimet_onnx.quantsim import (
+    QuantizationSimModel,
+)
+from aimet_onnx.common.defs import float32
 
 from GenAITests.shared.helpers.model_cache import DiskBackedModelCache, ModelCacheEntry
+from GenAITests.shared.helpers.precision_config import PrecisionConfig
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.base import LLM, SimCollection
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
+from GenAITests.onnx.models.adaptations.hub_models import AIHMAdaptation
 from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
     get_onnx_model,
     load_model_components_from_disk,
@@ -23,9 +30,10 @@ from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
     is_huggingface_ckpt,
 )
 from GenAITests.onnx.models.utils.quantsim_utils import (
-    _set_tensors_to_output_n_bit_symmmetric,
-    _tie_quantizers_for_kv_cache,
-    _set_lm_head_to_8b,
+    _resolve_kv_cache_quantization,
+    _set_lm_head_precision,
+    _apply_block_granularity_to_decoder_stack,
+    _remove_activation_quantizers,
     get_ort_providers,
     AttributePatch,
 )
@@ -42,11 +50,21 @@ class LLM_ONNX(LLM):
         context_length: int,
         sequence_length: int,
         small_model: bool = False,
-        kv_bits: int = 8,
+        precision: PrecisionConfig | None = None,
         model_cache: DiskBackedModelCache | None = None,
         *args,
         **kwargs,
     ) -> SimCollection:
+        if precision is None:
+            precision = PrecisionConfig()
+
+        if issubclass(cls, AIHMAdaptation):
+            # If we are working with AIHM adapted models, we need to change the block detection strategy for Qwen3
+            # todo: remove this when we have more robust block matching
+            from aimet_onnx.graph_passes.passes.decoder_block import DecoderBlockQwen3
+
+            DecoderBlockQwen3.NUM_RMSNORM_PER_BLK = 41
+
         is_hf = is_huggingface_ckpt(model_id)
 
         # Use model cache for HuggingFace checkpoints when a cache is provided
@@ -90,6 +108,9 @@ class LLM_ONNX(LLM):
             )
             config = AutoConfig.from_pretrained(model_id)
 
+        default_param_qtype = precision.blocks["default"].qtype
+        default_activation_qtype = precision.activations
+
         with (
             AttributePatch(quantsim, "op_types_to_tie_qtzrs", ["Concat"]),
             AttributePatch(quantsim, "_tie_qtzrs", True),
@@ -102,8 +123,8 @@ class LLM_ONNX(LLM):
             quant_sim = QuantizationSimModel(
                 model=onnx_model,
                 quant_scheme="min_max",
-                default_activation_bw=16,
-                default_param_bw=4,
+                param_type=default_param_qtype,
+                activation_type=default_activation_qtype,
                 config_file=cls.get_quantsim_config(),
                 providers=get_ort_providers(
                     torch.device("cuda")
@@ -112,12 +133,15 @@ class LLM_ONNX(LLM):
                 ),
             )
 
-        # Setting kv_cache and some other layers to 8-bit
-        _set_tensors_to_output_n_bit_symmmetric(quant_sim, kv_bits)
-        # Setting the LM head weights to 8-bit
-        _set_lm_head_to_8b(quant_sim)
-        # Tie kv_cache
-        _tie_quantizers_for_kv_cache(quant_sim)
+        # Setting the LM head weights
+        _set_lm_head_precision(quant_sim, precision.lm_head)
+        # Tie KV cache, and set quantization type
+        _resolve_kv_cache_quantization(quant_sim, precision.resolve_kv_cache_qtype())
+        # Apply block-level granularity (LPBQ/BQ) if configured
+        _apply_block_granularity_to_decoder_stack(quant_sim, precision)
+
+        if default_activation_qtype == float32:
+            _remove_activation_quantizers(quant_sim)
 
         return SimCollection(quant_sim, config=config)
 

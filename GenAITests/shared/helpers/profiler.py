@@ -7,6 +7,9 @@ import os
 import json
 import csv
 import collections
+import datetime
+import platform
+import subprocess
 import sys
 import fcntl
 from contextlib import contextmanager
@@ -85,6 +88,52 @@ def recursive_update(d, u):
     return d
 
 
+_cached_environment = None
+
+
+def _collect_environment():
+    """Collect environment info: Python version, GPU, platform, key packages.
+
+    Results are cached after the first call since the environment doesn't change
+    within a single process.
+    """
+    global _cached_environment
+    if _cached_environment is not None:
+        return _cached_environment
+
+    env = {
+        "run_type": "local",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+    }
+
+    try:
+        import torch
+
+        env["cuda_available"] = torch.cuda.is_available()
+        if torch.cuda.is_available():
+            env["cuda_version"] = torch.version.cuda
+            env["gpu_name"] = torch.cuda.get_device_name(0)
+    except ImportError:
+        pass
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "freeze"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            env["pip_freeze"] = result.stdout.strip().split("\n")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    _cached_environment = env
+    return env
+
+
 def write_stats_to_disk(
     output_folder: str,
     filename: str,
@@ -94,6 +143,7 @@ def write_stats_to_disk(
     components: dict[str, ComponentRecipeStats],
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
+    precision: dict | None = None,
 ):
     _write_stats_to_json(
         str(os.path.join(output_folder, filename + ".json")),
@@ -103,6 +153,7 @@ def write_stats_to_disk(
         components,
         accuracy_results,
         export_location,
+        precision,
     )
 
     _write_stats_to_csv(
@@ -113,6 +164,7 @@ def write_stats_to_disk(
         components,
         accuracy_results,
         export_location,
+        precision,
     )
 
 
@@ -124,6 +176,7 @@ def _write_stats_to_csv(
     components: dict[str, ComponentRecipeStats],
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
+    precision: dict | None = None,
 ):
     def dict_to_postgres_csv_json_field(d):
         json_str = json.dumps(d, separators=(",", ":"))  # Compact JSON
@@ -154,9 +207,11 @@ def _write_stats_to_csv(
         model_type,
         model_id,
         dict_to_postgres_csv_json_field(model_modifiers),
+        dict_to_postgres_csv_json_field(precision or {}),
         dict_to_postgres_csv_json_field(components_dict),
         dict_to_postgres_csv_json_field(accuracy_table),
         export_location if export_location is not None else "",
+        dict_to_postgres_csv_json_field(_collect_environment()),
     ]
 
     # Use file lock to ensure process-safe writes
@@ -169,9 +224,11 @@ def _write_stats_to_csv(
                         "model_type",
                         "model_id",
                         "model_modifiers",
+                        "precision",
                         "components",
                         "accuracy_results",
                         "export",
+                        "environment",
                     ]
                 )
 
@@ -188,6 +245,7 @@ def _write_stats_to_json(
     components: dict[str, ComponentRecipeStats],
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
+    precision: dict | None = None,
 ):
     """Helper function to write collected stats to disk, only overwriting newly collected fields.
 
@@ -197,6 +255,8 @@ def _write_stats_to_json(
     stats = {
         "model_id": model_id,
         "model_modifiers": model_modifiers,
+        "precision": precision or {},
+        "environment": _collect_environment(),
         "components": {
             comp_name: {
                 "recipe": comp_stats.recipe_name,
@@ -235,3 +295,72 @@ def _write_stats_to_json(
         # Write the updated dictionary back to the file
         with open(filename, "w") as f:
             json.dump(data, f, indent=4)
+
+
+def _read_json_data(filename):
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def _append_json_entry(data, model_type, entry):
+    if model_type not in data:
+        data[model_type] = []
+    data[model_type].append(entry)
+
+
+def merge_json_results(source_path, dest_path):
+    """Merge entries from a source profiling_data.json into a destination file.
+
+    Each model_type key in the source has its entries appended to the
+    corresponding list in the destination.
+    """
+    if not os.path.exists(source_path):
+        return 0
+
+    with open(source_path, "r") as f:
+        source_data = json.load(f)
+
+    dest_data = _read_json_data(dest_path)
+
+    count = 0
+    for model_type, entries in source_data.items():
+        for entry in entries:
+            _append_json_entry(dest_data, model_type, entry)
+            count += 1
+
+    with open(dest_path, "w") as f:
+        json.dump(dest_data, f, indent=4)
+
+    return count
+
+
+def merge_csv_results(source_path, dest_path):
+    """Append rows from a source profiling_data.csv into a destination file.
+
+    Creates the destination with headers if it doesn't exist.
+    """
+    if not os.path.exists(source_path):
+        return 0
+
+    with open(source_path, "r", newline="") as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+
+    if len(rows) <= 1:
+        return 0
+
+    header = rows[0]
+    data_rows = rows[1:]
+
+    if not os.path.exists(dest_path):
+        with open(dest_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+
+    with open(dest_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerows(data_rows)
+
+    return len(data_rows)

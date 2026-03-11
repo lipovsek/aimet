@@ -3,15 +3,21 @@
 
 """pytest config for test_genai.py"""
 
+import warnings
+from pathlib import Path
+
 import pytest
+import yaml
 
 from GenAITests.shared.helpers.fp_cache import DiskBackedFPCache
 from GenAITests.shared.helpers.model_cache import DiskBackedModelCache
-from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 
 
 def pytest_addoption(parser):
     parser.addoption("--config", action="store", default=None)
+    parser.addoption("--force-export", action="store_true", default=False)
+    parser.addoption("--export-dir", action="store", default="genai_output/exports")
+    parser.addoption("--results-dir", action="store", default="genai_output/results")
     parser.addoption("--fp-cache-dir", action="store", default=".fp_cache")
     parser.addoption("--clear-fp-cache", action="store_true", default=False)
     parser.addoption("--model-cache-dir", action="store", default=".model_cache")
@@ -46,12 +52,41 @@ def model_cache(request):
     return cache
 
 
+@pytest.fixture(scope="session")
+def export_dir(request):
+    """Base directory for exported model artifacts."""
+    path = Path(request.config.getoption("--export-dir"))
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+@pytest.fixture(scope="session")
+def results_dir(request):
+    """Directory for global profiling results (profiling_data.json/csv)."""
+    path = Path(request.config.getoption("--results-dir"))
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def pytest_generate_tests(metafunc):
     config_file = metafunc.config.getoption("--config", skip=False)
+    force_export = metafunc.config.getoption("--force-export", skip=False)
 
-    test_parameters = (
-        list(YAMLConfigParser.parse(config_file)) if config_file else [None]
-    )
-    if "test_parameters" in metafunc.fixturenames:
-        # Generate test cases based on the test parameters list from the config file
-        metafunc.parametrize("test_parameters", test_parameters)
+    if not config_file:
+        raise ValueError(
+            "No config file provided. Please specify a config file using the --config option,"
+        )
+
+    with open(config_file, "r") as f:
+        docs = list(yaml.safe_load_all(f))
+    if force_export:
+        for doc in docs:
+            if doc.get("export") and doc["export"] != True:
+                warnings.warn(
+                    "force_export is True, all artifacts will be saved to default export path."
+                )
+            doc["export"] = True
+    test_configs = docs
+
+    if "test_config" in metafunc.fixturenames:
+        metafunc.parametrize("test_config", test_configs)

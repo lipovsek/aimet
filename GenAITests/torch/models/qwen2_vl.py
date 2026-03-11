@@ -3,16 +3,19 @@
 
 """Qwen-2.5-VL model class"""
 
-import warnings
+from __future__ import annotations
+
 import torch
 
-from aimet_torch.common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme, float16, float32
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.nn.true_quant import QuantizationMixin
+from aimet_torch.v2.utils import remove_activation_quantizers
 from aimet_torch.v2.nn.transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     QuantizedQwen2_5_VLRMSNorm,
 )
 
+from GenAITests.shared.helpers.precision_config import PrecisionConfig
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.models.qwen2_vl import (
@@ -20,6 +23,10 @@ from GenAITests.shared.models.qwen2_vl import (
     Qwen2VLVisualWrapper,
 )
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAITests.torch.models.utils.quantsim_utils import (
+    _apply_block_granularity_to_decoder_stack,
+    _set_lm_head_precision,
+)
 
 
 @YAMLConfigParser.register_model("qwen2_5_vl")
@@ -32,18 +39,22 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
         sequence_length: int,
         small_model: bool = False,
         dtype: torch.dtype = torch.float32,
-        kv_bits: int = 8,
+        precision: PrecisionConfig | None = None,
         *args,
         **kwargs,
     ) -> SimCollection:
-        warnings.warn(
-            f"kv_bits parameter (value: {kv_bits}) is ignored in Torch GenAI framework. "
-            f"KV Cache quantization is not simulated. If you would like this setting to be "
-            f"simulated on your model, please enable eval_in_onnx in your config file."
-        )
+        if precision is None:
+            precision = PrecisionConfig()
 
         model = cls.instantiate_model(model_id, small_model)
         model = model.to(dtype=dtype)
+
+        default_param_bw = precision.blocks["default"].qtype.bits
+        default_output_bw = (
+            precision.activations.bits
+            if precision.activations not in (float16, float32)
+            else 16
+        )
 
         # 1) Wrap LLM model to make it traceable
         # Need to wrap model in this in order to enable JIT trace
@@ -60,18 +71,36 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
                 context_length=context_length,
                 sequence_length=sequence_length,
             ),
-            default_output_bw=16,
-            default_param_bw=4,
+            default_output_bw=default_output_bw,
+            default_param_bw=default_param_bw,
             in_place=True,
             config_file=cls.get_quantsim_config(),
         )
 
-        language_sim.model.lm_head.param_quantizers["weight"].bitwidth = 8
+        if precision.activations in (float16, float32):
+            remove_activation_quantizers(language_sim.model)
+
         for _, module in language_sim.model.named_modules():
             if isinstance(module, QuantizedQwen2_5_VLRMSNorm):
                 module.param_quantizers["weight"].bitwidth = 16
 
+        # Set LM Head precision if specified
+        _set_lm_head_precision(language_sim, precision.lm_head)
+        # Apply block-level granularity (LPBQ/BQ) if configured
+        _apply_block_granularity_to_decoder_stack(language_sim, precision)
+
         # 2) Wrap visual model to make it traceable
+        visual_param_bw = (
+            precision.visual_weight.qtype.bits
+            if precision.visual_weight
+            else default_param_bw
+        )
+        visual_output_bw = (
+            precision.visual_activations.bits
+            if precision.visual_activations is not None
+            and precision.visual_activations not in (float16, float32)
+            else default_output_bw
+        )
         traceable_visual = Qwen2VLVisualWrapper(model.model.visual)
         visual_sim = QuantizationSimModel(
             model=traceable_visual,
@@ -79,11 +108,19 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
             dummy_input=cls.get_sample_vision_inputs(
                 model.config.vision_config.hidden_size
             ),
-            default_output_bw=16,
-            default_param_bw=4,
+            default_output_bw=visual_output_bw,
+            default_param_bw=visual_param_bw,
             in_place=True,
             config_file=cls.get_quantsim_config(),
         )
+
+        visual_activation_qtype = (
+            precision.visual_activations
+            if precision.visual_activations
+            else precision.activations
+        )
+        if visual_activation_qtype in (float16, float32):
+            remove_activation_quantizers(visual_sim.model)
 
         # 3) Convert embedding table to quantized equivalent
         if not isinstance(model.model.language_model.embed_tokens, QuantizationMixin):

@@ -11,10 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from aimet_onnx.quantsim import (
-    QuantizationSimModel,
-    set_grouped_blockwise_quantization_for_weights,
-)
+from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.sequential_mse.seq_mse import SeqMseParams, SequentialMse
 from aimet_onnx.experimental.adascale.adascale_optimizer import (
     apply_adascale,
@@ -95,6 +92,7 @@ class RemoveQuantization(QuantizationTechnique):
     def apply(
         quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
     ):
+        # Remove all quantization nodes from the ONNX model.
         quantsim.model.model = quantsim.remove_quantizers(quantsim.model.model)
         quantsim._rebuild_session()
 
@@ -111,8 +109,12 @@ class Skip(QuantizationTechnique):
 
 
 @YAMLConfigParser.register_recipe
-class PCQ(QuantizationTechnique):
-    """Apply vanilla PCQ to model"""
+class Calibration(QuantizationTechnique):
+    """Calibrate quantization parameters.
+
+    Granularity (PCQ/LPBQ/BQ) is configured via the ``precision:`` section.
+    This recipe simply runs calibration.
+    """
 
     @staticmethod
     def apply(
@@ -121,37 +123,10 @@ class PCQ(QuantizationTechnique):
         dataloader: DataLoader,
         num_iterations: int = 20,
     ):
+        # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(quantsim, generator, dataloader, num_iterations)
 
-        def _forward(session, _):
-            for batch in tqdm(inputs, total=len(inputs), desc="Calibrating"):
-                session.run(None, batch)
-
-        quantsim.compute_encodings(_forward, tuple())
-
-
-@YAMLConfigParser.register_recipe
-class LPBQ(QuantizationTechnique):
-    """Apply LPBQ to model"""
-
-    @staticmethod
-    def apply(
-        quantsim: QuantizationSimModel,
-        generator: Generator,
-        dataloader: DataLoader,
-        num_iterations: int = 20,
-    ):
-        inputs = _prefill_inputs(quantsim, generator, dataloader, num_iterations)
-
-        set_grouped_blockwise_quantization_for_weights(
-            sim=quantsim,
-            op_types=("Gemm", "MatMul", "Conv"),
-            bitwidth=4,
-            decompressed_bw=8,
-            block_size=64,
-            nodes_to_exclude=_get_lm_head_node_names(quantsim),
-        )
-
+        # Step 2: Calibrate quantization parameters.
         def _forward(session, _):
             for batch in tqdm(inputs, total=len(inputs), desc="Calibrating"):
                 session.run(None, batch)
@@ -168,8 +143,10 @@ class SeqMSE(QuantizationTechnique):
         dataloader: DataLoader,
         num_iterations: int = 20,
     ):
+        # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(quantsim, generator, dataloader, num_iterations)
 
+        # Step 2: Optimize weight quantization parameters to minimize layer-wise MSE.
         print("Starting Sequential MSE...")
         params = SeqMseParams(num_batches=num_iterations)
         seq_mse = SequentialMse(
@@ -181,31 +158,12 @@ class SeqMSE(QuantizationTechnique):
         )
         seq_mse.apply_seq_mse_algo()
 
+        # Step 3: Calibrate activation quantization parameters.
         def _forward(session, _):
             for batch in tqdm(inputs, total=len(inputs), desc="Calibrating"):
                 session.run(None, batch)
 
         quantsim.compute_encodings(_forward, tuple())
-
-
-@YAMLConfigParser.register_recipe
-class LPBQ_SeqMSE(QuantizationTechnique):
-    @staticmethod
-    def apply(
-        quantsim: QuantizationSimModel,
-        generator: Generator,
-        dataloader: DataLoader,
-        num_iterations: int = 20,
-    ):
-        set_grouped_blockwise_quantization_for_weights(
-            sim=quantsim,
-            op_types=("Gemm", "MatMul", "Conv"),
-            bitwidth=4,
-            decompressed_bw=8,
-            block_size=64,
-            nodes_to_exclude=_get_lm_head_node_names(quantsim),
-        )
-        SeqMSE.apply(quantsim, generator, dataloader, num_iterations)
 
 
 @YAMLConfigParser.register_recipe
@@ -217,10 +175,13 @@ class AdaScale(QuantizationTechnique):
         quantsim: QuantizationSimModel,
         generator: Generator,
         dataloader: DataLoader,
-        num_batches: int = 20,
-        num_iterations: int = 1500,
+        num_batches: int = 32,
+        num_iterations: int = 64,
     ):
+        # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(quantsim, generator, dataloader, num_batches)
+
+        # Step 2: Optimize quantization parameters using AdaScale.
         apply_adascale(
             quantsim,
             inputs,
@@ -228,7 +189,7 @@ class AdaScale(QuantizationTechnique):
             num_iterations,
         )
 
-        # check generator config
+        # Step 3: Calibrate activation quantization parameters.
         def _forward(session, _):
             for batch in tqdm(inputs, total=len(inputs), desc="Calibrating"):
                 session.run(None, batch)

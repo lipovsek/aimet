@@ -3,14 +3,18 @@
 
 """Qwen-2.5-VL model class"""
 
+from __future__ import annotations
+
 import tempfile
 import torch
 from transformers import AutoConfig
 
 from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel
+from aimet_onnx.common.defs import float32
 
 from GenAITests.shared.helpers.model_cache import DiskBackedModelCache, ModelCacheEntry
+from GenAITests.shared.helpers.precision_config import PrecisionConfig
 from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.qwen2_vl import (
@@ -26,9 +30,10 @@ from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
     is_huggingface_ckpt,
 )
 from GenAITests.onnx.models.utils.quantsim_utils import (
-    _set_tensors_to_output_n_bit_symmmetric,
-    _tie_quantizers_for_kv_cache,
-    _set_lm_head_to_8b,
+    _resolve_kv_cache_quantization,
+    _set_lm_head_precision,
+    _apply_block_granularity_to_decoder_stack,
+    _remove_activation_quantizers,
     get_ort_providers,
     AttributePatch,
 )
@@ -43,11 +48,14 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
         context_length: int,
         sequence_length: int,
         small_model: bool = False,
-        kv_bits: int = 8,
+        precision: PrecisionConfig | None = None,
         model_cache: DiskBackedModelCache | None = None,
         *args,
         **kwargs,
     ):
+        if precision is None:
+            precision = PrecisionConfig()
+
         if model_id is None:
             model_id = cls.DEFAULT_MODEL_ID
 
@@ -101,6 +109,19 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
                     "Required model components could not be loaded from disk."
                 )
 
+        default_param_qtype = precision.blocks["default"].qtype
+        default_activation_qtype = precision.activations
+        visual_param_qtype = (
+            precision.visual_weight.qtype
+            if precision.visual_weight
+            else default_param_qtype
+        )
+        visual_activation_qtype = (
+            precision.visual_activations
+            if precision.visual_activations is not None
+            else default_activation_qtype
+        )
+
         with (
             AttributePatch(quantsim, "op_types_to_tie_qtzrs", ["Concat"]),
             AttributePatch(quantsim, "_tie_qtzrs", True),
@@ -113,8 +134,8 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
             backbone_quantsim = QuantizationSimModel(
                 model=backbone_onnx_model,
                 quant_scheme="min_max",
-                default_activation_bw=16,
-                default_param_bw=4,
+                param_type=default_param_qtype,
+                activation_type=default_activation_qtype,
                 config_file=cls.get_quantsim_config(),
                 providers=get_ort_providers(
                     torch.device("cuda")
@@ -125,8 +146,8 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
             visual_quantsim = QuantizationSimModel(
                 model=visual_onnx_model,
                 quant_scheme="min_max",
-                default_activation_bw=16,
-                default_param_bw=4,
+                param_type=visual_param_qtype,
+                activation_type=visual_activation_qtype,
                 config_file=cls.get_quantsim_config(),
                 providers=get_ort_providers(
                     torch.device("cuda")
@@ -135,12 +156,19 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
                 ),
             )
 
-        # Setting kv_cache and some other layers to 8-bit
-        _set_tensors_to_output_n_bit_symmmetric(backbone_quantsim, kv_bits)
-        # Setting the LM head weights to 8-bit.
-        _set_lm_head_to_8b(backbone_quantsim)
-        # Tie kv_cache
-        _tie_quantizers_for_kv_cache(backbone_quantsim)
+        # Setting the LM head weights
+        _set_lm_head_precision(backbone_quantsim, precision.lm_head)
+        # Tie KV cache, and set quantization type
+        _resolve_kv_cache_quantization(
+            backbone_quantsim, precision.resolve_kv_cache_qtype()
+        )
+        # Apply block-level granularity (LPBQ/BQ) if configured
+        _apply_block_granularity_to_decoder_stack(backbone_quantsim, precision)
+
+        if default_activation_qtype == float32:
+            _remove_activation_quantizers(backbone_quantsim)
+        if visual_activation_qtype == float32:
+            _remove_activation_quantizers(visual_quantsim)
 
         return SimCollection(
             backbone=backbone_quantsim,

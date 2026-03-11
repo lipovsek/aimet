@@ -14,6 +14,7 @@ from transformers.processing_utils import ProcessorMixin
 from aimet_torch.v2.nn import QuantizationMixin
 
 from GenAITests.shared.models.base import LLM, VLM
+from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.helpers.profiler import (
     GPUMeter,
     MetricResult,
@@ -27,7 +28,10 @@ from GenAITests.shared.helpers.metrics import TextEvaluationMetric
 from GenAITests.shared.helpers import datasets, metrics
 from GenAITests.torch import models
 from GenAITests.torch.helpers import quant_recipes
-from GenAITests.torch.models.utils import place_collection, generator_factory
+from GenAITests.torch.models.utils.generator_utils import (
+    place_collection,
+    generator_factory,
+)
 
 
 def _extract_recipe_config(recipe_dict):
@@ -41,30 +45,18 @@ def _extract_recipe_config(recipe_dict):
     return recipe_cls, recipe_kwargs, dataset_cls, dataset_kwargs
 
 
-def _build_recipe_output_config(recipe_cls, dataset_cls, dataset_kwargs):
-    """Build recipe config dict for ONNX eval config output."""
-    recipe_name = recipe_cls.__name__
-    if "RemoveQuantization" in recipe_name:
-        output_name = "RemoveQuantization"
-    elif "LPBQ" in recipe_name:
-        output_name = "LPBQ"
-    else:
-        output_name = "PCQ"
-    return {
-        "name": output_name,
-        "dataset": {
-            "name": dataset_cls.__name__,
-            **dataset_kwargs,
-        },
-    }
-
-
-def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
-    if test_parameters is None:
+def test_llm_quantization(
+    test_config, fp_cache: DiskBackedFPCache, export_dir, results_dir
+):
+    if test_config is None:
         pytest.skip("No GenAI test parameters provided.")
     set_seed(42)
 
+    test_parameters = YAMLConfigParser.parse_document(
+        test_config, export_base_dir=export_dir
+    )
     print(test_parameters)
+
     model_kwargs = test_parameters.pop("model")
 
     # Snapshot model args before destructive pops for the EvaluationContext hash
@@ -80,6 +72,8 @@ def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
     if "dtype" in model_kwargs:
         model_kwargs["dtype"] = getattr(torch, model_kwargs["dtype"])
 
+    precision = test_parameters.pop("precision")
+
     all_recipes = test_parameters.pop("recipe")
     profiler_kwargs = test_parameters.pop("profiler")
     profiler_capture_intermediate_data = profiler_kwargs.pop(
@@ -91,7 +85,7 @@ def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
     torch.cuda.empty_cache()
 
     sim_collection = model_cls.instantiate_quantsim(
-        model_id, context_length, sequence_length, **model_kwargs
+        model_id, context_length, sequence_length, precision=precision, **model_kwargs
     )
     tokenizer = model_cls.instantiate_tokenizer(model_id)
     generator = generator_factory(
@@ -188,17 +182,15 @@ def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
         gc.collect()
         torch.cuda.empty_cache()
 
-    if test_parameters["export"]:
-        tokenizer.save_pretrained(test_parameters["export"])
+    export_dir = test_parameters["export"] if test_parameters["export"] else None
+    if export_dir:
+        tokenizer.save_pretrained(export_dir)
+        sim_collection.backbone.model.config.save_pretrained(export_dir)
 
-        sim_collection.backbone.model.config.save_pretrained(test_parameters["export"])
-        os.mkdir(os.path.join(test_parameters["export"], "backbone"))
+        backbone_onnx_name = f"model_sl{sequence_length}_cl{context_length}.onnx"
+        os.mkdir(os.path.join(export_dir, "backbone"))
         sim_collection.backbone.onnx.export(
-            f=os.path.join(
-                test_parameters["export"],
-                "backbone",
-                f"model_sl{sequence_length}_cl{context_length}.onnx",
-            ),
+            f=os.path.join(export_dir, "backbone", backbone_onnx_name),
             args=model_cls.get_sample_backbone_inputs(
                 model=sim_collection.backbone.model,
                 context_length=context_length,
@@ -217,12 +209,10 @@ def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
 
         if sim_collection.visual is not None:
             assert isinstance(model_cls, VLM)
-            os.mkdir(os.path.join(test_parameters["export"], "visual"))
-            sim_collection.visual.model.config.save_pretrained(
-                test_parameters["export"]
-            )
+            os.mkdir(os.path.join(export_dir, "visual"))
+            sim_collection.visual.model.config.save_pretrained(export_dir)
             sim_collection.visual.onnx.export(
-                f=os.path.join(test_parameters["export"], "visual", "model.onnx"),
+                f=os.path.join(export_dir, "visual", "model.onnx"),
                 args=model_cls.get_sample_vision_inputs(sim_collection.config),
                 input_names=model_cls.get_visual_input_names(),
                 output_names=model_cls.get_visual_output_names(),
@@ -237,32 +227,38 @@ def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
 
             torch.save(
                 sim_collection.embedding.state_dict(),
-                os.path.join(test_parameters["export"], "embedding.pth"),
+                os.path.join(export_dir, "embedding.pth"),
             )
 
         if test_parameters["eval_in_onnx"]:
             data = {
                 "model": {
-                    "name": model_cls.__name__.removesuffix("_Torch"),
-                    "model_id": test_parameters["export"],
-                    "encodings": test_parameters["export"],
+                    "model_id": export_dir,
+                    "encodings": export_dir,
                     "sequence_length": sequence_length,
                     "context_length": context_length,
                     **model_kwargs,
                 },
+                "precision": precision,
                 "recipe": {
-                    "backbone": _build_recipe_output_config(
-                        backbone_recipe_cls,
-                        backbone_dataset_cls,
-                        backbone_dataset_kwargs,
-                    ),
+                    "backbone": {
+                        "name": quant_recipes.Calibration.__name__,
+                        "dataset": {
+                            "name": backbone_dataset_cls.__name__,
+                            **backbone_dataset_kwargs,
+                        },
+                    },
                 }
                 | {
-                    "visual": _build_recipe_output_config(
-                        visual_recipe_cls, visual_dataset_cls, visual_dataset_kwargs
-                    )
+                    "visual": {
+                        "name": quant_recipes.Calibration.__name__,
+                        "dataset": {
+                            "name": visual_dataset_cls.__name__,
+                            **visual_dataset_kwargs,
+                        },
+                    }
                 }
-                if "visual" in all_recipes
+                if "visual" in all_recipes and sim_collection.visual is not None
                 else {},
                 "metrics": [
                     {
@@ -273,9 +269,7 @@ def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
                 ],
             }
 
-            with open(
-                os.path.join(test_parameters["export"], "onnx_eval_config.yaml"), "w"
-            ) as file:
+            with open(os.path.join(export_dir, "onnx_eval_config.yaml"), "w") as file:
                 yaml.dump(data, file, default_flow_style=False)
 
     with place_collection(sim_collection, device):
@@ -316,9 +310,6 @@ def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
     if precomputed_encodings is not None:
         model_kwargs["encodings"] = precomputed_encodings
 
-    output_folder = Path(os.getcwd()) / "genai_test_artifacts"
-    output_folder.mkdir(parents=True, exist_ok=True)
-
     components = {
         "backbone": ComponentRecipeStats(
             recipe_name=backbone_recipe_cls.__name__,
@@ -328,7 +319,7 @@ def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
             profiler=backbone_profiler,
         )
     }
-    if "visual" in all_recipes:
+    if "visual" in all_recipes and sim_collection.visual is not None:
         components |= {
             "visual": ComponentRecipeStats(
                 recipe_name=visual_recipe_cls.__name__,
@@ -339,15 +330,29 @@ def test_llm_quantization(test_parameters, fp_cache: DiskBackedFPCache):
             )
         }
 
+    results_folder = Path(results_dir)
+    results_folder.mkdir(parents=True, exist_ok=True)
+    precision_dict = precision.to_dict()
     write_stats_to_disk(
-        output_folder=str(output_folder),
+        output_folder=str(results_folder),
         filename="profiling_data",
         model_type=model_type,
         model_id=model_id,
         model_modifiers=model_kwargs,
         components=components,
         accuracy_results=evaluation_results,
-        export_location=test_parameters["export"]
-        if test_parameters["export"]
-        else None,
+        export_location=export_dir,
+        precision=precision_dict,
     )
+
+    if export_dir:
+        write_stats_to_disk(
+            output_folder=export_dir,
+            filename="profiling_data",
+            model_type=model_type,
+            model_id=model_id,
+            model_modifiers=model_kwargs,
+            components=components,
+            accuracy_results=evaluation_results,
+            precision=precision_dict,
+        )

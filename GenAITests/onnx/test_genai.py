@@ -13,6 +13,7 @@ from transformers.processing_utils import ProcessorMixin
 
 from aimet_onnx.quantsim import load_encodings_to_sim
 
+from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.helpers.profiler import (
     GPUMeter,
     MetricResult,
@@ -42,13 +43,21 @@ def _extract_recipe_config(recipe_dict):
 
 
 def test_llm_quantization(
-    test_parameters, model_cache: DiskBackedModelCache, fp_cache: DiskBackedFPCache
+    test_config,
+    model_cache: DiskBackedModelCache,
+    fp_cache: DiskBackedFPCache,
+    export_dir,
+    results_dir,
 ):
-    if test_parameters is None:
+    if test_config is None:
         pytest.skip("No GenAI test parameters provided.")
     set_seed(42)
 
+    test_parameters = YAMLConfigParser.parse_document(
+        test_config, export_base_dir=export_dir
+    )
     print(test_parameters)
+
     model_kwargs = test_parameters.pop("model")
 
     # Snapshot model args before destructive pops for the EvaluationContext hash
@@ -70,6 +79,7 @@ def test_llm_quantization(
     if test_parameters["eval_in_onnx"]:
         warnings.warn("eval_in_onnx is ignored for ONNX GenAI tests.")
 
+    precision = test_parameters.pop("precision")
     all_recipes = test_parameters.pop("recipe")
 
     profiler_kwargs = test_parameters.pop("profiler")
@@ -86,6 +96,7 @@ def test_llm_quantization(
         model_id,
         context_length,
         sequence_length,
+        precision=precision,
         model_cache=model_cache,
         **model_kwargs,
     )
@@ -199,26 +210,30 @@ def test_llm_quantization(
     gc.collect()
     torch.cuda.empty_cache()
 
-    if test_parameters["export"]:
-        sim_collection.config.save_pretrained(test_parameters["export"])
-        tokenizer.save_pretrained(test_parameters["export"])
-        os.mkdir(os.path.join(test_parameters["export"], "backbone"))
+    export_dir = test_parameters["export"] if test_parameters["export"] else None
+    if export_dir:
+        sim_collection.config.save_pretrained(export_dir)
+        tokenizer.save_pretrained(export_dir)
+
+        os.mkdir(os.path.join(export_dir, "backbone"))
         sim_collection.backbone.export(
-            os.path.join(test_parameters["export"], "backbone"),
+            os.path.join(export_dir, "backbone"),
             f"model_sl{sequence_length}_cl{context_length}",
             export_model=True,
         )
+
         if sim_collection.visual is not None:
-            os.mkdir(os.path.join(test_parameters["export"], "visual"))
+            os.mkdir(os.path.join(export_dir, "visual"))
             sim_collection.visual.export(
-                os.path.join(test_parameters["export"], "visual"),
+                os.path.join(export_dir, "visual"),
                 "model",
                 export_model=True,
             )
+
         if sim_collection.embedding is not None:
             torch.save(
                 sim_collection.embedding.state_dict(),
-                os.path.join(test_parameters["export"], "embedding.pth"),
+                os.path.join(export_dir, "embedding.pth"),
             )
 
     evaluation_results = []
@@ -252,9 +267,6 @@ def test_llm_quantization(
     if precomputed_encodings is not None:
         model_kwargs["encodings"] = precomputed_encodings
 
-    output_folder = Path(os.getcwd()) / "genai_test_artifacts"
-    output_folder.mkdir(parents=True, exist_ok=True)
-
     components = {
         "backbone": ComponentRecipeStats(
             recipe_name=backbone_recipe_cls.__name__,
@@ -264,7 +276,7 @@ def test_llm_quantization(
             profiler=backbone_profiler,
         )
     }
-    if "visual" in all_recipes:
+    if "visual" in all_recipes and sim_collection.visual is not None:
         components |= {
             "visual": ComponentRecipeStats(
                 recipe_name=visual_recipe_cls.__name__,
@@ -275,15 +287,29 @@ def test_llm_quantization(
             )
         }
 
+    results_folder = Path(results_dir)
+    results_folder.mkdir(parents=True, exist_ok=True)
+    precision_dict = precision.to_dict()
     write_stats_to_disk(
-        output_folder=str(output_folder),
+        output_folder=str(results_folder),
         filename="profiling_data",
         model_type=model_type,
         model_id=model_id,
         model_modifiers=model_kwargs,
         components=components,
         accuracy_results=evaluation_results,
-        export_location=test_parameters["export"]
-        if test_parameters["export"]
-        else None,
+        export_location=export_dir,
+        precision=precision_dict,
     )
+
+    if export_dir:
+        write_stats_to_disk(
+            output_folder=export_dir,
+            filename="profiling_data",
+            model_type=model_type,
+            model_id=model_id,
+            model_modifiers=model_kwargs,
+            components=components,
+            accuracy_results=evaluation_results,
+            precision=precision_dict,
+        )

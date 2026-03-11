@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 import onnx
-from transformers import AutoConfig, PreTrainedConfig
+from transformers import AutoConfig, PretrainedConfig
 
 from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
     load_model_components_from_disk,
@@ -46,7 +46,7 @@ class AIHMAdaptation:
     @classmethod
     def instantiate_model(
         cls, model_id: str, small_model: bool, **kwargs
-    ) -> tuple[onnx.ModelProto, PreTrainedConfig]:
+    ) -> tuple[onnx.ModelProto, PretrainedConfig]:
         """Generate an AI Hub Models checkpoint for the given model.
 
         Args:

@@ -232,7 +232,15 @@ jobs:
             libxext6 \
             libxrender-dev \
             libgomp1 \
-            git
+            git \
+            zip \
+            unzip \
+            curl
+          # Install AWS CLI v2
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          /tmp/aws/install
+          rm -rf /tmp/awscliv2.zip /tmp/aws
           apt-get clean
           rm -rf /var/lib/apt/lists/*
 
@@ -285,7 +293,7 @@ jobs:
           export PYTHONPATH=$PYTHONPATH:$(pwd)
           export HF_HOME=/local/mnt2/workspace2/aimet_bot/huggingface
           hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
-          pytest -s GenAITests/${{ matrix.variant }}/test_genai.py --config GenAITests/scorecard_config.yaml
+          pytest -s GenAITests/${{ matrix.variant }}/test_genai.py --config GenAITests/scorecard_config.yaml --force-export
 
       - name: Run optional secondary evaluation using aimet-onnx
         if: ${{ matrix.variant == 'torch' }}
@@ -311,34 +319,64 @@ jobs:
           export PYTHONPATH=$PYTHONPATH:$(pwd)
           export HF_HOME=/local/mnt2/workspace2/aimet_bot/huggingface
           hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
-          pytest -s GenAITests/onnx/test_genai.py --config "$OUT_FILE"
+          pytest -s GenAITests/onnx/test_genai.py --config "$OUT_FILE" --force-export
         shell: bash
 
-      # (after reports are generated, before upload)
-      - name: Build file metadata string
-        id: file-metadata
+      # Write CI run metadata to a JSON file alongside profiling data
+      - name: Write run metadata
+        if: always()
         run: |
-          COMMIT_TIMESTAMP=$(git show -s --format=%cd --date=format:%Y%m%d-%H%M%S ${{ github.sha }})
-          SAFE_REF_NAME=$(echo "${{ github.ref_name }}" | sed 's/[^a-zA-Z0-9._-]/_/g')
-          FILE_SUFFIX=${{ matrix.variant }}-${SAFE_REF_NAME}-${{ github.sha }}-${COMMIT_TIMESTAMP}-${{ github.run_id }}
-          echo "file_suffix=$FILE_SUFFIX" >> "$GITHUB_OUTPUT"
+          COMMIT_TS=$(git show -s --format=%cI ${{ github.sha }})
+          cat > genai_output/results/run_metadata.json << METADATA_EOF
+          {
+            "run_id": "${{ github.run_id }}",
+            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "actor": "${{ github.actor }}",
+            "trigger": "${{ github.event_name }}",
+            "run_mode": "${{ github.event.inputs.run_mode || 'regression' }}",
+            "variant": "${{ matrix.variant }}",
+            "branch": "${{ github.ref_name }}",
+            "commit_sha": "${{ github.sha }}",
+            "commit_timestamp": "${COMMIT_TS}"
+          }
+          METADATA_EOF
 
-      # Rename report using suffix
-      - name: Update report filename
-        run: |
-          mv genai_test_artifacts/profiling_data.json genai_test_artifacts/profiling_data-${{ steps.file-metadata.outputs.file_suffix }}.json
-          mv genai_test_artifacts/profiling_data.csv genai_test_artifacts/profiling_data-${{ steps.file-metadata.outputs.file_suffix }}.csv
-
-      # Upload generated reports (CSV, HTML, JSON)
+      # Upload generated reports (CSV, HTML, JSON, run metadata)
       # Note: Using v3 for GHES compatibility
       # Artifacts available under "Artifacts" section in workflow run
       - name: Upload reports
         if: always()    # Upload even if tests failed
         uses: actions/upload-artifact@v3
         with:
-          name: test-data-${{ steps.file-metadata.outputs.file_suffix }}
-          path: genai_test_artifacts/profiling_data-${{ steps.file-metadata.outputs.file_suffix }}*
-          retention-days: 30  # Keep for 1 week
+          name: test-data-${{ matrix.variant }}-${{ github.run_id }}
+          path: genai_output/results/
+          retention-days: 30
+
+      # Zip all exported artifacts
+      - name: Zip artifacts
+        if: always()
+        run: |
+          cd genai_output/exports
+          for dir in */; do
+            zip -1 -r "${dir%/}.zip" "$dir" &
+          done
+          wait
+
+      # Authenticate with AWS to allow uploading to S3 in the next step
+      - name: Authenticate AWS
+        if: always()
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Upload artifacts to S3
+      - name: Upload artifacts to S3
+        if: always()    # Upload even if tests failed
+        run: |
+          aws s3 cp genai_output/exports/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/${{ matrix.variant }}/ --recursive --exclude "*" --include "*.zip"
+          aws s3 cp genai_output/results/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/${{ matrix.variant }}/ --recursive --exclude "*" --include "*.json" --include "*.csv"
 
       # Clean up cached models to prevent disk space issues
       - name: Clean up cache

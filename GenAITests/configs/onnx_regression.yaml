@@ -2,8 +2,6 @@ model:
   model_id: meta-llama/Llama-3.2-1B-Instruct
   sequence_length: 2048
   context_length: 4096
-recipe:
-  name: RemoveQuantization
 metrics:
   - name: TinyMMLU
   - name: PPL
@@ -12,8 +10,11 @@ model:
   model_id: meta-llama/Llama-3.2-1B-Instruct
   sequence_length: 2048
   context_length: 4096
+precision:
+  blocks:
+    granularity: LPBQ
 recipe:
-  name: LPBQ
+  name: Calibration
   dataset:
     name: Wikitext
     split: train
@@ -26,7 +27,7 @@ model:
   sequence_length: 2048
   context_length: 4096
 recipe:
-  name: PCQ
+  name: Calibration
   dataset:
     name: Wikitext
     split: train
