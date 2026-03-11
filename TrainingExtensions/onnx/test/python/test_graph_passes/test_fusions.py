@@ -5,11 +5,13 @@
 
 import os
 import pytest
+from packaging import version
 import numpy as np
 import torch
 import onnx
 import onnx_ir
 import onnxruntime
+import onnxscript
 from aimet_onnx.utils import make_dummy_input, get_node_attribute
 from aimet_onnx import QuantizationSimModel
 
@@ -582,6 +584,10 @@ class TestRMSNormFusion:
         fused_output = session.run(None, dummy_input)[0]
         assert np.allclose(original_output, fused_output)
 
+    @pytest.mark.skipif(
+        version.parse(onnxscript.__version__) < version.parse("0.4.0"),
+        reason="Requires onnxscript >= 0.4.0",
+    )
     @pytest.mark.parametrize("elementwise_affine", [True, False])
     @pytest.mark.parametrize("eps", [None, 1e-3])
     @pytest.mark.parametrize("opset", [13, 17, 22])
@@ -612,6 +618,10 @@ class TestRMSNormFusion:
         fused_output = session.run(None, dummy_input)[0]
         assert np.allclose(original_output, fused_output)
 
+    @pytest.mark.skipif(
+        version.parse(onnxscript.__version__) < version.parse("0.4.0"),
+        reason="Requires onnxscript >= 0.4.0",
+    )
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     @pytest.mark.parametrize(
         "model_factory, expected_matches",
@@ -704,6 +714,10 @@ class TestFusion:
 class TestInlineAllSupergroups:
     """Tests for inline_all_supergroups: unfusing supergroup functions back to primitives."""
 
+    @pytest.mark.skipif(
+        version.parse(onnxscript.__version__) < version.parse("0.4.0"),
+        reason="Requires onnxscript >= 0.4.0",
+    )
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     @pytest.mark.parametrize(
         "model_factory",

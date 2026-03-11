@@ -3,6 +3,8 @@
 
 """LayerNormalization fusion pass for ONNX models"""
 
+from __future__ import annotations
+
 import onnx_ir
 from onnxscript import rewriter
 from onnxscript.rewriter import pattern
@@ -10,6 +12,7 @@ from onnxscript.rewriter import pattern
 from .ir_utils import get_constant_singleton_value
 from .fusion_registry import register_fusion, AIMET_SUPERGROUP_DOMAIN
 from . import _patterns
+from ._compat import AttrVar
 
 _EPS_NAME = "epsilon"
 _AXES_NAME = "axes"
@@ -65,7 +68,7 @@ class LayerNormFusion(pattern.RewriteRuleClassBase):
         """
         Defines the decomposed LayerNormalization pattern to match.
         """
-        axes_attr = pattern.AttrVar(_AXES_NAME)
+        axes_attr = AttrVar(_AXES_NAME)
 
         # E[x]
         mean = op.ReduceMean(input_x, axes=axes_attr)
@@ -80,8 +83,8 @@ class LayerNormFusion(pattern.RewriteRuleClassBase):
                 op.RMSNormalization(
                     centered,
                     scale,
-                    epsilon=pattern.AttrVar(_EPS_NAME),
-                    axis=pattern.AttrVar(_AXIS_NAME),
+                    epsilon=AttrVar(_EPS_NAME),
+                    axis=AttrVar(_AXIS_NAME),
                     _domain=AIMET_SUPERGROUP_DOMAIN,
                 ),
             ]

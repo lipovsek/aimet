@@ -5,6 +5,8 @@
 RMSNormalization fusion pass for onnx-ir models
 """
 
+from __future__ import annotations
+
 import onnx_ir
 from onnxscript import rewriter
 from onnxscript.rewriter import pattern
