@@ -10,18 +10,24 @@ from dataclasses import dataclass
 from transformers.models.llama.modeling_llama import LlamaModel, LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Model, Qwen2DecoderLayer
 from transformers.models.phi3.modeling_phi3 import Phi3Model, Phi3DecoderLayer
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
-    Qwen2_5_VLTextModel,
-    Qwen2_5_VLDecoderLayer,
-    Qwen2_5_VisionTransformerPretrainedModel,
-    Qwen2_5_VLVisionBlock,
-    Qwen2_5_VLPatchMerger,
-)
 
 try:
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Model, Qwen3DecoderLayer
 except ImportError:
     Qwen3Model = Qwen3DecoderLayer = None
+
+try:
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
+        Qwen2_5_VLTextModel,
+        Qwen2_5_VLDecoderLayer,
+        Qwen2_5_VisionTransformerPretrainedModel,
+        Qwen2_5_VLVisionBlock,
+        Qwen2_5_VLPatchMerger,
+    )
+except ImportError:
+    Qwen2_5_VLTextModel = Qwen2_5_VLDecoderLayer = (
+        Qwen2_5_VisionTransformerPretrainedModel
+    ) = Qwen2_5_VLVisionBlock = Qwen2_5_VLPatchMerger = None
 
 try:
     from transformers.models.qwen3_vl.modeling_qwen3_vl import (
@@ -31,6 +37,7 @@ try:
     )
 except ImportError:
     Qwen3VLTextModel = Qwen3VLTextDecoderLayer = Qwen3VLVisionPatchMerger = None
+
 
 from aimet_torch.experimental.spinquant.hadamard_utils import get_hadamard_matrix
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
@@ -75,18 +82,30 @@ class SpinQuant:
         Phi3Model: SpinQuantConfig(
             block_type=Phi3DecoderLayer, block_interface=Phi3BlockInterface
         ),
-        Qwen2_5_VLTextModel: VLMSpinQuantConfig(
-            block_type=Qwen2_5_VLDecoderLayer,
-            block_interface=Qwen2dot5VLBackboneBlockInterface,
-            merger_type=Qwen2_5_VLPatchMerger,
-            merger_interface=Qwen25VLMergerInterface,
-        ),
-        Qwen2_5_VisionTransformerPretrainedModel: SpinQuantConfig(
-            block_type=Qwen2_5_VLVisionBlock,
-            block_interface=Qwen2dot5VLViTBlockInterface,
-        ),
     }
-
+    if Qwen2_5_VLTextModel is not None and Qwen2_5_VLDecoderLayer is not None:
+        model_config_dict.update(
+            {
+                Qwen2_5_VLTextModel: VLMSpinQuantConfig(
+                    block_type=Qwen2_5_VLDecoderLayer,
+                    block_interface=Qwen2dot5VLBackboneBlockInterface,
+                    merger_type=Qwen2_5_VLPatchMerger,
+                    merger_interface=Qwen25VLMergerInterface,
+                )
+            }
+        )
+    if (
+        Qwen2_5_VisionTransformerPretrainedModel is not None
+        and Qwen2_5_VLVisionBlock is not None
+    ):
+        model_config_dict.update(
+            {
+                Qwen2_5_VisionTransformerPretrainedModel: SpinQuantConfig(
+                    block_type=Qwen2_5_VLVisionBlock,
+                    block_interface=Qwen2dot5VLViTBlockInterface,
+                )
+            }
+        )
     if Qwen3Model is not None and Qwen3DecoderLayer is not None:
         model_config_dict.update(
             {

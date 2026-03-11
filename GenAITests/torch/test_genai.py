@@ -58,7 +58,6 @@ def test_llm_quantization(
     print(test_parameters)
 
     model_kwargs = test_parameters.pop("model")
-
     # Snapshot model args before destructive pops for the EvaluationContext hash
     eval_ctx = EvaluationContext(fp_cache=fp_cache, model_args=model_kwargs.copy())
 
@@ -333,6 +332,8 @@ def test_llm_quantization(
     results_folder = Path(results_dir)
     results_folder.mkdir(parents=True, exist_ok=True)
     precision_dict = precision.to_dict()
+    if "dtype" in model_kwargs:
+        model_kwargs["dtype"] = str(model_kwargs["dtype"])
     write_stats_to_disk(
         output_folder=str(results_folder),
         filename="profiling_data",

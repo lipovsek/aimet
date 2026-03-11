@@ -14,3 +14,6 @@ from GenAITests.shared.models.adaptations.sha_conv import (
 from GenAITests.shared.models.adaptations.fast_exportable import (
     Qwen2VLFastExportableAdaptation,
 )
+from GenAITests.shared.models.adaptations.moe import (
+    Qwen3MoEAdaptation,
+)

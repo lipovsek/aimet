@@ -22,15 +22,19 @@ from transformers.models.mistral.modeling_mistral import (
     MistralModel,
     MistralDecoderLayer,
 )
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
-    Qwen2_5_VLTextModel,
-    Qwen2_5_VLDecoderLayer,
-)
 
 try:
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Model, Qwen3DecoderLayer
 except ImportError:
     Qwen3Model = Qwen3DecoderLayer = None
+
+try:
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
+        Qwen2_5_VLTextModel,
+        Qwen2_5_VLDecoderLayer,
+    )
+except ImportError:
+    Qwen2_5_VLTextModel = Qwen2_5_VLDecoderLayer = None
 
 try:
     from transformers.models.qwen3_vl.modeling_qwen3_vl import (
@@ -39,6 +43,7 @@ try:
     )
 except ImportError:
     Qwen3VLTextModel = Qwen3VLTextDecoderLayer = None
+
 
 from aimet_torch.common.utils import AimetLogger
 from aimet_torch import QuantizationSimModel
@@ -86,10 +91,18 @@ adascale_model_config_dict = {
     Phi3Model: AdaScaleModelConfig(
         block_type=Phi3DecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
     ),
-    Qwen2_5_VLTextModel: AdaScaleModelConfig(
-        block_type=Qwen2_5_VLDecoderLayer, beta_gamma_lr=1e-3, scales_lr=5e-4
-    ),
 }
+
+if Qwen2_5_VLTextModel is not None and Qwen2_5_VLDecoderLayer is not None:
+    adascale_model_config_dict.update(
+        {
+            Qwen2_5_VLTextModel: AdaScaleModelConfig(
+                block_type=Qwen2_5_VLDecoderLayer,
+                beta_gamma_lr=1e-3,
+                scales_lr=5e-4,
+            )
+        }
+    )
 
 if Qwen3Model is not None and Qwen3DecoderLayer is not None:
     adascale_model_config_dict.update(
