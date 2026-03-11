@@ -744,7 +744,7 @@ def _to_onnx(
         for name, (enc, _) in tensor_to_encoding_map.items()
     }
     derived_encodings = _derive_const_rescale_op_output_encodings(
-        onnx_model, encoding_dict
+        onnx_model, encoding_dict, base_dir
     )
     derived_encodings |= _derive_data_movement_op_encodings(
         onnx_model, encoding_dict | derived_encodings

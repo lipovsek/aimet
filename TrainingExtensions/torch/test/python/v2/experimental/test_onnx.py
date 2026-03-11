@@ -1329,8 +1329,17 @@ def test_export_external_data(
     prequantize_constants: bool,
     tmp_path: pathlib.Path,
 ):
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(10, 100, bias=False)
+            self.scale = torch.nn.Parameter(torch.ones(100))
+
+        def forward(self, x):
+            return self.linear(x) * self.scale
+
     x = torch.randn(1, 10)
-    model = torch.nn.Sequential(torch.nn.Linear(10, 10, bias=False))
+    model = Model()
     sim = QuantizationSimModel(model, x, config_file="htp_v81")
     sim.compute_encodings(lambda model: model(x))
 
@@ -1348,6 +1357,7 @@ def test_export_external_data(
         dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
         dynamo=True,
         external_data=True,
+        opset_version=opset_version,
         encoding_version="2.0.0",
     )
 
@@ -1395,7 +1405,7 @@ def test_export_external_data(
     with torch.no_grad():
         expected_out = sim.model(x)
 
-    atol = sim.model[-1].output_quantizers[0].get_scale().item()
+    atol = sim.model.linear.output_quantizers[0].get_scale().item()
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
 
 

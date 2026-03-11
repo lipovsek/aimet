@@ -40,7 +40,7 @@ def _add_onnx_qdq_node(
     float_type: int,
     onnx_opset: int,
     prequantize_constants: bool,
-    base_dir: Optional[str] = None,
+    base_dir: str = "",
 ):
     """
     Add onnx::QuantizeLinear and/or onnx::DequantizeLinear as below
@@ -78,7 +78,7 @@ def _add_onnx_qdq_nodes(
     float_types: Iterable[np.dtype],
     onnx_opset: int,
     prequantize_constants: bool,
-    base_dir: Optional[str] = None,
+    base_dir: str = "",
 ):
     """
     Add onnx::QuantizeLinear and/or onnx::DequantizeLinear as below
@@ -311,7 +311,7 @@ def _quantize_const(
     output_dtype: str,
     per_block_int_scale: Optional[np.ndarray],
     opset,
-    base_dir: Optional[str] = None,
+    base_dir: str = "",
 ) -> TensorProto:
     const = to_array(const, base_dir=base_dir).astype(np.float32)
     # Always quantize in float32
@@ -1344,17 +1344,22 @@ def _get_effective_encoding(
     return None
 
 
-def _is_constant_scalar(tensor_name: str, constants: Mapping[str, TensorProto]) -> bool:
+def _is_constant_scalar(
+    tensor_name: str,
+    constants: Mapping[str, TensorProto],
+    base_dir: str = "",
+) -> bool:
     tensor = constants.get(tensor_name)
     if tensor is None:
         return False
-    array = to_array(tensor)
+    array = to_array(tensor, base_dir=base_dir)
     return array.size == 1
 
 
 def _derive_const_rescale_op_output_encodings(
     model: onnx.ModelProto,
     encodings: Mapping[str, Mapping],
+    base_dir: str = "",
 ) -> Dict[str, Dict]:
     updated_encodings = encodings.copy()
     constants = _get_all_constants(model)
@@ -1365,13 +1370,15 @@ def _derive_const_rescale_op_output_encodings(
         if node.output[0] in updated_encodings:
             continue
         inp_idx, scale_idx = (0, 1)
-        if node.op_type == "Mul" and not _is_constant_scalar(node.input[1], constants):
+        if node.op_type == "Mul" and not _is_constant_scalar(
+            node.input[1], constants, base_dir
+        ):
             inp_idx, scale_idx = scale_idx, inp_idx
         if node.input[scale_idx] in updated_encodings:
             continue  # Skip if rescaling factor is quantized
-        if not _is_constant_scalar(node.input[scale_idx], constants):
+        if not _is_constant_scalar(node.input[scale_idx], constants, base_dir):
             continue
-        const_factor = to_array(constants.get(node.input[scale_idx]))
+        const_factor = to_array(constants[node.input[scale_idx]], base_dir=base_dir)
         if const_factor.item() <= 0:
             continue
         input_encoding = _get_effective_encoding(
