@@ -635,6 +635,7 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
             # In case of any exception, make sure to restore
             # the original parameters before raising the exception
             stack.close()
+            raise
 
     def qmodules(self):
         """
