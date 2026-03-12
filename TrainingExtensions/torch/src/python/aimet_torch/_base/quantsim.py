@@ -1085,6 +1085,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
             valid_param_set,
             excluded_layer_names,
             propagate_encodings,
+            onnx_model=onnx_model,
             quantizer_args=quantizer_args,
         )
 
@@ -1304,6 +1305,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         valid_param_set: set,
         excluded_layer_names,
         propagate_encodings: bool,
+        onnx_model: onnx.ModelProto | None = None,
         quantizer_args: Dict = None,
     ):
         """
@@ -1407,15 +1409,26 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
             # export weight encodings to output json file
             encoding_file_path = os.path.join(path, filename_prefix + ".encodings")
             save_json_yaml(encoding_file_path, encodings_dict_onnx)
-        else:
-            _export_to_1_0_0(
+        elif quantsim.encoding_version == "1.0.0":
+            cls._export_encodings_to_1_0_0(
                 path,
                 filename_prefix,
                 activation_encodings_onnx,
                 param_encodings,
                 tensor_to_quantizer_map,
                 excluded_layer_names,
+                onnx_model,
                 quantizer_args,
+            )
+        elif quantsim.encoding_version == "2.0.0":
+            raise NotImplementedError(
+                f"Encoding version {quantsim.encoding_version} is not supported for ``QuantizationSimModel.export()``. "
+                "Use ``QuantizationSimModel.onnx.export()`` instead."
+            )
+        else:
+            raise NotImplementedError(
+                f"Encoding version {quantsim.encoding_version} not in set of valid encoding "
+                f"versions {VALID_ENCODING_VERSIONS}."
             )
 
         logger.warning(
@@ -1457,6 +1470,28 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
                 path, filename_prefix + "_torch" + ".encodings"
             )
             save_json_yaml(encoding_file_path_pytorch, encodings_dict_pytorch)
+
+    @classmethod
+    def _export_encodings_to_1_0_0(
+        cls,
+        path: str,
+        filename_prefix: str,
+        tensor_to_activation_encodings: Dict[str, List],
+        tensor_to_param_encodings: Dict[str, List],
+        tensor_to_quantizer_map: Dict,
+        excluded_layer_names: List[str],
+        onnx_model: onnx.ModelProto,  # pylint: disable=unused-argument
+        quantizer_args: Dict,
+    ):
+        _export_to_1_0_0(
+            path,
+            filename_prefix,
+            tensor_to_activation_encodings,
+            tensor_to_param_encodings,
+            tensor_to_quantizer_map,
+            excluded_layer_names,
+            quantizer_args,
+        )
 
     @staticmethod
     def _update_param_encodings_dict_for_layer(

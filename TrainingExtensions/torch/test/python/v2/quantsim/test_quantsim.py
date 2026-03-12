@@ -16,6 +16,7 @@ import onnx
 import torch
 from torch import nn, randn
 
+from aimet_torch.common.onnx._utils import _get_all_constants, _get_effective_encoding
 from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
 from aimet_common.defs import QuantizationDataType, QuantScheme
 import aimet_torch
@@ -2916,3 +2917,105 @@ def test_cg_split_input_quantizer(tmp_path: pathlib.Path):
     assert len(matmul_nodes) == 2
     for matmul in matmul_nodes:
         assert producers[matmul.input[0]].op_type == "DequantizeLinear"
+
+
+@pytest.mark.parametrize("dtype", [torch.float32])
+@pytest.mark.parametrize("activation_bw", [8, 16])
+@pytest.mark.parametrize(
+    "model_factory",
+    [
+        lambda: test_models.ModelWithPreparedConstRescale(3.0, divide=True),
+        lambda: test_models.ModelWithPreparedConstRescale(3.0, divide=False),
+        lambda: test_models.MatMulRescaleAddModel(divide=True),
+        lambda: test_models.MatMulRescaleAddModel(divide=False),
+        lambda: test_models.StandalonePreparedConstRescale(3.0, divide=True),
+        lambda: test_models.StandalonePreparedConstRescale(3.0, divide=False),
+        lambda: test_models.ModelWithFunctionalDiv(),
+        lambda: test_models.DivWithDataMovement(),
+        lambda: test_models.ModelWithReversedMulOrdering(),
+    ],
+)
+def test_sim_export_with_propagated_rescale_encodings(
+    tmp_path, model_factory, activation_bw, dtype
+):
+    """
+    Given: Model with constant scalar Mul/Div op with no output quantizer
+    """
+    model = model_factory().to(dtype)
+    dummy_input = tuple(t.to(dtype) for t in model.dummy_input())
+    sim = QuantizationSimModel(model, dummy_input, default_output_bw=activation_bw)
+    # Disable rescale output quantizers
+    for module in sim.qmodules():
+        if isinstance(module, (custom.Divide, custom.Multiply)):
+            module.output_quantizers[0] = None
+            module.input_quantizers[1] = None
+        else:
+            module.input_quantizers[0] = None
+    sim.compute_encodings(lambda m: m(*dummy_input))
+    """
+    When: Export model via sim.onnx.export
+    """
+    fname = os.path.join(tmp_path, "model.onnx")
+    encoding_path = os.path.join(tmp_path, "model.encodings")
+    sim.export(
+        tmp_path,
+        "model",
+        dummy_input,
+    )
+    """
+    Then: (1) Exported model is a valid onnx model
+    """
+    onnx_model = onnx.load(fname)
+    onnx.checker.check_model(onnx_model)
+    with open(encoding_path) as f:
+        encodings = json.load(f)
+    """
+    Then: (2) The encoding file contains an encoding for the Mul/Div output tensor
+    """
+    rescale_node = next(
+        node for node in onnx_model.graph.node if node.op_type in ("Mul", "Div")
+    )
+    rescale_output_name = rescale_node.output[0]
+    encoding_dict = {enc["name"]: enc for enc in encodings["activation_encodings"]}
+    assert rescale_output_name in encoding_dict
+    """
+    Then: (3) The propagated encoding scale matches input_scale * scale_factor
+    """
+    constants = _get_all_constants(onnx_model)
+    producers = {out: node for node in onnx_model.graph.node for out in node.output}
+    inp_idx, scale_idx = (0, 1) if rescale_node.input[1] in constants else (1, 0)
+    input_encoding = _get_effective_encoding(
+        rescale_node.input[inp_idx], producers, encoding_dict
+    )
+    output_encoding = encoding_dict[rescale_output_name]
+    const_factor_name = rescale_node.input[scale_idx]
+    const_factor = onnx.numpy_helper.to_array(constants[const_factor_name])
+    if rescale_node.op_type == "Div":
+        expected_scale = input_encoding["scale"][0] / const_factor.item()
+    else:
+        expected_scale = input_encoding["scale"][0] * const_factor.item()
+    assert np.isclose(output_encoding["scale"][0], expected_scale, rtol=1e-5)
+    """
+    Then: (4) The zero point is preserved in the output encoding
+    """
+    assert output_encoding.get("offset") == input_encoding.get("offset")
+    """
+    Then: (5) The dtype is preserved in the output encoding
+    """
+    assert output_encoding.get("bw") == input_encoding.get("bw")
+    """
+    Then: (6) The encoding file contains an encoding for the scale factor
+    """
+    assert const_factor_name in encoding_dict
+    factor_encoding = encoding_dict[const_factor_name]
+    """
+    Then: (7) The factor encoding has the same bitwidth as input/output encodings
+    """
+    assert factor_encoding.get("bw") == input_encoding.get("bw")
+    """
+    Then: (8) The factor encoding incurs no quantization noise:
+    """
+    factor_scale = factor_encoding["scale"][0]
+    assert factor_encoding.get("offset", 0) == [0]
+    q_float = np.round(const_factor.item() / factor_scale) * factor_scale
+    assert np.isclose(q_float, np.round(q_float), atol=1e-6)

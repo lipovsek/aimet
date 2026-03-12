@@ -67,7 +67,6 @@ def _get_activation_encodings(
 ):
     activation_encodings = []
     for tensor, encodings in tensor_to_activation_encodings.items():
-        assert tensor in tensor_to_quantizer_map
         if isinstance(encodings, dict) and "enc_type" in encodings:
             # Already in 1_0_0 format. Simply need to add the name as a key. This will occur if v2 quantsim is exported
             # with encoding_version set to 1.0.0. If v1 quantsim is used, translation from 0.6.1 format to 1.0.0 format
@@ -75,6 +74,7 @@ def _get_activation_encodings(
             encodings["name"] = tensor
             encoding_dict = encodings
         else:
+            assert tensor in tensor_to_quantizer_map
             assert encodings[0]["dtype"] in {"int", "float"}
             encoding = encodings[0]
             encoding_dict = {

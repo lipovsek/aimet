@@ -19,6 +19,7 @@ from typing import (
     TypeVar,
     Union,
     Literal,
+    List,
 )
 import warnings
 import itertools
@@ -31,7 +32,11 @@ import onnx
 
 from aimet_torch.common import quantsim
 from aimet_torch.common.defs import QuantScheme, QuantizationDataType
-from aimet_torch.common.onnx._utils import _is_htp_interpolation_op, _get_all_constants
+from aimet_torch.common.onnx._utils import (
+    _is_htp_interpolation_op,
+    _get_all_constants,
+    _derive_const_rescale_op_output_encodings,
+)
 from aimet_torch.common.quantsim_config.quantsim_config import _config_file_aliases
 from aimet_torch.common.utils import deprecated, _red, docstring
 from aimet_torch._base.quantsim import (
@@ -56,7 +61,7 @@ from aimet_torch.v2.nn.fake_quant import _legacy_impl
 from aimet_torch.v2._builder import _V2LazyQuantizeWrapper
 from aimet_torch.v2.quantization.base import QuantizerBase, EncodingBase
 from aimet_torch.v2.quantization.tensor import QuantizedTensorBase
-from aimet_torch.v2.quantization.affine import AffineQuantizerBase
+from aimet_torch.v2.quantization.affine import AffineQuantizerBase, AffineEncoding
 from aimet_torch.v2.quantization.encoding_analyzer import PercentileEncodingAnalyzer
 from aimet_torch.v2.utils import patch_attr
 from aimet_torch import utils
@@ -519,6 +524,64 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
         finally:
             for h in handles:
                 h.remove()
+
+    @classmethod
+    def _export_encodings_to_1_0_0(
+        cls,
+        path: str,
+        filename_prefix: str,
+        tensor_to_activation_encodings: Dict[str, List],
+        tensor_to_param_encodings: Dict[str, List],
+        tensor_to_quantizer_map: Dict,
+        excluded_layer_names: List[str],
+        onnx_model: Optional["onnx.ModelProto"],
+        quantizer_args: Dict,
+    ):
+        """
+        Export encodings using format version 1.0.0.
+
+        :param path: Path to save encodings
+        :param filename_prefix: Filename to save encodings with
+        :param tensor_to_activation_encodings: Dictionary of activation encodings which maps onnx attribute to encodings
+        :param tensor_to_param_encodings: Dictionary of param encodings
+        :param tensor_to_quantizer_map: Dictionary mapping tensor names to quantizers
+        :param excluded_layer_names: List of names of layers that have been excluded from quantization
+        :param quantizer_args: Arguments to top leve quantsim
+        """
+        if onnx_model is not None:
+            tensor_to_encoding_map = {
+                name: quantizer.get_encodings()
+                for name, quantizer in tensor_to_quantizer_map.items()
+                if quantizer
+            }
+            tensor_to_encoding_dict_map = {
+                name: encoding.to_qnn_encoding_dict("2.0.0")
+                for name, encoding in tensor_to_encoding_map.items()
+                if isinstance(encoding, AffineEncoding)
+            }
+            derived_encodings = _derive_const_rescale_op_output_encodings(
+                onnx_model, tensor_to_encoding_dict_map
+            )
+            # pylint: disable=protected-access
+            derived_encodings = {
+                name: AffineEncoding._from_qnn_encoding_dict(
+                    encoding_dict
+                ).to_qnn_encoding_dict("1.0.0")
+                for name, encoding_dict in derived_encodings.items()
+                if name not in tensor_to_activation_encodings
+                and name not in tensor_to_param_encodings
+            }
+            tensor_to_activation_encodings.update(derived_encodings)
+        super()._export_encodings_to_1_0_0(
+            path,
+            filename_prefix,
+            tensor_to_activation_encodings,
+            tensor_to_param_encodings,
+            tensor_to_quantizer_map,
+            excluded_layer_names,
+            onnx_model,
+            quantizer_args,
+        )
 
     def set_percentile_value(self, percentile_value: float):
         """
