@@ -850,7 +850,10 @@ class BaseQuantizationMixin(abc.ABC):
                 continue
 
             param = getattr(self, param_name)
-            qdq_param = param_qtzr(param).dequantize()
+
+            with torch.no_grad():
+                qdq_param = param_qtzr(param).dequantize()
+
             setattr(
                 self,
                 param_name,
