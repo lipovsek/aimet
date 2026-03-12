@@ -764,10 +764,11 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
         )
 
     @contextmanager
-    def _precompute_encodings(self):
+    def _precompute_encodings(self, dtype: torch.dtype | None = None):
         enc = self.get_encodings()
 
         if enc:
+            enc = enc.to(dtype=dtype)
             enc.scale = torch.nn.Parameter(enc.scale, requires_grad=False)
             enc.offset = torch.nn.Parameter(enc.offset, requires_grad=False)
 

@@ -287,5 +287,5 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
         self.allow_overwrite(mode)
 
     @contextlib.contextmanager
-    def _precompute_encodings(self):
+    def _precompute_encodings(self, dtype: torch.dtype | None = None):  # pylint: disable=unused-argument
         yield

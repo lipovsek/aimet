@@ -635,11 +635,18 @@ def _is_qtensor_casting_enabled():
 @contextmanager
 def _inference_mode(model: torch.nn.Module, prequantize_parameters: bool):
     # pylint: disable=protected-access
-    from .experimental.onnx._export import _precompute_encodings
     from .quantsim import QuantizationSimModel
+    from .quantization.tensor import DequantizedTensor
+    from .quantization.base import QuantizerBase
 
     with ExitStack() as stack:
-        stack.enter_context(_precompute_encodings(model))
+        for q in model.modules():
+            if isinstance(q, QuantizerBase):
+                dtype = next(
+                    p.dtype for p in itertools.chain(q.parameters(), q.buffers())
+                )
+                stack.enter_context(q._precompute_encodings(dtype=dtype))
+
         stack.enter_context(_enable_qtensor_casting(False))
 
         if prequantize_parameters:
@@ -648,4 +655,12 @@ def _inference_mode(model: torch.nn.Module, prequantize_parameters: bool):
             )
             stack.enter_context(remove_param_quantizers(model))
 
+        def cast_param_to_plain_tensor(module):
+            for name, param in module.named_parameters(recurse=False):
+                if isinstance(param, DequantizedTensor):
+                    stack.enter_context(
+                        patch_attr(module, name, param.as_subclass(torch.Tensor))
+                    )
+
+        model.apply(cast_param_to_plain_tensor)
         yield

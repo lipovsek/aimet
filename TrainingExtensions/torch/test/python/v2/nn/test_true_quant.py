@@ -1316,8 +1316,8 @@ def test_default_kernels(module_factory, input_factory):
     out = qmodule(*inputs)
 
     for out_, fout_ in zip(tree_flatten(out)[0], tree_flatten(fout)[0]):
-        assert torch.equal(out_, fout_)
-        assert torch.all(out_.isfinite())
+        assert torch.equal(out_, fout_), type(module)
+        assert torch.all(out_.isfinite()), type(module)
 
     """
     When: Trace a quantized modules with torch.jit.trace
@@ -1329,7 +1329,7 @@ def test_default_kernels(module_factory, input_factory):
     tout = traced(*inputs)
 
     for out_, tout_ in zip(tree_flatten(out)[0], tree_flatten(tout)[0]):
-        assert torch.equal(out_, tout_)
+        assert torch.equal(out_, tout_), type(module)
 
     if version.parse(torch.__version__) >= version.parse("2.8.0"):
         """

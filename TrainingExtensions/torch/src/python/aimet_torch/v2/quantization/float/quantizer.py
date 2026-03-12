@@ -468,10 +468,11 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         return ", ".join(extra_repr)
 
     @contextmanager
-    def _precompute_encodings(self):
+    def _precompute_encodings(self, dtype: torch.dtype | None = None):
         enc = self.get_encodings()
 
         if enc:
+            enc = enc.to(dtype=dtype)
             enc.scale = torch.nn.Parameter(enc.scale, requires_grad=False)
 
         def get_cache_encodings(*args, **kwargs):  # pylint: disable=unused-argument
