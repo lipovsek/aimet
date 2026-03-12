@@ -44,6 +44,7 @@ import aimet_torch.nn.modules.custom as custom
 from aimet_torch.v2.batch_norm_fold import fold_all_batch_norms_to_scale
 from aimet_torch.mixed_precision import choose_mixed_precision
 from aimet_torch.v2.mixed_precision import MixedPrecisionConfigurator
+from aimet_torch.v2.quantization.float import FloatEncoding, FloatQuantizeDequantize
 from ..models_ import test_models
 
 
@@ -3067,3 +3068,116 @@ def test_quantsim_enables_unpropagatable_scalar_constant_rescale_quantizers(
         assert sim.model.rescale.input_quantizers[1] is not None
 
     assert sim.model.rescale.output_quantizers[0] is not None
+
+
+class TestQuantSimWithMxfp4Weights:
+    class ToyLinearModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(32, 64)
+
+        def forward(self, x):
+            return self.linear(x)
+
+    @staticmethod
+    def _generate_mxfp4_weight(out_features, in_features, block_size):
+        """
+        Generate a weight tensor by creating random floats, deriving e8m0 scales per block,
+        then quantizing (divide by scale) and dequantizing (multiply by scale).
+
+        Returns (weight_data, expected_scales) where expected_scales has shape
+        [out_features, in_features // block_size].
+        """
+        n_blocks = in_features // block_size
+
+        # 1. Create random float weights
+        weight = torch.randn(out_features, in_features)
+
+        # 2. Derive e8m0 scales from the weight values (per block)
+        weight_blocks = weight.abs().reshape(out_features, n_blocks, block_size)
+        weight_max = weight_blocks.amax(dim=-1)  # [out_features, n_blocks]
+        weight_max = weight_max / 4
+
+        nonzero_mask = weight_max != 0
+        safe_weight_max = torch.where(
+            nonzero_mask, weight_max, torch.ones_like(weight_max)
+        )
+        exponent = torch.floor(torch.log2(safe_weight_max))
+        block_scales = torch.where(
+            nonzero_mask, torch.pow(2, exponent), torch.ones_like(weight_max)
+        )
+
+        # 3. Quantize (divide by scale) then dequantize (multiply by scale)
+        e2m1_qdq = FloatQuantizeDequantize(
+            exponent_bits=2,
+            mantissa_bits=1,
+            finite=True,
+            unsigned_zero=False,
+            shape=(out_features, n_blocks),
+            block_size=(1, block_size),
+        )
+        e2m1_qdq.maxval = block_scales * 6
+        weight_data = e2m1_qdq(weight)
+
+        # scales_expanded = block_scales.unsqueeze(-1)  # [out_features, n_blocks, 1]
+        # weight_reshaped = weight.reshape(out_features, n_blocks, block_size)
+        # weight_data = ((weight_reshaped / scales_expanded) * scales_expanded).reshape(out_features, in_features)
+
+        return weight_data, block_scales
+
+    @pytest.mark.parametrize("block_size", [2, 4, 8, 16, 32])
+    def test_model_with_mxfp4_weights(self, block_size):
+        """
+        Given: Model with weights quantized to mxfp4
+        When: Create quantsim and export encodings
+        Then: Encodings should be exported and loadable without error
+        """
+        torch.manual_seed(42)
+
+        model = self.ToyLinearModel()
+
+        in_features = 32
+        out_features = 64
+        n_blocks = in_features // block_size
+
+        # Generate weight data with e2m1 values scaled by random e8m0 scales
+        weight_data, expected_scales = self._generate_mxfp4_weight(
+            out_features=out_features, in_features=in_features, block_size=block_size
+        )
+
+        with torch.no_grad():
+            model.linear.weight.copy_(weight_data)
+
+        dummy_input = torch.randn(1, in_features)
+        sim = QuantizationSimModel(
+            model,
+            dummy_input,
+            quant_scheme=QuantScheme.min_max,
+            default_param_bw=4,
+            default_output_bw=16,
+        )
+
+        sim.model.linear.set_weight_quantizer_to_mxfp4_int8(block_size=block_size)
+        sim.compute_encodings(lambda model: model(dummy_input))
+
+        assert sim.model.linear.param_quantizers["weight"].bitwidth == 8
+        assert isinstance(sim.model.linear.weight, DequantizedTensor)
+
+        assert sim.model.linear.weight.encoding.scale.shape == torch.Size(
+            [out_features, n_blocks]
+        )
+
+        assert sim.model.linear.weight.encoding._finfo.exponent_bits == 2
+        assert sim.model.linear.weight.encoding._finfo.mantissa_bits == 1
+
+        # The quantizer should recover exactly the per-block e8m0 scales
+        recovered_scales = sim.model.linear.weight.encoding.scale
+        assert torch.allclose(recovered_scales, expected_scales, rtol=1e-5)
+
+        # Since weights are already e2m1-representable at their block scales,
+        # the dequantized weight should exactly match the original weight data
+        assert torch.allclose(sim.model.linear.weight, weight_data, rtol=1e-5)
+
+        # Run a forward pass to ensure encodings are functional
+        output = sim.model(dummy_input)
+        assert output.shape == (1, out_features)

@@ -32,6 +32,7 @@ from aimet_torch.v2.utils import (
     patch_attr,
     _ContextManager,
     flatten_nn_module_list,
+    reduce,
 )
 from aimet_torch.v2.deepspeed_utils import SafeGatheredParameters, _shallow_copy
 
@@ -694,6 +695,102 @@ class BaseQuantizationMixin(abc.ABC):
         del orig_module._modules["param_quantizers"]
 
         return orig_module
+
+    @torch.no_grad()
+    def set_weight_quantizer_to_mxfp4_int8(self, block_size: int = 32):
+        """
+        Set weight quantizer to MXFP4 quantizer.
+
+        Assumes weights are already quantize-dequantized to MXFP4 format.
+
+        :param block_size: Block size along the last dimension for MXFP4 quantization.
+        """
+        # 0. If there is no "weight" parameter and/or param_quantizer, exit early
+        if not hasattr(self, "weight") or self.weight is None:
+            return
+        if (
+            "weight" not in self.param_quantizers
+            or self.param_quantizers["weight"] is None
+        ):
+            return
+
+        if not isinstance(self, (nn.Linear, nn.Conv2d, nn.Conv1d, nn.Conv3d)):
+            raise RuntimeError(
+                "MxFP4 is only implemented in QAIRT for nn.Linear and nn.Conv2d modules"
+            )
+
+        weight = self.weight
+
+        # 1. Create a new float quantizer set to e2m1
+        # pylint: disable=import-outside-toplevel
+        from aimet_torch.v2.quantsim.config_utils import (
+            _get_block_size_array_for_module,
+            _get_weight_quantizer_shape_from_block_size,
+        )
+
+        block_shape = _get_block_size_array_for_module(self, block_size)
+        quantizer_shape = _get_weight_quantizer_shape_from_block_size(self, block_shape)
+
+        if quantizer_shape is None:
+            error_str = (
+                f"Layer has shape {weight.shape} which does not align with block shape {block_shape}. "
+                f"Each dimension's shape must divide evenly with the corresponding dimension in block shape."
+            )
+            raise RuntimeError(error_str)
+
+        e2m1_qdq = FloatQuantizeDequantize(
+            exponent_bits=2,
+            mantissa_bits=1,
+            finite=True,
+            unsigned_zero=False,
+            shape=quantizer_shape,
+            block_size=block_shape,
+        )
+
+        # 2. Derive e8m0 scales from the weight values
+        weight_max = reduce(
+            weight.abs(),
+            shape=quantizer_shape,
+            block_size=block_shape,
+            reduce_op=torch.amax,
+        )
+
+        # This is not intuitive but OCP microscaling spec suggests the following derivation
+        # floor(log2(weight_max / 4))
+        # Reference: https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
+        weight_max = weight_max / 4
+
+        # Calculate the appropriate power of 2 for E8M0 scaling (vectorized)
+        nonzero_mask = weight_max != 0
+        safe_weight_max = torch.where(
+            nonzero_mask, weight_max, torch.ones_like(weight_max)
+        )
+        exponent = torch.floor(torch.log2(safe_weight_max))
+        block_scales = torch.where(
+            nonzero_mask, torch.pow(2, exponent), torch.ones_like(weight_max)
+        )
+
+        # 3. We will QDQ the weight tensor so we end up with a dequantized tensor that holds the e2m1 scales.
+        # There is no API to set the scale in FloatQuantizeDequantize, but we can set the quantization range to be [0, block_scales * 6] to
+        # achieve the same effect since e2m1 format has 6.0 as the max representable value.
+        e2m1_qdq.maxval = block_scales * 6
+        dequantized_weight = e2m1_qdq(weight)
+
+        # Todo: We can  perhaps add a check here to make sure that QDQ values are the same as the original weight values.
+
+        # 4. Set the weight quantizer to per-channel symmetric INT8
+        per_channel_shape = (weight.shape[0],) + (1,) * (weight.ndim - 1)
+        self.param_quantizers["weight"] = QuantizeDequantize(
+            shape=per_channel_shape,
+            qmin=-128,
+            qmax=127,
+            symmetric=True,
+        )
+
+        # 5. Replace the weight tensor with the dequantized tensor from step 3, which holds the e2m1 encodings
+        self.weight = torch.nn.Parameter(
+            dequantized_weight, requires_grad=weight.requires_grad
+        )
 
     def _remove_input_quantizers(self, indices: Union[int, Iterable[int]] = None):
         """

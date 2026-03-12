@@ -317,8 +317,9 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
     def get_scale(self) -> torch.Tensor:
         log2_scale = self._get_log2_scale()
 
-        if log2_scale is None:
-            return None
+        if self._finfo == _float4_e2m1fn:
+            # For float4_e2m1fn, the scale is restricted to powers of 2, so we round the log2_scale to nearest integer
+            log2_scale = torch.round(log2_scale)
 
         return 2**log2_scale
 
