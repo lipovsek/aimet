@@ -596,6 +596,15 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 self._add_products_for_op(
                     op, [inp for inp in node.inputs()], outputs, output_map
                 )
+
+                if node.kind() == "prim::Constant":
+                    constant_value = _get_constant_value(node)
+                    if not (
+                        isinstance(constant_value, torch.Tensor)
+                        and constant_value.numel() > 1
+                    ):
+                        op.output_products[0].constant_value = constant_value
+
                 for output in outputs:
                     curr_level_tensors.append(output)
 
@@ -672,6 +681,8 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             )
             if isinstance(subgraph_model, torch.nn.Parameter):
                 op.output_products[0].is_parm = True
+            elif subgraph_model.numel() == 1:
+                op.output_products[0].constant_value = subgraph_model
             for output in outputs:
                 curr_level_tensors.append(output)
             return
@@ -1076,6 +1087,9 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                             )
                             constant_product._is_const = True
                             constant_product._is_parm = op.output_products[0].is_parm
+                            constant_product.constant_value = op.output_products[
+                                0
+                            ].constant_value
                             self._constant_count += 1
                             constant_product.add_consumer(consumer)
                             consumer.inputs[product_index] = constant_product
@@ -1294,6 +1308,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 new_product.is_model_input = product.is_model_input
                 new_product.is_const = product.is_const
                 new_product.is_parm = product.is_parm
+                new_product.constant_value = product.constant_value
                 new_product._consumers = [consumer]
                 new_product_dict[new_product.name] = new_product
                 if producer and not producer.outputs:
@@ -2022,3 +2037,23 @@ def _add_passthrough_input_quantizers(model):
         for module, input_quantizers in input_quantizer_map.items():
             for idx, _ in enumerate(module.input_quantizers):
                 module.input_quantizers[idx] = input_quantizers[idx]
+
+
+def _get_constant_value(node: torch._C.Node) -> Union[torch.Tensor, int, float, bool]:
+    """
+    Given a constant node in the JIT trace, return the value of the constant.
+
+    :param node: Constant node in JIT trace
+    :return: Value of the constant
+    """
+    if not node.kind() == "prim::Constant":
+        raise ValueError("Node must be a prim::Constant")
+    if len(node.attributeNames()) != 1:
+        return None
+    attr = node.attributeNames()[0]
+    if "value" not in attr:
+        return None
+    value = getattr(node, node.kindOf(attr))(attr)
+    if isinstance(value, (torch.Tensor, int, float, bool)):
+        return value
+    return None

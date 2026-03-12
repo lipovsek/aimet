@@ -1535,7 +1535,7 @@ class StandalonePreparedConstRescale(torch.nn.Module):
 
     def __init__(self, div_factor, divide=True):
         super().__init__()
-        self.denom = torch.nn.Parameter(torch.ones(1) * div_factor)
+        self.denom = torch.nn.Buffer(torch.ones(1) * div_factor)
         self.rescale = aimet_modules.Divide() if divide else aimet_modules.Multiply()
 
     def forward(self, x):

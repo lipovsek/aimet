@@ -11,6 +11,10 @@ _V2 = True
 
 
 class Product(_Product):
+    def __init__(self, name, shape):
+        super().__init__(name, shape)
+        self.constant_value = None
+
     def is_quantized(self):
         producer: Optional[Op] = self._producer
 

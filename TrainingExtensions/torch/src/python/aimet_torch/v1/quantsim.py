@@ -794,6 +794,11 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
                 onnx_export_args,
             )
 
+    def _disable_quantizers_for_constant_rescale_ops(self):
+        """
+        For legacy compatibility, does nothing.
+        """
+
 
 def load_encodings_to_sim(
     quant_sim_model: _QuantizationSimModelBase, pytorch_encoding_path: str

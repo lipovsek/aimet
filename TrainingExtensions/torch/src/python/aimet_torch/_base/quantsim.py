@@ -392,6 +392,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         self._validate_supported_kernels_for_quantizers(SUPPORTED_KERNELS_ACTION)
 
         self._apply_exception_rules()
+        self._disable_quantizers_for_constant_rescale_ops()
 
         # Initialize real wrappers using collected information
         self._realize_quant_wrappers_in_model(self.model)
@@ -723,6 +724,12 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
                     elif target_quantizer_for_second_input.bitwidth == 16:
                         target_quantizer_for_second_input.use_symmetric_encodings = True
                         target_quantizer_for_first_input.bitwidth = 16
+
+    @abstractmethod
+    def _disable_quantizers_for_constant_rescale_ops(self):
+        """
+        Disables quantizers for Div/Mul ops with constant scalar scaling factor
+        """
 
     def _get_target_quantizer(
         self, input_quantizer: _QuantizerProtocol, input_op: Op

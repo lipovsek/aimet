@@ -248,7 +248,7 @@ class TestTrainingExtensionElementwiseOps:
             def forward(self, input1):
                 x = self.conv(input1)
                 x = self.add(x, 2)
-                x = self.mul(x, 1)
+                x = self.mul(x, -1)
                 return x
 
         model = Model().eval()
@@ -289,7 +289,7 @@ class TestTrainingExtensionElementwiseOps:
             def forward(self, input1):
                 x = self.conv(input1)
                 x = self.add(x, 2)
-                x = self.mul(x, 1)
+                x = self.mul(x, -1)
                 return x
 
         model = Model().eval()

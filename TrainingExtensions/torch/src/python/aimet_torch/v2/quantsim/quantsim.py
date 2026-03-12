@@ -21,6 +21,7 @@ from typing import (
     Literal,
     List,
 )
+import math
 import warnings
 import itertools
 import io
@@ -39,6 +40,7 @@ from aimet_torch.common.onnx._utils import (
 )
 from aimet_torch.common.quantsim_config.quantsim_config import _config_file_aliases
 from aimet_torch.common.utils import deprecated, _red, docstring
+from aimet_torch.nn.modules import custom
 from aimet_torch._base.quantsim import (
     _QuantizationSimModelBase,
     logger,
@@ -935,6 +937,46 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
             lambda module: module in htp_interpolation_ops
             or (isinstance(module, QuantizedReLU) and module.output_quantizers[0]),
         )
+
+    def _disable_quantizers_for_constant_rescale_ops(self):
+        """
+        Disables quantizers for Div/Mul ops with constant scalar scaling factor
+        """
+        for op in self.connected_graph.ordered_ops:
+            wrapper = self._get_qmodule(op)
+            if not isinstance(wrapper, _V2LazyQuantizeWrapper):
+                continue
+            original_module = wrapper.get_original_module()
+            if isinstance(original_module, (custom.Divide, custom.Multiply)):
+                if len(op.inputs) != 2:
+                    continue
+                inp_idx, scale_idx = (0, 1)
+                if (
+                    isinstance(original_module, custom.Multiply)
+                    and op.inputs[scale_idx].constant_value is None
+                ):
+                    inp_idx, scale_idx = scale_idx, inp_idx
+                scalar_value = op.inputs[scale_idx].constant_value
+                if scalar_value is None:
+                    continue
+                if op.inputs[scale_idx].numel != 1:
+                    continue
+                if isinstance(scalar_value, torch.nn.Parameter):
+                    continue
+                if isinstance(scalar_value, torch.Tensor):
+                    scalar_value = scalar_value.item()
+                if scalar_value is None:
+                    continue
+                if scalar_value <= 0:
+                    continue
+                if math.isnan(scalar_value) or math.isinf(scalar_value):
+                    continue
+                inp_quantizer = wrapper.input_quantizers[inp_idx]
+                input_op = op.inputs[inp_idx].producer
+                inp_quantizer = self._get_target_quantizer(inp_quantizer, input_op)
+                if inp_quantizer and inp_quantizer.enabled:
+                    wrapper.input_quantizers[scale_idx].enabled = False
+                    wrapper.output_quantizers[0].enabled = False
 
 
 class QuantizationSimModelOnnxExporter:

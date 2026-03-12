@@ -3019,3 +3019,51 @@ def test_sim_export_with_propagated_rescale_encodings(
     assert factor_encoding.get("offset", 0) == [0]
     q_float = np.round(const_factor.item() / factor_scale) * factor_scale
     assert np.isclose(q_float, np.round(q_float), atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "model_factory",
+    [
+        lambda: test_models.ModelWithPreparedConstRescale(3.0, divide=True),
+        lambda: test_models.ModelWithPreparedConstRescale(3.0, divide=False),
+        lambda: test_models.MatMulRescaleAddModel(divide=True),
+        lambda: test_models.MatMulRescaleAddModel(divide=False),
+        lambda: test_models.StandalonePreparedConstRescale(3.0, divide=True),
+        lambda: test_models.StandalonePreparedConstRescale(3.0, divide=False),
+    ],
+)
+def test_quantsim_disables_scalar_constant_rescale_quantizers(tmp_path, model_factory):
+    model = model_factory()
+    dummy_input = model.dummy_input()
+    sim = QuantizationSimModel(model, dummy_input, config_file="htp_v81")
+    assert sim.model.rescale.input_quantizers[1] is None
+    assert sim.model.rescale.output_quantizers[0] is None
+
+
+@pytest.mark.parametrize(
+    "model_factory",
+    [
+        lambda: test_models.ModelWithPreparedConstRescale(-3.0, divide=True),
+        lambda: test_models.ModelWithPreparedConstRescale(-2.0, divide=False),
+        lambda: test_models.ModelWithPreparedConstRescale(0.0, divide=True),
+        lambda: test_models.ModelWithPreparedConstRescale(0.0, divide=False),
+        lambda: test_models.ModelWithPreparedConstRescale(float("inf"), divide=True),
+        lambda: test_models.ModelWithPreparedConstRescale(float("nan"), divide=True),
+        lambda: test_models.RescaleWithVectorConst(divide=True),
+        lambda: test_models.RescaleWithVectorConst(divide=False),
+        lambda: test_models.ModelWithDynamicRescale(divide=True),
+        lambda: test_models.ModelWithDynamicRescale(divide=False),
+    ],
+)
+def test_quantsim_enables_unpropagatable_scalar_constant_rescale_quantizers(
+    tmp_path, model_factory
+):
+    model = model_factory()
+    dummy_input = model.dummy_input()
+    sim = QuantizationSimModel(model, dummy_input, config_file="htp_v81")
+    assert sim.model.linear.output_quantizers[0] is not None
+    # Input[1] will be quantized by linear.output_quantizers[0] for ModelWithDynamicRescale
+    if not isinstance(model, test_models.ModelWithDynamicRescale):
+        assert sim.model.rescale.input_quantizers[1] is not None
+
+    assert sim.model.rescale.output_quantizers[0] is not None

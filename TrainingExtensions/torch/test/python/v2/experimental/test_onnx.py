@@ -2878,6 +2878,9 @@ def test_exported_qdq_matches_sim_with_lossy_rescale_quantization(tmp_path):
     sim.compute_encodings(lambda m: m(*dummy_input))
     # Rescale will get clipped to 1.5 in QDQ
     clip_val = 1.5
+    sim.model.rescale.input_quantizers[1] = Q.affine.QuantizeDequantize(
+        (), bitwidth=8, symmetric=False
+    )
     sim.model.rescale.input_quantizers[1].set_range(0, clip_val)
     sim_output = sim.model(*dummy_input)
     fname = os.path.join(tmp_path, "model.onnx")
