@@ -124,3 +124,4 @@ else:
         f"Transformers version {transformers.__version__} not supported for Qwen3MoE. "
         f"Only versions >=4.51.0 and <5.0.0 are supported."
     )
+    Qwen3MoEAdaptation = None
