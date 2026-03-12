@@ -353,43 +353,18 @@ class WheelBuildTask(Task):
             )
             return TaskResult(TaskStatus.SUCCESS, "Skipped - already installed")
 
-        # Install torch with correct variant (CPU or CUDA) - required before build
-        if self.enable_torch:
-            torch_index_url = get_torch_index_url(self.enable_cuda)
-            logger.info(f"Installing torch from {torch_index_url}")
-            torch_install_cmd = [
-                sys.executable,
-                "-m",
-                "uv",
-                "pip",
-                "install",
-                "--index-url",
-                torch_index_url,
-                "torch",
-            ]
-            logger.info(f"Running: {' '.join(torch_install_cmd)}")
-            try:
-                subprocess.run(
-                    torch_install_cmd, cwd=self.cwd, check=True, capture_output=False
-                )
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                # Fallback to pip
-                torch_install_cmd = [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--index-url",
-                    torch_index_url,
-                    "torch",
-                ]
-                logger.info(f"Running: {' '.join(torch_install_cmd)}")
-                subprocess.run(
-                    torch_install_cmd, cwd=self.cwd, check=True, capture_output=False
-                )
-
         # Compile and install dev dependencies
         dev_requirements_file = Path("/tmp") / "dev_requirements.txt"
+        constraints_file = Path("/tmp") / "aimet_constraints.txt"
+        torch_index_url = get_torch_index_url(self.enable_cuda)
+
+        # Create constraints file (same approach as CI Dockerfile)
+        constraints = ["torch==2.*"]
+        if self.enable_onnx:
+            constraints.append("onnxruntime==1.19.*")
+        constraints_file.write_text("\n".join(constraints) + "\n")
+        logger.info(f"Created constraints file: {constraints_file}")
+
         logger.info("Compiling dev dependencies from pyproject.toml")
         compile_cmd = [
             sys.executable,
@@ -401,11 +376,26 @@ class WheelBuildTask(Task):
             str(dev_requirements_file),
             "--extra",
             "dev",
+            "--constraint",
+            str(constraints_file),
+            "--extra-index-url",
+            torch_index_url,
+            "--index-strategy",
+            "unsafe-best-match",
             "pyproject.toml",
         ]
-        logger.info(f"Running: {' '.join(compile_cmd)}")
+        # Set CMAKE_ARGS so aimet's dynamic metadata plugin knows which variant to build
+        compile_env = os.environ.copy()
+        compile_env["CMAKE_ARGS"] = self.cmake_args
+        logger.info(f"Running: CMAKE_ARGS='{self.cmake_args}' {' '.join(compile_cmd)}")
         try:
-            subprocess.run(compile_cmd, cwd=self.cwd, check=True, capture_output=False)
+            subprocess.run(
+                compile_cmd,
+                cwd=self.cwd,
+                check=True,
+                capture_output=False,
+                env=compile_env,
+            )
         except subprocess.CalledProcessError as e:
             return TaskResult(
                 TaskStatus.FAILED, f"pip compile failed with exit code {e.returncode}"
@@ -421,11 +411,19 @@ class WheelBuildTask(Task):
                 str(dev_requirements_file),
                 "--extra",
                 "dev",
+                "--extra-index-url",
+                torch_index_url,
+                "-P",
+                "torch",
                 "pyproject.toml",
             ]
             try:
                 subprocess.run(
-                    compile_cmd, cwd=self.cwd, check=True, capture_output=False
+                    compile_cmd,
+                    cwd=self.cwd,
+                    check=True,
+                    capture_output=False,
+                    env=compile_env,
                 )
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 logger.warning(
@@ -628,6 +626,7 @@ class PyTestTask(Task):
         cwd: Path | None = None,
         skip_install_if: Callable[[], bool] | None = None,
         parallel: int = 8,
+        enable_cuda: bool = False,
     ) -> None:
         super().__init__(name)
         self.test_paths = [str(p) for p in test_paths]
@@ -637,6 +636,7 @@ class PyTestTask(Task):
         self.cwd = cwd or REPO_ROOT
         self.skip_install_if = skip_install_if
         self.parallel = parallel
+        self.enable_cuda = enable_cuda
 
     def run(self) -> TaskResult:
         # Check if we can skip wheel installation
@@ -661,12 +661,17 @@ class PyTestTask(Task):
             logger.info(f"Found wheel: {wheel_path}")
 
             # Install wheel with [test] extras
+            torch_index_url = get_torch_index_url(self.enable_cuda)
             install_cmd = [
                 sys.executable,
                 "-m",
                 "uv",
                 "pip",
                 "install",
+                "--extra-index-url",
+                torch_index_url,
+                "--index-strategy",
+                "unsafe-best-match",
                 f"{wheel_path}[test]",
             ]
             logger.info(f"Running: {' '.join(install_cmd)}")
@@ -681,6 +686,8 @@ class PyTestTask(Task):
                     "-m",
                     "pip",
                     "install",
+                    "--extra-index-url",
+                    torch_index_url,
                     f"{wheel_path}[test]",
                 ]
                 logger.info(f"Running: {' '.join(install_cmd)}")
@@ -1057,6 +1064,7 @@ class TaskLibrary:
                 markers=markers,
                 skip_install_if=skip_install_if,
                 parallel=parallel,
+                enable_cuda=gpu,
             ),
             "test",
         )
@@ -1118,6 +1126,24 @@ class TaskLibrary:
                         TaskStatus.FAILED,
                         "uv not found. Install with: pip install uv",
                     )
+
+                # Install pip and uv in the venv
+                venv_python = self.venv_path / "bin" / "python"
+                logger.info("Installing pip in venv...")
+                try:
+                    subprocess.run(
+                        [str(venv_python), "-m", "ensurepip", "--upgrade"],
+                        check=True,
+                        capture_output=True,
+                    )
+                    logger.info("Installing uv in venv...")
+                    subprocess.run(
+                        [str(venv_python), "-m", "pip", "install", "uv"],
+                        check=True,
+                        capture_output=True,
+                    )
+                except subprocess.CalledProcessError as e:
+                    logger.warning(f"Failed to install pip/uv in venv: {e}")
 
                 logger.info(
                     f"Venv created. Activate: source {self.venv_path}/bin/activate"
