@@ -87,6 +87,35 @@ def _set_matmul_second_input_to_8b(quantsim_model: QuantSimOnnx):
                 quantizer.use_symmetric_encodings = True
 
 
+def _get_all_downstream_concats(sim: QuantSimOnnx, tensor_name: str) -> set:
+    product = sim.connected_graph.get_product(tensor_name)
+    downstream = set()
+    for consumer in product.consumers:
+        if consumer.type == "Concat":
+            downstream.add(consumer)
+            downstream.update(
+                _get_all_downstream_concats(sim, consumer.outputs[0].name)
+            )
+        elif _is_grid_preserving_op(consumer.type):
+            downstream.update(
+                _get_all_downstream_concats(sim, consumer.outputs[0].name)
+            )
+
+    return downstream
+
+
+def _get_all_upstream_concats(sim: QuantSimOnnx, tensor_name: str) -> set:
+    product = sim.connected_graph.get_product(tensor_name)
+    upstream = set()
+    producer = product.producer
+    if producer and producer.type == "Concat":
+        upstream.add(producer)
+    elif producer and _is_grid_preserving_op(producer.type):
+        upstream.update(_get_all_upstream_concats(sim, producer.inputs[0].name))
+
+    return upstream
+
+
 def _tie_quantizers_for_kv_cache(
     quantsim_model: QuantSimOnnx, kv_io_map: dict[str, str]
 ) -> None:
@@ -94,12 +123,22 @@ def _tie_quantizers_for_kv_cache(
 
     for input_name, output_name in kv_io_map.items():
         quantizer = quantsim_model._get_enabled_quantizer(output_name)  # pylint: disable=protected-access
-        if quantizer:
-            quantizer_mapping[input_name] = quantizer
-        else:
+        if not quantizer:
             logger.warning(
                 "Warning: No valid quantizer found for output %s", output_name
             )
+            continue
+
+        quantizer_mapping[input_name] = quantizer
+
+        concats_to_tie = _get_all_upstream_concats(
+            quantsim_model, output_name
+        ) | _get_all_downstream_concats(quantsim_model, input_name)
+        for concat in concats_to_tie:
+            for tensor in concat.inputs + concat.outputs:
+                qtzr_name = quantsim_model._get_enabled_quantizer_name(tensor.name)  # pylint: disable=protected-access
+                if qtzr_name:
+                    quantizer_mapping[qtzr_name] = quantizer
 
     quantsim_model.set_quantizers(quantizer_mapping)
 
@@ -132,9 +171,6 @@ def _set_tensors_to_output_8b_sym(quantsim_model: QuantSimOnnx, out_tensors: lis
 def _apply_int8_kv_cache_tying_and_lm_head(
     sim: QuantSimOnnx, kv_io_map: dict[str, str], lm_head_tensor_name: str
 ):
-    sim._tie_quantizers_for_op_types(["Concat"])  # pylint: disable=protected-access
-    sim._rebuild_session()  # pylint: disable=protected-access
-
     # Setting kv_cache and some other layers to 8-bit
     kv_io_list = list(kv_io_map.keys()) + list(kv_io_map.values())
     _set_tensors_to_output_8b_sym(sim, kv_io_list)

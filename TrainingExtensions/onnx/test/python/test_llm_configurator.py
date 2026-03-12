@@ -23,6 +23,7 @@ from aimet_onnx.experimental.llm_configurator.llm_configurator import (
     _apply_int8_kv_cache_tying_and_lm_head,
     _set_matmul_second_input_to_8b,
     _get_quantizer_no_split_slice,
+    _tie_quantizers_for_kv_cache,
 )
 
 import onnx
@@ -36,7 +37,7 @@ from transformers.models.phi3.modeling_phi3 import Phi3ForCausalLM, Phi3Config
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2Config
 from transformers.cache_utils import DynamicCache
 
-from .models import models_for_tests
+from .models import models_for_tests, transformer_blocks
 
 from aimet_onnx.quantsim import QuantizationSimModel
 
@@ -397,3 +398,72 @@ class TestLLMConfigurator:
         quantizer = sim.qc_quantize_op_dict["reshape_output"]
         assert quantizer.enabled == True
         assert quantizer.bitwidth == 8
+
+    def test_sha_kv_cache_tying(self):
+        model = transformer_blocks.sha_2_head_block()
+        sim = QuantizationSimModel(model, activation_type="int16", param_type="int4")
+        kv_io_map = {"past_key_in": "past_key_out", "past_value_in": "past_value_out"}
+        _tie_quantizers_for_kv_cache(sim, kv_io_map)
+
+        tied_key_cache_quantizers = {
+            name
+            for name, q in sim.qc_quantize_op_dict.items()
+            if q is sim.qc_quantize_op_dict["past_key_out"]
+        }
+        tied_value_cache_quantizers = {
+            name
+            for name, q in sim.qc_quantize_op_dict.items()
+            if q is sim.qc_quantize_op_dict["past_value_out"]
+        }
+
+        assert "past_key_in" in tied_key_cache_quantizers
+        assert "past_value_in" in tied_value_cache_quantizers
+
+        enabled_quantizer_names = set(
+            name for name, q in sim.qc_quantize_op_dict.items() if q.enabled
+        )
+
+        expected_tied_key_quantizers = {
+            name
+            for name in enabled_quantizer_names
+            if name.startswith("total_key")
+            or name.startswith("k_proj_emb")
+            or name.startswith("past_key")
+        }
+        expected_tied_value_quantizers = {
+            name
+            for name in enabled_quantizer_names
+            if name.startswith("total_value")
+            or name.startswith("v_proj")
+            and "weight" not in name
+            or name.startswith("past_value")
+        }
+
+        # Additional tensors may be tied by normal concat tying
+        assert expected_tied_key_quantizers.issubset(tied_key_cache_quantizers)
+        assert expected_tied_value_quantizers.issubset(tied_value_cache_quantizers)
+
+        expected_not_tied_key_quantizers = {
+            name
+            for name in enabled_quantizer_names
+            if name.startswith("q_proj")
+            or name.startswith("self_attn_out")
+            or name.startswith("v_proj")
+            or name.startswith("hidden")
+            or name.startswith("k_proj_norm")
+            or name.startswith("key_scaled")
+        }
+        expected_not_tied_value_quantizers = {
+            name
+            for name in enabled_quantizer_names
+            if name.startswith("q_proj")
+            or name.startswith("self_attn_out")
+            or name.startswith("k_proj")
+            or name.startswith("hidden")
+        }
+        assert not expected_not_tied_key_quantizers.intersection(
+            tied_key_cache_quantizers
+        )
+        assert not expected_not_tied_value_quantizers.intersection(
+            tied_value_cache_quantizers
+        )

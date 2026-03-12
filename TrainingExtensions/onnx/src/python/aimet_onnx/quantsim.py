@@ -2685,10 +2685,17 @@ class QuantizationSimModel:
 
         :param tensor_name: Name of tensor for which to find quantizer
         """
-        quantizer = self.qc_quantize_op_dict.get(tensor_name, None)
-        if quantizer and quantizer.enabled:
-            return quantizer
+        quantizer_name = self._get_enabled_quantizer_name(tensor_name)
+        if quantizer_name:
+            return self.qc_quantize_op_dict[quantizer_name]
+        return None
 
+    def _get_enabled_quantizer_name(self, tensor_name) -> Optional[str]:
+        """
+        Returns closest enabled quantizer to tensor traversing upwards only through invariant ops
+
+        :param tensor_name: Name of tensor for which to find quantizer
+        """
         if tensor_name not in self.connected_graph.get_all_products():
             if tensor_name.endswith(("_updated", "_qdq")):
                 raise KeyError(
@@ -2698,14 +2705,17 @@ class QuantizationSimModel:
                 raise KeyError(
                     f"Could not find quantizer for tensor {tensor_name}. Tensor name does not exist in the graph"
                 )
+        quantizer = self.qc_quantize_op_dict.get(tensor_name, None)
+        if quantizer and quantizer.enabled:
+            return tensor_name
 
         path = self._get_path_to_effective_quantizer(tensor_name)
 
         if path:
             *_, qc_quantize_op_node = path
-            quantizer = self.qc_quantize_op_dict[qc_quantize_op_node.input[0]]
-            if quantizer.enabled:
-                return quantizer
+            quantizer_name = qc_quantize_op_node.input[0]
+            if self.qc_quantize_op_dict[quantizer_name].enabled:
+                return quantizer_name
 
         return None
 
