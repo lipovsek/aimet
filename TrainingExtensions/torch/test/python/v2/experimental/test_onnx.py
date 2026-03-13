@@ -2963,3 +2963,49 @@ def test_shared_weight_export(tmp_path: pathlib.Path):
     expected_out = sim.model(x)
     atol = sim.model[1].output_quantizers[0].get_scale().item()
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
+
+
+def test_unhashable_input():
+    """
+    Given: Built-in module that takes an unhashable input (e.g. list or dict)
+    When: Export to onnx QDQ
+    Then: Export should succeed and the exported model should be valid
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv1d(3, 3, 3)
+            self.reshape = aimet_ops.Reshape()
+
+        def forward(self, x):
+            x = self.conv(x)
+            x = self.reshape(x, [-1])
+            return x
+
+    model = Model()
+    dummy_input = torch.randn(1, 3, 224)
+    sim = aimet_torch.QuantizationSimModel(model, dummy_input)
+    sim.compute_encodings(lambda model: model(dummy_input))
+    aimet_torch.onnx.export(
+        sim.model,
+        dummy_input,
+        "model.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+    )
+    onnx_model = onnx.load("model.onnx")
+    onnx.checker.check_model(onnx_model)
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out,) = sess.run(None, {"input": dummy_input.detach().numpy()})
+    expected_out = sim.model(dummy_input)
+    atol = sim.model.conv.output_quantizers[0].get_scale().item()
+    assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)

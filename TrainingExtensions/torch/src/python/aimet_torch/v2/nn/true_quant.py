@@ -523,7 +523,10 @@ class _DispatchMixin(metaclass=_DispatchMeta):
             for name, param in self.named_parameters(recurse=False)
         }
 
-        def quantize_if_param(tensor: torch.Tensor):
+        def quantize_if_param(tensor: Any):
+            if not isinstance(tensor, torch.Tensor):
+                return tensor
+
             param_qtzr = params.get(tensor, None)
 
             if (
