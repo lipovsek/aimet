@@ -771,6 +771,7 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
             enc = enc.to(dtype=dtype)
             enc.scale = torch.nn.Parameter(enc.scale, requires_grad=False)
             enc.offset = torch.nn.Parameter(enc.offset, requires_grad=False)
+            setattr(enc.offset, "_precomputed_zero_point", -enc.offset.to(torch.int32))
 
         def get_cache_encodings(*args, **kwargs):  # pylint: disable=unused-argument
             return enc

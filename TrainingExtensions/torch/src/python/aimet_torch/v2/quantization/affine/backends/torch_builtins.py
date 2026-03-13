@@ -322,7 +322,11 @@ def _torch_fake_quantize(
     if is_per_tensor:
         tensor = tensor.to(tensor_internal_dtype)
         scale = scale.to(scale_internal_dtype)
-        zp = -offset.to(torch.int32)
+        zp = (
+            getattr(offset, "_precomputed_zero_point")
+            if hasattr(offset, "_precomputed_zero_point")
+            else -offset.to(torch.int32)
+        )
         output = _call_torch_fake_quantize_per_tensor(
             tensor,
             scale.view(()) if scale.dim() > 0 else scale,
@@ -355,7 +359,11 @@ def _torch_fake_quantize(
             try:
                 tensor = tensor.to(tensor_internal_dtype)
                 scale = scale.to(scale_internal_dtype)
-                zp = -offset.to(torch.int32)
+                zp = (
+                    getattr(offset, "_precomputed_zero_point")
+                    if hasattr(offset, "_precomputed_zero_point")
+                    else -offset.to(torch.int32)
+                )
                 output = _call_torch_fake_quantize_per_channel(
                     tensor,
                     scale.flatten() if scale.dim() > 1 else scale,
