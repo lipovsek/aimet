@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple
 from aimet_torch.common.utils import AimetLogger
 from aimet_torch.common.defs import QuantizationDataType, EncodingType
 from aimet_torch.utils import is_vector_encoding
+import aimet_torch
 
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
@@ -45,6 +46,10 @@ def _export_to_1_0_0(
     )
 
     encoding_file = {
+        "producer": {
+            "package": "aimet_torch",
+            "version": aimet_torch.__version__,
+        },
         "version": "1.0.0",
         "activation_encodings": activation_encodings,
         "param_encodings": param_encodings,

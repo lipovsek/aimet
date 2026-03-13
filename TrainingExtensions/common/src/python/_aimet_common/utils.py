@@ -586,3 +586,38 @@ def docstring(doc: str):
         return fn_or_cls
 
     return decorator
+
+
+def _get_version_string():
+    version_str = None
+    try:
+        from . import _version
+
+        version_str = _version.__version__
+    except ImportError:
+        # For convenience: This enables importing aimet_torch from source
+        # without building aimet_common._version
+        import subprocess
+        import os
+
+        try:
+            repo_dir = os.path.dirname(os.path.abspath(__file__))
+            prj_root, commit_hash = (
+                subprocess.check_output(
+                    ["git", "rev-parse", "--show-toplevel", "--short", "HEAD"],
+                    cwd=repo_dir,
+                    stderr=subprocess.DEVNULL,
+                )
+                .decode("utf-8")
+                .strip()
+                .split("\n")
+            )
+
+            with open(os.path.join(prj_root, "packaging", "version.txt"), "r") as f:
+                version = f.read().strip()
+
+            version_str = f"{version}.dev0+git{commit_hash}"
+        except Exception:
+            version_str = None
+    finally:
+        return version_str

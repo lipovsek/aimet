@@ -106,6 +106,7 @@ from aimet_onnx.utils import (
     OrtInferenceSession,
 )
 from aimet_onnx.batch_norm_fold import _has_unfolded_batchnorms
+import aimet_onnx
 from ._encoding import EncodingBase, LPBQEncoding
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
@@ -1292,7 +1293,13 @@ class QuantizationSimModel:
                 f"versions {VALID_ENCODING_VERSIONS}."
             )
 
-        encodings_dict = {"version": encoding_version}
+        encodings_dict = {
+            "producer": {
+                "package": "aimet_onnx",
+                "version": aimet_onnx.__version__,
+            },
+            "version": encoding_version,
+        }
 
         if encoding_version >= "2.0.0":
             encodings = self._get_encodings(

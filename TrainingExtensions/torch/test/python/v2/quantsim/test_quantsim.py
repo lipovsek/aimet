@@ -19,6 +19,7 @@ from torch import nn, randn
 from aimet_torch.common.onnx._utils import _get_all_constants, _get_effective_encoding
 from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
 from aimet_common.defs import QuantizationDataType, QuantScheme
+from aimet_torch.common import quantsim as aimet_common_quantsim
 import aimet_torch
 from aimet_torch import onnx_utils
 from aimet_torch.meta.connectedgraph import _UnsafeGraphError
@@ -2054,8 +2055,6 @@ class TestEncodingPropagation:
     def test_torch_encodings_parity(self):
         @contextlib.contextmanager
         def swap_encoding_version(encoding_version):
-            from aimet_common import quantsim as aimet_common_quantsim
-
             old_setting = aimet_common_quantsim.encoding_version
             aimet_common_quantsim.encoding_version = encoding_version
 
@@ -3181,3 +3180,32 @@ class TestQuantSimWithMxfp4Weights:
         # Run a forward pass to ensure encodings are functional
         output = sim.model(dummy_input)
         assert output.shape == (1, out_features)
+
+
+@pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0"])
+def test_encoding_metadata(tmp_path: pathlib.Path, encoding_version: str):
+    """
+    Given: A quantized model
+    When: Export
+    Then: The exported encoding should contain metadata with correct encoding version and AIMET version
+    """
+    model = torch.nn.Sequential(torch.nn.Linear(10, 10))
+    x = torch.randn(1, 10)
+
+    sim = aimet_torch.QuantizationSimModel(model, x)
+    sim.compute_encodings(lambda model: model(x))
+
+    orig_encoding_version = aimet_common_quantsim.encoding_version
+
+    try:
+        aimet_common_quantsim.encoding_version = encoding_version
+        sim.export(str(tmp_path), "model", x)
+    finally:
+        aimet_common_quantsim.encoding_version = orig_encoding_version
+
+    encodings = json.load(open(tmp_path / "model.encodings"))
+    assert encodings["version"] == encoding_version
+    assert encodings["producer"] == {
+        "package": "aimet_torch",
+        "version": aimet_torch.__version__,
+    }

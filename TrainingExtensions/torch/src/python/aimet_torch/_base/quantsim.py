@@ -37,6 +37,7 @@ import onnx
 from packaging import version
 from safetensors.numpy import save_file as save_safetensor_file
 
+import aimet_torch
 from aimet_torch.common.utils import (
     AimetLogger,
     save_json_yaml,
@@ -1402,6 +1403,10 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
 
         if quantsim.encoding_version == "0.6.1":
             encodings_dict_onnx = {
+                "producer": {
+                    "package": "aimet_torch",
+                    "version": aimet_torch.__version__,
+                },
                 "version": quantsim.encoding_version,
                 "activation_encodings": activation_encodings_onnx,
                 "param_encodings": param_encodings,
@@ -1464,6 +1469,10 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
 
             activation_encodings_torch.update(missing_activation_encodings_torch)
             encodings_dict_pytorch = {
+                "producer": {
+                    "package": "aimet_torch",
+                    "version": aimet_torch.__version__,
+                },
                 "version": quantsim.encoding_version,
                 "activation_encodings": activation_encodings_torch,
                 "param_encodings": param_encodings_torch,

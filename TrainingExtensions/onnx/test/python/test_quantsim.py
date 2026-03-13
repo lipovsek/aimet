@@ -454,6 +454,11 @@ class TestQuantSim:
         ) as json_file:
             encoding_data = json.load(json_file)
 
+        assert encoding_data["producer"] == {
+            "package": "aimet_onnx",
+            "version": aimet_onnx.__version__,
+        }
+
         activation_names = {
             encoding["name"] for encoding in encoding_data["activation_encodings"]
         }
@@ -488,6 +493,10 @@ class TestQuantSim:
             encoding_data = json.load(json_file)
 
         assert encoding_data["version"] == "1.0.0"
+        assert encoding_data["producer"] == {
+            "package": "aimet_onnx",
+            "version": aimet_onnx.__version__,
+        }
         assert isinstance(encoding_data["activation_encodings"], list)
         assert isinstance(encoding_data["param_encodings"], list)
 
@@ -539,6 +548,10 @@ class TestQuantSim:
         Then: All enabled quantizers should be exported
         """
         assert encodings["version"] == "2.0.0"
+        assert encodings["producer"] == {
+            "package": "aimet_onnx",
+            "version": aimet_onnx.__version__,
+        }
         encodings = encodings["encodings"]
         assert (
             sorted(e["name"] for e in encodings)

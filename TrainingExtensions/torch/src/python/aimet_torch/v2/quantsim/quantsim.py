@@ -69,6 +69,7 @@ from aimet_torch.v2.utils import patch_attr
 from aimet_torch import utils
 from aimet_torch.v2.deepspeed_utils import _register_zero3_forward_hooks
 from aimet_torch.experimental.transforms.transform_ops import is_mergeable_transform
+import aimet_torch
 
 
 __all__ = [
@@ -1112,6 +1113,10 @@ class QuantizationSimModelOnnxExporter:
 
         encodings_dict: Mapping[str, Any]
         encodings_dict = {
+            "producer": {
+                "package": "aimet_torch",
+                "version": aimet_torch.__version__,
+            },
             "version": encoding_version,
         }
 

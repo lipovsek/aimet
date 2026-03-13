@@ -2916,6 +2916,36 @@ def test_exported_qdq_matches_sim_with_lossy_rescale_quantization(tmp_path):
     )
 
 
+@pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
+def test_encoding_metadata(tmp_path: pathlib.Path, encoding_version: str):
+    """
+    Given: A quantized model
+    When: Export
+    Then: The exported encoding should contain metadata with correct encoding version and AIMET version
+    """
+    model = torch.nn.Sequential(torch.nn.Linear(10, 10))
+    x = torch.randn(1, 10)
+
+    sim = aimet_torch.QuantizationSimModel(model, x)
+    sim.compute_encodings(lambda model: model(x))
+
+    sim.onnx.export(
+        (x,),
+        tmp_path / "model.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+        encoding_version=encoding_version,
+    )
+
+    encodings = json.load(open(tmp_path / "model.encodings"))
+    assert encodings["version"] == encoding_version
+    assert encodings["producer"] == {
+        "package": "aimet_torch",
+        "version": aimet_torch.__version__,
+    }
+
+
 def test_shared_weight_export(tmp_path: pathlib.Path):
     """
     Given: Model with shared weight and identical encodings

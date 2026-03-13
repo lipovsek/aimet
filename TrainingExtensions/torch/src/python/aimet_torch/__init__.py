@@ -4,14 +4,10 @@
 
 # pylint: disable=missing-module-docstring
 
-try:
-    from aimet_torch.common import _version
+from aimet_torch.common.utils import _get_version_string
 
-    __version__ = _version.__version__
-except ImportError:
-    # For convenience: This enables importing aimet_torch from source
-    # without building aimet_common._version
-    __version__ = None
+__version__ = _get_version_string()
+del _get_version_string
 
 from .quantsim import QuantizationSimModel
 from . import nn
