@@ -58,18 +58,6 @@
     "Cast":
     {
       "is_output_quantized": "False"
-    },
-    "Mean":
-    {
-      "is_output_quantized": "False"
-    },
-    "Shape":
-    {
-      "is_output_quantized" : "False"
-    },
-    "If":
-    {
-      "is_output_quantized" : "False"
     }
   },
 

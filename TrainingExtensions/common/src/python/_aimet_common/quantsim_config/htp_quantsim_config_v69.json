@@ -50,23 +50,11 @@
     {
       "is_output_quantized": "False"
     },
-    "BatchPermutation":
-    {
-      "is_output_quantized": "False"
-    },
     "ChannelShuffle":
     {
       "is_output_quantized": "False"
     },
-    "CropAndResize":
-    {
-      "is_output_quantized": "False"
-    },
     "Gather":
-    {
-      "is_output_quantized": "False"
-    },
-    "Upsample":
     {
       "is_output_quantized": "False"
     },
@@ -88,10 +76,6 @@
       {
         "min": 0.0
       }
-    },
-    "Mean":
-    {
-      "is_output_quantized": "False"
     },
     "RMSNormalization":
     {
@@ -127,14 +111,6 @@
           "is_symmetric": "False"
         }
       }
-    },
-    "Shape":
-    {
-      "is_output_quantized" : "False"
-    },
-    "If":
-    {
-      "is_output_quantized" : "False"
     }
   },
 

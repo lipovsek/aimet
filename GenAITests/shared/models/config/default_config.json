@@ -30,15 +30,7 @@
     {
       "is_output_quantized": "False"
     },
-    "BatchPermutation":
-    {
-      "is_output_quantized": "False"
-    },
     "ChannelShuffle":
-    {
-      "is_output_quantized": "False"
-    },
-    "CropAndResize":
     {
       "is_output_quantized": "False"
     },
@@ -54,19 +46,7 @@
     {
       "is_output_quantized": "False"
     },
-    "Upsample":
-    {
-      "is_output_quantized": "False"
-    },
     "SpaceToDepth":
-    {
-      "is_output_quantized": "False"
-    },
-    "BatchToSpace":
-    {
-      "is_output_quantized": "False"
-    },
-    "SpaceToBatch":
     {
       "is_output_quantized": "False"
     },

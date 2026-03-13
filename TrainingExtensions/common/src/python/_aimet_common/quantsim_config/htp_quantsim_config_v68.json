@@ -42,15 +42,7 @@
     {
       "is_output_quantized": "False"
     },
-    "BatchPermutation":
-    {
-      "is_output_quantized": "False"
-    },
     "ChannelShuffle":
-    {
-      "is_output_quantized": "False"
-    },
-    "CropAndResize":
     {
       "is_output_quantized": "False"
     },
@@ -61,10 +53,6 @@
           "is_symmetric": "False"
         }
       }
-    },
-    "Upsample":
-    {
-      "is_output_quantized": "False"
     },
     "Tanh":
     {
@@ -82,10 +70,6 @@
       }
     },
     "NonMaxSuppression":
-    {
-      "is_output_quantized": "False"
-    },
-    "Mean":
     {
       "is_output_quantized": "False"
     },

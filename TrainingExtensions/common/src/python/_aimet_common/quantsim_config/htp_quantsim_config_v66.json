@@ -41,15 +41,7 @@
         }
       }
     },
-    "BatchPermutation":
-    {
-      "is_output_quantized": "False"
-    },
     "ChannelShuffle":
-    {
-      "is_output_quantized": "False"
-    },
-    "CropAndResize":
     {
       "is_output_quantized": "False"
     },
@@ -64,10 +56,6 @@
           "is_symmetric": "False"
         }
       }
-    },
-    "Upsample":
-    {
-      "is_output_quantized": "False"
     },
     "Tanh":
     {
@@ -88,19 +76,7 @@
     {
       "is_output_quantized": "False"
     },
-    "Mean":
-    {
-      "is_output_quantized": "False"
-    },
     "Flatten":
-    {
-      "is_output_quantized" : "False"
-    },
-    "Shape":
-    {
-      "is_output_quantized" : "False"
-    },
-    "If":
     {
       "is_output_quantized" : "False"
     }
