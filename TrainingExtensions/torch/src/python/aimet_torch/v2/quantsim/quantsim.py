@@ -1114,7 +1114,7 @@ class QuantizationSimModelOnnxExporter:
         encodings_dict: Mapping[str, Any]
         encodings_dict = {
             "producer": {
-                "package": "aimet_torch",
+                "package": "aimet-torch",
                 "version": aimet_torch.__version__,
             },
             "version": encoding_version,

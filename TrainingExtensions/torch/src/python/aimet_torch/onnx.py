@@ -7,7 +7,6 @@
 import contextlib
 import io
 import itertools
-from aimet_torch.v2.utils import patch_attr
 from packaging import version
 import traceback
 from typing import Any, Mapping, Tuple, Union, Literal
@@ -18,6 +17,8 @@ import onnx
 import torch
 from torch.onnx import _constants
 
+import aimet_torch
+from aimet_torch.v2.utils import patch_attr
 from aimet_torch.common.onnx._utils import (
     _add_onnx_qdq_nodes,
     _convert_version,
@@ -189,6 +190,12 @@ def export(
     )
     _remove_intermediate_identity_nodes(onnx_qdq_model)
     _remove_dangling_nodes_and_initializers(onnx_qdq_model)
+
+    # Add metadata property to indicate the model is exported by AIMET and its version
+    prop = onnx_qdq_model.metadata_props.add()
+    prop.key = "producer"
+    prop.value = f"aimet-torch {aimet_torch.__version__}"
+
     onnx.save(onnx_qdq_model, f)
 
 

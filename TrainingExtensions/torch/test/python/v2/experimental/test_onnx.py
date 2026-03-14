@@ -2916,8 +2916,7 @@ def test_exported_qdq_matches_sim_with_lossy_rescale_quantization(tmp_path):
     )
 
 
-@pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
-def test_encoding_metadata(tmp_path: pathlib.Path, encoding_version: str):
+def test_encoding_metadata(tmp_path: pathlib.Path):
     """
     Given: A quantized model
     When: Export
@@ -2929,21 +2928,35 @@ def test_encoding_metadata(tmp_path: pathlib.Path, encoding_version: str):
     sim = aimet_torch.QuantizationSimModel(model, x)
     sim.compute_encodings(lambda model: model(x))
 
-    sim.onnx.export(
+    for encoding_version in ["0.6.1", "1.0.0", "2.0.0"]:
+        sim.onnx.export(
+            (x,),
+            tmp_path / "model.onnx",
+            input_names=["input"],
+            output_names=["output"],
+            dynamo=False,
+            encoding_version=encoding_version,
+        )
+
+        encodings = json.load(open(tmp_path / "model.encodings"))
+        assert encodings["version"] == encoding_version
+        assert encodings["producer"] == {
+            "package": "aimet-torch",
+            "version": aimet_torch.__version__,
+        }
+
+    aimet_torch.onnx.export(
+        sim.model,
         (x,),
         tmp_path / "model.onnx",
         input_names=["input"],
         output_names=["output"],
         dynamo=False,
-        encoding_version=encoding_version,
     )
-
-    encodings = json.load(open(tmp_path / "model.encodings"))
-    assert encodings["version"] == encoding_version
-    assert encodings["producer"] == {
-        "package": "aimet_torch",
-        "version": aimet_torch.__version__,
-    }
+    onnx_qdq_model = onnx.load(tmp_path / "model.onnx")
+    (prop,) = onnx_qdq_model.metadata_props
+    assert prop.key == "producer"
+    assert prop.value == f"aimet-torch {aimet_torch.__version__}"
 
 
 def test_shared_weight_export(tmp_path: pathlib.Path):

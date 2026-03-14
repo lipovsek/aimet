@@ -455,7 +455,7 @@ class TestQuantSim:
             encoding_data = json.load(json_file)
 
         assert encoding_data["producer"] == {
-            "package": "aimet_onnx",
+            "package": "aimet-onnx",
             "version": aimet_onnx.__version__,
         }
 
@@ -494,7 +494,7 @@ class TestQuantSim:
 
         assert encoding_data["version"] == "1.0.0"
         assert encoding_data["producer"] == {
-            "package": "aimet_onnx",
+            "package": "aimet-onnx",
             "version": aimet_onnx.__version__,
         }
         assert isinstance(encoding_data["activation_encodings"], list)
@@ -549,7 +549,7 @@ class TestQuantSim:
         """
         assert encodings["version"] == "2.0.0"
         assert encodings["producer"] == {
-            "package": "aimet_onnx",
+            "package": "aimet-onnx",
             "version": aimet_onnx.__version__,
         }
         encodings = encodings["encodings"]
@@ -5254,6 +5254,13 @@ def test_to_onnx_qdq(
         export_int32_bias=export_int32_bias_encodings,
         prequantize_constants=prequantize_constants,
     )
+
+    """
+    Then: Exported model should have producer metadata property with aimet-onnx version
+    """
+    (prop,) = onnx_qdq_model.metadata_props
+    assert prop.key == "producer"
+    assert prop.value == f"aimet-onnx {aimet_onnx.__version__}"
 
     """
     Then: Exported model should preserve the original I/O names

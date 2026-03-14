@@ -1404,7 +1404,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         if quantsim.encoding_version == "0.6.1":
             encodings_dict_onnx = {
                 "producer": {
-                    "package": "aimet_torch",
+                    "package": "aimet-torch",
                     "version": aimet_torch.__version__,
                 },
                 "version": quantsim.encoding_version,
@@ -1470,7 +1470,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
             activation_encodings_torch.update(missing_activation_encodings_torch)
             encodings_dict_pytorch = {
                 "producer": {
-                    "package": "aimet_torch",
+                    "package": "aimet-torch",
                     "version": aimet_torch.__version__,
                 },
                 "version": quantsim.encoding_version,

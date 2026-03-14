@@ -47,7 +47,7 @@ def _export_to_1_0_0(
 
     encoding_file = {
         "producer": {
-            "package": "aimet_torch",
+            "package": "aimet-torch",
             "version": aimet_torch.__version__,
         },
         "version": "1.0.0",

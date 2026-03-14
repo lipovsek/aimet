@@ -1295,7 +1295,7 @@ class QuantizationSimModel:
 
         encodings_dict = {
             "producer": {
-                "package": "aimet_onnx",
+                "package": "aimet-onnx",
                 "version": aimet_onnx.__version__,
             },
             "version": encoding_version,
@@ -2436,6 +2436,12 @@ class QuantizationSimModel:
                         node.input[j] = last_node.output[i]
 
         ONNXModel(model_copy).topological_sort()
+
+        # Add metadata property to indicate the model is exported by AIMET and its version
+        prop = model_copy.metadata_props.add()
+        prop.key = "producer"
+        prop.value = f"aimet-onnx {aimet_onnx.__version__}"
+
         return model_copy
 
     def _get_qdq_parameters(self):

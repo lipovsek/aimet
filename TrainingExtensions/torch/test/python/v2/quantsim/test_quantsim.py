@@ -3206,6 +3206,6 @@ def test_encoding_metadata(tmp_path: pathlib.Path, encoding_version: str):
     encodings = json.load(open(tmp_path / "model.encodings"))
     assert encodings["version"] == encoding_version
     assert encodings["producer"] == {
-        "package": "aimet_torch",
+        "package": "aimet-torch",
         "version": aimet_torch.__version__,
     }
