@@ -1,5 +1,5 @@
 bokeh
-hvplot
+hvplot>=0.10.0
 Jinja2
 jsonschema
 numpy

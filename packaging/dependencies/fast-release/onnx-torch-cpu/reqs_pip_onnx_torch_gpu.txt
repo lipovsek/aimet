@@ -1,7 +1,7 @@
 bokeh
 cvxpy
 holoviews
-hvplot
+hvplot>=0.10.0
 Jinja2>=3.0.3
 jsonschema
 keras

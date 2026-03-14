@@ -1,7 +1,7 @@
 bokeh<=3.6.3
 cvxpy
 holoviews
-hvplot
+hvplot>=0.10.0
 Jinja2>=3.0.3
 jsonschema
 matplotlib>=3
