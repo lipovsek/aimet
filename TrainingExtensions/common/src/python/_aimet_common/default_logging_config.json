@@ -147,6 +147,12 @@
             "level": "INFO",
             "handlers": ["console"],
             "propagate": false
+        },
+
+        "SpinQuant": {
+            "level": "INFO",
+            "handlers": ["console"],
+            "propagate": false
         }
     }
 }
