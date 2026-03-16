@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,11 @@ from pathlib import Path
 def on_linux() -> bool:
     """Check if running on Linux."""
     return platform.uname().system == "Linux"
+
+
+def on_macos() -> bool:
+    """Check if running on macOS."""
+    return platform.uname().system == "Darwin"
 
 
 def get_repo_root() -> Path:
@@ -83,6 +89,27 @@ def are_ubuntu_deps_installed() -> bool:
     try:
         result = subprocess.run(
             ["dpkg", "-s"] + required_packages,
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return False
+        # Also check for uv (installed via curl, not apt)
+        if not shutil.which("uv"):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def are_macos_deps_installed() -> bool:
+    """Check if required macOS dependencies are already installed."""
+    if not on_macos():
+        return True  # Skip check on non-macOS
+    required_packages = ["cmake", "eigen", "pandoc", "pkg-config", "uv"]
+    try:
+        result = subprocess.run(
+            ["brew", "list"] + required_packages,
             capture_output=True,
             timeout=30,
         )

@@ -52,12 +52,14 @@ from enum import Enum
 from pathlib import Path
 
 from util import (
+    are_macos_deps_installed,
     are_ubuntu_deps_installed,
     get_repo_root,
     get_torch_index_url,
     is_aimet_onnx_installed,
     is_aimet_torch_installed,
     on_linux,
+    on_macos,
 )
 
 # Configure logging
@@ -194,6 +196,16 @@ class CommandTask(Task):
             )
         except FileNotFoundError as e:
             return TaskResult(TaskStatus.FAILED, f"Command not found: {e}")
+
+
+def _ensure_uv_installed() -> TaskResult | None:
+    """Ensure uv is installed. Returns TaskResult on failure, None on success."""
+    if shutil.which("uv"):
+        return None
+    return TaskResult(
+        TaskStatus.FAILED,
+        "uv not found. Run: python scripts/all/build_and_test.py --task install_deps",
+    )
 
 
 class WheelBuildTask(Task):
@@ -359,16 +371,19 @@ class WheelBuildTask(Task):
         torch_index_url = get_torch_index_url(self.enable_cuda)
 
         # Create constraints file (same approach as CI Dockerfile)
-        constraints = ["torch==2.*"]
+        constraints = ["torch==2.10.*"]
         if self.enable_onnx:
-            constraints.append("onnxruntime==1.19.*")
+            constraints.append("onnxruntime==1.23.*")
         constraints_file.write_text("\n".join(constraints) + "\n")
         logger.info(f"Created constraints file: {constraints_file}")
 
+        # Ensure uv is installed
+        if result := _ensure_uv_installed():
+            return result
+
+        # Compile dev dependencies
         logger.info("Compiling dev dependencies from pyproject.toml")
         compile_cmd = [
-            sys.executable,
-            "-m",
             "uv",
             "pip",
             "compile",
@@ -384,6 +399,9 @@ class WheelBuildTask(Task):
             "unsafe-best-match",
             "pyproject.toml",
         ]
+        if self.enable_docs:
+            compile_cmd.insert(-1, "--extra")
+            compile_cmd.insert(-1, "docs")
         # Set CMAKE_ARGS so aimet's dynamic metadata plugin knows which variant to build
         compile_env = os.environ.copy()
         compile_env["CMAKE_ARGS"] = self.cmake_args
@@ -398,45 +416,15 @@ class WheelBuildTask(Task):
             )
         except subprocess.CalledProcessError as e:
             return TaskResult(
-                TaskStatus.FAILED, f"pip compile failed with exit code {e.returncode}"
+                TaskStatus.FAILED,
+                f"uv pip compile failed with exit code {e.returncode}",
             )
-        except FileNotFoundError:
-            logger.warning("uv not found, trying pip-compile")
-            compile_cmd = [
-                sys.executable,
-                "-m",
-                "piptools",
-                "compile",
-                "--output-file",
-                str(dev_requirements_file),
-                "--extra",
-                "dev",
-                "--extra-index-url",
-                torch_index_url,
-                "-P",
-                "torch",
-                "pyproject.toml",
-            ]
-            try:
-                subprocess.run(
-                    compile_cmd,
-                    cwd=self.cwd,
-                    check=True,
-                    capture_output=False,
-                    env=compile_env,
-                )
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                logger.warning(
-                    f"pip-compile also failed: {e}, skipping dev deps compilation"
-                )
 
         # Install dev dependencies
         if dev_requirements_file.exists():
             logger.info("Installing dev dependencies")
             torch_index_url = get_torch_index_url(self.enable_cuda)
             install_cmd = [
-                sys.executable,
-                "-m",
                 "uv",
                 "pip",
                 "install",
@@ -457,27 +445,6 @@ class WheelBuildTask(Task):
                     TaskStatus.FAILED,
                     f"dev deps install failed with exit code {e.returncode}",
                 )
-            except FileNotFoundError:
-                logger.warning("uv not found, trying pip")
-                install_cmd = [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--extra-index-url",
-                    torch_index_url,
-                    "-r",
-                    str(dev_requirements_file),
-                ]
-                try:
-                    subprocess.run(
-                        install_cmd, cwd=self.cwd, check=True, capture_output=False
-                    )
-                except subprocess.CalledProcessError as e:
-                    return TaskResult(
-                        TaskStatus.FAILED,
-                        f"pip install failed with exit code {e.returncode}",
-                    )
 
         # Clean previous build artifacts
         for d in [self.cwd / "build", self.cwd / "dist", self.cwd / "wheelhouse"]:
@@ -494,7 +461,7 @@ class WheelBuildTask(Task):
         # so we use regular pip for editable installs.
         if self.editable:
             # Ensure pip is installed in the venv
-            pip_install_cmd = [sys.executable, "-m", "uv", "pip", "install", "pip"]
+            pip_install_cmd = ["uv", "pip", "install", "pip"]
             logger.info(f"Ensuring pip is installed: {' '.join(pip_install_cmd)}")
             subprocess.run(pip_install_cmd, cwd=self.cwd, capture_output=True)
 
@@ -504,6 +471,10 @@ class WheelBuildTask(Task):
                 logger.info(f"Uninstalling existing package: {' '.join(uninstall_cmd)}")
                 subprocess.run(uninstall_cmd, cwd=self.cwd, capture_output=True)
 
+            extras = ["dev", "test"]
+            if self.enable_docs:
+                extras.append("docs")
+            extras_str = ",".join(extras)
             cmd = [
                 sys.executable,
                 "-m",
@@ -511,7 +482,7 @@ class WheelBuildTask(Task):
                 "install",
                 "--no-build-isolation",
                 "-e",
-                ".[dev,test]",
+                f".[{extras_str}]",
             ]
             logger.info(f"Running: CMAKE_ARGS='{self.cmake_args}' {' '.join(cmd)}")
             try:
@@ -639,6 +610,10 @@ class PyTestTask(Task):
         self.enable_cuda = enable_cuda
 
     def run(self) -> TaskResult:
+        # Ensure uv is installed
+        if result := _ensure_uv_installed():
+            return result
+
         # Check if we can skip wheel installation
         if self.skip_install_if and self.skip_install_if():
             logger.info("Package already installed, skipping wheel installation")
@@ -663,8 +638,6 @@ class PyTestTask(Task):
             # Install wheel with [test] extras
             torch_index_url = get_torch_index_url(self.enable_cuda)
             install_cmd = [
-                sys.executable,
-                "-m",
                 "uv",
                 "pip",
                 "install",
@@ -679,27 +652,11 @@ class PyTestTask(Task):
                 subprocess.run(
                     install_cmd, cwd=self.cwd, check=True, capture_output=False
                 )
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                # Fallback to pip
-                install_cmd = [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--extra-index-url",
-                    torch_index_url,
-                    f"{wheel_path}[test]",
-                ]
-                logger.info(f"Running: {' '.join(install_cmd)}")
-                try:
-                    subprocess.run(
-                        install_cmd, cwd=self.cwd, check=True, capture_output=False
-                    )
-                except subprocess.CalledProcessError as e:
-                    return TaskResult(
-                        TaskStatus.FAILED,
-                        f"pip install failed with exit code {e.returncode}",
-                    )
+            except subprocess.CalledProcessError as e:
+                return TaskResult(
+                    TaskStatus.FAILED,
+                    f"uv pip install failed with exit code {e.returncode}",
+                )
 
         # Run pytest
         cmd = [sys.executable, "-m", "pytest"]
@@ -935,30 +892,57 @@ class TaskLibrary:
     # Dependency Installation Tasks
     # -------------------------------------------------------------------------
 
-    @public_task("Install Ubuntu system dependencies (Linux only)")
+    @public_task("Install system dependencies (Linux/macOS)")
     def install_deps(self, plan: Plan) -> str:
         class ConditionalInstallDepsTask(Task):
             def __init__(self) -> None:
-                super().__init__("Installing Ubuntu dependencies")
+                super().__init__("Installing system dependencies")
 
             def run(self) -> TaskResult:
-                if not on_linux():
-                    logger.info("Skipping Ubuntu deps (not on Linux)")
-                    return TaskResult(TaskStatus.SUCCESS, "Skipped - not on Linux")
+                if on_linux():
+                    if are_ubuntu_deps_installed():
+                        logger.info("Ubuntu dependencies already installed, skipping")
+                        return TaskResult(
+                            TaskStatus.SUCCESS, "Skipped - already installed"
+                        )
 
-                if are_ubuntu_deps_installed():
-                    logger.info("Ubuntu dependencies already installed, skipping")
-                    return TaskResult(TaskStatus.SUCCESS, "Skipped - already installed")
+                    cmd = [str(REPO_ROOT / "scripts/posix/install_ubuntu_deps.sh")]
+                    logger.info(f"Running: {' '.join(cmd)}")
+                    try:
+                        subprocess.run(
+                            cmd, cwd=REPO_ROOT, check=True, capture_output=False
+                        )
+                        return TaskResult(TaskStatus.SUCCESS)
+                    except subprocess.CalledProcessError as e:
+                        return TaskResult(
+                            TaskStatus.FAILED,
+                            f"Script failed with exit code {e.returncode}",
+                        )
 
-                cmd = [str(REPO_ROOT / "scripts/posix/install_ubuntu_deps.sh")]
-                logger.info(f"Running: {' '.join(cmd)}")
-                try:
-                    subprocess.run(cmd, cwd=REPO_ROOT, check=True, capture_output=False)
-                    return TaskResult(TaskStatus.SUCCESS)
-                except subprocess.CalledProcessError as e:
+                elif on_macos():
+                    if are_macos_deps_installed():
+                        logger.info("macOS dependencies already installed, skipping")
+                        return TaskResult(
+                            TaskStatus.SUCCESS, "Skipped - already installed"
+                        )
+
+                    cmd = [str(REPO_ROOT / "scripts/posix/install_macos_deps.sh")]
+                    logger.info(f"Running: {' '.join(cmd)}")
+                    try:
+                        subprocess.run(
+                            cmd, cwd=REPO_ROOT, check=True, capture_output=False
+                        )
+                        return TaskResult(TaskStatus.SUCCESS)
+                    except subprocess.CalledProcessError as e:
+                        return TaskResult(
+                            TaskStatus.FAILED,
+                            f"Script failed with exit code {e.returncode}",
+                        )
+
+                else:
+                    logger.info("Skipping deps installation (unsupported platform)")
                     return TaskResult(
-                        TaskStatus.FAILED,
-                        f"Script failed with exit code {e.returncode}",
+                        TaskStatus.SUCCESS, "Skipped - unsupported platform"
                     )
 
         return plan.add_step(ConditionalInstallDepsTask(), "install_deps")
@@ -1111,6 +1095,13 @@ class TaskLibrary:
                     logger.info(f"Venv already exists at {self.venv_path}")
                     return TaskResult(TaskStatus.SUCCESS, "Already exists")
 
+                # Check for system uv (installed via install_deps)
+                if not shutil.which("uv"):
+                    return TaskResult(
+                        TaskStatus.FAILED,
+                        "uv not found. Run: python scripts/all/build_and_test.py --task install_deps",
+                    )
+
                 logger.info(f"Creating venv at {self.venv_path}")
                 cmd = ["uv", "venv", "--python", "3.10", str(self.venv_path)]
                 logger.info(f"Running: {' '.join(cmd)}")
@@ -1121,13 +1112,8 @@ class TaskLibrary:
                         TaskStatus.FAILED,
                         f"uv venv failed with exit code {e.returncode}",
                     )
-                except FileNotFoundError:
-                    return TaskResult(
-                        TaskStatus.FAILED,
-                        "uv not found. Install with: pip install uv",
-                    )
 
-                # Install pip and uv in the venv
+                # Install pip in the venv
                 venv_python = self.venv_path / "bin" / "python"
                 logger.info("Installing pip in venv...")
                 try:
@@ -1136,14 +1122,8 @@ class TaskLibrary:
                         check=True,
                         capture_output=True,
                     )
-                    logger.info("Installing uv in venv...")
-                    subprocess.run(
-                        [str(venv_python), "-m", "pip", "install", "uv"],
-                        check=True,
-                        capture_output=True,
-                    )
                 except subprocess.CalledProcessError as e:
-                    logger.warning(f"Failed to install pip/uv in venv: {e}")
+                    logger.warning(f"Failed to install pip in venv: {e}")
 
                 logger.info(
                     f"Venv created. Activate: source {self.venv_path}/bin/activate"
