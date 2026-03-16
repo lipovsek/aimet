@@ -616,7 +616,13 @@ def _get_version_string():
             with open(os.path.join(prj_root, "packaging", "version.txt"), "r") as f:
                 version = f.read().strip()
 
-            version_str = f"{version}.dev0+git{commit_hash}"
+            major, minor, patch = (int(x) for x in version.split("."))
+            # The content of version.txt points to the latest release, not the next release.
+            # Since this is a pre-release of the next version built on top of the latest release,
+            # we need to increment the version to comply with version specification in PEP 440.
+            # For example, given version.txt is pointing to "2.26.0", this function returns "2.27.0.dev0"
+            # because "2.26.0" < "2.27.0.dev0" < "2.27.0".
+            version_str = f"{major}.{minor + 1}.{patch}.dev0+git{commit_hash}"
         except Exception:
             version_str = None
     finally:
