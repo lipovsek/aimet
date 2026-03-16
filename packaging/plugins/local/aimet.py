@@ -266,6 +266,11 @@ def optional_dependencies() -> dict[str, list[str]]:
             ]
         )
 
+    # onnxruntime-extensions is not supported on Windows ARM64. All tests
+    # dependent on onnxruntime-extensions will be skipped in Windows ARM64 variant
+    if is_target_windows_arm64():
+        optional_deps["test"].remove("onnxruntime-extensions")
+
     if aimet_variant in ("torch-gpu", "torch-cpu"):
         # Read torch-specific test deps (deepspeed, spconv - Linux only)
         torch_test_deps = _read_requirements_file("reqs_pip_test_torch.txt")
