@@ -16,7 +16,7 @@ class TestMseEncodingAnalyzer : public ::testing::Test
 {
 };
 // Test on CPU and GPU with float and double
-TYPED_TEST_CASE(TestMseEncodingAnalyzer, TestDataTypesAndDevices);
+TYPED_TEST_SUITE(TestMseEncodingAnalyzer, TestDataTypesAndDevices);
 
 TYPED_TEST(TestMseEncodingAnalyzer, Asymmetric)
 {

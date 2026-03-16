@@ -729,7 +729,7 @@ template <typename TypeParam>
 class TestBlockQuantizerCpuGpu : public ::testing::Test
 {};
 
-TYPED_TEST_CASE(TestBlockQuantizerCpuGpu, TestDeviceTypes);
+TYPED_TEST_SUITE(TestBlockQuantizerCpuGpu, TestDeviceTypes);
 
 TYPED_TEST(TestBlockQuantizerCpuGpu, TestBlockQuantizerPerTensorQdq)
 {

@@ -16,7 +16,7 @@ class TestPercentileEncodingAnalyzer : public ::testing::Test
 {
 };
 // Test on CPU and GPU with float and double
-TYPED_TEST_CASE(TestPercentileEncodingAnalyzer, TestDataTypesAndDevices);
+TYPED_TEST_SUITE(TestPercentileEncodingAnalyzer, TestDataTypesAndDevices);
 
 TYPED_TEST(TestPercentileEncodingAnalyzer, Asymmetric)
 {

@@ -21,17 +21,10 @@ class ContiguousEncodingAnalyzerBase : public IBlockEncodingAnalyzer<DTYPE>
 public:
     virtual ~ContiguousEncodingAnalyzerBase() = default;
 
-    virtual void resetStats() = 0;
-
     void updateStats(const DTYPE* tensor, const TensorDims& tensorShape, ComputationMode tensorCpuGpuMode,
                      IAllocator* allocator = nullptr, void* stream = nullptr) override;
 
-    virtual std::vector<TfEncoding> computeEncoding(uint8_t bw, bool useSymmetricEncodings, bool useStrictSymmetric,
-                                                    bool useUnsignedSymmetric, double zeroPointShift) const = 0;
-
-    virtual std::vector<std::vector<std::tuple<double, double>>> getStatsHistogram() const = 0;
-
-    TensorDims getShape();
+    TensorDims getShape() override;
 
 protected:
     virtual void updateStatsContiguous(const DTYPE* tensor, const TensorDims& shape, size_t blockSize,

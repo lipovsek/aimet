@@ -13,7 +13,7 @@ template <typename TypeParam>
 class TestEncodingAnalyzerWrapperCpuGpu : public ::testing::Test
 {};
 
-TYPED_TEST_CASE(TestEncodingAnalyzerWrapperCpuGpu, TestDataTypesAndDevices);
+TYPED_TEST_SUITE(TestEncodingAnalyzerWrapperCpuGpu, TestDataTypesAndDevices);
 
 TYPED_TEST(TestEncodingAnalyzerWrapperCpuGpu, UpdateBlockStatsSymmetric)
 {

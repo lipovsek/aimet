@@ -12,6 +12,8 @@ template <typename DTYPE>
 class ITensorQuantizationSim
 {
 public:
+    virtual ~ITensorQuantizationSim() = default;
+
     virtual void quantizeDequantizeTensor(const DTYPE* inputTensorData, size_t inputTensorCount,
                                           DTYPE* outputTensorData, double encodingMin, double encodingMax, uint8_t bw,
                                           RoundingMode roundMode, bool use_cuda) = 0;

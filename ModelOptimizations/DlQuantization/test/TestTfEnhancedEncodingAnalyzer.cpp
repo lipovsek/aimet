@@ -14,7 +14,7 @@ class TestTfEnhancedEncodingAnalyzer : public ::testing::Test
 };
 
 // Test on CPU and GPU with float and double
-TYPED_TEST_CASE(TestTfEnhancedEncodingAnalyzer, TestDataTypesAndDevices);
+TYPED_TEST_SUITE(TestTfEnhancedEncodingAnalyzer, TestDataTypesAndDevices);
 
 TYPED_TEST(TestTfEnhancedEncodingAnalyzer, GetStats)
 {

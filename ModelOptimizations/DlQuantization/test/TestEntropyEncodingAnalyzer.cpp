@@ -16,7 +16,7 @@ class TestEntropyEncodingAnalyzer : public ::testing::Test
 {
 };
 // Test on CPU and GPU with float and double
-TYPED_TEST_CASE(TestEntropyEncodingAnalyzer, TestDataTypesAndDevices);
+TYPED_TEST_SUITE(TestEntropyEncodingAnalyzer, TestDataTypesAndDevices);
 
 TYPED_TEST(TestEntropyEncodingAnalyzer, Asymmetric)
 {

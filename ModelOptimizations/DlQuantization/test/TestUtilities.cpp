@@ -273,7 +273,7 @@ template <typename TypeParam>
 class TestUtilitiesCpuGpu : public ::testing::Test
 {};
 
-TYPED_TEST_CASE(TestUtilitiesCpuGpu, TestDataTypesAndDevices);
+TYPED_TEST_SUITE(TestUtilitiesCpuGpu, TestDataTypesAndDevices);
 
 TYPED_TEST(TestUtilitiesCpuGpu, TensorBlockPermute)
 {

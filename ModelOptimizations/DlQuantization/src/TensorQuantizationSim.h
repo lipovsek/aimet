@@ -57,7 +57,7 @@ public:
     void fillEncodingInfo(TfEncoding& encoding, uint8_t bw, double encodingMin, double encodingMax) override;
 
     void generateScaleOffset(double& encodingMin, double& encodingMax, uint8_t bw, double& encodingScale,
-                             double& encodingOffset);
+                             double& encodingOffset) override;
 
     void quantizeDequantizeTensorPerChannel(const DTYPE* inputTensorData, size_t numChannel, size_t numElement,
                                             size_t numElementPerChannel, DTYPE* outputTensorData, DTYPE* encodingMin,

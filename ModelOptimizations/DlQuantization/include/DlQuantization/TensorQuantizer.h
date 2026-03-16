@@ -31,7 +31,7 @@ public:
     /**
      * Reset stats being collected to compute encoding
      */
-    void resetEncodingStats();
+    void resetEncodingStats() override;
 
     /**
      * Update stats being collected to compute encoding
@@ -144,7 +144,7 @@ public:
      * gets strict symmetric flag configured for this Tensor Quantizer
      * @return quantScheme as QuantizationMode
      */
-    bool getStrictSymmetric();
+    bool getStrictSymmetric() override;
 
     /**
      * sets strict symmetric flag
@@ -156,7 +156,7 @@ public:
      * gets unsigned symmetric flag config for this Tensor Quantizer
      * @return bool, True if unsigned symmetric mode, False otherwise
      */
-    bool getUnsignedSymmetric();
+    bool getUnsignedSymmetric() override;
 
     /**
      * sets unsigned symmetric flag

@@ -57,14 +57,14 @@ public:
      *
      * @param percentile Percentile value to be used while adjusting min and max
      */
-    void setPercentileValue(float percentile);
+    void setPercentileValue(float percentile) override;
 
     /**
      * @brief Fetch the Percentile Value of the encoding analyzer
      *
      * @return percentile value
      */
-    float getPercentileValue();
+    float getPercentileValue() override;
 
 private:
     PDF _stats;
