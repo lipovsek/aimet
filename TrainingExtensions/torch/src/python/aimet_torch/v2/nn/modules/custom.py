@@ -120,6 +120,9 @@ class QuantizedConcat(_DispatchMixin, QuantizationMixin, Concat):
 
     _builtin_torch_fn = torch.cat
 
+    def _is_dispatch_necessary(self) -> bool:
+        return True
+
     def _builtin_torch_fn_helper(self, fn: Callable[..., Tensor]):
         def cat(tensors, dim=0, *, out=None):
             input_quantizers = (
@@ -210,7 +213,7 @@ class QuantizedMaximum(_DispatchMixin, QuantizationMixin, Maximum):
 class QuantizedMax(_DispatchMixin, QuantizationMixin, Max):
     """Quantized Max"""
 
-    __quant_init__ = QuantizationMixin.__binary__
+    __quant_init__ = QuantizationMixin.__unary__
     _builtin_torch_fn = torch.max
 
 
@@ -234,7 +237,7 @@ class QuantizedMinimum(_DispatchMixin, QuantizationMixin, Minimum):
 class QuantizedMin(_DispatchMixin, QuantizationMixin, Min):
     """Quantized Min"""
 
-    __quant_init__ = QuantizationMixin.__binary__
+    __quant_init__ = QuantizationMixin.__unary__
     _builtin_torch_fn = torch.min
 
 
@@ -692,6 +695,9 @@ class QuantizedBatchNorm(_DispatchMixin, QuantizationMixin, BatchNorm):
         super().__quant_init__()
         # pylint: disable=attribute-defined-outside-init
         self.input_quantizers = nn.ModuleList([None, None, None, None, None])
+
+    def _is_dispatch_necessary(self) -> bool:
+        return True
 
     def _builtin_torch_fn_helper(self, fn: Callable[..., Tensor]):
         # pylint: disable=redefined-builtin

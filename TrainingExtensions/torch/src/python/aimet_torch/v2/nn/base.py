@@ -248,10 +248,20 @@ class BaseQuantizationMixin(abc.ABC):
 
         stack = contextlib.ExitStack()
         for param_name, param_quantizer in self.param_quantizers.items():
+            orig_param = getattr(self, param_name)
+
+            if (
+                isinstance(orig_param, QuantizedTensorBase)
+                and torch.onnx.is_in_onnx_export()
+            ):
+                # Quantize-dequantize an already-quantized tensor in a possibly duplicate fashion.
+                # If duplicate, the duplicate back-to-back QDQs will be removed by the graph pass
+                # within aimet_torch.onnx.export
+                orig_param = orig_param.encoding.quantize_dequantize(orig_param)
+
             if param_quantizer and param_quantizer.is_initialized():
-                orig_param = getattr(self, param_name)
                 quantized_param = param_quantizer(orig_param)
-                ctx = patch_attr(self, param_name, torch.nn.Parameter(quantized_param))
+                ctx = patch_attr(self, param_name, quantized_param)
                 stack.enter_context(ctx)
 
         return stack

@@ -1924,3 +1924,38 @@ def test_ignore():
         model, dummy_input=torch.randn(1, 3, 224, 224)
     )
     assert type(sim.model[0]) == QuantizedMyModule
+
+
+def test_patch_quantized_param_grad():
+    """
+    When: Patch quantized parameters with _patch_quantized_parameters and _patch_dequantized_parameters
+    Then: The gradients should be able to flow through the quantizers
+    """
+
+    class MyLinear(torch.nn.Linear): ...
+
+    @QuantizationMixin.implements(MyLinear)
+    class QuantizedMyLinear(QuantizationMixin, MyLinear):
+        def forward(self, input):
+            with (
+                self._patch_quantized_parameters(),
+                self._patch_dequantized_parameters(),
+            ):
+                return super().forward(input)
+
+    qlinear = QuantizedMyLinear(10, 10)
+    weight_qtzr = QuantizeDequantize(shape=(10, 1), qmin=-128, qmax=127, symmetric=True)
+
+    with torch.no_grad():
+        weight_qtzr.min.copy_(-1)
+        weight_qtzr.max.copy_(1)
+
+    qlinear.param_quantizers["weight"] = weight_qtzr
+
+    x = torch.randn(10, 10)
+
+    qlinear(x).sum().backward()
+
+    assert qlinear.weight.grad is not None
+    assert qlinear.param_quantizers["weight"].min.grad is not None
+    assert qlinear.param_quantizers["weight"].max.grad is not None

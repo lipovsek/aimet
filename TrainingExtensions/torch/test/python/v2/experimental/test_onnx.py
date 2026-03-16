@@ -56,6 +56,14 @@ from aimet_torch.v2.quantsim.config_utils import (
 )
 import aimet_torch
 from aimet_torch.nn.modules import custom as aimet_ops
+from aimet_torch.nn import (
+    QuantizedConv1d,
+    QuantizedConv2d,
+    QuantizedConv3d,
+    QuantizedConvTranspose1d,
+    QuantizedConvTranspose2d,
+    QuantizedConvTranspose3d,
+)
 
 
 def _get_qdq_encoding_map(onnx_model):
@@ -3051,4 +3059,89 @@ def test_unhashable_input():
     (out,) = sess.run(None, {"input": dummy_input.detach().numpy()})
     expected_out = sim.model(dummy_input)
     atol = sim.model.conv.output_quantizers[0].get_scale().item()
+    assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
+
+
+@pytest.mark.parametrize(
+    "conv_cls, padding_mode",
+    [
+        *itertools.product(
+            [QuantizedConv1d, QuantizedConv2d, QuantizedConv3d],
+            ["zeros", "reflect", "replicate", "circular"],
+        ),
+        (QuantizedConvTranspose1d, "zeros"),
+        (QuantizedConvTranspose2d, "zeros"),
+        (QuantizedConvTranspose3d, "zeros"),
+    ],
+)
+def test_pad_conv_export(conv_cls, padding_mode: str, tmp_path: pathlib.Path):
+    """
+    When: Export Conv with various padding modes to ONNX QDQ
+    Then: All input/output of Conv and Pad (if any) should be associated with QDQ nodes
+    """
+    qconv = conv_cls(3, 3, 3, padding=1, padding_mode=padding_mode)
+    qconv.input_quantizers[0] = Q.affine.QuantizeDequantize(
+        (), qmin=0, qmax=255, symmetric=False
+    )
+    qconv.output_quantizers[0] = Q.affine.QuantizeDequantize(
+        (), qmin=0, qmax=255, symmetric=False
+    )
+    qconv.param_quantizers["weight"] = Q.affine.QuantizeDequantize(
+        (), qmin=-128, qmax=127, symmetric=True
+    )
+    input = torch.randn(1, 3, *(24 for _ in range(qconv.weight.ndim - 2)))
+
+    with torch.no_grad(), qconv.compute_encodings():
+        _ = qconv(input)
+
+    aimet_torch.onnx.export(
+        qconv,
+        (input,),
+        tmp_path / "conv.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=False,
+    )
+
+    onnx_model = onnx.load(tmp_path / "conv.onnx")
+    onnx.checker.check_model(onnx_model)
+
+    producers = {out: node for node in onnx_model.graph.node for out in node.output}
+    consumers = {}
+    for node in onnx_model.graph.node:
+        for inp in node.input:
+            consumers.setdefault(inp, []).append(node)
+
+    conv_node = next(
+        node
+        for node in onnx_model.graph.node
+        if node.op_type in ("Conv", "ConvTranspose")
+    )
+    pad_node = next(
+        (node for node in onnx_model.graph.node if node.op_type == "Pad"), None
+    )
+
+    for inp in conv_node.input:
+        producer = producers[inp]
+        assert producer.op_type == "DequantizeLinear"
+    (consumer,) = consumers[conv_node.output[0]]
+    assert consumer.op_type == "QuantizeLinear"
+
+    if pad_node:
+        assert padding_mode in ("reflect", "replicate")  # sanity check
+        producer = producers[pad_node.input[0]]
+        assert producer.op_type == "DequantizeLinear"
+        (consumer,) = consumers[conv_node.output[0]]
+        assert consumer.op_type == "QuantizeLinear"
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out,) = sess.run(None, {"input": input.detach().numpy()})
+    expected_out = qconv(input)
+    atol = qconv.output_quantizers[0].get_scale().item()
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)

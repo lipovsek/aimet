@@ -286,8 +286,6 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
         for param_name, _ in self.param_quantizers.items():
             qparam = getattr(self, param_name)
             dqparam = _dequantize_if_applicable(qparam)
-            if not isinstance(dqparam, torch.nn.Parameter):
-                dqparam = torch.nn.Parameter(dqparam)
             ctx = patch_attr(self, param_name, dqparam)
             stack.enter_context(ctx)
 
@@ -497,12 +495,25 @@ class _DispatchMixin(metaclass=_DispatchMeta):
     def _get_builtin_torch_fn(self):
         return type(self)._builtin_torch_fn
 
+    def _is_dispatch_necessary(self) -> bool:
+        # Dispatch is only strictly necessary when Module.forward doesn't merely
+        # call the corresponding aten function but performs non-trivial
+        # pre/post-processing to the inputs/outputs of aten function.
+        return False
+
     def forward(self, *args, **kwargs):  # pylint: disable=missing-function-docstring
         kernel = self.get_kernel()
         builtin_torch_fn = self._get_builtin_torch_fn()
 
         if not kernel or _is_computing_encodings(self):
-            kernel = self._builtin_torch_fn_helper(builtin_torch_fn)
+            if self._is_dispatch_necessary():
+                kernel = self._builtin_torch_fn_helper(builtin_torch_fn)
+            else:
+                with (
+                    self._patch_quantized_parameters(),
+                    self._patch_dequantized_parameters(),
+                ):
+                    return self._forward_no_dispatch(super().forward, *args, **kwargs)
         else:
             kernel = self._custom_kernel_helper(kernel)
 
@@ -556,21 +567,7 @@ class _DispatchMixin(metaclass=_DispatchMeta):
         def wrapper(*args, **kwargs):
             if any(self.param_quantizers.values()) or torch.onnx.is_in_onnx_export():
                 args, kwargs = self._quantize_if_param(args, kwargs)
-
-            qtzd_args = tuple(
-                _quantize_dequantize_if_applicable(x, qtzr)
-                for x, qtzr in zip(args, self.input_quantizers)
-            )
-            others = tuple(
-                _dequantize_if_applicable(x) for x in args[len(self.input_quantizers) :]
-            )
-            kwargs = {
-                key: _dequantize_if_applicable(value) for key, value in kwargs.items()
-            }
-
-            output = fn(*qtzd_args, *others, **kwargs)
-
-            return _quantize_dequantize_if_applicable(output, self.output_quantizers[0])
+            return self._forward_no_dispatch(fn, *args, **kwargs)
 
         return wrapper
 
@@ -592,6 +589,24 @@ class _DispatchMixin(metaclass=_DispatchMeta):
             return fn(*qtzd_args, *others, **kwargs)
 
         return wrapper
+
+    def _forward_no_dispatch(self, forward_fn, *args, **kwargs):
+        args = tuple(
+            _quantize_dequantize_if_applicable(x, qtzr)
+            if qtzr
+            else _dequantize_if_applicable(x)
+            for x, qtzr in itertools.zip_longest(args, self.input_quantizers)
+        )
+        kwargs = {
+            key: _dequantize_if_applicable(value) for key, value in kwargs.items()
+        }
+
+        out = forward_fn(*args, **kwargs)
+
+        if self.output_quantizers[0]:
+            out = _quantize_dequantize_if_applicable(out, self.output_quantizers[0])
+
+        return out
 
 
 def _generate_docstring(parent_cls):
@@ -1108,6 +1123,9 @@ class QuantizedEmbeddingBag(_DispatchMixin, QuantizationMixin, nn.EmbeddingBag):
     __doc__ = _generate_docstring(parent_cls=nn.EmbeddingBag)
     _builtin_torch_fn = F.embedding_bag
 
+    def _is_dispatch_necessary(self) -> bool:
+        return True
+
     def _builtin_torch_fn_helper(self, fn: Callable[..., Tensor]):
         def embedding_bag(
             input: Tensor,  # pylint: disable=redefined-builtin, too-many-arguments
@@ -1264,6 +1282,9 @@ class QuantizedGRU(_DispatchMixin, QuantizationMixin, nn.GRU):
     __doc__ = _generate_docstring(parent_cls=nn.GRU)
     _builtin_torch_fn = _gru
 
+    def _is_dispatch_necessary(self) -> bool:
+        return True
+
     def __quant_init__(self):
         super().__quant_init__()
         # pylint: disable=attribute-defined-outside-init
@@ -1321,6 +1342,9 @@ class QuantizedGRUCell(_DispatchMixin, QuantizationMixin, nn.GRUCell):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.GRUCell)
     _builtin_torch_fn = _gru_cell
+
+    def _is_dispatch_necessary(self) -> bool:
+        return True
 
     def __quant_init__(self):
         super().__quant_init__()
@@ -1512,6 +1536,9 @@ class QuantizedLSTM(_DispatchMixin, QuantizationMixin, nn.LSTM):
     __doc__ = _generate_docstring(parent_cls=nn.LSTM)
     _builtin_torch_fn = _lstm
 
+    def _is_dispatch_necessary(self) -> bool:
+        return True
+
     def __quant_init__(self):
         super().__quant_init__()
         # pylint: disable=attribute-defined-outside-init
@@ -1572,6 +1599,9 @@ class QuantizedLSTMCell(_DispatchMixin, QuantizationMixin, nn.LSTMCell):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.LSTMCell)
     _builtin_torch_fn = _lstm_cell
+
+    def _is_dispatch_necessary(self) -> bool:
+        return True
 
     def __quant_init__(self):
         super().__quant_init__()
@@ -1961,6 +1991,9 @@ class QuantizedRNN(_DispatchMixin, QuantizationMixin, nn.RNN):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.RNN)
 
+    def _is_dispatch_necessary(self) -> bool:
+        return True
+
     def _get_builtin_torch_fn(self):
         assert self.mode in ("RNN_TANH", "RNN_RELU")
         if self.mode == "RNN_TANH":
@@ -2028,6 +2061,9 @@ class QuantizedRNN(_DispatchMixin, QuantizationMixin, nn.RNN):
 class QuantizedRNNCell(_DispatchMixin, QuantizationMixin, nn.RNNCell):
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.RNNCell)
+
+    def _is_dispatch_necessary(self) -> bool:
+        return True
 
     def _get_builtin_torch_fn(self):
         assert self.nonlinearity in ("tanh", "relu")
