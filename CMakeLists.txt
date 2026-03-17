@@ -260,15 +260,6 @@ if (PIP_INDEX EQUAL "reporelease")
   endif()
 endif()
 
-add_custom_target(packageaimet
-  # Run the install target first
-  COMMAND "${CMAKE_COMMAND}" --build "${PROJECT_BINARY_DIR}" --target install
-
-  # Now run the packaging target to generate wheel files
-  COMMAND ${CMAKE_COMMAND} -DSW_VERSION=${SW_VERSION} -DCUDA_VER_STRING=${CUDA_VER_STRING} -DPIP_INDEX=${PIP_INDEX} ${remote_url_cmake_opt} -DPYTHON3_EXECUTABLE=${Python3_EXECUTABLE} -DAIMET_PACKAGE_PATH=${AIMET_PACKAGE_PATH} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR} -DENABLE_CUDA=${ENABLE_CUDA} -DENABLE_TORCH=${ENABLE_TORCH} -DENABLE_ONNX=${ENABLE_ONNX} -DPATCHELF_EXE=${PATCHELF_EXE} -DFMWORK_VERSION=${FMWORK_VERSION} -P ${CMAKE_CURRENT_SOURCE_DIR}/packaging/package_aimet.cmake
-)
-
-
 if (ENABLE_TESTS)
     enable_testing()
     add_subdirectory(NightlyTests)
@@ -282,29 +273,3 @@ add_subdirectory(Docs)
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Benchmarks")
   add_subdirectory(Benchmarks)
 endif()
-
-# -------------------------------
-# Upload pip packages
-# -------------------------------
-
-# Check the pip config file path and set it to a default value (if not set)
-if(NOT DEFINED PIP_CONFIG_FILE)
-  set(PIP_CONFIG_FILE "None")
-endif()
-
-# Check the pip index name and set it to a default value (if not set)
-if(NOT DEFINED PIP_INDEX)
-  set(PIP_INDEX "None")
-endif()
-
-# Check the pip certificate path and set it to a default value (if not set)
-if(NOT DEFINED PIP_CERT_FILE)
-  set(PIP_CERT_FILE "None")
-endif()
-
-#TODO For some reason, this package upload target does NOT work as expected and needs to be debugged
-add_custom_target(upload
-    # Now run the packaging target to upload the pip package
-    COMMAND ${CMAKE_COMMAND} -DPIP_CONFIG_FILE=${PIP_CONFIG_FILE} -DPIP_INDEX=${PIP_INDEX} -DPIP_CERT_FILE=${PIP_CERT_FILE} -P ${CMAKE_CURRENT_SOURCE_DIR}/packaging/upload_aimet.cmake
-    DEPENDS packageaimet
-)

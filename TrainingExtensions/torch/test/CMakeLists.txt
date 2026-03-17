@@ -13,13 +13,6 @@ else (ENABLE_CUDA)
 
 endif (ENABLE_CUDA)
 
-if(NOT DEFINED ENV{FAST_RELEASE})
-    # When building PyPI wheel packages (aka FAST_RELEASE),
-    # we only want to test the pure wheel package without relying on any other build artifacts
-    set_property(TEST TorchTrainingExtensionTest
-          APPEND PROPERTY ENVIRONMENT "${AIMET_PYTHONPATH}")
-endif()
-
 if(DEFINED ENV{DEPENDENCY_DATA_PATH})
 set_property(TEST TorchTrainingExtensionTest
       APPEND PROPERTY ENVIRONMENT "${DEPENDENCY_DATA_PATH}")
