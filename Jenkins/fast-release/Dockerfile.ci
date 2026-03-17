@@ -16,10 +16,9 @@ RUN apt update && \
     DEBIAN_FRONTEND=noninteractive apt install --yes --no-install-recommends \
         acl \
         ca-certificates \
+        clang \
         cmake \
         curl \
-        # manylinux2014 requires gcc 10 and cuda doesn't support gcc>11
-        g++-10 \
         git \
         jq \
         libeigen3-dev \
@@ -35,7 +34,8 @@ RUN apt update && \
     && rm -rf /var/lib/apt/lists/* \
     && echo '%users ALL = (ALL) NOPASSWD: ALL' > /etc/sudoers.d/passwordless \
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 10 --slave /usr/bin/g++ g++ /usr/bin/g++-10 --slave /usr/bin/gcov gcov /usr/bin/gcov-10 \
+    && update-alternatives --install /usr/bin/cc cc /usr/bin/clang 100 \
+    && update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++ 100 \
     && git config --system --add safe.directory '*'
 
 ARG VER_PYTHON=3.10

@@ -85,7 +85,7 @@ def are_ubuntu_deps_installed() -> bool:
     """Check if required Ubuntu dependencies are already installed."""
     if not on_linux():
         return True  # Skip check on non-Linux
-    required_packages = ["cmake", "g++-10", "patchelf", "libeigen3-dev", "pandoc"]
+    required_packages = ["cmake", "clang", "patchelf", "libeigen3-dev", "pandoc"]
     try:
         result = subprocess.run(
             ["dpkg", "-s"] + required_packages,

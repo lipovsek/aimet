@@ -5,8 +5,8 @@
 
 # Only run on Linux
 if [[ "$(uname -s)" != "Linux" ]]; then
-    echo "Skipping Ubuntu deps installation (not on Linux)"
-    exit 0
+  echo "Skipping Ubuntu deps installation (not on Linux)"
+  exit 0
 fi
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
@@ -19,9 +19,9 @@ run_as_root apt-get update
 run_as_root apt-get install -y \
   acl \
   ca-certificates \
+  clang \
   cmake \
   curl \
-  g++-10 \
   git \
   jq \
   libeigen3-dev \
@@ -35,14 +35,17 @@ run_as_root apt-get install -y \
   sudo \
   build-essential
 
-run_as_root update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 10 --slave /usr/bin/g++ g++ /usr/bin/g++-10 --slave /usr/bin/gcov gcov /usr/bin/gcov-10
-
 # Install uv
-if ! command -v uv &> /dev/null; then
-    echo "Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    # Add to PATH for current session
-    export PATH="$HOME/.local/bin:$PATH"
+if ! command -v uv &>/dev/null; then
+  echo "Installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  # Add to PATH for current session
+  export PATH="$HOME/.local/bin:$PATH"
 fi
 
+# Set clang as the default compiler
+run_as_root update-alternatives --install /usr/bin/cc cc /usr/bin/clang 100
+run_as_root update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++ 100
+
 echo "Ubuntu dependencies installed successfully."
+echo "Using clang as the default compiler."
