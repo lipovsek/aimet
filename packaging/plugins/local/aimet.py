@@ -6,6 +6,7 @@ from __future__ import annotations
 import itertools
 import os
 import pathlib
+import re
 import shlex
 import subprocess
 import sys
@@ -138,23 +139,7 @@ def get_aimet_dependencies() -> list[str]:
     """Read dependencies form the corresponded files and return them as a list (!) of strings"""
     aimet_variant = get_aimet_variant()
     base_path = pathlib.Path(_PKG_ROOT, "packaging", "dependencies")
-
-    if aimet_variant in (
-        "torch-cpu",
-        "torch-gpu",
-        "onnx-cpu",
-        "onnx-torch-cpu",
-        "onnx-qnn",
-    ):
-        deps_path = pathlib.Path(base_path, "fast-release", aimet_variant)
-
-    # To publish the aimet-onnx-gpu wheel on PyPI, we have to temporarily use 'onnxruntime' as a dependency.
-    # For publishing the same wheel on GitHub, we continue using 'onnxruntime-gpu' as the dependency.
-    # This conditional logic will be removed once 'onnxruntime-gpu' becomes a valid dependency for the aimet-onnx PyPI wheel.
-    elif aimet_variant == "onnx-gpu" and is_pip_index_pypi():
-        deps_path = pathlib.Path(base_path, "fast-release", aimet_variant)
-    else:
-        deps_path = pathlib.Path(base_path, aimet_variant)
+    deps_path = pathlib.Path(base_path, "fast-release", aimet_variant)
 
     deps_files = [*deps_path.glob("reqs_pip_*.txt")]
     print(f"CMAKE_ARGS='{os.environ.get('CMAKE_ARGS', '')}'")
@@ -170,7 +155,21 @@ def get_aimet_dependencies() -> list[str]:
         )
         if not d.startswith(("#", "-f"))
     }
-    return list(sorted(deps))
+
+    deps = list(sorted(deps))
+
+    # aimet-onnx released Github depends on onnxruntime-gpu,
+    # while the same package on PyPI temporarily depends on onnxruntime (cpu).
+    # This conditional logic will be removed once onnxruntime-gpu
+    # becomes a valid dependency for the aimet-onnx PyPI distribution.
+    if aimet_variant == "onnx-gpu" and not is_pip_index_pypi():
+        # Replace onnxruntime with onnxruntime-gpu
+        deps = [
+            re.sub(r"(onnxruntime)([<>=].+)?", r"onnxruntime-gpu\2", pkg)
+            for pkg in deps
+        ]
+
+    return deps
 
 
 def get_cuda_version():
