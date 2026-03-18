@@ -133,14 +133,28 @@ def _div_wrapper(func) -> torch.Tensor:
             or getattr(input.encoding, "scale", None) is None
         ):
             return out
+
         if isinstance(other, torch.Tensor):
             return out
+
         if other < 0:
-            return out
+            if (
+                getattr(input.encoding, "symmetry", False)
+                and (input.encoding.qmin + input.encoding.qmax) % 2 != 0
+            ):
+                # Non-strict symmetry can't be preserved when scaling factor is negative
+                # as zero_point has to be shifted by 1
+                return out
 
         out = out.as_subclass(type(input))
         out.encoding = input.encoding._clone()
-        out.encoding.scale = out.encoding.scale / other
+        out.encoding.scale = out.encoding.scale / abs(other)
+
+        if hasattr(out.encoding, "offset") and other < 0:
+            out.encoding.offset = (
+                -out.encoding.qmax - out.encoding.qmin - out.encoding.offset
+            )
+
         return out
 
     return _div
@@ -152,23 +166,40 @@ def _mul_wrapper(func) -> torch.Tensor:
     @implements(func)
     def _mul(input, other, **kwargs):
         out = func(input, other, **kwargs)
+
         if not isinstance(input, QuantizedTensorBase):
             other, input = input, other
+
         if not isinstance(input, DequantizedTensor):
             return out
+
         if (
             getattr(input, "encoding", None) is None
             or getattr(input.encoding, "scale", None) is None
         ):
             return out
+
         if isinstance(other, torch.Tensor):
             return out
+
         if other < 0:
-            return out
+            if (
+                getattr(input.encoding, "symmetry", False)
+                and (input.encoding.qmin + input.encoding.qmax) % 2 != 0
+            ):
+                # Non-strict symmetry can't be preserved when scaling factor is negative
+                # as zero_point has to be shifted by 1
+                return out
 
         out = out.as_subclass(type(input))
         out.encoding = input.encoding._clone()
-        out.encoding.scale = out.encoding.scale * other
+        out.encoding.scale = out.encoding.scale * abs(other)
+
+        if hasattr(out.encoding, "offset") and other < 0:
+            out.encoding.offset = (
+                -out.encoding.qmax - out.encoding.qmin - out.encoding.offset
+            )
+
         return out
 
     return _mul
