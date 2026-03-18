@@ -86,7 +86,6 @@ class LLM_Torch(LLM):
     @staticmethod
     def _is_quantized_rms_norm(module: torch.nn.Module) -> bool:
         """Check if the given module is a quantized RMSNormalization layer."""
-        return (
-            isinstance(module, QuantizationMixin)
-            and map_torch_types_to_onnx.get(type(module), "") == "RMSNormalization"
-        )
+        return isinstance(
+            module, QuantizationMixin
+        ) and "RMSNormalization" in map_torch_types_to_onnx.get(type(module), [])
