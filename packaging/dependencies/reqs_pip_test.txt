@@ -1,17 +1,20 @@
-accelerate<1.10.0
+# Universal test dependencies
 beautifulsoup4
-datasets>=2.18.0
 matplotlib
 onnx
 onnxruntime
-onnxruntime-extensions
-onnxsim<0.6.0
-peft
 protobuf<7
 pylint<3
 pytest
 pytest-xdist
 pytorch-ignite
-safetensors<=0.5.3
 torchvision
-transformers
+
+# Excluded on Windows ARM64 (no wheels available)
+accelerate<1.10.0; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
+datasets>=2.18.0; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
+onnxruntime-extensions; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
+onnxsim<0.6.0; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
+peft; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
+safetensors<=0.5.3; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
+transformers; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'

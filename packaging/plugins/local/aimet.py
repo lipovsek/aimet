@@ -233,7 +233,7 @@ def optional_dependencies() -> dict[str, list[str]]:
             # duplicate build-system.requires for editable mode (non-isolated)
             "scikit-build-core[wheels]==0.11.1",
             "build",
-            "auditwheel",
+            "auditwheel; sys_platform == 'linux'",  # Linux only (ELF-based)
             # and the rest
         ],
         "test": test_deps,
@@ -264,11 +264,6 @@ def optional_dependencies() -> dict[str, list[str]]:
                 "onnxruntime-qnn",
             ]
         )
-
-    # onnxruntime-extensions is not supported on Windows ARM64. All tests
-    # dependent on onnxruntime-extensions will be skipped in Windows ARM64 variant
-    if is_target_windows_arm64():
-        optional_deps["test"].remove("onnxruntime-extensions")
 
     if aimet_variant in ("torch-gpu", "torch-cpu"):
         # Read torch-specific test deps (deepspeed, spconv - Linux only)
