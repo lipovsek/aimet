@@ -118,6 +118,68 @@ def _embedding(
     return out
 
 
+def _div_wrapper(func) -> torch.Tensor:
+    # pylint:disable = redefined-builtin, protected-access
+
+    @implements(func)
+    def _div(input, other, *, rounding_mode=None, **kwargs):
+        out = func(input, other, rounding_mode=rounding_mode, **kwargs)
+        if rounding_mode is not None:
+            return out
+        if not isinstance(input, DequantizedTensor):
+            return out
+        if (
+            getattr(input, "encoding", None) is None
+            or getattr(input.encoding, "scale", None) is None
+        ):
+            return out
+        if isinstance(other, torch.Tensor):
+            return out
+        if other < 0:
+            return out
+
+        out = out.as_subclass(type(input))
+        out.encoding = input.encoding._clone()
+        out.encoding.scale = out.encoding.scale / other
+        return out
+
+    return _div
+
+
+def _mul_wrapper(func) -> torch.Tensor:
+    # pylint:disable = redefined-builtin, protected-access
+
+    @implements(func)
+    def _mul(input, other, **kwargs):
+        out = func(input, other, **kwargs)
+        if not isinstance(input, QuantizedTensorBase):
+            other, input = input, other
+        if not isinstance(input, DequantizedTensor):
+            return out
+        if (
+            getattr(input, "encoding", None) is None
+            or getattr(input.encoding, "scale", None) is None
+        ):
+            return out
+        if isinstance(other, torch.Tensor):
+            return out
+        if other < 0:
+            return out
+
+        out = out.as_subclass(type(input))
+        out.encoding = input.encoding._clone()
+        out.encoding.scale = out.encoding.scale * other
+        return out
+
+    return _mul
+
+
+_div = _div_wrapper(torch.div)
+_tensor_div = _div_wrapper(torch.Tensor.div)
+_mul = _mul_wrapper(torch.mul)
+_tensor_mul = _mul_wrapper(torch.Tensor.mul)
+
+
 class QuantizedTensorBase(torch.Tensor):
     """
     Abstract base class for quantized tensors.

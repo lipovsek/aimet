@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch import randn, arange
 
+from aimet_torch.v2 import quantization as Q
 from aimet_torch.v2.quantization.affine import quantize, quantize_dequantize
 from aimet_torch.v2.quantization.tensor import (
     EncodingError,
@@ -848,3 +849,137 @@ class TestQuantizedTensor:
         # Sanity check for soundness of encoding
         assert torch.equal(qout.quantize(), qout.dequantize().quantize())
         assert torch.equal(qout.dequantize(), qout.quantize().dequantize())
+
+    @pytest.mark.parametrize(
+        "rescale_func",
+        [
+            lambda x: x / 0.5,
+            lambda x: x / 2,
+            lambda x: torch.div(x, 0.25),
+            lambda x: torch.Tensor.div(x, 2.5),
+            lambda x: x.div(other=0.25),
+            lambda x: x * 0.5,
+            lambda x: x * 2,
+            lambda x: 0.5 * x,
+            lambda x: 2 * x,
+            lambda x: torch.mul(x, 0.25),
+            lambda x: torch.mul(0.25, x),
+            lambda x: torch.mul(input=0.25, other=x),
+            lambda x: torch.mul(0.25, other=x),
+            lambda x: torch.Tensor.mul(x, 2.5),
+            lambda x: torch.Tensor.mul(x, other=2.5),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "quantizer",
+        [
+            Q.affine.QuantizeDequantize((), 8, False),
+            Q.affine.QuantizeDequantize((10, 1), 16, True),
+            Q.float.QuantizeDequantize(dtype=torch.bfloat16),
+            Q.float.QuantizeDequantize(exponent_bits=5, mantissa_bits=2),
+        ],
+    )
+    def test_encoding_propagation_for_rescale_op(self, quantizer, rescale_func):
+        shape = (10, 10)
+        tensor = torch.randn(*shape)
+
+        with quantizer.compute_encodings():
+            quantizer(torch.randn(*shape))
+
+        qtensor = quantizer(tensor)
+
+        output_tensor = rescale_func(qtensor)
+
+        assert type(output_tensor) == type(qtensor)
+
+        qtensor_dq = qtensor.dequantize().as_subclass(torch.Tensor)
+        ref_output = rescale_func(qtensor_dq)
+
+        assert torch.allclose(
+            output_tensor.dequantize().as_subclass(torch.Tensor), ref_output
+        )
+        assert torch.equal(
+            output_tensor.encoding.scale, rescale_func(qtensor.encoding.scale)
+        )
+
+        output_tensor_requant = output_tensor.dequantize().quantize().dequantize()
+        assert torch.allclose(output_tensor_requant, output_tensor.dequantize())
+
+    @pytest.mark.parametrize(
+        "rescale_func",
+        [
+            lambda x: x / torch.tensor([0.1]),
+            lambda x: torch.div(x, torch.tensor([0.2])),
+            lambda x: torch.div(input=x, other=torch.tensor([0.2])),
+            lambda x: torch.div(x, other=torch.tensor([0.5])),
+            lambda x: torch.Tensor.div(x, torch.tensor([0.3])),
+            lambda x: torch.mul(x, torch.tensor([0.2])),
+            lambda x: x * torch.tensor([0.1]),
+            lambda x: torch.tensor([0.1]) * x,
+            lambda x: torch.mul(torch.tensor([0.2]), x),
+            lambda x: torch.Tensor.mul(x, torch.tensor([0.3])),
+            lambda x: torch.Tensor.mul(torch.tensor([0.4]), x),
+            lambda x: torch.Tensor.mul(torch.tensor([0.4]), other=x),
+            lambda x: 0.5 / x,
+            lambda x: 2 / x,
+            lambda x: torch.tensor([0.1]) / x,
+            lambda x: x / -0.5,
+            lambda x: x / torch.tensor([-0.1]),
+            lambda x: x / torch.tensor(torch.ones(10, 10) * 10),
+            lambda x: torch.div(x, torch.tensor([0.5]), rounding_mode="floor"),
+            lambda x: torch.div(0.25, x),
+            lambda x: torch.div(torch.tensor([0.2]), x),
+            lambda x: torch.div(x, -0.25),
+            lambda x: torch.div(x, torch.tensor([-0.2])),
+            lambda x: torch.div(x, torch.ones([10])),
+            lambda x: torch.Tensor.div(x, -2.5),
+            lambda x: torch.Tensor.div(x, torch.tensor([-0.3])),
+            lambda x: torch.Tensor.div(x, torch.ones([10]) * 2.0),
+            lambda x: torch.Tensor.div(torch.tensor([0.4]), x),
+            lambda x: x * -0.5,
+            lambda x: x * torch.tensor([-0.1]),
+            lambda x: x * torch.tensor(torch.ones(10, 10) * 10),
+            lambda x: -0.5 * x,
+            lambda x: torch.tensor([-0.1]) * x,
+            lambda x: torch.tensor(torch.ones(10, 10) * 10) * x,
+            lambda x: torch.mul(x, -0.25),
+            lambda x: torch.mul(x, torch.tensor([-0.2])),
+            lambda x: torch.mul(-0.25, x),
+            lambda x: torch.mul(torch.tensor([-0.2]), x),
+            lambda x: torch.mul(torch.tensor([0.5] * 10), x),
+            lambda x: torch.Tensor.mul(x, -2.5),
+            lambda x: torch.Tensor.mul(torch.tensor([-0.3]), x),
+            lambda x: torch.Tensor.mul(x, torch.tensor([-0.4])),
+            lambda x: torch.Tensor.mul(x, torch.tensor([0.5] * 10)),
+            lambda x: torch.Tensor.mul(torch.tensor([0.5] * 10), x),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "quantizer",
+        [
+            Q.affine.QuantizeDequantize((), 8, False),
+            Q.affine.Quantize((), 8, False),
+            Q.affine.QuantizeDequantize((10, 1), 16, True),
+            Q.affine.Quantize((1, 10), 16, True),
+            Q.float.QuantizeDequantize(dtype=torch.bfloat16),
+            Q.float.QuantizeDequantize(exponent_bits=5, mantissa_bits=2),
+        ],
+    )
+    def test_skip_encoding_propagation_for_invalid_rescale_op(
+        self, quantizer, rescale_func
+    ):
+        shape = (10, 10)
+        tensor = torch.randn(*shape)
+
+        with quantizer.compute_encodings():
+            quantizer(torch.randn(*shape))
+
+        qtensor = quantizer(tensor)
+
+        output_tensor = rescale_func(qtensor)
+
+        assert type(output_tensor) == torch.Tensor
+        assert not hasattr(output_tensor, "encoding")
+
+        output_tensor_ref = rescale_func(qtensor.as_subclass(torch.Tensor))
+        assert torch.allclose(output_tensor, output_tensor_ref)
