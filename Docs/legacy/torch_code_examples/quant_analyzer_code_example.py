@@ -1,0 +1,91 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause
+
+# pylint: skip-file
+
+""" Quant Analyzer code example """
+
+# Step 0. Import statements
+from typing import Any
+import torch
+from torchvision import models
+from aimet_common.defs import QuantScheme
+from aimet_torch.quant_analyzer import QuantAnalyzer
+# End step 0
+
+# Step 1. Prepare forward pass callback
+# NOTE: In the actual use cases, the users should implement this part to serve
+#       their own goals if necessary.
+def forward_pass_callback(model: torch.nn.Module) -> None:
+    """
+    NOTE: This is intended to be the user-defined model calibration function.
+    AIMET requires the above signature. So if the user's calibration function does not
+    match this signature, please create a simple wrapper around this callback function.
+
+    A callback function for model calibration that simply runs forward passes on the model to
+    compute encoding (delta/offset). This callback function should use representative data and should
+    be subset of entire train/validation dataset (~1000 images/samples).
+
+    :param model: PyTorch model.
+    """
+    # User action required
+    # User should create data loader/iterable using representative dataset and simply run
+    # forward passes on the model.
+# End step 1
+
+# Step 2. Prepare eval callback
+# NOTE: In the actual use cases, the users should implement this part to serve
+#       their own goals if necessary.
+def eval_callback(model: torch.nn.Module) -> float:
+    """
+    NOTE: This is intended to be the user-defined model evaluation function.
+    AIMET requires the above signature. So if the user's calibration function does not
+    match this signature, please create a simple wrapper around this callback function.
+
+    A callback function for model evaluation that determines model performance. This callback function is
+    expected to return scalar value representing the model performance evaluated against entire
+    test/evaluation dataset.
+
+    :param model: PyTorch model.
+    :return: Scalar value representing the model performance.
+    """
+    # User action required
+    # User should create data loader/iterable using entire test/evaluation dataset, perform forward passes on
+    # the model and return single scalar value representing the model performance.
+    return .8
+# End step 2
+
+
+def quant_analyzer_example():
+
+    # Step 3. Prepare model and callback functions
+    model = models.resnet18(pretrained=True).cuda().eval()
+    input_shape = (1, 3, 224, 224)
+    dummy_input = torch.randn(*input_shape).cuda()
+    # End step 3
+
+    # Step 4. Create QuantAnalyzer object
+    quant_analyzer = QuantAnalyzer(model=model,
+                                   dummy_input=dummy_input,
+                                   forward_pass_callback=forward_pass_callback,
+                                   eval_callback=eval_callback)
+
+    # User action required
+    # User should use unlabeled dataloader, so if the dataloader yields labels as well user should use discard them.
+    unlabeled_data_loader = _get_unlabled_data_loader()
+    # Approximately 256 images/samples are recommended for MSE loss analysis. So, if the dataloader
+    # has batch_size of 64, then 4 number of batches leads to 256 images/samples.
+    quant_analyzer.enable_per_layer_mse_loss(unlabeled_dataset_iterable=unlabeled_data_loader, num_batches=4)
+    # End step 4
+
+    # Step 5. Run QuantAnalyzer
+    quant_analyzer.analyze(quant_scheme=QuantScheme.post_training_tf_enhanced,
+                           default_param_bw=8,
+                           default_output_bw=8,
+                           config_file=None,
+                           results_dir="./quant_analyzer_results/")
+    # End step 5
+
+
+if __name__ == '__main__':
+    quant_analyzer_example()
