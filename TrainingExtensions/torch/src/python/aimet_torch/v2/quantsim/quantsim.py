@@ -28,6 +28,7 @@ import io
 import json
 import contextlib
 import os
+from aimet_torch.v2.nn.true_quant import QuantizedGRU, QuantizedLSTM, QuantizedRNN
 import torch
 import onnx
 
@@ -478,6 +479,27 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
                     " https://quic.github.io/aimet-pages/releases/latest/apiref/torch/quantsim.html#aimet_torch.QuantizationSimModel.onnx"
                 )
             raise RuntimeError(msg)
+
+        rnn_layers = [
+            name
+            for name, qmodule in self.named_qmodules()
+            if isinstance(qmodule, (QuantizedRNN, QuantizedGRU, QuantizedLSTM))
+        ]
+
+        if len(rnn_layers) > 3:
+            # Only show up to 3 layer names for readability
+            rnn_layers = [*rnn_layers[:3], "..."]
+
+        if rnn_layers:
+            raise RuntimeError(
+                "QuantizationSimModel.export does not support exporting RNN/GRU/LSTM layers. "
+                f"Found the following RNN/GRU/LSTM layers in the model: [{', '.join(rnn_layers)}]. "
+                "Please use aimet_torch.onnx.export() or sim.onnx.export() instead, "
+                "which supports exporting RNN/GRU/LSTM layers. "
+                "For more information, see "
+                "https://quic.github.io/aimet-pages/releases/latest/apiref/torch/"
+                "quantsim.html#aimet_torch.QuantizationSimModel.onnx"
+            )
 
         if isinstance(dummy_input, torch.Tensor):
             dummy_input = (dummy_input,)
