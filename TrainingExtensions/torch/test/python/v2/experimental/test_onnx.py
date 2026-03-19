@@ -1847,9 +1847,11 @@ def test_activation_uint(tmp_path: pathlib.Path, force_activation_as: str | None
         def __init__(self):
             super().__init__()
             self.mm = aimet_torch.nn.modules.custom.MatMul()
+            self.linear = torch.nn.Linear(10, 10)
 
         def forward(self, x, y):
-            return self.mm(x, y)
+            output = self.mm(x, y)
+            return self.linear(output)
 
     dummy_input = (torch.randn(10, 10), torch.randn(10, 10))
     sim = QuantizationSimModel(
@@ -1861,6 +1863,33 @@ def test_activation_uint(tmp_path: pathlib.Path, force_activation_as: str | None
     assert not sim.model.mm.output_quantizers[0].symmetric
 
     sim.compute_encodings(lambda m: m(*dummy_input))
+
+    sim.onnx.export(
+        dummy_input,
+        tmp_path / "model.onnx",
+        input_names=["x", "y"],
+        output_names=["output"],
+        dynamo=False,
+        encoding_version="2.0.0",
+        force_activation_as=force_activation_as,
+        export_int32_bias=True,
+    )
+    with open(tmp_path / "model.encodings", "r") as f:
+        encodings = json.load(f)
+
+    for enc in encodings["encodings"]:
+        if enc["name"] == "linear.weight":
+            expected_dtype = "int8"
+        elif enc["name"] == "linear.bias":
+            expected_dtype = "int32"
+        elif force_activation_as == "unsigned":
+            expected_dtype = "uint16"
+        elif force_activation_as == "signed":
+            expected_dtype = "int16"
+        else:
+            expected_dtype = "int16" if enc["name"] == "y" else "uint16"
+        assert enc["output_dtype"] == expected_dtype, enc
+
     aimet_torch.onnx.export(
         sim.model,
         dummy_input,
@@ -1868,7 +1897,9 @@ def test_activation_uint(tmp_path: pathlib.Path, force_activation_as: str | None
         opset_version=21,
         input_names=["x", "y"],
         output_names=["output"],
+        dynamo=False,
         force_activation_as=force_activation_as,
+        export_int32_bias=True,
     )
 
     onnx_model = onnx.load(tmp_path / "model.onnx")
@@ -1879,7 +1910,11 @@ def test_activation_uint(tmp_path: pathlib.Path, force_activation_as: str | None
         if node.op_type in ("QuantizeLinear", "DequantizeLinear"):
             zero_point = node.input[2]
 
-            if force_activation_as == "unsigned":
+            if node.input[0].startswith("linear.weight"):
+                expected_dtype = onnx.TensorProto.INT8
+            elif node.input[0].startswith("linear.bias"):
+                expected_dtype = onnx.TensorProto.INT32
+            elif force_activation_as == "unsigned":
                 expected_dtype = TensorProto.UINT16
             elif force_activation_as == "signed":
                 expected_dtype = TensorProto.INT16

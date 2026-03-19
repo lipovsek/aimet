@@ -7199,3 +7199,95 @@ def test_set_param_type_by_op():
 
     with pytest.raises(TypeError):
         set_param_type(sim, aimet_onnx.int8, unsupported_arg=True)
+
+
+@pytest.mark.parametrize("force_activation_as", ["unsigned", "signed", None])
+def test_activation_uint(tmp_path: pathlib.Path, force_activation_as: str | None):
+    """
+    Given: Model with symmetric activation encoding
+    When: Export to onnx QDQ
+    Then: All activation encodings in the exported onnx model should be uint
+    """
+
+    class Matmul(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(10, 10)
+
+        def forward(self, x, y):
+            output = torch.matmul(x, y)
+            return self.linear(output)
+
+    matmul = Matmul()
+    torch.onnx.export(
+        matmul,
+        (torch.randn(1, 10), torch.randn(10, 10)),
+        tmp_path / "matmul.onnx",
+        input_names=["x", "y"],
+        output_names=["output"],
+        dynamo=False,
+    )
+    model = onnx.load(tmp_path / "matmul.onnx")
+
+    dummy_input = make_dummy_input(model)
+    sim = QuantizationSimModel(
+        model, param_type=aimet_onnx.int8, activation_type=aimet_onnx.int16
+    )
+
+    sim.compute_encodings([dummy_input])
+
+    sim.export(
+        str(tmp_path),
+        "matmul",
+        encoding_version="2.0.0",
+        export_int32_bias=True,
+        force_activation_as=force_activation_as,
+    )
+
+    with open(tmp_path / "matmul.encodings", "r") as f:
+        encodings = json.load(f)
+
+    for enc in encodings["encodings"]:
+        if enc["name"] == "linear.weight":
+            expected_dtype = "int8"
+        elif enc["name"] == "linear.bias":
+            expected_dtype = "int32"
+        elif force_activation_as == "unsigned":
+            expected_dtype = "uint16"
+        elif force_activation_as == "signed":
+            expected_dtype = "int16"
+        else:
+            expected_dtype = "int16" if enc["name"] == "y" else "uint16"
+        assert enc["output_dtype"] == expected_dtype, enc
+
+    qdq_model = sim.to_onnx_qdq(force_activation_as=force_activation_as)
+    onnx.checker.check_model(qdq_model)
+
+    initializers = {init.name: init for init in qdq_model.graph.initializer}
+    for node in qdq_model.graph.node:
+        if node.op_type in ("QuantizeLinear", "DequantizeLinear"):
+            zero_point = node.input[2]
+
+            if node.input[0].startswith("linear.weight"):
+                expected_dtype = onnx.TensorProto.INT8
+            elif node.input[0].startswith("linear.bias"):
+                expected_dtype = onnx.TensorProto.INT32
+            elif force_activation_as == "unsigned":
+                expected_dtype = onnx.TensorProto.UINT16
+            elif force_activation_as == "signed":
+                expected_dtype = onnx.TensorProto.INT16
+            else:
+                expected_dtype = (
+                    onnx.TensorProto.INT16
+                    if node.input[0] in ("y", "y_q")
+                    else onnx.TensorProto.UINT16
+                )
+
+            assert initializers[zero_point].data_type == expected_dtype
+
+    (out_1,) = sim.session.run(None, dummy_input)
+    sess = ort.InferenceSession(qdq_model.SerializeToString())
+    (out_2,) = sess.run(None, dummy_input)
+    assert np.allclose(
+        out_1, out_2, atol=sim.qc_quantize_op_dict["output"].get_encodings()[0].delta
+    )

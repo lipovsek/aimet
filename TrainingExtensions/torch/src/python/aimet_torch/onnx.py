@@ -70,11 +70,11 @@ def export(
         f: Same as `torch.onnx.export()`
         export_int32_bias (bool, optional):
             If true, generate and export int32 bias encoding on the fly (default: `True`).
-        prequantize_constants (bool):
+        prequantize_constants (bool, optional):
             If True, quantized weights will be represented as quantized weight followed by DequantizeLinear.
             If False, they will be represented as floating point weight followed by
             QuantizeLinear and DequantizeLinear (default: `False`).
-        force_activation_as (str):
+        force_activation_as (str, optional):
             Force representing quantized activations as signed or unsigned integers (default: `"unsigned"`)
         **kwargs: Same as `torch.onnx.export()`
 

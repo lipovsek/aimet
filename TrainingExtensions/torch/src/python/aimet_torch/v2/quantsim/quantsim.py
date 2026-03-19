@@ -1001,8 +1001,10 @@ class QuantizationSimModelOnnxExporter:
             Supported versions are: {sorted(list(quantsim.VALID_ENCODING_VERSIONS))}
         export_int32_bias (bool, optional):
             If true, generate and export int32 bias encoding on the fly (default: `True`).
-        force_activation_as (str):
-            Force representing quantized activations as signed or unsigned integers (default: `"unsigned"`)
+        force_activation_as (str, optional):
+            Force representing quantized activations as signed or unsigned integers.
+            This argument is only applicable for encoding version 2.0.0.
+            For versions 0.6.1 and 1.0.0, this argument is ignored. (uefault: `"unsigned"`)
         **kwargs: Same as `torch.onnx.export()`
 
     .. _torch.onnx.export(): https://docs.pytorch.org/docs/stable/onnx_torchscript.html#torch.onnx.export

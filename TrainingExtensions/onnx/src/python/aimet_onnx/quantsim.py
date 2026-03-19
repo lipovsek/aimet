@@ -15,6 +15,7 @@ from typing import (
     Callable,
     Dict,
     List,
+    Literal,
     Optional,
     overload,
     Tuple,
@@ -1281,7 +1282,12 @@ class QuantizationSimModel:
             encoding["name"] = name
         return list(encoding_dict.values())
 
-    def _export_encodings(self, encoding_file_path, encoding_version: str):
+    def _export_encodings(
+        self,
+        encoding_file_path,
+        encoding_version: str,
+        force_activation_as: str | None = "unsigned",
+    ):
         """
         Export encodings to json file
 
@@ -1305,6 +1311,17 @@ class QuantizationSimModel:
             encodings = self._get_encodings(
                 self.qc_quantize_op_dict.keys(), encoding_version
             )
+
+            if force_activation_as is not None:
+                param_names = set(self.param_names)
+                encodings = [
+                    enc
+                    if enc["name"] in param_names
+                    else _to_unsigned_encoding(enc)
+                    if force_activation_as == "unsigned"
+                    else _to_signed_encoding(enc)
+                    for enc in encodings
+                ]
 
             if self._export_data_movement_op_output_quantizers:
                 with self._remove_quantization_nodes():
@@ -1802,6 +1819,10 @@ class QuantizationSimModel:
         encoding_version (str, optional):
             Version of the encoding format to use. (default: {quantsim.encoding_version})
             Supported versions are: {sorted(list(quantsim.VALID_ENCODING_VERSIONS))}
+        force_activation_as (str, optional):
+            Force representing quantized activations as signed or unsigned integers.
+            This argument is only applicable for encoding version 2.0.0.
+            For versions 0.6.1 and 1.0.0, this argument is ignored. (default: `"unsigned"`)
 
     Example:
 
@@ -1816,6 +1837,9 @@ class QuantizationSimModel:
         *,
         export_int32_bias: bool = False,
         encoding_version: Optional[str] = None,
+        force_activation_as: Literal["unsigned"]
+        | Literal["signed"]
+        | None = "unsigned",
     ):
         encoding_version = encoding_version or quantsim.encoding_version
 
@@ -1839,7 +1863,9 @@ class QuantizationSimModel:
             else contextlib.nullcontext()
         ):
             self._export_encodings(
-                os.path.join(path, filename_prefix) + ".encodings", encoding_version
+                os.path.join(path, filename_prefix) + ".encodings",
+                encoding_version,
+                force_activation_as=force_activation_as,
             )
 
         if export_model:
@@ -2195,6 +2221,9 @@ class QuantizationSimModel:
         *,
         export_int32_bias: bool = False,
         prequantize_constants: bool = False,
+        force_activation_as: Literal["unsigned"]
+        | Literal["signed"]
+        | None = "unsigned",
     ) -> onnx.ModelProto:
         """
         Return a copy of ModelProto with all QcQuantizeOp nodes replaced with
@@ -2213,9 +2242,11 @@ class QuantizationSimModel:
         Args:
             export_int32_bias (bool, optional):
                 If true, generate and export int32 bias encoding on the fly (default: `True`)
-            prequantize_constants (bool):
+            prequantize_constants (bool, optional):
                 If True, weights will be represented as quantized weight followed by DequantizeLinear nodes.
                 If False, weights will be represented as float tensors followed by QuantizeLinear and DequantizeLinear nodes.
+            force_activation_as (str, optional):
+                Force representing quantized activations as signed or unsigned integers (default: `"unsigned"`)
 
         .. image:: ../../images/conv_qdq.onnx.svg
             :align: center
@@ -2225,11 +2256,16 @@ class QuantizationSimModel:
             if export_int32_bias
             else contextlib.nullcontext()
         ):
-            return self._to_onnx_qdq(prequantize_constants=prequantize_constants)
+            return self._to_onnx_qdq(
+                prequantize_constants=prequantize_constants,
+                force_activation_as=force_activation_as,
+            )
 
     _export_data_movement_op_output_quantizers = True
 
-    def _to_onnx_qdq(self, prequantize_constants: bool) -> onnx.ModelProto:
+    def _to_onnx_qdq(
+        self, prequantize_constants: bool, force_activation_as: str | None
+    ) -> onnx.ModelProto:
         lstm_int32_cell_states = [
             name
             for name, qtzr in self._lstm_cell_state_quantizers()
@@ -2350,7 +2386,13 @@ class QuantizationSimModel:
                     # This takes care of edge case where qtzr could be a symmetric quantizer
                     # for dynamic weight of Conv/ConvTranspose/Gemm/Matmul.
                     # This is a workaround for QNN converter limitation
-                    encodings = _to_unsigned_encoding(encodings)
+                    encodings = (
+                        _to_unsigned_encoding(encodings)
+                        if force_activation_as == "unsigned"
+                        else _to_signed_encoding(encodings)
+                        if force_activation_as == "signed"
+                        else encodings
+                    )
 
                 # Affine quantizer
                 # Replace QcQuantizeOp with onnx::QuantizeLinear and DequantizeLinear
@@ -2965,7 +3007,15 @@ class QuantizationSimModel:
             qtzr.load_encodings([encoding])
 
 
+def _to_signed_encoding(encoding: dict) -> dict:
+    return _to(encoding, signed=True)
+
+
 def _to_unsigned_encoding(encoding: dict) -> dict:
+    return _to(encoding, signed=False)
+
+
+def _to(encoding: dict, signed: bool) -> dict:
     if ("output_dtype" not in encoding) or ("y_scale" not in encoding):
         raise RuntimeError(
             f"Expected 2.0.0 encoding format. Got unexpected keys: {list(encoding.keys())}"
@@ -2974,10 +3024,12 @@ def _to_unsigned_encoding(encoding: dict) -> dict:
     encoding = encoding.copy()
     output_dtype = encoding["output_dtype"]
 
-    if output_dtype.startswith("uint"):
+    if not output_dtype.startswith(("int", "uint")):
+        return encoding  # floating point encoding
+    if output_dtype.startswith("int") and signed:
         return encoding
-
-    bw = int(output_dtype[3:])
+    if output_dtype.startswith("uint") and not signed:
+        return encoding
 
     if "y_zero_point" in encoding:
         y_zero_point = np.array(encoding["y_zero_point"], dtype=np.int64)
@@ -2985,9 +3037,18 @@ def _to_unsigned_encoding(encoding: dict) -> dict:
         y_scale = np.array(encoding["y_scale"])
         y_zero_point = np.zeros(y_scale.shape, dtype=np.int64)
 
+    if signed:
+        output_dtype = output_dtype[1:]
+        bw = int(output_dtype[3:])
+        y_zero_point -= 2 ** (bw - 1)
+    else:
+        output_dtype = f"u{output_dtype}"
+        bw = int(output_dtype[4:])
+        y_zero_point += 2 ** (bw - 1)
+
     # Update dtype from int to uint and shift zero_point accordingly
-    encoding["output_dtype"] = "u" + output_dtype
-    encoding["y_zero_point"] = (y_zero_point + 2 ** (bw - 1)).tolist()
+    encoding["output_dtype"] = output_dtype
+    encoding["y_zero_point"] = y_zero_point.tolist()
     return encoding
 
 
