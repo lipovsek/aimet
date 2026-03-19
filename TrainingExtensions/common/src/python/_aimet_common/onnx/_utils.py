@@ -593,7 +593,7 @@ def _is_float(
     )
 
 
-def _is_grid_preserving_op(op_type: str) -> bool:
+def _is_grid_preserving_op(op_type: str, domain: str = "") -> bool:
     """
     Returns True if op_type can be considered a grid-preserving op.
     Data movement op is defined as a reshape or indexing operator
@@ -606,39 +606,39 @@ def _is_grid_preserving_op(op_type: str) -> bool:
         * y  = f(x_q)
         * y' = requantize(y, scale_x, zp_x)
     """
-    return op_type in (
-        "BatchToSpace",
-        "Col2Im",
-        "Compress",
-        "DepthToSpace",
-        "Dropout",
-        "Expand",
-        "Flatten",
-        "Gather",
-        "GatherElements",
-        "GatherND",
-        "Identity",
-        "MaxPool",
-        "MaxRoiPool",
-        "NonZero",
-        "Pad",
-        "ReduceMax",
-        "ReduceMin",
-        "Reshape",
-        "Slice",
-        "SpaceToBatch",
-        "SpaceToDepth",
-        "Split",
-        "SplitToSequence",
-        "Squeeze",
-        "Tile",
-        "TopK",
-        "Transpose",
-        "Unsqueeze",
+    return (domain, op_type) in (
+        ("", "Col2Im"),
+        ("", "Compress"),
+        ("", "DepthToSpace"),
+        ("", "Dropout"),
+        ("", "Expand"),
+        ("", "Flatten"),
+        ("", "Gather"),
+        ("", "GatherElements"),
+        ("", "GatherND"),
+        ("", "Identity"),
+        ("", "MaxPool"),
+        ("", "MaxRoiPool"),
+        ("", "NonZero"),
+        ("", "Pad"),
+        ("", "ReduceMax"),
+        ("", "ReduceMin"),
+        ("", "Reshape"),
+        ("", "Slice"),
+        ("", "SpaceToDepth"),
+        ("", "Split"),
+        ("", "SplitToSequence"),
+        ("", "Squeeze"),
+        ("", "Tile"),
+        ("", "TopK"),
+        ("", "Transpose"),
+        ("", "Unsqueeze"),
+        ("qti_aisw", "BatchToSpace"),
+        ("qti_aisw", "SpaceToBatch"),
     )
 
 
-def _is_htp_interpolation_op(op_type: str) -> bool:
+def _is_htp_interpolation_op(op_type: str, domain: str = "") -> bool:
     """
     Returns True if op_type can be considered an interpolation op in HTP.
     Although these operators aren't strictly data movement ops,
@@ -646,11 +646,11 @@ def _is_htp_interpolation_op(op_type: str) -> bool:
     the interpolation ops
     """
     # TODO: Absorb this function into redesigned config file
-    return op_type in (
-        "CropAndResize",
-        "Resize",
-        "ScatterElements",
-        "Upsample",
+    return (domain, op_type) in (
+        ("", "Resize"),
+        ("", "ScatterElements"),
+        ("", "Upsample"),
+        ("qti_aisw", "CropAndResize"),
     )
 
 
@@ -1270,7 +1270,8 @@ def _derive_data_movement_op_encodings(
     data_movement_ops = [
         node
         for node in model.graph.node
-        if _is_grid_preserving_op(node.op_type) or node.op_type == "Concat"
+        if _is_grid_preserving_op(node.op_type, domain=node.domain)
+        or node.op_type == "Concat"
     ]
 
     new_encodings = {}
@@ -1362,7 +1363,10 @@ def _get_effective_encoding(
     if not producer:
         return None
 
-    if _is_grid_preserving_op(producer.op_type) and producer.input:
+    if (
+        _is_grid_preserving_op(producer.op_type, domain=producer.domain)
+        and producer.input
+    ):
         return _get_effective_encoding(producer.input[0], producers, encodings)
 
     return None

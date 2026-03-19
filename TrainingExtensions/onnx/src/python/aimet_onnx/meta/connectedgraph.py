@@ -90,6 +90,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             output_shape=None,
             is_anonymous=False,
             op_type=node.op_type,
+            domain=node.domain,
         )
         # Add corresponding node to op
         op.model_module = ONNXModelModule(node)

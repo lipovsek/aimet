@@ -292,7 +292,10 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         modified_quantize_ops = {}
         for op_name, op_to_quantizer in self._op_to_quantizers.items():
             op = self._conn_graph.get_all_ops()[op_name]
-            if _is_grid_preserving_op(op.type) and op.type not in op_configs:
+            if (
+                _is_grid_preserving_op(op.type, domain=op.domain)
+                and op.type not in op_configs
+            ):
                 op_configs[op.type] = {"is_output_quantized": False}
             if op.type in op_configs:
                 op_config = op_configs[op.type]

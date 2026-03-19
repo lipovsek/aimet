@@ -40,7 +40,7 @@ def _get_quantizer_no_split_slice(
         return None
 
     if (
-        not (_is_grid_preserving_op(producer.type))
+        not _is_grid_preserving_op(producer.type, domain=producer.domain)
         or producer.type == "Slice"
         or producer.type == "Split"
         or producer.type == "SplitToSequence"
@@ -96,7 +96,7 @@ def _get_all_downstream_concats(sim: QuantSimOnnx, tensor_name: str) -> set:
             downstream.update(
                 _get_all_downstream_concats(sim, consumer.outputs[0].name)
             )
-        elif _is_grid_preserving_op(consumer.type):
+        elif _is_grid_preserving_op(consumer.type, domain=consumer.domain):
             downstream.update(
                 _get_all_downstream_concats(sim, consumer.outputs[0].name)
             )
@@ -110,7 +110,7 @@ def _get_all_upstream_concats(sim: QuantSimOnnx, tensor_name: str) -> set:
     producer = product.producer
     if producer and producer.type == "Concat":
         upstream.add(producer)
-    elif producer and _is_grid_preserving_op(producer.type):
+    elif producer and _is_grid_preserving_op(producer.type, domain=producer.domain):
         upstream.update(_get_all_upstream_concats(sim, producer.inputs[0].name))
 
     return upstream

@@ -2105,7 +2105,9 @@ class QuantizationSimModel:
 
                     if inp.producer and (
                         inp.producer.type in op_types_to_tie
-                        or _is_grid_preserving_op(inp.producer.type)
+                        or _is_grid_preserving_op(
+                            inp.producer.type, domain=inp.producer.domain
+                        )
                     ):
                         stack.append(inp.producer)
 
@@ -2644,7 +2646,7 @@ class QuantizationSimModel:
         data_movement_ops = [
             op
             for op in self.connected_graph.ordered_ops
-            if _is_grid_preserving_op(op.type)
+            if _is_grid_preserving_op(op.type, domain=op.domain)
         ]
 
         def propogate_quantizer(op: Op):
@@ -2841,7 +2843,7 @@ class QuantizationSimModel:
             producer
             and producer.input
             and (
-                _is_grid_preserving_op(producer.op_type)
+                _is_grid_preserving_op(producer.op_type, domain=producer.domain)
                 or is_disabled_quantizer(producer)
             )
         ):
@@ -2961,7 +2963,9 @@ class QuantizationSimModel:
                     # as the initial_c quantizer.
                     producer = self._producers.get(initial_c)
 
-                    while producer and _is_grid_preserving_op(producer.op_type):
+                    while producer and _is_grid_preserving_op(
+                        producer.op_type, domain=producer.domain
+                    ):
                         producer = self._producers.get(producer.input[0])
 
                     if producer and producer.op_type == "QcQuantizeOp":
@@ -3073,7 +3077,8 @@ def _remove_delegatable_excess_encodings(
         output_encoding = encodings[output_name]
 
         while producer and (
-            _is_grid_preserving_op(producer.type) or producer.type == "Cast"
+            _is_grid_preserving_op(producer.type, domain=producer.domain)
+            or producer.type == "Cast"
         ):
             # Delegate excess encoding to producer's input
             #                                                      (excess encoding)

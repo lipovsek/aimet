@@ -18,6 +18,7 @@ class Op(_Op):
         output_shape,
         is_anonymous: bool,
         op_type: str,
+        domain: str = "",
     ):
         """
         Initializer for Op
@@ -25,11 +26,13 @@ class Op(_Op):
         :param dotted_name: dotted name of the operation
         :param output_shape: shape of the output product of the operation
         :param is_anonymous: whether this is an anonymous operation
-        :param op_type: type of the operation
+        :param op_type: op_type of the operation
+        :param domain: domain of the operation
         """
         super().__init__(name, dotted_name, output_shape, is_anonymous, op_type)
         self._parameters = {}
         self.transposed_params = False
+        self.domain = domain
 
     def add_param(self, param: str, product: Product, product_type: Union[str, None]):
         """Add a parameter product to parameters dictionary"""
