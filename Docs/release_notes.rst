@@ -6,6 +6,41 @@
 Release notes
 #############
 
+2.27.0
+======
+
+* Bug fixes and Improvements
+    * ONNX
+        * Add `force_activation_as` option to export APIs to control activation signedness (`3583462`_)
+
+    * Torch
+        * Reduce quantize-dequantize latency overhead (`9ca3bf4`_, `525e993`_, `b3de9a2`_)
+        * Optimize inference speed for GenAITests models (`cacd5cc`_, `b6ea5bd`_, `30ab60a`_)
+        * Allow checkpointing and loading during SeqMSE optimization (`4eb97f0`_)
+        * Fix SeqMSE error when model contains unquantized Conv/Linear layers (`3dd4ca9`_)
+        * Populate scalar constant Mul/Div output encodings at export (`1228394`_, `169952d`_, `ca2a324`_)
+        * Propagate tensor encodings through scalar Mul/Div operations (`54c7462`_, `2cfd07e`_)
+
+    * Common
+        * Propagate concat input quantizers to output when possible (`5ee0f13`_)
+
+.. _9ca3bf4: https://github.com/quic/aimet/commit/9ca3bf4cf74bc6b6db2a4d508ee260303a466edf
+.. _1228394: https://github.com/quic/aimet/commit/1228394ae2f534890cf29062332062105e6cd9db
+.. _cacd5cc: https://github.com/quic/aimet/commit/cacd5cc7a08ba91b359d2fdcab30adaaa9f99df8
+.. _525e993: https://github.com/quic/aimet/commit/525e993be3daec18ac7733b6822281bace4d0ca3
+.. _4eb97f0: https://github.com/quic/aimet/commit/4eb97f093e37e2d8c71d40a7aa7222a32063b4d7
+.. _3dd4ca9: https://github.com/quic/aimet/commit/3dd4ca9f44159b27a9eb3e802dd9fdde5af90e16
+.. _b6ea5bd: https://github.com/quic/aimet/commit/b6ea5bd022d4622f77a59694ef5d90fde0f5ac1e
+.. _169952d: https://github.com/quic/aimet/commit/169952d8582a289962eb3a168bb5aa70132c86d8
+.. _ca2a324: https://github.com/quic/aimet/commit/ca2a324a99724a1222818fe5bb53ea0a47fb3850
+.. _30ab60a: https://github.com/quic/aimet/commit/30ab60a7f210a8297e66c743d6f33a92aa186689
+.. _b3de9a2: https://github.com/quic/aimet/commit/b3de9a2b3591648e47067ac619ae8ceeb7984fd0
+.. _54c7462: https://github.com/quic/aimet/commit/54c746272d29058219eb0b57725de5cacd97a6ba
+.. _2cfd07e: https://github.com/quic/aimet/commit/2cfd07edccc6a5715ff99294dbc6057159acdd73
+.. _5ee0f13: https://github.com/quic/aimet/commit/5ee0f13d08b00294460566fe7d4bde5244f9c6db
+.. _3583462: https://github.com/quic/aimet/commit/35834628c5631853d3d7f36fd32b3ea1dceb8926
+
+
 2.26.0
 ======
 
