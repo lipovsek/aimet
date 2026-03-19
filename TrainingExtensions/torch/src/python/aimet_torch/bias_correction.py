@@ -14,7 +14,7 @@ import numpy as np
 
 from aimet_torch.common.graph_pattern_matcher import PatternType
 from aimet_torch.common.graph_searcher import GraphSearcher
-from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger, deprecated
 from aimet_torch.common.bias_correction import (
     ConvBnInfoType,
     ConvBnPatternHandler,
@@ -207,6 +207,7 @@ def call_analytical_correct_bias(
 
 
 # pylint: disable=too-many-arguments
+@deprecated(deletion_planned="v2.31.0")
 def correct_bias(
     model: torch.nn.Module,
     quant_params: QuantParams,

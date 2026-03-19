@@ -21,6 +21,7 @@ from torch import Tensor
 from torch import nn
 import torch.nn.functional as nnF
 import aimet_torch._base.nn.modules.custom as aimet_modules
+from aimet_torch.common.utils import deprecated
 
 
 # pylint: disable=too-many-arguments
@@ -403,6 +404,7 @@ class QuantizableMultiheadAttention(nn.MultiheadAttention):
             return attn_output, None
 
 
+@deprecated(deletion_planned="v2.31.0")
 def create_quantizable_multihead_attention(
     module: torch.nn.MultiheadAttention,
 ) -> QuantizableMultiheadAttention:
@@ -800,6 +802,7 @@ def create_quantizable_transformer_encoder_layer(
     return quantizable_encoder
 
 
+@deprecated(deletion_planned="v2.31.0")
 def create_quantizable_transformer_decoder_layer(
     transformerDecoderLayer: torch.nn.TransformerDecoderLayer,
 ) -> QuantizableTransformerDecoderLayer:

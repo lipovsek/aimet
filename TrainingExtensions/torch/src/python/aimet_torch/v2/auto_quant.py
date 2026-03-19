@@ -39,6 +39,7 @@ from aimet_torch.amp.mixed_precision_algo import (
 )
 from aimet_torch.onnx_utils import OnnxExportApiArgs
 from aimet_torch.common.defs import QuantScheme, CallbackFunc, QuantizationDataType
+from aimet_torch.common.utils import deprecated
 from aimet_torch.common.amp.utils import (
     create_sensitivity_plot,
     create_pareto_curve,
@@ -61,6 +62,7 @@ _MAP_QSCHEME_TO_ENCODING_ANALYZER = {
 }
 
 
+@deprecated(deletion_planned="v2.31.0")
 class AutoQuant(AutoQuantBase):  # pylint: disable=too-many-instance-attributes
     """
     Integrate and apply post-training quantization techniques.
@@ -180,6 +182,7 @@ DEFAULT_NUM_SAMPLES_FOR_AMP_PHASE_1 = EvalCallbackFactory._DEFAULT_SQNR_NUM_SAMP
 DEFAULT_NUM_SAMPLES_FOR_AMP_PHASE_2 = None
 
 
+@deprecated(deletion_planned="v2.31.0")
 class AutoQuantWithAutoMixedPrecision:
     """
     Integrate and apply post-training quantization techniques.

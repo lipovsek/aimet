@@ -44,18 +44,44 @@ def _red(msg: str):
     return f"\x1b[31;21m{msg}\x1b[0m"
 
 
-def deprecated(msg: str):
+def deprecated(msg: str = "", deletion_planned: str = ""):
     """
     Wrap a function or class such that a deprecation warning is printed out when invoked
     """
 
     def decorator(_callable):
+        _msg = f"{_callable.__qualname__} is deprecated"
+
+        if deletion_planned:
+            _msg += f" and will be deleted in {deletion_planned}"
+
+        if msg:
+            _msg += ". " + msg
+
+        if isinstance(_callable, type):
+            # _callable is a class
+            orig_new = _callable.__new__
+
+            @functools.wraps(orig_new)
+            def new_wrapper(cls, *args, **kwargs):
+                warnings.warn(
+                    _red(_msg),
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+
+                if orig_new is object.__new__:
+                    return orig_new(cls)
+
+                return orig_new(cls, *args, **kwargs)
+
+            _callable.__new__ = new_wrapper
+            return _callable
+
         @functools.wraps(_callable)
         def fn_wrapper(*args, **kwargs):
             warnings.warn(
-                _red(
-                    f"{_callable.__qualname__} will be deprecated soon in the later versions. {msg}"
-                ),
+                _red(_msg),
                 DeprecationWarning,
                 stacklevel=2,
             )

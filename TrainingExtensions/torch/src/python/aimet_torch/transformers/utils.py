@@ -8,8 +8,10 @@ import torch
 from aimet_torch import utils
 from aimet_torch.model_preparer import prepare_pt_transformer_for_quantsim
 from aimet_torch.transformers.activation import create_quantizable_multihead_attention
+from aimet_torch.common.utils import deprecated
 
 
+@deprecated(deletion_planned="v2.31.0")
 def get_quantizable_pt_transformer_model(model: torch.nn.Module):
     """
     This auto replaces pt MHA with Quantizable version
