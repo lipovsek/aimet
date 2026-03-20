@@ -4,13 +4,29 @@
 
 """Adascale tests"""
 
+from pathlib import Path
+import tempfile
 from unittest.mock import patch
+from copy import deepcopy
 
 import copy
 import pytest
 import torch
 from torch.utils.data import Dataset, DataLoader
-
+from typing import List
+from transformers import (
+    LlamaConfig,
+    LlamaForCausalLM,
+    Qwen2Config,
+    Qwen2ForCausalLM,
+    Phi3Config,
+    Phi3ForCausalLM,
+    MistralConfig,
+    MistralForCausalLM,
+    Qwen3Config,
+    Qwen3ForCausalLM,
+)
+from transformers import set_seed
 
 from aimet_torch import QuantizationSimModel
 from aimet_torch.experimental.adascale.adascale_optimizer import (
@@ -18,6 +34,7 @@ from aimet_torch.experimental.adascale.adascale_optimizer import (
     AdaScaleModelConfig,
     adascale_model_config_dict,
     apply_adascale,
+    PerBlockCheckpointManager,
 )
 from aimet_torch.experimental.adascale.adascale_quantizer import (
     AdaScaleQuantizeDequantize,
@@ -28,7 +45,222 @@ from aimet_torch.v2.nn import QuantizedLinear, QuantizedConv2d
 from aimet_torch.v2.quantization.affine import QuantizeDequantize
 from aimet_torch.v2.utils import remove_all_quantizers, remove_activation_quantizers
 
+from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+
 from .models_ import test_models
+
+
+SEQUENCE_LENGTH = 32
+CONTEXT_LENGTH = 64
+VOCAB_SIZE = 128
+HIDDEN_SIZE = 16
+NUM_HIDDEN_LAYERS = 4
+NUM_ATTN_HEADS = 2
+
+MODEL_CONFIGS = {
+    "llama": {
+        "config_class": LlamaConfig,
+        "model_class": LlamaForCausalLM,
+        "config_kwargs": {
+            "vocab_size": VOCAB_SIZE,
+            "hidden_size": HIDDEN_SIZE,
+            "intermediate_size": HIDDEN_SIZE * 2,
+            "num_hidden_layers": NUM_HIDDEN_LAYERS,
+            "num_attention_heads": NUM_ATTN_HEADS,
+            "num_key_value_heads": NUM_ATTN_HEADS,
+            "max_position_embeddings": CONTEXT_LENGTH,
+        },
+    },
+    "qwen2": {
+        "config_class": Qwen2Config,
+        "model_class": Qwen2ForCausalLM,
+        "config_kwargs": {
+            "vocab_size": VOCAB_SIZE,
+            "hidden_size": HIDDEN_SIZE,
+            "intermediate_size": HIDDEN_SIZE * 2,
+            "num_hidden_layers": NUM_HIDDEN_LAYERS,
+            "num_attention_heads": NUM_ATTN_HEADS,
+            "num_key_value_heads": NUM_ATTN_HEADS,
+            "max_position_embeddings": CONTEXT_LENGTH,
+        },
+    },
+    "mistral": {
+        "config_class": MistralConfig,
+        "model_class": MistralForCausalLM,
+        "config_kwargs": {
+            "vocab_size": VOCAB_SIZE,
+            "hidden_size": HIDDEN_SIZE,
+            "intermediate_size": HIDDEN_SIZE * 2,
+            "num_hidden_layers": NUM_HIDDEN_LAYERS,
+            "num_attention_heads": NUM_ATTN_HEADS,
+            "num_key_value_heads": NUM_ATTN_HEADS,
+            "max_position_embeddings": CONTEXT_LENGTH,
+        },
+    },
+    "phi3": {
+        "config_class": Phi3Config,
+        "model_class": Phi3ForCausalLM,
+        "config_kwargs": {
+            "vocab_size": VOCAB_SIZE,
+            "hidden_size": HIDDEN_SIZE,
+            "intermediate_size": HIDDEN_SIZE * 2,
+            "num_hidden_layers": NUM_HIDDEN_LAYERS,
+            "num_attention_heads": NUM_ATTN_HEADS,
+            "num_key_value_heads": NUM_ATTN_HEADS,
+            "max_position_embeddings": CONTEXT_LENGTH,
+            "pad_token_id": None,
+        },
+    },
+    "qwen3": {
+        "config_class": Qwen3Config,
+        "model_class": Qwen3ForCausalLM,
+        "config_kwargs": {
+            "vocab_size": VOCAB_SIZE,
+            "hidden_size": HIDDEN_SIZE,
+            "intermediate_size": HIDDEN_SIZE * 2,
+            "num_hidden_layers": NUM_HIDDEN_LAYERS,
+            "num_attention_heads": NUM_ATTN_HEADS,
+            "num_key_value_heads": NUM_ATTN_HEADS,
+            "max_position_embeddings": CONTEXT_LENGTH,
+        },
+    },
+}
+
+supported_modules: List = [QuantizedLinear, QuantizedConv2d]
+
+
+# ============================================================================
+# Fixtures
+# ============================================================================
+
+
+@pytest.fixture(params=list(MODEL_CONFIGS.keys()))
+def fxt_model_config(request):
+    return MODEL_CONFIGS[request.param]
+
+
+@pytest.fixture
+def fxt_model(fxt_model_config):
+    config = fxt_model_config["config_class"](**fxt_model_config["config_kwargs"])
+    model = fxt_model_config["model_class"](config)
+    model.eval()
+    return model
+
+
+@pytest.fixture
+def fxt_dummy_input():
+    return {
+        "input_ids": torch.randint(0, VOCAB_SIZE, (1, SEQUENCE_LENGTH)),
+        "attention_mask": torch.ones(1, SEQUENCE_LENGTH, dtype=torch.int),
+    }
+
+
+@pytest.fixture
+def fxt_dataloader():
+    class _Dataset(Dataset):
+        def __init__(self, size=64):
+            self._size = size
+
+        def __getitem__(self, idx):
+            # deterministic tokens
+            ids = torch.full((SEQUENCE_LENGTH,), idx % VOCAB_SIZE, dtype=torch.int)
+            return ids
+
+        def __len__(self):
+            return self._size
+
+    return DataLoader(dataset=_Dataset(), batch_size=1, shuffle=False)
+
+
+@pytest.fixture
+def fxt_checkpoint_dir():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        yield tmpdir
+
+
+@pytest.fixture
+def fxt_quantsim_ready_model(fxt_model, fxt_dummy_input):
+    traceable_model = ONNXExportableModuleWithCache(fxt_model)
+    sim = QuantizationSimModel(
+        model=traceable_model,
+        dummy_input=tuple(fxt_dummy_input.values()),
+        default_output_bw=16,
+        default_param_bw=4,
+    )
+    return sim
+
+
+@pytest.fixture
+def fxt_block(fxt_quantsim_ready_model):
+    return AdaScale._get_blocks(fxt_quantsim_ready_model)[0]
+
+
+# ============================================================================
+# Helpper Function
+# ============================================================================
+
+
+def get_quantsim_ready_model(model, dummy_input: dict):
+    traceable_model = ONNXExportableModuleWithCache(model)
+    sim = QuantizationSimModel(
+        model=traceable_model,
+        dummy_input=tuple(dummy_input.values()),
+        default_output_bw=16,
+        default_param_bw=4,
+    )
+    return sim
+
+
+def has_adascale_quantizers(block: torch.nn.Module) -> bool:
+    """Check if block already has AdaScale quantizers installed"""
+    for module in block.modules():
+        if isinstance(module, tuple(supported_modules)):
+            weight_quantizer = module.param_quantizers["weight"]
+            if isinstance(weight_quantizer, AdaScaleQuantizeDequantize):
+                return True
+
+    return False
+
+
+def run_n_times_then_stop_non_return(func: callable, n: int):
+    """Helper to simulate cancellation"""
+
+    def f(*args, **kwargs):
+        if f._count >= n:
+            raise RuntimeError("cancel")
+
+        func(*args, **kwargs)
+        f._count += 1
+
+    f._count = 0
+    return f
+
+
+def run_n_times_then_stop(func: callable, n: int):
+    """Helper to simulate cancellation"""
+
+    def wrapper(*args, **kwargs):
+        if wrapper._count >= n:
+            raise RuntimeError("cancel")
+
+        output = func(*args, **kwargs)
+        wrapper._count += 1
+        return output
+
+    wrapper._count = 0
+    return wrapper
+
+
+def count_adascale_quantizers(model):
+    """Helper to count number of AdaScale quantizers in model"""
+    count = 0
+    for module in model.modules():
+        if isinstance(module, QuantizedLinear):
+            if isinstance(
+                module.param_quantizers["weight"], AdaScaleQuantizeDequantize
+            ):
+                count += 1
+    return count
 
 
 @pytest.mark.parametrize(
@@ -498,3 +730,431 @@ class TestAdascale:
         ]
 
         assert len(adascale_quantizers) == 0
+
+
+class TestAdaScaleBasicFunctionality:
+    """Test basic AdaScale functionality across all supported models"""
+
+    def test_adascale_quantizer_initialization(self):
+        """Test AdaScale quantizer can be created from standard quantizer"""
+        from aimet_torch.v2.quantization.affine import QuantizeDequantize
+
+        # Create standard quantizer
+        qdq = QuantizeDequantize(
+            shape=(64,),
+            bitwidth=8,
+            symmetric=True,
+        )
+        qdq.set_range(torch.tensor(-1.0), torch.tensor(1.0))
+
+        # Create AdaScale quantizer
+        weight_shape = torch.Size([64, 64])
+        adascale_qdq = AdaScaleLinearQuantizeDequantize(qdq, weight_shape)
+
+        assert hasattr(adascale_qdq, "beta")
+        assert hasattr(adascale_qdq, "gamma")
+        assert hasattr(adascale_qdq, "s2")
+        assert hasattr(adascale_qdq, "s3")
+
+        assert torch.allclose(adascale_qdq.beta, torch.zeros(64))
+        assert torch.allclose(adascale_qdq.gamma, torch.zeros(64))
+
+    def test_get_blocks(self, fxt_quantsim_ready_model):
+        """Test _get_blocks correctly identifies decoder blocks for all model types"""
+        blocks = AdaScale._get_blocks(fxt_quantsim_ready_model)
+
+        assert len(blocks) == NUM_HIDDEN_LAYERS
+        # Blocks should be of correct type
+        assert all(hasattr(block, "self_attn") for block in blocks)
+        assert all(hasattr(block, "mlp") for block in blocks)
+
+    def test_replace_with_adascale_quantizers(self, fxt_quantsim_ready_model):
+        """Test replacing standard quantizers with AdaScale quantizers"""
+        # Initially should have standard quantizers
+        model = fxt_quantsim_ready_model.model
+        assert count_adascale_quantizers(model) == 0
+        assert not has_adascale_quantizers(model)
+
+        # Replace with AdaScale quantizers
+        AdaScale._replace_with_adascale_weight_quantizers(model)
+
+        # Now should have AdaScale quantizers
+        assert count_adascale_quantizers(model) > 0
+        assert has_adascale_quantizers(model)
+
+    def test_extract_and_restore_adascale_params(self, fxt_block):
+        """Test extracting and restoring AdaScale parameters"""
+        AdaScale._replace_with_adascale_weight_quantizers(fxt_block)
+
+        for module in fxt_block.modules():
+            if isinstance(module, QuantizedLinear):
+                weight_quantizer = module.param_quantizers["weight"]
+                if isinstance(weight_quantizer, AdaScaleQuantizeDequantize):
+                    with torch.no_grad():
+                        for idx, param in enumerate(weight_quantizer.parameters()):
+                            param.fill_(0.1 * (idx % 10 + 1))
+
+        # Extract parameters
+        expected_states = AdaScale.extract_adascale_params(fxt_block)
+        assert len(expected_states) > 0
+
+        # Corrupt all AdaScale params
+        for module in fxt_block.modules():
+            if isinstance(module, QuantizedLinear):
+                quantizer = module.param_quantizers["weight"]
+                if isinstance(quantizer, AdaScaleQuantizeDequantize):
+                    with torch.no_grad():
+                        for param in quantizer.parameters():
+                            param.fill_(999.0)
+
+        # Restore parameters
+        AdaScale.restore_adascale_params(fxt_block, expected_states)
+
+        # Verify all layers are correctly restored
+        for name, module in fxt_block.named_modules():
+            if name not in expected_states.keys():
+                continue
+            quantizer = module.param_quantizers["weight"]
+            assert isinstance(quantizer, AdaScaleQuantizeDequantize)
+            restored_state = quantizer.state_dict()
+            for key, expected_tensor in expected_states[name].items():
+                if key in ("extra_state", "_extra_state"):
+                    continue
+                assert torch.allclose(
+                    restored_state[key].cpu(), expected_tensor.cpu()
+                ), f"Mismatch after restore for layer {name}, key {key}"
+
+    def test_fold_adascale_quantizers(self, fxt_block):
+        """Test folding AdaScale parameters into weights"""
+        AdaScale._replace_with_adascale_weight_quantizers(fxt_block)
+
+        # Get original weight
+        original_weight = None
+        for module in fxt_block.modules():
+            if isinstance(module, QuantizedLinear):
+                original_weight = module.weight.data.clone()
+                break
+
+        # Fold quantizers
+        AdaScale.fold_adascale_quantizers(fxt_block)
+
+        assert count_adascale_quantizers(fxt_block) == 0
+
+        # Check weight shape is preserved
+        for module in fxt_block.modules():
+            if isinstance(module, QuantizedLinear):
+                assert module.weight.shape == original_weight.shape
+                break
+
+
+class TestCheckpointManagerFunctionality:
+    def test_checkpoint_manager_initialization(self, fxt_checkpoint_dir):
+        """Test checkpoint manager can be created"""
+        manager = PerBlockCheckpointManager(fxt_checkpoint_dir)
+        assert manager.checkpoint_dir.exists()
+        assert manager.progress_file == Path(fxt_checkpoint_dir) / "progress.json"
+
+    def test_save_and_load_completed_block(self, fxt_block, fxt_checkpoint_dir):
+        """Test saving and loading completed block adascale params and subsequent folding"""
+        manager = PerBlockCheckpointManager(fxt_checkpoint_dir)
+
+        AdaScale._replace_with_adascale_weight_quantizers(fxt_block)
+
+        for module in fxt_block.modules():
+            if isinstance(module, tuple(supported_modules)):
+                weight_quantizer = module.param_quantizers["weight"]
+                if isinstance(weight_quantizer, AdaScaleQuantizeDequantize):
+                    with torch.no_grad():
+                        for idx, param in enumerate(weight_quantizer.parameters()):
+                            param.fill_(0.1 * (idx % 10 + 1))
+
+        original_adascale_params = AdaScale.extract_adascale_params(fxt_block)
+        assert len(original_adascale_params) > 0, (
+            "Block should have AdaScale quantizers"
+        )
+
+        # Save params
+        manager.save_completed_block(
+            block=fxt_block,
+            block_idx=0,
+        )
+
+        checkpoint_file = Path(fxt_checkpoint_dir) / "checkpoint_block_0.safetensors"
+        assert checkpoint_file.exists()
+
+        # Corrupt the AdaScale params
+        for module in fxt_block.modules():
+            if isinstance(module, tuple(supported_modules)):
+                if isinstance(
+                    module.param_quantizers["weight"], AdaScaleQuantizeDequantize
+                ):
+                    with torch.no_grad():
+                        for param in module.param_quantizers["weight"].parameters():
+                            param.fill_(999.0)
+
+        # Load AdaScale params
+        manager.load_completed_block(fxt_block, block_idx=0)
+
+        original_adascale_params_nested = AdaScale.unflatten_state_dict(
+            original_adascale_params
+        )
+        for name, module in fxt_block.named_modules():
+            if name in original_adascale_params_nested:
+                weight_quantizer = module.param_quantizers["weight"]
+                assert isinstance(weight_quantizer, AdaScaleQuantizeDequantize)
+                restored_state = weight_quantizer.state_dict()
+                for key, tensor in original_adascale_params_nested[name].items():
+                    assert torch.allclose(restored_state[key].cpu(), tensor.cpu()), (
+                        f"Restored adascale param mismatch for layer {name}, key {key}"
+                    )
+
+        # Verify progress was updated
+        assert manager.is_block_completed(0)
+        progress = manager.get_progress()
+        assert 0 in progress["completed_blocks"]
+        assert progress["current_block"] == 1
+
+        # Verify no stale .pt checkpoint exists (format migrated to .safetensors)
+        stale_pt_file = Path(fxt_checkpoint_dir) / "checkpoint_block_0.pt"
+        assert not stale_pt_file.exists()
+
+    def test_progress_tracking(self, fxt_checkpoint_dir):
+        """Test progress tracking functionality"""
+        manager = PerBlockCheckpointManager(fxt_checkpoint_dir)
+
+        # Get initial progress (should be empty)
+        progress = manager.get_progress()
+        assert progress["total_blocks"] == 0
+
+        # Update progress with metadata
+        manager._update_progress(
+            0, completed=False, total_blocks=5, config={"num_iterations": 100}
+        )
+
+        # Check progress file exists
+        assert manager.progress_file.exists()
+
+        # Get progress
+        progress = manager.get_progress()
+        assert progress["total_blocks"] == 5
+        assert progress["config"]["num_iterations"] == 100
+
+        # Update progress
+        manager._update_progress(0, completed=True)
+        progress = manager.get_progress()
+        assert 0 in progress["completed_blocks"]
+        assert progress["current_block"] == 1
+
+    def test_is_block_completed(self, fxt_block, fxt_checkpoint_dir):
+        """Test checking if block is completed"""
+        AdaScale._replace_with_adascale_weight_quantizers(fxt_block)
+
+        manager = PerBlockCheckpointManager(fxt_checkpoint_dir)
+
+        # Initially not completed
+        assert not manager.is_block_completed(0)
+
+        # Save block
+        manager.save_completed_block(fxt_block, 0)
+
+        # Now completed
+        assert manager.is_block_completed(0)
+
+    def test_get_resume_point(self, fxt_checkpoint_dir):
+        """Test getting resume point"""
+        manager = PerBlockCheckpointManager(fxt_checkpoint_dir)
+
+        # Initially should start from beginning
+        all_done, block_idx = manager.get_resume_point()
+        assert not all_done
+        assert block_idx == 0
+
+        # Mark some blocks as completed
+        manager._update_progress(0, completed=True, total_blocks=3)
+        manager._update_progress(1, completed=True)
+
+        # Should resume from block 2
+        all_done, block_idx = manager.get_resume_point()
+        assert not all_done
+        assert block_idx == 2
+
+
+class TestAdaScaleResumability:
+    """Test AdaScale resumability features"""
+
+    @pytest.mark.parametrize("n_times", [1, NUM_HIDDEN_LAYERS])
+    def test_cancel_after_block_completes(
+        self, n_times, fxt_quantsim_ready_model, fxt_dataloader, fxt_checkpoint_dir
+    ):
+        """
+        Test cancellation after n blocks complete, including all blocks completion.
+        This test is to test the case of saving and loading completed blocks.
+        """
+        # Simulate cancellation after n blocks
+        with patch.object(
+            AdaScale,
+            "adascale_block",
+            side_effect=run_n_times_then_stop(AdaScale.adascale_block, n=n_times),
+        ):
+            if n_times < NUM_HIDDEN_LAYERS:
+                with pytest.raises(RuntimeError, match="cancel"):
+                    AdaScale.apply_adascale(
+                        fxt_quantsim_ready_model,
+                        fxt_dataloader,
+                        num_iterations=10,
+                        checkpoint_dir=fxt_checkpoint_dir,
+                    )
+            else:
+                # Should complete successfully if all blocks are done
+                AdaScale.apply_adascale(
+                    fxt_quantsim_ready_model,
+                    fxt_dataloader,
+                    num_iterations=10,
+                    checkpoint_dir=fxt_checkpoint_dir,
+                )
+
+        # Verify checkpoint state and progress file
+        manager = PerBlockCheckpointManager(fxt_checkpoint_dir)
+        progress = manager.get_progress()
+
+        assert progress["current_block"] == n_times
+
+        completed_blocks = set(progress["completed_blocks"])
+        expected_completed = set(range(n_times))
+        assert completed_blocks == expected_completed
+
+        for i in range(n_times):
+            assert manager.is_block_completed(i), f"Block {i} should be completed"
+
+        for i in range(n_times, NUM_HIDDEN_LAYERS):
+            assert not manager.is_block_completed(i), (
+                f"Block {i} should not be completed"
+            )
+
+        # If all blocks completed, verify optimization is done
+        if n_times == NUM_HIDDEN_LAYERS:
+            all_done, _ = manager.get_resume_point()
+            assert all_done, "All blocks should be marked as done"
+
+    def test_resume_reproducibility_and_determinism(
+        self, fxt_model_config, fxt_dummy_input, fxt_dataloader, fxt_checkpoint_dir
+    ):
+        """
+        Test that AdaScale optimization is deterministic and resume produces identical results.
+        This test verifies:
+        1. Same seed produces same optimization results (determinism)
+        2. Interrupted + resumed optimization produces same final weights as uninterrupted run
+        """
+        num_iter = 500
+
+        # Set the same seed before adascale_block() to ensure determinism (gradient, initilization,...)
+        def _set_seed_hook(func: callable):
+            def f(*args, **kwargs):
+                set_seed(432)
+                func(*args, **kwargs)
+
+            return f
+
+        # =========================================================================
+        # Part 1: Run complete optimization without interruption (baseline)
+        # =========================================================================
+        set_seed(432)
+        config1 = fxt_model_config["config_class"](**fxt_model_config["config_kwargs"])
+        model1 = fxt_model_config["model_class"](config1)
+        model2 = deepcopy(model1)
+        model1.eval()
+        qsim1 = get_quantsim_ready_model(model1, fxt_dummy_input)
+        with patch.object(
+            AdaScale,
+            "adascale_block",
+            wraps=_set_seed_hook(AdaScale.adascale_block),
+        ):
+            AdaScale.apply_adascale(
+                qsim1,
+                fxt_dataloader,
+                num_iterations=num_iter,
+                checkpoint_dir=None,
+            )
+
+        # Capture final folded weights from baseline
+        baseline_weights = {}
+        for block_idx, block in enumerate(AdaScale._get_blocks(qsim1)):
+            baseline_weights[block_idx] = {
+                name: module.weight.data.clone().cpu()
+                for name, module in block.named_modules()
+                if isinstance(module, QuantizedLinear)
+                and isinstance(module.param_quantizers["weight"], QuantizeDequantize)
+            }
+
+        # =========================================================================
+        # Part 2: Run with interruption and resume
+        # =========================================================================
+        set_seed(432)  # Same seed for reproducibility
+        model2.eval()
+        qsim2 = get_quantsim_ready_model(model2, fxt_dummy_input)
+
+        n_times = int(num_iter * 1.5)  # first block is completed
+        with patch.object(
+            AdaScale,
+            "adascale_block",
+            wraps=_set_seed_hook(AdaScale.adascale_block),
+        ):
+            with patch.object(
+                torch.optim.Adam,
+                "step",
+                wraps=run_n_times_then_stop_non_return(
+                    torch.optim.Adam.step, n=n_times
+                ),
+            ):
+                with pytest.raises(RuntimeError, match="cancel"):
+                    AdaScale.apply_adascale(
+                        qsim2,
+                        fxt_dataloader,
+                        num_iterations=num_iter,
+                        checkpoint_dir=fxt_checkpoint_dir,
+                    )
+
+        # Verify interruption state
+        manager = PerBlockCheckpointManager(fxt_checkpoint_dir)
+        progress = manager.get_progress()
+        assert progress["current_block"] == 1, "Should have completed first block"
+        assert 0 in progress["completed_blocks"]
+
+        # Resume and complete
+        with patch.object(
+            AdaScale,
+            "adascale_block",
+            wraps=_set_seed_hook(AdaScale.adascale_block),
+        ):
+            AdaScale.apply_adascale(
+                qsim2,
+                fxt_dataloader,
+                num_iterations=num_iter,
+                checkpoint_dir=fxt_checkpoint_dir,
+            )
+
+        # Capture final folded weights from resumed run
+        resumed_weights = {}
+        for block_idx, block in enumerate(AdaScale._get_blocks(qsim2)):
+            resumed_weights[block_idx] = {
+                name: module.weight.data.clone().cpu()
+                for name, module in block.named_modules()
+                if isinstance(module, QuantizedLinear)
+                and isinstance(module.param_quantizers["weight"], QuantizeDequantize)
+            }
+
+        # =========================================================================
+        # Part 3: Verify reproducibility - compare baseline vs resumed
+        # =========================================================================
+        for block_idx in range(NUM_HIDDEN_LAYERS):
+            for layer_name, baseline_weight in baseline_weights[block_idx].items():
+                assert layer_name in resumed_weights[block_idx], (
+                    f"Layer {layer_name} should exist in resumed block {block_idx}"
+                )
+                resumed_weight = resumed_weights[block_idx][layer_name]
+                assert torch.allclose(baseline_weight, resumed_weight), (
+                    f"Block {block_idx}, layer {layer_name} weight mismatch:\n"
+                    f"Baseline: {baseline_weight.flatten()[:5]}\n"
+                    f"Resumed:  {resumed_weight.flatten()[:5]}\n"
+                    f"Max diff: {torch.max(torch.abs(baseline_weight - resumed_weight))}"
+                )

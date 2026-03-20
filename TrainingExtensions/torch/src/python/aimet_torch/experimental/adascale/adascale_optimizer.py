@@ -5,15 +5,17 @@
 
 """AdaScale implementation"""
 
-import functools
 from copy import deepcopy
 from dataclasses import dataclass
 from types import NoneType
 from typing import Callable, List, Any, Tuple, Type, Sequence, Optional, Dict
 from tqdm import tqdm
+from pathlib import Path
+import json
 
 import torch
 from torch.utils.data import DataLoader
+from safetensors.torch import load_file, save_file
 
 from transformers.models.llama.modeling_llama import LlamaModel, LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2Model, Qwen2DecoderLayer
@@ -134,6 +136,112 @@ _LOSS_FN = torch.nn.MSELoss()
 supported_modules: List = [QuantizedLinear, QuantizedConv2d]
 
 
+class PerBlockCheckpointManager:
+    """
+    Manages per-block checkpoints for AdaScale optimization.
+    Each block is saved separately after completion.
+    """
+
+    def __init__(self, checkpoint_dir: str):
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.progress_file = self.checkpoint_dir / "progress.json"
+
+    def save_completed_block(self, block: torch.nn.Module, block_idx: int):
+        """
+        Save a completed block's AdaScale params.
+        Called after block optimization finishes.
+        """
+        flat_params = AdaScale.extract_adascale_params(block)
+
+        block_checkpoint_path = (
+            self.checkpoint_dir / f"checkpoint_block_{block_idx}.safetensors"
+        )
+        save_file(flat_params, block_checkpoint_path)
+
+        _logger.info(f"Block {block_idx} checkpoint saved to: {block_checkpoint_path}")
+        _logger.info(
+            f"Size: {block_checkpoint_path.stat().st_size / 1024 / 1024:.2f} MB"
+        )
+
+        # Update progress tracker
+        self._update_progress(block_idx, completed=True)
+
+    def load_completed_block(self, block: torch.nn.Module, block_idx: int):
+        """
+        Load and restore a completed block's AdaScale params.
+        Called when resuming optimization to restore already-optimized blocks.
+        """
+        block_checkpoint_path = (
+            self.checkpoint_dir / f"checkpoint_block_{block_idx}.safetensors"
+        )
+
+        if not block_checkpoint_path.exists():
+            return None
+
+        flat_params = load_file(block_checkpoint_path, device="cpu")
+
+        AdaScale.restore_adascale_params(block, flat_params)
+
+        _logger.info(f"Loaded checkpoint for block {block_idx} successfully")
+
+    def get_progress(self) -> Dict:
+        """Get current progress information"""
+        if not self.progress_file.exists():
+            return {
+                "total_blocks": 0,
+                "completed_blocks": [],
+                "current_block": 0,
+            }
+
+        with open(self.progress_file, "r") as f:
+            return json.load(f)
+
+    def _update_progress(self, block_idx: int, completed: bool, **metadata):
+        """Update progress tracker file"""
+        progress = self.get_progress()
+
+        if completed:
+            if block_idx not in progress["completed_blocks"]:
+                progress["completed_blocks"].append(block_idx)
+                progress["completed_blocks"].sort()
+            progress["current_block"] = block_idx + 1
+        else:
+            progress["current_block"] = block_idx
+
+        # Update any additional metadata
+        progress.update(metadata)
+
+        temp_file = self.progress_file.with_suffix(".tmp")
+        with open(temp_file, "w") as f:
+            json.dump(progress, f, indent=2)
+        temp_file.replace(self.progress_file)
+
+    def is_block_completed(self, block_idx: int) -> bool:
+        """Check if a block has been completed"""
+        block_checkpoint_path = (
+            self.checkpoint_dir / f"checkpoint_block_{block_idx}.safetensors"
+        )
+        return block_checkpoint_path.exists()
+
+    def get_resume_point(self) -> tuple[int, int]:
+        """
+        Get the point to resume from.
+        Returns: (all_done, block_idx)
+        """
+        progress = self.get_progress()
+        current_block = progress.get("current_block", 0)
+        completed_blocks = progress["completed_blocks"]
+        total_blocks = progress["total_blocks"]
+
+        # If all blocks are completed
+        if total_blocks == len(completed_blocks) and len(completed_blocks) > 0:
+            return True, current_block
+
+        # Otherwise, start from next uncompleted block
+        return False, current_block
+
+
 class AdaScale:
     """
     AdaScale is PTQ technique which performs Knowledge Distillation on blocks of modules by using the FP32 output as its
@@ -160,6 +268,7 @@ class AdaScale:
         data_loader: DataLoader,
         forward_fn: Callable[[torch.nn.Module, Any], Any] = None,
         num_iterations: int = 1500,
+        checkpoint_dir: str = None,  # For checkpointing
     ):
         """
         :param qsim: Quantization Sim model
@@ -195,6 +304,29 @@ class AdaScale:
         if not forward_fn:
             forward_fn = default_forward_fn
 
+        assert num_iterations > 0, "num_iterations must be greater than 0"
+
+        # Initialize checkpoint manager
+        checkpoint_manager = None
+        start_block_idx = 0
+
+        if checkpoint_dir:
+            checkpoint_manager = PerBlockCheckpointManager(checkpoint_dir)
+
+            # Get resume point
+            all_blocks_done, start_block_idx = checkpoint_manager.get_resume_point()
+
+            if all_blocks_done:
+                _logger.info(
+                    f"All {start_block_idx} blocks have been optimized for AdaScale."
+                )
+                _logger.info(f"Loading checkpoints and skipping AdaScale.")
+            else:
+                if start_block_idx > 0:
+                    _logger.info(f"Resuming from block {start_block_idx}")
+                else:
+                    _logger.info("Starting fresh AdaScale optimization")
+
         compute_param_encodings(qsim.model)
 
         adascale_blocks = cls._get_blocks(qsim)
@@ -202,6 +334,16 @@ class AdaScale:
         # replace with adascale weight quantizer which introduces trainable params - beta, gamma, s2, s3
         device = get_device(qsim.model)
         dtype = next(qsim.model.parameters()).dtype
+
+        # Update progress with total blocks
+        if checkpoint_manager:
+            metadata = {
+                "total_blocks": len(adascale_blocks),
+            }
+
+            checkpoint_manager._update_progress(
+                start_block_idx, completed=False, **metadata
+            )
 
         qsim.model.to(device=torch.device("cpu"), dtype=dtype)
 
@@ -221,9 +363,26 @@ class AdaScale:
         beta_gamma_lr, scales_lr = AdaScale._model_specific_lr(qsim)
 
         with remove_activation_quantizers(qsim.model):
-            for block, fp_block_inputs, qt_block_inputs in sampler.sample(
-                device=device, desc="AdaScale blocks processed"
+            for block_idx, (block, fp_block_inputs, qt_block_inputs) in enumerate(
+                sampler.sample(device=device, desc="AdaScale blocks processed")
             ):
+                # Check if block already completed
+                if checkpoint_manager and checkpoint_manager.is_block_completed(
+                    block_idx
+                ):
+                    _logger.info(
+                        f"Block {block_idx} already completed, loading checkpoint..."
+                    )
+                    temp_device = get_device(block)
+                    temp_dtype = next(block.parameters()).dtype
+
+                    cls._replace_with_adascale_weight_quantizers(block)
+                    checkpoint_manager.load_completed_block(block, block_idx)
+
+                    block.to(device=temp_device, dtype=temp_dtype)
+
+                    continue
+
                 fp_block_inputs = CachedIterable(fp_block_inputs)
                 qt_block_inputs = _SamplingIterable(
                     CachedIterable(qt_block_inputs),
@@ -231,6 +390,8 @@ class AdaScale:
                     ratio=_QT_SAMPLING_PROB,
                     device=device,
                 )
+
+                # Optimize block
                 cls.adascale_block(
                     block,
                     fp_block_inputs,
@@ -240,11 +401,20 @@ class AdaScale:
                     scales_lr=scales_lr,
                 )
 
-        del sampler
+                # Save completed block checkpoint
+                if checkpoint_manager:
+                    checkpoint_manager.save_completed_block(
+                        block=block,
+                        block_idx=block_idx,
+                    )
+
+        del sampler, checkpoint_manager
 
         cls.fold_adascale_quantizers(qsim.model)
 
         qsim.model.to(device=device, dtype=dtype)
+
+        _logger.info("AdaScale optimization completed!")
 
     @classmethod
     def adascale_block(
@@ -350,6 +520,85 @@ class AdaScale:
                         optimizer.zero_grad()
 
                         del quant_out, batch_fp_out, loss
+
+    @staticmethod
+    def extract_adascale_params(block: torch.nn.Module) -> dict:
+        """
+        Extract only AdaScale parameters from a block.
+        Returns a lightweight dict containing only beta, gamma, s2, s3, s4.
+        """
+        device = get_device(block)
+        block.to(device="cpu")
+
+        adascale_params = {}
+        for name, module in block.named_modules():
+            if isinstance(module, tuple(supported_modules)):
+                weight_quantizer = module.param_quantizers["weight"]
+
+                if isinstance(weight_quantizer, AdaScaleQuantizeDequantize):
+                    # Extract AdaScale parameters
+                    quantizer_state = weight_quantizer.state_dict()
+                    if "extra_state" in quantizer_state:
+                        quantizer_state.pop("extra_state")
+                    if "_extra_state" in quantizer_state:
+                        quantizer_state.pop("_extra_state")
+                    adascale_params[name] = quantizer_state
+
+        adascale_params = AdaScale.flatten_state_dict(adascale_params)
+
+        block.to(device=device)
+
+        return adascale_params
+
+    @staticmethod
+    def restore_adascale_params(block: torch.nn.Module, adascale_params: dict):
+        """
+        Restore AdaScale parameters to a block.
+        Assumes block already has AdaScaleQuantizeDequantize quantizers installed.
+        """
+        device = get_device(block)
+        block.to(device="cpu")
+
+        adascale_params = AdaScale.unflatten_state_dict(adascale_params)
+
+        for name, module in block.named_modules():
+            if name in adascale_params:
+                weight_quantizer = module.param_quantizers["weight"]
+
+                if isinstance(weight_quantizer, AdaScaleQuantizeDequantize):
+                    quantizer_state = adascale_params[name]
+                    # Restore parameters
+                    weight_quantizer.load_state_dict(quantizer_state)
+
+        block.to(device=device)
+
+    @staticmethod
+    def flatten_state_dict(
+        original_dict: dict[str, dict[str, torch.Tensor]],
+        separator: str = "/",
+    ) -> dict[str, torch.Tensor]:
+        return {
+            f"{outer_key}{separator}{inner_key}": value
+            for outer_key, inner_dict in original_dict.items()
+            for inner_key, value in inner_dict.items()
+        }
+
+    @staticmethod
+    def unflatten_state_dict(
+        flat_dict: dict[str, torch.Tensor],
+        separator: str = "/",
+    ) -> dict[str, dict[str, torch.Tensor]]:
+        original_dict: dict[str, dict[str, torch.Tensor]] = {}
+
+        for flat_key, value in flat_dict.items():
+            outer_key, inner_key = flat_key.split(separator, maxsplit=1)
+
+            if isinstance(value, torch.Tensor):
+                value = value.detach().clone()
+
+            original_dict.setdefault(outer_key, {})[inner_key] = value
+
+        return original_dict
 
     @staticmethod
     def _screen_for_target_type(model: torch.nn.Module) -> Type:
