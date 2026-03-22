@@ -73,10 +73,6 @@ PYBIND11_MODULE(_libpymo, m)
         .def("quantizeDequantize",
              (py::array_t<float>(TensorQuantizationSimForPython::*)(py::array_t<float>, DlQuantization::TfEncoding&,
                                                                     DlQuantization::RoundingMode, unsigned int, bool)) &
-                 DlQuantization::TensorQuantizationSimForPython::quantizeDequantize)
-        .def("quantizeDequantize",
-             (py::array_t<float>(TensorQuantizationSimForPython::*)(py::array_t<float>, DlQuantization::TfEncoding&,
-                                                                    DlQuantization::RoundingMode, bool)) &
                  DlQuantization::TensorQuantizationSimForPython::quantizeDequantize);
 
     py::enum_<DlQuantization::TensorQuantizerOpMode>(m, "TensorQuantizerOpMode")
