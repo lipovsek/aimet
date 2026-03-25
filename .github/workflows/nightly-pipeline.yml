@@ -270,9 +270,9 @@ jobs:
         run: curl -k -H "Authorization:Bearer ${{ secrets.DOCKER_CREDENTIALS }}" -X DELETE "https://${{ vars.DOCKER_REGISTRY }}/v2/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}/manifests/${{ needs.docker-tag.outputs.tag }}" || true
 
   notify_failure:
-    if: ${{ failure() && github.event_name == 'schedule' }}
+    if: ${{ always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule' }}
     name: Notify failure on slack
-    needs: [ call-build-wheels, call-unit-acceptance-tests, cleanup ]
+    needs: [ docker-build-image, call-build-wheels, call-unit-acceptance-tests, docker-push-latest ]
     runs-on: ubuntu-latest
     steps:
     - uses: slackapi/slack-github-action@v1.25.0
