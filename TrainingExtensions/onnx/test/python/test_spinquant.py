@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import io
+import logging
 import numpy as np
 import pytest
 import torch
@@ -11,6 +12,8 @@ from onnx import load_model, numpy_helper
 from onnxruntime import GraphOptimizationLevel, InferenceSession, SessionOptions
 
 from .models.test_models import RMSNorm
+from .utils import add_genai_tests_path
+from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.experimental.spinquant.fuse_norm import (
     _OP_OUTPUTS_TO_IGNORE,
     _find_norm_scale_and_consumers,
@@ -19,6 +22,17 @@ from aimet_onnx.experimental.spinquant.fuse_norm import (
 )
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import ParamUtils
+
+from aimet_onnx.experimental.spinquant.block_identifier import (
+    ActiveNorm,
+    DecoderBlockRoleMap,
+    DecoderModelRoleMap,
+    find_active_norms,
+    get_decoder_block_boundaries,
+    get_decoder_role_map,
+)
+
+AimetLogger.set_level_for_all_areas(logging.INFO)
 
 
 def _export_to_onnx(
@@ -377,3 +391,384 @@ class TestFuseNormLayers:
         w_after = numpy_helper.to_array(ParamUtils.get_param_by_name(model, w_name))
         assert np.array_equal(w_after, w_before)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
+
+
+_NORM_KW = dict(mul_for_pow=False, mul_rsqrt_pattern="mul_rsqrt")
+_H, _I = 8, 16  # hidden dim, intermediate dim
+_VOCAB = 16
+_B, _SEQ = 1, 4  # batch, sequence length
+
+
+def _export_decoder(module: nn.Module) -> onnx.ModelProto:
+    x = torch.randn(_B, _SEQ, _H)
+    return _export_to_onnx(module, x)
+
+
+def _export_decoder_with_ids(module: nn.Module) -> onnx.ModelProto:
+    token_ids = torch.randint(0, _VOCAB, (_B, _SEQ))
+    return _export_to_onnx(module, token_ids)
+
+
+class _LlamaBlock(nn.Module):
+    """Simplified LLaMA/Qwen2 decoder block: 2 active norms per block.
+
+    input_norm feeds q/k/v projections.
+    post_attn_norm feeds gate/up projections.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.input_norm = RMSNorm(_H, **_NORM_KW)
+        self.q = nn.Linear(_H, _H, bias=False)
+        self.k = nn.Linear(_H, _H, bias=False)
+        self.v = nn.Linear(_H, _H, bias=False)
+        self.o = nn.Linear(_H, _H, bias=False)
+        self.post_attn_norm = RMSNorm(_H, **_NORM_KW)
+        self.gate = nn.Linear(_H, _I, bias=False)
+        self.up = nn.Linear(_H, _I, bias=False)
+        self.down = nn.Linear(_I, _H, bias=False)
+
+    def forward(self, x):
+        h = self.input_norm(x)
+        attn = self.o(self.q(h) + self.k(h) + self.v(h))
+        x = x + attn
+        h2 = self.post_attn_norm(x)
+        return x + self.down(self.gate(h2) * self.up(h2))
+
+
+class LlamaStyleDecoder(nn.Module):
+    """2-block LLaMA decoder + embed_tokens + final norm + lm_head: 5 active norms total."""
+
+    def __init__(self):
+        super().__init__()
+        self.embed_tokens = nn.Embedding(_VOCAB, _H)
+        self.block0 = _LlamaBlock()
+        self.block1 = _LlamaBlock()
+        self.norm = RMSNorm(_H, **_NORM_KW)
+        self.lm_head = nn.Linear(_H, _VOCAB, bias=False)
+
+    def forward(self, token_ids):
+        x = self.embed_tokens(token_ids)
+        x = self.block0(x)
+        x = self.block1(x)
+        return self.lm_head(self.norm(x))
+
+
+class _Qwen3Block(nn.Module):
+    """Qwen3-style decoder block: 4 norms per block, only 2 active (q_norm / k_norm are internal and their output not fed directly into a weight MatMul/Gemm/Conv )."""
+
+    def __init__(self):
+        super().__init__()
+        self.input_norm = RMSNorm(_H, **_NORM_KW)
+        self.q_proj = nn.Linear(_H, _H, bias=False)
+        self.k_proj = nn.Linear(_H, _H, bias=False)
+        self.v = nn.Linear(_H, _H, bias=False)
+        self.q_norm = RMSNorm(_H, **_NORM_KW)
+        self.k_norm = RMSNorm(_H, **_NORM_KW)
+        self.o = nn.Linear(_H, _H, bias=False)
+        self.post_attn_norm = RMSNorm(_H, **_NORM_KW)
+        self.gate = nn.Linear(_H, _I, bias=False)
+        self.up = nn.Linear(_H, _I, bias=False)
+        self.down = nn.Linear(_I, _H, bias=False)
+
+    def forward(self, x):
+        h = self.input_norm(x)
+        q = self.q_norm(self.q_proj(h))
+        k = self.k_norm(self.k_proj(h))
+        v = self.v(h)
+        attn = self.o(q + k + v)
+        x = x + attn
+        h2 = self.post_attn_norm(x)
+        return x + self.down(self.gate(h2) * self.up(h2))
+
+
+class Qwen3StyleDecoder(nn.Module):
+    """2-block Qwen3 decoder + embed_tokens + final norm + lm_head: 5 active norms total."""
+
+    def __init__(self):
+        super().__init__()
+        self.embed_tokens = nn.Embedding(_VOCAB, _H)
+        self.block0 = _Qwen3Block()
+        self.block1 = _Qwen3Block()
+        self.norm = RMSNorm(_H, **_NORM_KW)
+        self.lm_head = nn.Linear(_H, _VOCAB, bias=False)
+
+    def forward(self, token_ids):
+        x = self.embed_tokens(token_ids)
+        x = self.block0(x)
+        x = self.block1(x)
+        return self.lm_head(self.norm(x))
+
+
+class _Phi3Block(nn.Module):
+    """Phi3-style decoder block: fused qkv_proj (single linear) and fused gate_up_proj (single linear)."""
+
+    def __init__(self):
+        super().__init__()
+        self.input_norm = RMSNorm(_H, **_NORM_KW)
+        self.qkv_proj = nn.Linear(_H, 3 * _H, bias=False)
+        self.o = nn.Linear(_H, _H, bias=False)
+        self.post_attn_norm = RMSNorm(_H, **_NORM_KW)
+        self.gate_up_proj = nn.Linear(_H, 2 * _I, bias=False)
+        self.down = nn.Linear(_I, _H, bias=False)
+
+    def forward(self, x):
+        h = self.input_norm(x)
+        q, k, v = self.qkv_proj(h).chunk(3, dim=-1)
+        attn = self.o(q + k + v)
+        x = x + attn
+        h2 = self.post_attn_norm(x)
+        gate, up = self.gate_up_proj(h2).chunk(2, dim=-1)
+        return x + self.down(gate * up)
+
+
+class Phi3StyleDecoder(nn.Module):
+    """2-block Phi3 decoder + embed_tokens + final norm + lm_head: 5 active norms total."""
+
+    def __init__(self):
+        super().__init__()
+        self.embed_tokens = nn.Embedding(_VOCAB, _H)
+        self.block0 = _Phi3Block()
+        self.block1 = _Phi3Block()
+        self.norm = RMSNorm(_H, **_NORM_KW)
+        self.lm_head = nn.Linear(_H, _VOCAB, bias=False)
+
+    def forward(self, token_ids):
+        x = self.embed_tokens(token_ids)
+        x = self.block0(x)
+        x = self.block1(x)
+        return self.lm_head(self.norm(x))
+
+
+class TestBlockIdentifier:
+    """Tests for find_active_norms and decoder block detection boundaries."""
+
+    def test_llama_active_norm_count(self):
+        """2 blocks × 2 active norms/block + 1 final norm → 5 active norms."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        cg = ConnectedGraph(model)
+        active_norms = find_active_norms(model, cg)
+        assert len(active_norms) == 5
+
+    def test_llama_all_have_downstream_linears(self):
+        """Every returned ActiveNorm must expose at least one downstream weight linear."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        cg = ConnectedGraph(model)
+        for active_norm in find_active_norms(model, cg):
+            assert active_norm.downstream_linears
+
+    def test_qwen3_active_norm_count(self):
+        """9 total norms but only 5 active; q_norm/k_norm (internal) are excluded."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(Qwen3StyleDecoder())
+        cg = ConnectedGraph(model)
+        active_norms = find_active_norms(model, cg)
+        assert len(active_norms) == 5
+
+    def test_qwen3_internal_norms_excluded(self):
+        """9 total norms but only 5 active; q_norm/k_norm (internal) are excluded."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(Qwen3StyleDecoder())
+        cg = ConnectedGraph(model)
+        for active_norm in find_active_norms(model, cg):
+            assert active_norm.downstream_linears
+
+    def test_phi3_active_norm_count(self):
+        """2 blocks × 2 active norms/block + 1 final norm → 5 active norms; fused qkv/gate_up do not affect norm detection."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(Phi3StyleDecoder())
+        cg = ConnectedGraph(model)
+        active_norms = find_active_norms(model, cg)
+        assert len(active_norms) == 5
+
+    def test_phi3_block_count(self):
+        """Phi3StyleDecoder with 2 blocks → 2 boundaries."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(Phi3StyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks, _ = get_decoder_block_boundaries(model, cg)
+        assert len(blocks) == 2
+
+    def test_llama_block_count(self):
+        """LlamaStyleDecoder with 2 blocks → 2 boundaries."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks, _ = get_decoder_block_boundaries(model, cg)
+        assert len(blocks) == 2
+
+    def test_qwen3_block_count(self):
+        """Qwen3StyleDecoder with 2 blocks → 2 boundaries (internal norms ignored)."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(Qwen3StyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks, _ = get_decoder_block_boundaries(model, cg)
+        assert len(blocks) == 2
+
+    def test_boundaries_are_active_norm_ops(self):
+        """Both start_op and end_op of every boundary must be active norm start ops."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        active_op_ids = {id(an.norm_op) for an in active_norms}
+        for start_op, end_op in blocks:
+            assert id(start_op) in active_op_ids
+            assert id(end_op) in active_op_ids
+
+    def test_boundaries_non_overlapping(self):
+        """end_op of block i must be the same object as start_op of block i+1."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks, _ = get_decoder_block_boundaries(model, cg)
+        for i in range(len(blocks) - 1):
+            assert id(blocks[i][1]) == id(blocks[i + 1][0])
+
+    def test_even_active_norms(self):
+        """Even active norm count must raise ValueError."""
+        torch.manual_seed(0)
+
+        class _NoFinalNorm(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block0 = _LlamaBlock()
+                self.block1 = _LlamaBlock()
+
+            def forward(self, x):
+                return self.block1(self.block0(x))
+
+        model = _export_decoder(_NoFinalNorm())
+        cg = ConnectedGraph(model)
+        with pytest.raises(ValueError):
+            get_decoder_block_boundaries(model, cg)
+
+    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+    @pytest.mark.parametrize(
+        "model_id, model_type, adaptations",
+        [
+            ["Qwen/Qwen2-0.5B", "qwen2", []],
+            ["Qwen/Qwen3-0.6B", "qwen3", ["SHA_Conv"]],
+        ],
+    )
+    def test_get_decoder_block_boundaries(
+        self, add_genai_tests_path, model_id, model_type, adaptations
+    ):
+        from GenAITests.onnx.models.llm import LLM_ONNX
+        from aimet_onnx.experimental.adascale.find_blocks import (
+            get_decoder_blocks_end_points,
+        )
+
+        if adaptations:
+            import GenAITests.shared.models.adaptations.sha_conv
+            from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
+
+            model_cls = YAMLConfigParser.get_model_class(model_type, adaptations)
+        else:
+            model_cls = LLM_ONNX
+
+        collection = model_cls.instantiate_quantsim(model_id, 32, 16, small_model=True)
+        blocks, _ = get_decoder_block_boundaries(
+            collection.backbone.model.model,
+            collection.backbone.connected_graph,
+        )
+        assert len(blocks) == 2
+        blocks_old = get_decoder_blocks_end_points(collection.backbone, model_type)
+        assert len(blocks_old) == 2
+
+        # Both methods must identify the same block boundary ops.
+        assert blocks == blocks_old
+
+
+class TestDecoderRoleMap:
+    """Tests for get_decoder_role_map."""
+
+    def test_llama_role_map_structure(self):
+        """LlamaStyleDecoder: verify per-block and model-level role counts.
+
+        2 blocks × (3 qkv, 1 o_proj, 2 gate_up, 1 down_proj) + 1 lm_head + 1 embed_tokens.
+        """
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks, active_norms)
+
+        assert len(role_map.blocks) == 2
+        assert len(role_map.lm_head) == 1
+        assert len(role_map.embed_tokens) == 1
+        for block in role_map.blocks:
+            assert len(block.qkv_linears) == 3
+            assert len(block.o_proj) == 1
+            assert len(block.gate_up_linears) == 2
+            assert len(block.down_proj) == 1
+
+    def test_qwen3_qkv_count(self):
+        """Qwen3 q_norm/k_norm are internal; qkv_linears still has 3 (q_proj, k_proj, v)."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(Qwen3StyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        for block in role_map.blocks:
+            assert len(block.qkv_linears) == 3
+
+    def test_missing_embed_tokens_raises(self):
+        """A model without a Gather embedding before the first block raises ValueError."""
+        torch.manual_seed(0)
+
+        class _NoEmbedDecoder(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block0 = _LlamaBlock()
+                self.block1 = _LlamaBlock()
+                self.norm = RMSNorm(_H, **_NORM_KW)
+                self.lm_head = nn.Linear(_H, _VOCAB, bias=False)
+
+            def forward(self, x):
+                x = self.block0(x)
+                x = self.block1(x)
+                return self.lm_head(self.norm(x))
+
+        model = _export_decoder(_NoEmbedDecoder())
+        cg = ConnectedGraph(model)
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        with pytest.raises(ValueError, match="embed_tokens"):
+            get_decoder_role_map(cg, blocks, active_norms)
+
+    def test_wrong_active_norms_per_block_raises(self):
+        """Passing active_norms_per_block inconsistent with detected norms raises ValueError."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        with pytest.raises(ValueError):
+            get_decoder_role_map(cg, blocks, active_norms, active_norms_per_block=3)
+
+    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+    def test_qwen3_role_map(self, add_genai_tests_path):
+        """Qwen/Qwen3-0.6B with no adaptations."""
+        from GenAITests.onnx.models.llm import LLM_ONNX
+        import GenAITests.shared.models.adaptations.sha_conv
+        from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
+
+        model_cls = YAMLConfigParser.get_model_class("qwen3")
+        collection = model_cls.instantiate_quantsim(
+            "Qwen/Qwen3-0.6B", 32, 16, small_model=True
+        )
+        onnx_model = collection.backbone.model.model
+        cg = collection.backbone.connected_graph
+
+        blocks, active_norms = get_decoder_block_boundaries(onnx_model, cg)
+        role_map = get_decoder_role_map(cg, blocks, active_norms)
+
+        assert len(role_map.blocks) == 2
+        assert len(role_map.lm_head) == 1
+        assert len(role_map.embed_tokens) == 1
+        for block in role_map.blocks:
+            assert len(block.qkv_linears) == 3
+            assert len(block.o_proj) == 1
+            assert len(block.gate_up_linears) == 2
+            assert len(block.down_proj) == 1
