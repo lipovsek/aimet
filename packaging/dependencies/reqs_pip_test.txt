@@ -17,4 +17,4 @@ onnxruntime-extensions; sys_platform != 'win32' or platform_machine not in 'ARM6
 onnxsim<0.6.0; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
 peft; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
 safetensors<=0.5.3; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
-transformers; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
+transformers<5.4.0; sys_platform != 'win32' or platform_machine not in 'ARM64,aarch64'
