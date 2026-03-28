@@ -16,8 +16,15 @@ if (SKBUILD)
                 torch
                 ${TORCH_PYTHON_LIB}
             PRIVATE
-                PyModelOptimizations
+                MoDlQuantization
             )
+
+        if (ENABLE_CUDA)
+            target_link_libraries(${extension_name}
+                PRIVATE
+                    MoDlQuantizationCuda
+                )
+        endif (ENABLE_CUDA)
 
         target_compile_definitions(${extension_name}
             PRIVATE

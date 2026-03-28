@@ -13,7 +13,6 @@ add_library(OnnxCppOps SHARED
         src/AimetOpUtils.cpp
         src/RegisterCustomOps.h
         src/RegisterCustomOps.cpp
-        src/QcQuantizeInfo.cpp
         src/QcQuantizeInfo.h
         src/QcQuantizeOp.cpp
         src/OnnxOpUtils.h
@@ -58,7 +57,8 @@ if (SKBUILD)
     endif()
 
     install(TARGETS OnnxCppOps
-            DESTINATION aimet_onnx/common)
+            LIBRARY DESTINATION aimet_onnx/common
+            RUNTIME DESTINATION aimet_onnx/common)
 
 else (SKBUILD)
     set_target_properties(OnnxCppOps PROPERTIES
@@ -73,15 +73,46 @@ install(TARGETS OnnxCppOps
 
 endif (SKBUILD)
 
-# ----
+# ---- Cython libquant_info module (Python Limited API / Stable ABI) ----
 
-Python3_add_library(quant_info SHARED
-        src/QcQuantizeInfo.h
-        src/QcQuantizeInfo.cpp)
+set(QUANT_INFO_PYX "${CMAKE_CURRENT_SOURCE_DIR}/src/python/aimet_onnx/libquant_info.pyx")
+set(QUANT_INFO_PXD "${CMAKE_CURRENT_SOURCE_DIR}/src/python/aimet_onnx/libquant_info.pxd")
+set(QUANT_INFO_CPP "${CMAKE_CURRENT_BINARY_DIR}/libquant_info.cpp")
 
-    target_link_libraries(quant_info PUBLIC
-            MoDlQuantization
-            )
+# Generate C++ from Cython using Python module
+add_custom_command(
+    OUTPUT ${QUANT_INFO_CPP}
+    COMMAND ${Python3_EXECUTABLE} -m cython --cplus -3
+            -I${CMAKE_CURRENT_SOURCE_DIR}/src
+            -I${CMAKE_CURRENT_SOURCE_DIR}/src/python/aimet_onnx
+            -I${CMAKE_CURRENT_SOURCE_DIR}/../../ModelOptimizations/DlQuantization/include
+            -o ${QUANT_INFO_CPP}
+            ${QUANT_INFO_PYX}
+    DEPENDS ${QUANT_INFO_PYX} ${QUANT_INFO_PXD}
+    COMMENT "Generating C++ from Cython: libquant_info.pyx"
+    VERBATIM
+)
+
+# Add custom target to ensure Cython generation completes before library build
+# This prevents race conditions in parallel builds (-j flag)
+add_custom_target(generate_quant_info_cpp DEPENDS ${QUANT_INFO_CPP})
+
+# Build the Cython-generated C++ as a Python extension
+# USE_SABI 3.10 enables Python Limited API (Stable ABI) for Python 3.10+
+# This allows the extension to work across Python versions without recompilation
+# and properly links against the stable ABI library (python3.lib on Windows)
+Python3_add_library(quant_info MODULE USE_SABI 3.10 ${QUANT_INFO_CPP})
+add_dependencies(quant_info generate_quant_info_cpp)
+
+target_include_directories(quant_info PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../ModelOptimizations/DlQuantization/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../ModelOptimizations/DlQuantization/src
+        )
+
+target_link_libraries(quant_info PUBLIC
+        MoDlQuantization
+        )
 
 if (ENABLE_CUDA)
     target_link_libraries(quant_info PUBLIC
@@ -108,7 +139,8 @@ if (SKBUILD)
     endif()
 
     install(TARGETS quant_info
-            DESTINATION aimet_onnx/common)
+            LIBRARY DESTINATION aimet_onnx/common
+            RUNTIME DESTINATION aimet_onnx/common)
 else (SKBUILD)
 
 set_target_properties(quant_info
@@ -176,14 +208,17 @@ add_dependencies(whl_prep_ln whl_prep_ln_onnx)
 
 endif (SKBUILD)
 
+# Set Python extension suffix
+# Windows: use .pyd (Windows Python doesn't recognize .abi3.pyd in EXTENSION_SUFFIXES)
+# Unix: use .abi3.so for stable ABI
 if (${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
     set_target_properties(quant_info
         PROPERTIES
-        SUFFIX ".${Python3_SOABI}.pyd"
+        SUFFIX ".pyd"
         )
 else()
     set_target_properties(quant_info
         PROPERTIES
-        SUFFIX ".${Python3_SOABI}.so"
+        SUFFIX ".abi3.so"
         )
 endif()

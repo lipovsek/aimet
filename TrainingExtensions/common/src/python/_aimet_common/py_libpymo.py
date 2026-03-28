@@ -6,6 +6,7 @@
 """Creating an alias for function/classes/methods to use AIMET without MO library"""
 
 import enum
+from enum import IntEnum
 
 IMPORT_ERROR: ImportError = ImportError()
 

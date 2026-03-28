@@ -30,23 +30,23 @@ class TestEnums:
         assert hasattr(libpymo, "RoundingMode")
         assert hasattr(libpymo, "TensorQuantizerOpMode")
 
-    def test_enum_values_exported(self):
-        """Test that enum values are exported to module level (via .export_values())."""
+    def test_enum_values(self):
+        """Test that enum values are accessible via enum classes."""
         # ComputationMode
-        assert libpymo.COMP_MODE_CPU is not None
-        assert libpymo.COMP_MODE_GPU is not None
+        assert libpymo.ComputationMode.COMP_MODE_CPU is not None
+        assert libpymo.ComputationMode.COMP_MODE_GPU is not None
 
         # QuantizationMode
-        assert libpymo.QUANTIZATION_TF is not None
-        assert libpymo.QUANTIZATION_TF_ENHANCED is not None
+        assert libpymo.QuantizationMode.QUANTIZATION_TF is not None
+        assert libpymo.QuantizationMode.QUANTIZATION_TF_ENHANCED is not None
 
         # LayerInOut
-        assert libpymo.LAYER_INPUT is not None
-        assert libpymo.LAYER_OUTPUT is not None
+        assert libpymo.LayerInOut.LAYER_INPUT is not None
+        assert libpymo.LayerInOut.LAYER_OUTPUT is not None
 
         # RoundingMode
-        assert libpymo.ROUND_NEAREST is not None
-        assert libpymo.ROUND_STOCHASTIC is not None
+        assert libpymo.RoundingMode.ROUND_NEAREST is not None
+        assert libpymo.RoundingMode.ROUND_STOCHASTIC is not None
 
 
 class TestTfEncoding:

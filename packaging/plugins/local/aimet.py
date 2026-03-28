@@ -234,6 +234,7 @@ def optional_dependencies() -> dict[str, list[str]]:
             "scikit-build-core[wheels]==0.11.1",
             "build",
             "auditwheel; sys_platform == 'linux'",  # Linux only (ELF-based)
+            "cython>=3.0",
             # and the rest
         ],
         "test": test_deps,

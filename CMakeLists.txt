@@ -1,7 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.26)
 
 project(aimet)
 
@@ -82,11 +82,29 @@ execute_process(
 
 set(Python3_FIND_VIRTUALENV "STANDARD")
 if (_python_version_result EQUAL 0 AND Python3_VERSION)
-    find_package(Python3 ${Python3_VERSION} EXACT COMPONENTS Interpreter Development REQUIRED)
+    find_package(Python3 ${Python3_VERSION} EXACT COMPONENTS Interpreter Development Development.SABIModule REQUIRED)
 else()
-    find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+    find_package(Python3 COMPONENTS Interpreter Development Development.SABIModule REQUIRED)
 endif()
 message(STATUS "Found Python3: ${Python3_FOUND}, at ${Python3_LIBRARIES}")
+
+# On Windows, Python3_add_library() with Py_LIMITED_API expects python3.lib (stable ABI library).
+# Many Python distributions (uv, nuget, embedded) only include pythonXY.lib.
+# Create a copy of pythonXY.lib as python3.lib if it doesn't exist.
+if (WIN32 AND Python3_LIBRARY)
+    get_filename_component(_python_lib_dir "${Python3_LIBRARY}" DIRECTORY)
+    set(_python3_lib "${_python_lib_dir}/python3.lib")
+    if (NOT EXISTS "${_python3_lib}")
+        message(STATUS "python3.lib not found, copying from ${Python3_LIBRARY}")
+        # Use configure_file for CMake 3.19 compatibility (file(COPY_FILE) requires 3.21)
+        configure_file("${Python3_LIBRARY}" "${_python3_lib}" COPYONLY)
+        # Verify the copy succeeded
+        if (NOT EXISTS "${_python3_lib}")
+            message(FATAL_ERROR "Failed to create python3.lib from ${Python3_LIBRARY}. "
+                    "Please manually copy ${Python3_LIBRARY} to ${_python3_lib}")
+        endif()
+    endif()
+endif()
 
 # Override Python3_SOABI for Windows ARM64 cross-compilation
 # When cross-compiling for ARM64 from x64, the host Python's SOABI is win_amd64

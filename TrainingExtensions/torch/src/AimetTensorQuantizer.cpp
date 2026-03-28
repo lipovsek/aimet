@@ -280,17 +280,103 @@ private:
 };
 
 
+// Helper function to validate and extract encoding from a Python object.
+// Accepts any object with min, max, delta, offset, and bw attributes (duck typing).
+DlQuantization::TfEncoding extractEncoding(const pybind11::object& encoding)
+{
+    // Validate that encoding object has all required attributes
+    static const char* requiredAttrs[] = {"min", "max", "delta", "offset", "bw"};
+    for (const char* attr : requiredAttrs)
+    {
+        if (!pybind11::hasattr(encoding, attr))
+        {
+            throw std::invalid_argument(
+                std::string("Encoding object must have '") + attr + "' attribute");
+        }
+    }
+
+    DlQuantization::TfEncoding enc;
+    try
+    {
+        enc.min    = encoding.attr("min").cast<double>();
+        enc.max    = encoding.attr("max").cast<double>();
+        enc.delta  = encoding.attr("delta").cast<double>();
+        enc.offset = encoding.attr("offset").cast<double>();
+        enc.bw     = encoding.attr("bw").cast<int>();
+    }
+    catch (const pybind11::cast_error& e)
+    {
+        throw std::invalid_argument(
+            std::string("Encoding attributes must be numeric types: ") + e.what());
+    }
+    return enc;
+}
+
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
+    // Bind TfEncoding struct
+    pybind11::class_<DlQuantization::TfEncoding>(m, "TfEncoding")
+        .def(pybind11::init<>())
+        .def_readwrite("min", &DlQuantization::TfEncoding::min)
+        .def_readwrite("max", &DlQuantization::TfEncoding::max)
+        .def_readwrite("delta", &DlQuantization::TfEncoding::delta)
+        .def_readwrite("offset", &DlQuantization::TfEncoding::offset)
+        .def_readwrite("bw", &DlQuantization::TfEncoding::bw);
+
+    // Bind RoundingMode enum
+    pybind11::enum_<DlQuantization::RoundingMode>(m, "RoundingMode")
+        .value("ROUND_NEAREST", DlQuantization::RoundingMode::ROUND_NEAREST)
+        .value("ROUND_STOCHASTIC", DlQuantization::RoundingMode::ROUND_STOCHASTIC);
+
     pybind11::class_<AimetTensorQuantizer>(m, "AimetTensorQuantizer")
-        .def(pybind11::init<DlQuantization::QuantizationMode>())
+        .def(pybind11::init([](int quantScheme) {
+            return new AimetTensorQuantizer(static_cast<DlQuantization::QuantizationMode>(quantScheme));
+        }))
         .def("updateStats", &AimetTensorQuantizer::updateStats)
-        .def("quantizeDequantize", &AimetTensorQuantizer::quantizeDequantize)
-        .def("quantize", &AimetTensorQuantizer::quantize)
-        .def("getEncoding", &AimetTensorQuantizer::getEncoding)
+        .def("quantizeDequantize",
+             [](AimetTensorQuantizer& self, at::Tensor input, pybind11::object encoding, int roundingMode,
+                bool use_cuda) {
+                 DlQuantization::TfEncoding enc = extractEncoding(encoding);
+                 return self.quantizeDequantize(input, enc,
+                                                static_cast<DlQuantization::RoundingMode>(roundingMode), use_cuda);
+             })
+        .def("quantize",
+             [](AimetTensorQuantizer& self, at::Tensor input, pybind11::object encoding, int roundingMode,
+                bool use_cuda, bool shiftToSigned) {
+                 DlQuantization::TfEncoding enc = extractEncoding(encoding);
+                 return self.quantize(input, enc, static_cast<DlQuantization::RoundingMode>(roundingMode), use_cuda,
+                                      shiftToSigned);
+             })
+        .def("getEncoding",
+             [](AimetTensorQuantizer& self, unsigned int bitwidth, bool useSymmetricEncodings, bool useStrictSymmetric,
+                bool useUnsignedSymmetric) {
+                 auto [enc, isValid] = self.getEncoding(bitwidth, useSymmetricEncodings, useStrictSymmetric, useUnsignedSymmetric);
+                 // Return encoding values as tuple: (min, max, delta, offset, bw, is_valid)
+                 return pybind11::make_tuple(enc.min, enc.max, enc.delta, enc.offset, enc.bw, isValid);
+             })
         .def("resetEncodingStats", &AimetTensorQuantizer::resetEncodingStats)
         .def("getStatsHistogram", &AimetTensorQuantizer::getStatsHistogram)
         .def("setPercentileValue", &AimetTensorQuantizer::setPercentileValue)
-        .def("makeDeltaOffsetTensor", &AimetTensorQuantizer::makeDeltaOffsetTensor)
-        .def("quantizeDequantizePerChannel", &AimetTensorQuantizer::quantizeDequantizePerChannel);
+        .def("makeDeltaOffsetTensor",
+             [](AimetTensorQuantizer& self, at::Device device, pybind11::list encodings) {
+                 std::vector<DlQuantization::TfEncoding> encVec;
+                 for (auto& pyEnc : encodings)
+                 {
+                     encVec.push_back(extractEncoding(pybind11::reinterpret_borrow<pybind11::object>(pyEnc)));
+                 }
+                 return self.makeDeltaOffsetTensor(device, encVec);
+             })
+        .def("quantizeDequantizePerChannel",
+             [](AimetTensorQuantizer& self, at::Tensor input, pybind11::list encodings, size_t numChannel,
+                size_t numElement, size_t numElementPerChannel, int roundingMode, bool useCuda) {
+                 std::vector<DlQuantization::TfEncoding> encVec;
+                 for (auto& pyEnc : encodings)
+                 {
+                     encVec.push_back(extractEncoding(pybind11::reinterpret_borrow<pybind11::object>(pyEnc)));
+                 }
+                 return self.quantizeDequantizePerChannel(input, encVec, numChannel, numElement, numElementPerChannel,
+                                                          static_cast<DlQuantization::RoundingMode>(roundingMode),
+                                                          useCuda);
+             });
 }

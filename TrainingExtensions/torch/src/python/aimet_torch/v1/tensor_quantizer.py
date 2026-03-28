@@ -317,7 +317,14 @@ class StaticGridTensorQuantizer(TensorQuantizer):  # pylint: disable=abstract-me
                     )
             else:
                 for op in self._cppOp:
-                    encoding, is_encoding_valid = op.getEncoding(
+                    (
+                        enc_min,
+                        enc_max,
+                        enc_delta,
+                        enc_offset,
+                        enc_bw,
+                        is_encoding_valid,
+                    ) = op.getEncoding(
                         self.bitwidth,
                         self.use_symmetric_encodings,
                         self.use_strict_symmetric,
@@ -327,6 +334,12 @@ class StaticGridTensorQuantizer(TensorQuantizer):  # pylint: disable=abstract-me
                     if not is_encoding_valid:
                         self.enabled = False
                     else:
+                        encoding = libpymo.TfEncoding()
+                        encoding.min = enc_min
+                        encoding.max = enc_max
+                        encoding.delta = enc_delta
+                        encoding.offset = enc_offset
+                        encoding.bw = enc_bw
                         self._encoding.append(encoding)
 
                 # NOTE: Check feasibility about unsigned symmetric case

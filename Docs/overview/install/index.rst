@@ -191,5 +191,5 @@ However, if you prefer to work with the latest source code or plan to contribute
 To do so, follow the steps outlined for building the latest AIMET codebase manually, see :ref:`Build AIMET from source <build-from-source>`.
 
 .. |torch_whl_suffix| replace:: \-py310-none-any.whl
-.. |whl_suffix| replace:: \-cp310-cp310-manylinux_2_34_x86_64.whl
+.. |whl_suffix| replace:: \-cp310-abi3-manylinux_2_34_x86_64.whl
 .. |download_url| replace:: \https://github.com/quic/aimet/releases/download/

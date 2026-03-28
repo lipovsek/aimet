@@ -34,8 +34,6 @@ add_library(MoDlQuantization STATIC
       src/EncodingAnalyzerWrapper.cpp
       src/TensorQuantizationSim.h
       src/TensorQuantizationSim.cpp
-      src/EncodingAnalyzerForPython.cpp
-      src/TensorQuantizationSimForPython.cpp
       src/TensorQuantizer.cpp
       src/Fp16Quantization.cpp
 
@@ -44,8 +42,6 @@ add_library(MoDlQuantization STATIC
       include/DlQuantization/QuantizerFactory.hpp
       include/DlQuantization/IQuantizationEncodingAnalyzer.hpp
       include/DlQuantization/ITensorQuantizationSim.h
-      include/DlQuantization/EncodingAnalyzerForPython.h
-      include/DlQuantization/TensorQuantizationSimForPython.h
       include/DlQuantization/TensorQuantizer.h
       include/DlQuantization/Fp16Quantization.hpp
       include/DlQuantization/EncodingRescale.hpp
@@ -64,9 +60,6 @@ target_include_directories(MoDlQuantization
         ${CMAKE_CURRENT_SOURCE_DIR}/include
       )
 
-target_link_libraries(MoDlQuantization PUBLIC
-    pybind11
-    )
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 if (ENABLE_CUDA)
