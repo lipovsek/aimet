@@ -1,0 +1,65 @@
+################################################################################
+# Composite Action: Stop Ephemeral GPU Runner(s)
+################################################################################
+# Tears down Argo workflow(s) started by the start-gpu-runner action.
+# Accepts a single runner ID or a comma-separated list. Empty/blank entries
+# are skipped, so it's safe to pass outputs from skipped jobs.
+#
+# Usage:
+#   steps:
+#     - uses: actions/checkout@v4
+#     - uses: ./.github/actions/stop-gpu-runner
+#       with:
+#         runner-ids: "runner-1,runner-2"
+#         kubeconfig: ${{ secrets.KUBECONFIG }}
+################################################################################
+
+name: Stop GPU Runner
+description: Delete ephemeral GPU runner Argo workflow(s)
+
+inputs:
+  runner-ids:
+    description: 'Runner ID(s) to clean up. Single value or comma-separated list.'
+    required: true
+  argo-namespace:
+    description: 'Argo namespace'
+    required: false
+    default: "aihub"
+  kubeconfig:
+    description: 'Kubeconfig file contents for cluster access'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Argo CLI
+      shell: bash
+      run: |
+        if ! command -v argo &>/dev/null; then
+          curl -fsSL "https://github.com/argoproj/argo-workflows/releases/download/v3.5.5/argo-linux-amd64.gz" | gunzip > /tmp/argo
+          sudo install /tmp/argo /usr/local/bin/argo
+          rm /tmp/argo
+        fi
+
+    - name: Configure cluster access
+      shell: bash
+      run: |
+        mkdir -p ~/.kube
+        echo "$KUBECONFIG_DATA" > ~/.kube/config
+        chmod 600 ~/.kube/config
+      env:
+        KUBECONFIG_DATA: ${{ inputs.kubeconfig }}
+
+    - name: Delete Argo workflows
+      shell: bash
+      run: |
+        IFS=',' read -ra IDS <<< "${{ inputs.runner-ids }}"
+        for id in "${IDS[@]}"; do
+          id=$(echo "$id" | xargs)  # trim whitespace
+          if [ -n "$id" ]; then
+            bash scripts/kube/stop_pod.sh --delete "$id" || true
+          fi
+        done
+        echo "Cleanup complete"
+      env:
+        NAMESPACE: ${{ inputs.argo-namespace }}
