@@ -3,66 +3,67 @@
 
 """AIMET ONNX LoRA: Multi-adapter quantization support for ONNX models.
 
-Workflow
---------
+Composable standalone functions for LoRA quantization workflows::
 
-**Quick path** (recommended — 3 calls)::
+    from aimet_onnx.experimental.lora import (
+        export_peft_to_onnx, set_lora_bitwidth,
+        freeze_base_model, unfreeze_lora_quantizers,
+        get_lora_encodings, set_lora_encodings, get_zero_weights,
+    )
+    from safetensors.numpy import load_file
 
-    import aimet_onnx
-    from aimet_onnx.experimental.lora import export_peft_to_onnx, calibrate_lora, export_lora
+    # 1. Export
+    model, lora_names = export_peft_to_onnx(peft_model, sample_inputs, adapter_paths, output_dir)
 
-    model, result = export_peft_to_onnx(peft_model, sample_inputs, adapter_paths, output_dir)
+    # 2. Create QuantSim
     sim = QuantizationSimModel(model, ...)
-    calibrate_lora(sim, result, dataloader, lora_param_type=aimet_onnx.int16)
-    export_lora(sim, result, export_dir, target="qairt")  # or target="ort"
+    set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int8)
 
-**Composable path** (for custom calibration strategies)::
+    # 3. Base calibration (zero weights = LoRA disabled)
+    zero_weights = get_zero_weights(model, lora_names)
+    sim.compute_encodings(lambda sess: calibrate(sess, zero_weights))
 
-    model, result = export_peft_to_onnx(peft_model, sample_inputs, adapter_paths, output_dir)
-    sim = QuantizationSimModel(model, ...)
-    configure_lora_quantizers(sim, result, lora_param_type=aimet_onnx.int16)
+    # 4. Freeze base, per-adapter calibration
+    freeze_base_model(sim, lora_names)
+    adapter_encodings = {}
+    for name in adapters:
+        unfreeze_lora_quantizers(sim, lora_names)
+        weights = load_file(f"{output_dir}/{name}.safetensors")
+        sim.compute_encodings(lambda sess, w=weights: calibrate(sess, w))
+        adapter_encodings[name] = get_lora_encodings(sim, lora_names)
 
-    # Base calibration
-    sim.compute_encodings(callback)
-    freeze_base_param_quantizers(sim, result)
-
-    # Per-adapter calibration
-    for adapter_name in adapters:
-        unfreeze_lora_quantizers(sim, result)
-        sim.compute_encodings(callback)
-        encodings = get_lora_encodings(sim, result)
-        set_lora_encodings(sim, result, encodings)  # restore later
-
-    # Export
-    export_lora(sim, result, export_dir, target="qairt")
+    # 5. Inference with specific adapter
+    set_lora_encodings(sim, adapter_encodings["code"])
+    weights = load_file(f"{output_dir}/code.safetensors")
+    output = sim.session.run(None, {**input_data, **weights})
 """
 
 from aimet_onnx.experimental.lora.lora_adapter_quantization import (
-    LoRAResult,
-    configure_lora_quantizers,
-    freeze_base_param_quantizers,
     freeze_base_activation_quantizers,
     freeze_base_model,
-    unfreeze_lora_quantizers,
-    export_lora_weights,
+    freeze_base_param_quantizers,
     get_lora_encodings,
+    get_zero_weights,
+    set_lora_bitwidth,
     set_lora_encodings,
-    calibrate_lora,
-    export_lora,
+    unfreeze_lora_quantizers,
+    write_adaptor_list,
+    write_lora_config,
+    write_lora_weight_list,
 )
 from aimet_onnx.experimental.lora.peft_to_onnx import export_peft_to_onnx
 
 __all__ = [
-    "LoRAResult",
     "export_peft_to_onnx",
-    "configure_lora_quantizers",
+    "set_lora_bitwidth",
     "freeze_base_param_quantizers",
     "freeze_base_activation_quantizers",
     "freeze_base_model",
     "unfreeze_lora_quantizers",
-    "export_lora_weights",
     "get_lora_encodings",
     "set_lora_encodings",
-    "calibrate_lora",
-    "export_lora",
+    "get_zero_weights",
+    "write_lora_weight_list",
+    "write_lora_config",
+    "write_adaptor_list",
 ]

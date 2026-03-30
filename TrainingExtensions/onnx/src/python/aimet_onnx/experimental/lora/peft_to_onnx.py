@@ -3,9 +3,8 @@
 
 """PyTorch-to-ONNX export for LoRA models.
 
-Provides ``export_peft_to_onnx()`` which handles the full pipeline: take a
-user-loaded PeftModel, export to ONNX with LoRA weights as initializers,
-then prepare the model for adapter swapping.
+Provides ``export_peft_to_onnx()`` which exports a PeftModel to ONNX
+with LoRA weights prepared for adapter swapping.
 
 Requires PyTorch + PEFT.
 """
@@ -18,8 +17,6 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import onnx
-
-from aimet_onnx.experimental.lora.lora_adapter_quantization import LoRAResult
 
 logger = logging.getLogger(__name__)
 
@@ -35,20 +32,14 @@ def export_peft_to_onnx(
     dynamic_shapes: dict = None,
     opset_version: int = 18,
     model_filename: str = "model.onnx",
-) -> Tuple[onnx.ModelProto, LoRAResult]:
+) -> Tuple[onnx.ModelProto, Dict[str, List[str]]]:
     """Export a PeftModel with LoRA adapters to ONNX.
 
-    The user loads their own model and provides sample inputs — this function
-    handles ONNX export and LoRA preparation. Follows the same pattern as
-    ``QuantizationSimModel(model, dummy_input)``.
-
     :param peft_model: A PEFT model with at least one LoRA adapter applied.
-        The user is responsible for loading the base model and applying adapters.
-    :param sample_inputs: Tuple of sample input tensors for tracing, like
-        ``dummy_input`` for QuantSim. Example: ``(input_ids,)`` for LLMs,
-        ``(sample, timestep, encoder_hidden_states)`` for UNet.
+    :param sample_inputs: Tuple of sample input tensors for tracing.
     :param adapter_paths: Dict mapping adapter name to HuggingFace ID or local path
-        for each PEFT adapter.
+        for each PEFT adapter. Adapter weights are saved as
+        ``{output_dir}/{adapter_name}.safetensors``.
     :param output_dir: Directory to save the ONNX model and adapter files.
     :param input_names: ONNX input names. If None, inferred from the base model's
         forward signature.
@@ -57,8 +48,9 @@ def export_peft_to_onnx(
         If None, batch dimension (dim 0) is made dynamic for all inputs.
     :param opset_version: ONNX opset version (default 18).
     :param model_filename: Filename for the exported ONNX model (default "model.onnx").
-    :return: Tuple of ``(model, result)`` — the ONNX ModelProto with LoRA weights
-        as initializers, and a LoRAResult with adapter data.
+    :return: Tuple of ``(model, lora_names)`` where ``lora_names`` is a dict
+        with ``"params"`` (LoRA weight tensor names) and ``"activations"``
+        (LoRA branch activation tensor names).
     """
     try:
         import torch  # noqa: F401  # pylint: disable=unused-import
@@ -127,34 +119,29 @@ def export_peft_to_onnx(
     model_proto = onnx.load(onnx_path)
     init_map = {init.name: init for init in model_proto.graph.initializer}
 
-    lora_inits = []
+    lora_param_names = []
     for name in lora_initializer_names:
         if name not in init_map:
             raise ValueError(f"Initializer '{name}' not found in model")
-        lora_inits.append(init_map[name])
+        lora_param_names.append(name)
 
-    # Extract default adapter weights and cache shapes
-    default_weights = {}
-    lora_shapes = {}
-    for init in lora_inits:
-        default_weights[init.name] = onnx.numpy_helper.to_array(init)
-        shape = tuple(init.dims)
-        dtype = onnx.helper.tensor_dtype_to_np_dtype(init.data_type)
-        lora_shapes[init.name] = (shape, dtype)
+    _dual_list_lora_initializers(model_proto, lora_param_names)
 
-    lora_input_names = [init.name for init in lora_inits]
+    # Trace downstream from LoRA weights to find LoRA branch activations
+    lora_activation_names = _trace_lora_activations(model_proto, lora_param_names)
 
-    result = LoRAResult(
-        adapters={"default": default_weights},
-        lora_input_names=lora_input_names,
-        lora_shapes=lora_shapes,
-    )
+    lora_names = {
+        "params": lora_param_names,
+        "activations": lora_activation_names,
+    }
 
-    # Load adapter weights from safetensors files on disk
+    # Save adapter weights as safetensors files
     for adapter_name, adapter_path in adapter_paths.items():
         logger.info("Loading adapter '%s' from: %s", adapter_name, adapter_path)
-        weights = _load_adapter_safetensors(adapter_path, result.lora_input_names)
-        result.adapters[adapter_name] = weights
+        weights = _load_adapter_safetensors(adapter_path, lora_param_names)
+        safetensors_path = str(output_dir / f"{adapter_name}.safetensors")
+        _save_adapter_safetensors(weights, safetensors_path)
+        logger.info("Saved adapter '%s' to: %s", adapter_name, safetensors_path)
 
     # Clean up external data files from the dynamo save before re-saving
     # with a consistent filename. Dynamo's save may use a different external
@@ -173,9 +160,8 @@ def export_peft_to_onnx(
     )
     onnx.load_external_data_for_model(model_proto, str(output_dir))
     logger.info("Saved prepared model to: %s", onnx_path)
-    result.model_path = str(onnx_path)
 
-    return model_proto, result
+    return model_proto, lora_names
 
 
 def _export_model_to_onnx(
@@ -189,20 +175,12 @@ def _export_model_to_onnx(
 ) -> None:
     """Export a PeftModel to ONNX via ``torch.onnx.export(dynamo=True)``.
 
-    Wraps the model in ``_Wrapper`` which:
+    Uses ``_Wrapper`` to add ``model.`` prefix to parameter names,
+    bypass PeftModel's adapter hooks, and generate a ``forward()`` with
+    named parameters so dynamo preserves input names in the ONNX graph.
 
-    - Stores PeftModel as ``self.model``, adding a ``model.`` prefix to all
-      ONNX parameter names (needed for name-based LoRA detection).
-    - Calls ``base_model(...)`` to bypass ``PeftModel.forward()``'s
-      adapter context-manager hooks.
-    - Extracts the primary output tensor from structured outputs
-      (e.g. ``CausalLMOutput.logits``).
-    - Uses dynamically generated ``forward()`` with explicitly named
-      parameters so dynamo export preserves input names in the ONNX graph.
-
-    .. note::
-        ``optimize=False`` is required — the ONNX graph optimizer renames
-        initializers to anonymous names, breaking the LoRA name matching.
+    ``optimize=False`` is required — the optimizer renames initializers,
+    breaking LoRA name matching.
     """
     import torch
 
@@ -247,11 +225,7 @@ def _export_model_to_onnx(
 
 
 def _extract_output(out):
-    """Extract a single tensor from structured model output.
-
-    HuggingFace models return structured outputs (CausalLMOutput, UNet2DOutput,
-    etc.) rather than raw tensors. This extracts the primary output tensor.
-    """
+    """Extract a single tensor from structured model output."""
     import torch
 
     if isinstance(out, torch.Tensor):
@@ -265,10 +239,7 @@ def _extract_output(out):
 def _infer_input_names(peft_model, sample_inputs: tuple) -> List[str]:
     """Infer ONNX input names from the base model's forward signature.
 
-    First tries required (no-default) parameters. If none are found (common
-    with HuggingFace models where all params have defaults like
-    ``input_ids: Optional[...] = None``), uses the first N positional
-    parameter names matching ``len(sample_inputs)``.
+    Tries required parameters first, then falls back to positional order.
     """
     base = peft_model.get_base_model()
     sig = inspect.signature(base.forward)
@@ -298,11 +269,7 @@ def _infer_input_names(peft_model, sample_inputs: tuple) -> List[str]:
 
 
 def _infer_dynamic_shapes(sample_inputs: tuple, input_names: List[str]) -> tuple:  # pylint: disable=unused-argument
-    """Make batch dimension (dim 0) dynamic for all inputs with dim > 0.
-
-    Returns a tuple of per-input shape specs, converted to a dict keyed by
-    parameter name in ``_export_model_to_onnx`` before passing to dynamo.
-    """
+    """Make batch dimension (dim 0) dynamic for all inputs with dim > 0."""
     import torch
 
     batch = torch.export.Dim("batch")
@@ -315,19 +282,7 @@ def _load_adapter_safetensors(
 ) -> Dict[str, np.ndarray]:
     """Load LoRA weights from safetensors and map to ONNX input names.
 
-    Reads ``adapter_model.safetensors`` directly from disk — no PyTorch
-    model needed. Supports local directories and HuggingFace Hub IDs.
-
-    Name mapping is deterministic, based on ``dynamo=True`` export guarantees::
-
-        ONNX:        model.base_model.model...lora_A.default.weight
-        Safetensors:       base_model.model...lora_A.weight
-
-    Two differences (both reversed by :func:`_onnx_name_to_safetensors_key`):
-
-    1. ONNX has ``model.`` prefix (``_Wrapper`` stores PeftModel as ``self.model``)
-    2. ONNX includes adapter name (``.default.``) between ``lora_A``/``lora_B``
-       and ``weight``; PEFT strips this when saving to safetensors
+    Supports local directories, direct file paths, and HuggingFace Hub IDs.
 
     :param adapter_path: Local directory or HuggingFace Hub ID
     :param onnx_input_names: ONNX graph input names for LoRA weights
@@ -373,18 +328,8 @@ def _load_adapter_safetensors(
 def _onnx_name_to_safetensors_key(onnx_name: str) -> str:
     """Convert an ONNX initializer name to the corresponding safetensors key.
 
-    Reverses two naming differences introduced during export:
-
-    1. Strips ``model.`` prefix added by ``_Wrapper``
-    2. Removes the single-segment adapter name (e.g. ``default``, ``style``)
-       between ``lora_A``/``lora_B`` and ``weight``. PEFT's
-       ``named_parameters()`` includes this segment, but PEFT strips it when
-       saving to safetensors.
-
-    .. note::
-        This assumes PEFT adapter names are single dot-separated segments
-        (e.g. ``default``, ``style``). Multi-segment adapter names containing
-        dots would cause incorrect stripping.
+    Strips ``model.`` prefix and removes the adapter name segment between
+    ``lora_A``/``lora_B`` and ``weight``. Assumes single-segment adapter names.
     """
     # Strip _Wrapper's "model." prefix
     key = onnx_name.split(".", 1)[1] if onnx_name.startswith("model.") else onnx_name
@@ -400,12 +345,101 @@ def _onnx_name_to_safetensors_key(onnx_name: str) -> str:
     return ".".join(parts)
 
 
-def _cleanup_external_data(output_dir: Path, model_filename: str, keep: set) -> None:
-    """Remove external data files left by a previous ONNX save.
+def _trace_lora_activations(
+    model: onnx.ModelProto, lora_param_names: List[str]
+) -> List[str]:
+    """BFS from LoRA weight tensors to find LoRA branch activation names.
 
-    Dynamo's ``onnx_program.save()`` creates external data files with names
-    that may differ from the final ``onnx.save_model()`` call. This removes
-    any ``*.data`` files associated with the model, except those in *keep*.
+    :param model: ONNX ModelProto
+    :param lora_param_names: LoRA weight tensor names (seeds for the trace)
+    :return: List of LoRA activation tensor names
+    """
+    # Build index: tensor name → list of nodes that consume it
+    consumers = {}
+    for node in model.graph.node:
+        for inp in node.input:
+            consumers.setdefault(inp, []).append(node)
+
+    # Also track all initializer names to exclude them from activations
+    initializer_names = {init.name for init in model.graph.initializer}
+
+    # BFS from LoRA param names. A node's outputs are LoRA activations if
+    # any of its inputs are LoRA-related. We continue tracing past a node
+    # only if all its non-constant inputs are LoRA-related (stops at the
+    # Add where base and LoRA merge — the Add output IS included but its
+    # downstream consumers are not).
+    lora_tensors = set(lora_param_names)
+    activation_names = []
+    frontier = list(lora_param_names)
+    visited_nodes = set()
+
+    while frontier:
+        next_frontier = []
+        for tensor_name in frontier:
+            for node in consumers.get(tensor_name, []):
+                node_id = id(node)
+                if node_id in visited_nodes:
+                    continue
+                visited_nodes.add(node_id)
+
+                # Add all outputs as LoRA activations
+                new_outputs = []
+                for output in node.output:
+                    if (
+                        output
+                        and output not in lora_tensors
+                        and output not in initializer_names
+                    ):
+                        lora_tensors.add(output)
+                        activation_names.append(output)
+                        new_outputs.append(output)
+
+                # Continue tracing only if ALL non-constant inputs are
+                # LoRA-related. At the Add (base + LoRA), the base input
+                # is not in lora_tensors, so we stop propagating.
+                non_const_inputs = [
+                    inp for inp in node.input if inp and inp not in initializer_names
+                ]
+                if all(inp in lora_tensors for inp in non_const_inputs):
+                    next_frontier.extend(new_outputs)
+        frontier = next_frontier
+
+    logger.info("Traced %d LoRA activation tensors", len(activation_names))
+    return activation_names
+
+
+def _dual_list_lora_initializers(model: onnx.ModelProto, lora_names: List[str]) -> None:
+    """Add LoRA initializers to graph.input while keeping them in graph.initializer.
+
+    :param model: ONNX ModelProto (modified in-place)
+    :param lora_names: List of LoRA initializer names
+    """
+    init_map = {init.name: init for init in model.graph.initializer}
+    existing_inputs = {inp.name for inp in model.graph.input}
+
+    for name in lora_names:
+        if name in existing_inputs:
+            continue
+        init = init_map[name]
+        value_info = onnx.helper.make_tensor_value_info(
+            name, init.data_type, list(init.dims)
+        )
+        model.graph.input.append(value_info)
+
+
+def _save_adapter_safetensors(weights: Dict[str, np.ndarray], path: str) -> None:
+    """Save adapter weights as a safetensors file.
+
+    :param weights: Dict mapping ONNX input name to numpy weight array
+    :param path: Output file path
+    """
+    from safetensors.numpy import save_file
+
+    save_file(weights, path)
+
+
+def _cleanup_external_data(output_dir: Path, model_filename: str, keep: set) -> None:
+    """Remove stale external data files from a previous ONNX save.
 
     :param output_dir: Directory containing the ONNX model
     :param model_filename: ONNX model filename (e.g. ``"model.onnx"``)
