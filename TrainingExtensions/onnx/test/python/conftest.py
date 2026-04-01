@@ -96,6 +96,11 @@ def skip_module_on_windows_arm64(reason):
         pytest.skip(allow_module_level=True, reason=reason)
 
 
+def skip_module_on_windows_amd64(reason):
+    if _is_windows_amd64():
+        pytest.skip(allow_module_level=True, reason=reason)
+
+
 def skip_module_on_macos(reason):
     if _is_macos():
         pytest.skip(allow_module_level=True, reason=reason)

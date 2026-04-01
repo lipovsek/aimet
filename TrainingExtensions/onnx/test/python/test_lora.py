@@ -15,10 +15,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-pytest.importorskip("peft", reason="peft is required for LoRA test model generation")
-pytest.importorskip(
-    "safetensors", reason="safetensors is required for LoRA adapter I/O"
+from .conftest import skip_module_on_windows_amd64, skip_module_on_windows_arm64
+
+skip_module_on_windows_amd64(
+    "torch dynamo ONNX export packaging issue on Windows AMD64 CI"
 )
+skip_module_on_windows_arm64("peft and safetensors not available on Windows ARM64")
 
 from peft import LoraConfig, get_peft_model
 from safetensors.numpy import load_file, save_file
