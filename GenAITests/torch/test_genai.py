@@ -3,6 +3,8 @@
 
 """GenAI test runner"""
 
+import inspect
+import uuid
 import pytest
 import torch
 import gc
@@ -14,10 +16,12 @@ from transformers.processing_utils import ProcessorMixin
 from aimet_torch.v2.nn import QuantizationMixin
 
 from GenAITests.shared.models.base import LLM, VLM
+from GenAITests.shared.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.helpers.profiler import (
     GPUMeter,
     MetricResult,
+    RecipeStepStats,
     ComponentRecipeStats,
     write_stats_to_disk,
 )
@@ -45,6 +49,54 @@ def _extract_recipe_config(recipe_dict):
     return recipe_cls, recipe_kwargs, dataset_cls, dataset_kwargs
 
 
+def _apply_recipe_chain(
+    recipe_list,
+    sim_component,
+    generator,
+    tokenizer,
+    context_length,
+    image_size,
+    profiler_kwargs,
+    profiler_capture_intermediate_data,
+):
+    """Apply a chain of recipe steps sequentially, returning per-step stats."""
+    step_stats = []
+    for recipe_config in recipe_list:
+        recipe_cls, recipe_kwargs, dataset_cls, dataset_kwargs = _extract_recipe_config(
+            recipe_config
+        )
+        if image_size is not None and dataset_cls is not None:
+            sig = inspect.signature(dataset_cls.load_encoded_dataset)
+            if "image_size" in sig.parameters:
+                dataset_kwargs.setdefault("image_size", image_size)
+        train_dataset = (
+            dataset_cls.load_encoded_dataset(
+                tokenizer,
+                context_length,
+                **dataset_kwargs,
+            )
+            if dataset_cls
+            else None
+        )
+        with GPUMeter(
+            **profiler_kwargs,
+            capture_intermediate_data=profiler_capture_intermediate_data,
+        ) as profiler:
+            recipe_cls.apply(sim_component, generator, train_dataset, **recipe_kwargs)
+        step_stats.append(
+            RecipeStepStats(
+                recipe_name=recipe_cls.__name__,
+                recipe_kwargs=recipe_kwargs,
+                dataset_name=dataset_cls.__name__ if dataset_cls else "",
+                dataset_kwargs=dataset_kwargs,
+                profiler=profiler,
+            )
+        )
+        gc.collect()
+        torch.cuda.empty_cache()
+    return step_stats
+
+
 def test_llm_quantization(
     test_config, fp_cache: DiskBackedFPCache, export_dir, results_dir
 ):
@@ -66,6 +118,7 @@ def test_llm_quantization(
     sequence_length = model_kwargs.pop("sequence_length")
     model_id = model_kwargs.pop("model_id")
     model_type = model_kwargs.pop("model_type")
+    image_size = model_kwargs.pop("image_size", None)
     precomputed_encodings = model_kwargs.pop("encodings", None)
 
     if "dtype" in model_kwargs:
@@ -84,7 +137,12 @@ def test_llm_quantization(
     torch.cuda.empty_cache()
 
     sim_collection = model_cls.instantiate_quantsim(
-        model_id, context_length, sequence_length, precision=precision, **model_kwargs
+        model_id,
+        context_length,
+        sequence_length,
+        precision=precision,
+        image_size=image_size,
+        **model_kwargs,
     )
     tokenizer = model_cls.instantiate_tokenizer(model_id)
     generator = generator_factory(
@@ -120,71 +178,38 @@ def test_llm_quantization(
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     with place_collection(sim_collection, device):
-        # Apply backbone recipe with its own profiler
-        (
-            backbone_recipe_cls,
-            backbone_recipe_kwargs,
-            backbone_dataset_cls,
-            backbone_dataset_kwargs,
-        ) = _extract_recipe_config(all_recipes["backbone"])
-        backbone_train_dataset = (
-            backbone_dataset_cls.load_encoded_dataset(
-                tokenizer.tokenizer
-                if isinstance(tokenizer, ProcessorMixin)
-                else tokenizer,
-                context_length,
-                **backbone_dataset_kwargs,
-            )
-            if backbone_dataset_cls
-            else None
+        backbone_steps = _apply_recipe_chain(
+            all_recipes["backbone"],
+            sim_collection.backbone,
+            generator,
+            tokenizer.tokenizer if isinstance(tokenizer, ProcessorMixin) else tokenizer,
+            context_length,
+            image_size,
+            profiler_kwargs,
+            profiler_capture_intermediate_data,
         )
-        with GPUMeter(
-            **profiler_kwargs,
-            capture_intermediate_data=profiler_capture_intermediate_data,
-        ) as backbone_profiler:
-            backbone_recipe_cls.apply(
-                sim_collection.backbone,
-                generator,
-                backbone_train_dataset,
-                **backbone_recipe_kwargs,
-            )
 
-        # Apply visual recipe if specified, with its own profiler
-        visual_profiler = None
+        visual_steps = []
         if "visual" in all_recipes and sim_collection.visual is not None:
-            (
-                visual_recipe_cls,
-                visual_recipe_kwargs,
-                visual_dataset_cls,
-                visual_dataset_kwargs,
-            ) = _extract_recipe_config(all_recipes["visual"])
-            visual_train_dataset = (
-                visual_dataset_cls.load_encoded_dataset(
-                    tokenizer,
-                    context_length,
-                    **visual_dataset_kwargs,
-                )
-                if visual_dataset_cls
-                else None
+            visual_steps = _apply_recipe_chain(
+                all_recipes["visual"],
+                sim_collection.visual,
+                generator,
+                tokenizer,
+                context_length,
+                image_size,
+                profiler_kwargs,
+                profiler_capture_intermediate_data,
             )
-            with GPUMeter(
-                **profiler_kwargs,
-                capture_intermediate_data=profiler_capture_intermediate_data,
-            ) as visual_profiler:
-                visual_recipe_cls.apply(
-                    sim_collection.visual,
-                    generator,
-                    visual_train_dataset,
-                    **visual_recipe_kwargs,
-                )
 
         gc.collect()
         torch.cuda.empty_cache()
 
+    run_group = None
     export_dir = test_parameters["export"] if test_parameters["export"] else None
     if export_dir:
         tokenizer.save_pretrained(export_dir)
-        sim_collection.backbone.model.config.save_pretrained(export_dir)
+        sim_collection.config.save_pretrained(export_dir)
 
         backbone_onnx_name = f"model_sl{sequence_length}_cl{context_length}.onnx"
         os.mkdir(os.path.join(export_dir, "backbone"))
@@ -194,12 +219,17 @@ def test_llm_quantization(
                 model=sim_collection.backbone.model,
                 context_length=context_length,
                 sequence_length=sequence_length,
+                layer_cache_descriptors=generator.layer_cache_descriptors,
             ),
             input_names=model_cls.get_backbone_input_names(
-                sim_collection.backbone.model.model.config.num_hidden_layers
+                build_layer_cache_descriptors(
+                    sim_collection.backbone.model.model.config
+                )
             ),
             output_names=model_cls.get_backbone_output_names(
-                sim_collection.backbone.model.model.config.num_hidden_layers
+                build_layer_cache_descriptors(
+                    sim_collection.backbone.model.model.config
+                )
             ),
             opset_version=17,
             dynamo=False,
@@ -207,12 +237,13 @@ def test_llm_quantization(
         )
 
         if sim_collection.visual is not None:
-            assert isinstance(model_cls, VLM)
+            assert issubclass(model_cls, VLM)
             os.mkdir(os.path.join(export_dir, "visual"))
-            sim_collection.visual.model.config.save_pretrained(export_dir)
             sim_collection.visual.onnx.export(
                 f=os.path.join(export_dir, "visual", "model.onnx"),
-                args=model_cls.get_sample_vision_inputs(sim_collection.config),
+                args=model_cls.get_sample_vision_inputs(
+                    sim_collection.config, image_size=image_size
+                ),
                 input_names=model_cls.get_visual_input_names(),
                 output_names=model_cls.get_visual_output_names(),
                 opset_version=17,
@@ -225,40 +256,44 @@ def test_llm_quantization(
                 sim_collection.embedding.fold_param_quantizers()
 
             torch.save(
-                sim_collection.embedding.state_dict(),
+                sim_collection.embedding.state_dict()["weight"].as_subclass(
+                    torch.Tensor
+                ),
                 os.path.join(export_dir, "embedding.pth"),
             )
 
         if test_parameters["eval_in_onnx"]:
+            run_group = uuid.uuid4().hex[:16]
+
+            # Use the last Calibration step's dataset for ONNX re-calibration
+            def _last_calibration_for_onnx(steps):
+                for s in reversed(steps):
+                    if s.recipe_name == quant_recipes.Calibration.__name__:
+                        return {
+                            "name": quant_recipes.Calibration.__name__,
+                            "dataset": {"name": s.dataset_name, **s.dataset_kwargs},
+                            **s.recipe_kwargs,
+                        }
+                return {"name": quant_recipes.RemoveQuantization.__name__}
+
+            onnx_recipe = {
+                "backbone": _last_calibration_for_onnx(backbone_steps),
+            }
+            if visual_steps:
+                onnx_recipe["visual"] = _last_calibration_for_onnx(visual_steps)
+
             data = {
                 "model": {
                     "model_id": export_dir,
                     "encodings": export_dir,
                     "sequence_length": sequence_length,
                     "context_length": context_length,
+                    **({"image_size": list(image_size)} if image_size else {}),
                     **model_kwargs,
                 },
-                "precision": precision,
-                "recipe": {
-                    "backbone": {
-                        "name": quant_recipes.Calibration.__name__,
-                        "dataset": {
-                            "name": backbone_dataset_cls.__name__,
-                            **backbone_dataset_kwargs,
-                        },
-                    },
-                }
-                | {
-                    "visual": {
-                        "name": quant_recipes.Calibration.__name__,
-                        "dataset": {
-                            "name": visual_dataset_cls.__name__,
-                            **visual_dataset_kwargs,
-                        },
-                    }
-                }
-                if "visual" in all_recipes and sim_collection.visual is not None
-                else {},
+                "precision": precision.to_dict(),
+                "run_group": run_group,
+                "recipe": onnx_recipe,
                 "metrics": [
                     {
                         "name": metric["class"].__name__,
@@ -285,11 +320,15 @@ def test_llm_quantization(
                 with GPUMeter(
                     capture_intermediate_data=False, **profiler_kwargs
                 ) as profiler:
+                    extra_metric_kwargs = {}
+                    if not issubclass(metric_cls, TextEvaluationMetric):
+                        extra_metric_kwargs["image_size"] = image_size
                     result = metric_cls.evaluate(
                         generator,
                         tokenizer_arg,
                         context_length,
                         eval_ctx=eval_ctx,
+                        **extra_metric_kwargs,
                         **metric_kwargs,
                     )
                     print(f"{metric_cls.__name__} result: {result}")
@@ -306,28 +345,16 @@ def test_llm_quantization(
 
     model_kwargs["context_length"] = context_length
     model_kwargs["sequence_length"] = sequence_length
+    if image_size is not None:
+        model_kwargs["image_size"] = list(image_size)
     if precomputed_encodings is not None:
         model_kwargs["encodings"] = precomputed_encodings
 
     components = {
-        "backbone": ComponentRecipeStats(
-            recipe_name=backbone_recipe_cls.__name__,
-            recipe_kwargs=backbone_recipe_kwargs,
-            dataset_name=backbone_dataset_cls.__name__ if backbone_dataset_cls else "",
-            dataset_kwargs=backbone_dataset_kwargs,
-            profiler=backbone_profiler,
-        )
+        "backbone": ComponentRecipeStats(steps=backbone_steps),
     }
-    if "visual" in all_recipes and sim_collection.visual is not None:
-        components |= {
-            "visual": ComponentRecipeStats(
-                recipe_name=visual_recipe_cls.__name__,
-                recipe_kwargs=visual_recipe_kwargs,
-                dataset_name=visual_dataset_cls.__name__ if visual_dataset_cls else "",
-                dataset_kwargs=visual_dataset_kwargs,
-                profiler=visual_profiler,
-            )
-        }
+    if visual_steps:
+        components["visual"] = ComponentRecipeStats(steps=visual_steps)
 
     results_folder = Path(results_dir)
     results_folder.mkdir(parents=True, exist_ok=True)
@@ -344,6 +371,7 @@ def test_llm_quantization(
         accuracy_results=evaluation_results,
         export_location=export_dir,
         precision=precision_dict,
+        run_group=run_group,
     )
 
     if export_dir:
@@ -356,4 +384,5 @@ def test_llm_quantization(
             components=components,
             accuracy_results=evaluation_results,
             precision=precision_dict,
+            run_group=run_group,
         )

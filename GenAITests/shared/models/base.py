@@ -17,8 +17,10 @@ from transformers import (
     AutoTokenizer,
     AutoConfig,
 )
+from transformers.cache_utils import DynamicCache
 
 from .generator import Generator, VLM_Generator
+from .utils.layer_cache import AttentionType, LayerCacheDescriptor
 
 
 @dataclass
@@ -84,7 +86,11 @@ class LLM(ABC):
     @classmethod
     @abstractmethod
     def get_sample_backbone_inputs(
-        cls, model, context_length: int, sequence_length: int
+        cls,
+        model,
+        context_length: int,
+        sequence_length: int,
+        layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
     ) -> tuple[torch.Tensor, ...]:
         """Get sample inputs for LLM backbone QuantSim instantiation or ONNX export"""
         dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
@@ -97,6 +103,7 @@ class LLM(ABC):
             past_key_values=[],
             context_length=context_length,
             sequence_length=sequence_length,
+            layer_cache_descriptors=layer_cache_descriptors,
         )
         return assembled_dummy_inputs
 
@@ -107,24 +114,55 @@ class LLM(ABC):
         return str(config_path.resolve())
 
     @staticmethod
-    def get_backbone_input_names(num_layers: int) -> tuple[str, ...]:
-        """Get input names for the backbone model"""
-        names = ["input_ids", "attention_mask", "position_ids"]
-        kv_names = zip(
-            [f"past_key_{i}_in" for i in range(num_layers)],
-            [f"past_value_{i}_in" for i in range(num_layers)],
-        )
-        return tuple(names + list(itertools.chain.from_iterable(kv_names)))
+    def get_cache_type() -> type:
+        """
+        Returns ``DynamicCache`` by default. Models with hybrid attention
+        (e.g. linear + full) can override this to return ``HybridCache``.
+        """
+        return DynamicCache
 
     @staticmethod
-    def get_backbone_output_names(num_layers: int) -> tuple[str, ...]:
-        """Get output names for the backbone model"""
+    def get_backbone_input_names(
+        layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+    ) -> tuple[str, ...]:
+        """Get input names for the backbone model.
+
+        When *layer_cache_descriptors* is provided, linear attention layers
+        receive ``recurrent_state_k_<i>_in`` / ``recurrent_state_v_<i>_in``
+        names instead of the standard ``past_key_<i>_in`` / ``past_value_<i>_in``.
+        """
+        names = ["input_ids", "attention_mask", "position_ids"]
+        for desc in layer_cache_descriptors:
+            i = desc.layer_idx
+            if desc.attention_type == AttentionType.LINEAR:
+                names += [
+                    f"recurrent_state_k_{i}_in",
+                    f"recurrent_state_v_{i}_in",
+                ]
+            else:
+                names += [f"past_key_{i}_in", f"past_value_{i}_in"]
+        return tuple(names)
+
+    @staticmethod
+    def get_backbone_output_names(
+        layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+    ) -> tuple[str, ...]:
+        """Get output names for the backbone model.
+
+        When *layer_cache_descriptors* is provided, linear attention layers
+        receive ``recurrent_state_k_<i>_out`` / ``recurrent_state_v_<i>_out``.
+        """
         names = ["logits"]
-        kv_names = zip(
-            [f"past_key_{i}_out" for i in range(num_layers)],
-            [f"past_value_{i}_out" for i in range(num_layers)],
-        )
-        return tuple(names + list(itertools.chain.from_iterable(kv_names)))
+        for desc in layer_cache_descriptors:
+            i = desc.layer_idx
+            if desc.attention_type == AttentionType.LINEAR:
+                names += [
+                    f"recurrent_state_k_{i}_out",
+                    f"recurrent_state_v_{i}_out",
+                ]
+            else:
+                names += [f"past_key_{i}_out", f"past_value_{i}_out"]
+        return tuple(names)
 
     @staticmethod
     def get_generator_cls() -> type[Generator]:
@@ -140,20 +178,27 @@ class VLM(LLM):
     @classmethod
     @abstractmethod
     def get_sample_vision_inputs(
-        cls, config: PretrainedConfig
+        cls, config: PretrainedConfig, image_size: tuple[int, int] | None = None
     ) -> tuple[torch.Tensor, ...]:
         """Get sample inputs for visual model QuantSim instantiation or ONNX export"""
         pass
 
     @staticmethod
-    def get_backbone_input_names(num_layers: int) -> tuple[str, ...]:
+    def get_backbone_input_names(
+        layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+    ) -> tuple[str, ...]:
         """Get input names for the backbone model"""
         names = ["inputs_embeds", "attention_mask", "position_ids"]
-        kv_names = zip(
-            [f"past_key_{i}_in" for i in range(num_layers)],
-            [f"past_value_{i}_in" for i in range(num_layers)],
-        )
-        return tuple(names + list(itertools.chain.from_iterable(kv_names)))
+        for desc in layer_cache_descriptors:
+            i = desc.layer_idx
+            if desc.attention_type == AttentionType.LINEAR:
+                names += [
+                    f"recurrent_state_k_{i}_in",
+                    f"recurrent_state_v_{i}_in",
+                ]
+            else:
+                names += [f"past_key_{i}_in", f"past_value_{i}_in"]
+        return tuple(names)
 
     @staticmethod
     @abstractmethod

@@ -14,12 +14,17 @@ from aimet_onnx import quantsim
 from aimet_onnx.quantsim import (
     QuantizationSimModel,
 )
-from aimet_onnx.common.defs import float32
 
 from GenAITests.shared.helpers.model_cache import DiskBackedModelCache, ModelCacheEntry
-from GenAITests.shared.helpers.precision_config import PrecisionConfig
+from GenAITests.shared.helpers.precision_config import (
+    PrecisionConfig,
+    float16,
+    float32,
+    int16,
+)
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.base import LLM, SimCollection
+from GenAITests.shared.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 from GenAITests.onnx.models.adaptations.hub_models import AIHMAdaptation
@@ -140,8 +145,13 @@ class LLM_ONNX(LLM):
         # Apply block-level granularity (LPBQ/BQ) if configured
         _apply_block_granularity_to_decoder_stack(quant_sim, precision)
 
-        if default_activation_qtype == float32:
+        if default_activation_qtype in (float16, float32):
             _remove_activation_quantizers(quant_sim)
+
+        if precision.embedding != int16:
+            raise NotImplementedError(
+                "Embedding quantization other than int16 is not currently supported for LLMs"
+            )
 
         return SimCollection(quant_sim, config=config)
 
@@ -169,7 +179,9 @@ class LLM_ONNX(LLM):
 
         assert isinstance(instantiated_model, torch.nn.Module)
         instantiated_model = instantiated_model.to(dtype=torch.float32)
-        exportable_model = ONNXExportableModuleWithCache(instantiated_model)
+        exportable_model = ONNXExportableModuleWithCache(
+            instantiated_model, cache_type=cls.get_cache_type()
+        )
 
         onnx_model, *_ = get_onnx_model(
             checkpoint=directory,
@@ -180,10 +192,10 @@ class LLM_ONNX(LLM):
                 exportable_model, context_length, sequence_length
             ),
             input_names=cls.get_backbone_input_names(
-                instantiated_model.config.num_hidden_layers
+                build_layer_cache_descriptors(exportable_model.config)
             ),
             output_names=cls.get_backbone_output_names(
-                instantiated_model.config.num_hidden_layers
+                build_layer_cache_descriptors(exportable_model.config)
             ),
         )
 

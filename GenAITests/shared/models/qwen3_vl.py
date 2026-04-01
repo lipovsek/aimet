@@ -11,6 +11,11 @@ from transformers.models.qwen3_vl import modeling_qwen3_vl
 
 from GenAITests.shared.models.base import VLM
 from GenAITests.shared.models.generator import VLM_Generator
+from GenAITests.shared.models.utils.layer_cache import LayerCacheDescriptor
+from GenAITests.shared.models.utils.model_utils import (
+    PositionIdContext,
+    compute_vision_input_shapes,
+)
 
 
 class Qwen_3_VL(VLM):
@@ -46,7 +51,9 @@ class Qwen_3_VL(VLM):
         )
 
     @classmethod
-    def get_sample_backbone_inputs(cls, model, context_length, sequence_length):
+    def get_sample_backbone_inputs(
+        cls, model, context_length, sequence_length, layer_cache_descriptors
+    ):
         dummy_inputs_embeds = torch.zeros(
             (1, sequence_length, model.config.hidden_size), dtype=torch.int
         )
@@ -62,6 +69,7 @@ class Qwen_3_VL(VLM):
             sequence_length=sequence_length,
             inputs_embeds=dummy_inputs_embeds,
             position_ids=dummy_position_ids,
+            layer_cache_descriptors=layer_cache_descriptors,
         )
 
         dummy_visual_pos_masks = torch.zeros((1, sequence_length), dtype=torch.int)
@@ -80,10 +88,12 @@ class Qwen_3_VL(VLM):
         )
 
     @classmethod
-    def get_sample_vision_inputs(cls, config):
-        # todo: need to make this more generic, and dependent on user configured image width and height
-        dummy_pixel_values = torch.ones((11008, 1536), dtype=torch.float32)
-        dummy_grid_thw = torch.Tensor([[1, 86, 128]]).to(dtype=torch.int64)
+    def get_sample_vision_inputs(cls, config, image_size=(512, 512)):
+        num_patches, pixel_dim, h_patches, w_patches = compute_vision_input_shapes(
+            image_size, config.vision_config
+        )
+        dummy_pixel_values = torch.ones((num_patches, pixel_dim), dtype=torch.float32)
+        dummy_grid_thw = torch.tensor([[1, h_patches, w_patches]], dtype=torch.int64)
         return (
             dummy_pixel_values,
             dummy_grid_thw,
@@ -91,16 +101,17 @@ class Qwen_3_VL(VLM):
         )
 
     def generate_position_ids(self, *args, **kwargs):
-        # Passing in `self` here since the method we are overriding is a staticmethod, but the original implementation
-        # needs access to the model's config, which is an instance variable.
+        ctx = PositionIdContext(self.config, modeling_qwen3_vl.Qwen3VLModel)
         position_ids, *_ = modeling_qwen3_vl.Qwen3VLModel.get_rope_index(
-            self, *args, **kwargs
+            ctx, *args, **kwargs
         )
         return position_ids.to(dtype=torch.int32)
 
     @staticmethod
-    def get_backbone_input_names(num_layers: int) -> tuple[str, ...]:
-        return VLM.get_backbone_input_names(num_layers) + (
+    def get_backbone_input_names(
+        layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+    ) -> tuple[str, ...]:
+        return VLM.get_backbone_input_names(layer_cache_descriptors) + (
             "visual_pos_masks",
             "deepstack_visual_embeds",
         )
@@ -125,24 +136,22 @@ class Qwen3VLVisualWrapper(torch.nn.Module):
         self.visual = visual
 
     def forward(
-        self, pixel_values: torch.Tensor, grid_thw: torch.Tensor, mask: torch.Tensor
+        self,
+        pixel_values: torch.Tensor,
+        image_grid_thw: torch.Tensor,
+        mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
         if pixel_values is not None:
             pixel_values = pixel_values.type(self.visual.dtype)
             vision_outputs = self.visual(
-                pixel_values, grid_thw=grid_thw, return_dict=True
+                pixel_values, grid_thw=image_grid_thw, return_dict=True
             )
-            split_sizes = (
-                grid_thw.prod(-1) // self.visual.spatial_merge_size**2
-            ).tolist()
-            image_embeds = torch.split(vision_outputs.pooler_output, split_sizes)
             return (
-                torch.cat(image_embeds, dim=0),
+                vision_outputs.pooler_output,
                 mask[..., 0],
                 vision_outputs.deepstack_features,
             )
         else:
-            # torch.zeros((0, self.visual.config.hidden_size)) for _ in range(self.visual.config.)
             return None, mask[..., 0], []
 
 

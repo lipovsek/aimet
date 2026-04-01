@@ -8,7 +8,7 @@ from transformers import PreTrainedModel
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 
 
-@YAMLConfigParser.register_adaptation("FastExportable", model_type="qwen2_vl")
+@YAMLConfigParser.register_adaptation("FastExportable", model_type="qwen2_5_vl")
 class Qwen2VLFastExportableAdaptation:
     """FastExportable adaptation for Qwen2 VL models.
 

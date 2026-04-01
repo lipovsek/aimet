@@ -16,6 +16,7 @@ _NON_METRIC_KEYS = {
     "environment",
     "components",
     "export",
+    "run_group",
 }
 
 

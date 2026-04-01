@@ -186,6 +186,7 @@ jobs:
       needs.start-runners.result == 'success'
 
     strategy:
+      fail-fast: false
       matrix:
         variant: ${{
           fromJSON(
@@ -279,9 +280,9 @@ jobs:
           OUT_FILE="GenAITests/secondary_onnx_eval.yaml"
           rm -f "$OUT_FILE"
 
-          mapfile -t FILES < <(ls -1 artifacts/*/*onnx*.yml artifacts/*/*onnx*.yaml 2>/dev/null | sort)
+          mapfile -t FILES < <(ls -1 genai_output/exports/*/*onnx*.yaml genai_output/exports/*/*onnx*.yml 2>/dev/null | sort)
           if [ "${#FILES[@]}" -eq 0 ]; then
-            echo "No YAML files found in artifacts/"
+            echo "No YAML files found in genai_output/exports/"
             exit 0
           fi
 
@@ -296,7 +297,7 @@ jobs:
           . .venv/bin/activate
           export PYTHONPATH=$PYTHONPATH:$(pwd)
           hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
-          pytest -s GenAITests/onnx/test_genai.py --config "$OUT_FILE" --force-export
+          pytest -s GenAITests/onnx/test_genai.py --config "$OUT_FILE" --results-dir genai_output/secondary_results --force-export
         shell: bash
 
       # Write CI run metadata to a JSON file alongside profiling data
@@ -315,6 +316,12 @@ jobs:
             "commit_sha": "${{ github.sha }}"
           }
           METADATA_EOF
+          # Copy metadata for secondary ONNX eval results (with variant corrected to onnx)
+          if [ -d genai_output/secondary_results ]; then
+            sed 's/"variant": "torch"/"variant": "onnx"/' \
+              genai_output/results/run_metadata.json \
+              > genai_output/secondary_results/run_metadata.json
+          fi
 
       # Upload generated reports (CSV, HTML, JSON, run metadata)
       # Note: Using v3 for GHES compatibility
@@ -352,6 +359,10 @@ jobs:
         run: |
           aws s3 cp genai_output/exports/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/${{ matrix.variant }}/ --recursive --exclude "*" --include "*.zip"
           aws s3 cp genai_output/results/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/${{ matrix.variant }}/ --recursive --exclude "*" --include "*.json" --include "*.csv"
+          # Upload secondary ONNX eval results under onnx/ prefix so Lambda tags variant correctly
+          if [ -d genai_output/secondary_results ]; then
+            aws s3 cp genai_output/secondary_results/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/onnx/ --recursive --exclude "*" --include "*.json" --include "*.csv"
+          fi
 
   # ===========================================================================
   # JOB 5: Cleanup Ephemeral Runners

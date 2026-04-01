@@ -7,13 +7,18 @@ from __future__ import annotations
 
 import torch
 
-from aimet_torch.common.defs import QuantScheme, float16, float32
+from aimet_torch.common.defs import QuantScheme
 from aimet_torch.onnx_utils import map_torch_types_to_onnx
 from aimet_torch.v2.nn.true_quant import QuantizationMixin
 from aimet_torch.v2.utils import remove_activation_quantizers
 from aimet_torch import QuantizationSimModel
 
-from GenAITests.shared.helpers.precision_config import PrecisionConfig
+from GenAITests.shared.helpers.precision_config import (
+    PrecisionConfig,
+    float16,
+    float32,
+    int16,
+)
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
@@ -49,13 +54,15 @@ class LLM_Torch(LLM):
 
         default_param_bw = precision.blocks["default"].qtype.bits
         default_output_bw = (
-            precision.activations.bits
-            if precision.activations not in (float16, float32)
-            else 16
+            16
+            if precision.activations in (float16, float32)
+            else precision.activations.bits
         )
 
         # Wrap model to enable JIT trace
-        traceable_model = ONNXExportableModuleWithCache(model)
+        traceable_model = ONNXExportableModuleWithCache(
+            model, cache_type=cls.get_cache_type()
+        )
         quantsim = QuantizationSimModel(
             model=traceable_model,
             quant_scheme=QuantScheme.post_training_tf,
@@ -81,7 +88,12 @@ class LLM_Torch(LLM):
         # Apply block-level granularity (LPBQ/BQ) if configured
         _apply_block_granularity_to_decoder_stack(quantsim, precision)
 
-        return SimCollection(quantsim)
+        if precision.embedding != int16:
+            raise NotImplementedError(
+                "Embedding quantization other than int16 is not currently supported for LLMs"
+            )
+
+        return SimCollection(backbone=quantsim, config=model.config)
 
     @staticmethod
     def _is_quantized_rms_norm(module: torch.nn.Module) -> bool:

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field, fields
+from enum import Enum
 
 try:
     from aimet_onnx.common.defs import (
@@ -29,7 +30,11 @@ except ImportError:
         float32,
     )
 
-_VALID_GRANULARITIES = {"PCQ", "BQ", "LPBQ"}
+
+class Granularity(Enum):
+    PCQ = "PCQ"
+    BQ = "BQ"
+    LPBQ = "LPBQ"
 
 
 def resolve_qtype(value: int | str | qtype) -> qtype:
@@ -48,22 +53,31 @@ class WeightPrecision:
     """Precision settings for a weight tensor group (blocks, lm_head, embedding, visual)."""
 
     qtype: qtype = int4
-    granularity: str = "PCQ"
-    block_size: int = 64
+    granularity: Granularity = Granularity.PCQ
+    block_size: int | None = None
 
     def __post_init__(self):
-        if self.granularity not in _VALID_GRANULARITIES:
-            raise ValueError(
-                f"Invalid granularity '{self.granularity}'. "
-                f"Must be one of: {', '.join(sorted(_VALID_GRANULARITIES))}"
+        if isinstance(self.granularity, str):
+            try:
+                self.granularity = Granularity(self.granularity)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid granularity '{self.granularity}'. "
+                    f"Must be one of: {', '.join(g.value for g in Granularity)}"
+                )
+        if self.granularity in (Granularity.BQ, Granularity.LPBQ):
+            assert self.block_size is not None, (
+                f"block_size is required for {self.granularity.value} granularity."
             )
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "qtype": repr(self.qtype),
-            "granularity": self.granularity,
-            "block_size": self.block_size,
+            "granularity": self.granularity.value,
         }
+        if self.block_size is not None:
+            d["block_size"] = self.block_size
+        return d
 
     @classmethod
     def from_dict(cls, d: dict | str | int | None, **defaults) -> WeightPrecision:
@@ -107,6 +121,18 @@ class PrecisionConfig:
     )
     visual_weight: WeightPrecision | None = None
     visual_activations: qtype | None = None
+
+    def ensure_visual_defaults(self) -> None:
+        """Populate visual precision fields with defaults if not already set.
+
+        Called when the model is known to be a VLM so that visual precision
+        is always explicitly recorded rather than silently falling back to
+        backbone settings.
+        """
+        if self.visual_weight is None:
+            self.visual_weight = WeightPrecision(qtype=int8)
+        if self.visual_activations is None:
+            self.visual_activations = int16
 
     def to_dict(self) -> dict:
         d = {
@@ -178,7 +204,7 @@ class PrecisionConfig:
                 )
             else:
                 kwargs["visual_weight"] = WeightPrecision(qtype=int8)
-            kwargs["visual_activations"] = visual.get("activations", 16)
+            kwargs["visual_activations"] = resolve_qtype(visual.get("activations", 16))
 
         return cls(**kwargs)
 

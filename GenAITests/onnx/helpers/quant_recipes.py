@@ -54,23 +54,25 @@ def _prefill_inputs(
     if num_iterations is not None:
         dataloader = itertools.islice(dataloader, num_iterations)
 
+    def _to_numpy(tensors: tuple[torch.Tensor, ...]) -> dict[str, np.ndarray]:
+        return {
+            k: v.cpu().detach().numpy()
+            for k, v in kwargs_to_dict(input_names, *tensors).items()
+        }
+
     with generator.fp_mode():
         for sample in tqdm(
             dataloader, total=num_iterations, desc="Pre-filling calibration data"
         ):
-            inputs.extend(
-                list(generator.prefill(sample["input_ids"], sample["attention_mask"]))
-            )
+            sample_kwargs = {
+                k: v.to(device=generator.device) if isinstance(v, torch.Tensor) else v
+                for k, v in sample.items()
+            }
+            # Convert to CPU numpy immediately to free CUDA memory before
+            # fp_mode exits and rebuilds the full quantized session.
+            inputs.extend([_to_numpy(t) for t in generator.prefill(**sample_kwargs)])
 
-    def convert_torch_inputs_to_numpy(
-        inputs: tuple[torch.Tensor, ...],
-    ) -> dict[str, np.ndarray]:
-        return {
-            k: v.cpu().detach().numpy()
-            for k, v in kwargs_to_dict(input_names, *inputs).items()
-        }
-
-    return list(map(convert_torch_inputs_to_numpy, inputs))
+    return inputs
 
 
 class QuantizationTechnique(ABC):
@@ -123,15 +125,20 @@ class Calibration(QuantizationTechnique):
         dataloader: DataLoader,
         num_iterations: int = 20,
     ):
-        # Step 1: Collect calibration inputs in FP mode.
-        inputs = _prefill_inputs(quantsim, generator, dataloader, num_iterations)
+        def _forward(_):
+            sliced_dataloader = itertools.islice(dataloader, num_iterations)
+            for batch in tqdm(
+                sliced_dataloader, total=num_iterations, desc="Calibrating"
+            ):
+                inputs = {
+                    k: v.to(device=generator.device)
+                    if isinstance(v, torch.Tensor)
+                    else v
+                    for k, v in batch.items()
+                }
+                generator(**inputs)
 
-        # Step 2: Calibrate quantization parameters.
-        def _forward(session, _):
-            for batch in tqdm(inputs, total=len(inputs), desc="Calibrating"):
-                session.run(None, batch)
-
-        quantsim.compute_encodings(_forward, tuple())
+        quantsim.compute_encodings(_forward)
 
 
 @YAMLConfigParser.register_recipe
@@ -158,13 +165,6 @@ class SeqMSE(QuantizationTechnique):
         )
         seq_mse.apply_seq_mse_algo()
 
-        # Step 3: Calibrate activation quantization parameters.
-        def _forward(session, _):
-            for batch in tqdm(inputs, total=len(inputs), desc="Calibrating"):
-                session.run(None, batch)
-
-        quantsim.compute_encodings(_forward, tuple())
-
 
 @YAMLConfigParser.register_recipe
 class AdaScale(QuantizationTechnique):
@@ -188,10 +188,3 @@ class AdaScale(QuantizationTechnique):
             adascale_model_config_dict[generator.config.model_type],
             num_iterations,
         )
-
-        # Step 3: Calibrate activation quantization parameters.
-        def _forward(session, _):
-            for batch in tqdm(inputs, total=len(inputs), desc="Calibrating"):
-                session.run(None, batch)
-
-        quantsim.compute_encodings(_forward, tuple())

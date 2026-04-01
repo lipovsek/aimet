@@ -268,10 +268,8 @@ class YAMLConfigParser:
             raise RuntimeError(
                 "Multiple models cannot be specified in a single document."
             )
-        if "recipe" in doc and not isinstance(doc["recipe"], dict):
-            raise RuntimeError(
-                "Multiple recipes cannot be specified in a single document."
-            )
+        if "recipe" in doc and not isinstance(doc["recipe"], (dict, list)):
+            raise RuntimeError("Recipe must be a dict or list.")
 
         if "model_id" not in doc["model"]:
             raise RuntimeError("Model 'model_id' not specified.")
@@ -282,23 +280,71 @@ class YAMLConfigParser:
 
         # Normalize single recipe to component format
         if "recipe" in doc:
-            has_recipe_name = "name" in doc["recipe"]
-            has_backbone = "backbone" in doc["recipe"]
-            if not has_recipe_name and not has_backbone:
-                raise RuntimeError(
-                    "Recipe must have either 'name' or 'backbone' specified."
-                )
-            elif has_recipe_name and has_backbone:
-                raise RuntimeError(
-                    "Recipe cannot have both 'name' and 'backbone' specified."
-                )
-            elif has_recipe_name:
+            if isinstance(doc["recipe"], list):
+                # Top-level list of recipe steps → treat as backbone chain
                 doc["recipe"] = {"backbone": doc["recipe"]}
+            elif isinstance(doc["recipe"], dict):
+                has_recipe_name = "name" in doc["recipe"]
+                has_backbone = "backbone" in doc["recipe"]
+                if not has_recipe_name and not has_backbone:
+                    raise RuntimeError(
+                        "Recipe must have either 'name' or 'backbone' specified."
+                    )
+                elif has_recipe_name and has_backbone:
+                    raise RuntimeError(
+                        "Recipe cannot have both 'name' and 'backbone' specified."
+                    )
+                elif has_recipe_name:
+                    doc["recipe"] = {"backbone": doc["recipe"]}
+
+            # Normalize each component's value: dict → [dict], list stays as-is
+            for comp_name in list(doc["recipe"].keys()):
+                comp_val = doc["recipe"][comp_name]
+                if isinstance(comp_val, dict):
+                    doc["recipe"][comp_name] = [comp_val]
+                elif isinstance(comp_val, list):
+                    for step in comp_val:
+                        if not isinstance(step, dict) or "name" not in step:
+                            raise RuntimeError(
+                                f"Each recipe step in '{comp_name}' must be a dict with a 'name' key."
+                            )
+                else:
+                    raise RuntimeError(
+                        f"Recipe component '{comp_name}' must be a dict or list."
+                    )
+
+            # Auto-insert Calibration if no Calibration or RemoveQuantization is present
+            _TERMINAL_RECIPES = {"Calibration", "RemoveQuantization", "Skip"}
+            for comp_name, recipe_list in doc["recipe"].items():
+                step_names = {step["name"] for step in recipe_list}
+                if not step_names & _TERMINAL_RECIPES:
+                    recipe_list.append(
+                        {
+                            "name": "Calibration",
+                            "dataset": {"name": "Wikitext", "split": "train"},
+                        }
+                    )
+                    warnings.warn(
+                        f"\n"
+                        f"{'=' * 70}\n"
+                        f"  AUTO-INSERTED Calibration step for '{comp_name}'\n"
+                        f"\n"
+                        f"  No Calibration, RemoveQuantization, or Skip recipe was found\n"
+                        f"  in the '{comp_name}' recipe chain. A Calibration step using\n"
+                        f"  the Wikitext dataset (split=train) has been automatically\n"
+                        f"  appended to ensure activation encodings are computed.\n"
+                        f"\n"
+                        f"  To suppress this, add an explicit Calibration or\n"
+                        f"  RemoveQuantization step to your config.\n"
+                        f"{'=' * 70}",
+                        stacklevel=2,
+                    )
 
         # Backward compatibility: migrate top-level dataset into backbone component
         if "dataset" in doc:
-            if "dataset" not in doc["recipe"]["backbone"]:
-                doc["recipe"]["backbone"]["dataset"] = doc.pop("dataset")
+            first_backbone = doc["recipe"]["backbone"][0]
+            if "dataset" not in first_backbone:
+                first_backbone["dataset"] = doc.pop("dataset")
             else:
                 doc.pop("dataset")  # Component has its own dataset, discard top-level
 
@@ -321,6 +367,8 @@ class YAMLConfigParser:
         task_params["eval_in_onnx"] = doc.pop("eval_in_onnx", False)
         if not isinstance(task_params["eval_in_onnx"], bool):
             raise ValueError("eval_in_onnx field must be a boolean value.")
+
+        task_params["run_group"] = doc.pop("run_group", None)
 
         if task_params["eval_in_onnx"] and not task_params["export"]:
             warnings.warn(
@@ -360,38 +408,44 @@ class YAMLConfigParser:
         precision = PrecisionConfig.from_dict(doc.pop("precision", None))
         task_params["precision"] = precision
 
-        # Recipe parsing
+        # Recipe parsing — each component is a list of recipe steps
         task_params["recipe"] = {}
         if "recipe" in doc:
-            for component_name, component_config in doc["recipe"].items():
-                recipe_name = component_config["name"]
-                try:
-                    recipe_cls = cls.get_recipe(recipe_name)
-                    task_params["recipe"][component_name] = component_config.copy()
-                    task_params["recipe"][component_name]["class"] = recipe_cls
-                    del task_params["recipe"][component_name]["name"]
-                except LookupError as exc:
-                    raise LookupError(
-                        f"Specified quantization recipe name ({recipe_name}) not found."
-                    ) from exc
-
-                # Parse dataset within component
-                if "dataset" in component_config:
-                    dataset_config = task_params["recipe"][component_name]["dataset"]
-                    dataset_name = dataset_config["name"]
+            for component_name, recipe_list in doc["recipe"].items():
+                parsed_steps = []
+                for step_config in recipe_list:
+                    recipe_name = step_config["name"]
                     try:
-                        dataset_cls = cls.get_dataset(dataset_name)
-                        dataset_config["class"] = dataset_cls
-                        del dataset_config["name"]
+                        recipe_cls = cls.get_recipe(recipe_name)
                     except LookupError as exc:
                         raise LookupError(
-                            f"Specified dataset name ({dataset_name}) not found."
+                            f"Specified quantization recipe name ({recipe_name}) not found."
                         ) from exc
+
+                    parsed = step_config.copy()
+                    parsed["class"] = recipe_cls
+                    del parsed["name"]
+
+                    # Parse dataset within step
+                    if "dataset" in step_config:
+                        dataset_config = parsed["dataset"]
+                        dataset_name = dataset_config["name"]
+                        try:
+                            dataset_cls = cls.get_dataset(dataset_name)
+                            dataset_config["class"] = dataset_cls
+                            del dataset_config["name"]
+                        except LookupError as exc:
+                            raise LookupError(
+                                f"Specified dataset name ({dataset_name}) not found."
+                            ) from exc
+
+                    parsed_steps.append(parsed)
+                task_params["recipe"][component_name] = parsed_steps
             del doc["recipe"]
         else:
             task_params["recipe"] = {
-                "backbone": {"class": cls.get_recipe("RemoveQuantization")},
-                "visual": {"class": cls.get_recipe("RemoveQuantization")},
+                "backbone": [{"class": cls.get_recipe("RemoveQuantization")}],
+                "visual": [{"class": cls.get_recipe("RemoveQuantization")}],
             }
 
         # Metrics parsing

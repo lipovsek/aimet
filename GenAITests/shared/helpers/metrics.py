@@ -168,6 +168,7 @@ class GenericMMLU(TextEvaluationMetric):
           positions (before any softmax).
         * ``"labels"`` – ``Tensor(N,)`` of correct-answer indices (0–3).
         """
+        kwargs.pop("image_size", None)
         dataloader = cls.get_dataloader(tokenizer, context_length, **kwargs)
 
         def tokenize_letter(letter: str):
@@ -397,8 +398,8 @@ class _FlipsCompute:
 
     @classmethod
     def _compute(cls, fp_data, q_data):
-        fp_preds = fp_data["logits"].argmax(dim=-1)
-        q_preds = q_data["logits"].argmax(dim=-1)
+        fp_preds = fp_data.get("preds", fp_data["logits"].argmax(dim=-1))
+        q_preds = q_data.get("preds", q_data["logits"].argmax(dim=-1))
         return (fp_preds != q_preds).float().mean().item() * 100
 
 
@@ -450,35 +451,42 @@ class MMMU(EvaluationMetric):
         return f"{cls.__name__}_choice_logits"
 
     @staticmethod
-    def get_dataset(processor, context_length, **kwargs):
+    def get_dataset(processor, context_length, image_size=None, **kwargs):
         return MMMUDataset.load_encoded_dataset(
-            processor, context_length, split="validation"
+            processor, context_length, split="validation", image_size=image_size
         )
 
     @classmethod
     def collect_choice_logits(cls, model, processor, context_length, **kwargs) -> dict:
         """Run the model over MMMU and collect per-sample choice logits.
 
-        Returns ``{"logits": Tensor(N, 4), "labels": Tensor(N,)}``.
+        Returns a dict with:
+
+        * ``"logits"`` – ``Tensor(N, max_options)`` of raw logits at each
+          answer-letter token position, padded with ``-inf`` for samples that
+          have fewer options than the maximum.
+        * ``"preds"``  – ``Tensor(N,)`` of predicted answer indices.
+        * ``"labels"`` – ``Tensor(N,)`` of correct-answer indices.
         """
         dataset = cls.get_dataset(processor, context_length, **kwargs)
 
         tokenizer = getattr(processor, "tokenizer", processor)
-        choices_tokens = tuple(
-            torch.Tensor(tokenizer(letter, add_special_tokens=False)["input_ids"]).to(
-                dtype=torch.int
-            )
-            for letter in ("A", "B", "C", "D")
-        )
 
-        all_logits = []
+        def _token_id(letter):
+            return tokenizer(letter, add_special_tokens=False)["input_ids"][0]
+
+        all_logits = []  # variable-length per sample, padded later
+        all_preds = []
         all_labels = []
 
         for sample in tqdm(dataset, desc=f"Collecting {cls.__name__} logits"):
+            num_options = sample.pop("num_options", 4)
+            label = sample.pop("label")
+
             inputs = {
                 k: v.to(model.device)
                 for k, v in sample.items()
-                if k != "label" and isinstance(v, torch.Tensor)
+                if isinstance(v, torch.Tensor)
             }
             outputs = model(**inputs)
 
@@ -489,16 +497,32 @@ class MMMU(EvaluationMetric):
                 .flatten()
             )
 
-            choice_logits = torch.tensor([last_logit[c].item() for c in choices_tokens])
+            # Only compare logits for the actual number of options
+            choice_letters = [chr(65 + i) for i in range(num_options)]
+            choice_ids = [_token_id(c) for c in choice_letters]
+            choice_logits = torch.tensor([last_logit[c].item() for c in choice_ids])
+
             all_logits.append(choice_logits)
+            all_preds.append(choice_logits.argmax().item())
+            all_labels.append(ord(label.strip().upper()) - ord("A"))
 
-            label_idx = tokenizer.decode(sample["label"]).strip()
-            all_labels.append(ord(label_idx) - ord("A"))
+            del outputs, inputs
+            torch.cuda.empty_cache()
 
-            del outputs
+        # Pad logits to the maximum number of options with -inf so they can be
+        # stacked into a single tensor.  Softmax(-inf) == 0 so padded positions
+        # contribute nothing to KL / JS divergence computations.
+        max_options = max(l.size(0) for l in all_logits) if all_logits else 4
+        padded = []
+        for logit in all_logits:
+            pad_len = max_options - logit.size(0)
+            if pad_len > 0:
+                logit = torch.cat([logit, logit.new_full((pad_len,), float("-inf"))])
+            padded.append(logit)
 
         return {
-            "logits": torch.stack(all_logits),
+            "logits": torch.stack(padded),
+            "preds": torch.tensor(all_preds, dtype=torch.long),
             "labels": torch.tensor(all_labels, dtype=torch.long),
         }
 
@@ -525,8 +549,7 @@ class MMMU(EvaluationMetric):
             if eval_ctx
             else collect_qt()
         )
-        preds = data["logits"].argmax(dim=-1)
-        correct = (preds == data["labels"]).sum().item()
+        correct = (data["preds"] == data["labels"]).sum().item()
         return float(correct / len(data["labels"])) * 100
 
 
@@ -539,7 +562,9 @@ class _MMMUDistanceBase(DistanceMetric):
     """Shared MMMU data collection for all MMMU-based distance metrics"""
 
     @classmethod
-    def _get_mmmu_data(cls, model, processor, context_length, eval_ctx):
+    def _get_mmmu_data(
+        cls, model, processor, context_length, eval_ctx, image_size=None
+    ):
         if eval_ctx is None:
             warnings.warn(
                 "No EvaluationContext provided; MMLU logits will not be cached."
@@ -549,10 +574,14 @@ class _MMMUDistanceBase(DistanceMetric):
 
         def collect_fp():
             with model.fp_mode():
-                return MMMU.collect_choice_logits(model, processor, context_length)
+                return MMMU.collect_choice_logits(
+                    model, processor, context_length, image_size=image_size
+                )
 
         def collect_qt():
-            return MMMU.collect_choice_logits(model, processor, context_length)
+            return MMMU.collect_choice_logits(
+                model, processor, context_length, image_size=image_size
+            )
 
         fp = (
             eval_ctx.get_or_compute_fp(collection, collect_fp)
@@ -580,9 +609,12 @@ class _MMMUDistanceBase(DistanceMetric):
         *,
         eval_ctx: EvaluationContext = None,
         num_fewshot: int = 5,
+        image_size: tuple[int, int] | None = None,
         **kwargs,
     ):
-        fp, q = cls._get_mmmu_data(model, processor, context_length, eval_ctx)
+        fp, q = cls._get_mmmu_data(
+            model, processor, context_length, eval_ctx, image_size=image_size
+        )
         return cls._compute(fp, q)
 
 

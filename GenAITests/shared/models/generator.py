@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import itertools
 import typing
 from typing import Union
@@ -20,8 +21,13 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from GenAITests.shared.models.utils.attention_mask import (
     convert_2d_attention_mask_to_4d,
+    convert_2d_attention_mask_to_4d_sliding_window,
 )
 
+from GenAITests.shared.models.utils.layer_cache import (
+    AttentionType,
+    build_layer_cache_descriptors,
+)
 from GenAITests.shared.models.utils.rope_embedding import RopeEmbedding
 
 
@@ -31,41 +37,73 @@ def get_past_keyval_with_shift(
     length: int,
     device: torch.device = torch.device("cpu"),
     dtype: torch.dtype = torch.float32,
+    layer_cache_descriptors: list | None = None,
 ) -> list[torch.Tensor]:
     """
     Combine past_key_vals with new_key_vals and clip them so there are no more than `length` tokens worth of context.
+
+    When *layer_cache_descriptors* is provided, per-layer behaviour is applied:
+    - ``"full"`` / ``"sliding_window"`` layers: concatenate and clip to *length*.
+    - ``"linear"`` layers: the new state replaces the old state entirely
+      (no concatenation).
     """
     ret = []
+
+    def _get_desc(layer_idx):
+        if layer_cache_descriptors and layer_idx < len(layer_cache_descriptors):
+            return layer_cache_descriptors[layer_idx]
+        return None
 
     # If there are no past_key_vals create some empty ones in the correct shape
     if len(past_key_vals) == 0:
         for i in range(0, len(new_key_vals), 2):
-            key_shape = new_key_vals[i].shape
-            key_shape = (key_shape[0], key_shape[1], 0, key_shape[3])
-            past_key_vals.append(torch.zeros(key_shape, device=device))
+            desc = _get_desc(i // 2)
+            if desc and desc.attention_type == AttentionType.LINEAR:
+                past_key_vals.append(torch.zeros_like(new_key_vals[i]))
+                past_key_vals.append(torch.zeros_like(new_key_vals[i + 1]))
+            else:
+                key_shape = new_key_vals[i].shape
+                key_shape = (key_shape[0], key_shape[1], 0, key_shape[3])
+                past_key_vals.append(torch.zeros(key_shape, device=device))
 
-            value_shape = new_key_vals[i + 1].shape
-            value_shape = (value_shape[0], value_shape[1], 0, value_shape[3])
-            past_key_vals.append(torch.zeros(value_shape, device=device))
+                value_shape = new_key_vals[i + 1].shape
+                value_shape = (value_shape[0], value_shape[1], 0, value_shape[3])
+                past_key_vals.append(torch.zeros(value_shape, device=device))
 
     # If there are no new_key_vals create some empty ones in the correct shape
     if len(new_key_vals) == 0:
         for i in range(0, len(past_key_vals), 2):
-            key_shape = past_key_vals[i].shape
-            key_shape = (key_shape[0], key_shape[1], 0, key_shape[3])
-            new_key_vals.append(torch.zeros(key_shape, device=device))
+            desc = _get_desc(i // 2)
+            if desc and desc.attention_type == AttentionType.LINEAR:
+                new_key_vals.append(torch.zeros_like(past_key_vals[i]))
+                new_key_vals.append(torch.zeros_like(past_key_vals[i + 1]))
+            else:
+                key_shape = past_key_vals[i].shape
+                key_shape = (key_shape[0], key_shape[1], 0, key_shape[3])
+                new_key_vals.append(torch.zeros(key_shape, device=device))
 
-            value_shape = past_key_vals[i + 1].shape
-            value_shape = (value_shape[0], value_shape[1], 0, value_shape[3])
-            new_key_vals.append(torch.zeros(value_shape, device=device))
+                value_shape = past_key_vals[i + 1].shape
+                value_shape = (value_shape[0], value_shape[1], 0, value_shape[3])
+                new_key_vals.append(torch.zeros(value_shape, device=device))
 
-    # Key and Values are concatenated on batch dimension
+    # Combine past and new values per layer
     for i in range(0, len(past_key_vals), 2):
+        desc = _get_desc(i // 2)
+
+        if desc and desc.attention_type == AttentionType.LINEAR:
+            # Linear attention: state is replaced, not concatenated
+            ret.append(new_key_vals[i].to(device=device, dtype=dtype))
+            ret.append(new_key_vals[i + 1].to(device=device, dtype=dtype))
+            continue
+
+        # Full or sliding_window: concatenate on sequence dimension and clip
+        clip_len = desc.clip_length(length) if desc else length
+
         key_cache = torch.cat(
             [past_key_vals[i].to(device), new_key_vals[i].to(device)],
             dim=2,
         )
-        key_cache = key_cache[:, :, -length:, :]
+        key_cache = key_cache[:, :, -clip_len:, :]
         val_cache = torch.cat(
             [
                 past_key_vals[i + 1].to(device),
@@ -73,7 +111,7 @@ def get_past_keyval_with_shift(
             ],
             dim=2,
         )
-        val_cache = val_cache[:, :, -length:, :]
+        val_cache = val_cache[:, :, -clip_len:, :]
 
         ret.append(key_cache.to(dtype=dtype))
         ret.append(val_cache.to(dtype=dtype))
@@ -120,6 +158,20 @@ class Generator(GenerationMixin, torch.nn.Module):
         if self._config is not None:
             return self._config
         return self.model.config
+
+    @functools.cached_property
+    def layer_cache_descriptors(self):
+        try:
+            return build_layer_cache_descriptors(
+                self.config.text_config
+                if hasattr(self.config, "text_config")
+                else self.config
+            )
+        except AttributeError as e:
+            raise RuntimeError(
+                f"Failed to build layer_cache_descriptors from config "
+                f"({type(self.config).__name__}): {e}"
+            ) from e
 
     @property
     def main_input_name(self) -> str:
@@ -224,6 +276,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         attention_mask_min: int = -100,
         inputs_embeds: torch.FloatTensor | None = None,
         position_ids: torch.Tensor | None = None,
+        layer_cache_descriptors: list | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, ...]:
         """Prepare provided inputs for model forward pass with static graph constraints"""
@@ -231,6 +284,13 @@ class Generator(GenerationMixin, torch.nn.Module):
             raise ValueError(
                 "You must specify exactly one of input_ids or inputs_embeds"
             )
+
+        if layer_cache_descriptors is None:
+            if not hasattr(model, "config"):
+                raise ValueError(
+                    "Model config is required to build layer cache descriptors if they are not provided directly."
+                )
+            layer_cache_descriptors = build_layer_cache_descriptors(model.config)
 
         input_tokens = input_ids if input_ids is not None else inputs_embeds
         input_tokens = input_tokens.to(
@@ -278,31 +338,24 @@ class Generator(GenerationMixin, torch.nn.Module):
             dim=-1,
         )
 
-        # Create dummy KV cache
-        head_dim = (
-            model.config.head_dim
-            if hasattr(model.config, "head_dim") and model.config.head_dim is not None
-            else model.config.hidden_size // model.config.num_attention_heads
-        )
-        kv_shape = (
-            batch_size,
-            model.config.num_key_value_heads,
-            context_length - sequence_length,
-            head_dim,
-        )
-        dummy_past_key_values = (
-            [
-                torch.zeros(kv_shape, device=device),
-            ]
-            * model.config.num_hidden_layers
-            * 2
-        )
+        # Create dummy KV cache / recurrent state per layer
+        dummy_past_key_values = []
+        for desc in layer_cache_descriptors:
+            shape = desc.dummy_state_shape(batch_size, context_length, sequence_length)
+            dummy_past_key_values.append(torch.zeros(shape, device=device))
+            dummy_past_key_values.append(torch.zeros(shape, device=device))
 
-        current_key_value_length = (
-            past_key_values[0].shape[-2]
-            if past_key_values and len(past_key_values) > 0
-            else 0
-        )
+        # Determine current KV cache length (skip linear attention, sliding window attention layers)
+        current_key_value_length = 0
+        if past_key_values and len(past_key_values) > 0:
+            for desc in layer_cache_descriptors:
+                if desc.attention_type == AttentionType.FULL:
+                    state_idx = desc.layer_idx * 2
+                    if state_idx < len(past_key_values):
+                        current_key_value_length = past_key_values[state_idx].shape[-2]
+                    break
+            else:
+                current_key_value_length = past_key_values[0].shape[-2]
         key_value_padding_length = (
             context_length - sequence_length
         ) - current_key_value_length
@@ -314,6 +367,7 @@ class Generator(GenerationMixin, torch.nn.Module):
             length=context_length - sequence_length,
             device=device,
             dtype=model.dtype,
+            layer_cache_descriptors=layer_cache_descriptors,
         )
 
         # Mask out dummy entries in KV cache
@@ -333,6 +387,31 @@ class Generator(GenerationMixin, torch.nn.Module):
             padded_attention_mask, sequence_length, context_length
         )
         cm_attention_mask = cm_attention_mask.clip(attention_mask_min, 0)
+
+        for desc in layer_cache_descriptors:
+            if desc.attention_type == AttentionType.SLIDING_WINDOW:
+                cm_sliding_attention_mask = (
+                    convert_2d_attention_mask_to_4d_sliding_window(
+                        padded_attention_mask,
+                        sequence_length,
+                        context_length,
+                        desc.window_size,
+                    )
+                )
+                cm_sliding_attention_mask = cm_sliding_attention_mask.clip(
+                    attention_mask_min, 0
+                )
+
+                prepared_attention_mask = {
+                    AttentionType.FULL.value: cm_attention_mask.to(dtype=model.dtype),
+                    AttentionType.SLIDING_WINDOW.value: cm_sliding_attention_mask.to(
+                        dtype=model.dtype
+                    ),
+                }
+
+                break
+        else:
+            prepared_attention_mask = cm_attention_mask.to(dtype=model.dtype)
 
         # Compute or pad position_ids
         if position_ids is None:
@@ -354,11 +433,11 @@ class Generator(GenerationMixin, torch.nn.Module):
                     dtype=position_ids.dtype,
                     device=device,
                 )
-                position_ids = torch.cat((position_ids, position_ids_padding), dim=-1)
+                position_ids = torch.cat((position_ids_padding, position_ids), dim=-1)
 
         return (
             padded_input_tokens,
-            cm_attention_mask.to(dtype=model.dtype),
+            prepared_attention_mask,
             position_ids,
             *padded_past_key_values,
             *[kwargs[k] for k in kwargs],
@@ -386,20 +465,28 @@ class Generator(GenerationMixin, torch.nn.Module):
             else local_logits
         )
 
-        # strip KV cache corresponding to padding tokens
+        # strip KV cache / recurrent state corresponding to padding tokens
         local_past_key_values = get_past_keyval_with_shift(
             past_key_vals=[],
             new_key_vals=list(local_outputs[1:]),
             length=num_valid_input_tokens,
             device=self.device,
+            layer_cache_descriptors=self.layer_cache_descriptors,
         )
 
         # shift global KV cache, concatenate local KV cache
-        current_key_value_length = (
-            global_outputs["past_key_values"][0].shape[-2]
-            if global_outputs["past_key_values"]
-            else 0
-        )
+        # For linear attention layers, the state is simply replaced.
+        current_key_value_length = 0
+        for desc in self.layer_cache_descriptors:
+            if (
+                desc.attention_type == AttentionType.FULL
+                and global_outputs["past_key_values"]
+            ):
+                current_key_value_length = global_outputs["past_key_values"][
+                    desc.layer_idx * 2
+                ].shape[-2]
+                break
+
         global_outputs["past_key_values"] = get_past_keyval_with_shift(
             past_key_vals=global_outputs["past_key_values"],
             new_key_vals=local_past_key_values,
@@ -408,6 +495,7 @@ class Generator(GenerationMixin, torch.nn.Module):
                 self.context_length - self.sequence_length,
             ),
             device=self.device,
+            layer_cache_descriptors=self.layer_cache_descriptors,
         )
 
     def forward(
@@ -460,6 +548,7 @@ class Generator(GenerationMixin, torch.nn.Module):
                 attention_mask_min=self.attention_mask_min,
                 inputs_embeds=input_slice if inputs_embeds is not None else None,
                 position_ids=position_ids_slice,
+                layer_cache_descriptors=self.layer_cache_descriptors,
                 **kwargs_slice,
             )
 
@@ -546,6 +635,7 @@ class Generator(GenerationMixin, torch.nn.Module):
                 attention_mask_min=self.attention_mask_min,
                 inputs_embeds=input_slice if inputs_embeds is not None else None,
                 position_ids=position_ids_slice,
+                layer_cache_descriptors=self.layer_cache_descriptors,
                 **kwargs_slice,
             )
 
@@ -575,6 +665,7 @@ class Generator(GenerationMixin, torch.nn.Module):
             attention_mask_min=self.attention_mask_min,
             inputs_embeds=input_slice if inputs_embeds is not None else None,
             position_ids=position_ids_slice,
+            layer_cache_descriptors=self.layer_cache_descriptors,
             **kwargs_slice,
         )
         yield prefilled_inputs
@@ -593,6 +684,7 @@ class HubCompatibleGenerator(Generator):
         attention_mask_min: int = -100,
         inputs_embeds: torch.FloatTensor | None = None,
         position_ids: torch.Tensor | None = None,
+        layer_cache_descriptors: list | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, ...]:
         assert len(kwargs) == 0, (
@@ -600,16 +692,17 @@ class HubCompatibleGenerator(Generator):
         )
         padded_input_tokens, cm_attention_mask, position_ids, *past_key_values = (
             super().prepare_inputs(
-                model,
-                input_ids,
-                attention_mask,
-                past_key_values,
-                sequence_length,
-                context_length,
-                pad_token,
-                attention_mask_min,
-                inputs_embeds,
-                position_ids,
+                model=model,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                sequence_length=sequence_length,
+                context_length=context_length,
+                pad_token=pad_token,
+                attention_mask_min=attention_mask_min,
+                inputs_embeds=inputs_embeds,
+                position_ids=position_ids,
+                layer_cache_descriptors=layer_cache_descriptors,
             )
         )
 
@@ -710,12 +803,14 @@ class VLM_Generator(Generator):
         pixel_values_videos: torch.Tensor | None = None,
         image_grid_thw: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, dict]:
+    ) -> tuple[torch.Tensor, torch.Tensor, dict]:
         # 1) Convert input_ids to input embeddings using self.embedding
         inputs_embeds = self.embedding(input_ids)
         extra_kwargs = {}
 
-        # 2) Process images and videos through vision model to get image embeddings
+        # 2) Process each image individually through the vision model.
+        #    This aligns with ONNX export (fixed single-image input shape)
+        #    and on-target deployment (one vision encoder call per image).
         image_mask = (
             (input_ids == self.config.image_token_id)
             .unsqueeze(-1)
@@ -723,20 +818,60 @@ class VLM_Generator(Generator):
             .to(inputs_embeds.device)
         )
 
-        vision_output = self.vision_model(
-            pixel_values=pixel_values,
-            grid_thw=image_grid_thw,
-            mask=image_mask,
-        )
+        if pixel_values is not None and image_grid_thw is not None:
+            # Split pixel_values into per-image chunks and process individually
+            per_image_sizes = image_grid_thw.prod(-1).tolist()
+            per_image_pixels = torch.split(pixel_values, per_image_sizes, dim=0)
 
-        # Handle tuple vs single tensor output
-        if isinstance(vision_output, tuple):
-            image_embeddings = vision_output[0]
-            # Map remaining outputs to kwargs using visual_output_names
-            for name, value in zip(self.visual_output_names[1:], vision_output[1:]):
-                extra_kwargs[name] = value
+            all_embeddings = []
+            all_extra = {name: [] for name in self.visual_output_names[1:]}
+
+            for pixels_i, grid_i in zip(per_image_pixels, image_grid_thw):
+                vision_output = self.vision_model(
+                    pixel_values=pixels_i,
+                    image_grid_thw=grid_i.unsqueeze(0),
+                    mask=image_mask,
+                )
+
+                if isinstance(vision_output, tuple):
+                    all_embeddings.append(vision_output[0])
+                    for name, value in zip(
+                        self.visual_output_names[1:], vision_output[1:]
+                    ):
+                        all_extra[name].append(value)
+                else:
+                    all_embeddings.append(vision_output)
+
+            image_embeddings = torch.cat(all_embeddings, dim=0)
+
+            # Merge per-image extra outputs:
+            # - Tensors: take the first (e.g. visual_pos_masks is identical across images)
+            # - Lists of tensors: concatenate per-layer across images
+            for name, vals in all_extra.items():
+                if not vals:
+                    continue
+                if isinstance(vals[0], torch.Tensor):
+                    extra_kwargs[name] = vals[0]
+                elif isinstance(vals[0], list):
+                    extra_kwargs[name] = [
+                        torch.cat(per_layer, dim=0) for per_layer in zip(*vals)
+                    ]
+                else:
+                    extra_kwargs[name] = vals
+        elif pixel_values is not None:
+            vision_output = self.vision_model(
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                mask=image_mask,
+            )
+            if isinstance(vision_output, tuple):
+                image_embeddings = vision_output[0]
+                for name, value in zip(self.visual_output_names[1:], vision_output[1:]):
+                    extra_kwargs[name] = value
+            else:
+                image_embeddings = vision_output
         else:
-            image_embeddings = vision_output
+            image_embeddings = None
 
         if image_embeddings is not None:
             image_embeddings = image_embeddings.to(
@@ -747,7 +882,18 @@ class VLM_Generator(Generator):
         if pixel_values_videos is not None or video_grid_thw is not None:
             raise RuntimeError("No support for video yet.")
 
-        return inputs_embeds, extra_kwargs
+        if "mm_token_type_ids" in extra_kwargs:
+            mm_token_type_ids = extra_kwargs.pop("mm_token_type_ids")
+        elif pixel_values is None and pixel_values_videos is None:
+            # No actual vision data — treat all tokens as text so that
+            # get_rope_index does not try to consume image_grid_thw entries.
+            mm_token_type_ids = torch.zeros_like(input_ids)
+        else:
+            mm_token_type_ids = torch.zeros_like(input_ids)
+            mm_token_type_ids[input_ids == self.config.image_token_id] = 1
+            mm_token_type_ids[input_ids == self.config.video_token_id] = 2
+
+        return inputs_embeds, mm_token_type_ids, extra_kwargs
 
     def forward(
         self,
@@ -761,7 +907,7 @@ class VLM_Generator(Generator):
         **kwargs,
     ) -> CausalLMOutputWithPast:
         # 1) Obtain fused input embeddings and extra vision outputs
-        inputs_embeds, extra_kwargs = self.fuse_text_image_video(
+        inputs_embeds, mm_token_type_ids, extra_kwargs = self.fuse_text_image_video(
             input_ids=input_ids,
             pixel_values=pixel_values,
             pixel_values_videos=pixel_values_videos,
@@ -776,6 +922,7 @@ class VLM_Generator(Generator):
                 image_grid_thw=image_grid_thw,
                 video_grid_thw=video_grid_thw,
                 attention_mask=attention_mask,
+                mm_token_type_ids=mm_token_type_ids,
             )
             if self.position_id_processor is not None
             else None
@@ -805,7 +952,7 @@ class VLM_Generator(Generator):
         **kwargs,
     ) -> typing.Generator[tuple[torch.Tensor, ...], None, None]:
         # 1) Obtain fused input embeddings and extra vision outputs
-        inputs_embeds, extra_kwargs = self.fuse_text_image_video(
+        inputs_embeds, mm_token_type_ids, extra_kwargs = self.fuse_text_image_video(
             input_ids=input_ids,
             pixel_values=pixel_values,
             pixel_values_videos=pixel_values_videos,
@@ -820,6 +967,7 @@ class VLM_Generator(Generator):
                 image_grid_thw=image_grid_thw,
                 video_grid_thw=video_grid_thw,
                 attention_mask=attention_mask,
+                mm_token_type_ids=mm_token_type_ids,
             )
             if self.position_id_processor is not None
             else None

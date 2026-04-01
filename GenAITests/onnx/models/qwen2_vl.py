@@ -11,16 +11,16 @@ from transformers import AutoConfig
 
 from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel
-from aimet_onnx.common.defs import float32
 
 from GenAITests.shared.helpers.model_cache import DiskBackedModelCache, ModelCacheEntry
-from GenAITests.shared.helpers.precision_config import PrecisionConfig
+from GenAITests.shared.helpers.precision_config import PrecisionConfig, float16, float32
 from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.qwen2_vl import (
     Qwen_25_VL,
     Qwen2VLVisualWrapper,
 )
+from GenAITests.shared.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
@@ -34,6 +34,7 @@ from GenAITests.onnx.models.utils.quantsim_utils import (
     _set_lm_head_precision,
     _apply_block_granularity_to_decoder_stack,
     _remove_activation_quantizers,
+    quantize_embedding_weights,
     get_ort_providers,
     AttributePatch,
 )
@@ -50,11 +51,13 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
         small_model: bool = False,
         precision: PrecisionConfig | None = None,
         model_cache: DiskBackedModelCache | None = None,
+        image_size: tuple[int, int] | None = None,
         *args,
         **kwargs,
     ):
         if precision is None:
             precision = PrecisionConfig()
+        precision.ensure_visual_defaults()
 
         if model_id is None:
             model_id = cls.DEFAULT_MODEL_ID
@@ -70,6 +73,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
                         "sequence_length": sequence_length,
                         "context_length": context_length,
                         "small_model": small_model,
+                        "image_size": image_size,
                     }
                     key = DiskBackedModelCache.build_key(params)
                     entry = model_cache.get_or_export(
@@ -80,6 +84,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
                             sequence_length,
                             small_model,
                             tmpdir,
+                            image_size=image_size,
                         ),
                         metadata=params,
                     )
@@ -90,6 +95,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
                     sequence_length,
                     small_model,
                     get_model_checkpoint_path(model_id),
+                    image_size=image_size,
                 )
             backbone_onnx_model = entry.backbone
             visual_onnx_model = entry.visual
@@ -111,16 +117,8 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
 
         default_param_qtype = precision.blocks["default"].qtype
         default_activation_qtype = precision.activations
-        visual_param_qtype = (
-            precision.visual_weight.qtype
-            if precision.visual_weight
-            else default_param_qtype
-        )
-        visual_activation_qtype = (
-            precision.visual_activations
-            if precision.visual_activations is not None
-            else default_activation_qtype
-        )
+        visual_param_qtype = precision.visual_weight.qtype
+        visual_activation_qtype = precision.visual_activations
 
         with (
             AttributePatch(quantsim, "op_types_to_tie_qtzrs", ["Concat"]),
@@ -165,10 +163,13 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
         # Apply block-level granularity (LPBQ/BQ) if configured
         _apply_block_granularity_to_decoder_stack(backbone_quantsim, precision)
 
-        if default_activation_qtype == float32:
+        if default_activation_qtype in (float16, float32):
             _remove_activation_quantizers(backbone_quantsim)
-        if visual_activation_qtype == float32:
+        if visual_activation_qtype in (float16, float32):
             _remove_activation_quantizers(visual_quantsim)
+
+        if precision.embedding not in (float16, float32):
+            quantize_embedding_weights(embedding, precision.embedding.bits)
 
         return SimCollection(
             backbone=backbone_quantsim,
@@ -186,6 +187,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
         sequence_length: int,
         small_model: bool,
         directory: str,
+        image_size: tuple[int, int] | None = None,
     ) -> ModelCacheEntry:
         """Export the torch model to ONNX and return a :class:`ModelCacheEntry`."""
         model = cls.instantiate_model(model_id, small_model).to(dtype=torch.float32)
@@ -194,6 +196,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
             model.model.language_model,
             lm_head=model.lm_head,
             use_inputs_embeds=True,
+            cache_type=cls.get_cache_type(),
         )
         traceable_visual = Qwen2VLVisualWrapper(model.model.visual)
 
@@ -203,16 +206,23 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
             context_length=context_length,
             sequence_length=sequence_length,
             sample_input=cls.get_sample_backbone_inputs(
-                traceable_backbone, context_length, sequence_length
+                traceable_backbone,
+                context_length,
+                sequence_length,
+                layer_cache_descriptors=build_layer_cache_descriptors(
+                    traceable_backbone.config
+                ),
             ),
             input_names=cls.get_backbone_input_names(
-                model.config.text_config.num_hidden_layers
+                build_layer_cache_descriptors(traceable_backbone.config)
             ),
             output_names=cls.get_backbone_output_names(
-                model.config.text_config.num_hidden_layers
+                build_layer_cache_descriptors(traceable_backbone.config)
             ),
             fp_visual_model=traceable_visual,
-            sample_visual_input=cls.get_sample_vision_inputs(model.config),
+            sample_visual_input=cls.get_sample_vision_inputs(
+                model.config, image_size=image_size
+            ),
             visual_input_names=cls.get_visual_input_names(),
             visual_output_names=cls.get_visual_output_names(),
         )

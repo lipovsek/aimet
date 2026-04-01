@@ -7,6 +7,62 @@ import torch
 from transformers import PreTrainedModel, DynamicCache
 
 
+def compute_vision_input_shapes(
+    image_size: tuple[int, int],
+    vision_config,
+) -> tuple[int, int, int, int]:
+    """Compute vision encoder input shapes from a target image size.
+
+    Args:
+        image_size: Target (width, height) that images will be resized to.
+            Follows PIL convention.
+        vision_config: HF vision config with ``patch_size``,
+            ``spatial_merge_size``, ``temporal_patch_size``, and
+            ``in_channels`` attributes.
+
+    Returns:
+        (num_patches, pixel_dim, h_patches, w_patches)
+    """
+    w, h = image_size
+    patch_size = vision_config.patch_size
+    merge_size = vision_config.spatial_merge_size
+    temporal_patch_size = vision_config.temporal_patch_size
+    in_channels = vision_config.in_channels
+
+    # The HF processor rounds image dimensions down to the nearest
+    # multiple of (patch_size * spatial_merge_size).
+    factor = patch_size * merge_size
+    h_patches = (h // factor) * merge_size
+    w_patches = (w // factor) * merge_size
+
+    num_patches = h_patches * w_patches
+    pixel_dim = in_channels * temporal_patch_size * patch_size * patch_size
+
+    return num_patches, pixel_dim, h_patches, w_patches
+
+
+class PositionIdContext:
+    """Minimal stand-in for ``self`` when calling HF's unbound ``get_rope_index``.
+
+    HF's ``get_rope_index`` is an instance method that accesses ``self.config``
+    and may call sibling methods (e.g. ``self.get_vision_position_ids``).  In our
+    framework the position-ID computation must work without a real HF model
+    instance (e.g. in the ONNX path).  This proxy satisfies the ``self`` contract
+    by holding the config and delegating any other attribute lookups to the
+    original HF model *class* (bound to this proxy).
+    """
+
+    def __init__(self, config, model_cls):
+        self.config = config
+        self._model_cls = model_cls
+
+    def __getattr__(self, name):
+        attr = getattr(self._model_cls, name)
+        if callable(attr):
+            return attr.__get__(self, type(self))
+        return attr
+
+
 class ONNXExportableModuleWithCache(torch.nn.Module):
     """
     Helper class to enable Torch JIT trace and ONNX export of HuggingFace models
@@ -19,18 +75,24 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
         lm_head: torch.nn.Module | None = None,
         use_inputs_embeds: bool = False,
         extra_input_names: tuple[str, ...] = (),
+        cache_type: type = DynamicCache,
     ):
         """
         :param model: The HuggingFace model to wrap
         :param lm_head: Optional LM head (for VLM backbones where head is separate)
         :param use_inputs_embeds: If True, first input is inputs_embeds; else input_ids
         :param extra_input_names: Names of additional inputs to pass through to model
+        :param cache_type: Cache class to construct from flattened KV pairs.
+            Defaults to ``DynamicCache``. Models with hybrid attention (e.g.
+            mixing full attention with linear/recurrent layers) can pass
+            ``HybridCache`` or another cache class.
         """
         super().__init__()
         self.model = model
         self.lm_head = lm_head
         self.use_inputs_embeds = use_inputs_embeds
         self.extra_input_names = extra_input_names
+        self.cache_type = cache_type
 
     @property
     def device(self):
@@ -46,6 +108,15 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
     def config(self):
         """Return model config"""
         return self.model.config
+
+    def _build_cache(self, past_key_values: tuple[tuple[torch.Tensor, ...], ...]):
+        """Build a cache object from flattened state pairs using ``self.cache_type``."""
+        kv_cache = self.cache_type()
+        for layer_idx, (k, v) in enumerate(
+            zip(past_key_values[::2], past_key_values[1::2])
+        ):
+            kv_cache.update(k, v, layer_idx, {})
+        return kv_cache
 
     # pylint: disable=keyword-arg-before-vararg
     def forward(
@@ -82,12 +153,8 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
             past_key_values = args
             extra_kwargs = {}
 
-        # Build DynamicCache from flattened KV pairs
-        kv_cache = DynamicCache()
-        for layer_idx, (k, v) in enumerate(
-            zip(past_key_values[::2], past_key_values[1::2])
-        ):
-            kv_cache.update(k, v, layer_idx, {})
+        # Build cache from flattened state pairs
+        kv_cache = self._build_cache(past_key_values)
 
         # Build model kwargs
         model_kwargs = {

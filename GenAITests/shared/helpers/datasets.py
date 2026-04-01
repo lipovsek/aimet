@@ -5,6 +5,7 @@
 
 from abc import ABC, abstractmethod
 import ast
+import inspect
 import re
 
 from datasets import (
@@ -33,6 +34,70 @@ class Dataset(ABC):
         cls, tokenizer: PreTrainedTokenizer, context_length: int, split: str
     ):
         """Load encoded and chunked dataset"""
+
+
+class InterleavedDatasetWrapper(torch.utils.data.Dataset):
+    """Interleaves entries from multiple datasets in round-robin order.
+
+    Items are drawn alternately: dataset_0[0], dataset_1[0], dataset_0[1],
+    dataset_1[1], ... until the shortest dataset is exhausted.
+    """
+
+    def __init__(self, datasets: list):
+        self.datasets = datasets
+        self._min_len = min(len(d) for d in datasets)
+
+    def __len__(self):
+        return self._min_len * len(self.datasets)
+
+    def __getitem__(self, index: int):
+        ds_idx = index % len(self.datasets)
+        item_idx = index // len(self.datasets)
+        return self.datasets[ds_idx][item_idx]
+
+
+@YAMLConfigParser.register_dataset
+class Interleaved(Dataset):
+    """Meta-dataset that interleaves entries from multiple sub-datasets.
+
+    YAML usage::
+
+        dataset:
+          name: Interleaved
+          source_datasets:
+            - name: Wikitext
+              split: train
+            - name: AOKVQA
+              split: train
+
+    Parent kwargs like ``image_size`` are automatically forwarded to
+    sub-datasets whose ``load_encoded_dataset`` signature accepts them.
+    """
+
+    @staticmethod
+    def load_dataset(split: str):
+        raise NotImplementedError("Interleaved does not support load_dataset directly.")
+
+    @classmethod
+    def load_encoded_dataset(cls, tokenizer, context_length, source_datasets, **kwargs):
+        if not source_datasets or not isinstance(source_datasets, list):
+            raise ValueError(
+                "Interleaved dataset requires a 'source_datasets' list with at least one entry."
+            )
+        loaded = []
+        for sub_config in source_datasets:
+            sub_config = sub_config.copy()
+            sub_name = sub_config.pop("name")
+            sub_cls = YAMLConfigParser.get_dataset(sub_name)
+            # Forward parent kwargs (e.g. image_size) to sub-datasets that accept them
+            sig = inspect.signature(sub_cls.load_encoded_dataset)
+            for key, value in kwargs.items():
+                if key in sig.parameters:
+                    sub_config.setdefault(key, value)
+            loaded.append(
+                sub_cls.load_encoded_dataset(tokenizer, context_length, **sub_config)
+            )
+        return InterleavedDatasetWrapper(loaded)
 
 
 class ChunkedDataset(torch.utils.data.Dataset):
@@ -422,14 +487,19 @@ class MMMLU(Dataset):
 class LazyMMMUDataset(torch.utils.data.Dataset):
     """Lazy MMMU dataset, to avoid ballooning memory costs once samples are processed."""
 
-    def __init__(self, raw_dataset, processor, context_length):
+    def __init__(self, raw_dataset, processor, context_length, image_size=None):
         self.raw_dataset = raw_dataset
         self.processor = processor
         self.tokenizer = getattr(processor, "tokenizer", processor)
         self.context_length = context_length
+        self.image_size = tuple(image_size) if image_size is not None else None
 
     def __len__(self):
         return len(self.raw_dataset)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
 
     def __getitem__(self, index):
         sample = self.raw_dataset[index]
@@ -441,27 +511,42 @@ class LazyMMMUDataset(torch.utils.data.Dataset):
             else sample["options"]
         )
 
-        # Collect all images
-        images = [sample.get(f"image_{i}") for i in range(1, 8)]
+        # Collect all images by slot (1-indexed)
+        image_slots = {i: sample.get(f"image_{i}") for i in range(1, 8)}
+        valid_images = [img for img in image_slots.values() if img is not None]
 
         # Format answer choices
         choices_text = "\n".join(
             f"{chr(65 + i)}. {opt}" for i, opt in enumerate(options)
         )
 
-        # Build content blocks, splitting on <image N> placeholders
+        # Build content blocks, splitting on <image N> placeholders.
+        # Each reference (even repeated ones like <image 1> appearing twice)
+        # becomes an image content block, and the corresponding image is
+        # appended to ordered_images so the processor sees a 1:1 mapping
+        # between placeholders and pixel data.
         content = []
+        ordered_images = []
         parts = re.split(r"(<image \d+>)", question)
         for part in parts:
-            if re.match(r"<image \d+>", part):
-                content.append({"type": "image"})
+            m = re.match(r"<image (\d+)>", part)
+            if m:
+                img_idx = int(m.group(1))
+                img = image_slots.get(img_idx)
+                if img is not None:
+                    content.append({"type": "image"})
+                    ordered_images.append(img)
+                else:
+                    # Reference to a non-existent image — keep as text
+                    content.append({"type": "text", "text": part})
             elif part.strip():
                 content.append({"type": "text", "text": part})
 
         # If no placeholders were found but images exist, prepend them
-        if not any(c.get("type") == "image" for c in content) and images:
-            for _ in images:
+        if not ordered_images and valid_images:
+            for img in valid_images:
                 content.insert(0, {"type": "image"})
+            ordered_images = list(valid_images)
 
         content.append({"type": "text", "text": f"\n{choices_text}\nAnswer:"})
 
@@ -470,12 +555,14 @@ class LazyMMMUDataset(torch.utils.data.Dataset):
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
+        if self.image_size is not None:
+            ordered_images = [image.resize(self.image_size) for image in ordered_images]
 
         # Use the full processor with images so that image placeholder tokens
         # are expanded to match the actual image dimensions.
         inputs = self.processor(
             text=[text],
-            images=[image for image in images if image is not None],
+            images=ordered_images if ordered_images else None,
             return_tensors="pt",
         )
 
@@ -483,13 +570,12 @@ class LazyMMMUDataset(torch.utils.data.Dataset):
         inputs["input_ids"] = inputs["input_ids"][:, -self.context_length :]
         inputs["attention_mask"] = inputs["attention_mask"][:, -self.context_length :]
 
-        # Tokenize the answer label
-        tokenized_answer = self.tokenizer(
-            sample["answer"],
-            return_token_type_ids=False,
-            add_special_tokens=False,
-        )
-        inputs["label"] = tokenized_answer["input_ids"]
+        # Store answer and number of choices for the metric
+        inputs["label"] = sample["answer"]
+        inputs["num_options"] = len(options)
+
+        # Remove token type IDS if they exist - recomputed on the fly
+        inputs.pop("mm_token_type_ids", None)
 
         return inputs
 
@@ -508,9 +594,13 @@ class MMMU(Dataset):
         return combined.filter(lambda x: x["question_type"] == "multiple-choice")
 
     @classmethod
-    def load_encoded_dataset(cls, processor, context_length, split="validation"):
+    def load_encoded_dataset(
+        cls, processor, context_length, split="validation", image_size=None
+    ):
         raw_dataset = cls.load_dataset(split)
-        return LazyMMMUDataset(raw_dataset, processor, context_length)
+        return LazyMMMUDataset(
+            raw_dataset, processor, context_length, image_size=image_size
+        )
 
 
 @YAMLConfigParser.register_dataset
@@ -539,3 +629,111 @@ class C4(Dataset):
         )
 
         return ChunkedDataset(encoded_dataset_split, context_length)
+
+
+class LazyAOKVQADataset(torch.utils.data.Dataset):
+    """Lazy A-OKVQA dataset for multimodal backbone calibration.
+
+    Each sample is an image + question processed through the full VLM processor,
+    producing fused input_ids, attention_mask, pixel_values, and image_grid_thw.
+
+    For the train split, the correct answer choice and the first rationale are
+    appended as an assistant turn, giving the quantizer longer, more
+    representative sequences to calibrate on.
+    """
+
+    def __init__(
+        self,
+        raw_dataset,
+        processor,
+        context_length,
+        image_size=None,
+        include_answer=False,
+    ):
+        self.raw_dataset = raw_dataset
+        self.processor = processor
+        self.tokenizer = getattr(processor, "tokenizer", processor)
+        self.context_length = context_length
+        self.image_size = tuple(image_size) if image_size is not None else None
+        self.include_answer = include_answer
+
+    def __len__(self):
+        return len(self.raw_dataset)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    def __getitem__(self, index):
+        sample = self.raw_dataset[index]
+
+        image = sample["image"]
+        question = sample["question"]
+        choices = sample["choices"]
+
+        choices_text = "\n".join(
+            f"{chr(65 + i)}. {opt}" for i, opt in enumerate(choices)
+        )
+
+        content = [
+            {"type": "image"},
+            {"type": "text", "text": f"{question}\n{choices_text}\nAnswer:"},
+        ]
+
+        messages = [{"role": "user", "content": content}]
+
+        if self.include_answer:
+            answer_idx = sample["correct_choice_idx"]
+            answer_letter = chr(65 + answer_idx)
+            answer_text = f"{answer_letter}. {choices[answer_idx]}"
+            rationales = sample.get("rationales", [])
+            if rationales:
+                answer_text += f"\n\nReasoning: {rationales[0]}"
+            messages.append({"role": "assistant", "content": answer_text})
+
+        text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=not self.include_answer,
+        )
+
+        if self.image_size is not None:
+            image = image.resize(self.image_size)
+
+        inputs = self.processor(
+            text=[text],
+            images=[image],
+            return_tensors="pt",
+        )
+
+        inputs["input_ids"] = inputs["input_ids"][:, -self.context_length :]
+        inputs["attention_mask"] = inputs["attention_mask"][:, -self.context_length :]
+        inputs.pop("mm_token_type_ids", None)
+
+        return inputs
+
+
+@YAMLConfigParser.register_dataset
+class AOKVQA(Dataset):
+    """A-OKVQA dataset for multimodal backbone calibration (CC BY 4.0)."""
+
+    @staticmethod
+    def load_dataset(split: str = "train"):
+        return load_dataset("HuggingFaceM4/A-OKVQA", split=split)
+
+    @classmethod
+    def load_encoded_dataset(
+        cls,
+        processor,
+        context_length,
+        split="train",
+        image_size=None,
+    ):
+        raw_dataset = cls.load_dataset(split)
+        return LazyAOKVQADataset(
+            raw_dataset,
+            processor,
+            context_length,
+            image_size=image_size,
+            include_answer=(split == "train"),
+        )

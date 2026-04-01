@@ -68,14 +68,21 @@ class MetricResult:
 
 
 @dataclass
-class ComponentRecipeStats:
-    """Dataclass to hold recipe, dataset, and profiling info for a model component"""
+class RecipeStepStats:
+    """Dataclass to hold recipe, dataset, and profiling info for a single recipe step"""
 
     recipe_name: str
     recipe_kwargs: dict
     dataset_name: str
     dataset_kwargs: dict
     profiler: GPUMeter = None
+
+
+@dataclass
+class ComponentRecipeStats:
+    """Dataclass to hold a chain of recipe steps for a model component"""
+
+    steps: list[RecipeStepStats]
 
 
 def recursive_update(d, u):
@@ -134,6 +141,59 @@ def _collect_environment():
     return env
 
 
+def _aggregate_resource_utilization(
+    steps: list[RecipeStepStats], remove_finegrained: bool = False
+) -> dict:
+    """Aggregate resource utilization across recipe steps for backward compat."""
+    profilers = [s.profiler for s in steps if s.profiler is not None]
+    if not profilers:
+        return {}
+    result = {
+        "elapsed_ms": sum(p.elapsed_ms for p in profilers),
+        "cuda_peak_mb": max((p.cuda_peak_mb for p in profilers), default=0),
+        "cpu_peak_mb": max((p.cpu_peak_mb for p in profilers), default=0),
+    }
+    if not remove_finegrained:
+        # Concatenate fine-grained traces across steps
+        cuda_traces = [
+            t for p in profilers if p.cuda_running_mb for t in p.cuda_running_mb
+        ]
+        cpu_traces = [
+            t for p in profilers if p.cpu_running_mb for t in p.cpu_running_mb
+        ]
+        if cuda_traces:
+            result["cuda_running_mb"] = cuda_traces
+        if cpu_traces:
+            result["cpu_running_mb"] = cpu_traces
+    return {k: v for k, v in result.items() if v is not None}
+
+
+def _serialize_component_stats(
+    stats: ComponentRecipeStats, remove_finegrained: bool = False
+) -> dict:
+    """Serialize a ComponentRecipeStats to a dict with recipe_chain + backward-compat fields."""
+    chain = [
+        {
+            "recipe_name": step.recipe_name,
+            "recipe_kwargs": step.recipe_kwargs,
+            "dataset_name": step.dataset_name,
+            "dataset_kwargs": step.dataset_kwargs,
+            "resource_utilization": convert_gpu_meter_to_dict(
+                step.profiler, remove_finegrained=remove_finegrained
+            ),
+        }
+        for step in stats.steps
+    ]
+    # Backward-compat summary fields
+    return {
+        "steps": chain,
+        "recipe_name": "+".join(step.recipe_name for step in stats.steps),
+        "resource_utilization": _aggregate_resource_utilization(
+            stats.steps, remove_finegrained=remove_finegrained
+        ),
+    }
+
+
 def write_stats_to_disk(
     output_folder: str,
     filename: str,
@@ -144,6 +204,7 @@ def write_stats_to_disk(
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
     precision: dict | None = None,
+    run_group: str | None = None,
 ):
     _write_stats_to_json(
         str(os.path.join(output_folder, filename + ".json")),
@@ -154,6 +215,7 @@ def write_stats_to_disk(
         accuracy_results,
         export_location,
         precision,
+        run_group,
     )
 
     _write_stats_to_csv(
@@ -165,6 +227,7 @@ def write_stats_to_disk(
         accuracy_results,
         export_location,
         precision,
+        run_group,
     )
 
 
@@ -177,6 +240,7 @@ def _write_stats_to_csv(
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
     precision: dict | None = None,
+    run_group: str | None = None,
 ):
     def dict_to_postgres_csv_json_field(d):
         json_str = json.dumps(d, separators=(",", ":"))  # Compact JSON
@@ -189,17 +253,9 @@ def _write_stats_to_csv(
         for result in accuracy_results
     }
 
-    # Convert components to serializable dict with resource_utilization
+    # Convert components to serializable dict with recipe_chain + backward-compat summary
     components_dict = {
-        name: {
-            "recipe_name": stats.recipe_name,
-            "recipe_kwargs": stats.recipe_kwargs,
-            "dataset_name": stats.dataset_name,
-            "dataset_kwargs": stats.dataset_kwargs,
-            "resource_utilization": convert_gpu_meter_to_dict(
-                stats.profiler, remove_finegrained=True
-            ),
-        }
+        name: _serialize_component_stats(stats, remove_finegrained=True)
         for name, stats in components.items()
     }
 
@@ -212,6 +268,7 @@ def _write_stats_to_csv(
         dict_to_postgres_csv_json_field(accuracy_table),
         export_location if export_location is not None else "",
         dict_to_postgres_csv_json_field(_collect_environment()),
+        run_group or "",
     ]
 
     # Use file lock to ensure process-safe writes
@@ -229,6 +286,7 @@ def _write_stats_to_csv(
                         "accuracy_results",
                         "export",
                         "environment",
+                        "run_group",
                     ]
                 )
 
@@ -246,6 +304,7 @@ def _write_stats_to_json(
     accuracy_results: list[MetricResult],
     export_location: str | None = None,
     precision: dict | None = None,
+    run_group: str | None = None,
 ):
     """Helper function to write collected stats to disk, only overwriting newly collected fields.
 
@@ -258,13 +317,7 @@ def _write_stats_to_json(
         "precision": precision or {},
         "environment": _collect_environment(),
         "components": {
-            comp_name: {
-                "recipe": comp_stats.recipe_name,
-                "recipe_kwargs": comp_stats.recipe_kwargs,
-                "dataset": comp_stats.dataset_name,
-                "dataset_kwargs": comp_stats.dataset_kwargs,
-                "resource_utilization": convert_gpu_meter_to_dict(comp_stats.profiler),
-            }
+            comp_name: _serialize_component_stats(comp_stats, remove_finegrained=False)
             for comp_name, comp_stats in components.items()
         },
     } | {
@@ -275,6 +328,9 @@ def _write_stats_to_json(
 
     if export_location is not None:
         stats["export"] = export_location
+
+    if run_group is not None:
+        stats["run_group"] = run_group
 
     # Use file lock to ensure process-safe read-modify-write
     with _file_lock(filename):

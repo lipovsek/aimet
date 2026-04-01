@@ -10,21 +10,28 @@ from aimet_torch.v2.quantsim.config_utils import (
 )
 from aimet_torch import QuantizationSimModel
 
-from GenAITests.shared.helpers.precision_config import PrecisionConfig, WeightPrecision
+from GenAITests.shared.helpers.precision_config import (
+    Granularity,
+    PrecisionConfig,
+    WeightPrecision,
+)
 
 
 def _apply_block_granularity_to_decoder_stack(
-    quantsim: QuantizationSimModel, precision: PrecisionConfig
+    quantsim: QuantizationSimModel, precision: PrecisionConfig, lm_head=None
 ):
     """Apply block-level granularity (LPBQ/BQ) to weight quantizers if configured."""
+    if lm_head is None:
+        lm_head = quantsim.model.model.lm_head
+
     block_prec = precision.blocks["default"]
     arg = lambda module: (
         isinstance(module, (QuantizedConv2d, QuantizedLinear))
         and module.param_quantizers["weight"]
         and module.param_quantizers["weight"].bitwidth == block_prec.qtype.bits
-        and module is not quantsim.model.model.lm_head
+        and module is not lm_head
     )
-    if block_prec.granularity == "LPBQ":
+    if block_prec.granularity == Granularity.LPBQ:
         set_grouped_blockwise_quantization_for_weights(
             sim=quantsim,
             arg=arg,
@@ -34,7 +41,7 @@ def _apply_block_granularity_to_decoder_stack(
             block_size=block_prec.block_size,
             block_grouping=-1,
         )
-    elif block_prec.granularity == "BQ":
+    elif block_prec.granularity == Granularity.BQ:
         set_blockwise_quantization_for_weights(
             sim=quantsim,
             arg=arg,
@@ -44,11 +51,13 @@ def _apply_block_granularity_to_decoder_stack(
         )
 
 
-def _set_lm_head_precision(quantsim: QuantizationSimModel, precision: WeightPrecision):
-    # todo: update placing LM head in LPBQ/BQ if specified
-    # todo: update this to support weights in O, I format (like from torch.onnx.export)
-    arg = lambda module: (module is quantsim.model.model.lm_head)
-    if precision.granularity == "LPBQ":
+def _set_lm_head_precision(
+    quantsim: QuantizationSimModel, precision: WeightPrecision, lm_head=None
+):
+    if lm_head is None:
+        lm_head = quantsim.model.model.lm_head
+    arg = lambda module: (module is lm_head)
+    if precision.granularity == Granularity.LPBQ:
         set_grouped_blockwise_quantization_for_weights(
             sim=quantsim,
             arg=arg,
@@ -58,7 +67,7 @@ def _set_lm_head_precision(quantsim: QuantizationSimModel, precision: WeightPrec
             block_size=precision.block_size,
             block_grouping=-1,
         )
-    elif precision.granularity == "BQ":
+    elif precision.granularity == Granularity.BQ:
         set_blockwise_quantization_for_weights(
             sim=quantsim,
             arg=arg,
@@ -67,6 +76,4 @@ def _set_lm_head_precision(quantsim: QuantizationSimModel, precision: WeightPrec
             block_size=precision.block_size,
         )
     else:
-        quantsim.model.model.lm_head.param_quantizers[
-            "weight"
-        ].bitwidth = precision.qtype.bits
+        lm_head.param_quantizers["weight"].bitwidth = precision.qtype.bits

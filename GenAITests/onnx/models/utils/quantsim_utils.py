@@ -6,7 +6,7 @@
 import torch
 import onnx
 
-from aimet_onnx.common.defs import qtype, float16, float32
+from aimet_onnx.common.defs import qtype
 from aimet_onnx.quantsim import (
     QuantizationSimModel,
     set_grouped_blockwise_quantization_for_weights,
@@ -14,8 +14,31 @@ from aimet_onnx.quantsim import (
     set_lpbq_for_params,
 )
 
-from GenAITests.shared.helpers.precision_config import PrecisionConfig, WeightPrecision
+from GenAITests.shared.helpers.precision_config import (
+    Granularity,
+    PrecisionConfig,
+    WeightPrecision,
+    float16,
+    float32,
+)
 from GenAITests.onnx.helpers.quant_recipes import _get_lm_head_node_names
+
+
+def quantize_embedding_weights(embedding: torch.nn.Module, n_bits: int):
+    """Quantize embedding weights in-place using per-tensor asymmetric quantization.
+
+    Derives scale and offset from the min/max of the weight tensor, quantizes
+    to ``n_bits`` integers, then dequantizes back to a regular float tensor.
+    """
+    w = embedding.weight.data
+    qmin = -(2 ** (n_bits - 1))
+    qmax = 2 ** (n_bits - 1) - 1
+    w_min = w.min()
+    w_max = w.max()
+    scale = (w_max - w_min) / (qmax - qmin)
+    offset = torch.round(w_min / scale) - qmin
+    w_q = torch.clamp(torch.round(w / scale + offset), qmin, qmax)
+    embedding.weight.data = (w_q - offset) * scale
 
 
 def get_ort_providers(
@@ -116,7 +139,7 @@ def _set_lm_head_precision(
 ):
     # todo: update placing LM head in LPBQ/BQ if specified
     # todo: update this to support weights in O, I format (like from torch.onnx.export)
-    if precision.granularity == "LPBQ":
+    if precision.granularity == Granularity.LPBQ:
         set_lpbq_for_params(
             sim=quantsim_model,
             op_types=("Gemm", "MatMul", "Conv"),
@@ -124,7 +147,7 @@ def _set_lm_head_precision(
             block_size=precision.block_size,
             nodes_to_include=_get_lm_head_node_names(quantsim_model),
         )
-    elif precision.granularity == "PCQ":
+    elif precision.granularity == Granularity.PCQ:
         for weight in _get_lm_head_weights(quantsim_model.model.model):
             quantizer = quantsim_model.qc_quantize_op_dict[weight.name]
             quantizer.set_bitwidth(precision.qtype.bits)
@@ -151,7 +174,7 @@ def _apply_block_granularity_to_decoder_stack(
 ):
     """Apply block-level granularity (LPBQ/BQ) to weight quantizers if configured."""
     block_prec = precision.blocks["default"]
-    if block_prec.granularity == "LPBQ":
+    if block_prec.granularity == Granularity.LPBQ:
         set_grouped_blockwise_quantization_for_weights(
             sim=quantsim_model,
             op_types=("Gemm", "MatMul", "Conv"),
@@ -160,7 +183,7 @@ def _apply_block_granularity_to_decoder_stack(
             block_size=block_prec.block_size,
             nodes_to_exclude=_get_lm_head_node_names(quantsim_model),
         )
-    elif block_prec.granularity == "BQ":
+    elif block_prec.granularity == Granularity.BQ:
         set_blockwise_quantization_for_weights(
             sim=quantsim_model,
             op_types=("Gemm", "MatMul", "Conv"),
@@ -175,4 +198,4 @@ def _remove_activation_quantizers(quantsim_model: QuantizationSimModel):
     for op_name, qc_op in quantsim_model.qc_quantize_op_dict.items():
         if op_name in quantsim_model.activation_names:
             qc_op.reset_encoding_stats()
-            qc_op.enabled(False)
+            qc_op.enabled = False

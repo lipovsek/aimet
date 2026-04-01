@@ -7,15 +7,16 @@ from __future__ import annotations
 
 import torch
 
-from aimet_torch.common.defs import QuantScheme, float16, float32
+from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.nn.true_quant import QuantizationMixin
+from aimet_torch.v2.nn import compute_param_encodings
 from aimet_torch.v2.utils import remove_activation_quantizers
 from aimet_torch.v2.nn.transformers.models.qwen3_vl.modeling_qwen3_vl import (
     QuantizedQwen3VLTextRMSNorm,
 )
 
-from GenAITests.shared.helpers.precision_config import PrecisionConfig
+from GenAITests.shared.helpers.precision_config import PrecisionConfig, float16, float32
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.models.base import SimCollection
 from GenAITests.shared.models.qwen3_vl import (
@@ -23,6 +24,7 @@ from GenAITests.shared.models.qwen3_vl import (
     Qwen3VLVisualWrapper,
 )
 from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAITests.shared.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAITests.torch.models.utils.quantsim_utils import (
     _apply_block_granularity_to_decoder_stack,
     _set_lm_head_precision,
@@ -40,20 +42,22 @@ class Qwen_3_VL_Torch(Qwen_3_VL):
         small_model: bool = False,
         dtype: torch.dtype = torch.float32,
         precision: PrecisionConfig | None = None,
+        image_size: tuple[int, int] | None = None,
         *args,
         **kwargs,
     ) -> SimCollection:
         if precision is None:
             precision = PrecisionConfig()
+        precision.ensure_visual_defaults()
 
         model = cls.instantiate_model(model_id, small_model)
         model = model.to(dtype=dtype)
 
         default_param_bw = precision.blocks["default"].qtype.bits
         default_output_bw = (
-            precision.activations.bits
-            if precision.activations not in (float16, float32)
-            else 16
+            16
+            if precision.activations in (float16, float32)
+            else precision.activations.bits
         )
 
         # 1) Wrap LLM model to make it traceable
@@ -63,6 +67,7 @@ class Qwen_3_VL_Torch(Qwen_3_VL):
             lm_head=model.lm_head,
             use_inputs_embeds=True,
             extra_input_names=cls.get_visual_output_names()[1:],
+            cache_type=cls.get_cache_type(),
         )
         language_sim = QuantizationSimModel(
             model=traceable_backbone,
@@ -71,6 +76,9 @@ class Qwen_3_VL_Torch(Qwen_3_VL):
                 traceable_backbone,
                 context_length=context_length,
                 sequence_length=sequence_length,
+                layer_cache_descriptors=build_layer_cache_descriptors(
+                    model.config.text_config
+                ),
             ),
             default_output_bw=default_output_bw,
             default_param_bw=default_param_bw,
@@ -86,28 +94,27 @@ class Qwen_3_VL_Torch(Qwen_3_VL):
                 module.param_quantizers["weight"].bitwidth = 16
 
         # Set LM Head precision if specified
-        _set_lm_head_precision(language_sim, precision.lm_head)
+        _set_lm_head_precision(
+            language_sim, precision.lm_head, lm_head=language_sim.model.lm_head
+        )
         # Apply block-level granularity (LPBQ/BQ) if configured
-        _apply_block_granularity_to_decoder_stack(language_sim, precision)
+        _apply_block_granularity_to_decoder_stack(
+            language_sim, precision, lm_head=language_sim.model.lm_head
+        )
 
         # 2) Wrap visual model to make it traceable
-        visual_param_bw = (
-            precision.visual_weight.qtype.bits
-            if precision.visual_weight
-            else default_param_bw
-        )
+        visual_param_bw = precision.visual_weight.qtype.bits
         visual_output_bw = (
-            precision.visual_activations.bits
-            if precision.visual_activations is not None
-            and precision.visual_activations not in (float16, float32)
-            else default_output_bw
+            16
+            if precision.visual_activations in (float16, float32)
+            else precision.visual_activations.bits
         )
         traceable_visual = Qwen3VLVisualWrapper(model.model.visual)
         visual_sim = QuantizationSimModel(
             model=traceable_visual,
             quant_scheme=QuantScheme.post_training_tf,
             dummy_input=cls.get_sample_vision_inputs(
-                model.config.vision_config.hidden_size
+                model.config, image_size=image_size
             ),
             default_output_bw=visual_output_bw,
             default_param_bw=visual_param_bw,
@@ -115,22 +122,25 @@ class Qwen_3_VL_Torch(Qwen_3_VL):
             config_file=cls.get_quantsim_config(),
         )
 
-        visual_activation_qtype = (
-            precision.visual_activations
-            if precision.visual_activations
-            else precision.activations
-        )
+        visual_activation_qtype = precision.visual_activations
         if visual_activation_qtype in (float16, float32):
             remove_activation_quantizers(visual_sim.model)
 
         # 3) Convert embedding table to quantized equivalent
-        if not isinstance(model.model.language_model.embed_tokens, QuantizationMixin):
+        quantized_embedding = precision.embedding not in (float16, float32)
+        if quantized_embedding and not isinstance(
+            model.model.language_model.embed_tokens, QuantizationMixin
+        ):
             model.model.language_model.embed_tokens = QuantizationMixin.from_module(
                 model.model.language_model.embed_tokens
             )
+            model.model.language_model.embed_tokens.param_quantizers[
+                "weight"
+            ].bitwidth = precision.embedding.bits
+            compute_param_encodings(model.model.language_model.embed_tokens)
 
         return SimCollection(
-            language_sim,
+            backbone=language_sim,
             visual=visual_sim,
             embedding=model.model.language_model.embed_tokens,
             config=model.config,

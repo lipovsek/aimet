@@ -73,27 +73,27 @@ class DiskBackedModelCache:
         backbone_path = entry_dir / "backbone" / "model.onnx"
         if not backbone_path.exists():
             # Stale index entry -- files were deleted externally
+            print(
+                f"Model cache: stale entry for key {key}. "
+                f"backbone_path={backbone_path} does not exist. "
+                f"cache_dir exists={self._cache_dir.exists()}, "
+                f"entry_dir exists={entry_dir.exists()}"
+            )
             del self._index["entries"][key]
             self._save_index()
             return None
 
-        # Staleness check: compare stored config against live HuggingFace config
-        config_path = entry_dir / "config.json"
-        # We can't do this for small models, since the live config would be different from the one on disk
+        # Staleness check: compare hub config hash at cache time vs now.
+        # We can't do this for small models, since the live config would be different.
         small_model = entry_meta.get("metadata", {}).get("small_model", False)
-        if (
-            config_path.exists()
-            and "model_id" in entry_meta.get("metadata", {})
-            and not small_model
-        ):
+        stored_hash = entry_meta.get("hub_config_hash")
+        model_id = entry_meta.get("metadata", {}).get("model_id")
+        if stored_hash is not None and model_id is not None and not small_model:
             try:
-                stored_config = AutoConfig.from_pretrained(str(config_path))
-                live_config = AutoConfig.from_pretrained(
-                    entry_meta["metadata"]["model_id"]
-                )
-                if not _equivalent_configs(stored_config, live_config):
+                current_hash = _hub_config_hash(model_id)
+                if stored_hash != current_hash:
                     print(
-                        f"Model cache: config changed for {entry_meta['metadata']['model_id']}, "
+                        f"Model cache: config changed for {model_id}, "
                         "invalidating cache entry."
                     )
                     shutil.rmtree(entry_dir, ignore_errors=True)
@@ -105,6 +105,7 @@ class DiskBackedModelCache:
                 pass
 
         # Load components from disk
+        config_path = entry_dir / "config.json"
         backbone = onnx.load(str(backbone_path))
 
         visual_path = entry_dir / "visual" / "model.onnx"
@@ -169,10 +170,25 @@ class DiskBackedModelCache:
         if entry.config is not None:
             entry.config.save_pretrained(str(entry_dir))
 
-        self._index["entries"][key] = {
+        # Compute hub config hash for staleness checks.
+        # entry.config may have been mutated at runtime (attn_implementation,
+        # torch_dtype, etc.), so we fetch the pristine hub config separately.
+        hub_config_hash = None
+        model_id = (metadata or {}).get("model_id")
+        if model_id is not None:
+            try:
+                hub_config_hash = _hub_config_hash(model_id)
+            except Exception:
+                pass
+
+        index_entry = {
             "metadata": metadata or {},
             "created": datetime.now().isoformat(),
         }
+        if hub_config_hash is not None:
+            index_entry["hub_config_hash"] = hub_config_hash
+
+        self._index["entries"][key] = index_entry
         self._save_index()
 
     def get_or_export(
@@ -224,12 +240,32 @@ class DiskBackedModelCache:
         return {"version": cls._INDEX_VERSION, "entries": {}}
 
 
-def _equivalent_configs(config_a, config_b) -> bool:
-    """Compare two HuggingFace configs by dict equality, ignoring private keys."""
-    config_dict_a = {
-        k: v for k, v in config_a.to_dict().items() if not k.startswith("_")
-    }
-    config_dict_b = {
-        k: v for k, v in config_b.to_dict().items() if not k.startswith("_")
-    }
-    return config_dict_a == config_dict_b
+def _strip_private_keys(obj):
+    """Recursively remove ``_``-prefixed keys from nested dicts.
+
+    VLM configs contain nested sub-configs (``text_config``, ``vision_config``,
+    etc.) that each carry their own ``_name_or_path`` which can resolve to
+    different HuggingFace cache snapshot paths between process invocations.
+    A top-level-only filter misses these, producing non-deterministic hashes.
+    """
+    if isinstance(obj, dict):
+        return {
+            k: _strip_private_keys(v) for k, v in obj.items() if not k.startswith("_")
+        }
+    if isinstance(obj, list):
+        return [_strip_private_keys(item) for item in obj]
+    return obj
+
+
+def _hub_config_hash(model_id: str) -> str:
+    """Return a deterministic hash of the pristine hub config for *model_id*.
+
+    Fetches the config directly from HuggingFace (or local cache) and hashes
+    its canonical JSON representation.  Private keys (``_``-prefixed) are
+    recursively excluded so that local runtime metadata (like snapshot paths
+    in nested sub-configs) does not affect the hash.
+    """
+    config = AutoConfig.from_pretrained(model_id)
+    config_dict = _strip_private_keys(config.to_dict())
+    canonical = json.dumps(config_dict, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
