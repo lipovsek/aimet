@@ -2519,6 +2519,7 @@ def test_export_creates_directory_if_not_exists(tmp_path):
         lambda: test_models.StandalonePreparedConstRescale(3.0, divide=False),
         lambda: test_models.ModelWithFunctionalDiv(),
         lambda: test_models.DivWithDataMovement(),
+        lambda: test_models.RescaleModelWithSharedScaleFactor(),
     ],
 )
 def test_aimet_torch_export_with_propagated_rescale_encodings(
@@ -2634,6 +2635,7 @@ def test_aimet_torch_export_with_propagated_rescale_encodings(
         lambda: test_models.ModelWithFunctionalDiv(),
         lambda: test_models.DivWithDataMovement(),
         lambda: test_models.ModelWithReversedMulOrdering(),
+        lambda: test_models.RescaleModelWithSharedScaleFactor(),
     ],
 )
 def test_sim_onnx_export_with_propagated_rescale_encodings(

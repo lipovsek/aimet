@@ -1402,7 +1402,7 @@ def _derive_const_rescale_op_output_encodings(
             node.input[1], constants, base_dir
         ):
             inp_idx, scale_idx = scale_idx, inp_idx
-        if node.input[scale_idx] in updated_encodings:
+        if node.input[scale_idx] in encodings:
             continue  # Skip if rescaling factor is quantized
         if not _is_constant_scalar(node.input[scale_idx], constants, base_dir):
             continue

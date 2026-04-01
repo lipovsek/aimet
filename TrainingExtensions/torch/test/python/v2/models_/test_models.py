@@ -1701,3 +1701,24 @@ class ModelWithReversedMulOrdering(torch.nn.Module):
     @staticmethod
     def dummy_input():
         return (torch.randn(1, 10),)
+
+
+class RescaleModelWithSharedScaleFactor(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(10, 10)
+        self.div = aimet_modules.Divide()
+        self.linear = torch.nn.Linear(10, 10)
+        self.div2 = aimet_modules.Divide()
+        self.scale_factor = torch.nn.Buffer(torch.tensor(2.0))
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = self.div(x, self.scale_factor)
+        x = self.linear(x)
+        x = self.div2(x, self.scale_factor)
+        return x
+
+    @staticmethod
+    def dummy_input():
+        return (torch.randn(1, 10),)
