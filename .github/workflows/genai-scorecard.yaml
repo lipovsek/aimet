@@ -382,3 +382,4 @@ jobs:
             ${{ needs.start-runners.outputs.onnx-label }},
             ${{ needs.start-runners.outputs.torch-label }}
           kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}

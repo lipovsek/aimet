@@ -5,9 +5,8 @@
 # registers it as a GitHub Actions ephemeral runner. Uses launch_pod.sh for
 # Argo submission and pod readiness polling.
 #
-# The registration token is generated upfront and passed as an Argo workflow
-# parameter. The token is valid for 1 hour, so the pod must come online
-# within that window.
+# The registration token is injected as a Kubernetes secret after the pod
+# starts, so scheduling delays do not expire the token.
 #
 # Usage:
 #   steps:
@@ -63,13 +62,18 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Install Argo CLI
+    - name: Install Argo CLI and kubectl
       shell: bash
       run: |
         if ! command -v argo &>/dev/null; then
           curl -fsSL "https://github.com/argoproj/argo-workflows/releases/download/v3.5.5/argo-linux-amd64.gz" | gunzip > /tmp/argo
           sudo install /tmp/argo /usr/local/bin/argo
           rm /tmp/argo
+        fi
+        if ! command -v kubectl &>/dev/null; then
+          curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+          sudo install /tmp/kubectl /usr/local/bin/kubectl
+          rm /tmp/kubectl
         fi
 
     - name: Configure cluster access
@@ -80,23 +84,6 @@ runs:
         chmod 600 ~/.kube/config
       env:
         KUBECONFIG_DATA: ${{ inputs.kubeconfig }}
-
-    - name: Generate runner registration token
-      id: token
-      shell: bash
-      run: |
-        RESPONSE=$(curl -s -X POST \
-          -H "Authorization: token ${{ inputs.pat-token }}" \
-          -H "Accept: application/vnd.github+json" \
-          "${{ github.api_url }}/repos/${{ github.repository }}/actions/runners/registration-token")
-        TOKEN=$(echo "$RESPONSE" | jq -r '.token')
-        if [ "$TOKEN" = "null" ] || [ -z "$TOKEN" ]; then
-          echo "Failed to generate runner registration token"
-          echo "$RESPONSE"
-          exit 1
-        fi
-        echo "::add-mask::$TOKEN"
-        echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
     - name: Start runner via launch_pod.sh
       id: start
@@ -111,7 +98,6 @@ runs:
           -c "${{ inputs.cpu-request }}" \
           -g "${{ inputs.gpu-request }}" \
           -m "${{ inputs.memory-request }}" \
-          -p "runner-token=${{ steps.token.outputs.token }}" \
           -p "runner-labels=${{ inputs.runner-id }}" \
           -p "run-id=${{ inputs.runner-id }}" \
           -p "docker-image=${{ inputs.docker-image }}" \
@@ -119,6 +105,30 @@ runs:
           -p "send-email-on-finish=false"
 
         echo "runner-label=${{ inputs.runner-id }}" >> "$GITHUB_OUTPUT"
+      env:
+        NAMESPACE: ${{ inputs.argo-namespace }}
+
+    - name: Generate and inject runner registration token
+      shell: bash
+      run: |
+        # Generate a fresh token now that the pod is running — the full
+        # 1-hour validity window is available for runner registration.
+        RESPONSE=$(curl -s -X POST \
+          -H "Authorization: token ${{ inputs.pat-token }}" \
+          -H "Accept: application/vnd.github+json" \
+          "${{ github.api_url }}/repos/${{ github.repository }}/actions/runners/registration-token")
+        TOKEN=$(echo "$RESPONSE" | jq -r '.token')
+        if [ "$TOKEN" = "null" ] || [ -z "$TOKEN" ]; then
+          echo "Failed to generate runner registration token"
+          echo "$RESPONSE"
+          exit 1
+        fi
+        echo "::add-mask::$TOKEN"
+
+        # Create the Kubernetes secret that the pod is polling for
+        kubectl create secret generic "runner-token-${{ inputs.runner-id }}" \
+          -n "${{ inputs.argo-namespace }}" \
+          --from-literal=token="$TOKEN"
       env:
         NAMESPACE: ${{ inputs.argo-namespace }}
 
@@ -137,6 +147,8 @@ runs:
 
           if [ "$STATUS" = "online" ]; then
             echo "Runner '${{ inputs.runner-id }}' is online!"
+            kubectl delete secret "runner-token-${{ inputs.runner-id }}" \
+              -n "${{ inputs.argo-namespace }}" --ignore-not-found || true
             exit 0
           fi
           echo "Attempt $i/$NUM_TRIES - runner not yet online (status: ${STATUS:-not found})"
