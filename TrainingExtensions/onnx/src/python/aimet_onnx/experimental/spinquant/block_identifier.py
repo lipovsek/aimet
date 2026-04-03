@@ -23,7 +23,8 @@ from typing import List, Optional, Tuple
 from aimet_onnx.common.utils import AimetLogger
 
 from aimet_onnx.experimental.spinquant.fuse_norm import (
-    _find_norm_scale_and_consumers,
+    ActiveNorm,
+    find_active_norms,
     _get_weight_product,
 )
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
@@ -34,20 +35,6 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 
 _LINEAR_TYPES = frozenset(("MatMul", "Gemm", "Conv"))
 _EMBEDDING_TYPES = frozenset(("Gather",))
-
-
-@dataclass
-class ActiveNorm:
-    """An affine RMSNorm that has at least one downstream weight linear op.
-
-    :param norm_op: The Pow/Mul starting op of the matched RMSNorm pattern.
-    :param scale_name: Name of the gamma (scale) initializer in the model.
-    :param downstream_linears: MatMul/Gemm/Conv ops reachable from the scale Mul.
-    """
-
-    norm_op: Op
-    scale_name: str
-    downstream_linears: List[Op] = field(default_factory=list)
 
 
 @dataclass
@@ -345,40 +332,4 @@ def get_decoder_role_map(
         )
     _logger.debug("embed_tokens: %s", [op.name for op in result.embed_tokens])
 
-    return result
-
-
-def find_active_norms(
-    model: ModelProto, connected_graph: ConnectedGraph
-) -> List[ActiveNorm]:
-    """Return all affine RMSNorms with at least one downstream weight linear op.
-
-    Iterates ``connected_graph.ordered_ops`` in topological order and collects
-    every op that starts an affine RMSNorm pattern whose gamma-scale Mul has at
-    least one downstream weight MatMul/Gemm/Conv (reachable through reshape-only
-    ops). Norms with no weight consumers are omitted.
-
-    :param model: ONNX ModelProto.
-    :param connected_graph: ConnectedGraph built from ``model``.
-    :return: ``ActiveNorm`` objects in topological order.
-    """
-    result = []
-    for op in connected_graph.ordered_ops:
-        match = _find_norm_scale_and_consumers(op, model)
-        if match is None:
-            continue
-        scale_name, downstream_linears = match
-        if not downstream_linears:
-            _logger.debug(
-                "RMSNorm scale '%s' (op '%s'): no downstream weight linears, skipping.",
-                scale_name,
-                op.name,
-            )
-            continue
-        result.append(
-            ActiveNorm(
-                norm_op=op, scale_name=scale_name, downstream_linears=downstream_linears
-            )
-        )
-    _logger.debug("Found %d active norm(s).", len(result))
     return result

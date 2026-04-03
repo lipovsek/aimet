@@ -3,17 +3,34 @@
 
 """RMSNorm fusion for SpinQuant: absorb norm scale weights into downstream linear layers."""
 
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 import numpy as np
 from onnx import numpy_helper
 
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.common.connected_graph.operation import Op
+from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.graph_passes.passes.common_patterns import match_rms_norm_pattern
-from aimet_onnx.meta.connectedgraph import ConnectedGraph, Product
+from aimet_onnx.meta.connectedgraph import Product
 from aimet_onnx.utils import ModelProto, ParamUtils
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
+
+
+@dataclass
+class ActiveNorm:
+    """An affine RMSNorm that has at least one downstream weight linear op.
+
+    :param norm_op: The Pow/Mul starting op of the matched RMSNorm pattern.
+    :param scale_name: Name of the gamma (scale) initializer in the model.
+    :param downstream_linears: MatMul/Gemm/Conv ops reachable from the scale Mul.
+    """
+
+    norm_op: Op
+    scale_name: str
+    downstream_linears: List[Op] = field(default_factory=list)
+
 
 # Op types that only reshape/reformat activations without changing the
 # mathematical relationship between gamma and the downstream linear weight.
@@ -27,9 +44,45 @@ _OP_OUTPUTS_TO_IGNORE = [
 ]
 
 
-def fuse_norm_layers_into_linears(model: ModelProto, connected_graph: ConnectedGraph):
+def find_active_norms(
+    model: ModelProto, connected_graph: ConnectedGraph
+) -> List[ActiveNorm]:
+    """Return all affine RMSNorms with at least one downstream weight linear op.
+
+    Iterates ``connected_graph.ordered_ops`` in topological order and collects
+    every op that starts an affine RMSNorm pattern whose gamma-scale Mul has at
+    least one downstream weight MatMul/Gemm/Conv (reachable through reshape-only
+    ops). Norms with no weight consumers are omitted.
+
+    :param model: ONNX ModelProto.
+    :param connected_graph: ConnectedGraph built from ``model``.
+    :return: ``ActiveNorm`` objects in topological order.
     """
-    For every affine RMSNorm in the model, absorb the scale weight (gamma) into
+    result = []
+    for op in connected_graph.ordered_ops:
+        match = _find_norm_scale_and_consumers(op, model)
+        if match is None:
+            continue
+        scale_name, downstream_linears = match
+        if not downstream_linears:
+            _logger.debug(
+                "RMSNorm scale '%s' (op '%s'): no downstream weight linears, skipping.",
+                scale_name,
+                op.name,
+            )
+            continue
+        result.append(
+            ActiveNorm(
+                norm_op=op, scale_name=scale_name, downstream_linears=downstream_linears
+            )
+        )
+    _logger.info("Found %d active norm(s).", len(result))
+    return result
+
+
+def fuse_norm_layers_into_linears(model: ModelProto, active_norms: List[ActiveNorm]):
+    """
+    For every affine RMSNorm in active_norms, absorb the scale weight (gamma) into
     the weights of its downstream linear (MatMul/Gemm/Conv) layers, then reset
     gamma to ones.
 
@@ -44,14 +97,13 @@ def fuse_norm_layers_into_linears(model: ModelProto, connected_graph: ConnectedG
     with no learnable scale effect.
 
     :param model: ONNX ModelProto whose initializers are modified in-place.
-    :param connected_graph: ConnectedGraph built from the model.
+    :param active_norms: Active norms to fuse, as returned by find_active_norms.
+        Each entry carries the gamma initializer name and the downstream linear ops.
     """
-    for op in connected_graph.ordered_ops:
-        result = _find_norm_scale_and_consumers(op, model)
-        if result is None:
-            continue
+    for active_norm in active_norms:
+        scale_name = active_norm.scale_name
+        downstream_linears = active_norm.downstream_linears
 
-        scale_name, downstream_linears = result
         if not downstream_linears:
             _logger.debug(
                 "RMSNorm scale '%s': no downstream linear ops found, skipping.",
@@ -93,6 +145,12 @@ def fuse_norm_layers_into_linears(model: ModelProto, connected_graph: ConnectedG
             W_fused = (scale_broadcast * W.astype(np.float64)).astype(orig_dtype)
             weight_tensor.CopyFrom(
                 numpy_helper.from_array(W_fused, name=weight_tensor.name)
+            )
+            _logger.debug(
+                "Fused RMSNorm scale '%s' into weight '%s' of op '%s'.",
+                scale_name,
+                weight_inp.name,
+                linear_op.name,
             )
 
         # Reset gamma to ones so the norm no longer applies any scaling

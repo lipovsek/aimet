@@ -1,9 +1,12 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
+import copy
 import io
 import logging
+import shutil
 import numpy as np
+import scipy.linalg
 import pytest
 import torch
 import torch.nn as nn
@@ -14,23 +17,31 @@ from onnxruntime import GraphOptimizationLevel, InferenceSession, SessionOptions
 from .models.test_models import RMSNorm
 from .utils import add_genai_tests_path
 from aimet_onnx.common.utils import AimetLogger
+from aimet_onnx.quantsim import QuantizationSimModel
+from aimet_onnx.meta.connectedgraph import ConnectedGraph
+from aimet_onnx.utils import ParamUtils
+
 from aimet_onnx.experimental.spinquant.fuse_norm import (
     _OP_OUTPUTS_TO_IGNORE,
     _find_norm_scale_and_consumers,
     _get_weight_product,
     fuse_norm_layers_into_linears,
+    find_active_norms,
 )
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
-from aimet_onnx.utils import ParamUtils
-
 from aimet_onnx.experimental.spinquant.block_identifier import (
     ActiveNorm,
     DecoderBlockRoleMap,
     DecoderModelRoleMap,
-    find_active_norms,
     get_decoder_block_boundaries,
     get_decoder_role_map,
 )
+from aimet_onnx.experimental.spinquant.apply_rotation import (
+    apply_r1_rotation,
+    _apply_transform,
+    _right_multiply,
+    _left_multiply,
+)
+from aimet_onnx.experimental.spinquant import apply_spinquant
 
 AimetLogger.set_level_for_all_areas(logging.INFO)
 
@@ -140,6 +151,36 @@ def _verify_fusion(model: onnx.ModelProto, pre_state: dict):
                 w_after,
                 w_expected,
             )
+
+
+def _collect_all_weights(model: onnx.ModelProto, role_map: DecoderModelRoleMap) -> dict:
+    weights = {}
+
+    def _store_linear(op):
+        weight_inp, _ = _get_weight_product(op)
+        if weight_inp is not None:
+            tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
+            if tensor is not None:
+                weights[weight_inp.name] = numpy_helper.to_array(tensor).copy()
+
+    def _store_gather(op):
+        for inp in op.inputs:
+            if inp.is_parm or inp.is_const:
+                tensor = ParamUtils.get_param_by_name(model, inp.name)
+                if tensor is not None:
+                    weights[inp.name] = numpy_helper.to_array(tensor).copy()
+                    return
+
+    for op in role_map.embed_tokens:
+        _store_gather(op)
+    for op in role_map.lm_head:
+        _store_linear(op)
+    for block in role_map.blocks:
+        for op in (
+            block.qkv_linears + block.o_proj + block.gate_up_linears + block.down_proj
+        ):
+            _store_linear(op)
+    return weights
 
 
 class RMSNormMatMul(nn.Module):
@@ -256,7 +297,7 @@ class TestFuseNormLayers:
 
         y_before = _run_model(model, x)
         pre = _collect_pre_fusion_state(model, cg)
-        fuse_norm_layers_into_linears(model, cg)
+        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
         _verify_fusion(model, pre)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
@@ -281,7 +322,7 @@ class TestFuseNormLayers:
 
         y_before = _run_model(model, x)
         pre = _collect_pre_fusion_state(model, cg)
-        fuse_norm_layers_into_linears(model, cg)
+        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
         _verify_fusion(model, pre)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
@@ -306,7 +347,7 @@ class TestFuseNormLayers:
 
         y_before = _run_model(model, x)
         pre = _collect_pre_fusion_state(model, cg)
-        fuse_norm_layers_into_linears(model, cg)
+        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
         _verify_fusion(model, pre)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
@@ -326,7 +367,7 @@ class TestFuseNormLayers:
         y_before = _run_model(model, x)
         pre = _collect_pre_fusion_state(model, cg)
         assert len(next(iter(pre.values()))[1]) == 3
-        fuse_norm_layers_into_linears(model, cg)
+        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
         _verify_fusion(model, pre)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
@@ -347,7 +388,7 @@ class TestFuseNormLayers:
 
         y_before = _run_model(model, x)
         pre = _collect_pre_fusion_state(model, cg)
-        fuse_norm_layers_into_linears(model, cg)
+        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
         _verify_fusion(model, pre)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
@@ -386,7 +427,7 @@ class TestFuseNormLayers:
 
         y_before = _run_model(model, x)
         cg = ConnectedGraph(model)
-        fuse_norm_layers_into_linears(model, cg)
+        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
 
         w_after = numpy_helper.to_array(ParamUtils.get_param_by_name(model, w_name))
         assert np.array_equal(w_after, w_before)
@@ -657,29 +698,40 @@ class TestBlockIdentifier:
         self, add_genai_tests_path, model_id, model_type, adaptations
     ):
         from GenAITests.onnx.models.llm import LLM_ONNX
+        from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
+            get_model_checkpoint_path,
+        )
         from aimet_onnx.experimental.adascale.find_blocks import (
             get_decoder_blocks_end_points,
         )
 
-        if adaptations:
-            import GenAITests.shared.models.adaptations.sha_conv
-            from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
+        cache_dir = get_model_checkpoint_path(model_id)
+        try:
+            if adaptations:
+                import GenAITests.shared.models.adaptations.sha_conv
+                from GenAITests.shared.helpers.yaml_config_parser import (
+                    YAMLConfigParser,
+                )
 
-            model_cls = YAMLConfigParser.get_model_class(model_type, adaptations)
-        else:
-            model_cls = LLM_ONNX
+                model_cls = YAMLConfigParser.get_model_class(model_type, adaptations)
+            else:
+                model_cls = LLM_ONNX
 
-        collection = model_cls.instantiate_quantsim(model_id, 32, 16, small_model=True)
-        blocks, _ = get_decoder_block_boundaries(
-            collection.backbone.model.model,
-            collection.backbone.connected_graph,
-        )
-        assert len(blocks) == 2
-        blocks_old = get_decoder_blocks_end_points(collection.backbone, model_type)
-        assert len(blocks_old) == 2
+            collection = model_cls.instantiate_quantsim(
+                model_id, 32, 16, small_model=True
+            )
+            blocks, _ = get_decoder_block_boundaries(
+                collection.backbone.model.model,
+                collection.backbone.connected_graph,
+            )
+            assert len(blocks) == 2
+            blocks_old = get_decoder_blocks_end_points(collection.backbone, model_type)
+            assert len(blocks_old) == 2
 
-        # Both methods must identify the same block boundary ops.
-        assert blocks == blocks_old
+            # Both methods must identify the same block boundary ops.
+            assert blocks == blocks_old
+        finally:
+            shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 class TestDecoderRoleMap:
@@ -750,25 +802,257 @@ class TestDecoderRoleMap:
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     def test_qwen3_role_map(self, add_genai_tests_path):
         """Qwen/Qwen3-0.6B with no adaptations."""
+        from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
+            get_model_checkpoint_path,
+        )
         from GenAITests.onnx.models.llm import LLM_ONNX
         import GenAITests.shared.models.adaptations.sha_conv
         from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 
-        model_cls = YAMLConfigParser.get_model_class("qwen3")
-        collection = model_cls.instantiate_quantsim(
-            "Qwen/Qwen3-0.6B", 32, 16, small_model=True
-        )
-        onnx_model = collection.backbone.model.model
-        cg = collection.backbone.connected_graph
+        model_id = "Qwen/Qwen3-0.6B"
+        cache_dir = get_model_checkpoint_path(model_id)
+        try:
+            model_cls = YAMLConfigParser.get_model_class("qwen3")
+            collection = model_cls.instantiate_quantsim(
+                model_id, 32, 16, small_model=True
+            )
+            onnx_model = collection.backbone.model.model
+            cg = collection.backbone.connected_graph
 
-        blocks, active_norms = get_decoder_block_boundaries(onnx_model, cg)
+            blocks, active_norms = get_decoder_block_boundaries(onnx_model, cg)
+            role_map = get_decoder_role_map(cg, blocks, active_norms)
+
+            assert len(role_map.blocks) == 2
+            assert len(role_map.lm_head) == 1
+            assert len(role_map.embed_tokens) == 1
+            for block in role_map.blocks:
+                assert len(block.qkv_linears) == 3
+                assert len(block.o_proj) == 1
+                assert len(block.gate_up_linears) == 2
+                assert len(block.down_proj) == 1
+        finally:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+class TestApplyR1Rotation:
+    """Tests for apply_r1_rotation."""
+
+    @pytest.mark.parametrize(
+        "decoder_cls",
+        [LlamaStyleDecoder, Qwen3StyleDecoder, Phi3StyleDecoder],
+    )
+    def test_output_preserved_after_rotation(self, decoder_cls):
+        """Model output must be numerically same before and after R1 rotation."""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+        cg = ConnectedGraph(model)
+
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
         role_map = get_decoder_role_map(cg, blocks, active_norms)
 
-        assert len(role_map.blocks) == 2
-        assert len(role_map.lm_head) == 1
-        assert len(role_map.embed_tokens) == 1
-        for block in role_map.blocks:
-            assert len(block.qkv_linears) == 3
-            assert len(block.o_proj) == 1
-            assert len(block.gate_up_linears) == 2
-            assert len(block.down_proj) == 1
+        """
+        When: fuse_norm_layers_into_linears is applied
+        Then: RMSNorm's scale weight (gamma) is fused into downstream linear layers.
+        """
+        fuse_norm_layers_into_linears(model, active_norms)
+
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+        y_before = _run_model(model, token_ids)
+
+        """
+        When: apply_r1_rotation is applied
+        Then: Model output is preserved numerically after rotation (R1 @ R1^T = I).
+        """
+        apply_r1_rotation(model, role_map, hidden_size=_H)
+
+        y_after = _run_model(model, token_ids)
+        assert np.allclose(y_after, y_before)
+
+    @pytest.mark.parametrize(
+        "decoder_cls",
+        [LlamaStyleDecoder, Qwen3StyleDecoder, Phi3StyleDecoder],
+    )
+    def test_double_rotation_recovers_original_weights(self, decoder_cls):
+        """Applying R1 rotation twice must recover the original weights (R1 @ R1^T = I)."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+        cg = ConnectedGraph(model)
+
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        fuse_norm_layers_into_linears(model, active_norms)
+        weights_original = _collect_all_weights(model, role_map)
+
+        """
+        When: apply_r1_rotation is applied twice
+        Then: Linear layer weights are recovered.
+        """
+        apply_r1_rotation(model, role_map, hidden_size=_H)
+        apply_r1_rotation(model, role_map, hidden_size=_H)
+
+        weights_recovered = _collect_all_weights(model, role_map)
+        for name, W_orig in weights_original.items():
+            W_rec = weights_recovered[name]
+            assert np.allclose(W_rec, W_orig, atol=1e-5)
+
+    def test_right_multiply_formula(self):
+        """_right_multiply: W_new = W @ R."""
+        np.random.seed(0)
+        H = 8
+        R = np.array(scipy.linalg.hadamard(H) / np.sqrt(H), dtype=np.float64)
+
+        # 2D [out, in], axis=1 - reading
+        W = np.random.randn(5, H)
+        assert np.allclose(_right_multiply(W, R, axis=1), W @ R)
+
+        # 2D [in, out], axis=-1 - writing, (out=H, rotated on output side)
+        W = np.random.randn(5, H)
+        assert np.allclose(_right_multiply(W, R, axis=-1), W @ R)
+
+        # Conv [out, in, k], axis=1 - reading
+        W = np.random.randn(4, H, 3)
+        expected = (W.transpose(0, 2, 1) @ R).transpose(0, 2, 1)
+        assert np.allclose(_right_multiply(W, R, axis=1), expected)
+
+    def test_left_multiply_formula(self):
+        """_left_multiply: W_new = R^T @ W."""
+        np.random.seed(0)
+        H = 8
+        R = np.array(scipy.linalg.hadamard(H) / np.sqrt(H), dtype=np.float64)
+
+        # 2D [out, in], axis=0 - writing
+        W = np.random.randn(H, 5)
+        assert np.allclose(_left_multiply(W, R, axis=0), R.T @ W)
+
+        # 2D [in, out], axis=0 - reading
+        W = np.random.randn(H, 5)
+        assert np.allclose(_left_multiply(W, R, axis=0), R.T @ W)
+
+        # Conv [out, in, k], axis=0 - writing
+        W = np.random.randn(H, 4, 3)
+        expected = (R.T @ W.reshape(W.shape[0], -1)).reshape(W.shape)
+        assert np.allclose(_left_multiply(W, R, axis=0), expected)
+
+    def test_right_and_left_multiply_twice(self):
+        """Applying the same multiply twice with R then R^T recovers W (R @ R^T = I)."""
+        np.random.seed(0)
+        H = 8
+        R = np.array(scipy.linalg.hadamard(H) / np.sqrt(H), dtype=np.float64)
+        W = np.random.randn(H, H)
+
+        """
+        When: _right_multiply is applied with R then R^T on the same axis, and
+              _left_multiply is applied with R then R^T on the same axis.
+        Then: The rotated weights is same as original weights.
+        """
+        assert np.allclose(
+            _right_multiply(_right_multiply(W, R, axis=1), R.T, axis=1), W
+        )
+        assert np.allclose(_left_multiply(_left_multiply(W, R, axis=0), R.T, axis=0), W)
+
+
+class TestApplySpinquant:
+    """End-to-end tests for apply_spinquant"""
+
+    @pytest.mark.parametrize(
+        "decoder_cls",
+        [LlamaStyleDecoder, Qwen3StyleDecoder, Phi3StyleDecoder],
+    )
+    def test_float_output_preserved(self, decoder_cls):
+        """apply_spinquant must preserve model output numrically."""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+
+        # Capture float output BEFORE sim creation
+        y_before = _run_model(model, token_ids)
+
+        """
+        When: apply_spinquant correctly applied R1 rotation
+        Then: The rotated model is mathematically equivalent to original FP32 model.
+        """
+
+        sim = QuantizationSimModel(model, dummy_input={"input": token_ids})
+        apply_spinquant(sim)
+
+        # Strip QcQuantizeOp to get the rotated float model for comparison.
+        rotated_float = QuantizationSimModel.remove_quantizers(
+            copy.deepcopy(sim.model.model)
+        )
+        y_after = _run_model(rotated_float, token_ids)
+        assert np.allclose(y_before, y_after, atol=1e-5)
+
+    @pytest.mark.parametrize(
+        "decoder_cls",
+        [LlamaStyleDecoder, Qwen3StyleDecoder, Phi3StyleDecoder],
+    )
+    def test_weights_changed(self, decoder_cls):
+        """apply_spinquant must modify weight initializers in sim.model.model."""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+
+        # Find the embed_tokens initializer (Gather weight: shape [_VOCAB, _H]).
+        embed_name = next(
+            init.name
+            for init in model.graph.initializer
+            if numpy_helper.to_array(init).shape == (_VOCAB, _H)
+        )
+        w_before = numpy_helper.to_array(
+            ParamUtils.get_param_by_name(model, embed_name)
+        ).copy()
+
+        sim = QuantizationSimModel(model, dummy_input={"input": token_ids})
+        apply_spinquant(sim)
+
+        w_after = numpy_helper.to_array(
+            ParamUtils.get_param_by_name(sim.model.model, embed_name)
+        )
+        assert not np.array_equal(w_before, w_after)
+
+    def test_validation_failure_leaves_model_untouched(self):
+        """Model shouldn't be corrupted if the validation fails"""
+        torch.manual_seed(0)
+        np.random.seed(0)
+
+        class _NoEmbedDecoder(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block0 = _LlamaBlock()
+                self.block1 = _LlamaBlock()
+                self.norm = RMSNorm(_H, **_NORM_KW)
+                self.lm_head = nn.Linear(_H, _VOCAB, bias=False)
+
+            def forward(self, x):
+                x = self.block0(x)
+                x = self.block1(x)
+                return self.lm_head(self.norm(x))
+
+        model = _export_decoder(_NoEmbedDecoder())  # 2 blocks
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+
+        sim = QuantizationSimModel(model, dummy_input={"input": token_ids})
+
+        # Snapshot all initializers before the failed call.
+        init_before = {
+            t.name: numpy_helper.to_array(t).copy()
+            for t in sim.model.model.graph.initializer
+        }
+
+        """
+        When: Block detection/classification raises an error.
+        Then: The model is unchanged.
+        """
+
+        with pytest.raises(ValueError):
+            apply_spinquant(sim)
+
+        # Every initializer must be bit-exact same.
+        for name, arr_before in init_before.items():
+            arr_after = numpy_helper.to_array(
+                ParamUtils.get_param_by_name(sim.model.model, name)
+            )
+            assert np.array_equal(arr_before, arr_after)
