@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "DlQuantization/IForLoopRunner.h"
 #include "DlQuantization/TensorQuantizerOpFacade.h"
 #include <DlQuantization/IQuantizationEncodingAnalyzer.hpp>
 #include <DlQuantization/ITensorQuantizationSim.h>
@@ -258,7 +259,7 @@ public:
      * @param stream Cuda stream to use for GPU kernels
      */
     void quantizeDequantize(const float* input, float* output, const TensorDims& tensorShape, bool useCuda,
-                            void* stream = nullptr) const;
+                            void* stream = nullptr, IForLoopRunner* runner = nullptr) const;
 
     /**
      * Update stats being collected to compute encoding

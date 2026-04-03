@@ -6,6 +6,7 @@
 
 #include <numeric>
 #include "DlQuantization/Fp16Quantization.hpp"
+#include "DlQuantization/IForLoopRunner.h"
 #include "DlQuantization/Quantization.hpp"
 #include "DlQuantization/TensorQuantizer.h"
 #include "DlQuantization/TensorQuantizerOpFacade.h"
@@ -27,7 +28,8 @@ void modeSpecificActionBroadcastInt(const T* inTensor, T* outTensor, const std::
                                     DlQuantization::BlockTensorQuantizer* tensorQuantizer,
                                     const DlQuantization::TensorQuantizerOpMode opMode,
                                     const bool useSymmetricEncoding, DlQuantization::IAllocator* allocator,
-                                    bool useCuda, void* stream)
+                                    bool useCuda, void* stream,
+                                    DlQuantization::IForLoopRunner* runner = nullptr)
 {
     switch (opMode)
     {
@@ -41,7 +43,7 @@ void modeSpecificActionBroadcastInt(const T* inTensor, T* outTensor, const std::
     }
     case DlQuantization::TensorQuantizerOpMode::quantizeDequantize:
     {
-        tensorQuantizer->quantizeDequantize(inTensor, outTensor, inputShape, useCuda, stream);
+        tensorQuantizer->quantizeDequantize(inTensor, outTensor, inputShape, useCuda, stream, runner);
         break;
     }
     case DlQuantization::TensorQuantizerOpMode::updateStats:

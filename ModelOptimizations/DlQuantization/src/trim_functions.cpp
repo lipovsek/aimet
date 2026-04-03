@@ -18,6 +18,10 @@ namespace DlQuantization
 {
 using namespace std;
 
+// Minimum number of elements per parallel chunk. Tensors smaller than this
+// threshold are processed sequentially to avoid thread-dispatch overhead.
+static constexpr size_t MIN_ELEMENTS_PER_CHUNK = 1024;
+
 inline double randUniformCpu()
 {
     return rand() / (RAND_MAX + static_cast<double>(1.0));
@@ -57,12 +61,12 @@ Lambda parallelize(const uint32_t number_of_threads, Lambda lambda)
 // encoding: TF: rounded
 template <typename DTYPE>
 void quantizeDequantize(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out, ComputationMode mode_cpu_gpu,
-                        RoundingMode rounding_mode, void* stream)
+                        RoundingMode rounding_mode, void* stream, IForLoopRunner* runner)
 {
     switch (mode_cpu_gpu)
     {
     case COMP_MODE_CPU:
-        quantizeDequantizeCpu(in, cnt, encoding, out, rounding_mode);
+        quantizeDequantizeCpu(in, cnt, encoding, out, rounding_mode, runner);
         break;
     case COMP_MODE_GPU:
 #ifdef GPU_QUANTIZATION_ENABLED
@@ -137,14 +141,31 @@ inline void dequantizeValueCpu(DTYPE* out, DTYPE encoding_delta, DTYPE encoding_
 }
 
 template <typename DTYPE>
-void quantizeDequantizeCpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out, RoundingMode rounding_mode)
+void quantizeDequantizeCpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out,
+                           RoundingMode rounding_mode, IForLoopRunner* runner)
 {
-    for (uint64_t i = 0; i < cnt; ++i)
+    auto qdqLoop = [&](size_t start, size_t end) {
+        for (size_t i = start; i < end; ++i)
+        {
+            quantizeValueCpu<DTYPE>(&in[i], &out[i], encoding.min, encoding.max, encoding.delta, encoding.offset,
+                                    rounding_mode);
+            dequantizeValueCpu<DTYPE>(&out[i], encoding.delta, encoding.offset);
+        }
+    };
+
+    if (runner && cnt > MIN_ELEMENTS_PER_CHUNK)
     {
-        quantizeValueCpu<DTYPE>(&in[i], &out[i], encoding.min, encoding.max, encoding.delta, encoding.offset,
-                                rounding_mode);
-        dequantizeValueCpu<DTYPE>(&out[i], encoding.delta, encoding.offset);
+        size_t numChunks = std::max<size_t>(1, cnt / MIN_ELEMENTS_PER_CHUNK);
+        size_t chunkSize = (cnt + numChunks - 1) / numChunks;
+        runner->run([&, chunkSize](size_t chunkId) {
+            size_t start = chunkId * chunkSize;
+            size_t end   = std::min(start + chunkSize, static_cast<size_t>(cnt));
+            qdqLoop(start, end);
+        }, numChunks);
+        return;
     }
+
+    qdqLoop(0, static_cast<size_t>(cnt));
 }
 
 
@@ -599,29 +620,44 @@ void quantizeDequantizePerChannel(const DTYPE* in, int numChannel, int numElemen
 template <typename DTYPE>
 void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings& encodings,
                                     int64_t numElement, const TensorDims& inputStrides,
-                                    const TensorDims& encodingStrides)
+                                    const TensorDims& encodingStrides,
+                                    IForLoopRunner* runner)
 {
-    for (size_t i = 0; i < numElement; i++)
-    {
-        int encodingIdx = 0;
-        int remainder   = i;
-        for (auto dim = 0; dim < inputStrides.size(); dim++)
+    auto qdqLoop = [&](size_t start, size_t end) {
+        for (size_t i = start; i < end; i++)
         {
-            int dimIdx = remainder / inputStrides[dim];
-            remainder  = remainder - dimIdx * inputStrides[dim];
-            // encodingStrides will be 0 along broadcast dimensions
-            encodingIdx += encodingStrides[dim] * dimIdx;
+            int encodingIdx = 0;
+            int remainder   = i;
+            for (auto dim = 0; dim < inputStrides.size(); dim++)
+            {
+                int dimIdx = remainder / inputStrides[dim];
+                remainder  = remainder - dimIdx * inputStrides[dim];
+                encodingIdx += encodingStrides[dim] * dimIdx;
+            }
+
+            auto delta  = encodings[encodingIdx].delta;
+            auto offset = encodings[encodingIdx].offset;
+            auto min    = encodings[encodingIdx].min;
+            auto max    = encodings[encodingIdx].max;
+
+            quantizeValueCpu<DTYPE>(in + i, out + i, min, max, delta, offset, ROUND_NEAREST);
+            dequantizeValueCpu<DTYPE>(out + i, delta, offset);
         }
+    };
 
-        auto delta  = encodings[encodingIdx].delta;
-        auto offset = encodings[encodingIdx].offset;
-        auto min    = encodings[encodingIdx].min;
-        auto max    = encodings[encodingIdx].max;
-
-        quantizeValueCpu<DTYPE>(in + i, out + i, min, max, delta, offset, ROUND_NEAREST);
-
-        dequantizeValueCpu<DTYPE>(out + i, delta, offset);
+    if (runner && numElement > static_cast<int64_t>(MIN_ELEMENTS_PER_CHUNK))
+    {
+        size_t numChunks = std::max<size_t>(1, static_cast<size_t>(numElement) / MIN_ELEMENTS_PER_CHUNK);
+        size_t chunkSize = (static_cast<size_t>(numElement) + numChunks - 1) / numChunks;
+        runner->run([&, chunkSize](size_t chunkId) {
+            size_t start = chunkId * chunkSize;
+            size_t end   = std::min(start + chunkSize, static_cast<size_t>(numElement));
+            qdqLoop(start, end);
+        }, numChunks);
+        return;
     }
+
+    qdqLoop(0, static_cast<size_t>(numElement));
 }
 
 
@@ -642,7 +678,7 @@ void quantizeDequantizePerChannelCpu(const DTYPE* in, int numChannel, int numEle
 template <typename T>
 void quantizeDequantizeBroadcast(const T* inTensor, T* outTensor, const Encodings& encodings,
                                  const TensorDims& inputShape, const TensorDims& encodingShape, ComputationMode mode,
-                                 void* stream)
+                                 void* stream, IForLoopRunner* runner)
 {
     auto numElements = getNumel(inputShape);
 
@@ -672,7 +708,8 @@ void quantizeDequantizeBroadcast(const T* inTensor, T* outTensor, const Encoding
 #endif
         break;
     case COMP_MODE_CPU:
-        quantizeDequantizeBroadcastCpu(inTensor, outTensor, encodings, numElements, inputStrides, encodingStrides);
+        quantizeDequantizeBroadcastCpu(inTensor, outTensor, encodings, numElements, inputStrides, encodingStrides,
+                                       runner);
         break;
     default:
         throw std::runtime_error("Unknown computation mode.");
@@ -682,10 +719,12 @@ void quantizeDequantizeBroadcast(const T* inTensor, T* outTensor, const Encoding
 
 // Explicit instantiations
 template void quantizeDequantize(const double* in, uint64_t cnt, const TfEncoding& encoding, double* out,
-                                 ComputationMode mode_cpu_gpu, RoundingMode rounding_mode, void* stream);
+                                 ComputationMode mode_cpu_gpu, RoundingMode rounding_mode, void* stream,
+                                 IForLoopRunner* runner);
 
 template void quantizeDequantize(const float* in, uint64_t cnt, const TfEncoding& encoding, float* out,
-                                 ComputationMode mode_cpu_gpu, RoundingMode rounding_mode, void* stream);
+                                 ComputationMode mode_cpu_gpu, RoundingMode rounding_mode, void* stream,
+                                 IForLoopRunner* runner);
 
 template void quantizeToFxp(const double* in, uint64_t cnt, const TfEncoding& encoding, double* out,
                             ComputationMode mode_cpu_gpu, RoundingMode rounding_mode, bool shiftToSigned);
@@ -713,10 +752,12 @@ template void quantizeDequantizePerChannel(const double* in, int numChannel, int
 
 template void quantizeDequantizeBroadcast(const float* inTensor, float* outTensor,
                                           const Encodings& encodings, const TensorDims& inputShape,
-                                          const TensorDims& encodingShape, ComputationMode mode, void* stream);
+                                          const TensorDims& encodingShape, ComputationMode mode, void* stream,
+                                          IForLoopRunner* runner);
 
 template void quantizeDequantizeBroadcastCpu(const float* in, float* out, const Encodings& encodings,
                                              int64_t numElement, const TensorDims& inputStrides,
-                                             const TensorDims& encodingStrides);
+                                             const TensorDims& encodingStrides,
+                                             IForLoopRunner* runner);
 
 }   // End of namespace DlQuantization

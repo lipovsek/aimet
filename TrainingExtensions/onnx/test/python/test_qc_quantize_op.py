@@ -704,6 +704,56 @@ class TestQcQuantizeOp:
         output = per_channel_session.run(None, {"input": inp_array})[0]
         assert np.allclose(output, expected_out)
 
+    def test_quantize_dequantize_large_tensor(self):
+        """
+        Verify correctness with a tensor large enough to activate threadpool parallelism
+        (> 1024 elements) and with a shape not evenly divisible by 1024.
+        Tests per-tensor, per-channel, and per-block QDQ through the ORT session and
+        compares against the Python QDQ path.
+        """
+        input_shape = (7, 500)
+        tensor_quantizer_params = TensorQuantizerParams(input_shape, 0, 1)
+        calibration_tensor = np.random.randn(*input_shape).astype(np.float32)
+        input_tensor = np.random.randn(*input_shape).astype(np.float32) * 10
+
+        quant_info = libquant_info.QcQuantizeInfo()
+        session = create_qc_quantize_model_session(quant_info, input_tensor.shape)
+
+        quantizer = QcQuantizeOp(
+            quant_info,
+            bitwidth=8,
+            op_mode=OpMode.updateStats,
+            tensor_quantizer_params=tensor_quantizer_params,
+        )
+
+        # per-tensor
+        quantizer.update_encoding_stats(calibration_tensor)
+        quantizer.compute_encodings()
+        quantizer.op_mode = OpMode.quantizeDequantize
+        output = session.run(None, {"input": input_tensor})[0]
+        qdq_output = quantizer.quantize_dequantize(input_tensor)
+        assert np.array_equal(output, qdq_output)
+
+        # per-channel
+        quantizer.reset_encoding_stats()
+        quantizer.enable_per_channel_quantization()
+        quantizer.update_encoding_stats(calibration_tensor)
+        quantizer.compute_encodings()
+        quantizer.op_mode = OpMode.quantizeDequantize
+        output = session.run(None, {"input": input_tensor})[0]
+        qdq_output = quantizer.quantize_dequantize(input_tensor)
+        assert np.array_equal(output, qdq_output)
+
+        # per-block
+        quantizer.reset_encoding_stats()
+        quantizer._enable_blockwise_quantization(block_size=25)
+        quantizer.update_encoding_stats(calibration_tensor)
+        quantizer.compute_encodings()
+        quantizer.op_mode = OpMode.quantizeDequantize
+        output = session.run(None, {"input": input_tensor})[0]
+        qdq_output = quantizer.quantize_dequantize(input_tensor)
+        assert np.array_equal(output, qdq_output)
+
     @pytest.mark.parametrize(
         "input_arr",
         (

@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "DlQuantization/IForLoopRunner.h"
+
 namespace DlQuantization
 {
 
@@ -136,7 +138,8 @@ void quantizeDequantizeBroadcast(const T* inTensor,
                                  const TensorDims& inputShape,
                                  const TensorDims& encodingShape,
                                  ComputationMode mode,
-                                 void* stream = nullptr);
+                                 void* stream = nullptr,
+                                 IForLoopRunner* runner = nullptr);
 
 class CpuAllocator : public IAllocator
 {

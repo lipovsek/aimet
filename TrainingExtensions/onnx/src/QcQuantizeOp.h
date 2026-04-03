@@ -23,7 +23,8 @@ struct QcQuantizeOp
     QcQuantizeOp(const OrtApi* api, const OrtKernelInfo* info);
 
     void computeImpl(const Ort::Custom::Tensor<T>& input, Ort::Custom::Tensor<T>& output, void* stream,
-                     bool useCuda, DlQuantization::IAllocator* allocator);
+                     bool useCuda, DlQuantization::IAllocator* allocator,
+                     OrtKernelContext* ortCtx = nullptr);
 
 protected:
     struct QcQuantizeInfo* quantInfo;

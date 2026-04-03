@@ -343,7 +343,7 @@ void BlockTensorQuantizer::updateStats(const float* tensor, const TensorDims& te
 
 // TODO: Let BlockTensorQuantizer own the encodings vector, do not take as argument
 void BlockTensorQuantizer::quantizeDequantize(const float* input, float* output, const TensorDims& tensorShape,
-                                              bool useCuda, void* stream) const
+                                              bool useCuda, void* stream, IForLoopRunner* runner) const
 {
     auto mode = useCuda ? COMP_MODE_GPU : COMP_MODE_CPU;
     if (not isEncodingValid)
@@ -354,11 +354,11 @@ void BlockTensorQuantizer::quantizeDequantize(const float* input, float* output,
     {
         // More efficient per-tensor quantization impl which avoids separate cudaMemcpy for encodings
         DlQuantization::quantizeDequantize(input, getNumel(tensorShape), _encodings[0], output, mode, ROUND_NEAREST,
-                                           stream);
+                                           stream, runner);
     }
     else
     {
-        quantizeDequantizeBroadcast(input, output, _encodings, tensorShape, this->_shape, mode, stream);
+        quantizeDequantizeBroadcast(input, output, _encodings, tensorShape, this->_shape, mode, stream, runner);
     }
 }
 

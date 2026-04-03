@@ -3,11 +3,34 @@
 
 #include "QcQuantizeOp.h"
 #include "AimetOpUtils.h"
+#include "DlQuantization/IForLoopRunner.h"
 #include "trim_functions.hpp"
 
 #include <vector>
 #include <iostream>
 #include <type_traits>
+
+
+// Concrete IForLoopRunner that delegates to ORT's intra-op thread pool.
+class OrtForLoopRunner : public DlQuantization::IForLoopRunner
+{
+public:
+    explicit OrtForLoopRunner(OrtKernelContext* ctx) : _ctx(ctx) {}
+
+    void run(std::function<void(size_t)> fn, size_t numChunks) const override
+    {
+        Ort::KernelContext ctx(_ctx);
+        // Bridge from std::function to the C function pointer that ORT expects.
+        ctx.ParallelFor(
+            [](void* userData, size_t i) {
+                (*reinterpret_cast<std::function<void(size_t)>*>(userData))(i);
+            },
+            numChunks, 0, &fn);
+    }
+
+private:
+    OrtKernelContext* _ctx;
+};
 
 
 #ifdef ONNX_CUDA
@@ -65,7 +88,8 @@ void ConvertFloat32ToFloat16(float* resultPtr, T* convertedResult, size_t size, 
 
 template<typename T>
 void QcQuantizeOp<T>::computeImpl(const Ort::Custom::Tensor<T>& input, Ort::Custom::Tensor<T>& output,
-                               void* stream, bool useCuda, DlQuantization::IAllocator* allocator)
+                               void* stream, bool useCuda, DlQuantization::IAllocator* allocator,
+                               OrtKernelContext* ortCtx)
 {
     // Setup inputs
     auto inputShape = input.Shape();
@@ -101,10 +125,17 @@ void QcQuantizeOp<T>::computeImpl(const Ort::Custom::Tensor<T>& input, Ort::Cust
         resultPtr = result;
     }
 
+    // Create parallel for-loop runner from ORT kernel context (CPU only)
+    std::unique_ptr<OrtForLoopRunner> runner;
+    if (ortCtx && !useCuda)
+    {
+        runner = std::make_unique<OrtForLoopRunner>(ortCtx);
+    }
+
     if (quantInfo->isIntDataType)
     {
         modeSpecificActionBroadcastInt(inputPtr, resultPtr, inputShape, quantInfo->tensorQuantizer.get(), opMode,
-            quantInfo->useSymmetricEncoding, allocator, useCuda, stream);
+            quantInfo->useSymmetricEncoding, allocator, useCuda, stream, runner.get());
     }
     else
     {
@@ -141,9 +172,9 @@ struct QcQuantizeOpCpu : QcQuantizeOp<T>
 {
     using QcQuantizeOp<T>::QcQuantizeOp;
 
-    void Compute(const Ort::Custom::Tensor<T>& input, Ort::Custom::Tensor<T>& output)
+    void Compute(OrtKernelContext* ctx, const Ort::Custom::Tensor<T>& input, Ort::Custom::Tensor<T>& output)
     {
-        this->computeImpl(input, output, nullptr, false, &cpuAllocator);
+        this->computeImpl(input, output, nullptr, false, &cpuAllocator, ctx);
     }
 };
 
@@ -152,9 +183,9 @@ struct QcQuantizeOpCpuFloat16 : QcQuantizeOp<T>
 {
     using QcQuantizeOp<T>::QcQuantizeOp;
 
-    void Compute(const Ort::Custom::Tensor<T>& input, Ort::Custom::Tensor<T>& output)
+    void Compute(OrtKernelContext* ctx, const Ort::Custom::Tensor<T>& input, Ort::Custom::Tensor<T>& output)
     {
-        this->computeImpl(input, output, nullptr, false, &cpuAllocator);
+        this->computeImpl(input, output, nullptr, false, &cpuAllocator, ctx);
     }
 };
 

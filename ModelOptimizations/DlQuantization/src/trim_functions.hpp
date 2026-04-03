@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "DlQuantization/IForLoopRunner.h"
 #include "DlQuantization/Quantization.hpp"
 
 #ifdef GPU_QUANTIZATION_ENABLED
@@ -20,7 +21,7 @@ inline double randUniformCpu();
 
 template <typename DTYPE>
 void quantizeDequantize(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out, ComputationMode mode_cpu_gpu,
-                        RoundingMode rounding_mode, void* stream);
+                        RoundingMode rounding_mode, void* stream, IForLoopRunner* runner = nullptr);
 
 
 void quantizeDequantizeFp16ForGPU(const float* in, uint64_t cnt, float* out, void* stream);
@@ -45,7 +46,7 @@ void dequantizeFromPackedFxp(const uint8_t* input, uint64_t cnt, const TfEncodin
 
 template <typename DTYPE>
 void quantizeDequantizeCpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out,
-                           RoundingMode rounding_mode);
+                           RoundingMode rounding_mode, IForLoopRunner* runner = nullptr);
 
 template <typename DTYPE>
 void quantizeToFxpCpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out, RoundingMode rounding_mode,
@@ -76,7 +77,8 @@ void quantizeDequantizePerChannel(const DTYPE* in, int numChannel, int numElemen
 template <typename DTYPE>
 void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings& encodings,
                                     int64_t numElement, const TensorDims& inputStrides,
-                                    const TensorDims& encodingStrides);
+                                    const TensorDims& encodingStrides,
+                                    IForLoopRunner* runner = nullptr);
 
 
 // GPU implementations ...
