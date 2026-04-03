@@ -78,6 +78,7 @@ template <typename DTYPE>
 void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings& encodings,
                                     int64_t numElement, const TensorDims& inputStrides,
                                     const TensorDims& encodingStrides,
+                                    const TensorDims& inputShape,
                                     IForLoopRunner* runner = nullptr);
 
 

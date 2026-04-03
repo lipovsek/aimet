@@ -620,21 +620,24 @@ void quantizeDequantizePerChannel(const DTYPE* in, int numChannel, int numElemen
 template <typename DTYPE>
 void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings& encodings,
                                     int64_t numElement, const TensorDims& inputStrides,
-                                    const TensorDims& encodingStrides,
+                                    const TensorDims& encodingStrides, const TensorDims& inputShape,
                                     IForLoopRunner* runner)
 {
+    auto ndim = inputStrides.size();
+
     auto qdqLoop = [&](size_t start, size_t end) {
+        int64_t encodingIdx = 0;
+        TensorDims coords(ndim);
+        size_t remainder = start;
+        for (size_t d = 0; d < ndim; d++)
+        {
+            coords[d] = remainder / inputStrides[d];
+            remainder -= coords[d] * inputStrides[d];
+            encodingIdx += encodingStrides[d] * coords[d];
+        }
+
         for (size_t i = start; i < end; i++)
         {
-            int encodingIdx = 0;
-            int remainder   = i;
-            for (auto dim = 0; dim < inputStrides.size(); dim++)
-            {
-                int dimIdx = remainder / inputStrides[dim];
-                remainder  = remainder - dimIdx * inputStrides[dim];
-                encodingIdx += encodingStrides[dim] * dimIdx;
-            }
-
             auto delta  = encodings[encodingIdx].delta;
             auto offset = encodings[encodingIdx].offset;
             auto min    = encodings[encodingIdx].min;
@@ -642,6 +645,23 @@ void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings
 
             quantizeValueCpu<DTYPE>(in + i, out + i, min, max, delta, offset, ROUND_NEAREST);
             dequantizeValueCpu<DTYPE>(out + i, delta, offset);
+
+            // Increment coords by 1 and find new encodingIdx
+            for (int d = ndim - 1; d >= 0; d--)
+            {
+                coords[d]++;
+                if (coords[d] < inputShape[d])
+                {
+                    encodingIdx += encodingStrides[d];
+                    break;
+                }
+                else
+                {
+                    coords[d] = 0;
+                    encodingIdx -= encodingStrides[d] * (inputShape[d] - 1);
+                }
+
+            }
         }
     };
 
@@ -709,7 +729,7 @@ void quantizeDequantizeBroadcast(const T* inTensor, T* outTensor, const Encoding
         break;
     case COMP_MODE_CPU:
         quantizeDequantizeBroadcastCpu(inTensor, outTensor, encodings, numElements, inputStrides, encodingStrides,
-                                       runner);
+                                       bcTensorShape, runner);
         break;
     default:
         throw std::runtime_error("Unknown computation mode.");
@@ -757,7 +777,7 @@ template void quantizeDequantizeBroadcast(const float* inTensor, float* outTenso
 
 template void quantizeDequantizeBroadcastCpu(const float* in, float* out, const Encodings& encodings,
                                              int64_t numElement, const TensorDims& inputStrides,
-                                             const TensorDims& encodingStrides,
+                                             const TensorDims& encodingStrides, const TensorDims& inputShape,
                                              IForLoopRunner* runner);
 
 }   // End of namespace DlQuantization
