@@ -17,9 +17,10 @@ from aimet_onnx.experimental.adascale.adascale_optimizer import (
     apply_adascale,
     adascale_model_config_dict,
 )
+from aimet_onnx.experimental.spinquant import apply_spinquant
 
 from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
-from GenAITests.shared.models.generator import Generator
+from GenAITests.shared.models.generator import Generator, VLM_Generator
 from GenAITests.onnx.models.utils.torch_onnx_interface import kwargs_to_dict
 
 
@@ -188,3 +189,25 @@ class AdaScale(QuantizationTechnique):
             adascale_model_config_dict[generator.config.model_type],
             num_iterations,
         )
+
+
+@YAMLConfigParser.register_recipe
+class SpinQuant(QuantizationTechnique):
+    """Apply SpinQuant: R1 rotation to model"""
+
+    @staticmethod
+    def apply(
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+    ):
+        # SpinQuant currently only supports LLM backbones. Skip for VLMs.
+        # When VLM support is added remove this check.
+        if isinstance(generator, VLM_Generator):
+            raise NotImplementedError(
+                "SpinQuant does not yet support VLMs. "
+                "Only LLM (backbone-only) models are supported."
+            )
+
+            # Apply SpinQuant rotation.
+        apply_spinquant(quantsim)
