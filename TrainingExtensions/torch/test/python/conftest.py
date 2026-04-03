@@ -21,6 +21,18 @@ def pytest_configure(config):
     )
 
 
+def pytest_ignore_collect(collection_path, config):
+    """Skip test files that import aimet_torch.v1 on Python 3.11+"""
+    if sys.version_info >= (3, 11) and collection_path.suffix == ".py":
+        try:
+            content = collection_path.read_text()
+            if "from aimet_torch.v1" in content or "import aimet_torch.v1" in content:
+                return True  # Ignore this file
+        except Exception:
+            pass
+    return False  # Don't ignore
+
+
 @pytest.fixture(autouse=True)
 def skip_on_macos(request):
     marker = request.node.get_closest_marker("skip_on_macos")

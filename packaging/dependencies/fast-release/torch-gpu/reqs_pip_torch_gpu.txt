@@ -1,4 +1,4 @@
-bokeh<=3.6.3
+bokeh>=3.3.0,<=3.6.3
 cvxpy
 holoviews
 hvplot>=0.10.0

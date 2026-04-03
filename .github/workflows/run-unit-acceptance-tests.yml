@@ -8,6 +8,7 @@ on:
         type: string
         default: aimet-dev
       ver_python:
+        description: "Comma-separated Python versions to test, e.g. '3.10,3.11,3.12'"
         required: false
         type: string
         default: "3.10"
@@ -44,10 +45,28 @@ on:
         default: false
 
 jobs:
+  parse_python_versions:
+    name: Parse Python versions
+    runs-on: ubuntu-latest
+    outputs:
+      python_versions: ${{ steps.set-matrix.outputs.python_versions }}
+    steps:
+      - name: Convert comma-separated Python versions to JSON array
+        id: set-matrix
+        run: |
+          # Convert "3.10,3.11,3.12" to JSON array ["3.10","3.11","3.12"]
+          versions="${{ inputs.ver_python }}"
+          json_array=$(echo "$versions" | tr ',' '\n' | jq -R . | jq -sc .)
+          echo "python_versions={\"ver_python\":$json_array}" >> $GITHUB_OUTPUT
+
   test_on_linux:
-    name: Run AIMET unit and acceptance tests on Ubuntu
+    name: Run AIMET unit and acceptance tests on Ubuntu (Python ${{ matrix.ver_python }})
+    needs: parse_python_versions
     runs-on: ${{ inputs.runs_on }}
     if: inputs.run_unit_tests || inputs.run_acceptance_tests
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.parse_python_versions.outputs.python_versions) }}
     env:
       pytest_github_report: true
       pytest_use_zeros: true
@@ -84,7 +103,7 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           ENV_NAME: ${{ inputs.env_name }}
-          VER_PYTHON: ${{ inputs.ver_python }}
+          VER_PYTHON: ${{ matrix.ver_python }}
       - name: Install test dependencies
         run: |
           . ./${{ inputs.env_name }}/bin/activate
@@ -98,9 +117,11 @@ jobs:
           python3 -m uv pip install "${WHEEL_PATH}[test,v1-deps]" --extra-index-url="https://download.pytorch.org/whl/${cu}"  --index-strategy unsafe-best-match
 
       - name: Run pylint
+        # TODO: #6789: Enable pylint for python 3.11 and 3.12
+        if: matrix.ver_python == '3.10'
         run: |
           . ./${{ inputs.env_name }}/bin/activate
-          UV_PYTHONPATH="./${{ inputs.env_name }}/lib/python${{ inputs.ver_python }}/site-packages"
+          UV_PYTHONPATH="./${{ inputs.env_name }}/lib/python${{ matrix.ver_python }}/site-packages"
 
           # Set LD_LIBRARY_PATH for dynamic linking with libpython3.so
           PYTHON_LIB_PATH=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")

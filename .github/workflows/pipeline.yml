@@ -78,7 +78,8 @@ jobs:
               {
                  "id":              "torch-cpu",
                  "runs-on":         "ubuntu-latest",
-                 "VER_PYTHON":      "3.10",
+                 "VER_PYTHON_BUILD": "3.10",
+                 "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "2.*",
                  "VER_ONNXRUNTIME": "",
                  "VER_CUDA":        "",
@@ -90,7 +91,8 @@ jobs:
               {
                  "id":              "torch-gpu",
                  "runs-on":         "k8s-gpu",
-                 "VER_PYTHON":      "3.10",
+                 "VER_PYTHON_BUILD": "3.10",
+                 "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "2.*",
                  "VER_ONNXRUNTIME": "",
                  "VER_CUDA":        "12.6.0",
@@ -109,7 +111,8 @@ jobs:
               {
                  "id":              "onnx-cpu",
                  "runs-on":         "ubuntu-latest",
-                 "VER_PYTHON":      "3.10",
+                 "VER_PYTHON_BUILD": "3.10",
+                 "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "",
                  "VER_ONNXRUNTIME": "1.19.2",
                  "VER_CUDA":        "",
@@ -121,7 +124,8 @@ jobs:
               {
                  "id":              "onnx-gpu",
                  "runs-on":         "k8s-gpu",
-                 "VER_PYTHON":      "3.10",
+                 "VER_PYTHON_BUILD": "3.10",
+                 "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "",
                  "VER_ONNXRUNTIME": "1.19.2",
                  "VER_CUDA":        "12.6.0",
@@ -139,7 +143,8 @@ jobs:
               {
                  "id":              "onnx-torch-cpu",
                  "runs-on":         "ubuntu-latest",
-                 "VER_PYTHON":      "3.10",
+                 "VER_PYTHON_BUILD": "3.10",
+                 "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "2.*",
                  "VER_ONNXRUNTIME": "1.19.2",
                  "VER_CUDA":        "",
@@ -174,7 +179,7 @@ jobs:
           image-name: "${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}"
           image-tag: ${{ needs.docker-tag.outputs.tag }}
           build-args: |
-            VER_PYTHON=${{ matrix.VER_PYTHON }}
+            VER_PYTHON=${{ matrix.VER_PYTHON_BUILD }}
             VER_CUDA=${{ matrix.VER_CUDA }}
             VER_TORCH=${{ matrix.VER_TORCH }}
             VER_ONNXRUNTIME=${{ matrix.VER_ONNXRUNTIME }}
@@ -197,7 +202,7 @@ jobs:
     strategy:
       matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     with:
-      ver_python: ${{ matrix.VER_PYTHON }}
+      ver_python: ${{ matrix.VER_PYTHON_TEST }}
       ver_cuda: ${{ matrix.VER_CUDA }}
       ver_torch: ${{ matrix.VER_TORCH }}
       ver_onnxruntime: ${{ matrix.VER_ONNXRUNTIME }}

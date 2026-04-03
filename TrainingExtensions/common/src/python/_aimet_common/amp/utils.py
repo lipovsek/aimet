@@ -306,7 +306,7 @@ def create_sensitivity_plot(
         fill_color=factor_cmap(
             "QuantizerGroup_Bitwidth",
             palette=list(color_groups.blue),
-            factors=df["Bitwidth"].unique(),
+            factors=list(df["Bitwidth"].unique()),
             start=1,
             end=2,
         ),
