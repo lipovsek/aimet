@@ -6,6 +6,29 @@
 Release notes
 #############
 
+2.28.0
+======
+
+* New Features
+    * Torch
+        * Add resumable checkpointing for AdaScale optimization (`20ecb0a`_)
+
+    * Common
+        * Migrate pybind11 bindings to Cython using Python's Stable ABI to enable Python-version-independent wheels (`0d6f856`_)
+
+* Bug fixes and Improvements
+    * Torch
+        * Fix rescale encodings not propagating with shared scale values (`d9f3a90`_)
+
+* Documentation
+    * Update docs and examples to use new API for setting lm_head precision (`ac3e11e`_)
+
+.. _20ecb0a: https://github.com/quic/aimet/commit/20ecb0ae89a1261250d5b5a8128802bc8d442bae
+.. _0d6f856: https://github.com/quic/aimet/commit/0d6f856cf8b6c1bbb3adc5d8d5e2d0a2c14c72e6
+.. _d9f3a90: https://github.com/quic/aimet/commit/d9f3a9094876db4834e9b1359b36627ff3ef6570
+.. _ac3e11e: https://github.com/quic/aimet/commit/ac3e11e1c6d835a6f65b83e29fd5e36479a9a750
+
+
 2.27.0
 ======
 
