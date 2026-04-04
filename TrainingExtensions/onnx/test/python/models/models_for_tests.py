@@ -2536,8 +2536,8 @@ def simplifiable_model(batch_size=1):
     class Model(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.weight1 = torch.nn.Parameter(torch.empty(10, 10))
-            self.weight2 = torch.nn.Parameter(torch.empty(20, 10))
+            self.weight1 = torch.nn.Parameter(torch.randn(10, 10))
+            self.weight2 = torch.nn.Parameter(torch.randn(20, 10))
 
         def forward(self, x):
             # Add some nonsense operations that will get folded in onnx simplifier

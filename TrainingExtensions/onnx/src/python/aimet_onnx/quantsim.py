@@ -31,6 +31,7 @@ import json
 import warnings
 import numpy as np
 import onnx
+import onnx_ir
 
 from onnx import helper
 from onnx.numpy_helper import to_array
@@ -105,6 +106,10 @@ from aimet_onnx.utils import (
     remove_activation_hooks,
     create_ort_session_options_with_aimet_custom_ops,
     OrtInferenceSession,
+)
+from aimet_onnx.graph_passes.fusions import (
+    AIMET_SUPERGROUP_DOMAIN,
+    inline_all_supergroups,
 )
 from aimet_onnx.batch_norm_fold import _has_unfolded_batchnorms
 import aimet_onnx
@@ -1870,18 +1875,23 @@ class QuantizationSimModel:
 
         if export_model:
             with self._remove_quantization_nodes():
-                if self.model.model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF:
-                    # Note: Saving as external data mutates the saved model, removing all initializer data
-                    save_model_with_external_weights(
-                        self.model.model,
-                        os.path.join(path, filename_prefix) + ".onnx",
-                        location=filename_prefix + ".data",
-                        all_tensors_to_one_file=True,
-                    )
-                else:
-                    self.model.save_model_to_file(
-                        os.path.join(path, filename_prefix) + ".onnx"
-                    )
+                use_external_data = (
+                    self.model.model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF
+                )
+                ir_model = onnx_ir.from_proto(self.model.model)
+                if any(
+                    node.domain == AIMET_SUPERGROUP_DOMAIN
+                    for node in ir_model.graph.all_nodes()
+                ):
+                    inline_all_supergroups(ir_model)
+
+                onnx_ir.save(
+                    ir_model,
+                    os.path.join(path, filename_prefix) + ".onnx",
+                    external_data=filename_prefix + ".data"
+                    if use_external_data
+                    else None,
+                )
 
     def set_and_freeze_param_encodings(self, encoding_path: str):
         """
@@ -2350,8 +2360,15 @@ class QuantizationSimModel:
                 onnx_opset_version,
             )
 
-        model_copy = onnx.ModelProto()
-        model_copy.CopyFrom(self.model.model)
+        # Note: Must inline supergroups before version conversion, since version_converter does not handle functions
+        ir_model = onnx_ir.from_proto(self.model.model)
+        if any(
+            node.domain == AIMET_SUPERGROUP_DOMAIN
+            for node in ir_model.graph.all_nodes()
+        ):
+            inline_all_supergroups(ir_model)
+
+        model_copy = onnx_ir.to_proto(ir_model)
 
         self._overwrite_parameters(model_copy, self._get_qdq_parameters())
 

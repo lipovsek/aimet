@@ -25,7 +25,9 @@ import torch.nn.functional as F
 import numpy as np
 from onnx import load_model
 import onnx
+import onnx_ir
 import onnxruntime as ort
+from onnxruntime.quantization.onnx_model import ONNXModel
 import pytest
 
 from aimet_onnx.common import libpymo
@@ -98,6 +100,7 @@ from .models.onnx_qdq_models import (
     transpose_multi_consumer,
     identity_tree,
 )
+from aimet_onnx.graph_passes.fusions import fuse_supergroups, AIMET_SUPERGROUP_DOMAIN
 
 CPU_PROVIDERS = ["CPUExecutionProvider"]
 CUDA_PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -147,6 +150,21 @@ def _get_tensor_dtypes(model: onnx.ModelProto):
         t.name: _to_np_dtype(t.data_type) for t in inferred_model.graph.initializer
     }
     return act_dtypes | param_dtypes
+
+
+def _has_aimet_supergroups(model: onnx.ModelProto):
+    return any(node.domain == AIMET_SUPERGROUP_DOMAIN for node in model.graph.node)
+
+
+def _fuse_all_supergroups(model: onnx.ModelProto):
+    if isinstance(model, ONNXModel):
+        return ONNXModel(_fuse_all_supergroups(model.model))
+
+    ir_model = onnx_ir.from_proto(model)
+    fuse_supergroups(
+        ir_model, patterns=["MatmulAdd", "LayerNormalization", "RMSNormalization"]
+    )
+    return onnx_ir.to_proto(ir_model)
 
 
 class DummyModel(SingleResidual):
@@ -416,10 +434,14 @@ class TestQuantSim:
         assert quantizer_args["dtype"] == "int"
         assert "is_symmetric" in quantizer_args
 
+    @pytest.mark.parametrize("fuse_supergroups", (True, False))
     @pytest.mark.parametrize("export_model", (True, False))
-    def test_export_model(self, export_model, tmp_dir):
+    def test_export_model(self, export_model, fuse_supergroups, tmp_dir):
         """Test to export encodings and model"""
         model = build_dummy_model()
+        if fuse_supergroups:
+            model = _fuse_all_supergroups(model)
+
         dummy_input = make_dummy_input(model)
         sim = QuantizationSimModel(model)
 
@@ -472,6 +494,7 @@ class TestQuantSim:
             model_path = os.path.join(tmp_dir, "quant_sim_model.onnx")
             onnx.checker.check_model(model_path)
             model = onnx.load(model_path)
+            assert not _has_aimet_supergroups(model)
             # Exported graph should not have any QcQuantizeOps
             assert not any(node.op_type == "QcQuantizeOp" for node in model.graph.node)
             # Exported graph should not have updated output names
@@ -872,8 +895,11 @@ class TestQuantSim:
         if cn is not None:
             assert sim.qc_quantize_op_dict["cn"].enabled
 
-    def test_single_residual(self):
+    @pytest.mark.parametrize("fuse_supergroups", (True, False))
+    def test_single_residual(self, fuse_supergroups):
         model = single_residual_model().model
+        if fuse_supergroups:
+            model = _fuse_all_supergroups(model)
         with tempfile.TemporaryDirectory() as tempdir:
             sim = QuantizationSimModel(model, providers=["CPUExecutionProvider"])
             for quantizer in sim.qc_quantize_op_dict:
@@ -894,6 +920,7 @@ class TestQuantSim:
             # Check that exported model is the same as original model
             model = single_residual_model().model
             exported_model = onnx.load(os.path.join(tempdir, "quant_sim_model.onnx"))
+            assert not _has_aimet_supergroups(exported_model)
 
             for idx, t in enumerate(model.graph.input):
                 assert t.name == exported_model.graph.input[idx].name
@@ -2220,13 +2247,16 @@ class TestQuantSim:
             assert groupnorm_bias_enc["bw"] == 16
             assert groupnorm_bias_enc["is_sym"] is False
 
-    def test_layernorm_exception_rule(self):
+    @pytest.mark.parametrize("fuse_supergroups", [True, False])
+    def test_layernorm_exception_rule(self, fuse_supergroups):
         """
         Given: HTP quantsim config
         When: Set layernorm weight to int16
         Then: Set layernorm weight should be symmetric
         """
         model = layernorm_model()
+        if fuse_supergroups:
+            model = _fuse_all_supergroups(model)
         sim = aimet_onnx.QuantizationSimModel(
             model,
             param_type=aimet_onnx.int16,
@@ -4554,8 +4584,9 @@ class TestEncodingPropagation:
             """
             assert sim.qc_quantize_op_dict["weight"].bitwidth == 4
 
+    @pytest.mark.parametrize("fuse_supergroups", [True, False])
     @pytest.mark.parametrize("per_channel", [True, False])
-    def test_matmul_add_bias_quantizer(self, per_channel: bool):
+    def test_matmul_add_bias_quantizer(self, per_channel: bool, fuse_supergroups):
         quantsim_config = {
             "defaults": {
                 "ops": {"is_output_quantized": "True"},
@@ -4564,7 +4595,7 @@ class TestEncodingPropagation:
                 "strict_symmetric": "False",
                 "unsigned_symmetric": "False",
             },
-            "params": {},
+            "params": {"bias": {"is_quantized": "False"}},
             "op_type": {},
             "supergroup_pass_list": ["MatmulAdd"],
             "supergroups": [],
@@ -4577,6 +4608,8 @@ class TestEncodingPropagation:
                weight_matmul - bias_add
         """
         model = models_for_tests.matmul_bias_add_model()
+        if fuse_supergroups:
+            model = _fuse_all_supergroups(model)
 
         """
         When: Create QuantizationSimModel
@@ -4600,8 +4633,11 @@ class TestEncodingPropagation:
             == weight_qtzr.quant_info.usePerChannelMode
         )
 
-        _, _, param_quantizers = sim.get_op_quantizers(sim.connected_graph._ops["add"])
-        assert list(param_quantizers.values()) == [bias_qtzr]
+        if not fuse_supergroups:
+            _, _, param_quantizers = sim.get_op_quantizers(
+                sim.connected_graph._ops["add"]
+            )
+            assert list(param_quantizers.values()) == [bias_qtzr]
 
         """
         When: Concretize int32 bias quantizers
@@ -4629,6 +4665,7 @@ class TestEncodingPropagation:
         assert not bias_qtzr.enabled
 
         quantized_model = sim.to_onnx_qdq(export_int32_bias=True)
+        assert not _has_aimet_supergroups(quantized_model)
         quantized_model_session = ort.InferenceSession(
             quantized_model.SerializeToString(), providers=["CPUExecutionProvider"]
         )
@@ -4984,6 +5021,7 @@ class TestEncodingPropagation:
                 assert np.allclose(weight_scale, expected_weight_scale)
 
 
+@pytest.mark.parametrize("fuse_supergroups", [True, False])
 @pytest.mark.parametrize(
     "model_factory,             input_shape,     block_size, lpbq, enable_mp",
     [
@@ -5001,8 +5039,12 @@ class TestEncodingPropagation:
         # TODO: Add tests with GroupNormalization
     ],
 )
-def test_bias_export(model_factory, input_shape, block_size, lpbq, enable_mp, tmp_dir):
+def test_bias_export(
+    model_factory, input_shape, block_size, lpbq, enable_mp, tmp_dir, fuse_supergroups
+):
     model = model_factory()
+    if fuse_supergroups:
+        model = _fuse_all_supergroups(model)
     input = np.random.randn(*input_shape).astype(np.float32)
 
     """
@@ -5219,6 +5261,7 @@ def test_to_onnx_qdq(
 ):
     ort.set_seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
 
     model = model_factory()
     input_names = [inp.name for inp in getattr(model, "model", model).graph.input]
@@ -5383,6 +5426,7 @@ def test_fp16_qdq_export(
 
     ort.set_seed(0)
     np.random.seed(0)
+    torch.manual_seed(0)
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
     model = model_factory()
@@ -5760,10 +5804,11 @@ def test_insert_data_movement_op_quantizers(model_factory):
             assert np.all(out_before == out_after)
 
 
+@pytest.mark.parametrize("fuse_supergroups", [False, True])
 @pytest.mark.parametrize(
     "model_factory", [model_with_split_matmul, reshape_with_multiple_consumers]
 )
-def test_insert_data_movement_op_edge_case(model_factory):
+def test_insert_data_movement_op_edge_case(model_factory, fuse_supergroups):
     """
     Given: Model with edge case scenarios
 
@@ -5780,6 +5825,9 @@ def test_insert_data_movement_op_edge_case(model_factory):
                            +--> ...
     """
     model = model_factory()
+    if fuse_supergroups:
+        model = _fuse_all_supergroups(model)
+
     with patch("aimet_onnx.quantsim.op_outputs_to_ignore", []):
         sim = QuantizationSimModel(model)
 
@@ -7291,3 +7339,127 @@ def test_activation_uint(tmp_path: pathlib.Path, force_activation_as: str | None
     assert np.allclose(
         out_1, out_2, atol=sim.qc_quantize_op_dict["output"].get_encodings()[0].delta
     )
+
+
+@pytest.mark.skip_on_windows_amd64(
+    "torch.onnx.export fails for llama_rmsnorm_model on Windows AMD64"
+)
+@pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+@pytest.mark.cuda()
+@pytest.mark.parametrize("providers", [CPU_PROVIDERS, CUDA_PROVIDERS])
+@pytest.mark.parametrize(
+    "model_factory",
+    [
+        models_for_tests.llama_rmsnorm_model,
+        models_for_tests.rmsnorm_model,
+        partial(models_for_tests.rmsnorm_model, elementwise_affine=False),
+        lambda _: models_for_tests.standalone_layernorm((10, 10, 10)),
+        lambda _: models_for_tests.model_with_4d_matmul_weight(),
+        lambda _: models_for_tests.model_with_split_matmul(),
+        lambda _: models_for_tests.standalone_batchnorm((10, 10, 10, 10)),
+        lambda _: models_for_tests.matmul_add_with_transpose(True, False),
+        # lambda _: models_for_tests.matmul_add_with_transpose(False, False), # CUDA error
+        lambda _: models_for_tests.matmul_add_with_transpose(True, True),
+        lambda _: models_for_tests.matmul_add_with_transpose(False, True),
+        lambda _: models_for_tests.matmul_bias_add_model(bias_first=False),
+        lambda _: models_for_tests.matmul_bias_add_model(bias_first=True),
+        lambda _: models_for_tests.layernorm_model(),
+        lambda _: models_for_tests.simplifiable_model(),
+        lambda _: models_for_tests.instance_norm_model().model,
+    ],
+)
+def test_e2e_quantsim_with_fused_supergroups(model_factory, tmp_path, providers):
+    model = model_factory(tmp_path)
+    dummy_input = make_dummy_input(model)
+    model = _fuse_all_supergroups(model)
+
+    init_names = set(tensor.name for tensor in model.graph.initializer)
+    supergroup_weights = set()
+    supergroup_bias = set()
+    supergroup_nodes = []
+    for node in model.graph.node:
+        if node.domain != AIMET_SUPERGROUP_DOMAIN:
+            continue
+        supergroup_nodes.append(node)
+        if node.op_type in ("Gemm", "LayerNormalization"):
+            if len(node.input) > 1 and node.input[1] in init_names:
+                supergroup_weights.add(node.input[1])
+            if len(node.input) > 2 and node.input[2] in init_names:
+                supergroup_bias.add(node.input[2])
+    """
+    When: Create a quantsim with a fused supergroup model
+    """
+    sim = QuantizationSimModel(
+        model, param_type="int8", activation_type="int16", config_file="htp_v79"
+    )
+    """
+    Then: 1) Compute encodings is successful
+    """
+    sim.compute_encodings([dummy_input])
+    sim_out = sim.session.run(None, dummy_input)[0]
+    """
+    Then: 2) Supergroup weights and biases are correctly identified
+    """
+    assert supergroup_weights.issubset(set(sim.param_names))
+    assert supergroup_bias.issubset(set(sim.param_names))
+    """
+    Then: 3) Supergroup nodes are correctly represented in connected graph
+    """
+    for node in supergroup_nodes:
+        assert node.name in sim.connected_graph._ops
+        cg_op = sim.connected_graph._ops[node.name]
+        assert cg_op.type == node.op_type
+
+        if cg_op.type in ("Gemm", "LayerNormalization"):
+            assert len(cg_op.inputs) - 1 == len(cg_op.parameters)
+    """
+    When: Export sim with fused supergroups to QDQ
+    Then: 1) QDQ model contains no aimet supergroup nodes
+          2) QDQ model passes onnx checker
+    """
+    qdq_model = sim.to_onnx_qdq()
+    assert not qdq_model.functions
+    assert not _has_aimet_supergroups(qdq_model)
+    onnx.checker.check_model(qdq_model)
+    """
+    Then: 3) QDQ model produces same output as sim.session within quantization error
+    """
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    qdq_sess = ort.InferenceSession(qdq_model.SerializeToString(), providers=providers)
+    qdq_out = qdq_sess.run(None, dummy_input)[0]
+    assert np.sum(np.square(qdq_out - sim_out)) / np.sum(np.square(sim_out)) < 1e-4
+    """
+    Then: 4) All quantizers that were enabled in the sim have corresponding QuantizeLinear nodes in the QDQ model
+    """
+    enabled_quantizers = set(
+        name for name, qtzr in sim.qc_quantize_op_dict.items() if qtzr.enabled
+    )
+    quantizer_inputs = set(
+        node.input[0].removesuffix("_updated")
+        for node in qdq_model.graph.node
+        if node.op_type == "QuantizeLinear"
+    )
+    assert enabled_quantizers.issubset(quantizer_inputs)
+    """
+    When: Export sim with fused supergroups to .onnx + .encoding
+    Then: 1) Exported model contains no supergroup nodes
+          2) Exported model passes onnx checker
+          3) All encodings map to tensor names in the exported model
+          4) All quantizers that were enabled in the sim have corresponding encodings in the exported encodings file
+    """
+    sim.export(tmp_path, "model", export_int32_bias=True, encoding_version="2.0.0")
+    exported_model = onnx.load(os.path.join(tmp_path, "model.onnx"))
+    with open(os.path.join(tmp_path, "model.encodings")) as f:
+        encodings = json.load(f)
+
+    assert not _has_aimet_supergroups(exported_model)
+    onnx.checker.check_model(exported_model)
+    model_tensor_names = (
+        {tensor.name for tensor in exported_model.graph.initializer}
+        | {tensor.name for tensor in exported_model.graph.input}
+        | {t for node in exported_model.graph.node for t in node.output}
+    )
+    encoding_names = set(encoding["name"] for encoding in encodings["encodings"])
+    assert encoding_names.issubset(model_tensor_names)
+    assert enabled_quantizers.issubset(encoding_names)
