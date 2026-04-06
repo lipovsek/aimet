@@ -6,7 +6,7 @@
 from datetime import datetime
 
 
-def get_test_artifacts_path(test_params, base_dir="genai_output/exports"):
+def get_test_artifacts_path(test_params, base_dir="GenAITests/artifacts/exports"):
     """Generate a deterministic, human-readable artifact directory path."""
     model_id = test_params["model"]["model_id"]
     slug = model_id.split("/")[-1]

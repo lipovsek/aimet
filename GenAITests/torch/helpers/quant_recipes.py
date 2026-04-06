@@ -55,6 +55,10 @@ def _prefill_inputs(
 class QuantizationTechnique(ABC):
     """Generic GenAI quantization technique"""
 
+    @classmethod
+    def cacheable(cls):
+        return False
+
     @staticmethod
     @abstractmethod
     def apply(
@@ -124,6 +128,10 @@ class Calibration(QuantizationTechnique):
 class SeqMSE(QuantizationTechnique):
     """Apply SeqMSE to model"""
 
+    @classmethod
+    def cacheable(cls):
+        return True
+
     @staticmethod
     @torch.no_grad()
     def apply(
@@ -139,6 +147,10 @@ class SeqMSE(QuantizationTechnique):
 @YAMLConfigParser.register_recipe
 class AdaScale(QuantizationTechnique):
     """Apply AdaScale to model"""
+
+    @classmethod
+    def cacheable(cls):
+        return True
 
     @staticmethod
     @torch.no_grad()

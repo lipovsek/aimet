@@ -3,7 +3,7 @@
 
 """GenAI test runner"""
 
-import inspect
+import contextlib
 import warnings
 import pytest
 import torch
@@ -18,7 +18,6 @@ from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAITests.shared.helpers.profiler import (
     GPUMeter,
     MetricResult,
-    RecipeStepStats,
     ComponentRecipeStats,
     write_stats_to_disk,
 )
@@ -27,6 +26,7 @@ from GenAITests.shared.helpers.eval_context import EvaluationContext
 from GenAITests.shared.helpers.fp_cache import DiskBackedFPCache
 from GenAITests.shared.helpers.metrics import TextEvaluationMetric
 from GenAITests.shared.helpers.model_cache import DiskBackedModelCache
+from GenAITests.shared.helpers.recipe_chain import apply_recipe_chain
 from GenAITests.shared.models.base import LLM, VLM
 from GenAITests.shared.helpers import datasets, metrics
 from GenAITests.onnx import models
@@ -34,69 +34,24 @@ from GenAITests.onnx.helpers import quant_recipes
 from GenAITests.onnx.models.utils.generator_utils import generator_factory
 
 
-def _extract_recipe_config(recipe_dict):
-    """Extract recipe class, dataset config, and kwargs from a recipe config dict."""
-    recipe_dict = recipe_dict.copy()
-    recipe_cls = recipe_dict.pop("class")
-    dataset_config = recipe_dict.pop("dataset", {}).copy()
-    dataset_cls = dataset_config.pop("class", None)
-    dataset_kwargs = dataset_config
-    recipe_kwargs = recipe_dict
-    return recipe_cls, recipe_kwargs, dataset_cls, dataset_kwargs
-
-
-def _apply_recipe_chain(
-    recipe_list,
-    sim_component,
-    generator,
-    tokenizer,
-    context_length,
-    image_size,
-    profiler_kwargs,
-    profiler_capture_intermediate_data,
-):
-    """Apply a chain of recipe steps sequentially, returning per-step stats."""
-    step_stats = []
-    for recipe_config in recipe_list:
-        recipe_cls, recipe_kwargs, dataset_cls, dataset_kwargs = _extract_recipe_config(
-            recipe_config
-        )
-        if image_size is not None and dataset_cls is not None:
-            sig = inspect.signature(dataset_cls.load_encoded_dataset)
-            if "image_size" in sig.parameters:
-                dataset_kwargs.setdefault("image_size", image_size)
-        train_dataset = (
-            dataset_cls.load_encoded_dataset(
-                tokenizer,
-                context_length,
-                **dataset_kwargs,
-            )
-            if dataset_cls
-            else None
-        )
-        with GPUMeter(
-            **profiler_kwargs,
-            capture_intermediate_data=profiler_capture_intermediate_data,
-        ) as profiler:
-            recipe_cls.apply(sim_component, generator, train_dataset, **recipe_kwargs)
-        step_stats.append(
-            RecipeStepStats(
-                recipe_name=recipe_cls.__name__,
-                recipe_kwargs=recipe_kwargs,
-                dataset_name=dataset_cls.__name__ if dataset_cls else "",
-                dataset_kwargs=dataset_kwargs,
-                profiler=profiler,
-            )
-        )
-        gc.collect()
-        torch.cuda.empty_cache()
-    return step_stats
+@contextlib.contextmanager
+def _disable_onnx_quantizers(quantsim):
+    """Temporarily disable all quantize ops on an ONNX quantsim."""
+    ops = {name: op for name, op in quantsim.qc_quantize_op_dict.items() if op.enabled}
+    for op in ops.values():
+        op.enabled = False
+    try:
+        yield
+    finally:
+        for op in ops.values():
+            op.enabled = True
 
 
 def test_llm_quantization(
     test_config,
     model_cache: DiskBackedModelCache,
     fp_cache: DiskBackedFPCache,
+    recipe_cache,
     export_dir,
     results_dir,
 ):
@@ -205,21 +160,34 @@ def test_llm_quantization(
                     f"Precomputed visual encodings not found  at {visual_encodings}. Proceeding without loading."
                 )
 
-    # Apply recipe chains
-    backbone_steps = _apply_recipe_chain(
-        all_recipes["backbone"],
-        sim_collection.backbone,
-        generator,
-        tokenizer.tokenizer if isinstance(tokenizer, ProcessorMixin) else tokenizer,
-        context_length,
-        image_size,
-        profiler_kwargs,
-        profiler_capture_intermediate_data,
+    # Disable visual quantizers during backbone recipes so the vision
+    # encoder runs in FP mode (its quantizers aren't calibrated yet).
+    visual_ctx = (
+        _disable_onnx_quantizers(sim_collection.visual)
+        if sim_collection.visual is not None
+        else contextlib.nullcontext()
     )
+    with visual_ctx:
+        backbone_steps = apply_recipe_chain(
+            all_recipes["backbone"],
+            sim_collection.backbone,
+            generator,
+            tokenizer,
+            context_length,
+            image_size,
+            profiler_kwargs,
+            profiler_capture_intermediate_data,
+            framework="onnx",
+            model_id=model_id,
+            precision=precision,
+            model_kwargs=model_kwargs,
+            component="backbone",
+            recipe_cache=recipe_cache,
+        )
 
     visual_steps = []
     if "visual" in all_recipes and sim_collection.visual is not None:
-        visual_steps = _apply_recipe_chain(
+        visual_steps = apply_recipe_chain(
             all_recipes["visual"],
             sim_collection.visual,
             generator,
@@ -228,6 +196,12 @@ def test_llm_quantization(
             image_size,
             profiler_kwargs,
             profiler_capture_intermediate_data,
+            framework="onnx",
+            model_id=model_id,
+            precision=precision,
+            model_kwargs=model_kwargs,
+            component="visual",
+            recipe_cache=recipe_cache,
         )
 
     gc.collect()

@@ -356,7 +356,7 @@ class YAMLConfigParser:
                 raise RuntimeError("Metric name not specified.")
 
     @classmethod
-    def parse_document(cls, doc, export_base_dir="genai_output/exports"):
+    def parse_document(cls, doc, export_base_dir="GenAITests/artifacts/exports"):
         cls.validate_config(doc)
         task_params = {}
 
@@ -474,7 +474,7 @@ class YAMLConfigParser:
         return task_params
 
     @classmethod
-    def parse(cls, filename, export_base_dir="genai_output/exports"):
+    def parse(cls, filename, export_base_dir="GenAITests/artifacts/exports"):
         print(filename)
         with open(filename, "r") as file:
             docs = yaml.safe_load_all(file)

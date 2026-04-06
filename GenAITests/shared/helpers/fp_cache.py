@@ -86,9 +86,12 @@ class DiskBackedFPCache:
     ) -> Any:
         """Return cached data for *key*, computing and storing it if absent."""
         result = self.get(key)
-        if result is None:
-            result = compute_fn()
-            self.put(key, result, metadata=metadata)
+        if result is not None:
+            _log_fp_cache_hit(key)
+            return result
+        _log_fp_cache_miss(key)
+        result = compute_fn()
+        self.put(key, result, metadata=metadata)
         return result
 
     def clear(self):
@@ -111,15 +114,35 @@ class DiskBackedFPCache:
     def _load_index(self) -> dict:
         index_path = self._cache_dir / self._INDEX_FILE
         if index_path.exists():
-            with open(index_path, "r") as f:
-                return json.load(f)
+            try:
+                with open(index_path, "r") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                print(f"  [cache] FP cache index corrupted — resetting")
+                index_path.unlink()
         return self._empty_index()
 
     def _save_index(self):
         index_path = self._cache_dir / self._INDEX_FILE
         with open(index_path, "w") as f:
-            json.dump(self._index, f, indent=2)
+            json.dump(self._index, f, indent=2, default=str)
 
     @classmethod
     def _empty_index(cls) -> dict:
         return {"version": cls._INDEX_VERSION, "entries": {}}
+
+
+_CACHE_BANNER = "\n" + "=" * 70 + "\n"
+
+
+def _log_fp_cache_hit(key: tuple):
+    _, collection_name = key
+    print(_CACHE_BANNER, end="")
+    print(f"  FP CACHE HIT")
+    print(f"  Loading cached FP results for: {collection_name}")
+    print("=" * 70 + "\n")
+
+
+def _log_fp_cache_miss(key: tuple):
+    _, collection_name = key
+    print(f"  [cache] FP cache miss for {collection_name} — computing from scratch")

@@ -31,7 +31,7 @@ do_sync() {
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='.venv' \
-    --exclude='genai_output' \
+    --exclude='GenAITests/artifacts' \
     -e "$SCRIPT_DIR/kubectl_rsync.sh" \
     "$LOCAL_DIR/" "pod:$REMOTE_DIR/" >/dev/null 2>&1; then
     return 0
@@ -69,7 +69,7 @@ fi
 echo "[sync] Watching for changes..."
 while inotifywait -r -q \
   -e modify -e create -e delete -e move \
-  --exclude '(\.git|build|__pycache__|\.pyc|\.venv|genai_output)' \
+  --exclude '(\.git|build|__pycache__|\.pyc|\.venv|GenAITests/artifacts)' \
   "$LOCAL_DIR"; do
   do_sync
 done

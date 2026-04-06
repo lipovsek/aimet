@@ -79,6 +79,10 @@ def _prefill_inputs(
 class QuantizationTechnique(ABC):
     """Generic AIMET-ONNX GenAI quantization technique"""
 
+    @classmethod
+    def cacheable(cls):
+        return False
+
     @staticmethod
     @abstractmethod
     def apply(
@@ -144,6 +148,10 @@ class Calibration(QuantizationTechnique):
 
 @YAMLConfigParser.register_recipe
 class SeqMSE(QuantizationTechnique):
+    @classmethod
+    def cacheable(cls):
+        return True
+
     @staticmethod
     def apply(
         quantsim: QuantizationSimModel,
@@ -170,6 +178,10 @@ class SeqMSE(QuantizationTechnique):
 @YAMLConfigParser.register_recipe
 class AdaScale(QuantizationTechnique):
     """Apply AdaScale to model"""
+
+    @classmethod
+    def cacheable(cls):
+        return True
 
     @staticmethod
     def apply(

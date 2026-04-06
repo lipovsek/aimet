@@ -5,7 +5,6 @@
 
 from abc import ABC, abstractmethod
 import ast
-import inspect
 import re
 
 from datasets import (
@@ -36,6 +35,14 @@ class Dataset(ABC):
         """Load encoded and chunked dataset"""
 
 
+class TextDataset(Dataset):
+    """Dataset that accepts a tokenizer (PreTrainedTokenizer)."""
+
+
+class MultimodalDataset(Dataset):
+    """Dataset that accepts a processor (ProcessorMixin) for text + image inputs."""
+
+
 class InterleavedDatasetWrapper(torch.utils.data.Dataset):
     """Interleaves entries from multiple datasets in round-robin order.
 
@@ -57,7 +64,7 @@ class InterleavedDatasetWrapper(torch.utils.data.Dataset):
 
 
 @YAMLConfigParser.register_dataset
-class Interleaved(Dataset):
+class Interleaved(MultimodalDataset):
     """Meta-dataset that interleaves entries from multiple sub-datasets.
 
     YAML usage::
@@ -89,13 +96,18 @@ class Interleaved(Dataset):
             sub_config = sub_config.copy()
             sub_name = sub_config.pop("name")
             sub_cls = YAMLConfigParser.get_dataset(sub_name)
-            # Forward parent kwargs (e.g. image_size) to sub-datasets that accept them
-            sig = inspect.signature(sub_cls.load_encoded_dataset)
-            for key, value in kwargs.items():
-                if key in sig.parameters:
-                    sub_config.setdefault(key, value)
+            # Text datasets need just the tokenizer; multimodal datasets
+            # need the full processor and get image_size forwarded.
+            if issubclass(sub_cls, TextDataset):
+                sub_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+            else:
+                sub_tokenizer = tokenizer
+                if "image_size" in kwargs:
+                    sub_config.setdefault("image_size", kwargs["image_size"])
             loaded.append(
-                sub_cls.load_encoded_dataset(tokenizer, context_length, **sub_config)
+                sub_cls.load_encoded_dataset(
+                    sub_tokenizer, context_length, **sub_config
+                )
             )
         return InterleavedDatasetWrapper(loaded)
 
@@ -122,7 +134,7 @@ class ChunkedDataset(torch.utils.data.Dataset):
 
 
 @YAMLConfigParser.register_dataset
-class Wikitext(Dataset):
+class Wikitext(TextDataset):
     """Wikitest dataset"""
 
     @staticmethod
@@ -149,7 +161,7 @@ class Wikitext(Dataset):
 
 
 @YAMLConfigParser.register_dataset
-class TinyMMLU(Dataset):
+class TinyMMLU(TextDataset):
     """TinyMMLU dataset"""
 
     @staticmethod
@@ -200,7 +212,7 @@ class TinyMMLU(Dataset):
 
 
 @YAMLConfigParser.register_dataset
-class MMLU(Dataset):
+class MMLU(TextDataset):
     """MMLU Dataset"""
 
     @classmethod
@@ -339,7 +351,7 @@ class MMLU(Dataset):
 
 
 @YAMLConfigParser.register_dataset
-class MMMLU(Dataset):
+class MMMLU(TextDataset):
     """MMLU Dataset"""
 
     @classmethod
@@ -581,7 +593,7 @@ class LazyMMMUDataset(torch.utils.data.Dataset):
 
 
 @YAMLConfigParser.register_dataset
-class MMMU(Dataset):
+class MMMU(MultimodalDataset):
     """MMMU Dataset."""
 
     @staticmethod
@@ -604,7 +616,7 @@ class MMMU(Dataset):
 
 
 @YAMLConfigParser.register_dataset
-class C4(Dataset):
+class C4(TextDataset):
     """C4 dataset"""
 
     @staticmethod
@@ -714,7 +726,7 @@ class LazyAOKVQADataset(torch.utils.data.Dataset):
 
 
 @YAMLConfigParser.register_dataset
-class AOKVQA(Dataset):
+class AOKVQA(MultimodalDataset):
     """A-OKVQA dataset for multimodal backbone calibration (CC BY 4.0)."""
 
     @staticmethod

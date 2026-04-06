@@ -11,17 +11,50 @@ import yaml
 
 from GenAITests.shared.helpers.fp_cache import DiskBackedFPCache
 from GenAITests.shared.helpers.model_cache import DiskBackedModelCache
+from GenAITests.shared.helpers.recipe_cache import RecipeCache
+
+# All generated artifacts live under GenAITests/artifacts/ so they don't
+# clutter the repo root and can be excluded from rsync with a single path.
+_OUTPUT_ROOT = Path(__file__).parent / "artifacts"
 
 
 def pytest_addoption(parser):
     parser.addoption("--config", action="store", default=None)
     parser.addoption("--force-export", action="store_true", default=False)
-    parser.addoption("--export-dir", action="store", default="genai_output/exports")
-    parser.addoption("--results-dir", action="store", default="genai_output/results")
-    parser.addoption("--fp-cache-dir", action="store", default=".fp_cache")
+    parser.addoption(
+        "--export-dir", action="store", default=str(_OUTPUT_ROOT / "exports")
+    )
+    parser.addoption(
+        "--results-dir", action="store", default=str(_OUTPUT_ROOT / "results")
+    )
+    parser.addoption(
+        "--fp-cache-dir", action="store", default=str(_OUTPUT_ROOT / "cache" / "fp")
+    )
     parser.addoption("--clear-fp-cache", action="store_true", default=False)
-    parser.addoption("--model-cache-dir", action="store", default=".model_cache")
+    parser.addoption(
+        "--model-cache-dir",
+        action="store",
+        default=str(_OUTPUT_ROOT / "cache" / "model"),
+    )
     parser.addoption("--clear-model-cache", action="store_true", default=False)
+    parser.addoption(
+        "--recipe-cache-dir",
+        action="store",
+        default=str(_OUTPUT_ROOT / "cache" / "recipe"),
+        help="Directory for recipe chain cache (use --no-recipe-cache to disable)",
+    )
+    parser.addoption(
+        "--no-recipe-cache",
+        action="store_true",
+        default=False,
+        help="Disable recipe chain caching",
+    )
+    parser.addoption(
+        "--clear-recipe-cache",
+        action="store_true",
+        default=False,
+        help="Clear the recipe cache before running",
+    )
 
 
 @pytest.fixture(scope="session")
@@ -48,6 +81,23 @@ def model_cache(request):
     """
     cache = DiskBackedModelCache(request.config.getoption("--model-cache-dir"))
     if request.config.getoption("--clear-model-cache"):
+        cache.clear()
+    return cache
+
+
+@pytest.fixture(scope="session")
+def recipe_cache(request):
+    """Session-scoped recipe chain cache (enabled by default).
+
+    Content-addressed caching of expensive recipe steps (AdaScale, SeqMSE)
+    so that shared recipe prefixes across experiments are computed only once.
+    Disable with --no-recipe-cache.
+    """
+    if request.config.getoption("--no-recipe-cache"):
+        return None
+    cache_dir = request.config.getoption("--recipe-cache-dir")
+    cache = RecipeCache(cache_dir)
+    if request.config.getoption("--clear-recipe-cache"):
         cache.clear()
     return cache
 

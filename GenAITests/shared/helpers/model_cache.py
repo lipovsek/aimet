@@ -74,10 +74,8 @@ class DiskBackedModelCache:
         if not backbone_path.exists():
             # Stale index entry -- files were deleted externally
             print(
-                f"Model cache: stale entry for key {key}. "
-                f"backbone_path={backbone_path} does not exist. "
-                f"cache_dir exists={self._cache_dir.exists()}, "
-                f"entry_dir exists={entry_dir.exists()}"
+                f"  [cache] Model cache stale entry for key {key} "
+                f"(backbone not found on disk) — removing"
             )
             del self._index["entries"][key]
             self._save_index()
@@ -93,8 +91,7 @@ class DiskBackedModelCache:
                 current_hash = _hub_config_hash(model_id)
                 if stored_hash != current_hash:
                     print(
-                        f"Model cache: config changed for {model_id}, "
-                        "invalidating cache entry."
+                        f"  [cache] Model cache config changed for {model_id} — invalidating"
                     )
                     shutil.rmtree(entry_dir, ignore_errors=True)
                     del self._index["entries"][key]
@@ -200,9 +197,9 @@ class DiskBackedModelCache:
         """Return cached entry for *key*, exporting and storing it if absent."""
         result = self.get(key)
         if result is not None:
-            print(f"Model cache: hit for key {key}")
+            _log_model_cache_hit(key, metadata)
             return result
-        print(f"Model cache: miss for key {key}, exporting...")
+        _log_model_cache_miss(key, metadata)
         result = compute_fn()
         self.put(key, result, metadata=metadata)
         return self.get(key)
@@ -226,8 +223,12 @@ class DiskBackedModelCache:
     def _load_index(self) -> dict:
         index_path = self._cache_dir / self._INDEX_FILE
         if index_path.exists():
-            with open(index_path, "r") as f:
-                return json.load(f)
+            try:
+                with open(index_path, "r") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                print(f"  [cache] Model cache index corrupted — resetting")
+                index_path.unlink()
         return self._empty_index()
 
     def _save_index(self):
@@ -238,6 +239,33 @@ class DiskBackedModelCache:
     @classmethod
     def _empty_index(cls) -> dict:
         return {"version": cls._INDEX_VERSION, "entries": {}}
+
+
+_CACHE_BANNER = "\n" + "=" * 70 + "\n"
+
+
+def _model_label(metadata: dict | None) -> str:
+    if metadata:
+        model_id = metadata.get("model_id", "")
+        if model_id:
+            return model_id
+    return ""
+
+
+def _log_model_cache_hit(key: str, metadata: dict | None):
+    label = _model_label(metadata)
+    print(_CACHE_BANNER, end="")
+    print(f"  MODEL CACHE HIT")
+    if label:
+        print(f"  Model: {label}")
+    print(f"  Loading exported ONNX model from disk")
+    print("=" * 70 + "\n")
+
+
+def _log_model_cache_miss(key: str, metadata: dict | None):
+    label = _model_label(metadata)
+    detail = f" for {label}" if label else ""
+    print(f"  [cache] Model cache miss{detail} — exporting from scratch")
 
 
 def _strip_private_keys(obj):

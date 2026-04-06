@@ -134,6 +134,22 @@ class PrecisionConfig:
         if self.visual_activations is None:
             self.visual_activations = int16
 
+    def weight_identity(self) -> dict:
+        """Return the precision fields that affect weight-modifying recipes.
+
+        Excludes activations, kv_cache, and visual_activations since cacheable
+        recipes (SpinQuant, AdaScale, SeqMSE) only modify weights and weight
+        encodings, not activation quantizers.
+        """
+        d = {
+            "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
+            "lm_head": self.lm_head.to_dict(),
+            "embedding": repr(self.embedding),
+        }
+        if self.visual_weight is not None:
+            d["visual_weight"] = self.visual_weight.to_dict()
+        return d
+
     def to_dict(self) -> dict:
         d = {
             "activations": repr(self.activations),

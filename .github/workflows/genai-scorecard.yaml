@@ -280,9 +280,9 @@ jobs:
           OUT_FILE="GenAITests/secondary_onnx_eval.yaml"
           rm -f "$OUT_FILE"
 
-          mapfile -t FILES < <(ls -1 genai_output/exports/*/*onnx*.yaml genai_output/exports/*/*onnx*.yml 2>/dev/null | sort)
+          mapfile -t FILES < <(ls -1 GenAITests/artifacts/exports/*/*onnx*.yaml GenAITests/artifacts/exports/*/*onnx*.yml 2>/dev/null | sort)
           if [ "${#FILES[@]}" -eq 0 ]; then
-            echo "No YAML files found in genai_output/exports/"
+            echo "No YAML files found in GenAITests/artifacts/exports/"
             exit 0
           fi
 
@@ -297,14 +297,14 @@ jobs:
           . .venv/bin/activate
           export PYTHONPATH=$PYTHONPATH:$(pwd)
           hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
-          pytest -s GenAITests/onnx/test_genai.py --config "$OUT_FILE" --results-dir genai_output/secondary_results --force-export
+          pytest -s GenAITests/onnx/test_genai.py --config "$OUT_FILE" --results-dir GenAITests/artifacts/secondary_results --export-dir GenAITests/artifacts/secondary_exports --force-export
         shell: bash
 
       # Write CI run metadata to a JSON file alongside profiling data
       - name: Write run metadata
         if: always()
         run: |
-          cat > genai_output/results/run_metadata.json << METADATA_EOF
+          cat > GenAITests/artifacts/results/run_metadata.json << METADATA_EOF
           {
             "run_id": "${{ github.run_id }}",
             "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
@@ -317,10 +317,10 @@ jobs:
           }
           METADATA_EOF
           # Copy metadata for secondary ONNX eval results (with variant corrected to onnx)
-          if [ -d genai_output/secondary_results ]; then
+          if [ -d GenAITests/artifacts/secondary_results ]; then
             sed 's/"variant": "torch"/"variant": "onnx"/' \
-              genai_output/results/run_metadata.json \
-              > genai_output/secondary_results/run_metadata.json
+              GenAITests/artifacts/results/run_metadata.json \
+              > GenAITests/artifacts/secondary_results/run_metadata.json
           fi
 
       # Upload generated reports (CSV, HTML, JSON, run metadata)
@@ -331,18 +331,23 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: test-data-${{ matrix.variant }}-${{ github.run_id }}
-          path: genai_output/results/
+          path: GenAITests/artifacts/results/
           retention-days: 30
 
       # Zip all exported artifacts
       - name: Zip artifacts
         if: always()
         run: |
-          cd genai_output/exports
-          for dir in */; do
-            zip -1 -r "${dir%/}.zip" "$dir" &
+          for export_dir in GenAITests/artifacts/exports GenAITests/artifacts/secondary_exports; do
+            if [ -d "$export_dir" ]; then
+              cd "$export_dir"
+              for dir in */; do
+                zip -1 -r "${dir%/}.zip" "$dir" &
+              done
+              wait
+              cd -
+            fi
           done
-          wait
 
       # Authenticate with AWS to allow uploading to S3 in the next step
       - name: Authenticate AWS
@@ -357,11 +362,14 @@ jobs:
       - name: Upload artifacts to S3
         if: always()    # Upload even if tests failed
         run: |
-          aws s3 cp genai_output/exports/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/${{ matrix.variant }}/ --recursive --exclude "*" --include "*.zip"
-          aws s3 cp genai_output/results/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/${{ matrix.variant }}/ --recursive --exclude "*" --include "*.json" --include "*.csv"
-          # Upload secondary ONNX eval results under onnx/ prefix so Lambda tags variant correctly
-          if [ -d genai_output/secondary_results ]; then
-            aws s3 cp genai_output/secondary_results/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/onnx/ --recursive --exclude "*" --include "*.json" --include "*.csv"
+          aws s3 cp GenAITests/artifacts/exports/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/${{ matrix.variant }}/ --recursive --exclude "*" --include "*.zip"
+          aws s3 cp GenAITests/artifacts/results/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/${{ matrix.variant }}/ --recursive --exclude "*" --include "*.json" --include "*.csv"
+          # Upload secondary ONNX eval results and exports under onnx/ prefix so Lambda tags variant correctly
+          if [ -d GenAITests/artifacts/secondary_results ]; then
+            aws s3 cp GenAITests/artifacts/secondary_results/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/onnx/ --recursive --exclude "*" --include "*.json" --include "*.csv"
+          fi
+          if [ -d GenAITests/artifacts/secondary_exports ]; then
+            aws s3 cp GenAITests/artifacts/secondary_exports/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/onnx/ --recursive --exclude "*" --include "*.zip"
           fi
 
   # ===========================================================================

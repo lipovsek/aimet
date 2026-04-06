@@ -33,5 +33,8 @@ unit_test_results
 packaging/setup_cfg.py
 package_info.py
 
+# GenAI test outputs (caches, exports, results)
+GenAITests/artifacts/
+
 # Models
 *.onnx

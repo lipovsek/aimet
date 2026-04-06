@@ -69,17 +69,17 @@ def main():
     )
     pytest_group.add_argument(
         "--export-dir",
-        default="genai_output/exports",
+        default="GenAITests/artifacts/exports",
         help="Base directory for exported model artifacts (default: %(default)s)",
     )
     pytest_group.add_argument(
         "--results-dir",
-        default="genai_output/results",
+        default="GenAITests/artifacts/results",
         help="Directory for profiling results (default: %(default)s)",
     )
     pytest_group.add_argument(
         "--fp-cache-dir",
-        default=".fp_cache",
+        default="GenAITests/artifacts/cache/fp",
         help="Directory for FP results cache (default: %(default)s)",
     )
     pytest_group.add_argument(
@@ -90,7 +90,7 @@ def main():
     )
     pytest_group.add_argument(
         "--model-cache-dir",
-        default=".model_cache",
+        default="GenAITests/artifacts/cache/model",
         help="Directory for ONNX model cache (default: %(default)s)",
     )
     pytest_group.add_argument(
@@ -125,15 +125,15 @@ def _build_pytest_args(args):
     pytest_args = []
     if args.force_export:
         pytest_args.append("--force-export")
-    if args.export_dir != "genai_output/exports":
+    if args.export_dir != "GenAITests/artifacts/exports":
         pytest_args.extend(["--export-dir", args.export_dir])
-    if args.results_dir != "genai_output/results":
+    if args.results_dir != "GenAITests/artifacts/results":
         pytest_args.extend(["--results-dir", args.results_dir])
-    if args.fp_cache_dir != ".fp_cache":
+    if args.fp_cache_dir != "GenAITests/artifacts/cache/fp":
         pytest_args.extend(["--fp-cache-dir", args.fp_cache_dir])
     if args.clear_fp_cache:
         pytest_args.append("--clear-fp-cache")
-    if args.model_cache_dir != ".model_cache":
+    if args.model_cache_dir != "GenAITests/artifacts/cache/model":
         pytest_args.extend(["--model-cache-dir", args.model_cache_dir])
     if args.clear_model_cache:
         pytest_args.append("--clear-model-cache")
