@@ -3,11 +3,8 @@
 
 """Common patterns for pattern matching"""
 
-from __future__ import annotations
-
 from onnxscript.rewriter import pattern
 from .fusion_registry import AIMET_SUPERGROUP_DOMAIN
-from ._compat import Var, AttrVar
 
 
 def square(op: pattern.OpsetPatternBuilder, tensor: pattern.Var):
@@ -42,10 +39,10 @@ def div(
 def reduce_mean(op: pattern.OpsetPatternBuilder, x: pattern.Var, axes_name: str):
     """Matches ReduceMean(x) for opsets {13, 18}"""
     # Note: In opset>=18, axes is an optional input to ReduceMean rather than attribute
-    axes_var = Var(axes_name)
-    axes_attr = AttrVar(axes_name)
+    axes_var = pattern.Var(axes_name)
+    axes_attr = pattern.AttrVar(axes_name, can_match_none=True)
     return pattern.OrValue(
-        [op.ReduceMean(x, axes_var), op.ReduceMean(x, axes=axes_attr), op.ReduceMean(x)]
+        [op.ReduceMean(x, axes_var), op.ReduceMean(x, axes=axes_attr)]
     )
 
 
@@ -85,7 +82,7 @@ def non_affine_rms_normalize(
         raise ValueError(f"Invalid value passed for pattern_idx: {pattern_idx}")
     squared = square(op, x)
     mean = reduce_mean(op, squared, axes)
-    mean_eps = add(op, mean, Var(epsilon))
+    mean_eps = add(op, mean, pattern.Var(epsilon))
     sqrt_mean = op.Sqrt(mean_eps)
     inv_sqrt_mean = reciprocal(op, sqrt_mean)
     normalize_patterns = [
@@ -120,8 +117,8 @@ def rms_normalize(
         pattern_idx: If specified returns a concrete pattern node rather than OrValue output. Valid values are {None, 0, 1}.
     """
 
-    epsilon_attr = AttrVar(epsilon)
-    axes_attr = AttrVar(axes)
+    epsilon_attr = pattern.AttrVar(epsilon)
+    axes_attr = pattern.AttrVar(axes, can_match_none=True)
     normalized = pattern.OrValue(
         [
             non_affine_rms_normalize(op, x, epsilon, axes),

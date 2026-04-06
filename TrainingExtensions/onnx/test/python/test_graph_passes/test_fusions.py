@@ -5,13 +5,11 @@
 
 import os
 import pytest
-from packaging import version
 import numpy as np
 import torch
 import onnx
 import onnx_ir
 import onnxruntime
-import onnxscript
 from aimet_onnx.utils import make_dummy_input, get_node_attribute
 from aimet_onnx import QuantizationSimModel
 
@@ -587,10 +585,6 @@ class TestRMSNormFusion:
     @pytest.mark.skip_on_windows_amd64(
         "torch.onnx.export fails for rmsnorm_model on Windows AMD64"
     )
-    @pytest.mark.skipif(
-        version.parse(onnxscript.__version__) < version.parse("0.4.0"),
-        reason="Requires onnxscript >= 0.4.0",
-    )
     @pytest.mark.parametrize("elementwise_affine", [True, False])
     @pytest.mark.parametrize("eps", [None, 1e-3])
     @pytest.mark.parametrize("opset", [13, 17, 22])
@@ -623,10 +617,6 @@ class TestRMSNormFusion:
 
     @pytest.mark.skip_on_windows_amd64(
         "torch.onnx.export fails for llama_rmsnorm_model on Windows AMD64"
-    )
-    @pytest.mark.skipif(
-        version.parse(onnxscript.__version__) < version.parse("0.4.0"),
-        reason="Requires onnxscript >= 0.4.0",
     )
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     @pytest.mark.parametrize(
@@ -722,10 +712,6 @@ class TestInlineAllSupergroups:
 
     @pytest.mark.skip_on_windows_amd64(
         "torch.onnx.export fails for llama_rmsnorm_model on Windows AMD64"
-    )
-    @pytest.mark.skipif(
-        version.parse(onnxscript.__version__) < version.parse("0.4.0"),
-        reason="Requires onnxscript >= 0.4.0",
     )
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     @pytest.mark.parametrize(

@@ -3,15 +3,12 @@
 
 """MatmulAdd fusion pass for onnx-ir models"""
 
-from __future__ import annotations
-
 import onnx_ir
 from onnxscript import rewriter
 from onnxscript.rewriter import pattern
 
 from .ir_utils import get_constant_as_array
 from .fusion_registry import register_fusion, AIMET_SUPERGROUP_DOMAIN
-from ._compat import AttrVar
 
 
 @register_fusion("MatmulAdd", bias_first=False, trans_b=False)
@@ -51,8 +48,8 @@ class MatmulAddFusion(pattern.RewriteRuleClassBase):
         """
         if self.trans_b:
             # Match both with and without explicit "perm" attribute
-            weight = pattern.OrValue(
-                [op.Transpose(weight, perm=AttrVar("perm")), op.Transpose(weight)]
+            weight = op.Transpose(
+                weight, perm=pattern.AttrVar("perm", can_match_none=True)
             )
 
         matmul_output = op.MatMul(input_x, weight)
