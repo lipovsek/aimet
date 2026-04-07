@@ -14,7 +14,20 @@ from .mistral import *
 
 try:
     from .qwen3 import *
+except ImportError:
+    pass
+
+try:
     from .qwen3_vl import *
+except ImportError:
+    pass
+
+try:
     from .qwen3_moe import *
+except ImportError:
+    pass
+
+try:
+    from .qwen3_5 import *
 except ImportError:
     pass
