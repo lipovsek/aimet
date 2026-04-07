@@ -126,14 +126,20 @@ fi
 # Environment variables
 # -----------------------------------------------------------------------
 echo "Configuring environment..."
-cat >> "$VENV_DIR/bin/activate" << 'EOF'
-
+EXTRA_ENV="
 # GenAI environment
-export GIT_CLONE_PROTECTION_ACTIVE="false"
-export GIT_TERMINAL_PROMPT="0"
-export MPLBACKEND="Agg"
-export QT_QPA_PLATFORM="offscreen"
-EOF
+export GIT_CLONE_PROTECTION_ACTIVE=\"false\"
+export GIT_TERMINAL_PROMPT=\"0\"
+export MPLBACKEND=\"Agg\"
+export QT_QPA_PLATFORM=\"offscreen\"
+"
+
+if [ -n "${SAML2AWS_APP_ID:-}" ]; then
+  EXTRA_ENV+="export SAML2AWS_APP_ID=\"$SAML2AWS_APP_ID\"
+"
+fi
+
+echo "$EXTRA_ENV" >> "$VENV_DIR/bin/activate"
 
 # Re-source to pick up the new vars
 . "$VENV_DIR/bin/activate"

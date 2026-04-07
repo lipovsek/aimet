@@ -13,6 +13,8 @@ model:
 precision:
   blocks:
     granularity: LPBQ
+    qtype: int4
+    block_size: 64
 recipe:
   name: Calibration
   dataset:

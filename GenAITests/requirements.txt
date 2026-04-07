@@ -6,4 +6,4 @@ pytest
 nvidia-ml-py
 qwen_vl_utils
 onnxruntime-gpu
-huggingface_hub
+huggingface_hub[cli]

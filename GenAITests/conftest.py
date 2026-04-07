@@ -6,8 +6,13 @@
 import warnings
 from pathlib import Path
 
+import onnxruntime as ort
 import pytest
 import yaml
+
+# Suppress verbose onnxruntime INFO/WARNING messages (e.g. EP selection,
+# graph optimisation notes) that clutter test output.  Level 3 = ERROR only.
+ort.set_default_logger_severity(3)
 
 from GenAITests.shared.helpers.fp_cache import DiskBackedFPCache
 from GenAITests.shared.helpers.model_cache import DiskBackedModelCache

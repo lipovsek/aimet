@@ -1,23 +1,26 @@
 ################################################################################
 # GenAI Scorecard
 ################################################################################
-# Tests AIMET quantization techniques on GenAI models in both Torch and ONNX
+# Tests AIMET quantization techniques on GenAI models in both Torch and ONNX.
 #
 # Two testing modes:
 # 1. Regression: Run all regression tests
-# 2. Ad-hoc: Run all tests in provided config file
+# 2. Ad-hoc: Run a user-provided config file
+#
+# Torch and ONNX tests run independently — neither waits for the other's
+# runner or build to finish. This avoids idle GPU time when the cluster is
+# saturated and only one runner is available.
 #
 # Workflow:
-# - Builds AIMET-ONNX, AIMET-Torch from source with CUDA 12.1
-# - Submits an Argo Workflow to spin up an ephemeral GPU runner on the MLOps cluster
-# - Runs tests on the ephemeral runner with GPU access
-# - Uploads CSV/HTML/JSON reports as downloadable artifacts
+# - Builds AIMET-ONNX, AIMET-Torch from source
+# - Starts independent ephemeral GPU runners
+# - Runs tests via the genai-test composite action
+# - Uploads CSV/JSON reports and model artifacts to S3
 ################################################################################
 
 name: GenAI Scorecard
 
 on:
-  # SCHEDULED: Run automatically every Friday at 6PM (like a cron job)
   schedule:
     - cron: '0 1 * * 6'   # Every Friday at 6PM PT (Saturday 01:00 UTC)
 
@@ -26,20 +29,18 @@ on:
       - 'GenAITests/configs/torch_regression.yaml'
       - 'GenAITests/configs/onnx_regression.yaml'
 
-  # Manual trigger from GitHub Actions UI
   workflow_dispatch:
     inputs:
-      # What to run: full suite, single config, or filtered subset
       run_mode:
         description: 'What to run?'
         required: true
         type: choice
         options:
-          - regression        # All configs in suite
-          - ad_hoc            # One specific config
+          - regression
+          - ad_hoc
         default: 'regression'
       ad_hoc_config_b64:
-        description: 'Config file to use converted to base64 (ad-hoc only). Can be generated via: cat <your config.yaml> | base64 -w 0'
+        description: 'Base64-encoded config (ad-hoc only). Generate via: cat config.yaml | base64 -w 0'
         required: false
       ad_hoc_variants:
         description: 'Variants to test (ad-hoc only)'
@@ -51,25 +52,21 @@ on:
           - onnx
         default: 'both'
 
-
 ################################################################################
 # JOBS
 ################################################################################
 jobs:
   # ===========================================================================
-  # JOB 1: Build AIMET ONNX
-  # ===========================================================================
-  # Compiles AIMET from source with ONNX + GPU support
-  # Outputs: onnx-gpu-wheel artifact containing the compiled .whl file
+  # Build wheels
   # ===========================================================================
   build-aimet-onnx-gpu:
     name: Build aimet_onnx
-
-    # Reuses existing build workflow
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.run_mode != 'ad_hoc' ||
+      github.event.inputs.ad_hoc_variants != 'torch'
     uses: ./.github/workflows/build-wheels.yml
-
     with:
-      # Build variant: ONNX Runtime 1.19.2 + CUDA 12.1 + Python 3.10
       variants: >
         {"include":[{
           "id":"onnx-gpu",
@@ -81,28 +78,15 @@ jobs:
           "PIP_INDEX":""
         }]}
       image-tag: latest
-
-    # Pass repository secrets to build workflow
     secrets: inherit
 
-  # ===========================================================================
-  # JOB 2: Build AIMET Torch
-  # ===========================================================================
-  # Compiles AIMET from source with Torch + GPU support
-  # Outputs: torch-gpu-wheel artifact containing the compiled .whl file
-  # ===========================================================================
   build-aimet-torch-gpu:
     name: Build aimet_torch
-
     if: |
       github.event_name != 'workflow_dispatch' ||
       github.event.inputs.run_mode != 'ad_hoc' ||
       github.event.inputs.ad_hoc_variants != 'onnx'
-
-
-    # Reuses existing build workflow
     uses: ./.github/workflows/build-wheels.yml
-
     with:
       variants: >
         {"include":[{
@@ -116,51 +100,49 @@ jobs:
           "PIP_INDEX":""
         }]}
       image-tag: latest
-
-    # Pass repository secrets to build workflow
     secrets: inherit
 
   # ===========================================================================
-  # JOB 3: Start Ephemeral Runners
+  # Start ephemeral runners (independent)
   # ===========================================================================
-  # Uses composite actions backed by scripts/kube/launch_pod.sh
-  # ===========================================================================
-  start-runners:
-    name: Start ephemeral runners
+  start-runner-onnx:
+    name: Start ONNX runner
+    if: |
+      always() &&
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.run_mode != 'ad_hoc' ||
+      github.event.inputs.ad_hoc_variants != 'torch'
     runs-on: ubuntu-latest
-
     outputs:
-      onnx-label: ${{ steps.onnx.outputs.runner-label }}
-      torch-label: ${{ steps.torch.outputs.runner-label }}
-
+      runner-label: ${{ steps.start.outputs.runner-label }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Start ONNX runner
-        id: onnx
-        if: |
-          github.event_name != 'workflow_dispatch' ||
-          github.event.inputs.run_mode != 'ad_hoc' ||
-          github.event.inputs.ad_hoc_variants != 'torch'
+      - uses: actions/checkout@v4
+      - id: start
         uses: ./.github/actions/start-gpu-runner
         with:
-          runner-id: genai-onnx-${{ github.run_id }}
+          runner-id: genai-onnx-${{ github.run_id }}-${{ github.run_attempt }}
           gpu-request: "1"
           cpu-request: "32"
           memory-request: "512Gi"
           kubeconfig: ${{ secrets.KUBECONFIG }}
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
-      - name: Start Torch runner
-        id: torch
-        if: |
-          github.event_name != 'workflow_dispatch' ||
-          github.event.inputs.run_mode != 'ad_hoc' ||
-          github.event.inputs.ad_hoc_variants != 'onnx'
+  start-runner-torch:
+    name: Start Torch runner
+    if: |
+      always() &&
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.run_mode != 'ad_hoc' ||
+      github.event.inputs.ad_hoc_variants != 'onnx'
+    runs-on: ubuntu-latest
+    outputs:
+      runner-label: ${{ steps.start.outputs.runner-label }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: start
         uses: ./.github/actions/start-gpu-runner
         with:
-          runner-id: genai-torch-${{ github.run_id }}
+          runner-id: genai-torch-${{ github.run_id }}-${{ github.run_attempt }}
           gpu-request: "1"
           cpu-request: "32"
           memory-request: "512Gi"
@@ -168,226 +150,77 @@ jobs:
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
   # ===========================================================================
-  # JOB 4: Run GenAI Tests
+  # Run tests (independent — torch doesn't wait for ONNX or vice versa)
   # ===========================================================================
-  # Runs on the ephemeral runner started by the previous job.
-  # Downloads AIMET wheel, installs dependencies, runs tests based on mode.
-  # Uploads reports as artifacts: test-reports-<run_id>
-  # ===========================================================================
-  test-gpu:
-    name: Run GenAI tests (${{ matrix.variant }})
-    needs: [build-aimet-onnx-gpu, build-aimet-torch-gpu, start-runners]
-    runs-on: ${{ matrix.variant == 'onnx' && needs.start-runners.outputs.onnx-label || needs.start-runners.outputs.torch-label }}
-
-    # Allow running even if one build/runner was skipped (single-variant ad-hoc runs)
+  test-torch:
+    name: Test (torch)
+    needs: [build-aimet-torch-gpu, build-aimet-onnx-gpu, start-runner-torch]
     if: |
       !cancelled() &&
-      !(needs.build-aimet-onnx-gpu.result == 'skipped' && needs.build-aimet-torch-gpu.result == 'skipped') &&
-      needs.start-runners.result == 'success'
-
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: ${{
-          fromJSON(
-            github.event.inputs.run_mode == 'ad_hoc'
-            && github.event.inputs.ad_hoc_variants != ''
-            && github.event.inputs.ad_hoc_variants != 'both'
-            && format('["{0}"]', github.event.inputs.ad_hoc_variants)
-            || '["onnx","torch"]'
-          ) }}
-
-    timeout-minutes: 10080     # 7 days (7 * 24 * 60)
-
-    env:
-      # CRITICAL: Auto-accept git clones for models that need external repos
-      # Without this, models like mobilenet_v2 will prompt "Ok to clone? [Y/n]"
-      # and block the pipeline waiting for input
-      GIT_CLONE_PROTECTION_ACTIVE: "false"
-
-      # Additional git safety settings
-      GIT_TERMINAL_PROMPT: "0"  # Disable any git prompts
-
-      # Headless environment (prevent GUI-related errors)
-      MPLBACKEND: "Agg"
-      QT_QPA_PLATFORM: "offscreen"
-
+      needs.build-aimet-torch-gpu.result == 'success' &&
+      needs.build-aimet-onnx-gpu.result == 'success' &&
+      needs.start-runner-torch.result == 'success'
+    runs-on: ${{ needs.start-runner-torch.outputs.runner-label }}
+    timeout-minutes: 10080     # 7 days
     steps:
-      # -----------------------------------------------------------------------
-      # Setup: Get code, cache models, download AIMET wheel
-      # -----------------------------------------------------------------------
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download aimet-torch wheel
-        if: needs.build-aimet-torch-gpu.result == 'success'
-        uses: actions/download-artifact@v3
+      - uses: actions/checkout@v4
+      - name: Resolve config
+        id: config
+        run: |
+          bash scripts/all/resolve_genai_config.sh torch \
+            "${{ github.event.inputs.ad_hoc_config_b64 }}"
+      - uses: ./.github/actions/genai-test
         with:
-          name: torch-gpu-wheel
-          path: downloads
-
-      - name: Download aimet-onnx wheel
-        if: needs.build-aimet-onnx-gpu.result == 'success'
-        uses: actions/download-artifact@v3
-        with:
-          name: onnx-gpu-wheel
-          path: downloads
-
-      # -----------------------------------------------------------------------
-      # Install: System deps + Python environment + AIMET (shared script)
-      # -----------------------------------------------------------------------
-      - name: Setup environment
-        run: |
-          bash scripts/environment/setup_genai.sh \
-            --with-aws \
-            --wheels-dir "${{ github.workspace }}/downloads" \
-            --repo-dir "${{ github.workspace }}"
-
-      # Set up config file based on run mode
-      - name: Prepare scorecard config file
-        run: |
-          if [ "${{ github.event.inputs.run_mode }}" = "ad_hoc" ] && [ -n "${{ github.event.inputs.ad_hoc_config_b64 }}" ]; then
-            if ! echo "${{ github.event.inputs.ad_hoc_config_b64 }}" | base64 -d > GenAITests/scorecard_config.yaml 2>/dev/null; then
-              echo "Error: Failed to decode base64 config. Please ensure the input is valid base64."
-              exit 1
-            fi
-            if [ ! -s GenAITests/scorecard_config.yaml ]; then
-              echo "Error: Decoded config file is empty."
-              exit 1
-            fi
-            echo "Saved ad-hoc config (shown below) to GenAITests/scorecard_config.yaml"
-            cat GenAITests/scorecard_config.yaml
-          else
-            cp GenAITests/configs/${{ matrix.variant }}_regression.yaml GenAITests/scorecard_config.yaml
-            echo "Copied ${{ matrix.variant }} regression config to GenAITests/scorecard_config.yaml"
-          fi
-
-      # -----------------------------------------------------------------------
-      # Run: Execute aimet tests
-      # -----------------------------------------------------------------------
-
-      # Run tests
-      - name: Run tests
-        run: |
-          . .venv/bin/activate
-          export PYTHONPATH=$PYTHONPATH:$(pwd)
-          hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
-          pytest -s GenAITests/${{ matrix.variant }}/test_genai.py --config GenAITests/scorecard_config.yaml --force-export
-
-      - name: Run optional secondary evaluation using aimet-onnx
-        if: ${{ matrix.variant == 'torch' }}
-        run: |
-          OUT_FILE="GenAITests/secondary_onnx_eval.yaml"
-          rm -f "$OUT_FILE"
-
-          mapfile -t FILES < <(ls -1 GenAITests/artifacts/exports/*/*onnx*.yaml GenAITests/artifacts/exports/*/*onnx*.yml 2>/dev/null | sort)
-          if [ "${#FILES[@]}" -eq 0 ]; then
-            echo "No YAML files found in GenAITests/artifacts/exports/"
-            exit 0
-          fi
-
-          for f in "${FILES[@]}"; do
-            cat "$f" >> "$OUT_FILE"
-            echo "---" >> "$OUT_FILE"
-          done
-          sed -i '$d' "$OUT_FILE"
-          echo "Created $OUT_FILE with ${#FILES[@]} documents."
-          cat "$OUT_FILE"
-
-          . .venv/bin/activate
-          export PYTHONPATH=$PYTHONPATH:$(pwd)
-          hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
-          pytest -s GenAITests/onnx/test_genai.py --config "$OUT_FILE" --results-dir GenAITests/artifacts/secondary_results --export-dir GenAITests/artifacts/secondary_exports --force-export
-        shell: bash
-
-      # Write CI run metadata to a JSON file alongside profiling data
-      - name: Write run metadata
-        if: always()
-        run: |
-          cat > GenAITests/artifacts/results/run_metadata.json << METADATA_EOF
-          {
-            "run_id": "${{ github.run_id }}",
-            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-            "actor": "${{ github.actor }}",
-            "trigger": "${{ github.event_name }}",
-            "run_mode": "${{ github.event.inputs.run_mode || 'regression' }}",
-            "variant": "${{ matrix.variant }}",
-            "branch": "${{ github.ref_name }}",
-            "commit_sha": "${{ github.sha }}"
-          }
-          METADATA_EOF
-          # Copy metadata for secondary ONNX eval results (with variant corrected to onnx)
-          if [ -d GenAITests/artifacts/secondary_results ]; then
-            sed 's/"variant": "torch"/"variant": "onnx"/' \
-              GenAITests/artifacts/results/run_metadata.json \
-              > GenAITests/artifacts/secondary_results/run_metadata.json
-          fi
-
-      # Upload generated reports (CSV, HTML, JSON, run metadata)
-      # Note: Using v3 for GHES compatibility
-      # Artifacts available under "Artifacts" section in workflow run
-      - name: Upload reports
-        if: always()    # Upload even if tests failed
-        uses: actions/upload-artifact@v3
-        with:
-          name: test-data-${{ matrix.variant }}-${{ github.run_id }}
-          path: GenAITests/artifacts/results/
-          retention-days: 30
-
-      # Zip all exported artifacts
-      - name: Zip artifacts
-        if: always()
-        run: |
-          for export_dir in GenAITests/artifacts/exports GenAITests/artifacts/secondary_exports; do
-            if [ -d "$export_dir" ]; then
-              cd "$export_dir"
-              for dir in */; do
-                zip -1 -r "${dir%/}.zip" "$dir" &
-              done
-              wait
-              cd -
-            fi
-          done
-
-      # Authenticate with AWS to allow uploading to S3 in the next step
-      - name: Authenticate AWS
-        if: always()
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
+          variant: torch
+          config: ${{ steps.config.outputs.path }}
+          wheel-artifacts: torch-gpu-wheel, onnx-gpu-wheel
+          huggingface-token: ${{ secrets.HUGGINGFACE_TOKEN }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
+          aws-bucket-name: ${{ secrets.AWS_BUCKET_NAME }}
 
-      # Upload artifacts to S3
-      - name: Upload artifacts to S3
-        if: always()    # Upload even if tests failed
+  test-onnx:
+    name: Test (onnx)
+    needs: [build-aimet-onnx-gpu, start-runner-onnx]
+    if: |
+      !cancelled() &&
+      needs.build-aimet-onnx-gpu.result == 'success' &&
+      needs.start-runner-onnx.result == 'success'
+    runs-on: ${{ needs.start-runner-onnx.outputs.runner-label }}
+    timeout-minutes: 10080     # 7 days
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve config
+        id: config
         run: |
-          aws s3 cp GenAITests/artifacts/exports/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/${{ matrix.variant }}/ --recursive --exclude "*" --include "*.zip"
-          aws s3 cp GenAITests/artifacts/results/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/${{ matrix.variant }}/ --recursive --exclude "*" --include "*.json" --include "*.csv"
-          # Upload secondary ONNX eval results and exports under onnx/ prefix so Lambda tags variant correctly
-          if [ -d GenAITests/artifacts/secondary_results ]; then
-            aws s3 cp GenAITests/artifacts/secondary_results/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/onnx/ --recursive --exclude "*" --include "*.json" --include "*.csv"
-          fi
-          if [ -d GenAITests/artifacts/secondary_exports ]; then
-            aws s3 cp GenAITests/artifacts/secondary_exports/ s3://${{ secrets.AWS_BUCKET_NAME }}/${{ github.run_id }}/onnx/ --recursive --exclude "*" --include "*.zip"
-          fi
+          bash scripts/all/resolve_genai_config.sh onnx \
+            "${{ github.event.inputs.ad_hoc_config_b64 }}"
+      - uses: ./.github/actions/genai-test
+        with:
+          variant: onnx
+          config: ${{ steps.config.outputs.path }}
+          wheel-artifacts: onnx-gpu-wheel
+          huggingface-token: ${{ secrets.HUGGINGFACE_TOKEN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          aws-bucket-name: ${{ secrets.AWS_BUCKET_NAME }}
 
   # ===========================================================================
-  # JOB 5: Cleanup Ephemeral Runners
+  # Cleanup ephemeral runners
   # ===========================================================================
   cleanup-runners:
-    needs: [test-gpu, start-runners]
+    name: Cleanup runners
+    needs: [test-torch, test-onnx, start-runner-torch, start-runner-onnx]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Stop GPU runners
-        uses: ./.github/actions/stop-gpu-runner
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stop-gpu-runner
         with:
           runner-ids: >-
-            ${{ needs.start-runners.outputs.onnx-label }},
-            ${{ needs.start-runners.outputs.torch-label }}
+            ${{ needs.start-runner-torch.outputs.runner-label }},
+            ${{ needs.start-runner-onnx.outputs.runner-label }}
           kubeconfig: ${{ secrets.KUBECONFIG }}
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}

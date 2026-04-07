@@ -1,0 +1,236 @@
+################################################################################
+# Composite Action: GenAI Test
+################################################################################
+# Runs GenAI quantization tests for a single variant (torch or onnx) on a
+# pre-provisioned GPU runner. Called as a step within genai-scorecard.yaml jobs.
+#
+# Accepts a comma-separated list of wheel artifacts to install, so the torch
+# job can also install the ONNX wheel for secondary evaluation.
+#
+# When variant is "torch", a secondary ONNX evaluation is automatically run
+# on any ONNX export configs produced by the primary test.
+#
+# Usage:
+#   steps:
+#     - uses: actions/checkout@v4
+#     - uses: ./.github/actions/genai-test
+#       with:
+#         variant: torch
+#         wheel-artifacts: torch-gpu-wheel, onnx-gpu-wheel
+#         huggingface-token: ${{ secrets.HUGGINGFACE_TOKEN }}
+#         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#         aws-region: ${{ secrets.AWS_REGION }}
+#         aws-bucket-name: ${{ secrets.AWS_BUCKET_NAME }}
+################################################################################
+
+name: GenAI Test
+description: Run GenAI quantization tests for a single variant (torch or onnx)
+
+inputs:
+  variant:
+    description: 'Test variant: torch or onnx'
+    required: true
+  wheel-artifacts:
+    description: 'Comma-separated list of wheel artifact names to download and install'
+    required: true
+  config:
+    description: 'Path to test config YAML file (caller resolves this before invoking the action)'
+    required: true
+  huggingface-token:
+    description: 'HuggingFace API token for model access'
+    required: true
+  aws-access-key-id:
+    description: 'AWS access key ID for S3 uploads'
+    required: true
+  aws-secret-access-key:
+    description: 'AWS secret access key for S3 uploads'
+    required: true
+  aws-region:
+    description: 'AWS region for S3 uploads'
+    required: true
+  aws-bucket-name:
+    description: 'S3 bucket name for artifact uploads'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # -------------------------------------------------------------------
+    # Setup
+    # -------------------------------------------------------------------
+    - name: Download wheel artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: downloads
+      # download-artifact@v3 with just `path` downloads ALL artifacts into
+      # subdirectories. We then flatten only the ones we need.
+
+    - name: Collect requested wheels
+      shell: bash
+      run: |
+        mkdir -p wheels
+        IFS=',' read -ra ARTIFACTS <<< "${{ inputs.wheel-artifacts }}"
+        for artifact in "${ARTIFACTS[@]}"; do
+          artifact="$(echo "$artifact" | xargs)"  # trim whitespace
+          if [ -d "downloads/$artifact" ]; then
+            cp downloads/"$artifact"/*.whl wheels/ 2>/dev/null || true
+            echo "Collected wheels from $artifact"
+          else
+            echo "Warning: artifact '$artifact' not found in downloads/"
+          fi
+        done
+        ls -la wheels/
+
+    - name: Setup environment
+      shell: bash
+      run: |
+        bash scripts/environment/setup_genai.sh \
+          --with-aws \
+          --wheels-dir "${{ github.workspace }}/wheels" \
+          --repo-dir "${{ github.workspace }}"
+
+    # -------------------------------------------------------------------
+    # Run tests
+    # -------------------------------------------------------------------
+    - name: Validate config
+      shell: bash
+      run: |
+        if [ ! -s "${{ inputs.config }}" ]; then
+          echo "Error: Config file '${{ inputs.config }}' does not exist or is empty."
+          exit 1
+        fi
+        echo "Using config: ${{ inputs.config }}"
+        cat "${{ inputs.config }}"
+
+    - name: Run tests
+      shell: bash
+      env:
+        GIT_CLONE_PROTECTION_ACTIVE: "false"
+        GIT_TERMINAL_PROMPT: "0"
+        MPLBACKEND: "Agg"
+        QT_QPA_PLATFORM: "offscreen"
+      run: |
+        source .venv/bin/activate
+        export PYTHONPATH=$PYTHONPATH:$(pwd)
+        hf auth login --token ${{ inputs.huggingface-token }}
+        pytest -s GenAITests/${{ inputs.variant }}/test_genai.py \
+          --config "${{ inputs.config }}" \
+          --force-export
+
+    # -------------------------------------------------------------------
+    # Secondary ONNX evaluation (torch variant only)
+    # -------------------------------------------------------------------
+    - name: Run secondary ONNX evaluation
+      if: inputs.variant == 'torch'
+      shell: bash
+      env:
+        GIT_CLONE_PROTECTION_ACTIVE: "false"
+        GIT_TERMINAL_PROMPT: "0"
+        MPLBACKEND: "Agg"
+        QT_QPA_PLATFORM: "offscreen"
+      run: |
+        OUT_FILE="GenAITests/secondary_onnx_eval.yaml"
+        rm -f "$OUT_FILE"
+
+        mapfile -t FILES < <(ls -1 GenAITests/artifacts/exports/*/*onnx*.yaml GenAITests/artifacts/exports/*/*onnx*.yml 2>/dev/null | sort)
+        if [ "${#FILES[@]}" -eq 0 ]; then
+          echo "No ONNX eval configs found in GenAITests/artifacts/exports/"
+          exit 0
+        fi
+
+        for f in "${FILES[@]}"; do
+          cat "$f" >> "$OUT_FILE"
+          echo "---" >> "$OUT_FILE"
+        done
+        sed -i '$d' "$OUT_FILE"
+        echo "Created $OUT_FILE with ${#FILES[@]} documents."
+        cat "$OUT_FILE"
+
+        . .venv/bin/activate
+        export PYTHONPATH=$PYTHONPATH:$(pwd)
+        pytest -s GenAITests/onnx/test_genai.py \
+          --config "$OUT_FILE" \
+          --results-dir GenAITests/artifacts/secondary_results \
+          --export-dir GenAITests/artifacts/secondary_exports \
+          --force-export
+
+    # -------------------------------------------------------------------
+    # Metadata + upload
+    # -------------------------------------------------------------------
+    - name: Write run metadata
+      if: always()
+      shell: bash
+      run: |
+        mkdir -p GenAITests/artifacts/results
+        cat > GenAITests/artifacts/results/run_metadata.json << METADATA_EOF
+        {
+          "run_id": "${{ github.run_id }}",
+          "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          "actor": "${{ github.actor }}",
+          "trigger": "${{ github.event_name }}",
+          "run_mode": "${{ github.event.inputs.run_mode || 'regression' }}",
+          "variant": "${{ inputs.variant }}",
+          "branch": "${{ github.ref_name }}",
+          "commit_sha": "${{ github.sha }}"
+        }
+        METADATA_EOF
+        # Secondary ONNX eval metadata (variant corrected to onnx)
+        if [ -d GenAITests/artifacts/secondary_results ]; then
+          sed 's/"variant": "torch"/"variant": "onnx"/' \
+            GenAITests/artifacts/results/run_metadata.json \
+            > GenAITests/artifacts/secondary_results/run_metadata.json
+        fi
+
+    - name: Upload reports
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-data-${{ inputs.variant }}-${{ github.run_id }}
+        path: GenAITests/artifacts/results/
+        retention-days: 30
+
+    - name: Zip exported artifacts
+      if: always()
+      shell: bash
+      run: |
+        for export_dir in GenAITests/artifacts/exports GenAITests/artifacts/secondary_exports; do
+          if [ -d "$export_dir" ]; then
+            cd "$export_dir"
+            for dir in */; do
+              zip -1 -r "${dir%/}.zip" "$dir" &
+            done
+            wait
+            cd -
+          fi
+        done
+
+    - name: Authenticate AWS
+      if: always()
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Upload to S3
+      if: always()
+      shell: bash
+      run: |
+        aws s3 cp GenAITests/artifacts/exports/ \
+          s3://${{ inputs.aws-bucket-name }}/${{ github.run_id }}/${{ inputs.variant }}/ \
+          --recursive --exclude "*" --include "*.zip"
+        aws s3 cp GenAITests/artifacts/results/ \
+          s3://${{ inputs.aws-bucket-name }}/${{ github.run_id }}/${{ inputs.variant }}/ \
+          --recursive --exclude "*" --include "*.json" --include "*.csv"
+        # Secondary ONNX results/exports under onnx/ prefix
+        if [ -d GenAITests/artifacts/secondary_results ]; then
+          aws s3 cp GenAITests/artifacts/secondary_results/ \
+            s3://${{ inputs.aws-bucket-name }}/${{ github.run_id }}/onnx/ \
+            --recursive --exclude "*" --include "*.json" --include "*.csv"
+        fi
+        if [ -d GenAITests/artifacts/secondary_exports ]; then
+          aws s3 cp GenAITests/artifacts/secondary_exports/ \
+            s3://${{ inputs.aws-bucket-name }}/${{ github.run_id }}/onnx/ \
+            --recursive --exclude "*" --include "*.zip"
+        fi

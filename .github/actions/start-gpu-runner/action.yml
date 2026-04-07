@@ -42,7 +42,7 @@ inputs:
   docker-image:
     description: 'Docker image for the runner pod'
     required: false
-    default: "docker-registry.qualcomm.com/library/nvidia/cuda:12.3.2-base-ubuntu22.04"
+    default: "docker-registry.qualcomm.com/library/nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04"
   argo-namespace:
     description: 'Argo namespace'
     required: false

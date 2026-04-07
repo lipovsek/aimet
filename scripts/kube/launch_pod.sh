@@ -32,21 +32,23 @@ OUTPUT_MODE="pod"
 CPU_REQUEST=""
 GPU_REQUEST=""
 MEMORY_REQUEST=""
+DOCKER_IMAGE=""
 EXTRA_PARAMS=()
 
 usage() {
   echo "Usage: $0 [options]" >&2
   echo "" >&2
   echo "Options:" >&2
-  echo "  --template <name>   Argo WorkflowTemplate (default: aihub-interactive)" >&2
-  echo "  --name <wf-name>    Explicit Argo workflow name" >&2
-  echo "  --labels <string>   Argo workflow labels (key=value,...)" >&2
-  echo "  --wait-step <name>  Poll for this specific step to be Running" >&2
-  echo "  --output <mode>     What to print: 'pod' (default) or 'workflow'" >&2
-  echo "  -p <key=value>      Extra Argo parameter (can be repeated)" >&2
-  echo "  -c <cpu>            CPU request (e.g. '4', '500m')" >&2
-  echo "  -g <gpu>            GPU request (e.g. '1')" >&2
-  echo "  -m <memory>         Memory request (e.g. '16Gi')" >&2
+  echo "  --template <name>       Argo WorkflowTemplate (default: aihub-interactive)" >&2
+  echo "  --name <wf-name>        Explicit Argo workflow name" >&2
+  echo "  --labels <string>       Argo workflow labels (key=value,...)" >&2
+  echo "  --wait-step <name>      Poll for this specific step to be Running" >&2
+  echo "  --output <mode>         What to print: 'pod' (default) or 'workflow'" >&2
+  echo "  --docker-image <image>  Docker image to use for the pod" >&2
+  echo "  -p <key=value>          Extra Argo parameter (can be repeated)" >&2
+  echo "  -c <cpu>                CPU request (e.g. '4', '500m')" >&2
+  echo "  -g <gpu>                GPU request (e.g. '1')" >&2
+  echo "  -m <memory>             Memory request (e.g. '16Gi')" >&2
   exit 1
 }
 
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --wait-step)  WAIT_STEP="$2"; shift 2 ;;
     --output)     OUTPUT_MODE="$2"; shift 2 ;;
     -p)           EXTRA_PARAMS+=("$2"); shift 2 ;;
+    --docker-image) DOCKER_IMAGE="$2"; shift 2 ;;
     -c)           CPU_REQUEST="$2"; shift 2 ;;
     -g)           GPU_REQUEST="$2"; shift 2 ;;
     -m)           MEMORY_REQUEST="$2"; shift 2 ;;
@@ -86,6 +89,7 @@ fi
 [ -n "$CPU_REQUEST" ]    && ARGO_ARGS+=(-p "cpu-request=$CPU_REQUEST")
 [ -n "$GPU_REQUEST" ]    && ARGO_ARGS+=(-p "gpu-request=$GPU_REQUEST")
 [ -n "$MEMORY_REQUEST" ] && ARGO_ARGS+=(-p "memory-request=$MEMORY_REQUEST")
+[ -n "$DOCKER_IMAGE" ]   && ARGO_ARGS+=(-p "docker-image=$DOCKER_IMAGE")
 
 # Extra pass-through parameters
 for param in "${EXTRA_PARAMS[@]}"; do

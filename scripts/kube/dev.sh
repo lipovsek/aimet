@@ -13,9 +13,10 @@ usage() {
   echo "Options:" >&2
   echo "  -p <pod-name>    Use existing pod (skip launch)" >&2
   echo "  -e <entrypoint>  Command to run on the pod (default: /bin/bash)" >&2
-  echo "  -c <cpu>         CPU request (e.g. '4', '500m')" >&2
-  echo "  -g <gpu>         GPU request (e.g. '1')" >&2
-  echo "  -m <memory>      Memory request (e.g. '16Gi')" >&2
+  echo "  -c <cpu>              CPU request (e.g. '4', '500m')" >&2
+  echo "  -g <gpu>              GPU request (e.g. '1')" >&2
+  echo "  -m <memory>           Memory request (e.g. '16Gi')" >&2
+  echo "  --docker-image <img>  Docker image to use for the pod" >&2
   echo "" >&2
   echo "Arguments:" >&2
   echo "  local-dir        Directories to sync (default: current directory)" >&2
@@ -42,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     -c) LAUNCH_ARGS+=(-c "$2"); shift 2 ;;
     -g) LAUNCH_ARGS+=(-g "$2"); shift 2 ;;
     -m) LAUNCH_ARGS+=(-m "$2"); shift 2 ;;
+    --docker-image) LAUNCH_ARGS+=(--docker-image "$2"); shift 2 ;;
     -h|--help) usage ;;
     *) DIRS+=("$1"); shift ;;
   esac
