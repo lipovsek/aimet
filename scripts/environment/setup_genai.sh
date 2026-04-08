@@ -104,6 +104,9 @@ pip install --upgrade pip wheel setuptools
 # -----------------------------------------------------------------------
 # Python dependencies
 # -----------------------------------------------------------------------
+echo "Installing PyTorch with CUDA support..."
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
 echo "Installing Python dependencies..."
 pip install qai_hub_models
 pip install -r "$REPO_DIR/GenAITests/requirements.txt"
