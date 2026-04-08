@@ -61,10 +61,6 @@ jobs:
   # ===========================================================================
   build-aimet-onnx-gpu:
     name: Build aimet_onnx
-    if: |
-      github.event_name != 'workflow_dispatch' ||
-      github.event.inputs.run_mode != 'ad_hoc' ||
-      github.event.inputs.ad_hoc_variants != 'torch'
     uses: ./.github/workflows/build-wheels.yml
     with:
       variants: >
