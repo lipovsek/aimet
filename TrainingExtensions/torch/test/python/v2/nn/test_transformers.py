@@ -10,6 +10,7 @@ from transformers.models.qwen3 import modeling_qwen3
 from transformers.models.gemma3 import modeling_gemma3
 from transformers.models.mistral import modeling_mistral
 from transformers.models.qwen3_5 import modeling_qwen3_5
+from transformers.models.internvl import modeling_internvl
 import aimet_torch
 
 
@@ -23,6 +24,7 @@ import aimet_torch
         modeling_gemma3.Gemma3RMSNorm,
         modeling_mistral.MistralRMSNorm,
         modeling_qwen3_5.Qwen3_5RMSNorm,
+        modeling_internvl.InternVLVisionRMSNorm,
     ],
 )
 def test_rmsnorm_quantsim_config(rmsnorm_cls):

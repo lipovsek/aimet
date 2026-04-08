@@ -11,6 +11,7 @@ from .qwen2 import *
 from .qwen2_5_vl import *
 from .phi3 import *
 from .mistral import *
+from .internvl import *
 
 try:
     from .qwen3 import *
