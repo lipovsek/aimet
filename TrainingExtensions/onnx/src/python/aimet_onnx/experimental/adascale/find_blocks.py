@@ -62,13 +62,13 @@ def get_decoder_blocks_end_points(
     :param quantsim: quantization simulator
     :param model_type: model type: llama, qwen2, mistral, phi3, qwen3
     """
-    if model_type in ["llama", "qwen2", "mistral", "phi3"]:
+    if model_type in ["llama", "qwen2", "mistral", "phi3", "qwen2_5_vl"]:
         PASS_TO_RUN = "DecoderBlock"
     elif model_type == "qwen3":
         PASS_TO_RUN = "DecoderBlockQwen3"
     else:
         raise ValueError(
-            f"Unsupported model type: '{model_type}'. Expected one of ['llama', 'qwen2', 'mistral', 'phi3', 'qwen3']."
+            f"Unsupported model type: '{model_type}'. Expected one of ['llama', 'qwen2', 'mistral', 'phi3', 'qwen3', 'qwen2_5_vl']."
         )
 
     if PASS_TO_RUN in PASS_REGISTRY:
