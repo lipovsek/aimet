@@ -142,7 +142,6 @@ def _set_lm_head_precision(
     if precision.granularity == Granularity.LPBQ:
         set_lpbq_for_params(
             sim=quantsim_model,
-            op_types=("Gemm", "MatMul", "Conv"),
             bitwidth=precision.qtype.bits,
             block_size=precision.block_size,
             nodes_to_include=_get_lm_head_node_names(quantsim_model),
