@@ -519,6 +519,7 @@ class ReportGenerator:
         unchanged: List[Comparison],
         runtime_regressions: Optional[List[MetricComparison]] = None,
         memory_regressions: Optional[List[MetricComparison]] = None,
+        baseline_source: Optional[str] = None,
     ) -> str:
         """Generate markdown report with quality and export validations."""
         lines = []
@@ -526,6 +527,9 @@ class ReportGenerator:
         has_qnn_data = any(r.qnn_latency_ms is not None for r in current.values())
 
         lines.append("## 📊 Results Comparison\n")
+
+        if baseline_source:
+            lines.append(f"**Baseline source:** `{baseline_source}`\n")
 
         if not baseline:
             lines.append("### ℹ️  First Run - No Baseline\n")
@@ -599,10 +603,15 @@ class ReportGenerator:
                 else:
                     failed_count += 1
 
+            comparison_header = (
+                f"**Baseline Comparison** (vs `{baseline_source}` AIMET accuracy):\n"
+                if baseline_source
+                else f"**Baseline Comparison** (vs previous run's AIMET accuracy):\n"
+            )
             lines.append(
                 f"### Summary\n\n"
-                f"**Baseline Comparison** (vs previous run's AIMET accuracy):\n"
-                f"- ✅ Stable: {len(unchanged)}\n"
+                + comparison_header
+                + f"- ✅ Stable: {len(unchanged)}\n"
                 f"- 📈 Improvements: {len(improvements)}\n"
                 f"- ⚠️ Regressions: {len(regressions)}\n\n"
                 f"**Quantization Status** (AIMET quantization vs FP32 original):\n"
@@ -617,7 +626,7 @@ class ReportGenerator:
                 legend = (
                     "**Legend:**\n"
                     "- **Technique**: Quantization method and parameters\n"
-                    "- **vs Baseline**: Change from previous run's AIMET accuracy\n"
+                    "- **vs Baseline**: Accuracy change compared to baseline\n"
                     "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
                     "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
                     "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
@@ -691,7 +700,7 @@ class ReportGenerator:
                 legend = (
                     "**Legend:**\n"
                     "- **Technique**: Quantization method and parameters\n"
-                    "- **vs Baseline**: Change from previous run's AIMET accuracy\n"
+                    "- **vs Baseline**: Accuracy change compared to baseline\n"
                     "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
                     "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
                     "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
@@ -766,7 +775,7 @@ class ReportGenerator:
                 legend = (
                     "**Legend:**\n"
                     "- **Technique**: Quantization method and parameters\n"
-                    "- **vs Baseline**: Change from previous run's AIMET accuracy\n"
+                    "- **vs Baseline**: Accuracy change compared to baseline\n"
                     "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
                     "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
                     "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
@@ -1011,6 +1020,13 @@ def main():
         help="Write markdown report to this file (for cross-job sharing)",
     )
 
+    parser.add_argument(
+        "--baseline-source",
+        dest="baseline_source",
+        default=None,
+        help="Branch the baseline was downloaded from (shown in report header)",
+    )
+
     args = parser.parse_args()
 
     print("=" * 60)
@@ -1119,6 +1135,7 @@ def main():
                 unchanged,
                 runtime_regressions=runtime_regressions,
                 memory_regressions=memory_regressions,
+                baseline_source=args.baseline_source,
             )
 
             if args.github_summary:
@@ -1161,7 +1178,14 @@ def main():
                 print(f"\n✅ All tests passed or within threshold!")
         else:
             print("ℹ️  First run - no baseline to compare")
-            markdown = ReportGenerator.generate_markdown(current, {}, [], [], [])
+            markdown = ReportGenerator.generate_markdown(
+                current,
+                {},
+                [],
+                [],
+                [],
+                baseline_source=args.baseline_source,
+            )
 
             if args.github_summary:
                 ReportGenerator.write_github_summary(markdown)

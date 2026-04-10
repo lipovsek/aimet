@@ -25,6 +25,23 @@ on:
           - smoke
         default: 'nightly'
 
+      baseline_source:
+        description: 'Branch to compare baseline against'
+        required: false
+        type: choice
+        options:
+          - own
+          - develop
+          - previous-release
+          - custom
+        default: 'own'
+
+      baseline_source_custom:
+        description: 'Custom branch name (only used when baseline_source is "custom")'
+        required: false
+        type: string
+        default: ''
+
 jobs:
   #=============================================================================
   # Build AIMET Wheels (Parallel)
@@ -89,6 +106,7 @@ jobs:
       UV_LINK_MODE: "symlink"
       INPUT_SUITE: ${{ github.event.inputs.suite || 'nightly' }}-onnx
       WORKFLOW_FILE: "nightly-regression.yaml"
+      BASELINE_SOURCE: ${{ github.event.inputs.baseline_source == 'custom' && github.event.inputs.baseline_source_custom || github.event.inputs.baseline_source || 'own' }}
 
     steps:
       - name: Checkout code
@@ -150,6 +168,7 @@ jobs:
           "
 
       - name: Download baseline
+        id: download_baseline
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -183,6 +202,7 @@ jobs:
             --results "$RESULTS_CSV" \
             --suite-name "$INPUT_SUITE" \
             --baselines-dir "AIMETRegression/baselines" \
+            --baseline-source "${{ steps.download_baseline.outputs.source_branch || env.BASELINE_SOURCE }}" \
             --github-summary \
             --output-file "AIMETRegression/reports/comparison_summary.json"
 
@@ -262,6 +282,7 @@ jobs:
       PYTHONFAULTHANDLER: "1"
       INPUT_SUITE: ${{ github.event.inputs.suite || 'nightly' }}-torch
       WORKFLOW_FILE: "nightly-regression.yaml"
+      BASELINE_SOURCE: ${{ github.event.inputs.baseline_source == 'custom' && github.event.inputs.baseline_source_custom || github.event.inputs.baseline_source || 'own' }}
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       UV_LINK_MODE: "symlink"
       VER_PYTHON: "3.10"
@@ -330,6 +351,7 @@ jobs:
           "
 
       - name: Download baseline
+        id: download_baseline
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -363,6 +385,7 @@ jobs:
             --results "$RESULTS_CSV" \
             --suite-name "$INPUT_SUITE" \
             --baselines-dir "AIMETRegression/baselines" \
+            --baseline-source "${{ steps.download_baseline.outputs.source_branch || env.BASELINE_SOURCE }}" \
             --github-summary \
             --output-file "AIMETRegression/reports/comparison_summary.json"
 

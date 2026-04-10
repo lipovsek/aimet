@@ -16,6 +16,23 @@ on:
           - torch
         default: 'all'
 
+      baseline_source:
+        description: 'Branch to compare baseline against'
+        required: false
+        type: choice
+        options:
+          - own
+          - develop
+          - previous-release
+          - custom
+        default: 'own'
+
+      baseline_source_custom:
+        description: 'Custom branch name (only used when baseline_source is "custom")'
+        required: false
+        type: string
+        default: ''
+
 env:
   VER_PYTHON: "3.10"
 
@@ -81,6 +98,7 @@ jobs:
       CUDA_VISIBLE_DEVICES: "0"
       PYTHONUNBUFFERED: "1"
       UV_LINK_MODE: "symlink"
+      BASELINE_SOURCE: ${{ github.event.inputs.baseline_source == 'custom' && github.event.inputs.baseline_source_custom || github.event.inputs.baseline_source || 'own' }}
 
     steps:
       - name: Checkout code
@@ -154,6 +172,7 @@ jobs:
           python -m AIMETRegression.workflow.utils configure-aihub
 
       - name: Download baseline from previous runs
+        id: download_baseline
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -189,6 +208,7 @@ jobs:
             --results "$RESULTS_CSV" \
             --suite-name "$SUITE" \
             --baselines-dir "AIMETRegression/baselines" \
+            --baseline-source "${{ steps.download_baseline.outputs.source_branch || env.BASELINE_SOURCE }}" \
             --github-summary \
             --output-file "AIMETRegression/reports/comparison_summary.json"
 
@@ -268,6 +288,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       UV_LINK_MODE: "symlink"
+      BASELINE_SOURCE: ${{ github.event.inputs.baseline_source == 'custom' && github.event.inputs.baseline_source_custom || github.event.inputs.baseline_source || 'own' }}
 
     steps:
       - name: Checkout code
@@ -344,6 +365,7 @@ jobs:
           python -m AIMETRegression.workflow.utils configure-aihub
 
       - name: Download baseline from previous runs
+        id: download_baseline
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -379,6 +401,7 @@ jobs:
             --results "$RESULTS_CSV" \
             --suite-name "$SUITE" \
             --baselines-dir "AIMETRegression/baselines" \
+            --baseline-source "${{ steps.download_baseline.outputs.source_branch || env.BASELINE_SOURCE }}" \
             --github-summary \
             --output-file "AIMETRegression/reports/comparison_summary.json"
 
