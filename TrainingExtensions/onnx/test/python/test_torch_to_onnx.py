@@ -12,7 +12,6 @@ import torch
 
 from .conftest import skip_module_on_windows_arm64
 
-pytest.skip(allow_module_level=True, reason="TODO: #6483: Requires aimet-torch==2.25.0")
 skip_module_on_windows_arm64("transformers is not available on Windows ARM64")
 
 from transformers.models.llama.modeling_llama import LlamaForCausalLM
@@ -229,16 +228,16 @@ def test_transpose_mm_lpbq(tmp_dir):
         dynamo=False,
         encoding_version="2.0.0",
     )
-    # TODO (kyunggeu): Uncomment once aimet-torch 2.22 is released
-    # aimet_torch.onnx.export(
-    #     torch_sim.model,
-    #     x,
-    #     os.path.join(tmp_dir, "transpose_mm_qdq.onnx"),
-    #     input_names=["input"],
-    #     output_names=["output"],
-    #     opset_version=21,
-    #     dynamo=False,
-    # )
+
+    aimet_torch.onnx.export(
+        torch_sim.model,
+        x,
+        os.path.join(tmp_dir, "transpose_mm_qdq.onnx"),
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+        dynamo=False,
+    )
 
     """
     When: Load encodings to aimet-onnx sim
@@ -257,13 +256,12 @@ def test_transpose_mm_lpbq(tmp_dir):
         atol=torch_sim.model[0].output_quantizers[0].get_scale().item(),
     )
 
-    # TODO (kyunggeu): Uncomment once aimet-torch 2.22 is released
-    # onnx_sim = aimet_onnx.QuantizationSimModel.from_onnx_qdq(
-    #     onnx.load(os.path.join(tmp_dir, "transpose_mm_qdq.onnx"))
-    # )
-    # (onnx_out,) = onnx_sim.session.run(None, {"input": x.numpy()})
-    # assert np.allclose(
-    #     torch_out,
-    #     onnx_out,
-    #     atol=torch_sim.model[0].output_quantizers[0].get_scale().item(),
-    # )
+    onnx_sim = aimet_onnx.QuantizationSimModel.from_onnx_qdq(
+        onnx.load(os.path.join(tmp_dir, "transpose_mm_qdq.onnx"))
+    )
+    (onnx_out,) = onnx_sim.session.run(None, {"input": x.numpy()})
+    assert np.allclose(
+        torch_out,
+        onnx_out,
+        atol=torch_sim.model[0].output_quantizers[0].get_scale().item(),
+    )
