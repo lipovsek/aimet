@@ -47,6 +47,39 @@ LinearType = ["Gemm", "MatMul"]
 BatchNormType = ["BatchNormalization"]
 
 
+def _find_shared_weight_names(connected_graph: ConnectedGraph) -> set:
+    """
+    Find all weight initializer names that are shared by multiple Conv/Linear nodes.
+
+    :param model: ONNX model to analyze
+    :return: Set of initializer names that are used as weights by more than one node
+    """
+    weight_usage_count: Dict[str, int] = {}
+    for op in connected_graph.ordered_ops:
+        if op.type not in ConvType + LinearType:
+            continue
+        for param, _ in op.parameters.values():
+            param_name = param.name
+            weight_usage_count[param_name] = weight_usage_count.get(param_name, 0) + 1
+
+    return {name for name, count in weight_usage_count.items() if count > 1}
+
+
+def _has_shared_weight(node: Op, shared_weight_names: set) -> bool:
+    """
+    Check if a Conv/Linear node's weight tensor is shared with other nodes.
+
+    :param node: Conv/Linear node to check
+    :param shared_weight_names: Set of weight names that are shared
+    :return: True if the node's weight is shared
+    """
+    for param, _ in node.parameters.values():
+        if param.name in shared_weight_names:
+            return True
+
+    return False
+
+
 class BNLayer:
     """Captures beta and gamma parameter for BatchNorm layers to be used during High Bias absorption"""
 
@@ -116,6 +149,9 @@ def find_all_batch_norms_to_fold(
     # To mark BN's already picked for backward folding
     bn_picked_for_folding = set()
 
+    # Find weights that are shared between multiple Conv/Linear nodes
+    shared_weight_names = _find_shared_weight_names(connected_graph)
+
     ordered_conv_fc_nodes = get_ordered_conv_linears(connected_graph)
 
     conv_bn_pairs = []
@@ -125,7 +161,12 @@ def find_all_batch_norms_to_fold(
         if node in conv_linear_bn_activation_info_dict:
             bn_info = conv_linear_bn_activation_info_dict[node]
             if bn_info.output_bn and bn_info.output_bn not in bn_picked_for_folding:
-                if is_valid_bn_fold(node.get_module(), model, True):
+                if _has_shared_weight(node, shared_weight_names):
+                    logger.info(
+                        "...... skipping fold due to shared weights %s",
+                        [node.name, bn_info.output_bn.name],
+                    )
+                elif is_valid_bn_fold(node.get_module(), model, True):
                     conv_bn_pairs.append(
                         (node.get_module(), bn_info.output_bn.get_module())
                     )
@@ -142,7 +183,12 @@ def find_all_batch_norms_to_fold(
         if node in conv_linear_bn_activation_info_dict:
             bn_info = conv_linear_bn_activation_info_dict[node]
             if bn_info.input_bn and bn_info.input_bn not in bn_picked_for_folding:
-                if is_valid_bn_fold(node.get_module(), model, False):
+                if _has_shared_weight(node, shared_weight_names):
+                    logger.info(
+                        "...... skipping fold due to shared weights %s",
+                        [bn_info.input_bn.name, node.name],
+                    )
+                elif is_valid_bn_fold(node.get_module(), model, False):
                     bn_conv_pairs.append(
                         (bn_info.input_bn.get_module(), node.get_module())
                     )

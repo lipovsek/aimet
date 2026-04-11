@@ -1484,6 +1484,74 @@ class BNAfterConv(torch.nn.Module):
         return x
 
 
+class BNAfterConvWithSharedWeights(torch.nn.Module):
+    def __init__(self, padding=1, stride=1, dilation=1, groups=1, bias=True):
+        super(BNAfterConvWithSharedWeights, self).__init__()
+        # Two conv layers that share the same weight and bias tensors
+        self.conv1 = torch.nn.Conv2d(
+            10,
+            20,
+            3,
+            bias=bias,
+            padding=padding,
+            stride=stride,
+            dilation=dilation,
+            groups=groups,
+        )
+        self.conv2 = torch.nn.Conv2d(
+            10,
+            20,
+            3,
+            bias=bias,
+            padding=padding,
+            stride=stride,
+            dilation=dilation,
+            groups=groups,
+        )
+        # Share weights and bias between conv1 and conv2
+        self.conv2.weight = self.conv1.weight
+        if bias:
+            self.conv2.bias = self.conv1.bias
+
+        # Two separate BN layers downstream from each conv
+        self.bn1 = torch.nn.BatchNorm2d(20)
+        self.bn2 = torch.nn.BatchNorm2d(20)
+
+        self.conv0a = torch.nn.Conv2d(10, 10, 1, bias=bias)
+        self.conv0b = torch.nn.Conv2d(10, 10, 1, bias=bias)
+        self.relu0a = torch.nn.ReLU()
+        self.relu0b = torch.nn.ReLU()
+
+        self.relu1 = torch.nn.ReLU()
+        self.relu2 = torch.nn.ReLU()
+
+    def forward(self, x):
+        x1 = self.conv0a(x)
+        x1 = self.relu0a(x1)
+        x1 = self.conv1(x1)
+        x1 = self.bn1(x1)
+        x1 = self.relu1(x1)
+
+        x2 = self.conv0b(x)
+        x2 = self.relu0b(x2)
+        x2 = self.conv2(x2)
+        x2 = self.bn2(x2)
+        x2 = self.relu2(x2)
+
+        return x1 + x2
+
+
+class BNAfterLinear(torch.nn.Module):
+    def __init__(self, bias=False):
+        super(BNAfterLinear, self).__init__()
+        self.fc1 = torch.nn.Linear(10, 20, bias=bias)
+        x2 = self.conv2(x2)
+        x2 = self.bn2(x2)
+        x2 = self.relu2(x2)
+
+        return x1 + x2
+
+
 class BNAfterLinear(torch.nn.Module):
     def __init__(self, bias=False):
         super(BNAfterLinear, self).__init__()
