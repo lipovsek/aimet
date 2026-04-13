@@ -3090,7 +3090,8 @@ def _remove_delegatable_excess_encodings(
     delegatable = set()
 
     for output_name in excess_encodings:
-        producer = sim.connected_graph.get_product(output_name).producer
+        output_product = sim.connected_graph.get_product(output_name)
+        producer = output_product.producer if output_product is not None else None
         output_encoding = encodings[output_name]
 
         while producer and (
