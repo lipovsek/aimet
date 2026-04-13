@@ -16,8 +16,10 @@ _AXES_NAME = "axes"
 _AXIS_NAME = "axis"
 
 
-@register_fusion(name="LayerNormalization")
-class LayerNormFusion(pattern.RewriteRuleClassBase):
+@register_fusion(name="LayerNormalization", pattern_idx=0)
+@register_fusion(name="LayerNormalization", pattern_idx=1)
+@register_fusion(name="LayerNormalization", pattern_idx=2)
+class LayerNormNoBiasFusion(pattern.RewriteRuleClassBase):
     """
     Fuses decomposed LayerNormalization pattern into a single node.
 
@@ -47,12 +49,16 @@ class LayerNormFusion(pattern.RewriteRuleClassBase):
                     Div
                     |
                     Mul
-                    |
-                    Add
 
     The pattern is replaced with a single function call node in the
     'aimet.supergroup' domain.
     """
+
+    def __init__(self, *args, pattern_idx: int = 0, **kwargs):
+        super().__init__(*args, **kwargs)
+        if pattern_idx not in {0, 1, 2}:
+            raise ValueError(f"Invalid value for pattern_idx: {pattern_idx}")
+        self.pattern_idx = pattern_idx
 
     # pylint: disable=arguments-differ
     def pattern(
@@ -60,7 +66,6 @@ class LayerNormFusion(pattern.RewriteRuleClassBase):
         op: pattern.OpsetPatternBuilder,
         input_x: pattern.Var,
         scale: pattern.Var,
-        bias: pattern.Var,
     ):
         """
         Defines the decomposed LayerNormalization pattern to match.
@@ -74,20 +79,22 @@ class LayerNormFusion(pattern.RewriteRuleClassBase):
         centered = input_x - mean
 
         # Note: same attribute cannot match both ReduceMean "axes" attr and RMSNormalization "axis" attr
-        scaled = pattern.OrValue(
-            [
-                _patterns.rms_normalize(op, centered, scale, _EPS_NAME, _AXIS_NAME),
-                op.RMSNormalization(
-                    centered,
-                    scale,
-                    epsilon=pattern.AttrVar(_EPS_NAME),
-                    axis=pattern.AttrVar(_AXIS_NAME),
-                    _domain=AIMET_SUPERGROUP_DOMAIN,
-                ),
-            ]
+        if self.pattern_idx == 2:
+            return op.RMSNormalization(
+                centered,
+                scale,
+                epsilon=pattern.AttrVar(_EPS_NAME),
+                axis=pattern.AttrVar(_AXIS_NAME),
+                _domain=AIMET_SUPERGROUP_DOMAIN,
+            )
+        return _patterns.rms_normalize(
+            op,
+            centered,
+            scale,
+            _EPS_NAME,
+            _AXIS_NAME,
+            pattern_idx=self.pattern_idx,
         )
-
-        return scaled + bias
 
     # pylint: disable=unused-argument
     def check(
@@ -95,7 +102,6 @@ class LayerNormFusion(pattern.RewriteRuleClassBase):
         context: rewriter.MatchContext,
         input_x: onnx_ir.Value,
         scale: onnx_ir.Value,
-        bias: onnx_ir.Value,
         **kwargs,
     ) -> rewriter.pattern.MatchResult:
         """
@@ -139,7 +145,6 @@ class LayerNormFusion(pattern.RewriteRuleClassBase):
         op: onnx_ir._tape.Builder,
         input_x: onnx_ir.Value,
         scale: onnx_ir.Value,
-        bias: onnx_ir.Value,
         **kwargs,
     ) -> onnx_ir.Value:
         """
@@ -151,10 +156,71 @@ class LayerNormFusion(pattern.RewriteRuleClassBase):
         result = op.LayerNormalization(
             input_x,
             scale,
-            bias,
             axis=get_constant_singleton_value(axes),
             epsilon=get_constant_singleton_value(epsilon),
             _domain=AIMET_SUPERGROUP_DOMAIN,
         )
 
         return result
+
+
+@register_fusion(name="LayerNormalization", pattern_idx=0)
+@register_fusion(name="LayerNormalization", pattern_idx=1)
+class LayerNormFusion(pattern.RewriteRuleClassBase):
+    """
+    Fuses the following pattern:
+
+        LayerNormalization(x, scale)
+                | y
+            Add(y, bias)
+
+    into a single LayerNormalization call with bias input:
+    """
+
+    def __init__(self, *args, pattern_idx: int = 0, **kwargs):
+        super().__init__(*args, **kwargs)
+        if pattern_idx not in {0, 1}:
+            raise ValueError(f"Invalid value for pattern_idx: {pattern_idx}")
+        self.pattern_idx = pattern_idx
+
+    # pylint: disable=arguments-differ
+    def pattern(
+        self,
+        op: pattern.OpsetPatternBuilder,
+        input_x: pattern.Var,
+        scale: pattern.Var,
+        bias: pattern.Var,
+    ):
+        layernorm_out = op.LayerNormalization(
+            input_x,
+            scale,
+            epsilon=pattern.AttrVar(_EPS_NAME),
+            axis=pattern.AttrVar(_AXIS_NAME),
+            _domain=AIMET_SUPERGROUP_DOMAIN,
+        )
+
+        return layernorm_out + bias if self.pattern_idx else bias + layernorm_out
+
+    def rewrite(
+        self,
+        op: onnx_ir._tape.Builder,
+        input_x: onnx_ir.Value,
+        scale: onnx_ir.Value,
+        bias: onnx_ir.Value,
+        **kwargs,
+    ) -> onnx_ir.Value:
+        """
+        Defines the fused replacement for the matched decomposed pattern.
+        """
+        axes = kwargs.get(_AXES_NAME) or kwargs.get(_AXIS_NAME)
+        epsilon = kwargs.get(_EPS_NAME)
+
+        layernorm_out = op.LayerNormalization(
+            input_x,
+            scale,
+            bias,
+            axis=get_constant_singleton_value(axes),
+            epsilon=get_constant_singleton_value(epsilon),
+            _domain=AIMET_SUPERGROUP_DOMAIN,
+        )
+        return layernorm_out

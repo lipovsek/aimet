@@ -110,8 +110,8 @@ def layernorm_with_no_reducemean_axis(tmpdir):
 class TestLayerNormFusion:
     """Tests for LayerNormalization pattern fusion."""
 
-    # TODO: Match layernorm without bias/affine transform
-    @pytest.mark.parametrize("bias", [True])
+    # TODO: Match layernorm without affine transform
+    @pytest.mark.parametrize("bias", [True, False])
     @pytest.mark.parametrize("affine", [True])
     @pytest.mark.parametrize("opset_version", range(13, 17))
     @pytest.mark.parametrize("epsilon", [1e-1, 1e-3, 1e-5])
@@ -176,39 +176,56 @@ class TestLayerNormFusion:
         assert np.allclose(output_pre_fusion[0], output_post_fusion[0], atol=1e-5)
 
     @pytest.mark.parametrize(
-        "invalid_graph_factory",
+        "model_factory, expected_matches",
         [
-            layernorm_with_pow_3,
-            layernorm_with_negative_epsilon,
-            layernorm_with_no_reducemean_axis,
-            lambda tmpdir: create_layernorm_model(tmpdir, elementwise_affine=False),
-            lambda tmpdir: create_layernorm_model(tmpdir, bias=False),
-            lambda tmpdir: create_layernorm_model(
-                tmpdir, bias=False, elementwise_affine=False
+            (
+                lambda _: models_for_tests.decomposed_layernorm(
+                    bias=True, bias_first=False
+                ),
+                1,
+            ),
+            (
+                lambda _: models_for_tests.decomposed_layernorm(
+                    bias=True, bias_first=True
+                ),
+                1,
+            ),
+            (lambda _: models_for_tests.decomposed_layernorm(bias=False), 1),
+            (lambda tmpdir: create_layernorm_model(tmpdir, bias=True), 1),
+            (lambda tmpdir: create_layernorm_model(tmpdir, bias=False), 1),
+            (
+                lambda tmpdir: create_layernorm_model(
+                    tmpdir, bias=False, elementwise_affine=False
+                ),
+                0,
+            ),
+            (layernorm_with_pow_3, 0),
+            (layernorm_with_negative_epsilon, 0),
+            (layernorm_with_no_reducemean_axis, 0),
+            (
+                lambda tmpdir: create_layernorm_model(tmpdir, elementwise_affine=False),
+                0,
             ),
         ],
     )
-    def test_rejects_invalid_layernorm_patterns(self, tmp_path, invalid_graph_factory):
-        """Test that invalid LayerNorm patterns are rejected during fusion."""
-        model_proto = invalid_graph_factory(tmp_path)
-        num_nodes_before = len(model_proto.graph.node)
+    def test_layernorm_fusion(self, tmp_path, model_factory, expected_matches):
+        model_proto = model_factory(tmp_path)
         inputs = make_dummy_input(model_proto)
         session = onnxruntime.InferenceSession(model_proto.SerializeToString())
         output_pre_fusion = session.run(None, inputs)
         model = onnx_ir.from_proto(model_proto)
 
-        # Attempt fusion
-        fused_model = fuse_supergroups(model, patterns=["LayerNormalization"])
+        fused_model = fuse_supergroups(
+            model, patterns=["LayerNormalization"], verbose=1
+        )
         model_proto = onnx_ir.to_proto(fused_model)
-        assert len(model_proto.graph.node) == num_nodes_before
 
-        # Ensure no LayerNormalization nodes were created
         layernorm_nodes = [
             node
             for node in model_proto.graph.node
             if node.op_type == "LayerNormalization"
         ]
-        assert len(layernorm_nodes) == 0
+        assert len(layernorm_nodes) == expected_matches
 
         session = onnxruntime.InferenceSession(model_proto.SerializeToString())
         output_post_fusion = session.run(None, inputs)

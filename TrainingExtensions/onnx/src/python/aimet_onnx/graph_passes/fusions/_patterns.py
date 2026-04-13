@@ -9,7 +9,7 @@ from .fusion_registry import AIMET_SUPERGROUP_DOMAIN
 
 def square(op: pattern.OpsetPatternBuilder, tensor: pattern.Var):
     """Matches `x * x` or `Pow(x, 2)`"""
-    exp = pattern.Constant(2.0)
+    exp = pattern.OrValue([pattern.Constant(2.0), pattern.Constant([2.0])])
     return pattern.OrValue([tensor * tensor, op.Pow(tensor, exp)])
 
 

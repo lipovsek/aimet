@@ -5014,3 +5014,59 @@ def relu_maxpool_concat_model():
     model = make_model(graph=graph)
     onnx.checker.check_model(model, True)
     return model
+
+
+def decomposed_layernorm(
+    bias: bool = True, eps: float = 1e-5, bias_first: bool = False
+):
+    import onnx_ir as ir
+
+    reduce_mean_attrs = {"axes": [-1]}
+
+    tape = ir.tape.Tape()
+    x = ir.val("input", dtype=ir.DataType.FLOAT, shape=(1, 32, 10))
+    scale = tape.initializer(ir.tensor([1.5] * 10, ir.DataType.FLOAT), name="scale")
+
+    epsilon = tape.op(
+        "Constant", [], attributes={"value": ir.tensor([eps], ir.DataType.FLOAT)}
+    )
+    pow_2 = tape.op(
+        "Constant", [], attributes={"value": ir.tensor([2.0], ir.DataType.FLOAT)}
+    )
+
+    mean = tape.op("ReduceMean", [x], attributes=reduce_mean_attrs)
+    centered = tape.op("Sub", [x, mean])
+    squared = tape.op("Pow", [centered, pow_2])
+    var = tape.op("ReduceMean", [squared], attributes=reduce_mean_attrs)
+    var_eps = tape.op("Add", [var, epsilon])
+    std_dev = tape.op("Sqrt", [var_eps])
+    normalized = tape.op("Div", [centered, std_dev])
+    scaled = tape.op("Mul", [scale, normalized])
+
+    if bias:
+        bias_val = tape.initializer(
+            ir.tensor([0.5] * 10, ir.DataType.FLOAT), name="bias"
+        )
+        add_inputs = [bias_val, scaled] if bias_first else [scaled, bias_val]
+        output = tape.op("Add", add_inputs)
+    else:
+        output = scaled
+
+    output.shape = ir.Shape((1, 32, 10))
+    output.dtype = ir.DataType.FLOAT
+    output.name = "output"
+
+    ir_model = ir.Model(
+        ir.Graph(
+            inputs=[x],
+            outputs=[output],
+            nodes=tape.nodes,
+            initializers=tape.initializers,
+            opset_imports={"": 17},
+            name="layernorm_graph",
+        ),
+        ir_version=10,
+    )
+    model = ir.to_proto(ir_model)
+    onnx.checker.check_model(model)
+    return model
