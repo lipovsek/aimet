@@ -99,6 +99,7 @@ from .models.onnx_qdq_models import (
     concat_qdq,
     transpose_multi_consumer,
     identity_tree,
+    back_to_back_qdq_pairs,
 )
 from aimet_onnx.graph_passes.fusions import fuse_supergroups, AIMET_SUPERGROUP_DOMAIN
 
@@ -6720,6 +6721,76 @@ def test_from_onnx_qdq_encoding_delegation(
         assert len(output_scales) == len(out) == len(out_expected)
         for out_i, out_expected_i, out_scale in zip(out, out_expected, output_scales):
             assert np.allclose(out_i, out_expected_i, atol=out_scale)
+
+
+def test_from_onnx_qdq_with_back_to_back_qdq_pairs():
+    """
+    Given: QDQ model with back-to-back Q->DQ->Q->DQ pattern where both Q-DQ pairs
+           have the same quantization parameters
+
+    Pattern: input -> Q1 -> DQ1 -> Q2 -> DQ2 -> Relu -> Q3 -> DQ3 -> output
+
+    When: Load the model using from_onnx_qdq
+    Then: The duplicate Q->DQ pair (DQ1->Q2) should be removed during optimization,
+          and the resulting sim should produce correct outputs
+    """
+    qdq_model, (output_scale,) = back_to_back_qdq_pairs()
+
+    # Count Q/DQ nodes before loading
+    q_nodes_before = sum(
+        1 for n in qdq_model.graph.node if n.op_type == "QuantizeLinear"
+    )
+    dq_nodes_before = sum(
+        1 for n in qdq_model.graph.node if n.op_type == "DequantizeLinear"
+    )
+
+    # Verify the model has back-to-back Q-DQ pairs (3 Q nodes, 3 DQ nodes)
+    assert q_nodes_before == 3, f"Expected 3 QuantizeLinear nodes, got {q_nodes_before}"
+    assert dq_nodes_before == 3, (
+        f"Expected 3 DequantizeLinear nodes, got {dq_nodes_before}"
+    )
+
+    # Run the original QDQ model
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess_original = ort.InferenceSession(
+        qdq_model.SerializeToString(), sess_options=sess_options
+    )
+
+    # Load the QDQ model into sim (this should remove duplicate Q-DQ pairs)
+    sim = QuantizationSimModel.from_onnx_qdq(qdq_model)
+
+    # Export back to QDQ model
+    qdq_model_exported = sim.to_onnx_qdq()
+
+    # Verify that the duplicate Q-DQ pair was removed
+    # Original: Q1 -> DQ1 -> Q2 -> DQ2 -> Relu -> Q3 -> DQ3 (3 Q, 3 DQ)
+    # After optimization: Q1 -> DQ2 -> Relu -> Q3 -> DQ3 (2 Q, 2 DQ)
+    q_nodes_after = sum(
+        1 for n in qdq_model_exported.graph.node if n.op_type == "QuantizeLinear"
+    )
+    dq_nodes_after = sum(
+        1 for n in qdq_model_exported.graph.node if n.op_type == "DequantizeLinear"
+    )
+
+    assert q_nodes_after == 2, (
+        f"Expected 2 QuantizeLinear nodes after optimization, got {q_nodes_after}"
+    )
+    assert dq_nodes_after == 2, (
+        f"Expected 2 DequantizeLinear nodes after optimization, got {dq_nodes_after}"
+    )
+
+    # Run the exported QDQ model
+    sess_exported = ort.InferenceSession(
+        qdq_model_exported.SerializeToString(), sess_options=sess_options
+    )
+
+    # Verify outputs match within tolerance
+    for _ in range(10):
+        input_data = {"input": np.random.randn(1, 3, 224, 224).astype(np.float32)}
+        (out_original,) = sess_original.run(None, input_data)
+        (out_exported,) = sess_exported.run(None, input_data)
+        assert np.allclose(out_original, out_exported, atol=output_scale)
 
 
 @pytest.mark.parametrize(

@@ -365,6 +365,112 @@ def transpose_multi_consumer():
         return onnx.load(path), (scale, scale, sigmoid_output_scale)
 
 
+def back_to_back_qdq_pairs():
+    """
+    Create a model with back-to-back Q->DQ->Q->DQ pattern:
+
+    (input) -> Q1 -> DQ1 -> Q2 -> DQ2 -> Relu -> Q3 -> DQ3 -> (output)
+
+    Where Q1/DQ1 have the same parameters as Q2/DQ2, allowing the duplicate
+    Q->DQ pair in the middle to be removed during optimization.
+    """
+    scale = 0.1
+    zero_point = 128
+
+    model = onnx.helper.make_model(
+        ir_version=10,
+        opset_imports=[onnx.helper.make_operatorsetid("", 13)],
+        graph=onnx.helper.make_graph(
+            name="back_to_back_qdq_graph",
+            inputs=[
+                onnx.helper.make_tensor_value_info(
+                    "input", onnx.TensorProto.FLOAT, shape=[1, 3, 224, 224]
+                )
+            ],
+            outputs=[
+                onnx.helper.make_tensor_value_info(
+                    "output", onnx.TensorProto.FLOAT, shape=[1, 3, 224, 224]
+                )
+            ],
+            nodes=[
+                # First Q->DQ pair (Q1, DQ1)
+                onnx.helper.make_node(
+                    "QuantizeLinear",
+                    inputs=["input", "scale", "zero_point"],
+                    outputs=["q1_out"],
+                    name="q1",
+                ),
+                onnx.helper.make_node(
+                    "DequantizeLinear",
+                    inputs=["q1_out", "scale", "zero_point"],
+                    outputs=["dq1_out"],
+                    name="dq1",
+                ),
+                # Second Q->DQ pair with same params (Q2, DQ2) - back-to-back
+                onnx.helper.make_node(
+                    "QuantizeLinear",
+                    inputs=["dq1_out", "scale", "zero_point"],
+                    outputs=["q2_out"],
+                    name="q2",
+                ),
+                onnx.helper.make_node(
+                    "DequantizeLinear",
+                    inputs=["q2_out", "scale", "zero_point"],
+                    outputs=["dq2_out"],
+                    name="dq2",
+                ),
+                # Relu operation
+                onnx.helper.make_node(
+                    "Relu",
+                    inputs=["dq2_out"],
+                    outputs=["relu_out"],
+                    name="relu",
+                ),
+                # Output Q->DQ pair (Q3, DQ3)
+                onnx.helper.make_node(
+                    "QuantizeLinear",
+                    inputs=["relu_out", "output_scale", "output_zero_point"],
+                    outputs=["q3_out"],
+                    name="q3",
+                ),
+                onnx.helper.make_node(
+                    "DequantizeLinear",
+                    inputs=["q3_out", "output_scale", "output_zero_point"],
+                    outputs=["output"],
+                    name="dq3",
+                ),
+            ],
+            initializer=[
+                onnx.helper.make_tensor(
+                    name="scale",
+                    data_type=onnx.TensorProto.FLOAT,
+                    dims=[],
+                    vals=[scale],
+                ),
+                onnx.helper.make_tensor(
+                    name="zero_point",
+                    data_type=onnx.TensorProto.UINT8,
+                    dims=[],
+                    vals=[zero_point],
+                ),
+                onnx.helper.make_tensor(
+                    name="output_scale",
+                    data_type=onnx.TensorProto.FLOAT,
+                    dims=[],
+                    vals=[scale],
+                ),
+                onnx.helper.make_tensor(
+                    name="output_zero_point",
+                    data_type=onnx.TensorProto.UINT8,
+                    dims=[],
+                    vals=[zero_point],
+                ),
+            ],
+        ),
+    )
+    return model, (scale,)
+
+
 def identity_tree():
     model = onnx.helper.make_model(
         ir_version=10,

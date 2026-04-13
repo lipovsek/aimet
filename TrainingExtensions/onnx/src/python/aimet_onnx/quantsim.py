@@ -59,6 +59,7 @@ from aimet_onnx.common.onnx._utils import (
     _derive_data_movement_op_encodings,
     _is_htp_interpolation_op,
 )
+from aimet_onnx.graph_passes.cleanup import remove_duplicate_qdq_pairs
 from aimet_onnx.common.quantsim import (
     extract_global_quantizer_args,
     VALID_ENCODING_VERSIONS,
@@ -562,6 +563,13 @@ class QuantizationSimModel:
             **kwargs: same as QuantizationSimModel.__init__
         """
         # pylint: disable=protected-access
+
+        # Optimize Q->DQ->Q->DQ patterns by removing duplicate Q->DQ pairs
+        removed_count, model = remove_duplicate_qdq_pairs(model)
+        if removed_count > 0:
+            logger.info(
+                "Removed %d duplicate Q->DQ pairs from QDQ model", removed_count
+            )
 
         # Removes Q/DQ node from model and extract them into 2.0.0 json encoding
         encodings = _remove_onnx_qdq_nodes(model)
