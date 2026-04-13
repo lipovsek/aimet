@@ -2760,19 +2760,15 @@ def test_cg_non_catastrophic_failure():
     Then:
       1. Quantsim should be created successfully without any error
       2. The connected graph should marked as not safe
-      3. Some qmodules may not have input quantizers, but all qmodules must have output quantizers
+      3. Some qmodules may not have input quantizers, but all non-reused qmodules must have output quantizers
     """
     sim = aimet_torch.QuantizationSimModel(model, dummy_input)
+    # Re-used module does not get quantized
     assert not sim.connected_graph.is_safe()
-    assert isinstance(
-        sim.model.reduce_sum.add[0].input_quantizers[0], QuantizeDequantize
-    )
-    assert isinstance(
-        sim.model.reduce_sum.add[0].input_quantizers[1], QuantizeDequantize
-    )
-    assert isinstance(
-        sim.model.reduce_sum.add[0].output_quantizers[0], QuantizeDequantize
-    )
+    assert sim.model.reduce_sum.add[0].input_quantizers[0] is None
+    assert sim.model.reduce_sum.add[0].input_quantizers[1] is None
+    assert sim.model.reduce_sum.add[0].output_quantizers[0] is None
+    # Add[1] does not get re-used, should have output quantizer
     assert isinstance(
         sim.model.reduce_sum.add[1].output_quantizers[0], QuantizeDequantize
     )
@@ -3067,6 +3063,49 @@ def test_quantsim_enables_unpropagatable_scalar_constant_rescale_quantizers(
         assert sim.model.rescale.input_quantizers[1] is not None
 
     assert sim.model.rescale.output_quantizers[0] is not None
+
+
+def test_quantsim_disables_quantization_for_reused_stateless_modules():
+    """
+    Given: Model with reused stateless module (e.g. ReLU)
+    When: Create quantsim
+    Then: Reused stateless modules without full constraints should not be quantized
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv2d(10, 10, kernel_size=3, padding=1)
+            self.conv2 = torch.nn.Conv2d(10, 10, kernel_size=3, padding=1)
+            self.add = custom.Add()
+            self.relu = torch.nn.ReLU()
+            self.softmax = torch.nn.Softmax(dim=1)
+            self.sigmoid = torch.nn.Sigmoid()
+
+        def forward(self, x):
+            x = self.conv(x)
+            x = self.add(x, x)
+            x = self.relu(x)
+            x = self.softmax(x)
+            x = self.sigmoid(x)
+            x = self.conv2(x)
+            x = self.add(x, x)  # Re-use add
+            x = self.relu(x)  # Re-use relu
+            x = self.softmax(x)  # Re-use softmax
+            x = self.sigmoid(x)  # Re-use sigmoid
+            return self.conv2(x)  # Re-use conv2
+
+    model = Model()
+    sim = QuantizationSimModel(model, torch.randn(1, 10, 32, 32), config_file="htp_v81")
+    assert sim.model.relu.output_quantizers[0] is None
+    assert sim.model.softmax.output_quantizers[0] is not None
+    assert sim.model.sigmoid.output_quantizers[0] is not None
+    assert sim.model.conv.output_quantizers[0] is not None
+    assert sim.model.conv2.output_quantizers[0] is not None
+    assert sim.model.conv.param_quantizers["weight"] is not None
+    assert sim.model.conv2.param_quantizers["weight"] is not None
+    assert sim.model.add.output_quantizers[0] is None
+    assert all(qtzr is None for qtzr in sim.model.add.input_quantizers)
 
 
 class TestQuantSimWithMxfp4Weights:

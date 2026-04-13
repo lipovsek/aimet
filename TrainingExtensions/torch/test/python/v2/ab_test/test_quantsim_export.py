@@ -463,10 +463,11 @@ class TestQuantsimOnnxExport:
             QuantizationSimModel as QuantizationSimModelV1,
         )
         from aimet_torch.v2.quantsim import QuantizationSimModel
+        from aimet_torch.model_preparer import prepare_model
 
         torch.manual_seed(0)
 
-        model = resnet18().eval()
+        model = prepare_model(resnet18().eval())
         dummy_input = torch.randn(1, 3, 224, 224)
 
         sim_v1 = QuantizationSimModelV1(

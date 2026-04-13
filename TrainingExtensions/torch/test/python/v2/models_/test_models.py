@@ -401,8 +401,8 @@ class ModelWithReusedNodes(nn.Module):
         super(ModelWithReusedNodes, self).__init__()
         self.conv1 = nn.Conv2d(3, 8, kernel_size=2, stride=2, padding=2, bias=False)
         self.bn1 = nn.BatchNorm2d(8)
-        self.relu1 = nn.ReLU(inplace=True)
-        self.relu2 = nn.ReLU(inplace=True)
+        self.relu1 = nn.ReLU()
+        self.relu2 = nn.ReLU()
         self.fc = nn.Linear(2592, 10)
 
     def forward(self, *inputs):

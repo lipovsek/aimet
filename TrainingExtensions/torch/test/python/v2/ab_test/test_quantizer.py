@@ -883,7 +883,19 @@ class TestQuantizationSimStaticGrad:
             with open(f"{tmp_dir}/resnet18.encodings") as json_file:
                 encoding_data = json.load(json_file)
 
-        assert len(encoding_data["activation_encodings"]) == 23
+        act_quantizers = 0
+        for qmodule in sim.qmodules():
+            act_quantizers += len(
+                [
+                    q
+                    for q in itertools.chain(
+                        qmodule.input_quantizers, qmodule.output_quantizers
+                    )
+                    if q
+                ]
+            )
+
+        assert len(encoding_data["activation_encodings"]) == act_quantizers
         assert all(
             len(enc["scale"]) == 1 for enc in encoding_data["activation_encodings"]
         )

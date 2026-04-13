@@ -5,6 +5,7 @@
 # pylint: disable=too-many-lines
 """Top level API for performing quantization simulation of a pytorch model"""
 
+from collections import defaultdict
 import copy
 from typing import (
     Any,
@@ -364,6 +365,8 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
         if self._hw_version is not None:
             # Let input/output of HTP resize ops to share same encoding
             self._propagate_encodings()
+
+        self._disable_quantizers_for_reused_modules()
 
     @property
     def onnx(self) -> "QuantizationSimModelOnnxExporter":
@@ -1000,6 +1003,45 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
                 if inp_quantizer and inp_quantizer.enabled:
                     wrapper.input_quantizers[scale_idx].enabled = False
                     wrapper.output_quantizers[0].enabled = False
+
+    def _disable_quantizers_for_reused_modules(self):
+        """
+        Disables quantizers for stateless modules that are used multiple times in the model.
+
+        Quantizing reused modules can lead to accuracy degradation as it forces tied encodings.
+        """
+        module_count = defaultdict(int)
+        for op in self.connected_graph.ordered_ops:
+            qmodule = self._get_qmodule(op)
+            if qmodule:
+                module_count[qmodule] += 1
+
+        for name, qmodule in self.named_qmodules():
+            if module_count.get(qmodule, 0) <= 1:
+                continue
+            if qmodule.param_quantizers:
+                continue
+            disabled = False
+            for quantizer_list in (qmodule.input_quantizers, qmodule.output_quantizers):
+                for idx, quantizer in enumerate(quantizer_list):
+                    if quantizer is None:
+                        continue
+                    # If encodings are fully fixed, leave enabled
+                    if quantizer.is_initialized() and all(
+                        not quantizer.is_overwrite_allowed(param_name)
+                        for param_name, _ in quantizer.named_parameters(recurse=False)
+                    ):
+                        continue
+                    quantizer_list[idx] = None
+                    disabled = True
+
+            if disabled:
+                logger.warning(
+                    "Module %s is used %d times in the model. Disabling quantizers for this module "
+                    "to avoid accuracy drop due to re-used quantization parameters.",
+                    name,
+                    module_count[qmodule],
+                )
 
 
 class QuantizationSimModelOnnxExporter:
