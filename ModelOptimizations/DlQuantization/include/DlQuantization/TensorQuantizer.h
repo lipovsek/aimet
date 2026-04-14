@@ -258,7 +258,8 @@ public:
      * @param useCuda If true, both the input and output tensors are assumed to be in CUDA memory
      * @param stream Cuda stream to use for GPU kernels
      */
-    void quantizeDequantize(const float* input, float* output, const TensorDims& tensorShape, bool useCuda,
+    template <typename T>
+    void quantizeDequantize(const T* input, T* output, const TensorDims& tensorShape, bool useCuda,
                             void* stream = nullptr, IForLoopRunner* runner = nullptr) const;
 
     /**

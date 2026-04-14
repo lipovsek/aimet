@@ -4,10 +4,12 @@
 #include "trim_functions.hpp"
 #include "DlQuantization/Quantization.hpp"
 #include "tensor_utils.hpp"
+#include <Eigen/Core>
 #include <algorithm>
 #include <climits>
 #include <cmath>
 #include <cstdint>
+#include <type_traits>
 #include <cstdlib>
 #include <functional>
 #include <stdexcept>
@@ -144,12 +146,16 @@ template <typename DTYPE>
 void quantizeDequantizeCpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out,
                            RoundingMode rounding_mode, IForLoopRunner* runner)
 {
+    using EncType = std::conditional_t<std::is_same_v<DTYPE, Eigen::half>, float, DTYPE>;
+
     auto qdqLoop = [&](size_t start, size_t end) {
         for (size_t i = start; i < end; ++i)
         {
-            quantizeValueCpu<DTYPE>(&in[i], &out[i], encoding.min, encoding.max, encoding.delta, encoding.offset,
-                                    rounding_mode);
-            dequantizeValueCpu<DTYPE>(&out[i], encoding.delta, encoding.offset);
+            EncType val = in[i];
+            quantizeValueCpu<EncType>(&val, &val, encoding.min, encoding.max, encoding.delta, encoding.offset,
+                                      rounding_mode);
+            dequantizeValueCpu<EncType>(&val, encoding.delta, encoding.offset);
+            out[i] = static_cast<DTYPE>(val);
         }
     };
 
@@ -625,6 +631,8 @@ void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings
 {
     auto ndim = inputStrides.size();
 
+    using EncType = std::conditional_t<std::is_same_v<DTYPE, Eigen::half>, float, DTYPE>;
+
     auto qdqLoop = [&](size_t start, size_t end) {
         int64_t encodingIdx = 0;
         TensorDims coords(ndim);
@@ -643,8 +651,10 @@ void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings
             auto min    = encodings[encodingIdx].min;
             auto max    = encodings[encodingIdx].max;
 
-            quantizeValueCpu<DTYPE>(in + i, out + i, min, max, delta, offset, ROUND_NEAREST);
-            dequantizeValueCpu<DTYPE>(out + i, delta, offset);
+            EncType val = in[i];
+            quantizeValueCpu<EncType>(&val, &val, min, max, delta, offset, ROUND_NEAREST);
+            dequantizeValueCpu<EncType>(&val, delta, offset);
+            out[i] = static_cast<DTYPE>(val);
 
             // Increment coords by 1 and find new encodingIdx
             for (int d = ndim - 1; d >= 0; d--)
@@ -776,6 +786,20 @@ template void quantizeDequantizeBroadcast(const float* inTensor, float* outTenso
                                           IForLoopRunner* runner);
 
 template void quantizeDequantizeBroadcastCpu(const float* in, float* out, const Encodings& encodings,
+                                             int64_t numElement, const TensorDims& inputStrides,
+                                             const TensorDims& encodingStrides, const TensorDims& inputShape,
+                                             IForLoopRunner* runner);
+
+template void quantizeDequantize(const Eigen::half* in, uint64_t cnt, const TfEncoding& encoding, Eigen::half* out,
+                                 ComputationMode mode_cpu_gpu, RoundingMode rounding_mode, void* stream,
+                                 IForLoopRunner* runner);
+
+template void quantizeDequantizeBroadcast(const Eigen::half* inTensor, Eigen::half* outTensor,
+                                          const Encodings& encodings, const TensorDims& inputShape,
+                                          const TensorDims& encodingShape, ComputationMode mode, void* stream,
+                                          IForLoopRunner* runner);
+
+template void quantizeDequantizeBroadcastCpu(const Eigen::half* in, Eigen::half* out, const Encodings& encodings,
                                              int64_t numElement, const TensorDims& inputStrides,
                                              const TensorDims& encodingStrides, const TensorDims& inputShape,
                                              IForLoopRunner* runner);

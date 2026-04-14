@@ -6,6 +6,7 @@
 #include "quantization_utils.hpp"
 #include "tensor_utils.hpp"
 #include "trim_functions.hpp"
+#include <Eigen/Core>
 #include <cassert>
 #include <numeric>
 #include <stdexcept>
@@ -342,8 +343,9 @@ void BlockTensorQuantizer::updateStats(const float* tensor, const TensorDims& te
 
 
 // TODO: Let BlockTensorQuantizer own the encodings vector, do not take as argument
-void BlockTensorQuantizer::quantizeDequantize(const float* input, float* output, const TensorDims& tensorShape,
-                                              bool useCuda, void* stream, IForLoopRunner* runner) const
+template <typename T>
+void BlockTensorQuantizer::quantizeDequantize(const T* input, T* output, const TensorDims& tensorShape, bool useCuda,
+                                              void* stream, IForLoopRunner* runner) const
 {
     auto mode = useCuda ? COMP_MODE_GPU : COMP_MODE_CPU;
     if (not isEncodingValid)
@@ -361,6 +363,11 @@ void BlockTensorQuantizer::quantizeDequantize(const float* input, float* output,
         quantizeDequantizeBroadcast(input, output, _encodings, tensorShape, this->_shape, mode, stream, runner);
     }
 }
+
+template void BlockTensorQuantizer::quantizeDequantize<float>(const float*, float*, const TensorDims&, bool, void*,
+                                                              IForLoopRunner*) const;
+template void BlockTensorQuantizer::quantizeDequantize<Eigen::half>(const Eigen::half*, Eigen::half*, const TensorDims&,
+                                                                    bool, void*, IForLoopRunner*) const;
 
 void BlockTensorQuantizer::setQuantScheme(QuantizationMode quantScheme)
 {

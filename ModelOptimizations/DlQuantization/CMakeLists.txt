@@ -55,6 +55,11 @@ target_compile_options(MoDlQuantization
       )
 endif (ENABLE_CUDA)
 
+target_link_libraries(MoDlQuantization
+      PUBLIC
+        Eigen3::Eigen
+      )
+
 target_include_directories(MoDlQuantization
       PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -79,6 +84,11 @@ if (ENABLE_CUDA)
     target_include_directories(MoDlQuantizationCuda PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    target_link_libraries(MoDlQuantizationCuda
+        PUBLIC
+          Eigen3::Eigen
     )
 
     target_compile_options(MoDlQuantizationCuda

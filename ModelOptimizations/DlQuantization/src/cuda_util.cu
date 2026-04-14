@@ -1,8 +1,9 @@
 // Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include <stdexcept>
 #include "cuda_util.hpp"
+#include <Eigen/Core>
+#include <stdexcept>
 
 namespace DlQuantization
 {
@@ -59,7 +60,9 @@ void copyTensorsCuda(T* outTensor, const T* inTensor, size_t count, void* stream
     }
 }
 
-// Explicit template instantiation for float
+// Explicit template instantiations
 template void copyTensorsCuda<float>(float* outTensor, const float* inTensor, size_t count, void* stream);
+template void copyTensorsCuda<Eigen::half>(Eigen::half* outTensor, const Eigen::half* inTensor, size_t count,
+                                           void* stream);
 
 }   // End of namespace DlQuantization

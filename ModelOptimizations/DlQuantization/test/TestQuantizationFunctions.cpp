@@ -5,17 +5,22 @@
 #include <vector>
 
 #include "DlQuantization/Quantization.hpp"
+#include "test_quantization_lib.hpp"
+#include "trim_functions.hpp"
 #include "gtest/gtest.h"
 
-#include <math_functions.hpp>
+#include <Eigen/Core>
 
 #ifdef GPU_QUANTIZATION_ENABLED
 #include "cuda_runtime_api.h"
 #endif
 
 
-void launchBlockQdqKernel(float* in, float* out, std::vector<DlQuantization::TfEncoding>& encodings, const DlQuantization::TensorDims& inputShape, const DlQuantization::TensorDims& encodingShape,
-                          int64_t numElements, bool useCuda)
+template <typename DTYPE>
+void launchBlockQdqKernelT(DTYPE* in, DTYPE* out, std::vector<DlQuantization::TfEncoding>& encodings,
+                           const DlQuantization::TensorDims& inputShape,
+                           const DlQuantization::TensorDims& encodingShape,
+                           int64_t numElements, bool useCuda)
 {
     void* inputBuffer;
     void* outputBuffer;
@@ -23,15 +28,15 @@ void launchBlockQdqKernel(float* in, float* out, std::vector<DlQuantization::TfE
     if (useCuda)
     {
 #ifdef GPU_QUANTIZATION_ENABLED
-        cudaMalloc(&inputBuffer, sizeof(float) * numElements);
-        cudaMalloc(&outputBuffer, sizeof(float) * numElements);
+        cudaMalloc(&inputBuffer, sizeof(DTYPE) * numElements);
+        cudaMalloc(&outputBuffer, sizeof(DTYPE) * numElements);
         // copy input to gpu
-        cudaMemcpy(inputBuffer, in, numElements * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(inputBuffer, in, numElements * sizeof(DTYPE), cudaMemcpyHostToDevice);
 
-        DlQuantization::quantizeDequantizeBroadcast((float*) inputBuffer, (float*) outputBuffer, encodings, inputShape, encodingShape, DlQuantization::COMP_MODE_GPU);
+        DlQuantization::quantizeDequantizeBroadcast((DTYPE*) inputBuffer, (DTYPE*) outputBuffer, encodings, inputShape, encodingShape, DlQuantization::COMP_MODE_GPU);
 
         // copy output to cpu
-        cudaMemcpy(out, outputBuffer, numElements * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(out, outputBuffer, numElements * sizeof(DTYPE), cudaMemcpyDeviceToHost);
         // free gpu memory
         cudaFree(outputBuffer);
         cudaFree(inputBuffer);
@@ -45,7 +50,18 @@ void launchBlockQdqKernel(float* in, float* out, std::vector<DlQuantization::TfE
 }
 
 
-TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast) {
+typedef ::testing::Types<float, Eigen::half> BroadcastQdqTypes;
+
+template <typename T>
+class TestBroadcastQdq : public ::testing::Test
+{};
+
+TYPED_TEST_SUITE(TestBroadcastQdq, BroadcastQdqTypes);
+
+
+TYPED_TEST(TestBroadcastQdq, TestQuantizeDequantizeBroadcast)
+{
+    using DTYPE = TypeParam;
     constexpr int numel = 16;
     DlQuantization::TensorDims inputShape = {2, 2, 2, 2};
     DlQuantization::TensorDims encodingShape = {2, 1, 1, 2};
@@ -64,10 +80,8 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast) {
         encodings[i].delta = encodingDelta[i];
         encodings[i].offset = encodingOffset[i];
     }
-    float out[numel];
 
-
-    float input[4 * 2 * 2] = {
+    float inputF32[numel] = {
         -125.1, -125.1,    48.3, 48.3,
         68.3, 68.3,       -3.1, -3.1,
 
@@ -75,7 +89,12 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast) {
         68.3, 68.3,        -3.1, -3.1,
     };
 
-    float expected[4 * 2 * 2] = {
+    DTYPE input[numel];
+    DTYPE out[numel];
+    for (int i = 0; i < numel; i++)
+        input[i] = DTYPE(inputF32[i]);
+
+    float expected[numel] = {
         -64.0, -125.0,     48.5, 48.0,
          63.5, 68.0,       -3.0, -3.0,
 
@@ -94,19 +113,20 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast) {
     for (auto && c : useCuda)
     {
         // Launch the kernel
-        launchBlockQdqKernel(input, out, encodings, inputShape, encodingShape, numel, c);
+        launchBlockQdqKernelT(input, out, encodings, inputShape, encodingShape, numel, c);
 
         for (int i = 0; i < numel; i++)
         {
-            EXPECT_EQ(out[i], expected[i]);
-            out[i] = 0; // Clear output
+            EXPECT_EQ(out[i], DTYPE(expected[i]));
+            out[i] = DTYPE(0.); // Clear output
         }
     }
-
 }
 
 
-TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast2) {
+TYPED_TEST(TestBroadcastQdq, TestQuantizeDequantizeBroadcast2)
+{
+    using DTYPE = TypeParam;
     constexpr int numel = 24;
     DlQuantization::TensorDims inputShape = {2, 3, 4};
     DlQuantization::TensorDims encodingShape = {2, 3, 1};
@@ -124,10 +144,8 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast2) {
         encodings[i].delta = encodingDelta[i];
         encodings[i].offset = encodingOffset[i];
     }
-    float out[numel];
 
-
-    float input[numel] = {
+    float inputF32[numel] = {
         0.126, 10.4, -12.3, 10000,
         0.126, 10.4, -12.3, 10000,
         0.126, 10.4, -12.3, 10000,
@@ -135,6 +153,11 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast2) {
         0.126, 10.4, -12.3, 10000,
         0.126, 10.4, -12.3, 10000,
     };
+
+    DTYPE input[numel];
+    DTYPE out[numel];
+    for (int i = 0; i < numel; i++)
+        input[i] = DTYPE(inputF32[i]);
 
     float expected[numel] = {
         0.25, 10.5, 0, 63.75,  // scale = .25
@@ -156,19 +179,20 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast2) {
     for (auto && c : useCuda)
     {
         // Launch the kernel
-        launchBlockQdqKernel(input, out, encodings, inputShape, encodingShape, numel, c);
+        launchBlockQdqKernelT(input, out, encodings, inputShape, encodingShape, numel, c);
 
         for (int i = 0; i < numel; i++)
         {
-            EXPECT_EQ(out[i], expected[i]);
-            out[i] = 0; // Clear output
+            EXPECT_EQ(out[i], DTYPE(expected[i]));
+            out[i] = DTYPE(0.); // Clear output
         }
     }
-
 }
 
 
-TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast3) {
+TYPED_TEST(TestBroadcastQdq, TestQuantizeDequantizeBroadcast3)
+{
+    using DTYPE = TypeParam;
     constexpr int numel = 24;
     DlQuantization::TensorDims inputShape = {4, 2, 3};
     DlQuantization::TensorDims encodingShape = {2, 3};
@@ -187,15 +211,18 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast3) {
         encodings[i].delta = encodingDelta[i];
         encodings[i].offset = encodingOffset[i];
     }
-    float out[numel];
 
-
-    float input[numel] = {
+    float inputF32[numel] = {
         0.126, 0.126, 0.126, 0.126, 0.126, 0.126,
         10.4,  10.4,  10.4,  10.4,  10.4,  10.4,
         -12.3, -12.3, -12.3, -12.3, -12.3, -12.3,
         10000, 10000, 10000, 10000, 10000, 10000,
     };
+
+    DTYPE input[numel];
+    DTYPE out[numel];
+    for (int i = 0; i < numel; i++)
+        input[i] = DTYPE(inputF32[i]);
 
     float expected[numel] = {
     //  0.25     1.0      0.5      2.0      .25      10.0
@@ -216,13 +243,84 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeBroadcast3) {
     for (auto && c : useCuda)
     {
         // Launch the kernel
-        launchBlockQdqKernel(input, out, encodings, inputShape, encodingShape, numel, c);
+        launchBlockQdqKernelT(input, out, encodings, inputShape, encodingShape, numel, c);
 
         for (int i = 0; i < numel; i++)
         {
-            EXPECT_EQ(out[i], expected[i]);
-            out[i] = 0; // Clear output
+            EXPECT_EQ(out[i], DTYPE(expected[i]));
+            out[i] = DTYPE(0.); // Clear output
         }
     }
-
 }
+
+
+TEST(TestOnnxTensorOps, TestQuantizeDequantizeFp16)
+{
+    constexpr int numel = 6;
+
+    DlQuantization::TfEncoding encoding = getTfEncoding(-0.5, 0.775, 8);
+
+    float inputF32[numel] = {-0.501, -0.2501, 0., 0.2501, 0.501, 0.8};
+    Eigen::half input[numel];
+    Eigen::half output[numel];
+    for (int i = 0; i < numel; i++)
+        input[i] = Eigen::half(inputF32[i]);
+
+    // fp32 reference
+    float refOutput[numel];
+    DlQuantization::quantizeDequantize(inputF32, (uint64_t) numel, encoding, refOutput,
+                                       DlQuantization::COMP_MODE_CPU,
+                                       DlQuantization::ROUND_NEAREST, nullptr);
+
+    // fp16
+    DlQuantization::quantizeDequantize(input, (uint64_t) numel, encoding, output,
+                                       DlQuantization::COMP_MODE_CPU,
+                                       DlQuantization::ROUND_NEAREST, nullptr);
+
+    for (int i = 0; i < numel; i++)
+    {
+        EXPECT_NEAR(float(output[i]), refOutput[i], 0.01);
+    }
+}
+
+
+#ifdef GPU_QUANTIZATION_ENABLED
+TEST(TestOnnxTensorOps, TestQuantizeDequantizeFp16Gpu)
+{
+    constexpr int numel = 6;
+
+    DlQuantization::TfEncoding encoding = getTfEncoding(-0.5, 0.775, 8);
+
+    float inputF32[numel] = {-0.501, -0.2501, 0., 0.2501, 0.501, 0.8};
+    Eigen::half input[numel];
+    for (int i = 0; i < numel; i++)
+        input[i] = Eigen::half(inputF32[i]);
+
+    // fp32 reference (CPU)
+    float refOutput[numel];
+    DlQuantization::quantizeDequantize(inputF32, (uint64_t) numel, encoding, refOutput,
+                                       DlQuantization::COMP_MODE_CPU,
+                                       DlQuantization::ROUND_NEAREST, nullptr);
+
+    // fp16 on GPU
+    Eigen::half* gpuIn;
+    Eigen::half* gpuOut;
+    cudaMalloc((void**) &gpuIn, sizeof(Eigen::half) * numel);
+    cudaMalloc((void**) &gpuOut, sizeof(Eigen::half) * numel);
+    cudaMemcpy(gpuIn, input, sizeof(Eigen::half) * numel, cudaMemcpyHostToDevice);
+
+    DlQuantization::quantizeDequantize(gpuIn, (uint64_t) numel, encoding, gpuOut,
+                                       DlQuantization::COMP_MODE_GPU,
+                                       DlQuantization::ROUND_NEAREST, nullptr);
+
+    Eigen::half output[numel];
+    cudaMemcpy(output, gpuOut, sizeof(Eigen::half) * numel, cudaMemcpyDeviceToHost);
+    cudaFree(gpuIn);
+    cudaFree(gpuOut);
+
+    for (int i = 0; i < numel; i++)
+    {
+        EXPECT_NEAR(float(output[i]), refOutput[i], 0.01);
+    }
+}
+#endif

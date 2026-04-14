@@ -33,3 +33,5 @@ void quantizeDequantizeFp16Cpu(const float* in, uint64_t cnt, float* out)
 
 template void copyInputTensorsToOutputTensors(const float* inTensor, size_t count, float* outTensor, bool useCuda,
                                               void* stream);
+template void copyInputTensorsToOutputTensors(const Eigen::half* inTensor, size_t count, Eigen::half* outTensor,
+                                              bool useCuda, void* stream);

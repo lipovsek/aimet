@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 #include <random>
+#include <type_traits>
 
 #include "DlQuantization/TensorQuantizer.h"
 #include "test_quantization_lib.hpp"
@@ -748,8 +749,11 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestBlockQuantizerPerTensorQdq)
     encodings[0] = {min, max, delta, offset, bw};
     tensorQuantizer.setEncodings(encodings);
 
-    DataType input[6] = {-7, -5, -3, 0, .1, 2.5};
+    float inputF32[6] = {-7, -5, -3, 0, .1, 2.5};
+    DataType input[6];
     DataType output[6];
+    for (int i = 0; i < 6; i++)
+        input[i] = DataType(inputF32[i]);
 
     Blob<TypeParam> inputBlob(input, 6);
     Blob<TypeParam> outputBlob(output, 6);
@@ -759,8 +763,9 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestBlockQuantizerPerTensorQdq)
 
     for (int i = 0; i < 6; i++)
     {
-        DataType clipped = std::max(std::min(input[i], max), min);
-        DataType expected = (std::round(clipped / delta - offset) + offset) * delta;
+        float inp = float(input[i]);
+        float clipped = std::max(std::min(inp, max), min);
+        DataType expected = DataType((std::round(clipped / delta - offset) + offset) * delta);
         EXPECT_NEAR(outputBlob.getDataPtrOnCpu()[i], expected, 0.001);
     }
 }
@@ -778,22 +783,31 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestBlockQuantizationEndToEnd)
     TensorDims quantizerShape = {2, 2};
     BlockTensorQuantizer tensorQuantizer(quantizerShape, 8, QUANTIZATION_TF);
 
-    DataType in[numElements] = {
+    float inF32[numElements] = {
         -5.4f, 10.f, -2.f,
         3.5f, 23.1f, 2.f,
         -10.f, -2.f, -1.f,
         -.1f, 0.3f, 0.1f
     };
+    DataType in[numElements];
     DataType out[numElements];
+    for (int i = 0; i < numElements; i++)
+        in[i] = DataType(inF32[i]);
 
     Blob<TypeParam> inputBlob(in, numElements);
     Blob<TypeParam> outputBlob(out, numElements);
     bool useCuda = TypeParam::modeCpuGpu == COMP_MODE_GPU;
-    tensorQuantizer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, useCuda);
+
+    // Note: Calibration on fp16 tensor not yet supported
+    if constexpr (std::is_same_v<DataType, float>)
+        tensorQuantizer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, useCuda);
+    else
+        tensorQuantizer.updateStats(inF32, inputShape, false);
+
     auto encodings = tensorQuantizer.computeEncodings(symmetric);
     tensorQuantizer.setEncodings(encodings);
 
-    DataType expectedMax[4] = {10.f, 23.1f, 10.f * 127./128., .3f};
+    float expectedMax[4] = {10.f, 23.1f, 10.f * 127./128., .3f};
     for (size_t i = 0; i < 4; i++)
     {
         auto enc = encodings[i];
@@ -810,8 +824,9 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestBlockQuantizationEndToEnd)
     {
         auto enc = encodings[i / 3];
         float min = enc.min; float max = enc.max; float delta = enc.delta; float offset = enc.offset;
-        DataType clipped = std::max(std::min(in[i], max), min);
-        DataType expected = (std::round(clipped / delta - offset) + offset) * delta;
+        float inp = float(in[i]);
+        float clipped = std::max(std::min(inp, max), min);
+        DataType expected = DataType((std::round(clipped / delta - offset) + offset) * delta);
         EXPECT_NEAR(outputBlob.getDataPtrOnCpu()[i], expected, 0.001);
 
     }
@@ -837,24 +852,32 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestQuantizerZeroPointShift)
     BlockTensorQuantizer tensorQuantizer(quantizerShape, 2, QUANTIZATION_TF);
     tensorQuantizer.setZeroPointShift(0.5);
 
-    DataType in[numElements] = {
+    float inF32[numElements] = {
         -3.f, 0.1f, -2.1f, 1.3f, 1.8f, 2.5f,
         -5.1f, -4.1f, -0.1f, 1.3f, 1.8f, 6.f
     };
-    DataType out[numElements];
-    DataType expectedOut[numElements] = {
+    float expectedOutF32[numElements] = {
         -3.f, 1.f, -3.f, 1.f, 1.f, 3.f,
         -6.f, -6.f, -2.f, 2.f, 2.f, 6.f
     };
+    DataType in[numElements];
+    DataType out[numElements];
+    for (int i = 0; i < numElements; i++)
+        in[i] = DataType(inF32[i]);
 
     Blob<TypeParam> inputBlob(in, numElements);
     Blob<TypeParam> outputBlob(out, numElements);
     bool useCuda = TypeParam::modeCpuGpu == COMP_MODE_GPU;
-    tensorQuantizer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, useCuda);
+
+    if constexpr (std::is_same_v<DataType, float>)
+        tensorQuantizer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, useCuda);
+    else
+        tensorQuantizer.updateStats(inF32, inputShape, false);
+
     auto encodings = tensorQuantizer.computeEncodings(symmetric);
     tensorQuantizer.setEncodings(encodings);
 
-    DataType expectedMax[2] = {3.0f, 6.0f};
+    float expectedMax[2] = {3.0f, 6.0f};
     for (size_t i = 0; i < 2; i++)
     {
         auto enc = encodings[i];
@@ -869,7 +892,7 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestQuantizerZeroPointShift)
 
     for (int i = 0; i < numElements; i++)
     {
-        EXPECT_NEAR(outputBlob.getDataPtrOnCpu()[i], expectedOut[i], 0.0001);
+        EXPECT_NEAR(outputBlob.getDataPtrOnCpu()[i], DataType(expectedOutF32[i]), 0.0001);
     }
 
     EXPECT_THROW(tensorQuantizer.computeEncodings(false), std::runtime_error);
@@ -883,18 +906,21 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestZeroPointShiftTFEError)
 
     typedef typename TypeParam::dataType DataType;
 
-    bool symmetric = true;
-    constexpr int numElements = 12;
-    TensorDims inputShape = {2, 6};
-    TensorDims quantizerShape = {2, 1};
-    BlockTensorQuantizer tensorQuantizer(quantizerShape, 2, QUANTIZATION_TF_ENHANCED);
-    tensorQuantizer.setZeroPointShift(0.5);
+    if constexpr (std::is_same_v<DataType, float>)
+    {
+        bool symmetric = true;
+        constexpr int numElements = 12;
+        TensorDims inputShape = {2, 6};
+        TensorDims quantizerShape = {2, 1};
+        BlockTensorQuantizer tensorQuantizer(quantizerShape, 2, QUANTIZATION_TF_ENHANCED);
+        tensorQuantizer.setZeroPointShift(0.5);
 
-    DataType in[numElements];
-    DataType out[numElements];
+        DataType in[numElements];
+        DataType out[numElements];
 
-    Blob<TypeParam> inputBlob(in, numElements);
-    bool useCuda = TypeParam::modeCpuGpu == COMP_MODE_GPU;
-    tensorQuantizer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, useCuda);
-    EXPECT_THROW(tensorQuantizer.computeEncodings(symmetric), std::runtime_error);
+        Blob<TypeParam> inputBlob(in, numElements);
+        bool useCuda = TypeParam::modeCpuGpu == COMP_MODE_GPU;
+        tensorQuantizer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, useCuda);
+        EXPECT_THROW(tensorQuantizer.computeEncodings(symmetric), std::runtime_error);
+    }
 }

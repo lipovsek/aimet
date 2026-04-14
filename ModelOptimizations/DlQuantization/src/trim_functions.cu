@@ -5,22 +5,23 @@
 #include "cuda_util.hpp"
 #include "trim_functions.cuh"
 #include "trim_functions.hpp"
+#include <Eigen/Core>
+#include <type_traits>
 
 namespace DlQuantization
 {
-template <typename DTYPE>
-__global__ void quantizeDequantizeKernel(const DTYPE* in, uint64_t cnt, DTYPE* out,
-                                         DTYPE encoding_min, DTYPE encoding_max,
-                                         DTYPE encoding_delta, DTYPE encoding_offset,
+template <typename DTYPE, typename EncType>
+__global__ void quantizeDequantizeKernel(const DTYPE* in, uint64_t cnt, DTYPE* out, EncType encoding_min,
+                                         EncType encoding_max, EncType encoding_delta, EncType encoding_offset,
                                          RoundingMode rounding_mode)
 {
     CUDA_KERNEL_LOOP(i, cnt)
     {
-        quantizeToFxpDevice<DTYPE>(in + i, out + i,
-                                   encoding_min, encoding_max,
-                                   encoding_delta, encoding_offset,
-                                   rounding_mode, i);
-        dequantizeFromFxpDevice<DTYPE>(out + i, encoding_delta, encoding_offset);
+        EncType val = in[i];
+        quantizeToFxpDevice<EncType>(&val, &val, encoding_min, encoding_max, encoding_delta, encoding_offset,
+                                     rounding_mode, i);
+        dequantizeFromFxpDevice<EncType>(&val, encoding_delta, encoding_offset);
+        out[i] = static_cast<DTYPE>(val);
     }
 }
 
@@ -58,11 +59,11 @@ __global__ void quantizeDequantizePerChannelKernel(const DTYPE* in, int numChann
 
 
 
-template <typename DTYPE>
+template <typename DTYPE, typename EncType>
 __global__ void quantizeDequantizeBroadcastKernel(const DTYPE* in, DTYPE* out, int64_t numElements, int64_t numDims,
                                                   const TensorDim* inputStrides, const TensorDim* encodingStrides,
-                                                  const DTYPE* encodingMin, const DTYPE* encodingMax,
-                                                  const DTYPE* encodingDelta, const DTYPE* encodingOffset)
+                                                  const EncType* encodingMin, const EncType* encodingMax,
+                                                  const EncType* encodingDelta, const EncType* encodingOffset)
 {
     CUDA_KERNEL_LOOP(i, numElements)
     {
@@ -81,8 +82,10 @@ __global__ void quantizeDequantizeBroadcastKernel(const DTYPE* in, DTYPE* out, i
         auto min    = *(encodingMin + encodingIdx);
         auto max    = *(encodingMax + encodingIdx);
 
-        quantizeToFxpDevice<DTYPE>(in + i, out + i, min, max, delta, offset, ROUND_NEAREST, i);
-        dequantizeFromFxpDevice<DTYPE>(out + i, delta, offset);
+        EncType val = in[i];
+        quantizeToFxpDevice<EncType>(&val, &val, min, max, delta, offset, ROUND_NEAREST, i);
+        dequantizeFromFxpDevice<EncType>(&val, delta, offset);
+        out[i] = static_cast<DTYPE>(val);
     }
 }
 
@@ -91,7 +94,8 @@ template <typename DTYPE>
 void quantizeDequantizeGpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out, RoundingMode rounding_mode,
                            void* stream)
 {
-    quantizeDequantizeKernel<DTYPE>
+    using EncType = std::conditional_t<std::is_same_v<DTYPE, Eigen::half>, float, DTYPE>;
+    quantizeDequantizeKernel<DTYPE, EncType>
         <<<CUDA_NUM_BLOCKS(cnt), CUDA_NUM_THREADS, 0, reinterpret_cast<cudaStream_t>(stream)>>>(
             in, cnt, out, encoding.min, encoding.max, encoding.delta, encoding.offset, rounding_mode);
 }
@@ -170,13 +174,14 @@ void quantizeDequantizePerChannelGpu(const DTYPE* in, int numChannel, int numEle
 }
 
 template <typename DTYPE>
-void quantizeDequantizeBroadcastGpu(const DTYPE* in, DTYPE* out, const Encodings& encodings,
-                                    int64_t numElements, const TensorDims& inputStrides,
-                                    const TensorDims& encodingStrides, void* stream)
+void quantizeDequantizeBroadcastGpu(const DTYPE* in, DTYPE* out, const Encodings& encodings, int64_t numElements,
+                                    const TensorDims& inputStrides, const TensorDims& encodingStrides, void* stream)
 {
+    using EncType = std::conditional_t<std::is_same_v<DTYPE, Eigen::half>, float, DTYPE>;
+
     int64_t numEncodings = encodings.size();
     int64_t numDims      = inputStrides.size();
-    std::vector<DTYPE> encVec(4 * numEncodings);
+    std::vector<EncType> encVec(4 * numEncodings);
 
     for (int i = 0; i < numEncodings; i++)
     {
@@ -188,12 +193,12 @@ void quantizeDequantizeBroadcastGpu(const DTYPE* in, DTYPE* out, const Encodings
 
     // Allocate device memory for strides and encodings
     TensorDim* stridesDevice;
-    DTYPE* encodingVectorDevice;
+    EncType* encodingVectorDevice;
     cudaMalloc((void**) &stridesDevice, 2 * numDims * sizeof(TensorDim));
-    cudaMalloc((void**) &encodingVectorDevice, 4 * numEncodings * sizeof(DTYPE));
+    cudaMalloc((void**) &encodingVectorDevice, 4 * numEncodings * sizeof(EncType));
 
     // Send encoding information to device
-    cudaMemcpyAsync(encodingVectorDevice, encVec.data(), 4 * numEncodings * sizeof(DTYPE), cudaMemcpyHostToDevice,
+    cudaMemcpyAsync(encodingVectorDevice, encVec.data(), 4 * numEncodings * sizeof(EncType), cudaMemcpyHostToDevice,
                     static_cast<cudaStream_t>(stream));
 
     // Send stride information to device
@@ -203,15 +208,15 @@ void quantizeDequantizeBroadcastGpu(const DTYPE* in, DTYPE* out, const Encodings
     cudaMemcpyAsync(stridesDevice, strideBuffer, 2 * numDims * sizeof(TensorDim), cudaMemcpyHostToDevice,
                     static_cast<cudaStream_t>(stream));
 
-    DTYPE* encodingMin    = encodingVectorDevice;
-    DTYPE* encodingMax    = encodingVectorDevice + numEncodings;
-    DTYPE* encodingDelta  = encodingVectorDevice + 2 * numEncodings;
-    DTYPE* encodingOffset = encodingVectorDevice + 3 * numEncodings;
+    EncType* encodingMin    = encodingVectorDevice;
+    EncType* encodingMax    = encodingVectorDevice + numEncodings;
+    EncType* encodingDelta  = encodingVectorDevice + 2 * numEncodings;
+    EncType* encodingOffset = encodingVectorDevice + 3 * numEncodings;
 
     TensorDim* dTensorStrides   = stridesDevice;
     TensorDim* dEncodingStrides = stridesDevice + numDims;
 
-    quantizeDequantizeBroadcastKernel<DTYPE>
+    quantizeDequantizeBroadcastKernel<DTYPE, EncType>
         <<<CUDA_NUM_BLOCKS(numElements), CUDA_NUM_THREADS, 0, static_cast<cudaStream_t>(stream)>>>(
             in, out, numElements, numDims, dTensorStrides, dEncodingStrides, encodingMin, encodingMax, encodingDelta,
             encodingOffset);
@@ -246,6 +251,13 @@ template void quantizeDequantizePerChannelGpu(const double* in, int numChannel, 
                                               RoundingMode roundingMode, void* stream);
 
 template void quantizeDequantizeBroadcastGpu(const float* in, float* out, const Encodings& encodings,
+                                             int64_t numElements, const TensorDims& inputStrides,
+                                             const TensorDims& encodingStrides, void* stream);
+
+template void quantizeDequantizeGpu(const Eigen::half* in, uint64_t cnt, const TfEncoding& encoding, Eigen::half* out,
+                                    RoundingMode rounding_mode, void* stream);
+
+template void quantizeDequantizeBroadcastGpu(const Eigen::half* in, Eigen::half* out, const Encodings& encodings,
                                              int64_t numElements, const TensorDims& inputStrides,
                                              const TensorDims& encodingStrides, void* stream);
 

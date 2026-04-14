@@ -6,6 +6,7 @@
 
 #include "gtest/gtest.h"
 
+#include <Eigen/Core>
 #include "DlQuantization/Quantization.hpp"
 #include "math_functions.hpp"
 
@@ -29,7 +30,7 @@ struct CpuDevice
 
 typedef ::testing::Types<CpuDevice<float>, CpuDevice<double> > TestDataTypesAndDevices;
 
-typedef ::testing::Types<CpuDevice<float> > TestDeviceTypes;
+typedef ::testing::Types<CpuDevice<float>, CpuDevice<Eigen::half> > TestDeviceTypes;
 
 #else
 
@@ -43,7 +44,7 @@ struct GpuDevice
 typedef ::testing::Types<CpuDevice<float>, CpuDevice<double>, GpuDevice<float>, GpuDevice<double> >
     TestDataTypesAndDevices;
 
-typedef ::testing::Types<CpuDevice<float>, GpuDevice<float> >
+typedef ::testing::Types<CpuDevice<float>, GpuDevice<float>, CpuDevice<Eigen::half>, GpuDevice<Eigen::half> >
     TestDeviceTypes;
 
 #endif

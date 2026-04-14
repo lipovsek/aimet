@@ -6,9 +6,9 @@
 #include "DlQuantization/IForLoopRunner.h"
 #include "trim_functions.hpp"
 
-#include <vector>
 #include <iostream>
 #include <type_traits>
+#include <vector>
 
 
 // Concrete IForLoopRunner that delegates to ORT's intra-op thread pool.
@@ -46,54 +46,13 @@ QcQuantizeOp<T>::QcQuantizeOp(const OrtApi* api, const OrtKernelInfo* info) : ap
     quantInfo = reinterpret_cast<struct QcQuantizeInfo*>(quantInfoPointer);
 }
 
-template<typename T>
-void ConvertFloat16ToFloat32(const T* inputData, float*& convertedPtr, size_t size, bool useCuda, void* stream)
-{
-    if (useCuda)
-    {
-        #ifdef ONNX_CUDA
-            DlQuantization::convertFp16ToFloatKernelForGPU(reinterpret_cast<const __half*>(inputData), size, convertedPtr, stream);
-        #else
-            throw std::runtime_error("Cannot call CUDA kernel for type conversion. Not compiled for GPU mode.");
-        #endif
-    }
-    else
-    {
-        for (size_t i = 0; i < size; ++i)
-        {
-            convertedPtr[i] = inputData[i].ToFloat();
-        }
-    }
-}
-
-template<typename T>
-void ConvertFloat32ToFloat16(float* resultPtr, T* convertedResult, size_t size, bool useCuda, void* stream)
-{
-    if (useCuda)
-    {
-        #ifdef ONNX_CUDA
-            DlQuantization::convertFloatToFp16KernelForGPU(resultPtr, size, reinterpret_cast<__half*>(convertedResult), stream);
-        #else
-            throw std::runtime_error("Cannot call CUDA kernel for type conversion. Not compiled for GPU mode.");
-        #endif
-    }
-    else
-    {
-        for (size_t i = 0; i < size; ++i)
-        {
-            convertedResult[i] = Ort::Float16_t(resultPtr[i]);
-        }
-    }
-}
-
-template<typename T>
-void QcQuantizeOp<T>::computeImpl(const Ort::Custom::Tensor<T>& input, Ort::Custom::Tensor<T>& output,
-                               void* stream, bool useCuda, DlQuantization::IAllocator* allocator,
-                               OrtKernelContext* ortCtx)
+template <typename T>
+void QcQuantizeOp<T>::computeImpl(const Ort::Custom::Tensor<T>& input, Ort::Custom::Tensor<T>& output, void* stream,
+                                  bool useCuda, DlQuantization::IAllocator* allocator, OrtKernelContext* ortCtx)
 {
     // Setup inputs
     auto inputShape = input.Shape();
-    auto size     = input.NumberOfElement();
+    auto size       = input.NumberOfElement();
     auto result     = output.Allocate(inputShape);
 
     DlQuantization::TensorQuantizerOpMode opMode = quantInfo->opMode;
@@ -103,27 +62,9 @@ void QcQuantizeOp<T>::computeImpl(const Ort::Custom::Tensor<T>& input, Ort::Cust
         opMode = DlQuantization::TensorQuantizerOpMode::passThrough;
     }
 
-    const float* inputPtr = nullptr;
-    float* resultPtr = nullptr;
-
-    if constexpr(std::is_same<T, Ort::Float16_t>::value)
-    {
-        // FLOAT16 Implementation
-        const T* inputData = input.Data();
-        float* inputPtrIntermediate = static_cast<float*>(allocator->allocateRaw(size * sizeof(float)));;
-
-        ConvertFloat16ToFloat32(inputData, inputPtrIntermediate, size, useCuda, stream);
-
-        inputPtr = inputPtrIntermediate;
-        resultPtr = static_cast<float*>(allocator->allocateRaw(size * sizeof(float)));
-
-    }
-    else
-    {
-        // FLOAT32 Implementation
-        inputPtr = input.Data();
-        resultPtr = result;
-    }
+    using DTYPE           = std::conditional_t<std::is_same_v<T, Ort::Float16_t>, Eigen::half, T>;
+    const DTYPE* inputPtr = reinterpret_cast<const DTYPE*>(input.Data());
+    DTYPE* resultPtr      = reinterpret_cast<DTYPE*>(result);
 
     // Create parallel for-loop runner from ORT kernel context (CPU only)
     std::unique_ptr<OrtForLoopRunner> runner;
@@ -139,25 +80,15 @@ void QcQuantizeOp<T>::computeImpl(const Ort::Custom::Tensor<T>& input, Ort::Cust
     }
     else
     {
-        modeSpecificActionFloat(inputPtr, size, resultPtr, opMode, allocator, useCuda, stream);
-    }
-
-    if constexpr(std::is_same<T, Ort::Float16_t>::value)
-    {
-
-        // FLOAT16 Implementation
-        ConvertFloat32ToFloat16(resultPtr, result, size, useCuda, stream);
-
-        if (useCuda)
+        if constexpr (std::is_same_v<T, Ort::Float16_t>)
         {
-            #ifdef ONNX_CUDA
-                cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
-            #endif
+            // Data is already fp16: no quantization simulation needed, just copy
+            copyInputTensorsToOutputTensors(inputPtr, size, resultPtr, useCuda, stream);
         }
-
-        allocator->deleteRaw((void*)inputPtr);
-        allocator->deleteRaw((void*)resultPtr);
-
+        else
+        {
+            modeSpecificActionFloat(inputPtr, size, resultPtr, opMode, allocator, useCuda, stream);
+        }
     }
 
     // We only ever need to run in oneShotQuantizeDequantize once, afterwards just use quantizeDequantize
