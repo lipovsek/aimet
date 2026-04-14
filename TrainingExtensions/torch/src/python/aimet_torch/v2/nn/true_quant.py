@@ -18,6 +18,7 @@ import warnings
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.nn.functional import _mha_shape_check
 from torch import Tensor
 from torch.overrides import BaseTorchFunctionMode, get_overridable_functions
 from torch._VF import (  # pylint: disable=no-name-in-module
@@ -1902,9 +1903,269 @@ class QuantizedMultiMarginLoss(_DispatchMixin, QuantizationMixin, nn.MultiMargin
     __quant_init__ = QuantizationMixin.__unary__
 
 
-# @QuantizationMixin.implements(nn.MultiheadAttention)
-# class QuantizedMultiheadAttention(_DispatchMixin, QuantizationMixin, nn.MultiheadAttention):
-#     _builtin_torch_fn = ...
+@QuantizationMixin.implements(nn.MultiheadAttention)
+class QuantizedMultiheadAttention(QuantizationMixin, nn.MultiheadAttention):
+    def __quant_init__(self):
+        super().__quant_init__()
+        self.param_quantizers.clear()
+        self.input_quantizers = torch.nn.ModuleList()
+        self.output_quantizers = torch.nn.ModuleList()
+
+        if self.in_proj_weight is None:
+            q_proj_weight = self.q_proj_weight
+            k_proj_weight = self.k_proj_weight
+            v_proj_weight = self.v_proj_weight
+        else:
+            q_proj_weight, k_proj_weight, v_proj_weight = self.in_proj_weight.chunk(3)
+
+        if self.in_proj_bias is None:
+            q_proj_bias = k_proj_bias = v_proj_bias = None
+        else:
+            q_proj_bias, k_proj_bias, v_proj_bias = self.in_proj_bias.chunk(3)
+
+        self.q_proj = nn.Linear(
+            in_features=q_proj_weight.shape[1],
+            out_features=q_proj_weight.shape[0],
+            bias=q_proj_bias is not None,
+        )
+        self.q_proj.weight = torch.nn.Parameter(q_proj_weight)
+        if q_proj_bias is not None:
+            self.q_proj.bias = torch.nn.Parameter(q_proj_bias)
+
+        self.k_proj = nn.Linear(
+            in_features=k_proj_weight.shape[1],
+            out_features=k_proj_weight.shape[0],
+            bias=k_proj_bias is not None,
+        )
+        self.k_proj.weight = torch.nn.Parameter(k_proj_weight)
+        if k_proj_bias is not None:
+            self.k_proj.bias = torch.nn.Parameter(k_proj_bias)
+
+        self.v_proj = nn.Linear(
+            in_features=v_proj_weight.shape[1],
+            out_features=v_proj_weight.shape[0],
+            bias=v_proj_bias is not None,
+        )
+        self.v_proj.weight = torch.nn.Parameter(v_proj_weight)
+        if v_proj_bias is not None:
+            self.v_proj.bias = torch.nn.Parameter(v_proj_bias)
+
+        out_proj_weight = self.out_proj.weight
+        out_proj_bias = self.out_proj.bias
+        self.out_proj = nn.Linear(
+            in_features=out_proj_weight.shape[1],
+            out_features=out_proj_weight.shape[0],
+            bias=out_proj_bias is not None,
+        )
+        self.out_proj.weight = out_proj_weight
+        self.out_proj.bias = out_proj_bias
+
+        from .modules import custom
+
+        self.qk_matmul = custom.MatMul()
+        self.mask_add = custom.Add()
+        self.key_padding_mask_add = custom.Add()
+        self.softmax = nn.Softmax(dim=-1)
+        self.qkv_matmul = custom.MatMul()
+        self.mean = custom.Mean()
+        self.cat_bias_k = custom.Concat(axis=0)
+        self.cat_bias_v = custom.Concat(axis=0)
+        self.attn_mask_value = -float("inf")
+
+    def _validate_inputs(  # pylint: disable=unused-argument
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        key_padding_mask: Optional[Tensor],
+        need_weights: bool,
+        attn_mask: Optional[Tensor],
+        average_attn_weights: bool,
+        is_causal: bool,
+    ):
+        if is_causal and attn_mask is None:
+            raise RuntimeError(
+                "Need attn_mask if specifying the is_causal hint. "
+                "You may use the Transformer module method "
+                "`generate_square_subsequent_mask` to create this mask."
+            )
+
+        bsz = query.size(1)
+        tgt_len = query.size(0)
+        src_len = key.size(0)
+        num_heads = self.num_heads
+
+        if attn_mask is not None:
+            # ensure attn_mask's dim is 3
+            if attn_mask.dim() == 2:
+                correct_2d_size = (tgt_len, src_len)
+                if attn_mask.shape != correct_2d_size:
+                    raise RuntimeError(
+                        f"The shape of the 2D attn_mask is {attn_mask.shape}, but should be {correct_2d_size}."
+                    )
+                attn_mask = attn_mask.unsqueeze(0)
+            elif attn_mask.dim() == 3:
+                correct_3d_size = (bsz * num_heads, tgt_len, src_len)
+                if attn_mask.shape != correct_3d_size:
+                    raise RuntimeError(
+                        f"The shape of the 3D attn_mask is {attn_mask.shape}, but should be {correct_3d_size}."
+                    )
+            else:
+                raise RuntimeError(
+                    f"attn_mask's dimension {attn_mask.dim()} is not supported"
+                )
+
+    def forward(  # pylint: disable=arguments-differ
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        key_padding_mask: Optional[Tensor] = None,
+        need_weights: bool = True,
+        attn_mask: Optional[Tensor] = None,
+        average_attn_weights: bool = True,
+        is_causal: bool = False,
+    ) -> tuple[Tensor, Optional[Tensor]]:
+        H = self.num_heads
+        D = self.head_dim
+        batched = _mha_shape_check(query, key, value, key_padding_mask, attn_mask, H)
+
+        if batched and self.batch_first:
+            # Transpose from (N, L, E) to (L, N, E)
+            query = query.transpose(0, 1)
+            key = key.transpose(0, 1)
+            value = value.transpose(0, 1)
+
+        if batched:
+            L, N, E = query.size()
+        else:
+            N = 1
+            L, E = query.size()
+            query = query.unsqueeze(1)
+            key = key.unsqueeze(1)
+            value = value.unsqueeze(1)
+            if key_padding_mask is not None:
+                key_padding_mask = key_padding_mask.unsqueeze(0)
+
+        self._validate_inputs(
+            query,
+            key,
+            value,
+            key_padding_mask,
+            need_weights,
+            attn_mask,
+            average_attn_weights,
+            is_causal,
+        )
+
+        if is_causal and key_padding_mask is None and not need_weights:
+            attn_mask = None
+
+        if key_padding_mask is not None and not key_padding_mask.is_floating_point():
+            key_padding_mask = torch.zeros_like(
+                key_padding_mask, dtype=query.dtype, device=query.device
+            ).masked_fill_(key_padding_mask, self.attn_mask_value)
+
+        if attn_mask is not None and attn_mask.dim() == 2:
+            attn_mask = attn_mask.unsqueeze(0)  # (1, L, L)
+
+        q = self.q_proj(query)
+        k = self.k_proj(key)
+        v = self.v_proj(value)
+
+        if self.bias_k is not None and self.bias_v is not None:
+            bias_k = self.bias_k.repeat_interleave(N, dim=1)
+            k = self.cat_bias_k(k, bias_k)
+            bias_v = self.bias_v.repeat_interleave(N, dim=1)
+            v = self.cat_bias_v(v, bias_v)
+
+            if attn_mask is not None:
+                attn_mask = F.pad(attn_mask, (0, 1))
+            if key_padding_mask is not None:
+                key_padding_mask = F.pad(key_padding_mask, (0, 1))
+
+        # Transpose to (N * H, L, D) for attention computation
+        q = q.view(-1, N * H, D).transpose(0, 1)
+        k = k.view(-1, N * H, D).transpose(0, 1)
+        v = v.view(-1, N * H, D).transpose(0, 1)
+
+        if self.add_zero_attn:
+            k = F.pad(k, (0, 0, 0, 1, 0, 0), value=0)
+            v = F.pad(v, (0, 0, 0, 1, 0, 0), value=0)
+
+            if attn_mask is not None:
+                attn_mask = F.pad(attn_mask, (0, 1))
+            if key_padding_mask is not None:
+                key_padding_mask = F.pad(key_padding_mask, (0, 1))
+
+        if attn_mask is not None and not attn_mask.is_floating_point():
+            attn_mask = torch.zeros_like(
+                attn_mask, dtype=query.dtype, device=query.device
+            ).masked_fill_(attn_mask, self.attn_mask_value)
+
+        if key_padding_mask is not None:
+            key_padding_mask = (
+                key_padding_mask.view(-1, 1, 1, k.size(1))
+                .expand(-1, H, -1, -1)
+                .reshape(-1, 1, k.size(1))
+            )
+            if attn_mask is None:
+                attn_mask = key_padding_mask
+            else:
+                attn_mask = self.key_padding_mask_add(attn_mask, key_padding_mask)
+
+        if is_causal and key_padding_mask is None and not need_weights:
+            attn_mask = torch.full(
+                (q.size(1), k.size(1)),
+                self.attn_mask_value,
+                dtype=query.dtype,
+                device=query.device,
+            ).triu(diagonal=1)
+
+        # Scaled dot-product attention
+        attn_scores = self.qk_matmul(q, k.transpose(-2, -1)) / (D**0.5)  # (N * H, L, L)
+
+        # Apply attention mask if provided
+        attn_scores = (
+            self.mask_add(attn_scores, attn_mask)
+            if attn_mask is not None
+            else attn_scores
+        )
+
+        attn_weights = self.softmax(attn_scores)  # (N * H, L, L)
+
+        if self.training and self.dropout > 0:
+            attn_weights = F.dropout(attn_weights, p=self.dropout)
+
+        attn_output = self.qkv_matmul(attn_weights, v)  # (N * H, L, D)
+
+        # Transpose and reshape back to (L, N, E)
+        attn_output = attn_output.transpose(0, 1).reshape(-1, E)
+
+        # Output projection
+        output = self.out_proj(attn_output)
+        output = output.view(L, N, -1)  # (L, N, E)
+
+        attn_weights = attn_weights.view(N, H, L, -1)
+
+        if batched:
+            if self.batch_first:
+                output = output.permute(1, 0, 2)  # (N, L, E)
+        else:
+            output = output.squeeze(1)  # (L, E)
+
+        # Handle need_weights and average_attn_weights
+        if need_weights:
+            # Average attention weights over heads if requested
+            if average_attn_weights:
+                # (N, H, L, L) -> (N, L, L)
+                attn_weights = self.mean(attn_weights, dim=1)
+            if not batched:
+                attn_weights = attn_weights.squeeze(0)  # (H, L, L)
+
+            return output, attn_weights
+        else:
+            return output, None
 
 
 @QuantizationMixin.implements(nn.NLLLoss)

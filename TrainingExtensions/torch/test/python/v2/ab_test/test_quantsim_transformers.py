@@ -867,38 +867,45 @@ def test_mha_as_leaf_module(replace_with_q_mha):
 
     cg_0 = ConnectedGraph(transformer_model, model_input=dummy_input)
 
-    aimet_torch.utils.modules_to_treat_as_leaf = [
-        torch.nn.MultiheadAttention,
-        aimet_torch.transformers.activation.QuantizableMultiheadAttention,
-    ]
-    cg_1 = ConnectedGraph(transformer_model, model_input=dummy_input)
+    modules_to_treat_as_leaf = aimet_torch.utils.modules_to_treat_as_leaf
+    try:
+        aimet_torch.utils.modules_to_treat_as_leaf = [
+            torch.nn.MultiheadAttention,
+            aimet_torch.transformers.activation.QuantizableMultiheadAttention,
+        ]
+        cg_1 = ConnectedGraph(transformer_model, model_input=dummy_input)
 
-    # create a dictionary of ops which are not part of modules_to_treat_as_leaf
-    ops_from_cg_0 = {}
-    ops_from_cg_1 = {}
+        # create a dictionary of ops which are not part of modules_to_treat_as_leaf
+        ops_from_cg_0 = {}
+        ops_from_cg_1 = {}
 
-    for op in cg_0.ordered_ops:
-        if type(op.residing_module) not in aimet_torch.utils.modules_to_treat_as_leaf:
-            ops_from_cg_0[op.dotted_name] = op
+        for op in cg_0.ordered_ops:
+            if (
+                type(op.residing_module)
+                not in aimet_torch.utils.modules_to_treat_as_leaf
+            ):
+                ops_from_cg_0[op.dotted_name] = op
 
-    for op in cg_1.ordered_ops:
-        if type(op.get_module()) not in aimet_torch.utils.modules_to_treat_as_leaf:
-            ops_from_cg_1[op.dotted_name] = op
+        for op in cg_1.ordered_ops:
+            if type(op.get_module()) not in aimet_torch.utils.modules_to_treat_as_leaf:
+                ops_from_cg_1[op.dotted_name] = op
 
-    assert len(ops_from_cg_0) == len(ops_from_cg_1)
-    for cg_0_op_name, cg_0_op in ops_from_cg_0.items():
-        # elementwise add ops can be omitted
-        if cg_0_op.type not in ["Add"]:
-            assert cg_0_op_name in ops_from_cg_1
-            cg_1_op = ops_from_cg_0[cg_0_op_name]
-            assert len(cg_0_op.inputs) == len(cg_1_op.inputs)
-            assert cg_0_op.outputs == cg_1_op.outputs
-            for idx, input_tensor in enumerate(cg_0_op.inputs):
-                if input_tensor.is_parm:
-                    assert input_tensor.is_const == cg_1_op.inputs[idx].is_const
-                    assert (
-                        input_tensor.is_model_input
-                        == cg_1_op.inputs[idx].is_model_input
-                    )
-                    assert input_tensor.numel == cg_1_op.inputs[idx].numel
-                    assert input_tensor.shape == cg_1_op.inputs[idx].shape
+        assert len(ops_from_cg_0) == len(ops_from_cg_1)
+        for cg_0_op_name, cg_0_op in ops_from_cg_0.items():
+            # elementwise add ops can be omitted
+            if cg_0_op.type not in ["Add"]:
+                assert cg_0_op_name in ops_from_cg_1
+                cg_1_op = ops_from_cg_0[cg_0_op_name]
+                assert len(cg_0_op.inputs) == len(cg_1_op.inputs)
+                assert cg_0_op.outputs == cg_1_op.outputs
+                for idx, input_tensor in enumerate(cg_0_op.inputs):
+                    if input_tensor.is_parm:
+                        assert input_tensor.is_const == cg_1_op.inputs[idx].is_const
+                        assert (
+                            input_tensor.is_model_input
+                            == cg_1_op.inputs[idx].is_model_input
+                        )
+                        assert input_tensor.numel == cg_1_op.inputs[idx].numel
+                        assert input_tensor.shape == cg_1_op.inputs[idx].shape
+    finally:
+        aimet_torch.utils.modules_to_treat_as_leaf = modules_to_treat_as_leaf

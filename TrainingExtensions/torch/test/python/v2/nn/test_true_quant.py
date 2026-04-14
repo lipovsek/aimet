@@ -3,9 +3,11 @@
 
 
 import ast
+import itertools
 import copy
 import functools
 from packaging import version
+from typing import Optional
 
 import pytest
 import torch
@@ -1959,3 +1961,247 @@ def test_patch_quantized_param_grad():
     assert qlinear.weight.grad is not None
     assert qlinear.param_quantizers["weight"].min.grad is not None
     assert qlinear.param_quantizers["weight"].max.grad is not None
+
+
+@torch.no_grad()
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+@pytest.mark.parametrize("dropout", [0.0, 0.1])
+@pytest.mark.parametrize("bias", [False, True])
+@pytest.mark.parametrize("add_bias_kv", [False, True])
+@pytest.mark.parametrize("add_zero_attn", [False, True])
+@pytest.mark.parametrize("kdim", [None, 4])
+@pytest.mark.parametrize("vdim", [None, 4])
+@pytest.mark.parametrize("batch_dim", [0, 1, None])
+def test_qmha_forward(
+    dtype: torch.dtype,
+    dropout: float,
+    bias: bool,
+    add_bias_kv: bool,
+    add_zero_attn: bool,
+    kdim: Optional[int],
+    vdim: Optional[int],
+    batch_dim: int,
+):
+    embed_dim = 8
+    num_heads = 2
+
+    mha = nn.MultiheadAttention(
+        embed_dim,
+        num_heads,
+        dropout=dropout,
+        bias=bias,
+        add_bias_kv=add_bias_kv,
+        add_zero_attn=add_zero_attn,
+        kdim=kdim,
+        vdim=vdim,
+        batch_first=batch_dim == 0,
+    ).to(dtype)
+
+    if mha.in_proj_bias is not None:
+        mha.in_proj_bias.copy_(torch.randint_like(mha.in_proj_bias, 0, 10) * 0.01)
+        mha.out_proj.bias.copy_(torch.randint_like(mha.out_proj.bias, 0, 10) * 0.01)
+
+    qmha = QuantizationMixin.from_module(mha)
+
+    N = 2
+    L = 4
+
+    if batch_dim == 0:
+        query = torch.randn(N, L, embed_dim, dtype=dtype)
+        key = torch.randn(N, L, kdim or embed_dim, dtype=dtype)
+        value = torch.randn(N, L, vdim or embed_dim, dtype=dtype)
+        kpm = torch.tensor(
+            [
+                [False, False, True, False],
+                [False, False, False, False],
+            ]
+        )
+    elif batch_dim == 1:
+        query = torch.randn(L, N, embed_dim, dtype=dtype)
+        key = torch.randn(L, N, kdim or embed_dim, dtype=dtype)
+        value = torch.randn(L, N, vdim or embed_dim, dtype=dtype)
+        kpm = torch.tensor(
+            [
+                [False, False, True, False],
+                [False, False, False, False],
+            ]
+        )
+    else:
+        query = torch.randn(L, embed_dim, dtype=dtype)
+        key = torch.randn(L, kdim or embed_dim, dtype=dtype)
+        value = torch.randn(L, vdim or embed_dim, dtype=dtype)
+        kpm = torch.tensor([False, False, True, False])
+
+    ones = torch.ones(L, L, dtype=dtype)
+    lower = torch.tril(ones, diagonal=-1)
+    upper = torch.triu(ones, diagonal=1)
+
+    atol = torch.finfo(dtype).eps
+    rtol = 1e-3 if dtype == torch.float16 else 1e-5
+
+    for (
+        is_training,
+        key_padding_mask,
+        need_weights,
+        attn_mask,
+        average_attn_weights,
+        is_causal,
+    ) in itertools.product(
+        [True, False],
+        [kpm, None],
+        [False, True],
+        [None, upper.bool(), lower.bool(), upper * -10, lower * -10],
+        [True, False],
+        [True, False],
+    ):
+        if is_causal and attn_mask is None:
+            # Unsupported by nn.MultiheadAttention
+            continue
+
+        mha.train(is_training)
+        qmha.train(is_training)
+
+        # Set seed to use identical dropout mask
+        torch.manual_seed(0)
+        out, attn = mha(
+            query,
+            key,
+            value,
+            key_padding_mask=key_padding_mask,
+            need_weights=need_weights,
+            attn_mask=attn_mask,
+            average_attn_weights=average_attn_weights,
+            is_causal=is_causal,
+        )
+
+        # Set seed to use identical dropout mask
+        torch.manual_seed(0)
+        qout, qattn = qmha(
+            query,
+            key,
+            value,
+            key_padding_mask=key_padding_mask,
+            need_weights=need_weights,
+            attn_mask=attn_mask,
+            average_attn_weights=average_attn_weights,
+            is_causal=is_causal,
+        )
+
+        assert out.shape == qout.shape
+        assert out.dtype == qout.dtype
+        assert torch.allclose(out, qout, equal_nan=True, rtol=rtol, atol=atol)
+
+        if attn is None:
+            assert qattn is None
+        else:
+            assert attn.shape == qattn.shape
+            assert attn.dtype == qattn.dtype
+            assert torch.allclose(attn, qattn, equal_nan=True, rtol=rtol, atol=atol)
+
+
+@torch.no_grad()
+@pytest.mark.parametrize("bias", [False, True])
+@pytest.mark.parametrize("add_bias_kv", [False, True])
+@pytest.mark.parametrize("add_zero_attn", [False, True])
+@pytest.mark.parametrize("kdim", [None, 4])
+@pytest.mark.parametrize("vdim", [None, 4])
+@pytest.mark.parametrize("batch_dim", [0, 1])
+def test_qmha_error(
+    bias: bool,
+    add_bias_kv: bool,
+    add_zero_attn: bool,
+    kdim: Optional[int],
+    vdim: Optional[int],
+    batch_dim: int,
+):
+    """
+    When: Run QuantizedMultiheadAttention.forward throws error
+    Then: nn.MultiheadAttention.forward should also throw same type of error
+    """
+
+    embed_dim = 8
+    num_heads = 2
+
+    mha = nn.MultiheadAttention(
+        embed_dim,
+        num_heads,
+        bias=bias,
+        add_bias_kv=add_bias_kv,
+        add_zero_attn=add_zero_attn,
+        kdim=kdim,
+        vdim=vdim,
+        batch_first=batch_dim == 0,
+    )
+
+    if mha.in_proj_bias is not None:
+        mha.in_proj_bias.copy_(torch.randint_like(mha.in_proj_bias, 0, 10) * 0.01)
+        mha.out_proj.bias.copy_(torch.randint_like(mha.out_proj.bias, 0, 10) * 0.01)
+
+    qmha = QuantizationMixin.from_module(mha)
+
+    N = 1
+    L = 4
+
+    if batch_dim == 0:
+        query = torch.randn(N, L, embed_dim)
+        key = torch.randn(N, L, kdim or embed_dim)
+        value = torch.randn(N, L, vdim or embed_dim)
+    else:
+        query = torch.randn(L, N, embed_dim)
+        key = torch.randn(L, N, kdim or embed_dim)
+        value = torch.randn(L, N, vdim or embed_dim)
+
+    """
+    When: Call with attn_mask=None, is_causal=True
+    Then: Both nn.MultiheadAttention and QuantizedMultiheadAttention should throw error
+    """
+    with pytest.raises(
+        RuntimeError, match="Need attn_mask if specifying the is_causal hint"
+    ):
+        _ = mha(query, key, value, attn_mask=None, is_causal=True)
+
+    with pytest.raises(
+        RuntimeError, match="Need attn_mask if specifying the is_causal hint"
+    ):
+        _ = qmha(query, key, value, attn_mask=None, is_causal=True)
+
+    """
+    When: Call with heterogeneous ndims
+    Then: Both nn.MultiheadAttention and QuantizedMultiheadAttention should throw error
+    """
+    for args in [
+        (query.squeeze(batch_dim), key, value),
+        (query, key.squeeze(batch_dim), value),
+        (query, key, value.squeeze(batch_dim)),
+    ]:
+        with pytest.raises(AssertionError, match=r"For (batched|unbatched)"):
+            _ = mha(*args)
+
+        with pytest.raises(AssertionError, match=r"For (batched|unbatched)"):
+            _ = qmha(*args)
+
+    """
+    When: Call with incompatible attn_mask shape
+    Then: Both nn.MultiheadAttention and QuantizedMultiheadAttention should throw error
+    """
+    attn_mask = torch.full((L, L + 1), -10.0).triu(diagonal=1)
+
+    with pytest.raises(
+        RuntimeError, match=r"The shape of the 2D attn_mask is .+, but should be .+"
+    ):
+        _ = mha(query, key, value, attn_mask=attn_mask)
+
+    with pytest.raises(
+        RuntimeError, match=r"The shape of the 3D attn_mask is .+, but should be .+"
+    ):
+        _ = mha(query, key, value, attn_mask=attn_mask.unsqueeze(0))
+
+    with pytest.raises(
+        RuntimeError, match=r"The shape of the 2D attn_mask is .+, but should be .+"
+    ):
+        _ = qmha(query, key, value, attn_mask=attn_mask)
+
+    with pytest.raises(
+        RuntimeError, match=r"The shape of the 3D attn_mask is .+, but should be .+"
+    ):
+        _ = qmha(query, key, value, attn_mask=attn_mask.unsqueeze(0))

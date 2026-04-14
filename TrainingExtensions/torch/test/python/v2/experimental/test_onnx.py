@@ -3182,3 +3182,106 @@ def test_pad_conv_export(conv_cls, padding_mode: str, tmp_path: pathlib.Path):
     expected_out = qconv(input)
     atol = qconv.output_quantizers[0].get_scale().item()
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
+
+
+def test_qmha_export(tmp_path: pathlib.Path):
+    """
+    Given: A quantized multi-head attention module
+    When: Export to onnx QDQ
+    Then: The exported onnx model should be valid and should have QDQ nodes around all computation nodes
+    """
+    embed_dim = 8
+    num_heads = 2
+    L, N, E = 4, 2, embed_dim
+
+    mha = torch.nn.MultiheadAttention(embed_dim, num_heads)
+
+    query = torch.randn(L, N, E)
+    key = torch.randn(L, N, E)
+    value = torch.randn(L, N, E)
+    dummy_input = (query, key, value)
+
+    sim = aimet_torch.QuantizationSimModel(mha, dummy_input)
+    sim.compute_encodings(lambda model: model(*dummy_input))
+
+    aimet_torch.onnx.export(
+        sim.model,
+        dummy_input,
+        tmp_path / "mha_decomposed.onnx",
+        input_names=["query", "key", "value"],
+        output_names=["output", "attn_weights"],
+        dynamo=False,
+    )
+
+    onnx_model = onnx.load(tmp_path / "mha_decomposed.onnx")
+    onnx.checker.check_model(onnx_model)
+
+    producers = {out: node for node in onnx_model.graph.node for out in node.output}
+    consumers = {}
+
+    for node in onnx_model.graph.node:
+        for inp in node.input:
+            consumers.setdefault(inp, []).append(node)
+
+    for node in onnx_model.graph.node:
+        if node.op_type in ("QuantizeLinear", "DequantizeLinear", "Constant"):
+            continue
+
+        for inp in node.input:
+            producer = producers.get(inp)
+            if producer:
+                assert (
+                    producer.op_type == "DequantizeLinear"
+                    or producer.op_type == "Constant"
+                    or (producer.op_type, node.op_type)
+                    in [
+                        ("Transpose", "MatMul"),
+                        ("MatMul", "Add"),
+                    ]
+                )
+
+        for out in node.output:
+            for consumer in consumers.get(out, []):
+                assert consumer.op_type == "QuantizeLinear" or (
+                    (node.op_type, consumer.op_type)
+                    in [
+                        ("Transpose", "MatMul"),
+                        ("MatMul", "Add"),
+                    ]
+                )
+
+    input_names = set(inp.name for inp in onnx_model.graph.input)
+    output_names = set(out.name for out in onnx_model.graph.output)
+    for node in onnx_model.graph.node:
+        if node.input and node.input[0] in input_names:
+            assert node.op_type == "QuantizeLinear"
+            input_names.remove(node.input[0])
+        if node.output and node.output[0] in output_names:
+            assert node.op_type == "DequantizeLinear"
+            output_names.remove(node.output[0])
+    assert not input_names
+    assert not output_names
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    out, attn_weights = sess.run(
+        None,
+        {
+            "query": query.detach().numpy(),
+            "key": key.detach().numpy(),
+            "value": value.detach().numpy(),
+        },
+    )
+    expected_out, expected_attn_weights = sim.model(*dummy_input)
+    atol = sim.model.out_proj.output_quantizers[0].get_scale().item()
+    assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
+
+    atol = sim.model.mean.output_quantizers[0].get_scale().item()
+    assert torch.allclose(
+        torch.from_numpy(attn_weights), expected_attn_weights, atol=atol
+    )
