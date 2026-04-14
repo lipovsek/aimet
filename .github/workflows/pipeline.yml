@@ -39,7 +39,7 @@ jobs:
           AIMET_ONNX_SRC_CODE:              "TrainingExtensions/onnx/"
           DOC_SRC_CODE:                     "Docs/"
           EXAMPLES_SRC_CODE:                "Examples/"
-          GENAI_TEST_CODE:                  "GenAITests/"
+          GENAI_TEST_CODE:                  "GenAILab/"
           ONNXREGRESSION_TEST_CODE:         "AIMETRegression/"
         shell: bash
         run: |

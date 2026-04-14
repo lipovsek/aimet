@@ -45,7 +45,7 @@ from aimet_torch.v2.nn import QuantizedLinear, QuantizedConv2d
 from aimet_torch.v2.quantization.affine import QuantizeDequantize
 from aimet_torch.v2.utils import remove_all_quantizers, remove_activation_quantizers
 
-from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 from .models_ import test_models
 

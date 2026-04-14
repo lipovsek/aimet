@@ -64,7 +64,7 @@ Workflow Overview
 
         The :ref:`SpinQuant <ptq-spinquant>` technique is currently available only in ``aimet-torch``. You can apply SpinQuant on the FP32 model before exporting it to ONNX, and then continue the workflow using ``aimet-onnx``.
 #. Compute Activations encodings
-    - Both ``aimet-torch`` and ``aimet-onnx`` compute activation encodings using representative data. In this tutorial, we use `WikiText (English) <https://github.com/quic/aimet/blob/develop/GenAITests/shared/helpers/datasets.py>`_ for calibration.
+    - Both ``aimet-torch`` and ``aimet-onnx`` compute activation encodings using representative data. In this tutorial, we use `WikiText (English) <https://github.com/quic/aimet/blob/develop/GenAILab/shared/helpers/datasets.py>`_ for calibration.
     - For ``aimet-torch`` only:
         - Due to PyTorch limitations, certain functional operations (``torch.nn.functional``) cannot have quantizers inserted. This makes implementing a mixed-precision profile (e.g., KV Cache in INT8) challenging.
         - To address this, include ``aimet-onnx`` evaluation step within the ``aimet-torch`` workflow. ``aimet-onnx`` provides a static graph, ensuring correct quantizer insertion for all activations and delivering a more accurate quantization simulation.
@@ -81,7 +81,7 @@ In this tutorial, we apply the quantization recipe to the `Llama 3.2 1B` model. 
 
 The example scripts are designed to be `flattened`, so all AIMET API calls and HuggingFace API calls are visible at the top level.
 
-To understand how this works under the hood for PyTorch and ONNX models using the same driver code, refer to the `Generator <https://github.com/quic/aimet/tree/develop/GenAITests#how-it-all-works>`_ class in ``GenAITests``.
+To understand how this works under the hood for PyTorch and ONNX models using the same driver code, refer to the `Generator <https://github.com/quic/aimet/tree/develop/GenAILab#how-it-all-works>`_ class in ``GenAILab``.
 
 Quantize
 --------

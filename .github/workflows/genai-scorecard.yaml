@@ -26,8 +26,8 @@ on:
 
   push:
     paths:
-      - 'GenAITests/configs/torch_regression.yaml'
-      - 'GenAITests/configs/onnx_regression.yaml'
+      - 'GenAILab/configs/torch_regression.yaml'
+      - 'GenAILab/configs/onnx_regression.yaml'
 
   workflow_dispatch:
     inputs:

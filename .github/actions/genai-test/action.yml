@@ -114,7 +114,7 @@ runs:
         source .venv/bin/activate
         export PYTHONPATH=$PYTHONPATH:$(pwd)
         hf auth login --token ${{ inputs.huggingface-token }}
-        pytest -s GenAITests/${{ inputs.variant }}/test_genai.py \
+        pytest -s GenAILab/${{ inputs.variant }}/test_genai.py \
           --config "${{ inputs.config }}" \
           --force-export
 
@@ -130,12 +130,12 @@ runs:
         MPLBACKEND: "Agg"
         QT_QPA_PLATFORM: "offscreen"
       run: |
-        OUT_FILE="GenAITests/secondary_onnx_eval.yaml"
+        OUT_FILE="GenAILab/secondary_onnx_eval.yaml"
         rm -f "$OUT_FILE"
 
-        mapfile -t FILES < <(ls -1 GenAITests/artifacts/exports/*/*onnx*.yaml GenAITests/artifacts/exports/*/*onnx*.yml 2>/dev/null | sort)
+        mapfile -t FILES < <(ls -1 GenAILab/artifacts/exports/*/*onnx*.yaml GenAILab/artifacts/exports/*/*onnx*.yml 2>/dev/null | sort)
         if [ "${#FILES[@]}" -eq 0 ]; then
-          echo "No ONNX eval configs found in GenAITests/artifacts/exports/"
+          echo "No ONNX eval configs found in GenAILab/artifacts/exports/"
           exit 0
         fi
 
@@ -149,10 +149,10 @@ runs:
 
         . .venv/bin/activate
         export PYTHONPATH=$PYTHONPATH:$(pwd)
-        pytest -s GenAITests/onnx/test_genai.py \
+        pytest -s GenAILab/onnx/test_genai.py \
           --config "$OUT_FILE" \
-          --results-dir GenAITests/artifacts/secondary_results \
-          --export-dir GenAITests/artifacts/secondary_exports \
+          --results-dir GenAILab/artifacts/secondary_results \
+          --export-dir GenAILab/artifacts/secondary_exports \
           --force-export
 
     # -------------------------------------------------------------------
@@ -162,8 +162,8 @@ runs:
       if: always()
       shell: bash
       run: |
-        mkdir -p GenAITests/artifacts/results
-        cat > GenAITests/artifacts/results/run_metadata.json << METADATA_EOF
+        mkdir -p GenAILab/artifacts/results
+        cat > GenAILab/artifacts/results/run_metadata.json << METADATA_EOF
         {
           "run_id": "${{ github.run_id }}",
           "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
@@ -176,10 +176,10 @@ runs:
         }
         METADATA_EOF
         # Secondary ONNX eval metadata (variant corrected to onnx)
-        if [ -d GenAITests/artifacts/secondary_results ]; then
+        if [ -d GenAILab/artifacts/secondary_results ]; then
           sed 's/"variant": "torch"/"variant": "onnx"/' \
-            GenAITests/artifacts/results/run_metadata.json \
-            > GenAITests/artifacts/secondary_results/run_metadata.json
+            GenAILab/artifacts/results/run_metadata.json \
+            > GenAILab/artifacts/secondary_results/run_metadata.json
         fi
 
     - name: Upload reports
@@ -187,14 +187,14 @@ runs:
       uses: actions/upload-artifact@v3
       with:
         name: test-data-${{ inputs.variant }}-${{ github.run_id }}
-        path: GenAITests/artifacts/results/
+        path: GenAILab/artifacts/results/
         retention-days: 30
 
     - name: Zip exported artifacts
       if: always()
       shell: bash
       run: |
-        for export_dir in GenAITests/artifacts/exports GenAITests/artifacts/secondary_exports; do
+        for export_dir in GenAILab/artifacts/exports GenAILab/artifacts/secondary_exports; do
           if [ -d "$export_dir" ]; then
             cd "$export_dir"
             for dir in */; do
@@ -217,20 +217,20 @@ runs:
       if: always()
       shell: bash
       run: |
-        aws s3 cp GenAITests/artifacts/exports/ \
+        aws s3 cp GenAILab/artifacts/exports/ \
           s3://${{ inputs.aws-bucket-name }}/${{ github.run_id }}/${{ inputs.variant }}/ \
           --recursive --exclude "*" --include "*.zip"
-        aws s3 cp GenAITests/artifacts/results/ \
+        aws s3 cp GenAILab/artifacts/results/ \
           s3://${{ inputs.aws-bucket-name }}/${{ github.run_id }}/${{ inputs.variant }}/ \
           --recursive --exclude "*" --include "*.json" --include "*.csv"
         # Secondary ONNX results/exports under onnx/ prefix
-        if [ -d GenAITests/artifacts/secondary_results ]; then
-          aws s3 cp GenAITests/artifacts/secondary_results/ \
+        if [ -d GenAILab/artifacts/secondary_results ]; then
+          aws s3 cp GenAILab/artifacts/secondary_results/ \
             s3://${{ inputs.aws-bucket-name }}/${{ github.run_id }}/onnx/ \
             --recursive --exclude "*" --include "*.json" --include "*.csv"
         fi
-        if [ -d GenAITests/artifacts/secondary_exports ]; then
-          aws s3 cp GenAITests/artifacts/secondary_exports/ \
+        if [ -d GenAILab/artifacts/secondary_exports ]; then
+          aws s3 cp GenAILab/artifacts/secondary_exports/ \
             s3://${{ inputs.aws-bucket-name }}/${{ github.run_id }}/onnx/ \
             --recursive --exclude "*" --include "*.zip"
         fi

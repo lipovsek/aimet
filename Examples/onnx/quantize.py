@@ -14,23 +14,23 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from aimet_onnx.quantsim import QuantizationSimModel
 
-from GenAITests.onnx.models.utils.torch_onnx_interface import (
+from GenAILab.onnx.models.utils.torch_onnx_interface import (
     TorchONNXInterface,
 )
-from GenAITests.onnx.models.utils.quantsim_utils import (
+from GenAILab.onnx.models.utils.quantsim_utils import (
     _set_tensors_to_output_n_bit_symmmetric,
     _tie_quantizers_for_kv_cache,
     _set_lm_head_precision,
 )
-from GenAITests.shared.helpers.precision_config import WeightPrecision
+from GenAILab.shared.helpers.precision_config import WeightPrecision
 from aimet_onnx.common.defs import int8
-from GenAITests.onnx.helpers.quant_recipes import (
+from GenAILab.onnx.helpers.quant_recipes import (
     _prefill_inputs,
 )
-from GenAITests.shared.models.base import LLM
-from GenAITests.shared.models.generator import Generator
-from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
-from GenAITests.shared.helpers.datasets import Wikitext
+from GenAILab.shared.models.base import LLM
+from GenAILab.shared.models.generator import Generator
+from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.shared.helpers.datasets import Wikitext
 
 SEQUENCE_LENGTH = 2048
 CONTEXT_LENGTH = 4096

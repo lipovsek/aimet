@@ -18,8 +18,8 @@ set -euo pipefail
 VARIANT="${1:?Usage: $0 <variant> [b64_config]}"
 B64_CONFIG="${2:-}"
 
-CONFIG_DIR="GenAITests/configs"
-STAGING_PATH="GenAITests/scorecard_config.yaml"
+CONFIG_DIR="GenAILab/configs"
+STAGING_PATH="GenAILab/scorecard_config.yaml"
 
 if [ -n "$B64_CONFIG" ]; then
   if ! echo "$B64_CONFIG" | base64 -d > "$STAGING_PATH" 2>/dev/null; then

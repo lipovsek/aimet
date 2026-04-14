@@ -6,7 +6,7 @@
 # [model-setup]
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 
 SEQUENCE_LENGTH = 2048
 CONTEXT_LENGTH = 4096
@@ -24,15 +24,15 @@ import os
 import tempfile
 import onnx
 from aimet_onnx.quantsim import QuantizationSimModel
-from GenAITests.shared.models.base import LLM
-from GenAITests.shared.models.generator import Generator
-from GenAITests.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
-from GenAITests.onnx.models.utils.quantsim_utils import (
+from GenAILab.shared.models.base import LLM
+from GenAILab.shared.models.generator import Generator
+from GenAILab.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
+from GenAILab.onnx.models.utils.quantsim_utils import (
     _set_tensors_to_output_n_bit_symmmetric,
     _tie_quantizers_for_kv_cache,
     _set_lm_head_precision,
 )
-from GenAITests.shared.helpers.precision_config import WeightPrecision
+from GenAILab.shared.helpers.precision_config import WeightPrecision
 from aimet_onnx.common.defs import int8
 
 assembled_dummy_inputs = Generator.prepare_inputs(
@@ -81,8 +81,8 @@ from aimet_onnx.experimental.adascale.adascale_optimizer import (
     AdaScale,
     adascale_model_config_dict,
 )
-from GenAITests.shared.helpers.datasets import Wikitext
-from GenAITests.onnx.helpers.quant_recipes import _prefill_inputs
+from GenAILab.shared.helpers.datasets import Wikitext
+from GenAILab.onnx.helpers.quant_recipes import _prefill_inputs
 
 ADASCALE_NUM_BATCHES = 128   # reduce for larger models to control runtime
 ADASCALE_NUM_ITERATIONS = 2048  # reduce for larger models; see quantization recipes

@@ -109,7 +109,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 echo "Installing Python dependencies..."
 pip install qai_hub_models
-pip install -r "$REPO_DIR/GenAITests/requirements.txt"
+pip install -r "$REPO_DIR/GenAILab/requirements.txt"
 
 # -----------------------------------------------------------------------
 # AIMET

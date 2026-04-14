@@ -27,11 +27,11 @@ from aimet_torch.v2.nn.transformers.models.phi3.modeling_phi3 import (
 )
 from aimet_torch.utils import place_model
 
-from GenAITests.shared.models.base import LLM
-from GenAITests.shared.models.generator import Generator
-from GenAITests.shared.models.utils.model_utils import ONNXExportableModuleWithCache
-from GenAITests.shared.helpers.datasets import Wikitext
-from GenAITests.torch.helpers.quant_recipes import _prefill_inputs
+from GenAILab.shared.models.base import LLM
+from GenAILab.shared.models.generator import Generator
+from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.shared.helpers.datasets import Wikitext
+from GenAILab.torch.helpers.quant_recipes import _prefill_inputs
 
 SEQUENCE_LENGTH = 2048
 CONTEXT_LENGTH = 4096

@@ -66,7 +66,7 @@ if [ -z "${1:-}" ]; then
 fi
 
 URL="$1"
-EXPORTS_DIR="GenAITests/artifacts/exports"
+EXPORTS_DIR="GenAILab/artifacts/exports"
 
 # Derive zip filename from URL
 ZIP_NAME="$(basename "$URL")"

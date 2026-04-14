@@ -698,8 +698,8 @@ class TestBlockIdentifier:
     def test_get_decoder_block_boundaries(
         self, add_genai_tests_path, model_id, model_type, adaptations
     ):
-        from GenAITests.onnx.models.llm import LLM_ONNX
-        from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
+        from GenAILab.onnx.models.llm import LLM_ONNX
+        from GenAILab.onnx.models.utils.torch_onnx_export_utils import (
             get_model_checkpoint_path,
         )
         from aimet_onnx.experimental.adascale.find_blocks import (
@@ -709,8 +709,8 @@ class TestBlockIdentifier:
         cache_dir = get_model_checkpoint_path(model_id)
         try:
             if adaptations:
-                import GenAITests.shared.models.adaptations.sha_conv
-                from GenAITests.shared.helpers.yaml_config_parser import (
+                import GenAILab.shared.models.adaptations.sha_conv
+                from GenAILab.shared.helpers.yaml_config_parser import (
                     YAMLConfigParser,
                 )
 
@@ -804,12 +804,12 @@ class TestDecoderRoleMap:
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     def test_qwen3_role_map(self, add_genai_tests_path):
         """Qwen/Qwen3-0.6B with no adaptations."""
-        from GenAITests.onnx.models.utils.torch_onnx_export_utils import (
+        from GenAILab.onnx.models.utils.torch_onnx_export_utils import (
             get_model_checkpoint_path,
         )
-        from GenAITests.onnx.models.llm import LLM_ONNX
-        import GenAITests.shared.models.adaptations.sha_conv
-        from GenAITests.shared.helpers.yaml_config_parser import YAMLConfigParser
+        from GenAILab.onnx.models.llm import LLM_ONNX
+        import GenAILab.shared.models.adaptations.sha_conv
+        from GenAILab.shared.helpers.yaml_config_parser import YAMLConfigParser
 
         model_id = "Qwen/Qwen3-0.6B"
         cache_dir = get_model_checkpoint_path(model_id)

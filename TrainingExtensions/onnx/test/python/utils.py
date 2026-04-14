@@ -20,7 +20,7 @@ def tmp_dir():
 @pytest.fixture
 def add_genai_tests_path(monkeypatch):
     """
-    Pytest fixture to add the GenAITests directory to sys.path.
+    Pytest fixture to add the GenAILab directory to sys.path.
     """
     path = os.path.abspath(os.path.join(Path(__file__).parent, "../../../../"))
     monkeypatch.syspath_prepend(path)
