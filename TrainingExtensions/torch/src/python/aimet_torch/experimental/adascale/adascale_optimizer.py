@@ -131,7 +131,19 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
 
 _QT_SAMPLING_PROB = 0.5
-_LOSS_FN = torch.nn.MSELoss()
+
+_BlockOutput = torch.Tensor | Tuple[torch.Tensor, ...]
+
+
+def _mse_loss_fn(fp_out: _BlockOutput, qt_out: _BlockOutput) -> torch.Tensor:
+    """Returns MSE loss between fp_out and qt_out"""
+    if isinstance(fp_out, (tuple, list)):
+        fp_out = torch.cat(fp_out)
+    if isinstance(qt_out, (tuple, list)):
+        qt_out = torch.cat(qt_out)
+
+    return torch.nn.functional.mse_loss(fp_out, qt_out)
+
 
 supported_modules: List = [QuantizedLinear, QuantizedConv2d]
 
@@ -426,6 +438,7 @@ class AdaScale:
         num_iterations: int = 1500,
         beta_gamma_lr: float = 1e-3,
         scales_lr: float = 5e-4,
+        loss_fn: Optional[Callable[[_BlockOutput, _BlockOutput], torch.Tensor]] = None,
     ):
         """
         Performs AdaScale algorithm to optimize weight quantization of input block to minimize the output MSE
@@ -439,8 +452,12 @@ class AdaScale:
             num_iterations: Number of iterations to optimize for during AdaScale BKD
             beta_gamma_lr: Learning rate for beta and gamma parameters
             scales_lr: Learning rate for scale parameters
+            loss_fn: Loss function taking in FP and quantized block outputs
+                and returning a scalar loss tensor. Defaults to MSE loss if None.
 
         """
+        if loss_fn is None:
+            loss_fn = _mse_loss_fn
 
         compute_param_encodings(block)
         device = get_device(block)
@@ -499,21 +516,13 @@ class AdaScale:
                     with torch.set_grad_enabled(True):
                         quant_out = run_forward(args, kwargs)
 
-                        # TODO: Fix this, may not be possible to cat outputs.
-                        #       Compute _LOSS_FN for each output and sum
-                        if isinstance(quant_out, tuple):
-                            quant_out = torch.cat(quant_out)
-
                         del args, kwargs
 
                         batch_fp_out = change_tensor_and_cache_device_placement(
                             deepcopy(fp_out[batch_idx]), device
                         )
-                        if isinstance(batch_fp_out, tuple):
-                            batch_fp_out = torch.cat(batch_fp_out)
 
-                        loss = _LOSS_FN(quant_out, batch_fp_out)
-
+                        loss = loss_fn(batch_fp_out, quant_out)
                         loss.backward()
                         optimizer.step()
                         scheduler.step()

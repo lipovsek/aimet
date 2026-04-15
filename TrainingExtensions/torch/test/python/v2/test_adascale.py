@@ -731,6 +731,34 @@ class TestAdascale:
 
         assert len(adascale_quantizers) == 0
 
+    def test_block_level_adascale_custom_loss_fn(self):
+        """Test that adascale_block accepts and uses a custom loss function"""
+        dummy_input = torch.rand(1, 3, 32, 64)
+        model = test_models.ModelWithConsecutiveLinearBlocks()
+        sim = QuantizationSimModel(model, dummy_input)
+
+        call_count = 0
+
+        def custom_loss_fn(fp_out, qt_out):
+            nonlocal call_count
+            call_count += 1
+            return torch.nn.functional.l1_loss(fp_out, qt_out)
+
+        fp_inputs = [((torch.rand(1, 3, 32, 64),), {}) for _ in range(3)]
+        qt_inputs = fp_inputs
+        num_iterations = 10
+
+        block = sim.model.blocks[0]
+        AdaScale.adascale_block(
+            block,
+            fp_inputs,
+            qt_inputs=qt_inputs,
+            num_iterations=num_iterations,
+            loss_fn=custom_loss_fn,
+        )
+
+        assert call_count == num_iterations
+
 
 class TestAdaScaleBasicFunctionality:
     """Test basic AdaScale functionality across all supported models"""
