@@ -3525,6 +3525,57 @@ def integer_concat_model():
 
 
 def shared_stat_batchnorm_model():
+    return shared_tensor_batchnorm_model_with_identities(
+        shared_stat=True, shared_bn_weight=True
+    )
+
+
+def shared_tensor_batchnorm_model_with_identities(
+    *,
+    shared_stat: bool = False,
+    shared_conv_weight: bool = False,
+    shared_bn_weight: bool = False,
+):
+    CHANNELS = 10
+
+    def random_array(shape, name, abs=False):
+        array = np.random.randn(*shape).astype("float32")
+        if abs:
+            array = np.abs(array)
+        return numpy_helper.from_array(
+            array,
+            name=name,
+        )
+
+    conv1_weight = random_array((CHANNELS, CHANNELS, 1, 1), "conv_1.weight")
+    bn1_weight = random_array((CHANNELS,), "batchnorm.weight")
+    bn1_bias = random_array((CHANNELS,), "batchnorm.bias")
+    bn1_mean = random_array((CHANNELS,), "batchnorm.input_mean")
+    bn1_var = random_array((CHANNELS,), "batchnorm.input_var", abs=True)
+    initializers = [conv1_weight, bn1_weight, bn1_bias, bn1_mean, bn1_var]
+
+    if not shared_conv_weight:
+        conv2_weight = random_array((CHANNELS, CHANNELS, 1, 1), "conv_2.weight")
+        initializers.append(conv2_weight)
+    else:
+        conv2_weight = conv1_weight
+
+    if not shared_bn_weight:
+        bn2_weight = random_array((CHANNELS,), "batchnorm2.weight")
+        bn2_bias = random_array((CHANNELS,), "batchnorm2.bias")
+        initializers.extend([bn2_weight, bn2_bias])
+    else:
+        bn2_weight = bn1_weight
+        bn2_bias = bn1_bias
+
+    if not shared_stat:
+        bn2_mean = random_array((CHANNELS,), "batchnorm2.input_mean")
+        bn2_var = random_array((CHANNELS,), "batchnorm2.input_var", abs=True)
+        initializers.extend([bn2_mean, bn2_var])
+    else:
+        bn2_mean = bn1_mean
+        bn2_var = bn1_var
+
     model = make_model(
         graph=helper.make_graph(
             name="BatchnormModel",
@@ -3538,89 +3589,58 @@ def shared_stat_batchnorm_model():
                     "model_output", TensorProto.FLOAT, shape=[10, 10, 8, 8]
                 )
             ],
-            initializer=[
-                numpy_helper.from_array(
-                    np.random.randn(10, 10, 1, 1).astype("float32"),
-                    name="conv_1.weight",
-                ),
-                numpy_helper.from_array(
-                    np.random.randn(10, 10, 1, 1).astype("float32"),
-                    name="conv_2.weight",
-                ),
-                numpy_helper.from_array(
-                    np.abs(
-                        np.random.randn(
-                            10,
-                        )
-                    ).astype("float32"),
-                    name="batchnorm.weight",
-                ),
-                numpy_helper.from_array(
-                    np.random.randn(
-                        10,
-                    ).astype("float32"),
-                    name="batchnorm.bias",
-                ),
-                numpy_helper.from_array(
-                    np.random.randn(
-                        10,
-                    ).astype("float32"),
-                    name="batchnorm.input_mean",
-                ),
-                numpy_helper.from_array(
-                    np.abs(
-                        np.random.randn(
-                            10,
-                        )
-                    ).astype("float32"),
-                    name="batchnorm.input_var",
-                ),
-            ],
+            initializer=initializers,
             nodes=[
                 helper.make_node(
                     "Conv",
-                    inputs=["model_input", "conv_1.weight"],
+                    inputs=["model_input", conv1_weight.name],
                     outputs=["conv_1.output"],
                     name="conv_1",
                 ),
                 helper.make_node(
                     "Identity",
-                    inputs=["batchnorm.input_mean"],
-                    outputs=["batchnorm1.input_mean"],
+                    inputs=[bn1_mean.name],
+                    outputs=["batchnorm1.input_mean_"],
                     name="identity_1",
                 ),
                 helper.make_node(
                     "BatchNormalization",
                     inputs=[
                         "conv_1.output",
-                        "batchnorm.weight",
-                        "batchnorm.bias",
-                        "batchnorm1.input_mean",
-                        "batchnorm.input_var",
+                        bn1_weight.name,
+                        bn1_bias.name,
+                        "batchnorm1.input_mean_",
+                        bn1_var.name,
                     ],
                     outputs=["batch_norm_1.output"],
                     name="batchnorm_1",
                 ),
                 helper.make_node(
+                    "Identity",
+                    inputs=[conv2_weight.name],
+                    outputs=["conv_2.weight_"],
+                    name="identity_3",
+                ),
+                helper.make_node(
                     "Conv",
-                    inputs=["batch_norm_1.output", "conv_2.weight"],
+                    inputs=["batch_norm_1.output", "conv_2.weight_"],
                     outputs=["conv_2.output"],
                     name="conv_2",
                 ),
                 helper.make_node(
                     "Identity",
-                    inputs=["batchnorm.input_mean"],
-                    outputs=["batchnorm2.input_mean"],
+                    inputs=[bn2_mean.name],
+                    outputs=["batchnorm2.input_mean_"],
                     name="identity_2",
                 ),
                 helper.make_node(
                     "BatchNormalization",
                     inputs=[
                         "conv_2.output",
-                        "batchnorm.weight",
-                        "batchnorm.bias",
-                        "batchnorm2.input_mean",
-                        "batchnorm.input_var",
+                        bn2_weight.name,
+                        bn2_bias.name,
+                        "batchnorm2.input_mean_",
+                        bn2_var.name,
                     ],
                     outputs=["model_output"],
                     name="batchnorm_2",
@@ -3628,6 +3648,7 @@ def shared_stat_batchnorm_model():
             ],
         )
     )
+
     onnx.checker.check_model(model, True)
     return model
 

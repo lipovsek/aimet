@@ -4,9 +4,12 @@
 
 """ONNX Code to fold batch-norm layers"""
 
+from collections import defaultdict
 from typing import Dict, List, Tuple
 import numpy as np
 import onnx
+import onnx_ir
+import onnx_ir.passes.common
 from onnx import numpy_helper
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from packaging import version
@@ -238,8 +241,10 @@ def is_valid_bn_fold(
     if not fold_backward:
         # Cannot fold BN -> Conv with padding. AIMET does not support forward folding to grouped or DW Conv
         if conv_linear.op_type == "Conv":
-            valid &= all(item == 0 for item in get_node_attribute(conv_linear, "pads"))
-            valid &= get_node_attribute(conv_linear, "group") == 1
+            pads = get_node_attribute(conv_linear, "pads")
+            if pads:
+                valid &= all(item == 0 for item in pads)
+            valid &= get_node_attribute(conv_linear, "group") in (None, 1)
         # AIMET does not support forward folding to ConvTranspose
         elif conv_linear.op_type == "ConvTranspose":
             valid = False
@@ -440,38 +445,74 @@ def get_input_output_channels(node: NodeProto, model: ModelProto) -> Tuple[int, 
     return num_in_channels, num_out_channels
 
 
+def _resolve_const_input(value: onnx_ir.Value) -> onnx_ir.Value | None:
+    """Resolve a BN parameter input to the root constant Value, propagating through Identity nodes."""
+    if onnx_ir.convenience.get_const_tensor(value) is not None:
+        return value
+    producer = value.producer()
+    if producer is None:
+        return None
+    if producer.op_type == "Identity":
+        return _resolve_const_input(producer.inputs[0])
+    return None
+
+
+def _get_batchnorm_param_consumers(
+    ir_model: onnx_ir.Model,
+) -> Dict[str, set[onnx_ir.Node]]:
+    """
+    Get a mapping of root constant Value names to the set of BN nodes that consume them.
+
+    :param ir_model: The ONNX IR model to analyze
+    :return: A dictionary mapping parameter names to sets of consuming BN nodes
+    """
+    consumer_dict = defaultdict(set)
+    for node in ir_model.graph.all_nodes():
+        if node.op_type not in BatchNormType:
+            continue
+        for value in node.inputs[1:]:
+            root = _resolve_const_input(value)
+            if root is not None:
+                consumer_dict[root.name].add(node)
+    return consumer_dict
+
+
+def _unique_name(base: str, existing: set[str]) -> str:
+    """Generate a unique name based on the provided base that does not exist in the existing set."""
+    if base not in existing:
+        return base
+    i = 1
+    while f"{base}_{i}" in existing:
+        i += 1
+    return f"{base}_{i}"
+
+
 # pylint: disable=too-many-locals
 def _update_standalone_batchnorm_ops(model: ModelProto):
     """
     Update weight and bias of standalone batchnorm ops in the model.
     :param model: onnx Model for which batchnorm parameters are to be updated.
     """
+    if not any(node.op_type in BatchNormType for node in model.graph.node):
+        return
 
-    for node in model.graph.node:
+    ir_model = onnx_ir.from_proto(model)
+    tensor_names = set(onnx_ir.convenience.create_value_mapping(ir_model.graph).keys())
+    param_to_consumers = _get_batchnorm_param_consumers(ir_model)
+
+    for node in ir_model.graph.all_nodes():
         if node.op_type in BatchNormType:
-            # get parameter names and indices
-            weight_name, bias_name, running_mean_name, running_var_name = node.input[1:]
-            init_w, init_b, init_rm, init_rv = [
-                ParamUtils.get_param(model, node, idx) for idx in range(1, 5)
-            ]
-
-            if None in (init_w, init_b, init_rm, init_rv):
+            params = [_resolve_const_input(v) for v in node.inputs[1:]]
+            if None in params:
                 continue  # Cannot update if any initializer is missing
 
-            attr = [item for item in node.attribute if item.name == "epsilon"]
-            if not attr:
-                attr = onnx.helper.make_attribute(
-                    "epsilon", 1e-5
-                )  # Default epsilon value
-                node.attribute.append(attr)
-            else:
-                attr = attr[0]
+            eps_attr = node.attributes.get("epsilon")
+            epsilon = eps_attr.value if eps_attr else 1e-5
 
-            epsilon = attr.f
-            tensor_w = numpy_helper.to_array(init_w)
-            tensor_b = numpy_helper.to_array(init_b)
-            tensor_rm = numpy_helper.to_array(init_rm)
-            tensor_rv = numpy_helper.to_array(init_rv)
+            tensor_w = onnx_ir.convenience.get_const_tensor(params[0]).numpy()
+            tensor_b = onnx_ir.convenience.get_const_tensor(params[1]).numpy()
+            tensor_rm = onnx_ir.convenience.get_const_tensor(params[2]).numpy()
+            tensor_rv = onnx_ir.convenience.get_const_tensor(params[3]).numpy()
 
             # update values
             inv_sigma = np.reciprocal(np.sqrt(tensor_rv + epsilon))
@@ -479,18 +520,34 @@ def _update_standalone_batchnorm_ops(model: ModelProto):
             tensor_b = tensor_b - tensor_rm * tensor_w
             tensor_rm = np.zeros(tensor_w.shape, tensor_w.dtype)
             tensor_rv = np.ones(tensor_w.shape, tensor_w.dtype)
-            attr.f = 0.0
+            node.attributes["epsilon"] = onnx_ir.convenience.convert_attribute(
+                "epsilon", 0.0
+            )
 
-            init_w_ = numpy_helper.from_array(tensor_w, weight_name)
-            init_b_ = numpy_helper.from_array(tensor_b, bias_name)
-            init_rm_ = numpy_helper.from_array(tensor_rm, running_mean_name)
-            init_rv_ = numpy_helper.from_array(tensor_rv, running_var_name)
+            new_data = [tensor_w, tensor_b, tensor_rm, tensor_rv]
+            for idx, (param_val, new_array) in enumerate(zip(params, new_data)):
+                param_to_consumers[param_val.name].discard(node)
+                is_shared = len(param_to_consumers[param_val.name]) > 0
+                is_indirect = node.inputs[idx + 1] is not param_val
 
-            # update initializers
-            init_w.CopyFrom(init_w_)
-            init_b.CopyFrom(init_b_)
-            init_rm.CopyFrom(init_rm_)
-            init_rv.CopyFrom(init_rv_)
+                if is_shared or is_indirect or param_val.const_value is None:
+                    # Insert new initializer for the updated parameter
+                    name = _unique_name(param_val.name, tensor_names)
+                    tensor_names.add(name)
+                    new_val = onnx_ir.val(
+                        name=name,
+                        const_value=onnx_ir.Tensor(new_array, name=name),
+                    )
+                    ir_model.graph.register_initializer(new_val)
+                    node.replace_input_with(idx + 1, new_val)
+                else:
+                    # Update the existing intializer in place
+                    param_val.const_value = onnx_ir.Tensor(
+                        new_array, name=param_val.name
+                    )
+
+    onnx_ir.passes.common.RemoveUnusedNodesPass().call(ir_model)
+    model.CopyFrom(onnx_ir.to_proto(ir_model))
 
 
 def _has_unfolded_batchnorms(

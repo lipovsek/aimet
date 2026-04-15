@@ -14,6 +14,7 @@ import pytest
 import torch
 import tempfile
 
+import aimet_onnx
 from aimet_onnx.batch_norm_fold import (
     _find_conv_bn_pairs,
     find_all_batch_norms_to_fold,
@@ -258,6 +259,23 @@ class TestBatchNormFold:
         model = _convert_to_onnx_no_fold(torch_model, torch.randn(input_shape))
         baseline_output, folded_output, pairs = get_outputs_after_fold(model, test_data)
 
+        assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
+
+    @pytest.mark.parametrize("shared_conv_weight", [True, False])
+    @pytest.mark.parametrize("shared_bn_weight", [True, False])
+    @pytest.mark.parametrize("shared_stat", [True, False])
+    def test_model_output_is_preserved_with_shared_tensors(
+        self, shared_conv_weight, shared_bn_weight, shared_stat
+    ):
+        model = ONNXModel(
+            models_for_tests.shared_tensor_batchnorm_model_with_identities(
+                shared_conv_weight=shared_conv_weight,
+                shared_bn_weight=shared_bn_weight,
+                shared_stat=shared_stat,
+            )
+        )
+        test_data = next(iter(aimet_onnx.utils.make_dummy_input(model.model).values()))
+        baseline_output, folded_output, _ = get_outputs_after_fold(model, test_data)
         assert np.allclose(baseline_output[0], folded_output[0], rtol=1e-2, atol=1e-6)
 
     def test_filter_bn_before_flatten(self):
