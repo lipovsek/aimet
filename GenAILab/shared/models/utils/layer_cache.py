@@ -139,5 +139,5 @@ def _is_sliding_window_layer(config: PretrainedConfig, layer_idx: int) -> bool:
     if model_type == "gemma2":
         return layer_idx % 2 != 0
 
-    # Fallback: sliding_window is set with no pattern — assume all layers
-    return True
+    # Fallback: sliding_window is set with no pattern — assume no layers
+    return False
