@@ -1,7 +1,7 @@
 transformers<5.4.0
 tokenizers
 datasets
-peft
+peft<0.19
 pytest
 nvidia-ml-py
 qwen_vl_utils
