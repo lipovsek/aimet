@@ -165,6 +165,14 @@ _DEPRECATED_ARGS = {
     "device",
 }
 
+_NORM_OP_TYPES = {
+    "BatchNormalization",
+    "LayerNormalization",
+    "GroupNormalization",
+    "RMSNormalization",
+    "InstanceNormalization",
+}
+
 
 def _allow_deprecated_args(func):
     @wraps(func)
@@ -1070,26 +1078,29 @@ class QuantizationSimModel:
         for op in self.connected_graph.get_all_ops().values():
             _, output_quantizers, param_quantizers = self.get_op_quantizers(op)
 
-            if op.type == "GroupNormalization":
-                if self._hw_version is None or self._hw_version in {
-                    "V66",
-                    "V68",
-                    "V69",
-                }:
-                    continue
-                if "weight" in param_quantizers:
-                    output_quantizer = output_quantizers[0]
-                    for _, param_quantizer in param_quantizers.items():
-                        param_quantizer.bitwidth = output_quantizer.bitwidth
-                        param_quantizer.use_symmetric_encodings = (
-                            output_quantizer.use_symmetric_encodings
-                        )
+            if op.type in _NORM_OP_TYPES:
+                output_bw = None
+                output_symmetry = False
+                if (
+                    output_quantizers
+                    and output_quantizers[0]
+                    and output_quantizers[0].enabled
+                ):
+                    output_bw = output_quantizers[0].bitwidth
+                    output_symmetry = output_quantizers[0].use_symmetric_encodings
 
-            elif op.type == "LayerNormalization":
-                # HTP requires 16-bit layernorm weight to be symmetric
-                weight_qtzr = param_quantizers.get("weight", None)
-                if weight_qtzr:
-                    weight_qtzr.use_symmetric_encodings = weight_qtzr.bitwidth >= 16
+                for param_quantizer in param_quantizers.values():
+                    if not param_quantizer.enabled:
+                        continue
+                    param_quantizer.set_bitwidth(max(param_quantizer.bitwidth, 8))
+                    if output_bw:
+                        param_quantizer.set_bitwidth(output_bw)
+                    if op.type == "GroupNormalization":
+                        param_quantizer.use_symmetric_encodings = output_symmetry
+                    elif op.type in ("LayerNormalization", "BatchNormalization"):
+                        param_quantizer.use_symmetric_encodings = (
+                            param_quantizer.bitwidth >= 16
+                        )
 
             elif op.type == "MatMul":
                 # Apply exception rule only to dynamic matmuls

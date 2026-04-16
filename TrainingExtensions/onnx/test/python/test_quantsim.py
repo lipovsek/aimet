@@ -636,6 +636,7 @@ class TestQuantSim:
         """
         LSTM without optional input/outputs
         """
+        np.random.seed(0)
         lstm = onnx.helper.make_model(
             ir_version=10,
             opset_imports=[onnx.helper.make_opsetid("", 13)],
@@ -2312,6 +2313,76 @@ class TestQuantSim:
             config_file="htp_v81",
         )
         assert not sim.qc_quantize_op_dict["layer_norm.weight"].use_symmetric_encodings
+
+    @pytest.mark.parametrize(
+        "param_type", [aimet_onnx.int4, aimet_onnx.int8, aimet_onnx.int16]
+    )
+    @pytest.mark.parametrize("activation_type", [aimet_onnx.int8, aimet_onnx.int16])
+    @pytest.mark.parametrize(
+        "model_factory",
+        [
+            (lambda: standalone_layernorm((1, 10, 32))),
+            (lambda: standalone_batchnorm((10, 10, 8, 8))),
+            (lambda: standalone_instancenorm((1, 10, 32))),
+            (lambda: standalone_layernorm((1, 10, 32))),
+            (lambda: standalone_batchnorm((10, 10, 8, 8))),
+            (lambda: standalone_layernorm((1, 10, 32))),
+            (lambda: standalone_batchnorm((10, 10, 8, 8))),
+        ],
+    )
+    def test_norm_param_bitwidth_follows_output(
+        self, model_factory, param_type, activation_type
+    ):
+        """
+        Given: Normalization model with various param/activation bitwidth combinations
+        Then: Param quantizer bitwidth should follow output quantizer bitwidth
+        """
+        model = model_factory()
+        sim = QuantizationSimModel(
+            model, param_type=param_type, activation_type=activation_type
+        )
+        for op in sim.connected_graph.ordered_ops:
+            if op.type not in (
+                "BatchNormalization",
+                "LayerNormalization",
+                "InstanceNormalization",
+            ):
+                continue
+            assert (
+                sim.qc_quantize_op_dict[op.inputs[1].name].bitwidth
+                == activation_type.bits
+            )
+
+    @pytest.mark.parametrize(
+        "model_factory, weight_name",
+        [
+            (lambda: standalone_batchnorm((10, 10, 8, 8)), "batchnorm.weight"),
+            (lambda: standalone_layernorm((1, 10, 32)), "scale"),
+        ],
+    )
+    def test_norm_symmetric_exception_rule(self, model_factory, weight_name):
+        """
+        Given: HTP quantsim config with normalization op
+        When: param_type=int16, weight should be symmetric
+        When: param_type=int8, weight should be asymmetric
+        """
+        model = model_factory()
+        sim = QuantizationSimModel(
+            model,
+            param_type=aimet_onnx.int16,
+            activation_type=aimet_onnx.int16,
+            config_file="htp_v81",
+        )
+        assert sim.qc_quantize_op_dict[weight_name].use_symmetric_encodings
+
+        model = model_factory()
+        sim = QuantizationSimModel(
+            model,
+            param_type=aimet_onnx.int8,
+            activation_type=aimet_onnx.int8,
+            config_file="htp_v81",
+        )
+        assert not sim.qc_quantize_op_dict[weight_name].use_symmetric_encodings
 
     def test_matmul_v73_lower_exception_rule(self, tmp_dir):
         model = models_for_tests.model_with_exceptional_ops()
