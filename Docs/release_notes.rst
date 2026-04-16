@@ -6,6 +6,48 @@
 Release notes
 #############
 
+2.29.0
+======
+
+* New Features
+    * ONNX
+        * Add support for Qwen 2.5 VL in aimet-onnx (`f25668610`_)
+
+    * Torch
+        * Support OOTB quantization of nn.MultiHeadAttention (`4d19f470f`_)
+        * Support OOTB quantization of Qwen 3.5 normalization layers (`01b912f65`_)
+        * Support OOTB quantization of InternVL GELU (`c5f65b782`_)
+
+* Bug fixes and Improvements
+    * Common
+        * Make export_int32_bias default to True if encoding_version >= 2.0.0 (`22876ca30`_)
+
+    * ONNX
+        * Optimize QDQ latency for fp16 models (`c817a17a5`_)
+        * Support pattern matching LayerNormalization without bias (`84f880aee`_)
+        * Make from_onnx_export ignore unloadable encodings by default (`1b5072751`_)
+        * Enable loading models with redundant back-to-back QDQ using from_onnx_qdq (`0f2be91bf`_)
+        * Skip folding BatchNormalization when the Conv layer has shared weights (`8f552b7a6`_)
+        * Fix bug in standalone BatchNormalization fold with shared tensors (`eb7ae4b72`_)
+
+    * Torch
+        * Disable activation quantizers for re-used stateless nn.Modules (`8f552b7a6`_)
+
+
+.. _f25618610: https://github.com/quic/aimet/commit/f25668610
+.. _4d19f470f: https://github.com/quic/aimet/commit/4d19f470f
+.. _01b912f65: https://github.com/quic/aimet/commit/01b912f65
+.. _c5f65b782: https://github.com/quic/aimet/commit/c5f65b782
+.. _22876ca30: https://github.com/quic/aimet/commit/22876ca30
+.. _c817a17a5: https://github.com/quic/aimet/commit/c817a17a5
+.. _84f880aee: https://github.com/quic/aimet/commit/84f880aee
+.. _8f552b7a6: https://github.com/quic/aimet/commit/8f552b7a6
+.. _1b5072751: https://github.com/quic/aimet/commit/1b5072751
+.. _eb7ae4b72: https://github.com/quic/aimet/commit/eb7ae4b72
+.. _0f2be91bf: https://github.com/quic/aimet/commit/0f2be91bf
+.. _8f552b7a6: https://github.com/quic/aimet/commit/8f552b7a6
+
+
 2.28.0
 ======
 
