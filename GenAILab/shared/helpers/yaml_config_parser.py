@@ -207,6 +207,41 @@ class YAMLConfigParser:
             f"No '{adaptation_name}' adaptation registered for model_type='{model_type}'."
         )
 
+    @staticmethod
+    def _normalize_adaptations(
+        adaptations_raw: list,
+    ) -> tuple[list[str], dict[str, dict]]:
+        """Normalize a mixed list of adaptation entries.
+
+        Each entry can be:
+        - A string:  ``"SHA"``
+        - A single-key dict:  ``{"AttentionMaskScale": {"layer_multipliers": {0: 0.8}}}``
+
+        Returns:
+            (adaptation_names, adaptation_kwargs) where *adaptation_kwargs*
+            maps adaptation name → dict of keyword arguments.
+        """
+        names: list[str] = []
+        kwargs: dict[str, dict] = {}
+        for entry in adaptations_raw:
+            if isinstance(entry, str):
+                names.append(entry)
+            elif isinstance(entry, dict):
+                if len(entry) != 1:
+                    raise ValueError(
+                        "Dict adaptation entry must have exactly one key "
+                        f"(the adaptation name), got {list(entry.keys())}"
+                    )
+                name, params = next(iter(entry.items()))
+                names.append(name)
+                kwargs[name] = params if isinstance(params, dict) else {}
+            else:
+                raise ValueError(
+                    f"Each adaptation must be a string or single-key dict, "
+                    f"got {type(entry)}"
+                )
+        return names, kwargs
+
     @classmethod
     def _validate_adaptations(cls, model_type: str, adaptations: list[str]):
         """Validate that the requested adaptations are compatible."""
@@ -226,12 +261,23 @@ class YAMLConfigParser:
         cls,
         model_type: str,
         adaptations: Optional[list[str]] = None,
+        adaptation_kwargs: Optional[dict[str, dict]] = None,
     ) -> type:
         """Get the final model class with adaptations applied.
 
         First checks model_lookup for a registered model (e.g., VLMs),
         then falls back to the default LLM class.
+
+        Args:
+            model_type: HuggingFace model_type string.
+            adaptations: List of adaptation names.
+            adaptation_kwargs: Per-adaptation keyword arguments to set as
+                class attributes on the dynamically-created class.  Keyed
+                by adaptation name.
         """
+        if adaptation_kwargs is None:
+            adaptation_kwargs = {}
+
         # Check for registered model first (VLMs, special models)
         if model_type in cls.model_lookup:
             base_cls = cls.model_lookup[model_type]
@@ -249,7 +295,8 @@ class YAMLConfigParser:
         for adaptation_name in adaptations:
             info = cls._get_adaptation_info(model_type, adaptation_name)
             new_name = f"{result_cls.__name__}_{adaptation_name}"
-            result_cls = type(new_name, (info.mixin_cls, result_cls), {})
+            cls_dict = adaptation_kwargs.get(adaptation_name, {})
+            result_cls = type(new_name, (info.mixin_cls, result_cls), cls_dict)
 
         return result_cls
 
@@ -387,21 +434,26 @@ class YAMLConfigParser:
 
         # Model setup
         model_id = doc["model"]["model_id"]
-        adaptations = doc["model"].pop("adaptations", [])
+        adaptations_raw = doc["model"].pop("adaptations", [])
+        adaptation_names, adaptation_kwargs = cls._normalize_adaptations(
+            adaptations_raw
+        )
         model_type = cls.detect_model_type(model_id)
 
         try:
-            model_cls = cls.get_model_class(model_type, adaptations)
+            model_cls = cls.get_model_class(
+                model_type, adaptation_names, adaptation_kwargs
+            )
             task_params["model"] = doc.pop("model")
             task_params["model"]["class"] = model_cls
             task_params["model"]["model_type"] = model_type
             task_params["model"]["adaptations"] = (
-                adaptations  # Preserve for profiler output
+                adaptations_raw  # Preserve original form for profiler output
             )
         except LookupError as exc:
             raise LookupError(
                 f"Failed to configure model for model_id='{model_id}', "
-                f"adaptations={adaptations}."
+                f"adaptations={adaptation_names}."
             ) from exc
 
         # Precision config
@@ -443,9 +495,11 @@ class YAMLConfigParser:
                 task_params["recipe"][component_name] = parsed_steps
             del doc["recipe"]
         else:
+            has_encodings = "encodings" in task_params.get("model", {})
+            default_recipe = "Skip" if has_encodings else "RemoveQuantization"
             task_params["recipe"] = {
-                "backbone": [{"class": cls.get_recipe("RemoveQuantization")}],
-                "visual": [{"class": cls.get_recipe("RemoveQuantization")}],
+                "backbone": [{"class": cls.get_recipe(default_recipe)}],
+                "visual": [{"class": cls.get_recipe(default_recipe)}],
             }
 
         # Validate: if SpinQuant is in backbone recipes and a visual component

@@ -17,3 +17,6 @@ from GenAILab.shared.models.adaptations.fast_exportable import (
 from GenAILab.shared.models.adaptations.moe import (
     Qwen3MoEAdaptation,
 )
+from GenAILab.shared.models.adaptations.attention_mask_scale import (
+    AttentionMaskScaleAdaptation,
+)
