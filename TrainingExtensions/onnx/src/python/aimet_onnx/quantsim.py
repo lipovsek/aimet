@@ -507,7 +507,9 @@ class QuantizationSimModel:
         )
 
     @classmethod
-    def from_onnx_qdq(cls, model: ModelProto, **kwargs) -> "QuantizationSimModel":
+    def from_onnx_qdq(
+        cls, model: ModelProto, strict: bool = False, **kwargs
+    ) -> "QuantizationSimModel":
         """
         Create sim from an ONNX QDQ model that contains QuantizeLinear/DequantizeLinear nodes.
 
@@ -517,6 +519,11 @@ class QuantizationSimModel:
 
         Args:
             model: ONNX model that contains QuantizeLinear/DequantizeLinear
+            strict:
+                If True, raises error if there are QuantizeLinear/DequantizeLinear nodes
+                in the model that cannot be mapped to any quantizer in the sim.
+                If False, ignores incompatible QuantizeLinear/DequantizeLinear nodes and
+                only loads the rest of the encodings. (Default: False)
             **kwargs: same as QuantizationSimModel.__init__
         Returns:
             QuantizationSimModel: QuantizationSimModel created from ONNX QDQ model
@@ -528,7 +535,7 @@ class QuantizationSimModel:
             ... )
             Quant - INFO - Loaded 26 out of 63 encodings from QuantizeLinear/DequantizeLinear nodes
         """
-        sim = cls._from_onnx_qdq(model, **kwargs)
+        sim = cls._from_onnx_qdq(model, strict=strict, **kwargs)
 
         loaded = [
             q
@@ -549,7 +556,9 @@ class QuantizationSimModel:
         return sim
 
     @classmethod
-    def _from_onnx_qdq(cls, model: ModelProto, **kwargs) -> "QuantizationSimModel":
+    def _from_onnx_qdq(
+        cls, model: ModelProto, strict: bool = False, **kwargs
+    ) -> "QuantizationSimModel":
         """
         Create sim from onnx QDQ model with following strategy
 
@@ -560,6 +569,11 @@ class QuantizationSimModel:
 
         Args:
             model: ONNX model that contains QuantizeLinear/DequantizeLinear
+            strict:
+                If True, raises error if there are QuantizeLinear/DequantizeLinear nodes
+                in the model that cannot be mapped to any quantizer in the sim.
+                If False, ignores incompatible QuantizeLinear/DequantizeLinear nodes and
+                only loads the rest of the encodings. (Default: False)
             **kwargs: same as QuantizationSimModel.__init__
         """
         # pylint: disable=protected-access
@@ -595,10 +609,23 @@ class QuantizationSimModel:
         excess_encodings = encodings.keys() - (quantizable_tensor_names | bias_names)
 
         if excess_encodings:
-            raise NotImplementedError(
-                "Unexpected QuantizeLinear/DequantizeLinear nodes were found "
-                f"for the following tensors: {excess_encodings}"
-            )
+            if strict:
+                raise NotImplementedError(
+                    "Unexpected QuantizeLinear/DequantizeLinear nodes were found "
+                    "for the following tensors: "
+                    f"{excess_encodings}"
+                )
+            else:
+                logger.warning(  # pylint: disable=logging-fstring-interpolation
+                    "Unexpected QuantizeLinear/DequantizeLinear nodes were found. "
+                    "The encodings for the following tensors will be ignored: "
+                    f"{excess_encodings}"
+                )
+                encodings = {
+                    name: enc
+                    for name, enc in encodings.items()
+                    if name not in excess_encodings
+                }
 
         # Make sure each encoding is associated with only one quantizer
         sim.set_quantizers(

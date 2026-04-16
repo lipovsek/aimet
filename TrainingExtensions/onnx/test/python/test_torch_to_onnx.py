@@ -90,6 +90,7 @@ def test_hf_torch_to_onnx_workflow(
     onnx_sim = aimet_onnx.QuantizationSimModel.from_onnx_qdq(
         onnx.load(onnx_qdq_model_path),
         config_file="htp_quantsim_config_v81_per_channel_linear.json",
+        strict=True,
     )
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
@@ -262,7 +263,7 @@ def test_transpose_mm_lpbq(tmp_dir):
     )
 
     onnx_sim = aimet_onnx.QuantizationSimModel.from_onnx_qdq(
-        onnx.load(os.path.join(tmp_dir, "transpose_mm_qdq.onnx"))
+        onnx.load(os.path.join(tmp_dir, "transpose_mm_qdq.onnx")), strict=True
     )
     (onnx_out,) = onnx_sim.session.run(None, {"input": x.numpy()})
     assert np.allclose(

@@ -5719,7 +5719,9 @@ def test_nan_handling_alignment_with_onnxruntime():
         if "CUDAExecutionProvider" in ort.get_available_providers()
         else ["CPUExecutionProvider"]
     )
-    sim = QuantizationSimModel.from_onnx_qdq(copy.deepcopy(model), providers=providers)
+    sim = QuantizationSimModel.from_onnx_qdq(
+        copy.deepcopy(model), providers=providers, strict=True
+    )
 
     nan_tensor = np.array([-np.nan, np.nan], dtype=np.float32)
     sim_out = sim.session.run(None, {"input": nan_tensor})[0]
@@ -6405,6 +6407,7 @@ def test_from_onnx_qdq(
             prequantize_constants=prequantize_constants,
         ),
         config_file="htp_v81",
+        strict=True,
     )
     _assert_sim_equal(sim, sim_2)
     (out,) = sim.session.run(None, inputs)
@@ -6489,6 +6492,7 @@ def test_from_onnx_qdq_lpbq(seed: int, prequantize_constants: bool):
     sim_2 = QuantizationSimModel.from_onnx_qdq(
         sim.to_onnx_qdq(prequantize_constants=prequantize_constants),
         config_file="htp_v81",
+        strict=True,
     )
     _assert_sim_equal(sim, sim_2)
     assert np.allclose(
@@ -6640,7 +6644,9 @@ def test_from_onnx_qdq_output_dtype():
     When: Create sim from onnx QDQ and re-export to QDQ
     Then: Re-exported QDQ model should produce same output as the original model
     """
-    model_2 = QuantizationSimModel.from_onnx_qdq(copy.deepcopy(model)).to_onnx_qdq()
+    model_2 = QuantizationSimModel.from_onnx_qdq(
+        copy.deepcopy(model), strict=True
+    ).to_onnx_qdq()
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
     sess = ort.InferenceSession(model.SerializeToString(), sess_options=sess_options)
@@ -6668,6 +6674,7 @@ def test_from_onnx_qdq_split_op():
     sim_2 = QuantizationSimModel.from_onnx_qdq(
         sim.to_onnx_qdq(),
         config_file="htp_v81",
+        strict=True,
     )
     _assert_sim_equal(sim, sim_2)
 
@@ -6717,7 +6724,7 @@ def test_from_onnx_qdq_encoding_delegation(
     qdq_model, output_scales = model_factory()
 
     with _apply_constraints(tie_encodings):
-        sim = QuantizationSimModel.from_onnx_qdq(model_factory()[0])
+        sim = QuantizationSimModel.from_onnx_qdq(model_factory()[0], strict=True)
 
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
@@ -6773,7 +6780,7 @@ def test_from_onnx_qdq_with_back_to_back_qdq_pairs():
     )
 
     # Load the QDQ model into sim (this should remove duplicate Q-DQ pairs)
-    sim = QuantizationSimModel.from_onnx_qdq(qdq_model)
+    sim = QuantizationSimModel.from_onnx_qdq(qdq_model, strict=True)
 
     # Export back to QDQ model
     qdq_model_exported = sim.to_onnx_qdq()
@@ -6845,9 +6852,11 @@ def test_from_onnx_qdq_with_back_to_back_qdq_pairs():
     ],
 )
 @pytest.mark.parametrize("tie_encodings", [False, True])
+@pytest.mark.parametrize("strict", [False, True])
 def test_from_onnx_qdq_excess_encodings(
     model_factory: Callable[[], tuple[onnx.ModelProto, tuple[float, ...]]],
     tie_encodings: bool,
+    strict: bool,
 ):
     """
     Given: Arbitrary onnx QDQ model
@@ -6858,11 +6867,20 @@ def test_from_onnx_qdq_excess_encodings(
 
     try:
         with _apply_constraints(tie_encodings):
-            sim = QuantizationSimModel.from_onnx_qdq(qdq_model)
+            sim = QuantizationSimModel.from_onnx_qdq(qdq_model, strict=strict)
     except NotImplementedError:
+        if strict:
+            # In strict mode, it is expected to raise error
+            # if the model has excess encodings that cannot be loaded.
+            return
+        else:
+            # Non-strict model should never raise error
+            raise
+
+    if not strict:
         return
 
-    # Didn't throw error. Verify correctness
+    # Strict mode. Strictly verify equivalence with the input model
     qdq_model, output_scales = model_factory()
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
