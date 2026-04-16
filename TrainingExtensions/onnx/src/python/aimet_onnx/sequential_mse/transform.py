@@ -24,6 +24,15 @@ def modify_graph_with_grouped_conv(
     graph = model.graph
     new_nodes = []
 
+    # Replace static input shapes with symbolic dims so ORT accepts variable spatial sizes
+    symbolic_input_shape = ["batch", "c_in", "h", "w"]
+    for i, input_tensor in enumerate(graph.input):
+        elem_type = input_tensor.type.tensor_type.elem_type
+        new_input = helper.make_tensor_value_info(
+            input_tensor.name, elem_type, symbolic_input_shape
+        )
+        graph.input[i].CopyFrom(new_input)
+
     conv_nodes = [n for n in graph.node if n.op_type == "Conv"]
     if not conv_nodes:
         raise ValueError("No Conv nodes found in the graph.")

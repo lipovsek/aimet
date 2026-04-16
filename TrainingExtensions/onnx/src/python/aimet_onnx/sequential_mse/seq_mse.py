@@ -43,6 +43,7 @@ from aimet_onnx.sequential_mse.transform import (
     prepare_linear_inputs,
 )
 
+_GPU_ALLOC_MARGIN = 0.8
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SeqMse)
 
 
@@ -499,15 +500,20 @@ class SequentialMse:
         )
 
         # Transform graph for bq/lpbq quantizers
-        subgraph_model, sim_inputs = self._transform_graph_for_block_quantization(
-            subgraph_model, sim_inputs
+        subgraph_model, sim_inputs, num_blocks = (
+            self._transform_graph_for_block_quantization(subgraph_model, sim_inputs)
         )
 
+        # Determine which axis carries the sequence dimension:
+        #   3-D inputs (num_blocks, seq_len, block_size)  -> Linear BQ, chunk along dim 1
+        #   4-D inputs (batch, c_in, 1,       seq_len)    -> Conv BQ,   chunk along dim 3
+        first_input = next(iter(sim_inputs.values()))[0]
+        chunk_dim = 3 if first_input.ndim == 4 else 1
         dataset_len = len(next(iter(sim_inputs.values())))
+
         with self._create_session(subgraph_model) as session:
-            # Pre-compute output shapes per batch
-            all_out_shapes, all_out_dtypes = _infer_out_shapes_and_dtypes(
-                session, sim_inputs
+            all_out_shapes, all_out_dtypes = self._infer_bq_output_shapes(
+                session, subgraph_model, sim_inputs, num_blocks, chunk_dim, dataset_len
             )
 
             torch_device = get_torch_device(session)
@@ -515,6 +521,27 @@ class SequentialMse:
             device_id = torch_device.index if torch_device.index is not None else 0
 
             output_names = [out.name for out in session.get_outputs()]
+
+            # Sequence chunking splits sim_inputs along the sequence dimension so each
+            # "batch" is a smaller chunk.
+            chunk_size = _compute_seq_chunk_size(
+                num_blocks,
+                sim_inputs,
+                all_out_shapes,
+                all_out_dtypes,
+                torch_device,
+                chunk_dim,
+            )
+            if chunk_size is not None:
+                _logger.info(
+                    "Large block-quantized output detected. "
+                    "Using sequence chunking (chunk_size=%d) to fit both fp and quantized block outputs on GPU.",
+                    chunk_size,
+                )
+                sim_inputs, all_out_shapes, all_out_dtypes = _rechunk_seq_inputs(
+                    sim_inputs, chunk_size, all_out_shapes, all_out_dtypes, chunk_dim
+                )
+                dataset_len = len(next(iter(sim_inputs.values())))
 
             # Store accumulated loss per dep_node across candidates
             total_loss = defaultdict(list)
@@ -585,6 +612,8 @@ class SequentialMse:
 
                     del binding, fp_outputs, sim_outputs, shared_outputs
 
+                torch.cuda.empty_cache()
+
                 # After all batches, append the accumulated loss for this candidate
                 for node_name, loss in accumulated_loss.items():
                     total_loss[node_name].append(loss)
@@ -620,6 +649,56 @@ class SequentialMse:
         _logger.info(
             f"Computed optimal parameter encodings for ops: {', '.join(dep_node_names)}"
         )
+
+    @staticmethod
+    def _infer_bq_output_shapes(
+        session: OrtInferenceSession,
+        subgraph_model: onnx.ModelProto,
+        sim_inputs: Dict[str, List[np.ndarray]],
+        num_blocks: int,
+        chunk_dim: int,
+        dataset_len: int,
+    ):
+        """
+        Infer output shapes and dtypes for a block-quantized subgraph.
+
+        For BQ subgraphs, uses a single-token probe along chunk_dim to avoid ORT's CUDA arena retaining a large allocation equal to the full
+        grouped output size, then scales the probed shapes back to the full sequence length.
+
+        :param session: ORT inference session for the subgraph.
+        :param subgraph_model: ONNX model proto of the subgraph.
+        :param sim_inputs: Dict mapping input name -> list of numpy arrays.
+        :param num_blocks: Number of BQ blocks (0 means no block quantization).
+        :param chunk_dim: Axis carrying the sequence dimension (1 for Linear BQ, 3 for Conv BQ).
+        :param dataset_len: Number of dataset samples.
+        :return: Tuple of (all_out_shapes, all_out_dtypes) each a list of length dataset_len.
+        """
+        first_input = next(iter(sim_inputs.values()))[0]
+
+        if num_blocks > 0 and _has_unit_kernel_only(subgraph_model):
+            slices = [slice(None)] * first_input.ndim
+            slices[chunk_dim] = slice(None, 1)
+            probe_input = {
+                name: [arr_list[0][tuple(slices)]]
+                for name, arr_list in sim_inputs.items()
+            }
+            probe_shapes, probe_dtypes = _infer_out_shapes_and_dtypes(
+                session, probe_input
+            )
+
+            full_seq_len = first_input.shape[chunk_dim]
+            scaled_shapes = [
+                s[:chunk_dim] + (full_seq_len,) + s[chunk_dim + 1 :]
+                for s in probe_shapes[0]
+            ]
+            all_out_shapes = [scaled_shapes] * dataset_len
+            all_out_dtypes = [probe_dtypes[0]] * dataset_len
+        else:
+            all_out_shapes, all_out_dtypes = _infer_out_shapes_and_dtypes(
+                session, sim_inputs
+            )
+
+        return all_out_shapes, all_out_dtypes
 
     @staticmethod
     def _split_onnx_graph(
@@ -757,7 +836,12 @@ class SequentialMse:
           across all the relevant ops in the subgraph.
 
         :param model: Model containing subgraph
-        :return: Modified model graph if BQ/LPBQ quantizer are found, else return model as-is.
+        :return: Tuple of (modified model, sim_inputs, num_blocks).
+                 num_blocks == 0  -> no BQ quantizers found; skip sequence chunking.
+                 num_blocks > 0 for linear BQ: equals the first dimension of the transformed
+                 sim_inputs (num_blocks, seq_len, block_size).
+                 num_blocks == 1 for Conv BQ: sim_inputs are not reshaped, but
+                 the grouped-conv output is large enough to require sequence chunking.
         """
         param_names = set(self.sim.param_names)
 
@@ -782,7 +866,7 @@ class SequentialMse:
 
         # Early exit if no block quantizers found
         if not bq_quantizers:
-            return model, sim_inputs
+            return model, sim_inputs, 0
 
         # If some quantizers are block-wise and non block-wise raise an error
         # Add support later
@@ -814,13 +898,19 @@ class SequentialMse:
         # Transform graph only for block quantization
         if has_conv:
             modify_graph_with_grouped_conv(model, ref_block_size, ref_block_axis)
+            # sim_inputs are not reshaped for Conv (no per-block input decomposition needed).
+            # Return num_blocks=1 to trigger sequence chunking in _compute_seq_chunk_size;
+            # the grouped-conv output shape (1, num_blocks*c_out, 1, seq_len)
+            return model, sim_inputs, 1
         elif has_linear:
             sim_inputs = prepare_linear_inputs(sim_inputs, block_size=ref_block_size)
             modify_graph_with_grouped_linear(model, ref_block_size, ref_block_axis)
+            # num_blocks is the first dimension of the transformed inputs
+            # (num_blocks, seq_len, block_size).
+            num_blocks = next(iter(sim_inputs.values()))[0].shape[0]
+            return model, sim_inputs, num_blocks
         else:
             raise RuntimeError(f"Subgraph contains no conv or linear ops.")
-
-        return model, sim_inputs
 
 
 @contextmanager
@@ -874,6 +964,149 @@ def _temporarily_disable_block_grouping(sim: QuantizationSimModel):
     finally:
         for quantizer, original_block_grouping in original_block_groupings.items():
             quantizer._block_grouping = original_block_grouping
+
+
+def _has_unit_kernel_only(model: onnx.ModelProto) -> bool:
+    """
+    Return True if every Conv node in the model has all-ones kernel_shape (e.g. 1×1).
+
+    The single-token probe used to infer output shapes assumes output_W == input_W, which
+    only holds when the kernel does not reduce the spatial dimension.  Non-unit kernels
+    (e.g. 3×3) change the output size, making the probe's scaled shapes incorrect.
+
+    :param model: Model containing subgraph
+    :return: True if every Conv has an all-ones kernel, False otherwise.
+    """
+    initializer_shapes = {
+        init.name: list(init.dims) for init in model.graph.initializer
+    }
+
+    for node in model.graph.node:
+        if node.op_type != "Conv":
+            continue
+
+        # Prefer the explicit kernel_shape attribute.
+        kernel_shape = None
+        for attr in node.attribute:
+            if attr.name == "kernel_shape":
+                kernel_shape = list(attr.ints)
+                break
+
+        if kernel_shape is None:
+            # Fall back to the weight initializer: input[1] is the weight tensor,
+            # whose shape is [C_out, C_in/group, *spatial_dims].
+            if len(node.input) >= 2:
+                weight_name = node.input[1]
+                weight_dims = initializer_shapes.get(weight_name)
+                if weight_dims is not None and len(weight_dims) >= 3:
+                    kernel_shape = weight_dims[2:]
+
+        if kernel_shape is None:
+            # Cannot determine kernel shape — assume non-unit.
+            return False
+
+        if any(k != 1 for k in kernel_shape):
+            return False
+
+    return True
+
+
+def _compute_seq_chunk_size(
+    num_blocks: int,
+    sim_inputs: Dict[str, List[np.ndarray]],
+    all_out_shapes: List,
+    all_out_dtypes: List,
+    torch_device: torch.device,
+    chunk_dim: int = 1,
+) -> Optional[int]:
+    """
+    Compute the sequence chunk size needed to hold both fp and quantized block outputs for
+    (BQ/LPBQ) subgraphs.
+
+    :param num_blocks: Number of blocks.
+                       0 means no block transformation was applied (chunking skipped).
+    :param sim_inputs: Inputs dict.
+    :param all_out_shapes: Per-batch list of output shapes.
+    :param all_out_dtypes: Per-batch list of output dtypes.
+    :param torch_device: PyTorch device.
+    :param chunk_dim: Axis that represents the sequence dimension.
+                      1 for 3-D Linear inputs (num_blocks, seq_len, block_size);
+                      3 for 4-D Conv inputs (batch, c_in, 1, seq_len).
+    :return: Chunk size (number of tokens per chunk), or None if chunking is not needed.
+    """
+    if num_blocks == 0 or torch_device.type != "cuda":
+        return None
+
+    # Bytes per token across all outputs.
+    bytes_per_token = sum(
+        int(np.prod(shape)) // shape[chunk_dim] * np.dtype(dtype).itemsize
+        for shape, dtype in zip(all_out_shapes[0], all_out_dtypes[0])
+    )
+    if bytes_per_token == 0:
+        return None
+
+    free_mem, _ = torch.cuda.mem_get_info(torch_device)
+    avail_mem = max(0, free_mem)
+
+    # fp_outputs + sim_outputs + mse_loss(reduction='none') output are all alive simultaneously.
+    # Unlike PyTorch SeqMSE (which processes one block at a time and uses factor 2)
+    max_tokens = max(int(avail_mem * _GPU_ALLOC_MARGIN / (3 * bytes_per_token)), 1)
+
+    first_input = next(iter(sim_inputs.values()))[0]
+    seq_len = first_input.shape[chunk_dim]
+
+    # Full sequence fits
+    if max_tokens >= seq_len:
+        return None
+
+    return max_tokens
+
+
+def _rechunk_seq_inputs(
+    sim_inputs: Dict[str, List[np.ndarray]],
+    chunk_size: int,
+    all_out_shapes: List,
+    all_out_dtypes: List,
+    chunk_dim: int = 1,
+) -> Tuple[Dict, List, List]:
+    """
+    Splits inputs along the sequence dimension into chunks of at most chunk_size tokens.
+    Returns updated sim_inputs, all_out_shapes, and all_out_dtypes sized to match the chunks.
+
+    :param sim_inputs: Inputs dict.
+    :param chunk_size: Maximum number of tokens (seq_len steps) per chunk.
+    :param all_out_shapes: Per-batch list of output shapes.
+    :param all_out_dtypes: Per-batch list of output dtypes.
+    :param chunk_dim: Axis that represents the sequence dimension.
+                      1 for 3-D Linear inputs (num_blocks, seq_len, block_size);
+                      3 for 4-D Conv inputs (batch, c_in, 1, seq_len).
+    :return: Tuple of (new sim_inputs, new all_out_shapes, new all_out_dtypes).
+    """
+    new_sim_inputs: Dict[str, List[np.ndarray]] = {}
+    for key, arr_list in sim_inputs.items():
+        new_arr_list = []
+        for arr in arr_list:
+            splits = list(range(chunk_size, arr.shape[chunk_dim], chunk_size))
+            new_arr_list.extend(np.array_split(arr, splits, axis=chunk_dim))
+        new_sim_inputs[key] = new_arr_list
+
+    # Derive per-chunk output shapes by replacing shape[chunk_dim] with the chunk seq_len.
+    template_shapes = all_out_shapes[0]
+    template_dtypes = all_out_dtypes[0]
+    first_key = next(iter(new_sim_inputs))
+    new_all_out_shapes = []
+    new_all_out_dtypes = []
+    for chunk_arr in new_sim_inputs[first_key]:
+        chunk_seq_len = chunk_arr.shape[chunk_dim]
+        new_all_out_shapes.append(
+            [
+                s[:chunk_dim] + (chunk_seq_len,) + s[chunk_dim + 1 :]
+                for s in template_shapes
+            ]
+        )
+        new_all_out_dtypes.append(template_dtypes)
+
+    return new_sim_inputs, new_all_out_shapes, new_all_out_dtypes
 
 
 def _infer_out_shapes_and_dtypes(

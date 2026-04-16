@@ -33,6 +33,8 @@ from aimet_onnx.sequential_mse.seq_mse import (
     SeqMseParams,
     SequentialMse,
     _temporarily_disable_block_grouping,
+    _rechunk_seq_inputs,
+    _compute_seq_chunk_size,
 )
 from aimet_onnx.sequential_mse.transform import (
     modify_graph_with_grouped_conv,
@@ -1323,6 +1325,139 @@ def test_add_value_info_no_memory_leak():
         f"RSS before: {rss_before:.1f} MB, RSS after: {rss_after:.1f} MB, Growth: {memory_growth:.1f} MB"
     )
     assert memory_growth < max_allowed_growth_mb
+
+
+def test_rechunk_seq_inputs_shapes():
+    """test _rechunk_seq_inputs shapes"""
+    num_blocks, seq_len, block_size = 4, 100, 8
+    chunk_size = 30  # yields chunks of size 30, 30, 30, 10
+
+    c_out = 16
+    arr = np.random.randn(num_blocks, seq_len, block_size).astype(np.float32)
+    sim_inputs = {"x": [arr]}
+    all_out_shapes = [[(num_blocks, seq_len, c_out)]]
+    all_out_dtypes = [[np.dtype("float32")]]
+
+    new_inputs, new_shapes, new_dtypes = _rechunk_seq_inputs(
+        sim_inputs, chunk_size, all_out_shapes, all_out_dtypes
+    )
+
+    """
+    When: _rechunk_seq_inputs
+    Then: Split dim=1 into chunks of at most chunk_size, produce correct output shapes, and be lossless
+     (concatenating chunks restores the original array)
+    """
+
+    chunks = new_inputs["x"]
+    assert len(chunks) == 4
+    assert chunks[0].shape == (num_blocks, 30, block_size)
+    assert chunks[1].shape == (num_blocks, 30, block_size)
+    assert chunks[2].shape == (num_blocks, 30, block_size)
+    assert chunks[3].shape == (num_blocks, 10, block_size)
+
+    assert np.allclose(np.concatenate(chunks, axis=1), arr)
+
+    """
+    When: _rechunk_seq_inputs
+    Then: Output shapes must mirror the chunk seq_len
+    """
+
+    assert new_shapes[0] == [(num_blocks, 30, c_out)]
+    assert new_shapes[3] == [(num_blocks, 10, c_out)]
+    assert len(new_dtypes) == 4
+    assert all(d == [np.dtype("float32")] for d in new_dtypes)
+
+
+def test_rechunk_seq_inputs_multiple_batches():
+    """_rechunk_seq_inputs with multiple batches"""
+    num_blocks, seq_len, block_size, c_out = 2, 60, 4, 8
+    chunk_size = 20  # 3 chunks per original batch
+    num_batches = 3
+
+    arrs = [
+        np.random.randn(num_blocks, seq_len, block_size).astype(np.float32)
+        for _ in range(num_batches)
+    ]
+    sim_inputs = {"x": arrs}
+    all_out_shapes = [[(num_blocks, seq_len, c_out)]] * num_batches
+    all_out_dtypes = [[np.dtype("float32")]] * num_batches
+
+    """
+    When: _rechunk_seq_inputs
+    Then: should apply chunking independently to every batch in sim_inputs,
+     expanding dataset_len proportionally
+    """
+
+    new_inputs, new_shapes, new_dtypes = _rechunk_seq_inputs(
+        sim_inputs, chunk_size, all_out_shapes, all_out_dtypes
+    )
+
+    assert len(new_inputs["x"]) == 9
+    assert len(new_shapes) == 9
+    assert len(new_dtypes) == 9
+
+    for chunk in new_inputs["x"]:
+        assert chunk.shape == (num_blocks, chunk_size, block_size)
+
+
+@pytest.mark.cuda
+def test_lpbq_seq_mse_chunked_matches_full(monkeypatch):
+    """Verify encodings full sequence vs chunk_size=1"""
+    import aimet_onnx.sequential_mse.seq_mse as seq_mse_module
+
+    model = single_linear_layer_model(do_constant_folding=True)
+    providers = ["CUDAExecutionProvider"]
+
+    def _make_sim():
+        sim = QuantizationSimModel(
+            model=copy.deepcopy(model),
+            quant_scheme=QuantScheme.post_training_tf,
+            default_activation_bw=8,
+            default_param_bw=4,
+            providers=providers,
+        )
+        set_grouped_blockwise_quantization_for_weights(
+            sim,
+            op_types=("MatMul", "Gemm"),
+            bitwidth=4,
+            decompressed_bw=8,
+            block_size=25,
+            strict=True,
+        )
+        with _temporarily_disable_block_grouping(sim):
+            sim._compute_param_encodings(overwrite=False)
+        return sim
+
+    inputs = [make_dummy_input(model.model) for _ in range(4)]
+    params = SeqMseParams(num_batches=None, num_candidates=20)
+
+    """
+    When: Sequence chunking is applied
+    Then: Verify that it produces identical encodings to a full-sequence run (seq_len=100).
+    """
+
+    # normal path (no sequential chunking, seq_len=100)
+    sim_full = _make_sim()
+    SequentialMse(None, sim_full, params, inputs).apply_seq_mse_algo()
+
+    # force chunk_size=1
+    monkeypatch.setattr(
+        seq_mse_module,
+        "_compute_seq_chunk_size",
+        lambda *args, **kwargs: 1,
+    )
+    sim_chunked = _make_sim()
+    SequentialMse(None, sim_chunked, params, inputs).apply_seq_mse_algo()
+
+    # Encoding max must be identical between both runs
+    for name in sim_full.qc_quantize_op_dict:
+        enc_full = sim_full.qc_quantize_op_dict[name].get_encodings()
+        enc_chunked = sim_chunked.qc_quantize_op_dict[name].get_encodings()
+        if enc_full is None:
+            continue
+        full_max = np.array([e.max for e in enc_full])
+        chunked_max = np.array([e.max for e in enc_chunked])
+        assert np.allclose(full_max, chunked_max)
 
 
 class TestDependencyGraph:
