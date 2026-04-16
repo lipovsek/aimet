@@ -577,23 +577,26 @@ class TestQuantSim:
             "version": aimet_onnx.__version__,
         }
         encodings = encodings["encodings"]
-        assert (
-            sorted(e["name"] for e in encodings)
-            == [
+        encoding_keys = set(e["name"] for e in encodings)
+
+        if activation_type == aimet_onnx.int8:
+            assert encoding_keys == {
                 "4",
                 "5",
                 "6",
+                "conv_b",
                 "conv_w",
+                "fc_b",
                 "fc_w",
                 "input",
                 "output",
-            ]
-            if activation_type == aimet_onnx.int8
-            else [
+            }
+        else:
+            assert encoding_keys == {
                 "conv_w",
                 "fc_w",
-            ]
-        )
+            }
+
         # Exported encoding can contain more entry than qc_quantize_op_dict since
         # some grid-preserving op's input/output encodings are auto-generated
         assert set(e["name"] for e in encodings) >= {
@@ -604,7 +607,13 @@ class TestQuantSim:
 
         # Cross-check with onnx QDQ.
         expected_encodings = _remove_onnx_qdq_nodes(sim.to_onnx_qdq())
-        assert len(encodings) == len(expected_encodings)
+        expected_encoding_keys = set(e["name"] for e in expected_encodings)
+
+        if activation_type == aimet_onnx.int8:
+            assert encoding_keys == expected_encoding_keys | {"conv_b", "fc_b"}
+            encodings = [e for e in encodings if e["name"] in expected_encoding_keys]
+        else:
+            assert encoding_keys == expected_encoding_keys
 
         encodings = sorted(encodings, key=lambda e: e["name"])
         expected_encodings = sorted(expected_encodings, key=lambda e: e["name"])
@@ -1620,7 +1629,13 @@ class TestQuantSim:
                     for name, q in sim.qc_quantize_op_dict.items()
                     if q in reconfigured_quantizers
                 ]
-                assert len(mismatched_encodings) == len(reconfigured_tensors)
+
+                if encoding_version in ("0.6.1", "1.0.0"):
+                    assert len(mismatched_encodings) == len(reconfigured_tensors)
+                else:
+                    # mismatched_encodings contains 2 extra entries for int32 bias encodings
+                    assert len(mismatched_encodings) == len(reconfigured_tensors) + 2
+
                 assert np.allclose(
                     out2,
                     out3,

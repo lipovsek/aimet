@@ -29,6 +29,7 @@ import io
 import json
 import contextlib
 import os
+from packaging import version
 from aimet_torch.v2.nn.true_quant import QuantizedGRU, QuantizedLSTM, QuantizedRNN
 import torch
 import onnx
@@ -1064,7 +1065,8 @@ class QuantizationSimModelOnnxExporter:
             Version of the encoding format to use. (default: {quantsim.encoding_version})
             Supported versions are: {sorted(list(quantsim.VALID_ENCODING_VERSIONS))}
         export_int32_bias (bool, optional):
-            If true, generate and export int32 bias encoding on the fly (default: `True`).
+            If true, generate and export int32 bias encoding on the fly.
+            Default: `True` if encoding version is 2.0.0 or higher, otherwise `False`.
         force_activation_as (str, optional):
             Force representing quantized activations as signed or unsigned integers.
             This argument is only applicable for encoding version 2.0.0.
@@ -1093,7 +1095,7 @@ class QuantizationSimModelOnnxExporter:
         f: Union[str, io.BytesIO],
         *,
         encoding_version: Optional[str] = None,
-        export_int32_bias: bool = True,
+        export_int32_bias: Optional[bool] = None,
         force_activation_as: Literal["unsigned"]
         | Literal["signed"]
         | None = "unsigned",
@@ -1105,6 +1107,11 @@ class QuantizationSimModelOnnxExporter:
             raise ValueError(
                 f"Unsupported encoding_version '{encoding_version}'. "
                 f"Supported versions are: {quantsim.VALID_ENCODING_VERSIONS}"
+            )
+
+        if export_int32_bias is None:
+            export_int32_bias = version.parse(encoding_version) >= version.parse(
+                "2.0.0"
             )
 
         from aimet_torch.onnx import (

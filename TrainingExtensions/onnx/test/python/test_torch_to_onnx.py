@@ -177,7 +177,12 @@ def test_torch_to_onnx_zero_point_shift(tmp_dir, encoding_version):
     onnx_export_path = os.path.join(tmp_dir, "onnx_export")
     onnx_encoding_path = os.path.join(onnx_export_path, "model.encodings")
     os.makedirs(onnx_export_path, exist_ok=True)
-    onnx_sim.export(onnx_export_path, "model", encoding_version=encoding_version)
+    onnx_sim.export(
+        onnx_export_path,
+        "model",
+        encoding_version=encoding_version,
+        export_int32_bias=False,
+    )
 
     with open(onnx_encoding_path, "r") as f:
         onnx_encodings = json.load(f)
