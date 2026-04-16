@@ -27,11 +27,13 @@ from GenAILab.shared.helpers.fp_cache import DiskBackedFPCache
 from GenAILab.shared.helpers.metrics import TextEvaluationMetric
 from GenAILab.shared.helpers.model_cache import DiskBackedModelCache
 from GenAILab.shared.helpers.recipe_chain import apply_recipe_chain
+from GenAILab.shared.helpers.precision_config import float16, float32
 from GenAILab.shared.models.base import LLM, VLM
 from GenAILab.shared.helpers import datasets, metrics
 from GenAILab.onnx import models
 from GenAILab.onnx.helpers import quant_recipes
 from GenAILab.onnx.models.utils.generator_utils import generator_factory
+from GenAILab.onnx.models.utils.quantsim_utils import quantize_embedding_weights
 
 
 @contextlib.contextmanager
@@ -203,6 +205,14 @@ def test_llm_quantization(
             component="visual",
             recipe_cache=recipe_cache,
         )
+
+    # Finalize embedding quantization after recipes have had a chance to
+    # transform the weights (e.g. SpinQuant rotation).
+    if sim_collection.embedding is not None and precision.embedding not in (
+        float16,
+        float32,
+    ):
+        quantize_embedding_weights(sim_collection.embedding, precision.embedding.bits)
 
     gc.collect()
     torch.cuda.empty_cache()

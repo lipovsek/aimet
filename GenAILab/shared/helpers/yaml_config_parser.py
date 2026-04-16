@@ -448,6 +448,25 @@ class YAMLConfigParser:
                 "visual": [{"class": cls.get_recipe("RemoveQuantization")}],
             }
 
+        # Validate: if SpinQuant is in backbone recipes and a visual component
+        # exists, SpinQuant must also be in the visual recipes. The R1 rotation
+        # on the decoder stack changes the expected input distribution, so the
+        # merger's post-MLP Hadamard rotation must also be applied.
+        backbone_recipe_names = {
+            step["class"].__name__ for step in task_params["recipe"].get("backbone", [])
+        }
+        if "SpinQuant" in backbone_recipe_names and "visual" in task_params["recipe"]:
+            visual_recipe_names = {
+                step["class"].__name__ for step in task_params["recipe"]["visual"]
+            }
+            if "SpinQuant" not in visual_recipe_names:
+                raise RuntimeError(
+                    "SpinQuant is specified for the backbone but not the visual component. "
+                    "When using SpinQuant on a VLM, it must be applied to both the backbone "
+                    "and visual components to maintain consistency between the decoder stack "
+                    "and the vision encoder merger layers."
+                )
+
         # Metrics parsing
         metrics = (
             doc["metrics"] if isinstance(doc["metrics"], list) else [doc["metrics"]]

@@ -170,117 +170,27 @@ class SpinQuant:
             if hasattr(model.model, "language_model")
             else model.model
         )
-        if language_backbone.embed_tokens.weight is model.lm_head.weight:
-            raise RuntimeError(
-                "SpinQuant requires embed_tokens and lm_head weights to be untied. Ensure that "
-                "model.config.tie_word_embeddings or a similar relevant setting is set to False for the model."
-            )
 
-        # Fuse RMS norm layers into linears
-        SpinQuant._fuse_norm_layer_into_linears(language_backbone.norm, [model.lm_head])
+        SpinQuant._apply_spinquant_to_decoder_stack(language_backbone, model.lm_head)
+
         if hasattr(model.model, "visual"):
-            for merger in SpinQuant._get_mergers(model):
-                SpinQuant._fuse_norm_layer_into_linears(merger.norm, [merger.linear1])
-
-        for block_interface in SpinQuant._get_blocks(model):
-            SpinQuant._fuse_norm_layer_into_linears(
-                block_interface.input_norm,
-                list(block_interface.qkv_layers()),
-            )
-            SpinQuant._fuse_norm_layer_into_linears(
-                block_interface.post_attention_norm,
-                list(block_interface.gate_up_layers()),
-            )
-
-        # Convert all layers to transformed layers
-        SpinQuant._convert_modules_to_transformed_modules(model)
-
-        if SpinQuant._enable_r1:
-            # Apply R1 to language backbone
             language_backbone_hidden_size = language_backbone.embed_tokens.weight.shape[
                 -1
             ]
-            SpinQuant._apply_r1_to_decoder_stack(
-                hidden_size=language_backbone_hidden_size,
-                embedding_layer=language_backbone.embed_tokens,
-                lm_head=model.lm_head,
-                blocks=SpinQuant._get_blocks(language_backbone),
-                device=model.device,
+            vlm_config = SpinQuant._find_vlm_config(model)
+            merger_modules = (
+                [m for m in model.modules() if isinstance(m, vlm_config.merger_type)]
+                if vlm_config
+                else None
             )
+            merger_interface_cls = vlm_config.merger_interface if vlm_config else None
 
-            # If SpinQuant is being applied to a VLM we need to separately transform the ViT
-            if hasattr(model.model, "visual"):
-                # Only apply SpinQuant on the decoder stack of the ViT if the type is registered
-                if len(SpinQuant._get_blocks(model.model.visual)) > 0:
-                    # Apply R1 to ViT
-                    vit_hidden_size = model.model.visual.patch_embed.proj.weight.shape[
-                        0
-                    ]
-                    SpinQuant._apply_r1_to_decoder_stack(
-                        hidden_size=vit_hidden_size,
-                        embedding_layer=None,
-                        lm_head=None,
-                        blocks=SpinQuant._get_blocks(model.model.visual),
-                        device=model.device,
-                    )
-
-                    # todo: switch this to use TransformedConv3d once implementation is tested
-                    patch_embed_shape = model.model.visual.patch_embed.proj.weight.shape
-                    patch_embed_hadamard_rotation = get_hadamard_matrix(
-                        vit_hidden_size
-                    ) / torch.sqrt(torch.tensor(vit_hidden_size))
-                    new_patch_embed_weight = (
-                        model.model.visual.patch_embed.proj.weight.data.clone()
-                        .detach()
-                        .to(torch.float64)
-                        .reshape([vit_hidden_size, -1])
-                    )
-                    new_patch_embed_weight = (
-                        patch_embed_hadamard_rotation.T.to(
-                            device=model.device, dtype=torch.float64
-                        )
-                        @ new_patch_embed_weight
-                    ).to(torch.float32)
-                    model.model.visual.patch_embed.proj.weight = torch.nn.Parameter(
-                        new_patch_embed_weight.reshape(patch_embed_shape)
-                    )
-
-                    # ViT MLP layer is sized differently so we need to handle it separately
-                    for merger in SpinQuant._get_mergers(model):
-                        mlp0_shape = merger.linear1.weight.data.shape
-                        new_mlp0_weight = (
-                            merger.linear1.weight.data.clone()
-                            .detach()
-                            .to(torch.float64)
-                            .reshape(-1, vit_hidden_size)
-                        )
-                        new_mlp0_weight = (
-                            new_mlp0_weight
-                            @ patch_embed_hadamard_rotation.T.to(
-                                device=model.device, dtype=torch.float64
-                            )
-                        ).to(dtype=torch.float32)
-                        merger.linear1.weight = torch.nn.Parameter(
-                            new_mlp0_weight.reshape(mlp0_shape)
-                        )
-
-                # This part needs to happen even if SpinQuant is not applied on the ViT blocks
-                post_mlp_hadamard_rotation = get_hadamard_matrix(
-                    language_backbone_hidden_size
-                ) / torch.sqrt(torch.tensor(language_backbone_hidden_size))
-                post_mlp_hadamard_rotation = post_mlp_hadamard_rotation.to(
-                    device=model.device, dtype=torch.float32
-                )
-                for merger in SpinQuant._get_mergers(model):
-                    merger.linear2.add_right_hand_transform(
-                        MatrixTransformOp(matrix=post_mlp_hadamard_rotation)
-                    )
-
-        if SpinQuant._enable_r2:
-            raise NotImplementedError("R2 transform is not yet implemented.")
-
-        # Convert all layers back to their original versions
-        SpinQuant._merge_transforms_and_revert_to_original_modules(model)
+            SpinQuant._apply_spinquant_to_visual_encoder(
+                visual_encoder=model.model.visual,
+                language_backbone_hidden_size=language_backbone_hidden_size,
+                merger_modules=merger_modules,
+                merger_interface=merger_interface_cls,
+            )
 
     @staticmethod
     def _apply_r1_to_decoder_stack(
@@ -479,6 +389,17 @@ class SpinQuant:
             config = SpinQuant.model_config_dict.get(target_type)
             if config is not None and isinstance(config, VLMSpinQuantConfig):
                 return config
+
+        # Fallback: look for a VLMSpinQuantConfig whose merger_type is present
+        # in the model (e.g. when called with just the visual encoder).
+        module_types = {type(m) for m in model.modules()}
+        for config in SpinQuant.model_config_dict.values():
+            if (
+                isinstance(config, VLMSpinQuantConfig)
+                and config.merger_type in module_types
+            ):
+                return config
+
         return None
 
     @staticmethod
@@ -489,6 +410,295 @@ class SpinQuant:
             for m in model.modules()
             if isinstance(m, vlm_config.merger_type)
         ]
+
+    @staticmethod
+    def _wrap_mergers(
+        merger_modules: list[torch.nn.Module],
+        merger_interface: Type[MergerInterface],
+    ) -> list[MergerInterface]:
+        return [merger_interface(m) for m in merger_modules]
+
+    @staticmethod
+    def _convert_block_layers_to_transformed(
+        blocks: list[BlockInterface],
+    ) -> None:
+        for block_interface in blocks:
+            layer_names = (
+                block_interface.attention_layer_names()
+                + block_interface.mlp_layer_names()
+            )
+            for layer_name in layer_names:
+                layer = getattr(block_interface, layer_name)
+                if not isinstance(layer, TransformationMixin):
+                    setattr(
+                        block_interface,
+                        layer_name,
+                        TransformationMixin.from_module(layer),
+                    )
+
+    @staticmethod
+    def _merge_and_revert_block_layers(
+        blocks: list[BlockInterface],
+    ) -> None:
+        for block_interface in blocks:
+            layer_names = (
+                block_interface.attention_layer_names()
+                + block_interface.mlp_layer_names()
+            )
+            for layer_name in layer_names:
+                layer = getattr(block_interface, layer_name)
+                if isinstance(layer, TransformationMixin):
+                    merged_layer = (
+                        SpinQuant._merge_transforms_and_recover_original_layer(layer)
+                    )
+                    setattr(block_interface, layer_name, merged_layer)
+
+    @staticmethod
+    def _apply_spinquant_to_decoder_stack(
+        decoder_model: torch.nn.Module,
+        lm_head: torch.nn.Module,
+    ) -> None:
+        """
+        Apply SpinQuant rotation transforms to a decoder-only language backbone.
+
+        This processes the language backbone in isolation, applying norm fusion and
+        R1 Hadamard rotations to embeddings, attention, and MLP layers.
+
+        :param decoder_model: Language backbone with .embed_tokens, .norm, and decoder
+            blocks (e.g., model.model for LlamaForCausalLM).
+        :param lm_head: The lm_head linear layer (e.g., model.lm_head).
+        :raises RuntimeError: If embed_tokens and lm_head weights are tied.
+        """
+        if decoder_model.embed_tokens.weight is lm_head.weight:
+            raise RuntimeError(
+                "SpinQuant requires embed_tokens and lm_head weights to be untied. Ensure that "
+                "model.config.tie_word_embeddings or a similar relevant setting is set to False for the model."
+            )
+
+        # Fuse RMS norm layers into linears
+        SpinQuant._fuse_norm_layer_into_linears(decoder_model.norm, [lm_head])
+        blocks = SpinQuant._get_blocks(decoder_model)
+        for block_interface in blocks:
+            SpinQuant._fuse_norm_layer_into_linears(
+                block_interface.input_norm,
+                list(block_interface.qkv_layers()),
+            )
+            SpinQuant._fuse_norm_layer_into_linears(
+                block_interface.post_attention_norm,
+                list(block_interface.gate_up_layers()),
+            )
+
+        # Convert to transformed modules
+        decoder_model.embed_tokens = TransformationMixin.from_module(
+            decoder_model.embed_tokens
+        )
+        lm_head_transformed = TransformationMixin.from_module(lm_head)
+        # Update lm_head in-place by copying transformed state
+        # We need to work with the transformed wrapper directly
+        SpinQuant._convert_block_layers_to_transformed(blocks)
+
+        if SpinQuant._enable_r1:
+            hidden_size = decoder_model.embed_tokens.weight.shape[-1]
+            device = lm_head.weight.device
+            SpinQuant._apply_r1_to_decoder_stack(
+                hidden_size=hidden_size,
+                embedding_layer=decoder_model.embed_tokens,
+                lm_head=lm_head_transformed,
+                blocks=blocks,
+                device=device,
+            )
+
+        if SpinQuant._enable_r2:
+            raise NotImplementedError("R2 transform is not yet implemented.")
+
+        # Merge transforms and revert
+        decoder_model.embed_tokens = (
+            SpinQuant._merge_transforms_and_recover_original_layer(
+                decoder_model.embed_tokens
+            )
+        )
+        merged_lm_head = SpinQuant._merge_transforms_and_recover_original_layer(
+            lm_head_transformed
+        )
+        # Copy merged weight/bias back into the original lm_head module
+        lm_head.weight = merged_lm_head.weight
+        if hasattr(merged_lm_head, "bias") and merged_lm_head.bias is not None:
+            lm_head.bias = merged_lm_head.bias
+        SpinQuant._merge_and_revert_block_layers(blocks)
+
+    @staticmethod
+    def _apply_spinquant_to_visual_encoder(
+        visual_encoder: torch.nn.Module,
+        language_backbone_hidden_size: int,
+        merger_modules: list[torch.nn.Module] | None = None,
+        merger_interface: Type[MergerInterface] | None = None,
+    ) -> None:
+        """
+        Apply SpinQuant rotation transforms to a visual encoder (ViT) and its merger modules.
+
+        :param visual_encoder: Visual transformer module with .patch_embed.proj and ViT blocks.
+        :param language_backbone_hidden_size: Hidden size of the language backbone, needed for
+            the post-merger Hadamard rotation on merger output layers.
+        :param merger_modules: Raw merger nn.Module instances. If None, mergers are
+            auto-discovered by scanning visual_encoder.
+        :param merger_interface: MergerInterface subclass to wrap merger_modules. Required if
+            merger_modules is provided.
+        """
+        # Resolve mergers
+        if merger_modules is not None:
+            if merger_interface is None:
+                raise ValueError(
+                    "merger_interface must be provided when merger_modules is specified."
+                )
+            mergers = SpinQuant._wrap_mergers(merger_modules, merger_interface)
+        else:
+            mergers = []
+            vlm_config = SpinQuant._find_vlm_config(visual_encoder)
+            if vlm_config is not None:
+                mergers = [
+                    vlm_config.merger_interface(m)
+                    for m in visual_encoder.modules()
+                    if isinstance(m, vlm_config.merger_type)
+                ]
+
+        # Fuse merger norms
+        for merger in mergers:
+            SpinQuant._fuse_norm_layer_into_linears(merger.norm, [merger.linear1])
+
+        # Fuse ViT block norms
+        vit_blocks = SpinQuant._get_blocks(visual_encoder)
+        for block_interface in vit_blocks:
+            SpinQuant._fuse_norm_layer_into_linears(
+                block_interface.input_norm,
+                list(block_interface.qkv_layers()),
+            )
+            SpinQuant._fuse_norm_layer_into_linears(
+                block_interface.post_attention_norm,
+                list(block_interface.gate_up_layers()),
+            )
+
+        # Convert to transformed modules
+        if hasattr(visual_encoder, "pos_embed"):
+            visual_encoder.pos_embed = TransformationMixin.from_module(
+                visual_encoder.pos_embed
+            )
+        for merger in mergers:
+            merger.linear1 = TransformationMixin.from_module(merger.linear1)
+            merger.linear2 = TransformationMixin.from_module(merger.linear2)
+        SpinQuant._convert_block_layers_to_transformed(vit_blocks)
+
+        if SpinQuant._enable_r1:
+            device = next(visual_encoder.parameters()).device
+
+            # Apply R1 to ViT blocks if registered
+            if len(vit_blocks) > 0:
+                vit_hidden_size = visual_encoder.patch_embed.proj.weight.shape[0]
+                SpinQuant._apply_r1_to_decoder_stack(
+                    hidden_size=vit_hidden_size,
+                    embedding_layer=None,
+                    lm_head=None,
+                    blocks=vit_blocks,
+                    device=device,
+                )
+
+                # Rotate patch_embed.proj weight directly
+                patch_embed_shape = visual_encoder.patch_embed.proj.weight.shape
+                patch_embed_hadamard_rotation = get_hadamard_matrix(
+                    vit_hidden_size
+                ) / torch.sqrt(torch.tensor(vit_hidden_size))
+                new_patch_embed_weight = (
+                    visual_encoder.patch_embed.proj.weight.data.clone()
+                    .detach()
+                    .to(torch.float64)
+                    .reshape([vit_hidden_size, -1])
+                )
+                new_patch_embed_weight = (
+                    patch_embed_hadamard_rotation.T.to(
+                        device=device, dtype=torch.float64
+                    )
+                    @ new_patch_embed_weight
+                ).to(torch.float32)
+                visual_encoder.patch_embed.proj.weight = torch.nn.Parameter(
+                    new_patch_embed_weight.reshape(patch_embed_shape)
+                )
+
+                # Rotate merger.linear1 weights
+                for merger in mergers:
+                    mlp0_shape = merger.linear1.weight.data.shape
+                    new_mlp0_weight = (
+                        merger.linear1.weight.data.clone()
+                        .detach()
+                        .to(torch.float64)
+                        .reshape(-1, vit_hidden_size)
+                    )
+                    new_mlp0_weight = (
+                        new_mlp0_weight
+                        @ patch_embed_hadamard_rotation.T.to(
+                            device=device, dtype=torch.float64
+                        )
+                    ).to(dtype=torch.float32)
+                    merger.linear1.weight = torch.nn.Parameter(
+                        new_mlp0_weight.reshape(mlp0_shape)
+                    )
+
+            # Post-MLP Hadamard rotation on merger.linear2 (always, even without ViT blocks)
+            post_mlp_hadamard_rotation = get_hadamard_matrix(
+                language_backbone_hidden_size
+            ) / torch.sqrt(torch.tensor(language_backbone_hidden_size))
+            post_mlp_hadamard_rotation = post_mlp_hadamard_rotation.to(
+                device=device, dtype=torch.float32
+            )
+            for merger in mergers:
+                merger.linear2.add_right_hand_transform(
+                    MatrixTransformOp(matrix=post_mlp_hadamard_rotation)
+                )
+
+        if SpinQuant._enable_r2:
+            raise NotImplementedError("R2 transform is not yet implemented.")
+
+        # Merge transforms and revert
+        if hasattr(visual_encoder, "pos_embed"):
+            visual_encoder.pos_embed = (
+                SpinQuant._merge_transforms_and_recover_original_layer(
+                    visual_encoder.pos_embed
+                )
+            )
+        for merger in mergers:
+            merger.linear1 = SpinQuant._merge_transforms_and_recover_original_layer(
+                merger.linear1
+            )
+            merger.linear2 = SpinQuant._merge_transforms_and_recover_original_layer(
+                merger.linear2
+            )
+        SpinQuant._merge_and_revert_block_layers(vit_blocks)
+
+    @staticmethod
+    def _apply_spinquant_to_embedding(
+        embedding_module: torch.nn.Embedding,
+        hidden_size: int,
+        device: torch.device | None = None,
+    ) -> torch.nn.Embedding:
+        """
+        Apply R1 Hadamard rotation to a standalone embedding table.
+
+        :param embedding_module: The embedding module to rotate.
+        :param hidden_size: Hidden size for the Hadamard matrix.
+        :param device: Device for computation. Inferred from embedding if None.
+        :return: The rotated embedding module.
+        """
+        if device is None:
+            device = embedding_module.weight.device
+
+        transformed = TransformationMixin.from_module(embedding_module)
+
+        matrix = get_hadamard_matrix(hidden_size) / torch.sqrt(
+            torch.tensor(hidden_size)
+        )
+        matrix = matrix.to(device=device, dtype=torch.float32)
+        r1_transform = MatrixTransformOp(matrix=matrix)
+        transformed.add_right_hand_transform(r1_transform)
+
+        return SpinQuant._merge_transforms_and_recover_original_layer(transformed)
 
 
 apply_spinquant = SpinQuant.apply_spinquant

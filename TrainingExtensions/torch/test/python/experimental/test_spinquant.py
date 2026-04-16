@@ -14,6 +14,7 @@ from transformers.models.llama.modeling_llama import (
 )
 from aimet_torch.experimental.spinquant.hadamard_utils import get_hadamard_matrix
 from aimet_torch.experimental.spinquant.spinquant_optimizer import SpinQuant
+from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
 from aimet_torch.quantsim import QuantizationSimModel
 
 
@@ -183,6 +184,73 @@ def test_apply_spinquant(hidden_size, use_bias):
     assert not torch.equal(orig_embed_tokens, new_embed_tokens)
     assert not torch.equal(orig_q, new_q)
     assert torch.allclose(orig_out.logits, new_out.logits, atol=1e-6)
+
+
+@pytest.mark.parametrize("hidden_size", [64, 192])
+@pytest.mark.parametrize("use_bias", [True, False])
+def test_apply_spinquant_to_decoder_stack(hidden_size, use_bias):
+    torch.manual_seed(0)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    config = LlamaConfig(
+        vocab_size=10,
+        hidden_size=hidden_size,
+        num_hidden_layers=1,
+        tie_word_embeddings=False,
+        intermediate_size=100,
+        attention_bias=use_bias,
+        mlp_bias=use_bias,
+    )
+    dummy_input = torch.randint(0, 10, (1, 200)).to(device)
+    model = LlamaForCausalLM(config=config).to(device)
+    if use_bias:
+        for module in model.modules():
+            if isinstance(module, torch.nn.Linear) and module.bias is not None:
+                with torch.no_grad():
+                    module.bias.copy_(torch.randn(module.bias.shape).to(device))
+    orig_out = model(input_ids=dummy_input)
+    SpinQuant._apply_spinquant_to_decoder_stack(model.model, model.lm_head)
+    new_out = model(input_ids=dummy_input)
+    assert torch.allclose(orig_out.logits, new_out.logits, atol=1e-6)
+
+
+@pytest.mark.parametrize("hidden_size", [64, 192])
+def test_apply_spinquant_delegation_equivalence(hidden_size):
+    torch.manual_seed(0)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    config = LlamaConfig(
+        vocab_size=10,
+        hidden_size=hidden_size,
+        num_hidden_layers=1,
+        tie_word_embeddings=False,
+        intermediate_size=100,
+    )
+    model_a = LlamaForCausalLM(config=config).to(device)
+    model_b = copy.deepcopy(model_a)
+
+    SpinQuant.apply_spinquant(model_a)
+    SpinQuant._apply_spinquant_to_decoder_stack(model_b.model, model_b.lm_head)
+
+    for (name_a, param_a), (name_b, param_b) in zip(
+        model_a.named_parameters(), model_b.named_parameters()
+    ):
+        assert name_a == name_b
+        assert torch.equal(param_a, param_b), f"Parameter mismatch at {name_a}"
+
+
+def test_apply_spinquant_to_embedding():
+    torch.manual_seed(0)
+    hidden_size = 64
+    embedding = torch.nn.Embedding(10, hidden_size)
+    orig_weight = embedding.weight.clone()
+
+    result = SpinQuant._apply_spinquant_to_embedding(embedding, hidden_size)
+
+    assert isinstance(result, torch.nn.Embedding)
+    assert not isinstance(result, TransformationMixin)
+    assert not torch.equal(orig_weight, result.weight)
+    assert result.weight.shape == orig_weight.shape
 
 
 @pytest.mark.parametrize("hidden_size", [192, 1536, 2560, 3584])

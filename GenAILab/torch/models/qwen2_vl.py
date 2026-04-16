@@ -10,7 +10,6 @@ import torch
 from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.nn.true_quant import QuantizationMixin
-from aimet_torch.v2.nn import compute_param_encodings
 from aimet_torch.v2.utils import remove_activation_quantizers
 from aimet_torch.v2.nn.transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     QuantizedQwen2_5_VLRMSNorm,
@@ -126,6 +125,8 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
             remove_activation_quantizers(visual_sim.model)
 
         # 3) Convert embedding table to quantized equivalent
+        # Note: encodings are computed after recipe application (in the test runner)
+        # to allow recipes like SpinQuant to rotate the weights first.
         quantized_embedding = precision.embedding not in (float16, float32)
         if quantized_embedding and not isinstance(
             model.model.language_model.embed_tokens, QuantizationMixin
@@ -136,7 +137,6 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
             model.model.language_model.embed_tokens.param_quantizers[
                 "weight"
             ].bitwidth = precision.embedding.bits
-            compute_param_encodings(model.model.language_model.embed_tokens)
 
         return SimCollection(
             backbone=language_sim,

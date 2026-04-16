@@ -34,7 +34,6 @@ from GenAILab.onnx.models.utils.quantsim_utils import (
     _set_lm_head_precision,
     _apply_block_granularity_to_decoder_stack,
     _remove_activation_quantizers,
-    quantize_embedding_weights,
     get_ort_providers,
     AttributePatch,
 )
@@ -168,8 +167,8 @@ class Qwen_3_VL_ONNX(Qwen_3_VL):
         if visual_activation_qtype in (float16, float32):
             _remove_activation_quantizers(visual_quantsim)
 
-        if precision.embedding not in (float16, float32):
-            quantize_embedding_weights(embedding, precision.embedding.bits)
+        # Note: embedding quantization is deferred to after recipe application
+        # (in the test runner) to allow recipes like SpinQuant to rotate weights first.
 
         return SimCollection(
             backbone=backbone_quantsim,

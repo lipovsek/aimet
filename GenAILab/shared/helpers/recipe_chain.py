@@ -95,7 +95,13 @@ def apply_recipe_chain(
             **profiler_kwargs,
             capture_intermediate_data=profiler_capture_intermediate_data,
         ) as profiler:
-            recipe_cls.apply(sim_component, generator, train_dataset, **recipe_kwargs)
+            recipe_cls.apply(
+                sim_component,
+                generator,
+                train_dataset,
+                component=component,
+                **recipe_kwargs,
+            )
         step_stats.append(
             RecipeStepStats(
                 recipe_name=recipe_cls.__name__,

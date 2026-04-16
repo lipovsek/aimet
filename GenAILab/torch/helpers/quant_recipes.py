@@ -11,14 +11,16 @@ from torch.utils.data import DataLoader, Dataset
 
 from aimet_torch import QuantizationSimModel
 from aimet_torch.experimental.adascale.adascale_optimizer import apply_adascale
-from aimet_torch.experimental.spinquant.spinquant_optimizer import apply_spinquant
+from aimet_torch.experimental.spinquant.spinquant_optimizer import (
+    SpinQuant as SpinQuantOptimizer,
+)
 from aimet_torch.v2.seq_mse import apply_seq_mse
 from aimet_torch.v2.nn import compute_encodings
 from aimet_torch.v2.utils import remove_all_quantizers
 from aimet_torch.utils import change_tensor_device_placement
 
 from GenAILab.shared.helpers.yaml_config_parser import YAMLConfigParser
-from GenAILab.shared.models.generator import Generator
+from GenAILab.shared.models.generator import Generator, VLM_Generator
 
 
 def _prefill_inputs(
@@ -62,7 +64,10 @@ class QuantizationTechnique(ABC):
     @staticmethod
     @abstractmethod
     def apply(
-        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        **kwargs,
     ):
         """Apply quantization technique"""
 
@@ -73,7 +78,10 @@ class RemoveQuantization(QuantizationTechnique):
 
     @staticmethod
     def apply(
-        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        **kwargs,
     ):
         # Remove all quantization wrappers to get an FP baseline.
         remove_all_quantizers(quantsim.model)
@@ -85,7 +93,10 @@ class Skip(QuantizationTechnique):
 
     @staticmethod
     def apply(
-        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        **kwargs,
     ):
         pass
 
@@ -105,6 +116,7 @@ class Calibration(QuantizationTechnique):
         generator: Generator,
         dataloader: DataLoader,
         num_iterations: int = 20,
+        **kwargs,
     ):
         # Calibrate quantization parameters by running data through the model.
         if num_iterations is None:
@@ -135,7 +147,10 @@ class SeqMSE(QuantizationTechnique):
     @staticmethod
     @torch.no_grad()
     def apply(
-        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        **kwargs,
     ):
         # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(generator, dataloader, 20, torch.device("cpu"))
@@ -160,6 +175,7 @@ class AdaScale(QuantizationTechnique):
         dataloader: Dataset,
         num_batches: int = 20,
         num_iterations: int = 1500,
+        **kwargs,
     ):
         # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(
@@ -179,19 +195,76 @@ class SpinQuant(QuantizationTechnique):
     @staticmethod
     @torch.no_grad()
     def apply(
-        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        component: str = "backbone",
+        **kwargs,
     ):
-        # Step 1: Untie embed_tokens and lm_head weights if they are shared.
-        if (
-            quantsim.model.model.model.embed_tokens.weight
-            is quantsim.model.model.lm_head.weight
-        ):
-            old_weight = quantsim.model.model.lm_head.weight
-            new_weight = torch.nn.Parameter(
+        if component == "backbone":
+            SpinQuant._apply_to_backbone(quantsim, generator)
+        elif component == "visual":
+            SpinQuant._apply_to_visual(quantsim, generator)
+
+    @staticmethod
+    def _apply_to_backbone(quantsim: QuantizationSimModel, generator: Generator):
+        wrapper = quantsim.model
+        # Resolve decoder model and lm_head based on wrapper structure.
+        # VLMs: wrapper.model = language_model, wrapper.lm_head = lm_head
+        # LLMs: wrapper.model = full HF model (has .model and .lm_head)
+        if hasattr(wrapper, "lm_head") and wrapper.lm_head:
+            decoder_model = wrapper.model
+            lm_head = wrapper.lm_head
+        else:
+            decoder_model = wrapper.model.model
+            lm_head = wrapper.model.lm_head
+
+        # Untie embed_tokens and lm_head weights if they are shared.
+        if decoder_model.embed_tokens.weight is lm_head.weight:
+            old_weight = lm_head.weight
+            lm_head.weight = torch.nn.Parameter(
                 old_weight.data.clone().detach().to(old_weight.device),
                 requires_grad=True,
             )
-            quantsim.model.model.lm_head.weight = new_weight
 
-        # Step 2: Apply SpinQuant rotation.
-        apply_spinquant(model=quantsim.model.model)
+        SpinQuantOptimizer._apply_spinquant_to_decoder_stack(decoder_model, lm_head)
+
+        # Apply SpinQuant rotation to the embedding table if available and separate from the embedding table in decoder_model.
+        # There is technically an "embed_tokens" in the backbone model (that is rotated by _apply_spinquant_to_decoder_stack)
+        # but we have our generator object hold a separate copy of this, so we need to rotate independently
+        if (
+            isinstance(generator, VLM_Generator)
+            and generator.embedding is not decoder_model.embed_tokens
+        ):
+            hidden_size = decoder_model.embed_tokens.weight.shape[-1]
+            generator.embedding = SpinQuantOptimizer._apply_spinquant_to_embedding(
+                generator.embedding, hidden_size
+            )
+
+    @staticmethod
+    def _apply_to_visual(quantsim: QuantizationSimModel, generator: Generator):
+        visual_encoder = quantsim.model.visual
+        # Determine language backbone hidden size from the generator's config. Could also be determined from weight shapes
+        config = generator.config
+        text_config = config.text_config if hasattr(config, "text_config") else config
+        language_backbone_hidden_size = text_config.hidden_size
+
+        # Find mergers and interface from SpinQuant model config registry.
+        vlm_config = SpinQuantOptimizer._find_vlm_config(quantsim.model)
+        merger_modules = (
+            [
+                m
+                for m in quantsim.model.modules()
+                if isinstance(m, vlm_config.merger_type)
+            ]
+            if vlm_config
+            else None
+        )
+        merger_interface = vlm_config.merger_interface if vlm_config else None
+
+        SpinQuantOptimizer._apply_spinquant_to_visual_encoder(
+            visual_encoder=visual_encoder,
+            language_backbone_hidden_size=language_backbone_hidden_size,
+            merger_modules=merger_modules,
+            merger_interface=merger_interface,
+        )

@@ -86,7 +86,10 @@ class QuantizationTechnique(ABC):
     @staticmethod
     @abstractmethod
     def apply(
-        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        **kwargs,
     ):
         """Apply quantization technique"""
 
@@ -97,7 +100,10 @@ class RemoveQuantization(QuantizationTechnique):
 
     @staticmethod
     def apply(
-        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        **kwargs,
     ):
         # Remove all quantization nodes from the ONNX model.
         quantsim.model.model = quantsim.remove_quantizers(quantsim.model.model)
@@ -110,7 +116,10 @@ class Skip(QuantizationTechnique):
 
     @staticmethod
     def apply(
-        quantsim: QuantizationSimModel, generator: Generator, dataloader: DataLoader
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        **kwargs,
     ):
         pass
 
@@ -129,6 +138,7 @@ class Calibration(QuantizationTechnique):
         generator: Generator,
         dataloader: DataLoader,
         num_iterations: int = 20,
+        **kwargs,
     ):
         def _forward(_):
             sliced_dataloader = itertools.islice(dataloader, num_iterations)
@@ -158,6 +168,7 @@ class SeqMSE(QuantizationTechnique):
         generator: Generator,
         dataloader: DataLoader,
         num_iterations: int = 20,
+        **kwargs,
     ):
         # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(quantsim, generator, dataloader, num_iterations)
@@ -190,6 +201,7 @@ class AdaScale(QuantizationTechnique):
         dataloader: DataLoader,
         num_batches: int = 32,
         num_iterations: int = 64,
+        **kwargs,
     ):
         # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(quantsim, generator, dataloader, num_batches)
@@ -212,14 +224,12 @@ class SpinQuant(QuantizationTechnique):
         quantsim: QuantizationSimModel,
         generator: Generator,
         dataloader: DataLoader,
+        component: str = "backbone",
+        **kwargs,
     ):
-        # SpinQuant currently only supports LLM backbones. Skip for VLMs.
-        # When VLM support is added remove this check.
-        if isinstance(generator, VLM_Generator):
+        if component == "backbone":
+            apply_spinquant(quantsim)
+        elif component == "visual":
             raise NotImplementedError(
-                "SpinQuant does not yet support VLMs. "
-                "Only LLM (backbone-only) models are supported."
+                "ONNX SpinQuant does not yet support visual encoder components."
             )
-
-            # Apply SpinQuant rotation.
-        apply_spinquant(quantsim)

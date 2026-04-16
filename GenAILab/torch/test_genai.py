@@ -13,7 +13,7 @@ import yaml
 from pathlib import Path
 from transformers.processing_utils import ProcessorMixin
 
-from aimet_torch.v2.nn import QuantizationMixin
+from aimet_torch.v2.nn import QuantizationMixin, compute_param_encodings
 from aimet_torch.v2.utils import remove_all_quantizers
 
 from GenAILab.shared.models.base import LLM, VLM
@@ -163,6 +163,13 @@ def test_llm_quantization(
                 component="visual",
                 recipe_cache=recipe_cache,
             )
+
+        # Finalize embedding quantization after recipes have had a chance to
+        # transform the weights (e.g. SpinQuant rotation).
+        if sim_collection.embedding is not None and isinstance(
+            sim_collection.embedding, QuantizationMixin
+        ):
+            compute_param_encodings(sim_collection.embedding)
 
         gc.collect()
         torch.cuda.empty_cache()
