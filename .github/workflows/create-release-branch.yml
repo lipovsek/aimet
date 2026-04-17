@@ -43,19 +43,16 @@ jobs:
           # if branch exists, stop workflow.
           if [[ $(git ls-remote origin ${release_branch_name}) ]]; then
             echo "Branch ${release_branch_name} exists on remote."
-            echo "If trying to create release branch, please ensure aimet_version is updated correctly."
-            echo "If trying to push more changes into release branch, please put up a PR instead."
-
-            exit 1
+            echo "Continuing from the existing release branch."
           else
             echo "Pushing ${release_branch_name} to remote."
 
             git checkout -b ${release_branch_name}
             git push origin ${release_branch_name}
-
-            # write release branch name to output
-            echo "RELEASE_BRANCH_NAME=${release_branch_name}" >> "$GITHUB_OUTPUT"
           fi
+
+          # write release branch name to output
+          echo "RELEASE_BRANCH_NAME=${release_branch_name}" >> "$GITHUB_OUTPUT"
 
   nightly_for_release_branch:
     needs: create_release_branch
