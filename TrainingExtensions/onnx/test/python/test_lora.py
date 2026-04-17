@@ -23,12 +23,14 @@ skip_module_on_windows_amd64(
 skip_module_on_windows_arm64("peft and safetensors not available on Windows ARM64")
 
 from peft import LoraConfig, get_peft_model
-from safetensors.numpy import load_file, save_file
+from safetensors.numpy import load_file
 
 import aimet_onnx
 from aimet_onnx import int4, int16
 from aimet_onnx.experimental.lora import (
+    configure_lora_onnx,
     export_peft_to_onnx,
+    add_lora_branches,
     set_lora_bitwidth,
     freeze_base_param_quantizers,
     freeze_base_activation_quantizers,
@@ -37,16 +39,14 @@ from aimet_onnx.experimental.lora import (
     get_lora_encodings,
     set_lora_encodings,
     get_zero_weights,
+    get_adapter_scale_weights,
     write_lora_weight_list,
     write_lora_config,
-    write_adaptor_list,
+    write_adapter_list,
 )
 from aimet_onnx.experimental.lora.peft_to_onnx import (
-    _extract_output,
     _infer_dynamic_shapes,
     _infer_input_names,
-    _load_adapter_safetensors,
-    _onnx_name_to_safetensors_key,
 )
 from aimet_onnx.quantsim import QuantizationSimModel
 
@@ -72,9 +72,8 @@ class _Attention(nn.Module):
         q = self.q_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
-        attn = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim**0.5)
-        attn = torch.softmax(attn, dim=-1)
-        out = torch.matmul(attn, v).transpose(1, 2).contiguous().view(B, S, -1)
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        out = out.transpose(1, 2).contiguous().view(B, S, -1)
         return self.o_proj(out)
 
 
@@ -172,7 +171,7 @@ def generate_lora_test_artifacts(
 ) -> dict:
     """Generate a test ONNX model with LoRA adapters via export_peft_to_onnx.
 
-    Returns a dict with model_path, lora_names, and output_dir.
+    Returns a dict with model_path, lora_names, output_dir, and adapter_dirs.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -206,7 +205,6 @@ def generate_lora_test_artifacts(
     model_proto, lora_names = export_peft_to_onnx(
         peft_model,
         sample_inputs,
-        adapter_dirs,
         str(output_dir),
     )
 
@@ -214,6 +212,7 @@ def generate_lora_test_artifacts(
         "model_path": str(output_dir / "model.onnx"),
         "lora_names": lora_names,
         "output_dir": str(output_dir),
+        "adapter_dirs": adapter_dirs,
     }
 
 
@@ -238,8 +237,8 @@ def prepared(lora_artifacts) -> tuple:
     model_proto = onnx.load(lora_artifacts["model_path"])
     onnx.load_external_data_for_model(model_proto, lora_artifacts["output_dir"])
     lora_names = lora_artifacts["lora_names"]
-    output_dir = lora_artifacts["output_dir"]
-    return model_proto, lora_names, output_dir
+    adapter_dirs = lora_artifacts["adapter_dirs"]
+    return model_proto, lora_names, adapter_dirs
 
 
 def _make_sim(model):
@@ -266,13 +265,13 @@ def _calibrate(sim, weights, num_batches=5):
     sim.compute_encodings(_fn)
 
 
-def _load_adapters(output_dir, expected=("B", "C")):
-    """Load adapter safetensors from output_dir and verify expected adapters exist."""
+def _load_adapters(adapter_dirs):
+    """Load adapter safetensors from PEFT adapter directories."""
     adapters = {}
-    for name in expected:
-        path = os.path.join(output_dir, f"{name}.safetensors")
+    for name, adapter_dir in adapter_dirs.items():
+        path = os.path.join(adapter_dir, "adapter_model.safetensors")
         assert os.path.exists(path), (
-            f"Expected adapter file {name}.safetensors not found"
+            f"Expected adapter_model.safetensors not found in {adapter_dir}"
         )
         adapters[name] = load_file(path)
     return adapters
@@ -285,11 +284,11 @@ def _load_adapters(output_dir, expected=("B", "C")):
 
 def test_full_lora_v1_workflow(prepared):
     """V1: LoRA as inputs, single weight + activation encoding across adapters."""
-    model, lora_names, output_dir = prepared
+    model, lora_names, adapter_dirs = prepared
     assert len(lora_names["params"]) > 0
     assert len(lora_names["activations"]) > 0
 
-    adapters = _load_adapters(output_dir)
+    adapters = _load_adapters(adapter_dirs)
 
     sim = QuantizationSimModel(
         model,
@@ -328,10 +327,10 @@ def test_full_lora_v1_workflow(prepared):
 
 def test_full_lora_v2_workflow(prepared):
     """V2: Full recalibration per adapter, no freezing."""
-    model, lora_names, output_dir = prepared
+    model, lora_names, adapter_dirs = prepared
     assert len(lora_names["params"]) > 0
 
-    adapters = _load_adapters(output_dir)
+    adapters = _load_adapters(adapter_dirs)
 
     sim = _make_sim(model)
     set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
@@ -357,11 +356,11 @@ def test_full_lora_v2_workflow(prepared):
 
 def test_full_lora_v3_workflow(prepared):
     """V3: Base frozen, per-adapter LoRA recalibration."""
-    model, lora_names, output_dir = prepared
+    model, lora_names, adapter_dirs = prepared
     assert len(lora_names["params"]) > 0
     assert len(lora_names["activations"]) > 0
 
-    adapters = _load_adapters(output_dir)
+    adapters = _load_adapters(adapter_dirs)
 
     sim = _make_sim(model)
     set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
@@ -438,7 +437,7 @@ def test_full_lora_v3_workflow(prepared):
 
 def test_lora_encoding_roundtrip(prepared):
     """get_lora_encodings / set_lora_encodings round-trip correctly."""
-    model, lora_names, output_dir = prepared
+    model, lora_names, adapter_dirs = prepared
     sim = _make_sim(model)
 
     set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
@@ -447,7 +446,7 @@ def test_lora_encoding_roundtrip(prepared):
     freeze_base_model(sim, lora_names)
 
     # Calibrate with adapter B
-    adapter_b = load_file(os.path.join(output_dir, "B.safetensors"))
+    adapter_b = load_file(os.path.join(adapter_dirs["B"], "adapter_model.safetensors"))
     unfreeze_lora_quantizers(sim, lora_names)
     _calibrate(sim, adapter_b)
 
@@ -455,7 +454,7 @@ def test_lora_encoding_roundtrip(prepared):
     assert len(encodings_b) > 0
 
     # Calibrate with adapter C (overwrites B's encodings)
-    adapter_c = load_file(os.path.join(output_dir, "C.safetensors"))
+    adapter_c = load_file(os.path.join(adapter_dirs["C"], "adapter_model.safetensors"))
     unfreeze_lora_quantizers(sim, lora_names)
     _calibrate(sim, adapter_c)
 
@@ -476,7 +475,7 @@ def test_lora_encoding_roundtrip(prepared):
 
 def test_lora_per_channel(prepared):
     """LoRA quantizers get per-channel mode (dual-listed → classified as params)."""
-    model, lora_names, output_dir = prepared
+    model, lora_names, adapter_dirs = prepared
 
     # Verify dual-listing: LoRA names in both initializer and graph.input
     init_names = {init.name for init in model.graph.initializer}
@@ -514,7 +513,7 @@ def test_lora_per_channel(prepared):
 
 def test_lora_names_structure(prepared):
     """lora_names has correct keys and non-empty lists."""
-    _model, lora_names, _output_dir = prepared
+    _model, lora_names, _adapter_dirs = prepared
 
     assert "params" in lora_names
     assert "activations" in lora_names
@@ -533,6 +532,25 @@ def test_lora_names_structure(prepared):
         assert name not in param_set, f"Activation '{name}' should not also be a param"
 
 
+def test_lora_param_names_match_peft_safetensors_keys(prepared):
+    """Exported ONNX LoRA param names exactly match PEFT safetensors keys."""
+    from peft.utils import get_peft_model_state_dict
+
+    _model, lora_names, _adapter_dirs = prepared
+
+    # Re-create the peft model to get its state dict keys
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model)
+    peft_state = get_peft_model_state_dict(peft_model)
+
+    # Every exported param name should be a PEFT safetensors key
+    for name in lora_names["params"]:
+        assert name in peft_state, (
+            f"Exported param '{name}' not found in PEFT state dict keys: "
+            f"{list(peft_state.keys())[:5]}"
+        )
+
+
 # =========================================================================
 # Test: get_zero_weights
 # =========================================================================
@@ -540,7 +558,7 @@ def test_lora_names_structure(prepared):
 
 def test_get_zero_weights(prepared):
     """get_zero_weights returns zero arrays for all LoRA params."""
-    model, lora_names, _output_dir = prepared
+    model, lora_names, _adapter_dirs = prepared
 
     zero_weights = get_zero_weights(model, lora_names)
 
@@ -558,7 +576,7 @@ def test_get_zero_weights(prepared):
 
 def test_write_lora_weight_list(prepared):
     """write_lora_weight_list writes all LoRA param names."""
-    _model, lora_names, _output_dir = prepared
+    _model, lora_names, _adapter_dirs = prepared
 
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, "lora_weight_list.txt")
@@ -585,10 +603,10 @@ def test_write_lora_config():
         assert "model.onnx" in content
 
 
-def test_write_adaptor_list():
-    """write_adaptor_list produces valid YAML structure."""
+def test_write_adapter_list():
+    """write_adapter_list produces valid YAML structure."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        write_adaptor_list(["adapter_A", "adapter_B"], tmpdir, "model")
+        write_adapter_list(["adapter_A", "adapter_B"], tmpdir, "model")
 
         adaptor_path = os.path.join(tmpdir, "lora_adaptor_list.yaml")
         assert os.path.exists(adaptor_path)
@@ -599,183 +617,6 @@ def test_write_adaptor_list():
 
 
 # =========================================================================
-# Test: _onnx_name_to_safetensors_key name transform
-# =========================================================================
-
-
-def test_onnx_name_to_safetensors_key():
-    """Deterministic name transform strips model. prefix and adapter name."""
-    # Standard case: model. prefix + .default. adapter name
-    assert (
-        _onnx_name_to_safetensors_key(
-            "model.base_model.model.model.layers.0.self_attn.q_proj.lora_A.default.weight"
-        )
-        == "base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight"
-    )
-
-    # lora_B variant
-    assert (
-        _onnx_name_to_safetensors_key(
-            "model.base_model.model.model.layers.0.self_attn.q_proj.lora_B.default.weight"
-        )
-        == "base_model.model.model.layers.0.self_attn.q_proj.lora_B.weight"
-    )
-
-    # Non-default adapter name
-    assert (
-        _onnx_name_to_safetensors_key(
-            "model.base_model.model.model.layers.0.self_attn.q_proj.lora_A.style.weight"
-        )
-        == "base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight"
-    )
-
-    # No model. prefix (edge case)
-    assert (
-        _onnx_name_to_safetensors_key("base_model.model.layers.0.lora_A.default.weight")
-        == "base_model.model.layers.0.lora_A.weight"
-    )
-
-    # Higher layer index
-    assert (
-        _onnx_name_to_safetensors_key(
-            "model.base_model.model.model.layers.31.self_attn.v_proj.lora_B.default.weight"
-        )
-        == "base_model.model.model.layers.31.self_attn.v_proj.lora_B.weight"
-    )
-
-
-# =========================================================================
-# Test: _load_adapter_safetensors from local directory
-# =========================================================================
-
-
-def test_load_adapter_safetensors_local():
-    """Load adapter weights from a local safetensors file and map to ONNX names."""
-    sf_weights = {
-        "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": np.random.randn(
-            8, 64
-        ).astype(np.float32),
-        "base_model.model.layers.0.self_attn.q_proj.lora_B.weight": np.random.randn(
-            64, 8
-        ).astype(np.float32),
-        "base_model.model.layers.0.self_attn.v_proj.lora_A.weight": np.random.randn(
-            8, 64
-        ).astype(np.float32),
-        "base_model.model.layers.0.self_attn.v_proj.lora_B.weight": np.random.randn(
-            64, 8
-        ).astype(np.float32),
-    }
-
-    onnx_input_names = [
-        "model.base_model.model.layers.0.self_attn.q_proj.lora_A.default.weight",
-        "model.base_model.model.layers.0.self_attn.q_proj.lora_B.default.weight",
-        "model.base_model.model.layers.0.self_attn.v_proj.lora_A.default.weight",
-        "model.base_model.model.layers.0.self_attn.v_proj.lora_B.default.weight",
-    ]
-
-    with tempfile.TemporaryDirectory() as adapter_dir:
-        save_file(sf_weights, os.path.join(adapter_dir, "adapter_model.safetensors"))
-        mapped = _load_adapter_safetensors(adapter_dir, onnx_input_names)
-
-    assert len(mapped) == 4
-    for onnx_name in onnx_input_names:
-        assert onnx_name in mapped
-        assert isinstance(mapped[onnx_name], np.ndarray)
-
-    np.testing.assert_array_equal(
-        mapped[
-            "model.base_model.model.layers.0.self_attn.q_proj.lora_A.default.weight"
-        ],
-        sf_weights["base_model.model.layers.0.self_attn.q_proj.lora_A.weight"],
-    )
-
-
-def test_load_adapter_safetensors_missing_file():
-    """Raises FileNotFoundError when adapter_model.safetensors is missing."""
-    with tempfile.TemporaryDirectory() as empty_dir:
-        with pytest.raises(FileNotFoundError, match="No adapter_model.safetensors"):
-            _load_adapter_safetensors(empty_dir, ["some_name"])
-
-
-def test_load_adapter_safetensors_partial_match():
-    """Raises ValueError when not all ONNX names can be mapped."""
-    sf_weights = {
-        "base_model.model.layers.0.lora_A.weight": np.zeros((4, 8), dtype=np.float32),
-    }
-
-    onnx_names = [
-        "model.base_model.model.layers.0.lora_A.default.weight",
-        "model.base_model.model.layers.0.lora_B.default.weight",
-    ]
-
-    with tempfile.TemporaryDirectory() as adapter_dir:
-        save_file(sf_weights, os.path.join(adapter_dir, "adapter_model.safetensors"))
-        with pytest.raises(ValueError, match="Only mapped 1/2"):
-            _load_adapter_safetensors(adapter_dir, onnx_names)
-
-
-def test_load_adapter_safetensors_direct_file():
-    """Load adapter weights from a direct .safetensors file path."""
-    sf_weights = {
-        "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": np.random.randn(
-            8, 64
-        ).astype(np.float32),
-        "base_model.model.layers.0.self_attn.q_proj.lora_B.weight": np.random.randn(
-            64, 8
-        ).astype(np.float32),
-    }
-
-    onnx_input_names = [
-        "model.base_model.model.layers.0.self_attn.q_proj.lora_A.default.weight",
-        "model.base_model.model.layers.0.self_attn.q_proj.lora_B.default.weight",
-    ]
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        file_path = os.path.join(tmpdir, "my_adapter.safetensors")
-        save_file(sf_weights, file_path)
-        mapped = _load_adapter_safetensors(file_path, onnx_input_names)
-
-    assert len(mapped) == 2
-    for name in onnx_input_names:
-        assert name in mapped
-
-
-# =========================================================================
-# Test: _extract_output handles various model output types
-# =========================================================================
-
-
-def test_extract_output():
-    """_extract_output handles tensors, structured outputs, and tuples."""
-    t = torch.randn(2, 3)
-    assert _extract_output(t) is t
-
-    class CausalLMOutput:
-        def __init__(self):
-            self.logits = torch.randn(2, 3)
-
-    out = CausalLMOutput()
-    assert _extract_output(out) is out.logits
-
-    class UNetOutput:
-        def __init__(self):
-            self.sample = torch.randn(1, 4, 64, 64)
-
-    out = UNetOutput()
-    assert _extract_output(out) is out.sample
-
-    class EncoderOutput:
-        def __init__(self):
-            self.last_hidden_state = torch.randn(1, 10, 768)
-
-    out = EncoderOutput()
-    assert _extract_output(out) is out.last_hidden_state
-
-    t0 = torch.randn(2, 3)
-    assert _extract_output((t0, torch.randn(2, 3))) is t0
-
-
-# =========================================================================
 # Test: _infer_input_names from forward signature
 # =========================================================================
 
@@ -783,15 +624,11 @@ def test_extract_output():
 def test_infer_input_names():
     """_infer_input_names extracts required param names from forward signature."""
 
-    class FakeBaseModel(nn.Module):
+    class FakeModel(nn.Module):
         def forward(self, input_ids, attention_mask=None, labels=None):
             pass
 
-    class FakePeftModel:
-        def get_base_model(self):
-            return FakeBaseModel()
-
-    names = _infer_input_names(FakePeftModel(), (torch.zeros(1, 10),))
+    names = _infer_input_names(FakeModel(), (torch.zeros(1, 10),))
     assert names == ["input_ids"]
 
 
@@ -802,12 +639,8 @@ def test_infer_input_names_multiple_required():
         def forward(self, sample, timestep, encoder_hidden_states, return_dict=True):
             pass
 
-    class FakePeftModel:
-        def get_base_model(self):
-            return FakeUNet()
-
     inputs = (torch.zeros(1, 4, 64, 64), torch.tensor(1.0), torch.zeros(1, 77, 768))
-    names = _infer_input_names(FakePeftModel(), inputs)
+    names = _infer_input_names(FakeUNet(), inputs)
     assert names == ["sample", "timestep", "encoder_hidden_states"]
 
 
@@ -818,11 +651,7 @@ def test_infer_input_names_fallback():
         def forward(self, *args, **kwargs):
             pass
 
-    class FakePeftModel:
-        def get_base_model(self):
-            return FakeModel()
-
-    names = _infer_input_names(FakePeftModel(), (torch.zeros(1), torch.zeros(2)))
+    names = _infer_input_names(FakeModel(), (torch.zeros(1), torch.zeros(2)))
     assert names == ["input_0", "input_1"]
 
 
@@ -832,15 +661,46 @@ def test_infer_input_names_fallback():
 
 
 def test_infer_dynamic_shapes():
-    """_infer_dynamic_shapes returns a tuple with dim 0 dynamic for tensors with dim > 0."""
+    """_infer_dynamic_shapes returns a dict with seq_len dim dynamic."""
     inputs = (torch.zeros(1, 10), torch.tensor(1.0))
-    names = ["input_ids", "timestep"]
-    shapes = _infer_dynamic_shapes(inputs, names)
+    shapes = _infer_dynamic_shapes(["x", "scalar"], inputs)
 
-    assert isinstance(shapes, tuple)
+    assert isinstance(shapes, dict)
     assert len(shapes) == 2
-    assert 0 in shapes[0]
-    assert shapes[1] == {}
+    # 2-D tensor: seq_len is dim 1
+    assert 1 in shapes["x"]
+    assert shapes["scalar"] == {}
+
+    # 1-D tensor: seq_len is dim 0
+    inputs_1d = (torch.zeros(10),)
+    shapes_1d = _infer_dynamic_shapes(["seq"], inputs_1d)
+    assert 0 in shapes_1d["seq"]
+
+
+# =========================================================================
+# Test: eager attention exports without SDPA switch
+# =========================================================================
+
+
+def test_eager_attention_export():
+    """Export works with eager attention config (no SDPA switch needed)."""
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model)
+    peft_model.eval()
+
+    class Config:
+        _attn_implementation = "eager"
+
+    inner_model = peft_model.base_model.model
+    inner_model.config = Config()
+
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _model, lora_names = export_peft_to_onnx(peft_model, sample_inputs, tmpdir)
+
+    # Config should be unchanged
+    assert inner_model.config._attn_implementation == "eager"
+    assert len(lora_names["params"]) > 0
 
 
 # =========================================================================
@@ -850,7 +710,7 @@ def test_infer_dynamic_shapes():
 
 def test_different_adapters_different_outputs(prepared):
     """Feed dict with different adapter weights must produce different outputs."""
-    model, lora_names, output_dir = prepared
+    model, lora_names, adapter_dirs = prepared
 
     sim = _make_sim(model)
     set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
@@ -860,12 +720,12 @@ def test_different_adapters_different_outputs(prepared):
     _calibrate(sim, zero_weights)
 
     # Run inference with adapter B
-    adapter_b = load_file(os.path.join(output_dir, "B.safetensors"))
+    adapter_b = load_file(os.path.join(adapter_dirs["B"], "adapter_model.safetensors"))
     input_data = {"input_ids": np.array([[1, 2, 3, 4, 5] + [0] * 27], dtype=np.int64)}
     output_b = sim.session.run(None, {**input_data, **adapter_b})[0]
 
     # Run inference with adapter C
-    adapter_c = load_file(os.path.join(output_dir, "C.safetensors"))
+    adapter_c = load_file(os.path.join(adapter_dirs["C"], "adapter_model.safetensors"))
     output_c = sim.session.run(None, {**input_data, **adapter_c})[0]
 
     # Run inference with zero weights (LoRA disabled)
@@ -887,7 +747,7 @@ def test_different_adapters_different_outputs(prepared):
 
 def test_set_lora_bitwidth_params_and_activations(prepared):
     """set_lora_bitwidth sets bitwidth on BOTH param and activation quantizers."""
-    model, lora_names, _output_dir = prepared
+    model, lora_names, _adapter_dirs = prepared
 
     sim = _make_sim(model)
     count = set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
@@ -916,7 +776,7 @@ def test_set_lora_bitwidth_params_and_activations(prepared):
 
 def test_set_lora_bitwidth_string_type(prepared):
     """set_lora_bitwidth accepts string types (Union[str, qtype] pattern)."""
-    model, lora_names, _output_dir = prepared
+    model, lora_names, _adapter_dirs = prepared
 
     sim = _make_sim(model)
     count = set_lora_bitwidth(
@@ -946,7 +806,7 @@ def test_lora_activation_count(prepared):
     With 2 params (lora_A.weight, lora_B.weight) per target, we expect
     activations >= 2 * num_params (i.e., at least 2 activations per param).
     """
-    _model, lora_names, _output_dir = prepared
+    _model, lora_names, _adapter_dirs = prepared
 
     num_params = len(lora_names["params"])
     num_activations = len(lora_names["activations"])
@@ -974,7 +834,7 @@ def test_lora_activation_count(prepared):
 
 def test_get_zero_weights_missing_initializer(prepared):
     """get_zero_weights raises ValueError when param names aren't in the model."""
-    model, _lora_names, _output_dir = prepared
+    model, _lora_names, _adapter_dirs = prepared
 
     bad_lora_names = {
         "params": ["nonexistent_param_name"],
@@ -992,7 +852,7 @@ def test_get_zero_weights_missing_initializer(prepared):
 
 def test_unfreeze_resets_lora_encodings(prepared):
     """unfreeze_lora_quantizers resets encoding stats so recalibration works."""
-    model, lora_names, output_dir = prepared
+    model, lora_names, adapter_dirs = prepared
 
     sim = _make_sim(model)
     set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
@@ -1003,13 +863,13 @@ def test_unfreeze_resets_lora_encodings(prepared):
     freeze_base_model(sim, lora_names)
 
     # Calibrate with adapter B
-    adapter_b = load_file(os.path.join(output_dir, "B.safetensors"))
+    adapter_b = load_file(os.path.join(adapter_dirs["B"], "adapter_model.safetensors"))
     _calibrate(sim, adapter_b)
     encodings_b = get_lora_encodings(sim, lora_names)
 
     # Unfreeze and calibrate with adapter C
     unfreeze_lora_quantizers(sim, lora_names)
-    adapter_c = load_file(os.path.join(output_dir, "C.safetensors"))
+    adapter_c = load_file(os.path.join(adapter_dirs["C"], "adapter_model.safetensors"))
     _calibrate(sim, adapter_c)
     encodings_c = get_lora_encodings(sim, lora_names)
 
@@ -1066,44 +926,40 @@ def test_infer_input_names_all_defaults():
         def forward(self, input_ids=None, attention_mask=None, position_ids=None):
             pass
 
-    class FakePeftModel:
-        def get_base_model(self):
-            return FakeHFModel()
+    model = FakeHFModel()
 
     # 2 sample inputs → first 2 positional params
-    names = _infer_input_names(
-        FakePeftModel(), (torch.zeros(1, 10), torch.zeros(1, 10))
-    )
+    names = _infer_input_names(model, (torch.zeros(1, 10), torch.zeros(1, 10)))
     assert names == ["input_ids", "attention_mask"]
 
     # 1 sample input → first positional param only
-    names = _infer_input_names(FakePeftModel(), (torch.zeros(1, 10),))
+    names = _infer_input_names(model, (torch.zeros(1, 10),))
     assert names == ["input_ids"]
 
 
 # =========================================================================
-# Error-path tests: _validate_lora_names
+# Error-path tests: name mismatch
 # =========================================================================
 
 
-def test_validate_lora_names_missing_keys(prepared):
-    """Functions raise ValueError when lora_names is missing required keys."""
-    model, _lora_names, _output_dir = prepared
+def test_set_lora_bitwidth_raises_on_no_match(prepared):
+    """set_lora_bitwidth raises ValueError when no LoRA names match sim quantizers."""
+    model, _lora_names, _adapter_dirs = prepared
     sim = _make_sim(model)
 
-    bad_names = {"params": ["some_name"]}  # missing "activations"
-    with pytest.raises(ValueError, match="must have 'params' and 'activations' keys"):
-        freeze_base_model(sim, bad_names)
+    bogus_names = {"params": ["bogus_param"], "activations": ["bogus_act"]}
+    with pytest.raises(ValueError, match="No LoRA quantizers found in sim"):
+        set_lora_bitwidth(sim, bogus_names, param_type=int16, activation_type=int16)
 
 
-def test_validate_lora_names_empty_lists(prepared):
-    """Functions raise ValueError when both params and activations are empty."""
-    model, _lora_names, _output_dir = prepared
+def test_unfreeze_lora_raises_on_no_match(prepared):
+    """unfreeze_lora_quantizers raises ValueError when no LoRA names match sim."""
+    model, _lora_names, _adapter_dirs = prepared
     sim = _make_sim(model)
 
-    empty_names = {"params": [], "activations": []}
-    with pytest.raises(ValueError, match="empty 'params' and 'activations' lists"):
-        set_lora_bitwidth(sim, empty_names, param_type=int16, activation_type=int16)
+    bogus_names = {"params": ["bogus_param"], "activations": ["bogus_act"]}
+    with pytest.raises(ValueError, match="No LoRA quantizers found in sim"):
+        unfreeze_lora_quantizers(sim, bogus_names)
 
 
 # =========================================================================
@@ -1113,7 +969,7 @@ def test_validate_lora_names_empty_lists(prepared):
 
 def test_set_lora_bitwidth_raises_on_frozen(prepared):
     """set_lora_bitwidth raises RuntimeError if LoRA quantizers are already frozen."""
-    model, lora_names, output_dir = prepared
+    model, lora_names, adapter_dirs = prepared
     sim = _make_sim(model)
 
     # Calibrate and freeze everything first
@@ -1138,7 +994,7 @@ def test_set_lora_bitwidth_raises_on_frozen(prepared):
 
 def test_get_lora_encodings_raises_uncalibrated(prepared):
     """get_lora_encodings raises RuntimeError if quantizers have no encoding."""
-    model, lora_names, _output_dir = prepared
+    model, lora_names, _adapter_dirs = prepared
     sim = _make_sim(model)
 
     # Don't calibrate — quantizers have no encodings
@@ -1153,7 +1009,7 @@ def test_get_lora_encodings_raises_uncalibrated(prepared):
 
 def test_set_lora_encodings_raises_missing_names(prepared):
     """set_lora_encodings raises ValueError if encoding names aren't in sim."""
-    model, _lora_names, _output_dir = prepared
+    model, _lora_names, _adapter_dirs = prepared
     sim = _make_sim(model)
 
     fake_encodings = {"nonexistent_quantizer_name": {"some": "data"}}
@@ -1168,14 +1024,14 @@ def test_set_lora_encodings_raises_missing_names(prepared):
 
 def test_quantized_output_close_to_fp32(prepared):
     """Quantized LoRA output should be close to FP32 (not garbage)."""
-    model, lora_names, output_dir = prepared
+    model, lora_names, adapter_dirs = prepared
 
     # FP32 baseline: run original model without quantization
     fp32_session = ort.InferenceSession(
         model.SerializeToString(),
         providers=["CPUExecutionProvider"],
     )
-    adapter_b = load_file(os.path.join(output_dir, "B.safetensors"))
+    adapter_b = load_file(os.path.join(adapter_dirs["B"], "adapter_model.safetensors"))
     input_data = {"input_ids": np.array([[1, 2, 3, 4, 5] + [0] * 27], dtype=np.int64)}
     fp32_feed = {**input_data, **adapter_b}
     fp32_output = fp32_session.run(None, fp32_feed)[0]
@@ -1205,11 +1061,11 @@ def test_quantized_output_close_to_fp32(prepared):
 
 def test_export_preserves_inference(prepared):
     """sim.session.run() produces same output before and after sim.export()."""
-    model, lora_names, output_dir = prepared
+    model, lora_names, adapter_dirs = prepared
 
     sim = _make_sim(model)
     set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
-    adapter_b = load_file(os.path.join(output_dir, "B.safetensors"))
+    adapter_b = load_file(os.path.join(adapter_dirs["B"], "adapter_model.safetensors"))
     _calibrate(sim, adapter_b)
 
     input_data = {"input_ids": np.array([[1, 2, 3, 4, 5] + [0] * 27], dtype=np.int64)}
@@ -1238,7 +1094,7 @@ def test_export_preserves_inference(prepared):
 
 def test_lora_names_json_serializable(prepared):
     """lora_names must be JSON-serializable (71st adapter scenario)."""
-    _model, lora_names, _output_dir = prepared
+    _model, lora_names, _adapter_dirs = prepared
 
     # Serialize to JSON and back
     json_str = json.dumps(lora_names)
@@ -1249,3 +1105,1623 @@ def test_lora_names_json_serializable(prepared):
     assert isinstance(restored["activations"], list)
     assert all(isinstance(name, str) for name in restored["params"])
     assert all(isinstance(name, str) for name in restored["activations"])
+
+
+# =========================================================================
+# Test: explicit input_names and dynamic_shapes
+# =========================================================================
+
+
+def test_export_explicit_input_names():
+    """export_peft_to_onnx accepts user-provided input_names and dynamic_shapes."""
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model)
+    peft_model.eval()
+
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+    batch = torch.export.Dim("batch")
+    # dynamic_shapes keys must match forward() arg names for torch.export
+    dynamic_shapes = {"input_ids": {0: batch}}
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model_proto, lora_names = export_peft_to_onnx(
+            peft_model,
+            sample_inputs,
+            tmpdir,
+            input_names=["tokens"],
+            dynamic_shapes=dynamic_shapes,
+        )
+
+    assert len(lora_names["params"]) > 0
+    # Verify the custom input name was used in the ONNX graph
+    graph_input_names = [inp.name for inp in model_proto.graph.input]
+    assert "tokens" in graph_input_names
+
+
+# =========================================================================
+# Error-path tests: get_lora_encodings with no matching quantizers
+# =========================================================================
+
+
+def test_get_lora_encodings_raises_on_no_match(prepared):
+    """get_lora_encodings raises ValueError when no LoRA names match sim."""
+    model, _lora_names, _adapter_dirs = prepared
+    sim = _make_sim(model)
+
+    bogus_names = {"params": ["bogus_param"], "activations": ["bogus_act"]}
+    with pytest.raises(ValueError, match="No LoRA quantizers found in sim"):
+        get_lora_encodings(sim, bogus_names)
+
+
+# =========================================================================
+# Multi-adapter helpers (different attach points)
+# =========================================================================
+
+
+def _make_multi_adapter_artifacts(output_dir, rank_a=8, rank_b=4):
+    """Export a model with two adapters that target different modules.
+
+    Adapter A: targets [q_proj, v_proj], rank=rank_a, alpha=16
+    Adapter B: targets [q_proj, k_proj, v_proj, o_proj], rank=rank_b, alpha=8
+
+    The union graph should have LoRA branches on all 4 attention projections.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_model = _build_tiny_transformer()
+    # Apply LoRA targeting q_proj, v_proj (adapter A's targets)
+    config_a = LoraConfig(
+        r=rank_a,
+        lora_alpha=16,
+        target_modules=["q_proj", "v_proj"],
+        lora_dropout=0.0,
+        bias="none",
+    )
+    peft_model = get_peft_model(base_model, config_a)
+    _randomize_lora_weights(peft_model, seed=99)
+    peft_model.eval()
+
+    # Save adapter A (with randomized weights so LoRA has a visible effect)
+    adapter_a_dir = str(output_dir / "adapter_A")
+    peft_model.save_pretrained(adapter_a_dir)
+
+    # Save adapter B config (different targets, different rank/alpha)
+    adapter_b_dir = str(output_dir / "adapter_B")
+    os.makedirs(adapter_b_dir, exist_ok=True)
+    with open(os.path.join(adapter_b_dir, "adapter_config.json"), "w") as f:
+        json.dump(
+            {
+                "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+                "r": rank_b,
+                "lora_alpha": 8,
+                "peft_type": "LORA",
+            },
+            f,
+        )
+
+    # Create fake safetensors for adapter B with correct shapes.
+    # Shapes must match the graph initializers: q_proj/v_proj use rank_a
+    # (from the PEFT export), k_proj/o_proj use rank_b (from add_lora_branches).
+    from safetensors.numpy import save_file
+
+    hidden_size = 64
+    adapter_b_weights = {}
+    for layer_idx in range(2):
+        for module in ["q_proj", "k_proj", "v_proj", "o_proj"]:
+            # Use the graph's rank for this module
+            r = rank_a if module in ["q_proj", "v_proj"] else rank_b
+            prefix = f"base_model.model.layers.{layer_idx}.self_attn.{module}"
+            adapter_b_weights[f"{prefix}.lora_A.weight"] = (
+                np.random.randn(r, hidden_size).astype(np.float32) * 0.01
+            )
+            adapter_b_weights[f"{prefix}.lora_B.weight"] = (
+                np.random.randn(hidden_size, r).astype(np.float32) * 0.01
+            )
+    save_file(
+        adapter_b_weights, os.path.join(adapter_b_dir, "adapter_model.safetensors")
+    )
+
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+    model_proto, lora_names = export_peft_to_onnx(
+        peft_model,
+        sample_inputs,
+        str(output_dir),
+        adapter_paths=[adapter_b_dir],
+    )
+
+    return {
+        "model_proto": model_proto,
+        "lora_names": lora_names,
+        "output_dir": str(output_dir),
+        "adapter_a_dir": adapter_a_dir,
+        "adapter_b_dir": adapter_b_dir,
+        "adapter_b_weights": adapter_b_weights,
+    }
+
+
+@pytest.fixture(scope="session")
+def multi_adapter_artifacts(tmp_path_factory):
+    """Generate multi-adapter test artifacts with different attach points."""
+    artifacts_dir = tmp_path_factory.mktemp("multi_adapter")
+    return _make_multi_adapter_artifacts(str(artifacts_dir))
+
+
+@pytest.fixture
+def multi_prepared(multi_adapter_artifacts) -> tuple:
+    """Fresh model proto and lora_names for each multi-adapter test."""
+    model_proto = onnx.load(
+        os.path.join(multi_adapter_artifacts["output_dir"], "model.onnx")
+    )
+    onnx.load_external_data_for_model(
+        model_proto, multi_adapter_artifacts["output_dir"]
+    )
+    return (
+        model_proto,
+        multi_adapter_artifacts["lora_names"],
+        multi_adapter_artifacts["adapter_a_dir"],
+        multi_adapter_artifacts["adapter_b_dir"],
+    )
+
+
+# =========================================================================
+# Test: Multi-adapter export with different attach points
+# =========================================================================
+
+
+def test_multi_adapter_export_union_graph(multi_adapter_artifacts):
+    """Union graph has LoRA branches for ALL target modules across adapters."""
+    lora_names = multi_adapter_artifacts["lora_names"]
+
+    # Should have params for q_proj, k_proj, v_proj, o_proj (all 4 projections)
+    param_modules = set()
+    for name in lora_names["params"]:
+        for mod in ["q_proj", "k_proj", "v_proj", "o_proj"]:
+            if f".{mod}." in name:
+                param_modules.add(mod)
+
+    assert param_modules == {"q_proj", "k_proj", "v_proj", "o_proj"}, (
+        f"Expected branches for all 4 projections, got: {param_modules}"
+    )
+
+    # Should have scales for all 4 modules
+    scale_modules = set()
+    for name in lora_names["scales"]:
+        for mod in ["q_proj", "k_proj", "v_proj", "o_proj"]:
+            if f".{mod}." in name:
+                scale_modules.add(mod)
+
+    assert scale_modules == {"q_proj", "k_proj", "v_proj", "o_proj"}, (
+        f"Expected scales for all 4 projections, got: {scale_modules}"
+    )
+
+
+def test_multi_adapter_lora_names_structure(multi_adapter_artifacts):
+    """lora_names has params, activations, and scales keys with correct content."""
+    lora_names = multi_adapter_artifacts["lora_names"]
+
+    assert "params" in lora_names
+    assert "activations" in lora_names
+    assert "scales" in lora_names
+    assert len(lora_names["params"]) > 0
+    assert len(lora_names["activations"]) > 0
+    assert len(lora_names["scales"]) > 0
+
+    for name in lora_names["params"]:
+        assert "lora_A" in name or "lora_B" in name
+
+
+# =========================================================================
+# Test: get_adapter_scale_weights
+# =========================================================================
+
+
+def test_get_adapter_scale_weights_matching(multi_adapter_artifacts):
+    """get_adapter_scale_weights returns correct scales for matching modules."""
+    lora_names = multi_adapter_artifacts["lora_names"]
+    adapter_a_dir = multi_adapter_artifacts["adapter_a_dir"]
+
+    scales = get_adapter_scale_weights(lora_names, adapter_a_dir)
+
+    # Should return a value for every scale name
+    assert set(scales.keys()) == set(lora_names["scales"].keys())
+
+    # Adapter A: alpha=16, r=8 → scale=2.0 for q_proj, v_proj
+    for name, val in scales.items():
+        assert isinstance(val, np.ndarray)
+        assert val.dtype == np.float32
+        if "q_proj" in name or "v_proj" in name:
+            assert float(val) == pytest.approx(2.0), (
+                f"{name} should have scale 2.0 (alpha=16, r=8)"
+            )
+
+
+def test_get_adapter_scale_weights_different_adapters(multi_adapter_artifacts):
+    """Different adapters with different alpha/r produce different scale values."""
+    lora_names = multi_adapter_artifacts["lora_names"]
+    adapter_a_dir = multi_adapter_artifacts["adapter_a_dir"]
+    adapter_b_dir = multi_adapter_artifacts["adapter_b_dir"]
+
+    scales_a = get_adapter_scale_weights(lora_names, adapter_a_dir)
+    scales_b = get_adapter_scale_weights(lora_names, adapter_b_dir)
+
+    # Both should return all scale names
+    assert set(scales_a.keys()) == set(scales_b.keys())
+
+    # Adapter A: alpha=16, r=8 → 2.0 for q_proj, v_proj
+    # Adapter B: alpha=8, r=4 → 2.0 for q_proj, k_proj, v_proj, o_proj
+    # For k_proj: A returns default (from graph), B returns 2.0
+    for name in scales_b:
+        if "k_proj" in name or "o_proj" in name:
+            assert float(scales_b[name]) == pytest.approx(2.0), (
+                f"Adapter B {name} should have scale 2.0 (alpha=8, r=4)"
+            )
+
+
+def test_get_adapter_scale_weights_missing_config():
+    """get_adapter_scale_weights raises FileNotFoundError for missing config."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with pytest.raises(FileNotFoundError, match="adapter_config.json"):
+            get_adapter_scale_weights({"scales": {}}, tmpdir)
+
+
+# =========================================================================
+# Test: add_lora_branches standalone
+# =========================================================================
+
+
+def test_add_lora_branches_standalone(multi_prepared):
+    """add_lora_branches inserts new branches for modules not already in graph."""
+    model, lora_names, _adapter_a_dir, _adapter_b_dir = multi_prepared
+
+    # Graph already has q_proj, k_proj, v_proj, o_proj branches.
+    # Try adding branches for up_proj, down_proj (from the FFN).
+    new_config = {
+        "target_modules": ["up_proj", "down_proj"],
+        "r": 4,
+        "lora_alpha": 8,
+    }
+
+    new_names = add_lora_branches(model, new_config)
+
+    assert len(new_names["params"]) > 0
+    assert len(new_names["scales"]) > 0
+
+    # Verify new params are for up_proj and down_proj
+    new_modules = set()
+    for name in new_names["params"]:
+        for mod in ["up_proj", "down_proj"]:
+            if f".{mod}." in name:
+                new_modules.add(mod)
+
+    assert new_modules == {"up_proj", "down_proj"}, (
+        f"Expected new branches for up_proj, down_proj; got: {new_modules}"
+    )
+
+
+def test_add_lora_branches_skips_existing(multi_prepared):
+    """add_lora_branches skips modules that already have LoRA branches."""
+    model, lora_names, _adapter_a_dir, _adapter_b_dir = multi_prepared
+
+    # Try adding branches for q_proj (already exists) and up_proj (new)
+    config = {
+        "target_modules": ["q_proj", "up_proj"],
+        "r": 4,
+        "lora_alpha": 8,
+    }
+
+    new_names = add_lora_branches(model, config)
+
+    # Only up_proj should be new (q_proj already exists)
+    new_modules = set()
+    for name in new_names["params"]:
+        for mod in ["q_proj", "up_proj"]:
+            if f".{mod}." in name:
+                new_modules.add(mod)
+
+    assert "q_proj" not in new_modules, (
+        "q_proj should have been skipped (already exists)"
+    )
+    assert "up_proj" in new_modules, "up_proj should be newly inserted"
+
+
+def test_add_lora_branches_from_path():
+    """add_lora_branches accepts a file path instead of a dict."""
+    base_model = _build_tiny_transformer()
+    config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=["q_proj", "v_proj"],
+        lora_dropout=0.0,
+        bias="none",
+    )
+    peft_model = get_peft_model(base_model, config)
+    peft_model.eval()
+
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model_proto, lora_names = export_peft_to_onnx(peft_model, sample_inputs, tmpdir)
+
+        # Write adapter config to a file
+        config_path = os.path.join(tmpdir, "adapter_config.json")
+        with open(config_path, "w") as f:
+            json.dump(
+                {
+                    "target_modules": ["k_proj", "o_proj"],
+                    "r": 4,
+                    "lora_alpha": 8,
+                },
+                f,
+            )
+
+        new_names = add_lora_branches(model_proto, config_path)
+
+    assert len(new_names["params"]) > 0
+    new_modules = set()
+    for name in new_names["params"]:
+        for mod in ["k_proj", "o_proj"]:
+            if f".{mod}." in name:
+                new_modules.add(mod)
+    assert new_modules == {"k_proj", "o_proj"}
+
+
+# =========================================================================
+# Test: Multi-adapter V1 workflow (different attach points)
+# =========================================================================
+
+
+def test_multi_adapter_v1_workflow(multi_prepared):
+    """V1 with different attach points: single encoding across adapters."""
+    model, lora_names, adapter_a_dir, adapter_b_dir = multi_prepared
+
+    sim = _make_sim(model)
+    set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
+
+    # Load adapter weights
+    adapter_a = load_file(os.path.join(adapter_a_dir, "adapter_model.safetensors"))
+    adapter_b = load_file(os.path.join(adapter_b_dir, "adapter_model.safetensors"))
+
+    zero_weights = get_zero_weights(model, lora_names)
+
+    # Calibrate with all adapters (V1 strategy)
+    def calibrate_all(session):
+        for weights in [adapter_a, adapter_b]:
+            feed = {**zero_weights, **weights}
+            scales = get_adapter_scale_weights(
+                lora_names,
+                adapter_a_dir if weights is adapter_a else adapter_b_dir,
+            )
+            for _ in range(3):
+                batch = {
+                    "input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64),
+                }
+                batch.update(feed)
+                batch.update(scales)
+                session.run(None, batch)
+
+    sim.compute_encodings(calibrate_all)
+
+    frozen = freeze_base_model(sim, lora_names)
+    assert frozen > 0
+
+    with tempfile.TemporaryDirectory() as export_dir:
+        sim.export(export_dir, "model_v1", export_model=False)
+        assert os.path.exists(os.path.join(export_dir, "model_v1.encodings"))
+
+
+# =========================================================================
+# Test: Multi-adapter V2 workflow (different attach points)
+# =========================================================================
+
+
+def test_multi_adapter_v2_workflow(multi_prepared):
+    """V2 with different attach points: full recalibration per adapter."""
+    model, lora_names, adapter_a_dir, adapter_b_dir = multi_prepared
+
+    sim = _make_sim(model)
+    set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
+
+    adapter_a = load_file(os.path.join(adapter_a_dir, "adapter_model.safetensors"))
+    adapter_b = load_file(os.path.join(adapter_b_dir, "adapter_model.safetensors"))
+    zero_weights = get_zero_weights(model, lora_names)
+
+    with tempfile.TemporaryDirectory() as export_dir:
+        for name, weights, adapter_dir in [
+            ("A", adapter_a, adapter_a_dir),
+            ("B", adapter_b, adapter_b_dir),
+        ]:
+            feed = {**zero_weights, **weights}
+            scales = get_adapter_scale_weights(lora_names, adapter_dir)
+
+            def cal_fn(session, f=feed, s=scales):
+                for _ in range(3):
+                    batch = {
+                        "input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64)
+                    }
+                    batch.update(f)
+                    batch.update(s)
+                    session.run(None, batch)
+
+            sim.compute_encodings(cal_fn)
+            sim.export(export_dir, f"model_{name}", export_model=False)
+            assert os.path.exists(os.path.join(export_dir, f"model_{name}.encodings"))
+
+
+# =========================================================================
+# Test: Multi-adapter V3 workflow (different attach points)
+# =========================================================================
+
+
+def test_multi_adapter_v3_workflow(multi_prepared):
+    """V3 with different attach points: base frozen, per-adapter LoRA recalibration."""
+    model, lora_names, adapter_a_dir, adapter_b_dir = multi_prepared
+
+    sim = _make_sim(model)
+    set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
+
+    zero_weights = get_zero_weights(model, lora_names)
+    scale_defaults = {
+        name: np.array(val, dtype=np.float32)
+        for name, val in lora_names["scales"].items()
+    }
+
+    # Base calibration with all branches zeroed
+    def base_cal(session):
+        for _ in range(5):
+            batch = {"input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64)}
+            batch.update(zero_weights)
+            batch.update(scale_defaults)
+            session.run(None, batch)
+
+    sim.compute_encodings(base_cal)
+
+    # Freeze base
+    frozen = freeze_base_model(sim, lora_names)
+    assert frozen > 0
+
+    # Snapshot a base param encoding
+    base_param_name = next(
+        name
+        for name in sim.param_names
+        if name not in set(lora_names["params"])
+        and name in sim.qc_quantize_op_dict
+        and sim.qc_quantize_op_dict[name].enabled
+    )
+    base_encoding_before = sim.qc_quantize_op_dict[base_param_name].export_encodings(
+        "1.0.0"
+    )
+
+    # Per-adapter calibration
+    adapter_a = load_file(os.path.join(adapter_a_dir, "adapter_model.safetensors"))
+    adapter_b = load_file(os.path.join(adapter_b_dir, "adapter_model.safetensors"))
+
+    adapter_encodings = {}
+    with tempfile.TemporaryDirectory() as export_dir:
+        for name, weights, adapter_dir in [
+            ("A", adapter_a, adapter_a_dir),
+            ("B", adapter_b, adapter_b_dir),
+        ]:
+            unfreeze_lora_quantizers(sim, lora_names)
+
+            feed = {**zero_weights, **weights}
+            scales = get_adapter_scale_weights(lora_names, adapter_dir)
+
+            def cal_fn(session, f=feed, s=scales):
+                for _ in range(3):
+                    batch = {
+                        "input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64)
+                    }
+                    batch.update(f)
+                    batch.update(s)
+                    session.run(None, batch)
+
+            sim.compute_encodings(cal_fn)
+            adapter_encodings[name] = get_lora_encodings(sim, lora_names)
+
+            sim.export(export_dir, f"model_{name}", export_model=False)
+            assert os.path.exists(os.path.join(export_dir, f"model_{name}.encodings"))
+
+    # Verify base encodings didn't change
+    base_encoding_after = sim.qc_quantize_op_dict[base_param_name].export_encodings(
+        "1.0.0"
+    )
+    assert base_encoding_before == base_encoding_after, (
+        "Base encoding changed during per-adapter calibration"
+    )
+
+    # Verify adapter encodings differ
+    enc_a = adapter_encodings["A"]
+    enc_b = adapter_encodings["B"]
+    assert len(enc_a) > 0 and len(enc_b) > 0
+    any_differ = any(enc_a.get(n) != enc_b.get(n) for n in enc_a)
+    assert any_differ, "Adapter A and B encodings should differ"
+
+
+# =========================================================================
+# Test: Zero-weight branches are invisible (different attach points)
+# =========================================================================
+
+
+def test_zero_weight_branches_invisible(multi_prepared):
+    """Feeding zero weights for extra branches produces same output as base-only."""
+    model, lora_names, adapter_a_dir, _adapter_b_dir = multi_prepared
+
+    # Run with zero weights (all branches disabled)
+    zero_weights = get_zero_weights(model, lora_names)
+    scale_defaults = {
+        name: np.array(val, dtype=np.float32)
+        for name, val in lora_names["scales"].items()
+    }
+
+    session = ort.InferenceSession(
+        model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+    )
+
+    input_data = {"input_ids": np.array([[1, 2, 3, 4, 5] + [0] * 27], dtype=np.int64)}
+    feed_zero = {**input_data, **zero_weights, **scale_defaults}
+    output_zero = session.run(None, feed_zero)[0]
+
+    # Run with adapter A (only q_proj, v_proj active; k_proj, o_proj zero)
+    adapter_a = load_file(os.path.join(adapter_a_dir, "adapter_model.safetensors"))
+    feed_a = {**zero_weights, **adapter_a}
+    scales_a = get_adapter_scale_weights(lora_names, adapter_a_dir)
+    feed_a_full = {**input_data, **feed_a, **scales_a}
+    output_a = session.run(None, feed_a_full)[0]
+
+    # Adapter A should differ from zero (LoRA has an effect)
+    assert not np.allclose(output_a, output_zero, atol=1e-6), (
+        "Adapter A output should differ from zero-weight output"
+    )
+
+    # Output should be finite (not NaN or Inf)
+    assert np.all(np.isfinite(output_zero)), "Zero-weight output has NaN/Inf"
+    assert np.all(np.isfinite(output_a)), "Adapter A output has NaN/Inf"
+
+
+# =========================================================================
+# Test: Encoding roundtrip with multi-adapter (different attach points)
+# =========================================================================
+
+
+def test_multi_adapter_encoding_roundtrip(multi_prepared):
+    """get/set_lora_encodings round-trip works with multi-adapter union graph."""
+    model, lora_names, adapter_a_dir, adapter_b_dir = multi_prepared
+
+    sim = _make_sim(model)
+    set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
+
+    zero_weights = get_zero_weights(model, lora_names)
+    scale_defaults = {
+        name: np.array(val, dtype=np.float32)
+        for name, val in lora_names["scales"].items()
+    }
+
+    # Base calibration
+    def base_cal(session):
+        for _ in range(3):
+            batch = {"input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64)}
+            batch.update(zero_weights)
+            batch.update(scale_defaults)
+            session.run(None, batch)
+
+    sim.compute_encodings(base_cal)
+    freeze_base_model(sim, lora_names)
+
+    # Calibrate adapter A
+    adapter_a = load_file(os.path.join(adapter_a_dir, "adapter_model.safetensors"))
+    unfreeze_lora_quantizers(sim, lora_names)
+    feed_a = {**zero_weights, **adapter_a}
+    scales_a = get_adapter_scale_weights(lora_names, adapter_a_dir)
+
+    def cal_a(session):
+        for _ in range(3):
+            batch = {"input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64)}
+            batch.update(feed_a)
+            batch.update(scales_a)
+            session.run(None, batch)
+
+    sim.compute_encodings(cal_a)
+    encodings_a = get_lora_encodings(sim, lora_names)
+
+    # Calibrate adapter B (overwrites A)
+    adapter_b = load_file(os.path.join(adapter_b_dir, "adapter_model.safetensors"))
+    unfreeze_lora_quantizers(sim, lora_names)
+    feed_b = {**zero_weights, **adapter_b}
+    scales_b = get_adapter_scale_weights(lora_names, adapter_b_dir)
+
+    def cal_b(session):
+        for _ in range(3):
+            batch = {"input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64)}
+            batch.update(feed_b)
+            batch.update(scales_b)
+            session.run(None, batch)
+
+    sim.compute_encodings(cal_b)
+
+    # Restore adapter A encodings
+    restored = set_lora_encodings(sim, encodings_a)
+    assert restored == len(encodings_a)
+
+    encodings_a_restored = get_lora_encodings(sim, lora_names)
+    for name in encodings_a:
+        assert name in encodings_a_restored
+        assert encodings_a[name] == encodings_a_restored[name]
+
+
+# =========================================================================
+# Test: TinyLlama E2E V3 workflow with real HF adapters
+# =========================================================================
+
+HF_CACHE = os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "..", "onnx_lora", "hf_cache", "hub"
+)
+_TINYLLAMA_BASE = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+_ADAPTER_A_ID = "barissglc/tinyllama-tarot-v1"  # [q_proj, v_proj], r=8
+_ADAPTER_B_ID = "cahlen/tinyllama-offline-practical-skills-qa-qlora"  # 7 modules, r=64
+
+
+def _resolve_hf_adapter(model_id: str) -> str:
+    """Resolve a HuggingFace model ID to its local snapshot path."""
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(model_id, cache_dir=HF_CACHE)
+
+
+def _tinyllama_available() -> bool:
+    """Check if TinyLlama and both adapters are cached locally."""
+    try:
+        for model_id in [_TINYLLAMA_BASE, _ADAPTER_A_ID, _ADAPTER_B_ID]:
+            model_dir = os.path.join(HF_CACHE, "models--" + model_id.replace("/", "--"))
+            if not os.path.isdir(model_dir):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skip(reason="Local only — requires TinyLlama + adapters cached")
+def test_tinyllama_e2e_v3_workflow():
+    """E2E V3 workflow: TinyLlama-1.1B + 2 real HF LoRA adapters.
+
+    Adapter A: barissglc/tinyllama-tarot-v1
+        target_modules=[q_proj, v_proj], rank=8, alpha=16
+
+    Adapter B: cahlen/tinyllama-offline-practical-skills-qa-qlora
+        target_modules=[q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+        rank=64, alpha=16
+
+    The union graph has LoRA branches on all 7 modules.  Adapter B uses
+    rank-64 weights even for q_proj/v_proj (exported at rank-8) — validated
+    by the ``"lora_rank"`` dynamic dimension.
+    """
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM
+
+    adapter_a_path = _resolve_hf_adapter(_ADAPTER_A_ID)
+    adapter_b_path = _resolve_hf_adapter(_ADAPTER_B_ID)
+
+    # 1. Load base model + adapter A
+    base_model = AutoModelForCausalLM.from_pretrained(
+        _TINYLLAMA_BASE,
+        cache_dir=HF_CACHE,
+        dtype=torch.float32,
+    )
+    peft_model = PeftModel.from_pretrained(base_model, adapter_a_path)
+    peft_model.eval()
+
+    sample_inputs = (torch.randint(0, 32000, (1, 16)),)
+
+    with tempfile.TemporaryDirectory(dir="/local/mnt/workspace") as tmpdir:
+        # 2. Export with adapter B's extra branches
+        model, lora_names = export_peft_to_onnx(
+            peft_model,
+            sample_inputs,
+            tmpdir,
+            adapter_paths=[adapter_b_path],
+        )
+
+        # 3. Verify union graph covers all 7 modules
+        param_modules = set()
+        for name in lora_names["params"]:
+            for mod in [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ]:
+                if f".{mod}." in name:
+                    param_modules.add(mod)
+
+        assert param_modules == {
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        }, f"Expected 7 module branches, got: {param_modules}"
+
+        assert len(lora_names["activations"]) > 0
+        assert len(lora_names["scales"]) > 0
+
+        # 4. Create QuantSim
+        dummy_input = {
+            "input_ids": np.random.randint(0, 32000, (1, 16)).astype(np.int64),
+        }
+        sim = QuantizationSimModel(
+            model,
+            dummy_input=dummy_input,
+            param_type=int4,
+            activation_type=int16,
+        )
+        set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
+
+        # 5. Base calibration with zero weights
+        zero_weights = get_zero_weights(model, lora_names)
+        scale_defaults = {
+            name: np.array(val, dtype=np.float32)
+            for name, val in lora_names["scales"].items()
+        }
+
+        def base_cal(session):
+            for _ in range(3):
+                batch = {
+                    "input_ids": np.random.randint(0, 32000, (1, 16)).astype(np.int64),
+                }
+                batch.update(zero_weights)
+                batch.update(scale_defaults)
+                session.run(None, batch)
+
+        sim.compute_encodings(base_cal)
+
+        # 6. Freeze base
+        frozen = freeze_base_model(sim, lora_names)
+        assert frozen > 0
+
+        # 7. Per-adapter calibration
+        adapter_encodings = {}
+        adapter_feeds = {}
+        adapter_scales = {}
+
+        for name, adapter_path in [("A", adapter_a_path), ("B", adapter_b_path)]:
+            unfreeze_lora_quantizers(sim, lora_names)
+
+            weights = load_file(os.path.join(adapter_path, "adapter_model.safetensors"))
+            feed = {**zero_weights, **weights}
+            scales = get_adapter_scale_weights(lora_names, adapter_path)
+
+            adapter_feeds[name] = feed
+            adapter_scales[name] = scales
+
+            def cal_fn(session, f=feed, s=scales):
+                for _ in range(3):
+                    batch = {
+                        "input_ids": np.random.randint(0, 32000, (1, 16)).astype(
+                            np.int64
+                        ),
+                    }
+                    batch.update(f)
+                    batch.update(s)
+                    session.run(None, batch)
+
+            sim.compute_encodings(cal_fn)
+            adapter_encodings[name] = get_lora_encodings(sim, lora_names)
+
+        # 8. Adapter encodings should differ
+        enc_a = adapter_encodings["A"]
+        enc_b = adapter_encodings["B"]
+        assert len(enc_a) > 0 and len(enc_b) > 0
+        any_differ = any(enc_a.get(n) != enc_b.get(n) for n in enc_a)
+        assert any_differ, "Adapter A and B encodings should differ"
+
+        # 9. Inference with each adapter produces different output
+        input_data = {
+            "input_ids": np.array([[1, 2, 3, 4, 5] + [0] * 11], dtype=np.int64),
+        }
+
+        set_lora_encodings(sim, enc_a)
+        feed_a = {**input_data, **adapter_feeds["A"], **adapter_scales["A"]}
+        output_a = sim.session.run(None, feed_a)[0]
+
+        set_lora_encodings(sim, enc_b)
+        feed_b = {**input_data, **adapter_feeds["B"], **adapter_scales["B"]}
+        output_b = sim.session.run(None, feed_b)[0]
+
+        assert np.all(np.isfinite(output_a)), "Adapter A output has NaN/Inf"
+        assert np.all(np.isfinite(output_b)), "Adapter B output has NaN/Inf"
+        assert not np.allclose(output_a, output_b, atol=1e-6), (
+            "Adapter A and B should produce different outputs"
+        )
+
+        # 10. Export
+        sim.export(tmpdir, "tinyllama_v3", export_model=False)
+        assert os.path.exists(os.path.join(tmpdir, "tinyllama_v3.encodings"))
+
+
+# =========================================================================
+# Test: Adapted model (Conv2d projections) + PEFT → export → QuantSim
+# =========================================================================
+
+
+class _Conv2dAttention(nn.Module):
+    """Attention with Conv2d projections (simulating ai-hub-models SHA adaptation)."""
+
+    def __init__(self, hidden_size, num_heads):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        # Conv2d projections instead of Linear (post-adaptation)
+        self.q_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=False)
+        self.k_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=False)
+        self.v_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=False)
+        self.o_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=False)
+
+    def forward(self, x):
+        B, S, C = x.shape
+        # Conv2d expects (B, C, H, W) — reshape for 1×1 conv
+        h = x.unsqueeze(2).permute(0, 3, 2, 1)  # (B, C, 1, S)
+        q = self.q_proj(h).permute(0, 3, 2, 1).squeeze(2)  # (B, S, C)
+        k = self.k_proj(h).permute(0, 3, 2, 1).squeeze(2)
+        v = self.v_proj(h).permute(0, 3, 2, 1).squeeze(2)
+        # Simple scaled dot-product attention
+        q = q.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        out = out.transpose(1, 2).contiguous().view(B, S, -1)
+        # o_proj is also Conv2d
+        out = out.unsqueeze(2).permute(0, 3, 2, 1)
+        out = self.o_proj(out).permute(0, 3, 2, 1).squeeze(2)
+        return out
+
+
+def _adapt_attention_to_conv2d(model: nn.Module) -> nn.Module:
+    """Simulate MHA→SHA adaptation: replace Linear attention with Conv2d.
+
+    This mirrors the ai-hub-models adaptation pipeline where Linear q/k/v/o
+    projections are replaced with 1×1 Conv2d for on-device efficiency.
+    The attention forward pass changes (Conv2d needs B,C,H,W layout),
+    but the TransformerBlock forward stays the same (calls self_attn
+    polymorphically).
+    """
+    for block in model.layers:
+        hidden_size = block.self_attn.q_proj.in_features
+        num_heads = block.self_attn.num_heads
+        block.self_attn = _Conv2dAttention(hidden_size, num_heads)
+    return model
+
+
+def _build_adapted_transformer(
+    vocab_size=512, hidden_size=64, num_heads=4, num_layers=2, intermediate_size=128
+):
+    """Build a standard transformer and adapt it to Conv2d attention.
+
+    Mirrors the real workflow: build standard model → run adaptation →
+    apply LoRA → export to ONNX.
+    """
+    model = _build_tiny_transformer(
+        vocab_size, hidden_size, num_heads, num_layers, intermediate_size
+    )
+    return _adapt_attention_to_conv2d(model)
+
+
+def test_adapted_model_conv2d_export():
+    """Conv2d-adapted model + PEFT → export_peft_to_onnx → LoRA names → QuantSim."""
+    base_model = _build_adapted_transformer()
+
+    # Apply LoRA to Conv2d projections
+    config = LoraConfig(
+        r=4,
+        lora_alpha=8,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_dropout=0.0,
+        bias="none",
+    )
+    peft_model = get_peft_model(base_model, config)
+    peft_model.eval()
+
+    sample_inputs = (torch.randint(0, 512, (1, 8)),)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model_proto, lora_names = export_peft_to_onnx(peft_model, sample_inputs, tmpdir)
+
+        # Verify LoRA params exist for all 4 projections
+        param_modules = set()
+        for name in lora_names["params"]:
+            for mod in ["q_proj", "k_proj", "v_proj", "o_proj"]:
+                if f".{mod}." in name:
+                    param_modules.add(mod)
+        assert param_modules == {"q_proj", "k_proj", "v_proj", "o_proj"}, (
+            f"Expected LoRA branches for all 4 projections, got: {param_modules}"
+        )
+
+        # Verify LoRA param names match PEFT safetensors keys
+        from peft.utils import get_peft_model_state_dict
+
+        peft_state = get_peft_model_state_dict(peft_model)
+        for name in lora_names["params"]:
+            assert name in peft_state, f"Exported param '{name}' not in PEFT state dict"
+
+        # Create QuantSim from exported model
+        dummy_input = {
+            "input_ids": np.random.randint(0, 512, (1, 8)).astype(np.int64),
+        }
+        sim = QuantizationSimModel(
+            model_proto,
+            dummy_input=dummy_input,
+            param_type=int4,
+            activation_type=int16,
+        )
+        set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
+
+        # Calibrate and verify inference produces finite output
+        zero_weights = get_zero_weights(model_proto, lora_names)
+
+        def calibrate(session):
+            for _ in range(3):
+                batch = {
+                    "input_ids": np.random.randint(0, 512, (1, 8)).astype(np.int64),
+                }
+                batch.update(zero_weights)
+                session.run(None, batch)
+
+        sim.compute_encodings(calibrate)
+
+        input_data = {
+            "input_ids": np.array([[1, 2, 3, 4, 5, 6, 7, 8]], dtype=np.int64),
+        }
+        output = sim.session.run(None, {**input_data, **zero_weights})[0]
+        assert np.all(np.isfinite(output)), "Output has NaN/Inf"
+
+
+# =========================================================================
+# Error-path tests: add_lora_branches validation
+# =========================================================================
+
+
+def test_add_lora_branches_rank_zero(multi_prepared):
+    """add_lora_branches raises ValueError on rank=0."""
+    model, _lora_names, _adapter_a_dir, _adapter_b_dir = multi_prepared
+
+    config = {"target_modules": ["up_proj"], "r": 0, "lora_alpha": 8}
+    with pytest.raises(ValueError, match="must be positive"):
+        add_lora_branches(model, config)
+
+
+def test_add_lora_branches_default_rank(multi_prepared):
+    """add_lora_branches uses default_rank when config has no 'r' key."""
+    model, _lora_names, _adapter_a_dir, _adapter_b_dir = multi_prepared
+
+    # multi_prepared has q/k/v/o_proj branches; up_proj is available
+    config = {"target_modules": ["up_proj"], "lora_alpha": 8}
+    new_names = add_lora_branches(model, config, default_rank=4)
+
+    assert len(new_names["params"]) > 0
+    # Verify the initializer shapes reflect rank=4
+    init_map = {init.name: init for init in model.graph.initializer}
+    for name in new_names["params"]:
+        if "lora_A" in name:
+            assert init_map[name].dims[0] == 4, f"{name} should have rank dim = 4"
+
+
+def test_export_peft_to_onnx_empty_peft_config():
+    """export_peft_to_onnx raises ValueError when peft_config is empty."""
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model)
+    peft_model.eval()
+
+    # Clear peft_config to simulate no adapters
+    peft_model.peft_config = {}
+
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with pytest.raises(ValueError, match="no adapters configured"):
+            export_peft_to_onnx(peft_model, sample_inputs, tmpdir)
+
+
+# =========================================================================
+# Tests for configure_lora_onnx (user-owned export path)
+# =========================================================================
+
+
+def _user_export_peft_model(peft_model, sample_inputs, output_dir):
+    """Export a PeftModel the way a user would — no wrapper, no AIMET helpers."""
+    from peft.utils import get_peft_model_state_dict
+
+    model = peft_model.base_model.model
+    model.eval()
+
+    onnx_path = str(Path(output_dir) / "model.onnx")
+    onnx_program = torch.onnx.export(
+        model,
+        sample_inputs,
+        dynamo=True,
+        optimize=False,
+    )
+    onnx_program.save(onnx_path, external_data=True)
+
+    adapter_name = next(iter(peft_model.peft_config))
+    peft_keys = list(
+        get_peft_model_state_dict(peft_model, adapter_name=adapter_name).keys()
+    )
+    return onnx_path, peft_keys
+
+
+def test_configure_lora_onnx_user_export():
+    """configure_lora_onnx works with a user-exported ONNX model (no wrapper)."""
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model, rank=8)
+    peft_model.eval()
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path, peft_keys = _user_export_peft_model(
+            peft_model, sample_inputs, tmpdir
+        )
+
+        model_proto, lora_names = configure_lora_onnx(onnx_path, peft_keys, onnx_path)
+
+        # Should have params, activations, and scales
+        assert len(lora_names["params"]) > 0
+        assert len(lora_names["activations"]) > 0
+        assert len(lora_names["scales"]) > 0
+
+        # All param names should follow PEFT naming convention
+        for name in lora_names["params"]:
+            assert name.startswith("base_model.model.")
+            assert "lora_A" in name or "lora_B" in name
+
+        # Activations should be at least half the number of params
+        # (one activation per LoRA A/B pair at minimum)
+        assert len(lora_names["activations"]) >= len(lora_names["params"]) // 2
+
+
+def test_configure_lora_onnx_safetensors_keys():
+    """configure_lora_onnx works with keys from a safetensors file (no live PeftModel)."""
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model, rank=8)
+    peft_model.eval()
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path, _ = _user_export_peft_model(peft_model, sample_inputs, tmpdir)
+
+        # Save adapter to disk and load keys from safetensors
+        adapter_dir = str(Path(tmpdir) / "adapter_default")
+        peft_model.save_pretrained(adapter_dir)
+
+        safetensors_path = Path(adapter_dir) / "default" / "adapter_model.safetensors"
+        if not safetensors_path.exists():
+            safetensors_path = Path(adapter_dir) / "adapter_model.safetensors"
+        safetensors_keys = list(load_file(str(safetensors_path)).keys())
+
+        model_proto, lora_names = configure_lora_onnx(
+            onnx_path, safetensors_keys, onnx_path
+        )
+
+        assert len(lora_names["params"]) > 0
+        assert len(lora_names["activations"]) > 0
+
+
+def test_configure_lora_onnx_with_adapter_paths():
+    """configure_lora_onnx inserts branches for additional adapter target modules."""
+    base_model = _build_tiny_transformer()
+
+    # Apply LoRA to only q_proj/v_proj (not all linear layers)
+    config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=["q_proj", "v_proj"],
+        lora_dropout=0.0,
+        bias="none",
+    )
+    peft_model = get_peft_model(base_model, config)
+    peft_model.eval()
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path, peft_keys = _user_export_peft_model(
+            peft_model, sample_inputs, tmpdir
+        )
+
+        # Create adapter_config.json targeting additional modules
+        extra_adapter_dir = Path(tmpdir) / "extra_adapter"
+        extra_adapter_dir.mkdir()
+        adapter_config = {
+            "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj"],
+            "r": 8,
+            "lora_alpha": 16,
+        }
+        with open(extra_adapter_dir / "adapter_config.json", "w") as f:
+            json.dump(adapter_config, f)
+
+        model_proto, lora_names = configure_lora_onnx(
+            onnx_path, peft_keys, onnx_path, adapter_paths=[str(extra_adapter_dir)]
+        )
+
+        # Should have params from both original (q/v) and newly inserted (k/o)
+        param_names_str = " ".join(lora_names["params"])
+        assert "q_proj" in param_names_str
+        assert "v_proj" in param_names_str
+        assert "k_proj" in param_names_str
+        assert "o_proj" in param_names_str
+
+
+def test_configure_lora_onnx_no_match_raises():
+    """configure_lora_onnx raises ValueError with actionable message for bogus keys."""
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model, rank=8)
+    peft_model.eval()
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path, _ = _user_export_peft_model(peft_model, sample_inputs, tmpdir)
+
+        bogus_keys = [
+            "completely.wrong.key.lora_A.weight",
+            "another.bad.key.lora_B.weight",
+        ]
+        with pytest.raises(ValueError, match="dynamo=True and optimize=False"):
+            configure_lora_onnx(onnx_path, bogus_keys, onnx_path)
+
+
+def test_configure_lora_onnx_bad_export_detected():
+    """configure_lora_onnx detects models exported with optimize=True."""
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model, rank=8)
+    peft_model.eval()
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+
+    from peft.utils import get_peft_model_state_dict
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model = peft_model.base_model.model
+        model.eval()
+
+        onnx_path = str(Path(tmpdir) / "model.onnx")
+        # Export with optimize=True — this destroys LoRA init names
+        onnx_program = torch.onnx.export(
+            model,
+            sample_inputs,
+            dynamo=True,
+            optimize=True,
+        )
+        onnx_program.save(onnx_path, external_data=True)
+
+        adapter_name = next(iter(peft_model.peft_config))
+        peft_keys = list(
+            get_peft_model_state_dict(peft_model, adapter_name=adapter_name).keys()
+        )
+
+        with pytest.raises(ValueError, match="dynamo=True and optimize=False"):
+            configure_lora_onnx(onnx_path, peft_keys, onnx_path)
+
+
+def test_configure_lora_onnx_separate_output():
+    """configure_lora_onnx with separate output_path preserves original."""
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model, rank=8)
+    peft_model.eval()
+    sample_inputs = (torch.randint(0, 512, (1, 32)),)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        onnx_path, peft_keys = _user_export_peft_model(
+            peft_model, sample_inputs, tmpdir
+        )
+        original_size = os.path.getsize(onnx_path)
+
+        output_path = os.path.join(tmpdir, "prepared", "model_prepared.onnx")
+        model_proto, lora_names = configure_lora_onnx(
+            onnx_path,
+            peft_keys,
+            output_path,
+        )
+
+        assert os.path.exists(output_path), "output_path file was not created"
+        assert os.path.getsize(onnx_path) == original_size, (
+            "Original ONNX file was modified when output_path was specified"
+        )
+        assert len(lora_names["params"]) > 0
+        assert len(lora_names["activations"]) > 0
+
+
+# =========================================================================
+# E2E tests using configure_lora_onnx (user-export flow)
+# =========================================================================
+
+
+def _generate_configure_lora_artifacts(
+    output_dir: str,
+    rank: int = 8,
+    seq_len: int = 32,
+) -> dict:
+    """Generate LoRA test artifacts via user-export + configure_lora_onnx.
+
+    Same result as generate_lora_test_artifacts, but uses the new flow:
+    user does torch.onnx.export → configure_lora_onnx.
+    """
+    from peft.utils import get_peft_model_state_dict
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model, rank=rank)
+    peft_model.eval()
+
+    # Snapshot default LoRA weights before randomizing for B/C
+    original_lora_state = {
+        name: param.detach().clone()
+        for name, param in peft_model.named_parameters()
+        if "lora_" in name
+    }
+
+    # Save adapters B and C to disk in PEFT format
+    adapter_dirs = {}
+    for i, name in enumerate(["B", "C"]):
+        _randomize_lora_weights(peft_model, seed=42 + i + 1)
+        adapter_dir = str(output_dir / f"adapter_{name}")
+        peft_model.save_pretrained(adapter_dir)
+        adapter_dirs[name] = adapter_dir
+
+    # Restore default weights so export captures the original adapter
+    with torch.no_grad():
+        for name, param in peft_model.named_parameters():
+            if name in original_lora_state:
+                param.copy_(original_lora_state[name])
+
+    # User-style export: no wrapper, no AIMET helpers
+    model = peft_model.base_model.model
+    model.eval()
+    sample_inputs = (torch.randint(0, 512, (1, seq_len)),)
+
+    onnx_path = str(output_dir / "model.onnx")
+    onnx_program = torch.onnx.export(
+        model,
+        sample_inputs,
+        dynamo=True,
+        optimize=False,
+    )
+    onnx_program.save(onnx_path, external_data=True)
+
+    # Get peft keys and call configure_lora_onnx
+    adapter_name = next(iter(peft_model.peft_config))
+    peft_keys = list(
+        get_peft_model_state_dict(peft_model, adapter_name=adapter_name).keys()
+    )
+
+    model_proto, lora_names = configure_lora_onnx(onnx_path, peft_keys, onnx_path)
+
+    return {
+        "model_path": str(output_dir / "model.onnx"),
+        "lora_names": lora_names,
+        "output_dir": str(output_dir),
+        "adapter_dirs": adapter_dirs,
+    }
+
+
+@pytest.fixture(scope="session")
+def configure_lora_artifacts(tmp_path_factory):
+    """Generate LoRA test artifacts via user-export + configure_lora_onnx."""
+    artifacts_dir = tmp_path_factory.mktemp("configure_lora_artifacts")
+    return _generate_configure_lora_artifacts(output_dir=str(artifacts_dir), rank=8)
+
+
+@pytest.fixture
+def configure_prepared(configure_lora_artifacts) -> tuple:
+    """Fresh model proto and lora_names for each test (configure_lora_onnx flow)."""
+    model_proto = onnx.load(configure_lora_artifacts["model_path"])
+    onnx.load_external_data_for_model(
+        model_proto, configure_lora_artifacts["output_dir"]
+    )
+    lora_names = configure_lora_artifacts["lora_names"]
+    adapter_dirs = configure_lora_artifacts["adapter_dirs"]
+    return model_proto, lora_names, adapter_dirs
+
+
+def test_configure_v1_workflow(configure_prepared):
+    """V1 workflow with configure_lora_onnx: single encoding across adapters."""
+    model, lora_names, adapter_dirs = configure_prepared
+    assert len(lora_names["params"]) > 0
+    assert len(lora_names["activations"]) > 0
+
+    adapters = _load_adapters(adapter_dirs)
+
+    sim = QuantizationSimModel(
+        model,
+        dummy_input={"input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64)},
+        param_type=int4,
+        activation_type=int16,
+    )
+    set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
+
+    def calibrate_adapters(session):
+        for adapter_name, weights in adapters.items():
+            for _ in range(5):
+                batch = {
+                    "input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64),
+                }
+                batch.update(weights)
+                session.run(None, batch)
+
+    sim.compute_encodings(calibrate_adapters)
+
+    frozen = freeze_base_model(sim, lora_names)
+    assert frozen > 0
+
+    with tempfile.TemporaryDirectory() as export_dir:
+        sim.export(export_dir, "model_lora", export_model=False)
+        assert os.path.exists(os.path.join(export_dir, "model_lora.encodings"))
+
+
+def test_configure_v2_workflow(configure_prepared):
+    """V2 workflow with configure_lora_onnx: full recalibration per adapter."""
+    model, lora_names, adapter_dirs = configure_prepared
+    assert len(lora_names["params"]) > 0
+
+    adapters = _load_adapters(adapter_dirs)
+
+    sim = _make_sim(model)
+    set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
+
+    for name in lora_names["params"]:
+        if name in sim.qc_quantize_op_dict:
+            assert sim.qc_quantize_op_dict[name].bitwidth == 16
+
+    with tempfile.TemporaryDirectory() as export_dir:
+        for adapter_name, weights in adapters.items():
+            _calibrate(sim, weights)
+            sim.export(export_dir, f"model_{adapter_name}", export_model=False)
+            assert os.path.exists(
+                os.path.join(export_dir, f"model_{adapter_name}.encodings")
+            )
+
+
+def test_configure_v3_workflow(configure_prepared):
+    """V3 workflow with configure_lora_onnx: base frozen, per-adapter LoRA recalibration."""
+    model, lora_names, adapter_dirs = configure_prepared
+    assert len(lora_names["params"]) > 0
+    assert len(lora_names["activations"]) > 0
+
+    adapters = _load_adapters(adapter_dirs)
+
+    sim = _make_sim(model)
+    set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
+
+    # Base calibration with LoRA disabled
+    zero_weights = get_zero_weights(model, lora_names)
+    _calibrate(sim, zero_weights)
+
+    # Freeze base
+    frozen_params = freeze_base_param_quantizers(sim, lora_names)
+    assert frozen_params > 0
+    frozen_activations = freeze_base_activation_quantizers(sim, lora_names)
+    assert frozen_activations > 0
+
+    # Snapshot a base param encoding to verify it stays frozen
+    base_param_name = next(
+        name
+        for name in sim.param_names
+        if name not in set(lora_names["params"])
+        and name in sim.qc_quantize_op_dict
+        and sim.qc_quantize_op_dict[name].enabled
+    )
+    base_encoding_before = sim.qc_quantize_op_dict[base_param_name].export_encodings(
+        "1.0.0"
+    )
+
+    # Per-adapter calibration
+    adapter_encodings = {}
+    with tempfile.TemporaryDirectory() as export_dir:
+        sim.export(export_dir, "model")
+        assert os.path.exists(os.path.join(export_dir, "model.encodings"))
+
+        for adapter_name, weights in adapters.items():
+            unfrozen = unfreeze_lora_quantizers(sim, lora_names)
+            assert unfrozen > 0
+
+            _calibrate(sim, weights)
+            adapter_encodings[adapter_name] = get_lora_encodings(sim, lora_names)
+
+            sim.export(export_dir, f"model_{adapter_name}", export_model=False)
+            assert os.path.exists(
+                os.path.join(export_dir, f"model_{adapter_name}.encodings")
+            )
+
+        # Verify base encodings did NOT change
+        base_encoding_after = sim.qc_quantize_op_dict[base_param_name].export_encodings(
+            "1.0.0"
+        )
+        assert base_encoding_before == base_encoding_after, (
+            "Base param encoding changed during per-adapter calibration — freeze is broken"
+        )
+
+        # Verify adapter encodings differ
+        enc_b = adapter_encodings["B"]
+        enc_c = adapter_encodings["C"]
+        assert len(enc_b) > 0 and len(enc_c) > 0
+        any_differ = any(enc_b.get(name) != enc_c.get(name) for name in enc_b)
+        assert any_differ, (
+            "Adapter B and C encodings are identical — per-adapter calibration may be broken"
+        )
+
+
+@pytest.mark.skip(reason="Local only — requires TinyLlama + adapters cached")
+def test_tinyllama_configure_lora_onnx_v3():
+    """E2E V3 with TinyLlama using configure_lora_onnx (user-export flow).
+
+    Same as test_tinyllama_e2e_v3_workflow but using user-style export +
+    configure_lora_onnx instead of export_peft_to_onnx.
+    """
+    from peft import PeftModel
+    from peft.utils import get_peft_model_state_dict
+    from transformers import AutoModelForCausalLM
+
+    adapter_a_path = _resolve_hf_adapter(_ADAPTER_A_ID)
+    adapter_b_path = _resolve_hf_adapter(_ADAPTER_B_ID)
+
+    # 1. Load base model + adapter A
+    base_model = AutoModelForCausalLM.from_pretrained(
+        _TINYLLAMA_BASE,
+        cache_dir=HF_CACHE,
+        dtype=torch.float32,
+    )
+    peft_model = PeftModel.from_pretrained(base_model, adapter_a_path)
+    peft_model.eval()
+
+    sample_inputs = (torch.randint(0, 32000, (1, 16)),)
+
+    with tempfile.TemporaryDirectory(dir="/local/mnt/workspace") as tmpdir:
+        # 2. User-style export — user handles use_cache and output format
+        model = peft_model.base_model.model
+        model.eval()
+        model.config.use_cache = False
+
+        onnx_path = str(Path(tmpdir) / "model.onnx")
+        onnx_program = torch.onnx.export(
+            model,
+            sample_inputs,
+            dynamo=True,
+            optimize=False,
+        )
+        onnx_program.save(onnx_path, external_data=True)
+
+        adapter_name = next(iter(peft_model.peft_config))
+        peft_keys = list(
+            get_peft_model_state_dict(peft_model, adapter_name=adapter_name).keys()
+        )
+
+        # 3. configure_lora_onnx with adapter_b branches
+        model_proto, lora_names = configure_lora_onnx(
+            onnx_path,
+            peft_keys,
+            onnx_path,
+            adapter_paths=[adapter_b_path],
+        )
+
+        # 4. Verify union graph covers all 7 modules
+        param_modules = set()
+        for name in lora_names["params"]:
+            for mod in [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ]:
+                if f".{mod}." in name:
+                    param_modules.add(mod)
+
+        assert param_modules == {
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        }, f"Expected 7 module branches, got: {param_modules}"
+
+        assert len(lora_names["activations"]) > 0
+        assert len(lora_names["scales"]) > 0
+
+        # 5. QuantSim
+        dummy_input = {
+            "input_ids": np.random.randint(0, 32000, (1, 16)).astype(np.int64),
+        }
+        sim = QuantizationSimModel(
+            model_proto,
+            dummy_input=dummy_input,
+            param_type=int4,
+            activation_type=int16,
+        )
+        set_lora_bitwidth(sim, lora_names, param_type=int16, activation_type=int16)
+
+        # 6. Base calibration with zero weights
+        zero_weights = get_zero_weights(model_proto, lora_names)
+        scale_defaults = {
+            name: np.array(val, dtype=np.float32)
+            for name, val in lora_names["scales"].items()
+        }
+
+        def base_cal(session):
+            for _ in range(3):
+                batch = {
+                    "input_ids": np.random.randint(0, 32000, (1, 16)).astype(np.int64),
+                }
+                batch.update(zero_weights)
+                batch.update(scale_defaults)
+                session.run(None, batch)
+
+        sim.compute_encodings(base_cal)
+
+        # 7. Freeze base
+        frozen = freeze_base_model(sim, lora_names)
+        assert frozen > 0
+
+        # 8. Per-adapter calibration
+        adapter_encodings = {}
+        adapter_feeds = {}
+        adapter_scales = {}
+
+        for name, adapter_path in [("A", adapter_a_path), ("B", adapter_b_path)]:
+            unfreeze_lora_quantizers(sim, lora_names)
+
+            weights = load_file(os.path.join(adapter_path, "adapter_model.safetensors"))
+            feed = {**zero_weights, **weights}
+            scales = get_adapter_scale_weights(lora_names, adapter_path)
+
+            adapter_feeds[name] = feed
+            adapter_scales[name] = scales
+
+            def cal_fn(session, f=feed, s=scales):
+                for _ in range(3):
+                    batch = {
+                        "input_ids": np.random.randint(0, 32000, (1, 16)).astype(
+                            np.int64
+                        ),
+                    }
+                    batch.update(f)
+                    batch.update(s)
+                    session.run(None, batch)
+
+            sim.compute_encodings(cal_fn)
+            adapter_encodings[name] = get_lora_encodings(sim, lora_names)
+
+        # 9. Adapter encodings should differ
+        enc_a = adapter_encodings["A"]
+        enc_b = adapter_encodings["B"]
+        assert len(enc_a) > 0 and len(enc_b) > 0
+        any_differ = any(enc_a.get(n) != enc_b.get(n) for n in enc_a)
+        assert any_differ, "Adapter A and B encodings should differ"
+
+        # 10. Inference with each adapter produces different output
+        input_data = {
+            "input_ids": np.array([[1, 2, 3, 4, 5] + [0] * 11], dtype=np.int64),
+        }
+
+        set_lora_encodings(sim, enc_a)
+        feed_a = {**input_data, **adapter_feeds["A"], **adapter_scales["A"]}
+        output_a = sim.session.run(None, feed_a)[0]
+
+        set_lora_encodings(sim, enc_b)
+        feed_b = {**input_data, **adapter_feeds["B"], **adapter_scales["B"]}
+        output_b = sim.session.run(None, feed_b)[0]
+
+        assert np.all(np.isfinite(output_a)), "Adapter A output has NaN/Inf"
+        assert np.all(np.isfinite(output_b)), "Adapter B output has NaN/Inf"
+        assert not np.allclose(output_a, output_b, atol=1e-6), (
+            "Adapter A and B should produce different outputs"
+        )
+
+        # 11. Export
+        sim.export(tmpdir, "tinyllama_v3", export_model=False)
+        assert os.path.exists(os.path.join(tmpdir, "tinyllama_v3.encodings"))

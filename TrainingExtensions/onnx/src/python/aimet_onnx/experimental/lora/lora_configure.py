@@ -1,13 +1,18 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Provides ``export_peft_to_onnx()`` and ``add_lora_branches()`` for
-PeftModel to ONNX export with multi-adapter LoRA support."""
+"""Configure user-exported ONNX models for LoRA quantization.
 
-import inspect
+Provides ``configure_lora_onnx()`` to match and rename LoRA initializers,
+convert scale constants, register LoRA weights as overridable graph inputs,
+and trace activation tensors.  Also provides ``add_lora_branches()`` to
+insert LoRA branches for additional adapter target modules.
+"""
+
 import json
 import logging
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
 import onnx
@@ -20,95 +25,63 @@ logger = logging.getLogger(__name__)
 _PEFT_PREFIX = "base_model.model."
 
 
-def export_peft_to_onnx(
-    peft_model,
-    sample_inputs: tuple,
-    output_dir: str,
+# ---------------------------------------------------------------------------
+# configure_lora_onnx — primary public API
+# ---------------------------------------------------------------------------
+
+
+def configure_lora_onnx(
+    onnx_path: str | Path,
+    peft_keys: Iterable[str],
+    output_path: str | Path,
     adapter_paths: list[str] = None,
     *,
-    input_names: list[str] = None,
-    output_names: list[str] = None,
-    dynamic_shapes: dict = None,
-    opset_version: int = 18,
-    model_filename: str = "model.onnx",
+    adapter_name: str = "default",
 ) -> tuple[onnx.ModelProto, dict]:
-    """Export a PeftModel with LoRA adapters to ONNX.
+    """Configure a user-exported ONNX model for LoRA quantization.
 
-    Exports the model, renames LoRA initializers to match PEFT safetensors
-    keys, and inserts LoRA branches for any additional target modules found
-    in ``adapter_paths``.
+    Takes an ONNX model and PEFT state dict keys, and returns a model
+    with LoRA weights registered as overridable graph inputs along with
+    the names needed for ``QuantizationSimModel`` setup.
 
-    :param peft_model: A PEFT model with at least one LoRA adapter.
-    :param sample_inputs: Tuple of sample input tensors for tracing.
-    :param output_dir: Directory to save the ONNX model.
+    The ONNX model must be exported with ``dynamo=True`` and
+    ``optimize=False`` to preserve LoRA initializer names::
+
+        torch.onnx.export(
+            peft_model.base_model.model, sample_inputs, "model.onnx",
+            dynamo=True, optimize=False,
+        )
+
+    :param onnx_path: Path to user-exported ONNX model.
+    :param peft_keys: PEFT state dict key strings.  Can come from
+        ``get_peft_model_state_dict(peft_model).keys()`` or
+        ``safetensors.numpy.load_file("adapter_model.safetensors").keys()``.
+    :param output_path: Where to save the configured model.
     :param adapter_paths: List of adapter directory paths.  Each directory
         must contain an ``adapter_config.json``.  Branches are inserted for
         any target modules not already present in the exported graph.
         Pass ``[]`` or ``None`` for single-adapter models.
-    :param input_names: ONNX input names. If None, inferred from forward signature.
-    :param output_names: ONNX output names. Default: ``["output"]``.
-    :param dynamic_shapes: Dynamic shape spec. If None, seq_len is made dynamic
-        (dim 1 for 2-D+ inputs, dim 0 for 1-D inputs; batch stays static).
-    :param opset_version: ONNX opset version (default 18).
-    :param model_filename: Filename for the exported ONNX model (default "model.onnx").
+    :param adapter_name: PEFT adapter name segment in ONNX initializer
+        names (e.g. ``"default"``).  Stripped during name matching.
     :return: ``(model, lora_names)`` where ``lora_names`` has ``"params"``,
         ``"activations"``, and ``"scales"`` keys.
     """
-    try:
-        from peft.utils import get_peft_model_state_dict
-    except ImportError as e:
-        raise ImportError(
-            "export_peft_to_onnx requires torch and peft. "
-            "Install with: pip install torch peft"
-        ) from e
-
     if adapter_paths is None:
         adapter_paths = []
 
-    output_dir = Path(output_dir)
+    onnx_path = Path(onnx_path)
+    output_path = Path(output_path)
+    output_dir = output_path.parent
     output_dir.mkdir(parents=True, exist_ok=True)
+    model_filename = output_path.name
 
-    model = peft_model.base_model.model
+    safetensors_keys = set(peft_keys)
 
-    if input_names is None:
-        input_names = _infer_input_names(model, sample_inputs)
-    if output_names is None:
-        output_names = ["output"]
-    if dynamic_shapes is None:
-        dynamic_shapes = _infer_dynamic_shapes(input_names, sample_inputs)
-
-    onnx_path = str(output_dir / model_filename)
-    logger.info("Exporting to ONNX: %s", onnx_path)
-
-    _export_model_to_onnx(
-        model,
-        onnx_path,
-        opset_version,
-        sample_inputs,
-        input_names,
-        output_names,
-        dynamic_shapes,
-    )
-
-    if not peft_model.peft_config:
-        raise ValueError(
-            "peft_model has no adapters configured. "
-            "Apply at least one LoRA adapter before calling export_peft_to_onnx()."
-        )
-    adapter_name = next(iter(peft_model.peft_config))
-    peft_state = get_peft_model_state_dict(peft_model, adapter_name=adapter_name)
-    safetensors_keys = set(peft_state.keys())
-
-    model_proto = onnx.load(onnx_path, load_external_data=False)
-    _strip_wrapper_prefix(model_proto)
+    model_proto = onnx.load(str(onnx_path), load_external_data=False)
     init_map = {init.name: init for init in model_proto.graph.initializer}
 
-    # Build suffix → PEFT key index for robust matching.
-    # ONNX init names vary by model depth (e.g. wrapper adds "model." prefix),
-    # but PEFT keys always start with "base_model.model." followed by the
-    # module path.  We index by the suffix after "base_model.model." so that
-    # any ONNX name (after stripping the adapter name) that ends with that
-    # suffix will match, regardless of extra prefixes.
+    # Index PEFT keys by suffix after "base_model.model." for matching
+    # against ONNX initializer names (which omit this prefix).
     suffix_to_peft_key = {}
     for key in safetensors_keys:
         if key.startswith(_PEFT_PREFIX):
@@ -134,8 +107,9 @@ def export_peft_to_onnx(
 
     if not lora_param_names:
         raise ValueError(
-            "No LoRA initializers found in ONNX model matching PEFT state dict. "
-            "Ensure the model has LoRA adapters applied."
+            "No LoRA initializers found in ONNX model matching provided keys. "
+            "Ensure the model was exported with dynamo=True and optimize=False: "
+            "torch.onnx.export(model, inputs, path, dynamo=True, optimize=False)"
         )
 
     lora_param_names.sort()
@@ -146,7 +120,7 @@ def export_peft_to_onnx(
     # Convert shared scale Constant nodes to per-branch named initializers
     scales = _convert_lora_scales(model_proto, lora_param_names)
 
-    # Dual-list LoRA initializers (initializer + graph input) with dynamic rank
+    # Register LoRA initializers as graph inputs so weights can be overridden via feed dict
     _dual_list_lora_initializers(model_proto, lora_param_names)
 
     # Insert branches for additional adapter target modules
@@ -170,18 +144,18 @@ def export_peft_to_onnx(
         "scales": scales,
     }
 
-    onnx.load_external_data_for_model(model_proto, str(output_dir))
+    onnx.load_external_data_for_model(model_proto, str(onnx_path.parent))
     _cleanup_external_data(output_dir, model_filename)
 
     onnx.save_model(
         model_proto,
-        onnx_path,
+        str(output_path),
         save_as_external_data=True,
         all_tensors_to_one_file=True,
         location=f"{model_filename}.data",
     )
     onnx.load_external_data_for_model(model_proto, str(output_dir))
-    logger.info("Saved prepared model to: %s", onnx_path)
+    logger.info("Saved prepared model to: %s", output_path)
 
     return model_proto, lora_names
 
@@ -280,6 +254,11 @@ def add_lora_branches(
     }
 
 
+# ---------------------------------------------------------------------------
+# Private helpers — branch insertion
+# ---------------------------------------------------------------------------
+
+
 def _find_base_weights_for_module(init_map: dict, target_module: str) -> list[str]:
     """Find base weight initializer names for a target module.
 
@@ -352,7 +331,7 @@ def _create_lora_initializers(
     init_map: dict,
     existing_inputs: set,
 ) -> None:
-    """Create lora_A, lora_B, and scale initializers and dual-list as inputs."""
+    """Create lora_A, lora_B, and scale initializers and register them as graph inputs."""
     for name, shape in [
         (lora_a_name, (rank, in_features)),
         (lora_b_name, (out_features, rank)),
@@ -380,10 +359,10 @@ def _build_lora_subgraph(
     scale_name: str,
     uses_transpose: bool,
 ) -> None:
-    """Build Gemm/MatMul → Mul → Add subgraph and append to the model graph.
+    """Build the LoRA branch nodes and wire them into the graph.
 
-    Renames the base linear node's output and inserts a LoRA branch that
-    merges back via Add.
+    Redirects the base linear node's output through an ``Add`` that
+    combines it with ``lora_A → lora_B → scale``.
     """
     original_output = linear_node.output[0]
     base_output_renamed = f"{original_output}_base"
@@ -397,6 +376,7 @@ def _build_lora_subgraph(
     if uses_transpose:
         lora_a_t = f"lora_a_transposed_{suffix}"
         lora_b_t = f"lora_b_transposed_{suffix}"
+
         lora_nodes = [
             helper.make_node(
                 "Transpose",
@@ -535,7 +515,7 @@ def _add_graph_input_for_lora(
     init: TensorProto,
     existing_inputs: set,
 ) -> None:
-    """Add a LoRA initializer as a graph input with dynamic rank dims."""
+    """Register a LoRA initializer as a graph input, using ``"lora_rank"`` for rank dims."""
     if name in existing_inputs:
         return
 
@@ -552,161 +532,8 @@ def _add_graph_input_for_lora(
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Private helpers — name matching and graph manipulation
 # ---------------------------------------------------------------------------
-
-
-def _strip_wrapper_prefix(model: onnx.ModelProto, prefix: str = "model.") -> None:
-    """Strip export wrapper prefix from all initializer/node/input/output names.
-
-    When ``_make_export_wrapper`` wraps the model as ``_Wrapper.model``,
-    ONNX initializer names gain an extra ``model.`` prefix (e.g.
-    ``model.model.layers.0...`` instead of ``model.layers.0...``).
-    This function removes it so names match PEFT safetensors convention.
-    """
-
-    def _strip(name: str) -> str:
-        return name[len(prefix) :] if name.startswith(prefix) else name
-
-    for init in model.graph.initializer:
-        init.name = _strip(init.name)
-    for inp in model.graph.input:
-        inp.name = _strip(inp.name)
-    for out in model.graph.output:
-        out.name = _strip(out.name)
-    for node in model.graph.node:
-        for i, name in enumerate(node.input):
-            node.input[i] = _strip(name)
-        for i, name in enumerate(node.output):
-            node.output[i] = _strip(name)
-    for vi in model.graph.value_info:
-        vi.name = _strip(vi.name)
-
-
-def _make_export_wrapper(model):
-    """Create an nn.Module wrapper that unwraps structured outputs.
-
-    The wrapper registers the original model as a submodule so that
-    ``torch.onnx.export(dynamo=True)`` preserves initializer names.
-    """
-    import torch.nn as nn
-
-    class _Wrapper(nn.Module):
-        def __init__(self, inner):
-            super().__init__()
-            self.model = inner
-            sig = inspect.signature(inner.forward)
-            object.__setattr__(
-                self, "_accepts_use_cache", "use_cache" in sig.parameters
-            )
-
-        def forward(self, *args):
-            if self._accepts_use_cache:
-                out = self.model(*args, use_cache=False)
-            else:
-                out = self.model(*args)
-            if isinstance(out, (tuple, list)):
-                return out[0]
-            if hasattr(out, "logits"):
-                return out.logits
-            if hasattr(out, "sample"):
-                return out.sample
-            if hasattr(out, "last_hidden_state"):
-                return out.last_hidden_state
-            return out
-
-    return _Wrapper(model)
-
-
-def _export_model_to_onnx(
-    model,
-    onnx_path: str,
-    opset_version: int,
-    sample_inputs: tuple,
-    input_names: list[str],
-    output_names: list[str],
-    dynamic_shapes: dict,
-) -> None:
-    """Export a model to ONNX via ``torch.onnx.export(dynamo=True)``.
-
-    Always wraps the model with ``_make_export_wrapper`` so that structured
-    outputs (e.g. ``CausalLMOutputWithPast``) are unwrapped to a single tensor.
-    The wrapper adds a ``model.`` prefix to all initializer names; the caller
-    must run ``_strip_wrapper_prefix`` on the loaded proto to remove it.
-
-    ``optimize=False`` is required — the optimizer renames initializers,
-    breaking LoRA name matching.
-    """
-    import torch
-
-    model.eval()
-
-    export_model = _make_export_wrapper(model)
-    # Wrapper uses *args, so dynamic_shapes must use 'args' key
-    ds_tuple = tuple(dynamic_shapes.get(n, {}) for n in input_names)
-    export_dynamic_shapes = {"args": ds_tuple}
-
-    onnx_program = torch.onnx.export(
-        export_model,
-        sample_inputs,
-        dynamo=True,
-        input_names=input_names,
-        output_names=output_names,
-        dynamic_shapes=export_dynamic_shapes,
-        opset_version=opset_version,
-        optimize=False,
-    )
-
-    onnx_program.save(onnx_path, external_data=True)
-
-
-def _infer_input_names(model, sample_inputs: tuple) -> list[str]:
-    """Infer ONNX input names from the model's forward signature."""
-    sig = inspect.signature(model.forward)
-
-    positional_names = [
-        name
-        for name, p in sig.parameters.items()
-        if name != "self"
-        and p.kind
-        not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-    ]
-
-    required = [
-        name
-        for name in positional_names
-        if sig.parameters[name].default is inspect.Parameter.empty
-    ]
-    if required and len(required) >= len(sample_inputs):
-        return required[: len(sample_inputs)]
-
-    if len(positional_names) >= len(sample_inputs):
-        return positional_names[: len(sample_inputs)]
-
-    return [f"input_{i}" for i in range(len(sample_inputs))]
-
-
-def _infer_dynamic_shapes(input_names: list[str], sample_inputs: tuple) -> dict:
-    """Make sequence-length dimension dynamic for all inputs.
-
-    Batch (dim 0) is kept static because LLM inference is typically batch=1
-    and Conv2d-adapted models require batch=1.  The seq_len dimension (dim 1
-    for 2-D+ tensors, dim 0 for 1-D tensors) is made dynamic with bounds
-    that are safe for Conv2d spatial reshaping (``max=65536``).
-    ``min=1`` supports single-token LLM decode with KV cache.
-    """
-    import torch
-
-    seq_len = torch.export.Dim("seq_len", min=1, max=65536)
-    shapes = {}
-    for name, t in zip(input_names, sample_inputs):
-        if t.dim() >= 2:
-            shapes[name] = {1: seq_len}
-        elif t.dim() == 1:
-            shapes[name] = {0: seq_len}
-        else:
-            shapes[name] = {}
-    return shapes
 
 
 def _rename_lora_initializers(
@@ -733,12 +560,11 @@ def _rename_lora_initializers(
 def _convert_lora_scales(
     model: onnx.ModelProto, lora_param_names: list[str]
 ) -> dict[str, float]:
-    """Replace shared Constant scale nodes with per-branch named initializers.
+    """Replace shared Constant scale nodes with named initializers.
 
-    After PEFT export, the scale (alpha/r) is a shared Constant node.
-    This converts each Mul(lora_b_out, constant) into
-    Mul(lora_b_out, named_initializer) where the initializer is dual-listed
-    as a graph input for runtime override.
+    PEFT export produces ``alpha/rank`` as anonymous Constant nodes.
+    This replaces each with a named initializer registered as a graph
+    input, so the scale value can be overridden per adapter at runtime.
 
     :return: Dict mapping scale initializer name to its float value.
     """
@@ -811,7 +637,7 @@ def _convert_lora_scales(
                 scale_input = inp
                 constants_to_remove.add(id(const_node))
                 break
-            # It might already be an initializer (if previously converted)
+            # Already a named initializer — skip
             if inp in init_names and "lora_scale" in inp:
                 scale_input = None
                 break
@@ -870,17 +696,13 @@ def _convert_lora_scales(
 def _trace_lora_activations(
     model: onnx.ModelProto, lora_param_names: list[str]
 ) -> list[str]:
-    """BFS from LoRA params to find LoRA branch activation tensor names.
+    """Find activation tensor names in LoRA branches for quantizer placement.
 
-    Traces downstream through the LoRA subgraph. Propagates through any node
-    that has at least one LoRA-related input, with two stop/filter rules:
-
-    1. **Add merge stop**: An ``Add`` node where not all non-constant inputs
-       are LoRA-related is the merge point (base + LoRA) — do not propagate.
-    2. **QuantSim alignment**: Outputs of ops in ``op_outputs_to_ignore``
-       (imported from ``aimet_onnx.quantsim``) are propagated through
-       but not added to the activation list, since QuantSim does not create
-       quantizers for them.
+    Starting from LoRA weight initializers, traces downstream through
+    each LoRA branch (Transpose → MatMul → MatMul → Mul) and collects
+    intermediate tensor names.  Stops at the ``Add`` node where the
+    LoRA branch merges back into the base path.  Skips ops listed in
+    ``op_outputs_to_ignore`` since QuantSim does not quantize those.
     """
     consumers = {}
     for node in model.graph.node:
@@ -944,9 +766,11 @@ def _trace_lora_activations(
 
 
 def _dual_list_lora_initializers(model: onnx.ModelProto, lora_names: list[str]) -> None:
-    """Add LoRA initializers to graph.input while keeping them in graph.initializer.
+    """Register LoRA initializers as graph inputs so they can be overridden via feed dict.
 
-    Uses dynamic ``"lora_rank"`` dimension for rank-related dims.
+    The initializers stay in ``graph.initializer`` (providing defaults) and are
+    also added to ``graph.input``.  Rank dimensions use ``"lora_rank"`` to
+    allow adapters with different ranks.
     """
     init_map = {init.name: init for init in model.graph.initializer}
     existing_inputs = {inp.name for inp in model.graph.input}
@@ -959,6 +783,6 @@ def _dual_list_lora_initializers(model: onnx.ModelProto, lora_names: list[str]) 
 
 
 def _cleanup_external_data(output_dir: Path, model_filename: str) -> None:
-    """Remove stale external data files from a previous ONNX save."""
+    """Remove existing external data files to avoid conflicts when saving."""
     for data_file in output_dir.glob(f"{model_filename}.data*"):
         data_file.unlink(missing_ok=True)
