@@ -382,6 +382,77 @@ class RMSNorm(nn.Module):
         return x
 
 
+class RMSNormWithCast(nn.Module):
+    """RMSNorm that casts to float32 for numerical stability, like Qwen2RMSNorm."""
+
+    def __init__(
+        self,
+        dim,
+        elementwise_affine=True,
+        mul_for_pow=False,
+        mul_rsqrt_pattern="mul_rsqrt",
+    ):
+        super().__init__()
+        self.weight = torch.randn(dim) if elementwise_affine else None
+        self.variance_epsilon = 0.003
+        self.mul_for_pow = mul_for_pow
+        self.mul_rsqrt_pattern = mul_rsqrt_pattern
+
+    def forward(self, x):
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+
+        if self.mul_for_pow:
+            variance = (x * x).mean(-1, keepdim=True)
+        else:
+            variance = x.pow(2).mean(-1, keepdim=True)
+
+        if self.mul_rsqrt_pattern == "mul_rsqrt":
+            x = x * torch.rsqrt(variance + self.variance_epsilon)
+        elif self.mul_rsqrt_pattern == "div_sqrt":
+            x = x / torch.sqrt(variance + self.variance_epsilon)
+        elif self.mul_rsqrt_pattern == "mul_reciprocal_sqrt":
+            sqrt = 1 / torch.sqrt(variance + self.variance_epsilon)
+            x = x * sqrt
+        else:
+            raise RuntimeError("Mul RSqrt pattern not specified.")
+
+        x = x.to(input_dtype)
+        if self.weight is not None:
+            return x * self.weight
+        return x
+
+
+def rmsnorm_with_cast_model(
+    dim: int = 32,
+    elementwise_affine: bool = True,
+    mul_for_pow: bool = False,
+    mul_rsqrt_pattern: str = "mul_rsqrt",
+    opset=16,
+):
+    torch.manual_seed(10)
+    model = RMSNormWithCast(
+        dim=dim,
+        elementwise_affine=elementwise_affine,
+        mul_for_pow=mul_for_pow,
+        mul_rsqrt_pattern=mul_rsqrt_pattern,
+    )
+    buffer = io.BytesIO()
+    x = torch.randn((1, 3, dim, dim), dtype=torch.float16)
+    torch.onnx.export(
+        model,
+        x,
+        buffer,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=opset,
+        dynamo=False,
+    )
+    buffer.seek(0)
+    model = load_model(buffer)
+    return model
+
+
 def rmsnorm_model(
     dim: int = 32,
     elementwise_affine: bool = True,

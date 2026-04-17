@@ -65,12 +65,19 @@ class RMSNormalization(SupergroupGraphPass):
         if not all_ops:
             return []
 
-        # Check if weights are present
+        # Check if weights are present, skipping any Cast ops (e.g. from
+        # dtype casting in RMSNorm implementations like Qwen2RMSNorm which
+        # casts to float32 for numerical stability then back).
         elementwise_affine = False
-        if len(all_ops[-1].output_ops) == 1 and all_ops[-1].output_ops[0].type == "Mul":
+        next_op = all_ops[-1]
+        cast_ops = []
+        while len(next_op.output_ops) == 1 and next_op.output_ops[0].type == "Cast":
+            cast_ops.append(next_op.output_ops[0])
+            next_op = next_op.output_ops[0]
+        if len(next_op.output_ops) == 1 and next_op.output_ops[0].type == "Mul":
             elementwise_affine = True
-            # Weights are present
-            all_ops.append(all_ops[-1].output_ops[0])
+            all_ops.extend(cast_ops)
+            all_ops.append(next_op.output_ops[0])
 
         # Disable output quantizers for all the intermediate outputs
         self.disable_output_quantizers(all_ops[:-1])
