@@ -166,8 +166,15 @@ def test_llm_quantization(
 
         # Finalize embedding quantization after recipes have had a chance to
         # transform the weights (e.g. SpinQuant rotation).
-        if sim_collection.embedding is not None and isinstance(
-            sim_collection.embedding, QuantizationMixin
+        # Skip if RemoveQuantization was applied to the backbone — the
+        # embedding should stay in FP to match.
+        backbone_removed_quant = any(
+            s.recipe_name == "RemoveQuantization" for s in backbone_steps
+        )
+        if (
+            sim_collection.embedding is not None
+            and isinstance(sim_collection.embedding, QuantizationMixin)
+            and not backbone_removed_quant
         ):
             compute_param_encodings(sim_collection.embedding)
 

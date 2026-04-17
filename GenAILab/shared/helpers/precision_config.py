@@ -153,8 +153,8 @@ class PrecisionConfig:
     def to_dict(self) -> dict:
         d = {
             "activations": repr(self.activations),
-            "kv_cache": repr(self.kv_cache),
-            "embedding": repr(self.embedding),
+            "kv_cache": repr(self.resolve_kv_cache_qtype()),
+            "embedding": repr(self.resolve_embedding_qtype()),
             "lm_head": self.lm_head.to_dict(),
             "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
         }
