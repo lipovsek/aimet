@@ -22,12 +22,12 @@ name: GenAI Scorecard
 
 on:
   schedule:
-    - cron: '0 1 * * 6'   # Every Friday at 6PM PT (Saturday 01:00 UTC)
+    - cron: '0 9 * * *'   # Nightly at 2AM PT (09:00 UTC)
+    - cron: '0 1 * * 6'   # Weekly — Friday at 6PM PT (Saturday 01:00 UTC)
 
   push:
     paths:
-      - 'GenAILab/configs/torch_regression.yaml'
-      - 'GenAILab/configs/onnx_regression.yaml'
+      - 'GenAILab/**'
 
   workflow_dispatch:
     inputs:
@@ -51,6 +51,20 @@ on:
           - torch
           - onnx
         default: 'both'
+
+################################################################################
+# Cadence resolution
+# - schedule cron '0 9 * * *' → nightly
+# - schedule cron '0 1 * * 6' → weekly
+# - push / workflow_dispatch  → acceptance
+################################################################################
+env:
+  CADENCE: >-
+    ${{
+      github.event.schedule == '0 9 * * *' && 'nightly' ||
+      github.event.schedule == '0 1 * * 6' && 'weekly' ||
+      'acceptance'
+    }}
 
 ################################################################################
 # JOBS
@@ -163,7 +177,7 @@ jobs:
       - name: Resolve config
         id: config
         run: |
-          bash scripts/all/resolve_genai_config.sh torch \
+          bash scripts/all/resolve_genai_config.sh torch "${{ env.CADENCE }}" \
             "${{ github.event.inputs.ad_hoc_config_b64 }}"
       - uses: ./.github/actions/genai-test
         with:
@@ -190,7 +204,7 @@ jobs:
       - name: Resolve config
         id: config
         run: |
-          bash scripts/all/resolve_genai_config.sh onnx \
+          bash scripts/all/resolve_genai_config.sh onnx "${{ env.CADENCE }}" \
             "${{ github.event.inputs.ad_hoc_config_b64 }}"
       - uses: ./.github/actions/genai-test
         with:

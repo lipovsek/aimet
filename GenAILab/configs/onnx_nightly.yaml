@@ -1,0 +1,50 @@
+# Nightly regression — one model, all recipes, TinyMMLU + PPL.
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  sequence_length: 2048
+  context_length: 4096
+metrics:
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  sequence_length: 2048
+  context_length: 4096
+precision:
+  blocks:
+    granularity: LPBQ
+recipe:
+  name: Calibration
+  dataset:
+    name: Wikitext
+    split: train
+metrics:
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  sequence_length: 2048
+  context_length: 4096
+recipe:
+  name: Calibration
+  dataset:
+    name: Wikitext
+    split: train
+metrics:
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  sequence_length: 2048
+  context_length: 4096
+recipe:
+  name: SeqMSE
+  dataset:
+    name: Wikitext
+    split: train
+metrics:
+  - name: TinyMMLU
+  - name: PPL

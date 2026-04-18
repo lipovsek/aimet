@@ -8,15 +8,16 @@
 # In regression mode, uses the checked-in regression config.
 #
 # Usage:
-#   scripts/resolve_scorecard_config.sh <variant> [b64_config]
+#   scripts/resolve_scorecard_config.sh <variant> <cadence> [b64_config]
 #
 # Outputs (via GITHUB_OUTPUT if set, otherwise stdout):
 #   path=<resolved config path>
 
 set -euo pipefail
 
-VARIANT="${1:?Usage: $0 <variant> [b64_config]}"
-B64_CONFIG="${2:-}"
+VARIANT="${1:?Usage: $0 <variant> <cadence> [b64_config]}"
+CADENCE="${2:?Usage: $0 <variant> <cadence> [b64_config]}"
+B64_CONFIG="${3:-}"
 
 CONFIG_DIR="GenAILab/configs"
 STAGING_PATH="GenAILab/scorecard_config.yaml"
@@ -34,7 +35,7 @@ if [ -n "$B64_CONFIG" ]; then
   cat "$STAGING_PATH"
   CONFIG_PATH="$STAGING_PATH"
 else
-  CONFIG_PATH="$CONFIG_DIR/${VARIANT}_regression.yaml"
+  CONFIG_PATH="$CONFIG_DIR/${VARIANT}_${CADENCE}.yaml"
   if [ ! -f "$CONFIG_PATH" ]; then
     echo "Error: Regression config not found: $CONFIG_PATH"
     exit 1

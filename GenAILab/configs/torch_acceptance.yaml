@@ -1,0 +1,21 @@
+# Minimal smoke test for PR integration checks.
+# FP baseline + one Calibration run with PPL+TinyMMLU only.
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  sequence_length: 2048
+  context_length: 4096
+metrics:
+  - name: TinyMMLU
+---
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  sequence_length: 2048
+  context_length: 4096
+recipe:
+  name: Calibration
+  dataset:
+    name: Wikitext
+    split: train
+metrics:
+  - name: PPL
+  - name: TinyMMLU

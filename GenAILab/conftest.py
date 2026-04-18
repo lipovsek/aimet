@@ -124,6 +124,9 @@ def results_dir(request):
 
 
 def pytest_generate_tests(metafunc):
+    if "test_config" not in metafunc.fixturenames:
+        return
+
     config_file = metafunc.config.getoption("--config", skip=False)
     force_export = metafunc.config.getoption("--force-export", skip=False)
 
@@ -143,5 +146,4 @@ def pytest_generate_tests(metafunc):
             doc["export"] = True
     test_configs = docs
 
-    if "test_config" in metafunc.fixturenames:
-        metafunc.parametrize("test_config", test_configs)
+    metafunc.parametrize("test_config", test_configs)

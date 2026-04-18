@@ -526,7 +526,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         global_outputs: dict[str, Union[torch.Tensor | list[torch.Tensor]]] = {
             "past_key_values": []
             if past_key_values is None or past_key_values.get_seq_length() == 0
-            else list(itertools.chain.from_iterable(past_key_values.to_legacy_cache()))
+            else [t for layer_kv in past_key_values for t in (layer_kv[0], layer_kv[1])]
         }
 
         for (
@@ -571,8 +571,10 @@ class Generator(GenerationMixin, torch.nn.Module):
 
         # Convert KV Cache outputs into HF DynamicCache
         past_key_values = DynamicCache()
-        past_key_values.key_cache = past_key_values_list[::2]
-        past_key_values.value_cache = past_key_values_list[1::2]
+        keys = past_key_values_list[::2]
+        values = past_key_values_list[1::2]
+        for layer_idx, (k, v) in enumerate(zip(keys, values)):
+            past_key_values.update(k, v, layer_idx=layer_idx)
         return CausalLMOutputWithPast(logits=logits, past_key_values=past_key_values)
 
     def prefill(
@@ -603,7 +605,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         preconsumed_outputs: dict[str, Union[torch.Tensor | list[torch.Tensor]]] = {
             "past_key_values": []
             if past_key_values is None or past_key_values.get_seq_length() == 0
-            else list(itertools.chain.from_iterable(past_key_values.to_legacy_cache()))
+            else [t for layer_kv in past_key_values for t in (layer_kv[0], layer_kv[1])]
         }
 
         slices_iter = self.slice_inputs_for_inference(
@@ -906,6 +908,11 @@ class VLM_Generator(Generator):
         video_grid_thw: torch.Tensor | None = None,
         **kwargs,
     ) -> CausalLMOutputWithPast:
+        # Remove mm_token_type_ids from kwargs — it is consumed by
+        # fuse_text_image_video / position_id_processor and must not
+        # propagate to the backbone model.
+        kwargs.pop("mm_token_type_ids", None)
+
         # 1) Obtain fused input embeddings and extra vision outputs
         inputs_embeds, mm_token_type_ids, extra_kwargs = self.fuse_text_image_video(
             input_ids=input_ids,
@@ -951,6 +958,8 @@ class VLM_Generator(Generator):
         video_grid_thw: torch.Tensor | None = None,
         **kwargs,
     ) -> typing.Generator[tuple[torch.Tensor, ...], None, None]:
+        kwargs.pop("mm_token_type_ids", None)
+
         # 1) Obtain fused input embeddings and extra vision outputs
         inputs_embeds, mm_token_type_ids, extra_kwargs = self.fuse_text_image_video(
             input_ids=input_ids,

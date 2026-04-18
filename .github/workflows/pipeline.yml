@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.final.outputs.value }}
+      test_genai_unit: ${{ steps.select.outputs.test_genai_unit }}
     steps:
       - uses: actions/checkout@v4
       - name: Get changed files
@@ -47,6 +48,7 @@ jobs:
 
           TORCH_TEST_REQUIRED='false'
           ONNX_TEST_REQUIRED='false'
+          GENAI_UNIT_TEST_REQUIRED='false'
 
           for file in ${ALL_CHANGED_FILES}; do
             if [[ "$file" == "$AIMET_TORCH_SRC_CODE"* ]]; then
@@ -58,18 +60,25 @@ jobs:
             elif [[ "$file" == "$EXAMPLES_SRC_CODE"* ]]; then
               : # Examples change doesn't require running unit tests; only doc rebuild is needed
             elif [[ "$file" == "$GENAI_TEST_CODE"* ]]; then
-              : # GenAI tests change doesn't require running unit tests
+              # GenAI code changes (not config changes) trigger full builds + GenAI unit/integration tests
+              if [[ "$file" != "$GENAI_TEST_CODE"configs/*.yaml ]]; then
+                GENAI_UNIT_TEST_REQUIRED='true'
+                TORCH_TEST_REQUIRED='true'
+                ONNX_TEST_REQUIRED='true'
+              fi
             elif [[ "$file" == "$ONNXREGRESSION_TEST_CODE"* ]]; then
               : # AIMETRegression tests change doesn't require running unit tests
             else
               TORCH_TEST_REQUIRED='true'
               ONNX_TEST_REQUIRED='true'
+              GENAI_UNIT_TEST_REQUIRED='true'
               break
             fi
           done
 
           echo "test_torch=$TORCH_TEST_REQUIRED" >> $GITHUB_OUTPUT
           echo "test_onnx=$ONNX_TEST_REQUIRED"   >> $GITHUB_OUTPUT
+          echo "test_genai_unit=$GENAI_UNIT_TEST_REQUIRED" >> $GITHUB_OUTPUT
       - name: Torch variants
         # For the default branch, we still test all variants every time (yet)
         if: steps.select.outputs.test_torch == 'true' || github.ref_name == github.event.repository.default_branch
@@ -225,3 +234,49 @@ jobs:
       - name: Delete temp docker image
         if: needs.docker-tag.outputs.tag != 'latest'
         run: curl -k -H "Authorization:Bearer ${{ secrets.DOCKER_CREDENTIALS }}" -X DELETE "https://${{ vars.DOCKER_REGISTRY }}/v2/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}/manifests/${{ needs.docker-tag.outputs.tag }}" || true
+
+  # ---------------------------------------------------------------------------
+  # GenAI unit tests — lightweight, CPU-only, no model weights required
+  # Uses freshly built AIMET wheels from the same pipeline run.
+  # ---------------------------------------------------------------------------
+  genai-unit-tests:
+    name: GenAI unit tests
+    needs: [pre-commit-check, variants, call-build-wheels]
+    if: needs.variants.outputs.test_genai_unit == 'true' || github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Download aimet-torch wheel
+        uses: actions/download-artifact@v3
+        with:
+          name: "torch-cpu-wheel"
+          path: "downloads"
+
+      - name: Download aimet-onnx wheel
+        uses: actions/download-artifact@v3
+        with:
+          name: "onnx-cpu-wheel"
+          path: "downloads"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install downloads/*.whl
+          pip install -r GenAILab/requirements.txt
+          hf auth login --token ${{ secrets.HUGGINGFACE_TOKEN }}
+
+      - name: Run GenAI unit tests
+        run: |
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+          python -m pytest GenAILab/tests/unit/ -v --tb=short
+
+      - name: Run GenAI integration tests
+        run: |
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+          python -m pytest GenAILab/tests/integration/ -v --tb=short

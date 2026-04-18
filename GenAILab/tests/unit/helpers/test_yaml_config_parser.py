@@ -1,0 +1,474 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Tests for YAMLConfigParser registry and config parsing."""
+
+import copy
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+from GenAILab.shared.helpers.yaml_config_parser import (
+    YAMLConfigParser,
+    AdaptationInfo,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures: save and restore global registry state
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_registry():
+    """Snapshot and restore the parser's global lookup dicts around each test."""
+    saved = {
+        "recipe": dict(YAMLConfigParser.recipe_lookup),
+        "model": dict(YAMLConfigParser.model_lookup),
+        "dataset": dict(YAMLConfigParser.dataset_lookup),
+        "metrics": dict(YAMLConfigParser.metrics_lookup),
+        "adaptation": dict(YAMLConfigParser.adaptation_lookup),
+        "default_llm": YAMLConfigParser._default_llm_cls,
+    }
+    yield
+    YAMLConfigParser.recipe_lookup = saved["recipe"]
+    YAMLConfigParser.model_lookup = saved["model"]
+    YAMLConfigParser.dataset_lookup = saved["dataset"]
+    YAMLConfigParser.metrics_lookup = saved["metrics"]
+    YAMLConfigParser.adaptation_lookup = saved["adaptation"]
+    YAMLConfigParser._default_llm_cls = saved["default_llm"]
+
+
+# ---------------------------------------------------------------------------
+# Registration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRegistration:
+    def test_register_metric(self):
+        @YAMLConfigParser.register_metric
+        class MyMetric:
+            pass
+
+        assert YAMLConfigParser.metrics_lookup["MyMetric"] is MyMetric
+
+    def test_register_dataset(self):
+        @YAMLConfigParser.register_dataset
+        class MyDataset:
+            pass
+
+        assert YAMLConfigParser.dataset_lookup["MyDataset"] is MyDataset
+
+    def test_register_recipe(self):
+        @YAMLConfigParser.register_recipe
+        class MyRecipe:
+            pass
+
+        assert YAMLConfigParser.recipe_lookup["MyRecipe"] is MyRecipe
+
+    def test_register_model(self):
+        @YAMLConfigParser.register_model("test_vlm")
+        class MyVLM:
+            pass
+
+        assert YAMLConfigParser.model_lookup["test_vlm"] is MyVLM
+
+    def test_register_model_duplicate_raises(self):
+        @YAMLConfigParser.register_model("dup_type")
+        class First:
+            pass
+
+        with pytest.raises(RuntimeError, match="already registered"):
+
+            @YAMLConfigParser.register_model("dup_type")
+            class Second:
+                pass
+
+    def test_register_adaptation(self):
+        @YAMLConfigParser.register_adaptation("SHA", model_type="llama")
+        class SHAMixin:
+            pass
+
+        key = ("llama", "SHA")
+        assert key in YAMLConfigParser.adaptation_lookup
+        assert YAMLConfigParser.adaptation_lookup[key].mixin_cls is SHAMixin
+
+    def test_register_adaptation_exclusive(self):
+        @YAMLConfigParser.register_adaptation("AIHM", model_type="*", exclusive=True)
+        class AIHMMixin:
+            pass
+
+        key = ("*", "AIHM")
+        assert YAMLConfigParser.adaptation_lookup[key].exclusive is True
+
+    def test_register_default_llm(self):
+        class FakeLLM:
+            pass
+
+        YAMLConfigParser._default_llm_cls = None
+        YAMLConfigParser.register_default_llm(FakeLLM)
+        assert YAMLConfigParser._default_llm_cls is FakeLLM
+
+    def test_register_default_llm_duplicate_different_raises(self):
+        class LLM_A:
+            pass
+
+        class LLM_B:
+            pass
+
+        YAMLConfigParser._default_llm_cls = None
+        YAMLConfigParser.register_default_llm(LLM_A)
+        with pytest.raises(RuntimeError, match="already registered"):
+            YAMLConfigParser.register_default_llm(LLM_B)
+
+    def test_register_default_llm_same_class_ok(self):
+        class LLM_A:
+            pass
+
+        YAMLConfigParser._default_llm_cls = None
+        YAMLConfigParser.register_default_llm(LLM_A)
+        YAMLConfigParser.register_default_llm(LLM_A)  # no error
+
+    def test_get_default_llm_unregistered_raises(self):
+        YAMLConfigParser._default_llm_cls = None
+        with pytest.raises(RuntimeError, match="No default LLM"):
+            YAMLConfigParser.get_default_llm()
+
+
+# ---------------------------------------------------------------------------
+# Adaptation resolution
+# ---------------------------------------------------------------------------
+
+
+class TestAdaptationResolution:
+    def test_get_model_class_no_adaptations(self):
+        class FakeLLM:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM
+        result = YAMLConfigParser.get_model_class("llama")
+        assert result is FakeLLM
+
+    def test_get_model_class_registered_model(self):
+        @YAMLConfigParser.register_model("qwen2_vl")
+        class Qwen2VL:
+            pass
+
+        result = YAMLConfigParser.get_model_class("qwen2_vl")
+        assert result is Qwen2VL
+
+    def test_get_model_class_with_adaptation(self):
+        class FakeLLM:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM
+
+        @YAMLConfigParser.register_adaptation("SHA", model_type="llama")
+        class SHAMixin:
+            pass
+
+        result = YAMLConfigParser.get_model_class("llama", adaptations=["SHA"])
+        # Should be a dynamically created class mixing SHAMixin + FakeLLM
+        assert issubclass(result, FakeLLM)
+        assert issubclass(result, SHAMixin)
+
+    def test_get_model_class_universal_adaptation(self):
+        class FakeLLM:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM
+
+        @YAMLConfigParser.register_adaptation("FastExport", model_type="*")
+        class FastExportMixin:
+            pass
+
+        result = YAMLConfigParser.get_model_class(
+            "any_type", adaptations=["FastExport"]
+        )
+        assert issubclass(result, FastExportMixin)
+
+    def test_exclusive_adaptation_alone_ok(self):
+        class FakeLLM:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM
+
+        @YAMLConfigParser.register_adaptation("AIHM", exclusive=True)
+        class AIHMMixin:
+            pass
+
+        result = YAMLConfigParser.get_model_class("llama", adaptations=["AIHM"])
+        assert issubclass(result, AIHMMixin)
+
+    def test_exclusive_adaptation_combined_raises(self):
+        class FakeLLM:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM
+
+        @YAMLConfigParser.register_adaptation("AIHM", exclusive=True)
+        class AIHMMixin:
+            pass
+
+        @YAMLConfigParser.register_adaptation("SHA")
+        class SHAMixin:
+            pass
+
+        with pytest.raises(ValueError, match="exclusive"):
+            YAMLConfigParser.get_model_class("llama", adaptations=["AIHM", "SHA"])
+
+    def test_unknown_adaptation_raises(self):
+        class FakeLLM:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM
+        with pytest.raises(LookupError, match="No 'Nonexistent'"):
+            YAMLConfigParser.get_model_class("llama", adaptations=["Nonexistent"])
+
+
+# ---------------------------------------------------------------------------
+# Config validation
+# ---------------------------------------------------------------------------
+
+
+class TestValidateConfig:
+    def test_missing_model_raises(self):
+        with pytest.raises(RuntimeError, match="Model section"):
+            YAMLConfigParser.validate_config({"metrics": [{"name": "PPL"}]})
+
+    def test_missing_metrics_raises(self):
+        with pytest.raises(RuntimeError, match="Metrics not"):
+            YAMLConfigParser.validate_config(
+                {
+                    "model": {
+                        "model_id": "x",
+                        "sequence_length": 32,
+                        "context_length": 64,
+                    }
+                }
+            )
+
+    def test_missing_model_id_raises(self):
+        with pytest.raises(RuntimeError, match="model_id"):
+            YAMLConfigParser.validate_config(
+                {
+                    "model": {"sequence_length": 32, "context_length": 64},
+                    "metrics": [{"name": "PPL"}],
+                }
+            )
+
+    def test_missing_sequence_length_raises(self):
+        with pytest.raises(RuntimeError, match="Sequence length"):
+            YAMLConfigParser.validate_config(
+                {
+                    "model": {"model_id": "x", "context_length": 64},
+                    "metrics": [{"name": "PPL"}],
+                }
+            )
+
+    def test_missing_context_length_raises(self):
+        with pytest.raises(RuntimeError, match="Context length"):
+            YAMLConfigParser.validate_config(
+                {
+                    "model": {"model_id": "x", "sequence_length": 32},
+                    "metrics": [{"name": "PPL"}],
+                }
+            )
+
+    def test_metric_missing_name_raises(self):
+        with pytest.raises(RuntimeError, match="Metric name"):
+            YAMLConfigParser.validate_config(
+                {
+                    "model": {
+                        "model_id": "x",
+                        "sequence_length": 32,
+                        "context_length": 64,
+                    },
+                    "metrics": [{"class": "PPL"}],
+                }
+            )
+
+    def test_recipe_name_normalized_to_backbone(self):
+        doc = {
+            "model": {"model_id": "x", "sequence_length": 32, "context_length": 64},
+            "recipe": {"name": "Calibration"},
+            "metrics": [{"name": "PPL"}],
+        }
+        YAMLConfigParser.validate_config(doc)
+        assert "backbone" in doc["recipe"]
+        assert doc["recipe"]["backbone"][0]["name"] == "Calibration"
+
+    def test_recipe_both_name_and_backbone_raises(self):
+        with pytest.raises(RuntimeError, match="cannot have both"):
+            YAMLConfigParser.validate_config(
+                {
+                    "model": {
+                        "model_id": "x",
+                        "sequence_length": 32,
+                        "context_length": 64,
+                    },
+                    "recipe": {"name": "Calibration", "backbone": {"name": "Skip"}},
+                    "metrics": [{"name": "PPL"}],
+                }
+            )
+
+
+# ---------------------------------------------------------------------------
+# Full parse_document (requires mocking detect_model_type)
+# ---------------------------------------------------------------------------
+
+
+class TestParseDocument:
+    @pytest.fixture(autouse=True)
+    def _setup_registry(self):
+        """Register minimal recipes and metrics for parse tests."""
+
+        @YAMLConfigParser.register_recipe
+        class RemoveQuantization:
+            pass
+
+        @YAMLConfigParser.register_recipe
+        class Calibration:
+            pass
+
+        @YAMLConfigParser.register_metric
+        class PPL:
+            pass
+
+        @YAMLConfigParser.register_metric
+        class TinyMMLU:
+            pass
+
+        @YAMLConfigParser.register_dataset
+        class C4:
+            pass
+
+        class FakeLLM:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
+    def test_minimal(self, mock_detect, tmp_path):
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "metrics": [{"name": "TinyMMLU"}],
+        }
+        result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+        assert "model" in result
+        assert "precision" in result
+        assert "recipe" in result
+        assert "metrics" in result
+        assert result["model"]["model_type"] == "llama"
+        assert result["metrics"][0]["class"].__name__ == "TinyMMLU"
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
+    def test_with_recipe_and_dataset(self, mock_detect, tmp_path):
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "recipe": {
+                "backbone": {
+                    "name": "Calibration",
+                    "dataset": {"name": "C4", "split": "en"},
+                }
+            },
+            "metrics": [{"name": "PPL"}],
+        }
+        result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+        assert result["recipe"]["backbone"][0]["class"].__name__ == "Calibration"
+        assert result["recipe"]["backbone"][0]["dataset"]["class"].__name__ == "C4"
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
+    def test_unknown_recipe_raises(self, mock_detect, tmp_path):
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "recipe": {"backbone": {"name": "NonexistentRecipe"}},
+            "metrics": [{"name": "PPL"}],
+        }
+        with pytest.raises(LookupError, match="NonexistentRecipe"):
+            YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
+    def test_unknown_metric_raises(self, mock_detect, tmp_path):
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "metrics": [{"name": "FakeMetric"}],
+        }
+        with pytest.raises(LookupError, match="FakeMetric"):
+            YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
+    def test_export_true(self, mock_detect, tmp_path):
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "metrics": [{"name": "PPL"}],
+            "export": True,
+        }
+        result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+        assert result["export"] is not None
+        assert isinstance(result["export"], str)
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
+    def test_export_false(self, mock_detect, tmp_path):
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "metrics": [{"name": "PPL"}],
+            "export": False,
+        }
+        result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+        assert result["export"] is False
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
+    def test_precision_parsed(self, mock_detect, tmp_path):
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "metrics": [{"name": "PPL"}],
+            "precision": {"activations": 8, "kv_cache": 4},
+        }
+        result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+        from GenAILab.shared.helpers.precision_config import int8, int4
+
+        assert result["precision"].activations == int8
+        assert result["precision"].kv_cache == int4
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
+    def test_unrecognized_section_raises(self, mock_detect, tmp_path):
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "metrics": [{"name": "PPL"}],
+            "unknown_section": {"foo": "bar"},
+        }
+        with pytest.raises(ValueError, match="Unrecognized"):
+            YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
