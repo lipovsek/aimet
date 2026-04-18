@@ -649,6 +649,7 @@ def _is_htp_interpolation_op(op_type: str, domain: str = "") -> bool:
     return (domain, op_type) in (
         ("", "Resize"),
         ("", "ScatterElements"),
+        ("", "ScatterND"),
         ("", "Upsample"),
         ("qti_aisw", "CropAndResize"),
     )

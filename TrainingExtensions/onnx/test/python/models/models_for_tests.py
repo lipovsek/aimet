@@ -5091,3 +5091,147 @@ def decomposed_layernorm(
     model = ir.to_proto(ir_model)
     onnx.checker.check_model(model)
     return model
+
+
+def _scatter_op_params(use_scatter_nd, data_shape, updates_shape):
+    if use_scatter_nd:
+        indices_data = np.arange(updates_shape[0], dtype=np.int64).reshape(-1, 1)
+        return "ScatterND", indices_data, {}
+    indices_data = np.tile(
+        np.arange(data_shape[1], dtype=np.int64), (data_shape[0], 1)
+    )[: updates_shape[0], : updates_shape[1]]
+    return "ScatterElements", indices_data, {"axis": 1}
+
+
+def simple_scatter_model(use_scatter_nd=False):
+    """
+    data -------> Scatter --> [output]
+    updates ---^     ^
+                  indices (int64 initializer)
+    """
+    data_shape = [4, 4]
+    updates_shape = [2, 4] if use_scatter_nd else [2, 2]
+    op_type, indices_data, attrs = _scatter_op_params(
+        use_scatter_nd, data_shape, updates_shape
+    )
+    indices = numpy_helper.from_array(indices_data, name="indices")
+    graph = helper.make_graph(
+        nodes=[
+            helper.make_node(
+                op_type,
+                inputs=["data", "indices", "updates"],
+                outputs=["scatter_output"],
+                name="scatter",
+                **attrs,
+            ),
+        ],
+        inputs=[
+            helper.make_tensor_value_info("data", TensorProto.FLOAT, shape=data_shape),
+            helper.make_tensor_value_info(
+                "updates", TensorProto.FLOAT, shape=updates_shape
+            ),
+        ],
+        outputs=[
+            helper.make_tensor_value_info(
+                "scatter_output", TensorProto.FLOAT, shape=data_shape
+            ),
+        ],
+        initializer=[indices],
+        name=f"Simple{op_type}Model",
+    )
+    model = make_model(graph=graph)
+    onnx.checker.check_model(model, True)
+    return model
+
+
+def scatter_with_shared_input_model(use_scatter_nd=False):
+    """
+                (data)      (indices)
+    Input1 -+  +---+         v
+            Add|   Scatter --> Output
+    Input2 -+  +---+
+                (updates)
+
+    Add output feeds both data and updates of Scatter op.
+    """
+    shape = [2, 4]
+    op_type, indices_data, attrs = _scatter_op_params(use_scatter_nd, shape, shape)
+    indices = numpy_helper.from_array(indices_data, name="indices")
+    graph = helper.make_graph(
+        nodes=[
+            helper.make_node(
+                "Add",
+                inputs=["input1", "input2"],
+                outputs=["add_output"],
+                name="add",
+            ),
+            helper.make_node(
+                op_type,
+                inputs=["add_output", "indices", "add_output"],
+                outputs=["scatter_output"],
+                name="scatter",
+                **attrs,
+            ),
+        ],
+        inputs=[
+            helper.make_tensor_value_info("input1", TensorProto.FLOAT, shape=shape),
+            helper.make_tensor_value_info("input2", TensorProto.FLOAT, shape=shape),
+        ],
+        outputs=[
+            helper.make_tensor_value_info(
+                "scatter_output", TensorProto.FLOAT, shape=shape
+            ),
+        ],
+        initializer=[indices],
+        name=f"{op_type}WithSharedInputModel",
+    )
+    model = make_model(graph=graph)
+    onnx.checker.check_model(model, True)
+    return model
+
+
+def scatter_with_relu_data_model(use_scatter_nd=False):
+    """
+                          (indices)
+                           v
+    Input --> Relu --> Scatter --> [output]
+          +------------^
+                  (updates)
+
+    Relu output feeds data. Raw input feeds updates.
+    Relu has encoding constraint [0, None].
+    Input has multiple consumers (Relu + Scatter).
+    """
+    shape = [4, 4]
+    op_type, indices_data, attrs = _scatter_op_params(use_scatter_nd, shape, shape)
+    indices = numpy_helper.from_array(indices_data, name="indices")
+    graph = helper.make_graph(
+        nodes=[
+            helper.make_node(
+                "Relu",
+                inputs=["input"],
+                outputs=["relu_output"],
+                name="relu",
+            ),
+            helper.make_node(
+                op_type,
+                inputs=["relu_output", "indices", "input"],
+                outputs=["scatter_output"],
+                name="scatter",
+                **attrs,
+            ),
+        ],
+        inputs=[
+            helper.make_tensor_value_info("input", TensorProto.FLOAT, shape=shape),
+        ],
+        outputs=[
+            helper.make_tensor_value_info(
+                "scatter_output", TensorProto.FLOAT, shape=shape
+            ),
+        ],
+        initializer=[indices],
+        name=f"{op_type}WithReluDataModel",
+    )
+    model = make_model(graph=graph)
+    onnx.checker.check_model(model, True)
+    return model

@@ -2071,6 +2071,7 @@ class QuantizationSimModel:
 
         :param op_types_to_tie: List of onnx ops for which to tie quantizers
         """
+        op_types_to_tie = set(op_types_to_tie)
         # Walk the graph and create a node input to op map, only for QcQuantizeOp nodes
         node_input_map = {}
         for node in self.model.graph().node:
@@ -2079,11 +2080,14 @@ class QuantizationSimModel:
             for input_name in node.input:
                 node_input_map[input_name] = node
 
-        if "Concat" in op_types_to_tie:
-            self._propagate_output_encodings({"Concat"}, node_input_map)
+        # Ops that combine data from multiple inputs to single output
+        data_aggregation_ops = {"Concat", "ScatterElements", "ScatterND"}
+        self._propagate_output_encodings(
+            op_types_to_tie & data_aggregation_ops, node_input_map
+        )
 
         self._propagate_input_encodings(
-            {x for x in op_types_to_tie if x != "Concat"}, node_input_map
+            op_types_to_tie - data_aggregation_ops, node_input_map
         )
 
     def _propagate_output_encodings(
@@ -2095,6 +2099,8 @@ class QuantizationSimModel:
         :param op_types_to_tie: List of onnx ops for which to tie quantizers
         """
         # pylint: disable = protected-access
+        if not op_types_to_tie:
+            return
         qtzr_to_name = {qtzr: name for name, qtzr in self.qc_quantize_op_dict.items()}
         visited = set()
 
@@ -2132,6 +2138,8 @@ class QuantizationSimModel:
                 visited.add(op)
 
                 for inp in op.inputs:
+                    if not self._is_quantizable_dtype(inp.name):
+                        continue
                     src_qtzr = self._get_enabled_quantizer(inp.name)
                     if src_qtzr:
                         src_name = qtzr_to_name[src_qtzr]

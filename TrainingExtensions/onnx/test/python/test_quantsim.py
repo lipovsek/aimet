@@ -4227,6 +4227,77 @@ class TestEncodingPropagation:
             is not sim.qc_quantize_op_dict["mul_output"]
         )
 
+    @pytest.mark.parametrize(
+        "model_factory",
+        [
+            lambda: models_for_tests.simple_scatter_model(use_scatter_nd=False),
+            lambda: models_for_tests.simple_scatter_model(use_scatter_nd=True),
+            lambda: models_for_tests.scatter_with_shared_input_model(
+                use_scatter_nd=False
+            ),
+            lambda: models_for_tests.scatter_with_shared_input_model(
+                use_scatter_nd=True
+            ),
+        ],
+        ids=[
+            "simple_scatter_elements",
+            "simple_scatter_nd",
+            "shared_input_scatter_elements",
+            "shared_input_scatter_nd",
+        ],
+    )
+    def test_scatter_ties_data_and_updates_to_output(self, model_factory):
+        """
+        For ScatterElements/ScatterND, input[0] (data) and input[2] (updates)
+        quantizers should both be tied to output[0] quantizer.
+        """
+        model = model_factory()
+        sim = QuantizationSimModel(model, config_file="htp_v79")
+
+        scatter_op = next(
+            op
+            for op in sim.connected_graph.ordered_ops
+            if op.type in ("ScatterElements", "ScatterND")
+        )
+        output_qtzr = sim._get_enabled_quantizer(scatter_op.outputs[0].name)
+        data_qtzr = sim._get_enabled_quantizer(scatter_op.inputs[0].name)
+        updates_qtzr = sim._get_enabled_quantizer(scatter_op.inputs[2].name)
+
+        assert data_qtzr is output_qtzr
+        assert updates_qtzr is output_qtzr
+
+    @pytest.mark.parametrize(
+        "model_factory",
+        [
+            lambda: models_for_tests.scatter_with_relu_data_model(use_scatter_nd=False),
+            lambda: models_for_tests.scatter_with_relu_data_model(use_scatter_nd=True),
+        ],
+        ids=[
+            "relu_data_scatter_elements",
+            "relu_data_scatter_nd",
+        ],
+    )
+    def test_scatter_skips_tie_when_input_has_encoding_constraint(self, model_factory):
+        """
+        Relu output (data) has encoding constraint [0, None].
+        Input (updates) has multiple consumers (Relu and Scatter).
+        Neither data nor updates quantizer should be tied to scatter output.
+        """
+        model = model_factory()
+        sim = QuantizationSimModel(model, config_file="htp_v79")
+
+        scatter_op = next(
+            op
+            for op in sim.connected_graph.ordered_ops
+            if op.type in ("ScatterElements", "ScatterND")
+        )
+        output_qtzr = sim._get_enabled_quantizer(scatter_op.outputs[0].name)
+        data_qtzr = sim._get_enabled_quantizer(scatter_op.inputs[0].name)
+        updates_qtzr = sim._get_enabled_quantizer(scatter_op.inputs[2].name)
+
+        assert data_qtzr is not output_qtzr
+        assert updates_qtzr is not output_qtzr
+
     def test_partial_encoding_constraints(self):
         """
         Given: model as below
