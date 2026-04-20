@@ -1,9 +1,5 @@
-transformers<5.4.0
-tokenizers
-datasets
-peft<0.19
+-r requirements-pinned.txt
 pytest
 nvidia-ml-py
 qwen_vl_utils
 onnxruntime-gpu
-huggingface_hub[cli]
