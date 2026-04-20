@@ -13,7 +13,9 @@ model:
   context_length: 4096
 precision:
   blocks:
+    qtype: int4
     granularity: LPBQ
+    block_size: 64
 recipe:
   name: Calibration
   dataset:
@@ -41,10 +43,14 @@ model:
   sequence_length: 2048
   context_length: 4096
 recipe:
-  name: SeqMSE
-  dataset:
-    name: Wikitext
-    split: train
+  - name: SeqMSE
+    dataset:
+      name: Wikitext
+      split: train
+  - name: Calibration
+    dataset:
+      name: Wikitext
+      split: train
 metrics:
   - name: TinyMMLU
   - name: PPL
@@ -54,10 +60,16 @@ model:
   sequence_length: 2048
   context_length: 4096
 recipe:
-  name: AdaScale
-  dataset:
-    name: Wikitext
-    split: train
+  - name: AdaScale
+    num_batches: 32
+    num_iterations: 64
+    dataset:
+      name: Wikitext
+      split: train
+  - name: Calibration
+    dataset:
+      name: Wikitext
+      split: train
 metrics:
   - name: TinyMMLU
   - name: PPL
@@ -67,10 +79,11 @@ model:
   sequence_length: 2048
   context_length: 4096
 recipe:
-  name: SpinQuant
-  dataset:
-    name: Wikitext
-    split: train
+  - name: SpinQuant
+  - name: Calibration
+    dataset:
+      name: Wikitext
+      split: train
 metrics:
   - name: TinyMMLU
   - name: PPL

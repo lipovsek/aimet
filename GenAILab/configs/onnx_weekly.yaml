@@ -3,49 +3,95 @@ model:
   sequence_length: 2048
   context_length: 4096
 metrics:
+  - name: MMLU1000
   - name: TinyMMLU
   - name: PPL
 ---
 model:
   model_id: meta-llama/Llama-3.2-1B-Instruct
+  sequence_length: 2048
+  context_length: 4096
+recipe:
+  - name: SeqMSE
+    dataset:
+      name: Wikitext
+      split: train
+  - name: Calibration
+    dataset:
+      name: Wikitext
+      split: train
+metrics:
+  - name: MMLU1000
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  model_id: meta-llama/Llama-3.2-1B-Instruct
+  sequence_length: 2048
+  context_length: 4096
+recipe:
+  - name: SpinQuant
+  - name: AdaScale
+    num_batches: 128
+    num_iterations: 2048
+    dataset:
+      name: Wikitext
+      split: train
+  - name: Calibration
+    dataset:
+      name: Wikitext
+      split: train
+metrics:
+  - name: MMLU1000
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  model_id: Qwen/Qwen3-1.7B
+  sequence_length: 2048
+  context_length: 4096
+metrics:
+  - name: MMLU1000
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  model_id: Qwen/Qwen3-1.7B
+  sequence_length: 2048
+  context_length: 4096
+recipe:
+  - name: SeqMSE
+    dataset:
+      name: Wikitext
+      split: train
+  - name: Calibration
+    dataset:
+      name: Wikitext
+      split: train
+metrics:
+  - name: MMLU1000
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  model_id: Qwen/Qwen3-1.7B
   sequence_length: 2048
   context_length: 4096
 precision:
-  blocks:
-    granularity: LPBQ
-    qtype: int4
-    block_size: 64
+  kv_cache: int16
 recipe:
-  name: Calibration
-  dataset:
-    name: Wikitext
-    split: train
+  - name: SpinQuant
+  - name: AdaScale
+    num_batches: 128
+    num_iterations: 2048
+    dataset:
+      name: Wikitext
+      split: train
+  - name: Calibration
+    dataset:
+      name: Wikitext
+      split: train
 metrics:
-  - name: TinyMMLU
-  - name: PPL
----
-model:
-  model_id: meta-llama/Llama-3.2-1B-Instruct
-  sequence_length: 2048
-  context_length: 4096
-recipe:
-  name: Calibration
-  dataset:
-    name: Wikitext
-    split: train
-metrics:
-  - name: TinyMMLU
-  - name: PPL
----
-model:
-  model_id: meta-llama/Llama-3.2-1B-Instruct
-  sequence_length: 2048
-  context_length: 4096
-recipe:
-  name: SeqMSE
-  dataset:
-    name: Wikitext
-    split: train
-metrics:
+  - name: MMLU1000
   - name: TinyMMLU
   - name: PPL
