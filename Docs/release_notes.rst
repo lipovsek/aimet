@@ -34,7 +34,7 @@ Release notes
         * Disable activation quantizers for re-used stateless nn.Modules (`8f552b7a6`_)
 
 
-.. _f25618610: https://github.com/quic/aimet/commit/f25668610
+.. _f25668610: https://github.com/quic/aimet/commit/f25668610
 .. _4d19f470f: https://github.com/quic/aimet/commit/4d19f470f
 .. _01b912f65: https://github.com/quic/aimet/commit/01b912f65
 .. _c5f65b782: https://github.com/quic/aimet/commit/c5f65b782
