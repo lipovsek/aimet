@@ -814,6 +814,7 @@ class SequentialMse:
                 self.sim.providers,
                 session_options=self.sim._ort_session_options,
                 path=self.sim._path,
+                save_as_external_data=self.sim._use_external_data,
             )
             yield session
         finally:

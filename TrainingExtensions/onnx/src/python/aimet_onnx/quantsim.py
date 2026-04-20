@@ -507,11 +507,15 @@ class QuantizationSimModel:
         # Always tie RNN hidden state quantizers regardless of _tie_qtzrs flag
         self._tie_rnn_hidden_state_quantizers()
 
+        self._use_external_data = (
+            self.model.model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF
+        )
         self.session = OrtInferenceSession(
             self.model.model,
             self.providers,
             session_options=self._ort_session_options,
             path=self._path,
+            save_as_external_data=self._use_external_data,
         )
 
     @classmethod
@@ -1927,9 +1931,6 @@ class QuantizationSimModel:
 
         if export_model:
             with self._remove_quantization_nodes():
-                use_external_data = (
-                    self.model.model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF
-                )
                 ir_model = onnx_ir.from_proto(self.model.model)
                 if any(
                     node.domain == AIMET_SUPERGROUP_DOMAIN
@@ -1941,7 +1942,7 @@ class QuantizationSimModel:
                     ir_model,
                     os.path.join(path, filename_prefix) + ".onnx",
                     external_data=filename_prefix + ".data"
-                    if use_external_data
+                    if self._use_external_data
                     else None,
                 )
 
@@ -1993,6 +1994,7 @@ class QuantizationSimModel:
             self.providers,
             session_options=self._ort_session_options,
             path=self._path,
+            save_as_external_data=self._use_external_data,
         )
 
     def set_quantizers(self, quantizer_dict: Dict[str, QcQuantizeOp]):
@@ -2641,7 +2643,11 @@ class QuantizationSimModel:
         if not partial_model.graph.output:
             return {}
 
-        sess = OrtInferenceSession(partial_model, ["CPUExecutionProvider"])
+        sess = OrtInferenceSession(
+            partial_model,
+            ["CPUExecutionProvider"],
+            save_as_external_data=self._use_external_data,
+        )
         output_tensor_names = [tensor_name for tensor_name, _, _, _ in output_tensors]
         output_param_names = [param_name for _, param_name, _, _ in output_tensors]
         out = sess.run(output_tensor_names, {})

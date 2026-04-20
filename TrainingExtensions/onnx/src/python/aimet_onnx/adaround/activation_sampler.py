@@ -101,7 +101,10 @@ class ActivationSampler:
         # TODO: optional: Clean all the outputs except the one we want?
         handle = add_hook_to_get_activation(model, activation)
         sess = OrtInferenceSession(
-            model, self.providers, self._quant_sim._ort_session_options
+            model,
+            self.providers,
+            self._quant_sim._ort_session_options,
+            save_as_external_data=self._quant_sim._use_external_data,
         )
         return sess, handle
 

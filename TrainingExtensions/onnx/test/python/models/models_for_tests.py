@@ -4901,6 +4901,64 @@ def rmsnorm_invalid_intermediate_output(tmpdir, dim: int = 32, opset=16):
     return onnx.load(fname)
 
 
+def make_split_concat_model(num_splits=128, split_size=32, num_channels=64):
+    import numpy as np
+    from onnx import helper, TensorProto, numpy_helper
+
+    total = num_splits * split_size
+    split_outputs = [f"split_out_{i}" for i in range(num_splits)]
+
+    unsqueeze_axis = numpy_helper.from_array(
+        np.array([0], dtype=np.int64),
+        name="unsqueeze_axis",
+    )
+    split_sizes = numpy_helper.from_array(
+        np.full(num_splits, split_size, dtype=np.int64),
+        name="split_sizes",
+    )
+
+    unsqueeze = helper.make_node(
+        "Unsqueeze",
+        ["input", "unsqueeze_axis"],
+        ["unsq_out"],
+        name="Unsqueeze_0",
+    )
+    split = helper.make_node(
+        "Split",
+        ["unsq_out", "split_sizes"],
+        split_outputs,
+        name="Split_0",
+        axis=-1,
+    )
+    concat = helper.make_node(
+        "Concat",
+        split_outputs,
+        ["output"],
+        name="Concat_0",
+        axis=1,
+    )
+
+    graph = helper.make_graph(
+        [unsqueeze, split, concat],
+        "split_concat_subgraph",
+        [
+            helper.make_tensor_value_info(
+                "input", TensorProto.FLOAT, [1, num_channels, total]
+            )
+        ],
+        [
+            helper.make_tensor_value_info(
+                "output", TensorProto.FLOAT, [1, num_splits, num_channels, split_size]
+            )
+        ],
+        initializer=[unsqueeze_axis, split_sizes],
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    model.ir_version = 10
+    model = onnx.shape_inference.infer_shapes(model)
+    return model
+
+
 def unsafe_concat_tie_model():
     """
             -- Add -+-----------+

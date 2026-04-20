@@ -31,7 +31,10 @@ def get_activation_shapes(sim: QuantizationSimModel) -> Dict[str, Any]:
     dummy_input = utils.make_dummy_input(sim.model.model)
     # pylint: disable=protected-access
     sess = OrtInferenceSession(
-        sim.model.model, ["CPUExecutionProvider"], sim._ort_session_options
+        sim.model.model,
+        ["CPUExecutionProvider"],
+        sim._ort_session_options,
+        save_as_external_data=sim._use_external_data,
     )
     outputs = sess.run(None, dummy_input)
     activation_shapes = {}

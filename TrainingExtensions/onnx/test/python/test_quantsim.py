@@ -7709,3 +7709,15 @@ def test_e2e_quantsim_with_fused_supergroups(model_factory, tmp_path, providers)
     encoding_names = set(encoding["name"] for encoding in encodings["encodings"])
     assert encoding_names.issubset(model_tensor_names)
     assert enabled_quantizers.issubset(encoding_names)
+
+
+def test_quantsim_with_large_split_length_input(tmp_path):
+    model_path = os.path.join(tmp_path, "model.onnx")
+    model = models_for_tests.make_split_concat_model()
+    onnx.save(model, model_path, save_as_external_data=True)
+    model = onnx.load(model_path, load_external_data=True)
+    sim = QuantizationSimModel(model, providers=["CPUExecutionProvider"])
+    sim.compute_encodings([aimet_onnx.utils.make_dummy_input(model)])
+    sim.session.run(None, aimet_onnx.utils.make_dummy_input(model))
+    sim.export(tmp_path, "model_quantized")
+    qdq_model = sim.to_onnx_qdq()

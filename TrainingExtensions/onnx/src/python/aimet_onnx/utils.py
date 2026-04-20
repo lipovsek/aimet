@@ -588,6 +588,7 @@ class OrtInferenceSession(InferenceSession):
         providers: List,
         session_options: SessionOptions = None,
         path: str = None,
+        save_as_external_data: bool = None,
     ):
         """
         Build and return onnxruntime inference session
@@ -596,10 +597,16 @@ class OrtInferenceSession(InferenceSession):
         :param providers: providers to execute onnxruntime
         :param session_options: onnxruntime session options
         :param path: path where to store model external data
+        :param save_as_external_data: Whether to save model with external data.
+            If None, auto-detects based on model size vs protobuf limit.
         """
 
         self.model_dir: Optional[str] = None
         if isinstance(model, ModelProto):
+            if save_as_external_data is None:
+                save_as_external_data = (
+                    model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF
+                )
             if path is None:
                 self.model_dir = tempfile.mkdtemp()
                 path = self.model_dir
@@ -610,7 +617,7 @@ class OrtInferenceSession(InferenceSession):
             onnx.save_model(
                 model_copy,
                 model_path,
-                save_as_external_data=True,
+                save_as_external_data=save_as_external_data,
                 location=Path(model_path).name + ".data",
             )
             del model_copy
