@@ -513,17 +513,10 @@ class QuantizedTensorBase(torch.Tensor):
             )
 
         if func in cls._cast_ops:
-            if not ret.dtype.is_floating_point and ret.dtype != torch.bool:
-                raise RuntimeError(
-                    f"Type casting to non-floating point dtype `{ret.dtype}` is not allowed for quantized tensors. "
-                    "To cast quantized tensors to integer, use `qtensor.quantzed_repr()`."
-                )
-
-            # Outputs of cast ops can inherit the same encoding as its parents,
-            # except boolean casting
-            if ret.dtype == torch.bool:
+            if not ret.dtype.is_floating_point:
                 return ret.as_subclass(torch.Tensor)
 
+            # Outputs of float->float cast ops can inherit the same encoding as its parents
             ret.encoding = self.encoding and self.encoding.to(device=ret.device)
             return ret
 

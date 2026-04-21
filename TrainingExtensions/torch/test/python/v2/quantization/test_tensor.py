@@ -174,14 +174,17 @@ class TestQuantizedTensor:
             """
             Given: QuantizedTensor
             When: Cast to integer dtypes
-            Then: Throw error
+            Then: Return torch.Tensor object (not QuantizedTensor)
             """
             data = torch.arange(256, dtype=torch.float)  # actual content of qtensor
             qtensor = data.clone().as_subclass(qtensor_cls)
             qtensor.encoding = AffineEncoding(scale, offset, bitwidth)
 
-            with pytest.raises(RuntimeError):
-                _ = cast_fn(qtensor)
+            qtensor_casted = cast_fn(qtensor)
+            assert type(qtensor_casted) == torch.Tensor
+            assert torch.equal(
+                qtensor_casted, cast_fn(qtensor.as_subclass(torch.Tensor))
+            )
 
         """
         When: Cast to boolean dtype
