@@ -7,7 +7,6 @@ aimet_torch API
 .. toctree::
     :hidden:
 
-    Migrate to aimet_torch 2 <migration_guide>
     aimet_torch.quantsim <quantsim>
     aimet_torch.nn <nn>
     aimet_torch.quantization <quantization>
@@ -39,12 +38,6 @@ aimet_torch API
 aimet_torch
 ===========
 
-.. important::
-   :mod:`aimet_torch` package has been upgraded to :mod:`aimet_torch.v2`.
-
-   aimet_torch 2 is fully backward-compatible with all the public APIs of aimet_torch 1.x.
-   See the :ref:`Migration guide <torch-migration-guide>`. 
-
 AIMET quantization for PyTorch models provides the following functionality.
 
 - :ref:`aimet_torch.quantsim <apiref-torch-quantsim>`
@@ -74,29 +67,3 @@ AIMET quantization for PyTorch models provides the following functionality.
 
 ..
   # end-before
-
-
-aimet_torch.v1
-==============
-
-To use aimet_torch 1.x, import from the :mod:`aimet_torch.v1` namespace.
-
-.. toctree::
-    :hidden:
-
-    aimet_torch.v1.quantsim <v1/quantsim>
-    aimet_torch.v1.adaround <v1/adaround>
-    aimet_torch.v1.seq_mse <v1/seq_mse>
-    aimet_torch.v1.quant_analyzer <v1/quant_analyzer>
-    aimet_torch.v1.autoquant <v1/autoquant>
-    aimet_torch.v1.amp <v1/amp>
-
-..
-  # start-after-v1
-
-- :ref:`aimet_torch.v1.quantsim <apiref-torch-v1-quantsim>`
-- :ref:`aimet_torch.v1.adaround <apiref-torch-v1-adaround>`
-- :ref:`aimet_torch.v1.seq_mse <apiref-torch-v1-seq-mse>`
-- :ref:`aimet_torch.v1.quant_analyzer <apiref-torch-v1-quant-analyzer>`
-- :ref:`aimet_torch.v1.autoquant <apiref-torch-v1-autoquant>`
-- :ref:`aimet_torch.v1.amp <apiref-torch-v1-amp>`
