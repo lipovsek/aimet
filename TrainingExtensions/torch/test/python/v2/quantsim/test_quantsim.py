@@ -45,7 +45,7 @@ import aimet_torch.nn.modules.custom as custom
 from aimet_torch.v2.batch_norm_fold import fold_all_batch_norms_to_scale
 from aimet_torch.mixed_precision import choose_mixed_precision
 from aimet_torch.v2.mixed_precision import MixedPrecisionConfigurator
-from aimet_torch.v2.quantization.float import FloatEncoding, FloatQuantizeDequantize
+from aimet_torch.v2.quantization.float import FloatQuantizeDequantize
 from ..models_ import test_models
 
 

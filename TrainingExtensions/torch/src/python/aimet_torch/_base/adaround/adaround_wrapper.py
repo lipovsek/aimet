@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-"""Defines AdaroundWrapperBase shared across aimet_torch.v1 and v2"""
+"""Defines AdaroundWrapperBase for aimet_torch"""
 
 import abc
 from typing import Tuple

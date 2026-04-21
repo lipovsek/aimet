@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-import pytest
 import os
 import re
 import shutil
@@ -14,7 +13,6 @@ import tempfile
 
 from aimet_torch.model_preparer import prepare_model
 from aimet_torch.model_validator.model_validator import ModelValidator
-from aimet_torch.v1.quantsim import QuantizationSimModel as QuantizationSimModelV1
 from aimet_torch.v2.quantsim import QuantizationSimModel as QuantizationSimModelV2
 from aimet_torch.layer_output_utils import NamingScheme, LayerOutputUtil, LayerOutput
 from aimet_torch.utils import is_leaf_module
@@ -116,12 +114,13 @@ class TestLayerOutput:
         # Delete temp_dir
         shutil.rmtree(temp_dir_path, ignore_errors=False, onerror=None)
 
-    @pytest.mark.parametrize("cls", [QuantizationSimModelV1, QuantizationSimModelV2])
-    def test_get_quantsim_outputs(self, cls, tmpdir):
+    def test_get_quantsim_outputs(self, tmpdir):
         """Test whether outputs are generated for all the layers of a quantsim model"""
 
         # Get quantsim artifacts
-        quantsim, layer_names, dummy_input = get_quantsim_artifacts(cls)
+        quantsim, layer_names, dummy_input = get_quantsim_artifacts(
+            QuantizationSimModelV2
+        )
         layer_names = [re.sub(r"\W+", "_", name) for name in layer_names]
 
         # Obtain layer-outputs of quantsim model
@@ -146,15 +145,12 @@ class TestLayerOutput:
                 "Output of last layer of quantsim model doesn't match with captured layer-output"
             )
 
-    @pytest.mark.parametrize(
-        "_QuantizationSimModel", [QuantizationSimModelV1, QuantizationSimModelV2]
-    )
-    def test_layer_name_to_onnx_layer_output_name_dict(self, _QuantizationSimModel):
+    def test_layer_name_to_onnx_layer_output_name_dict(self):
         """Test whether every layer-name has corresponding onnx layer-output-name"""
 
         # Get quantsim artifacts
         quantsim, layer_names, dummy_input = get_quantsim_artifacts(
-            _QuantizationSimModel
+            QuantizationSimModelV2
         )
 
         temp_dir_path = os.path.dirname(os.path.abspath(__file__))
@@ -212,12 +208,11 @@ def get_dataset_artifacts():
 
 
 class TestLayerOutputUtil:
-    @pytest.mark.parametrize("cls", [QuantizationSimModelV1, QuantizationSimModelV2])
-    def test_generate_layer_outputs(self, cls, tmpdir):
+    def test_generate_layer_outputs(self, tmpdir):
         """Test whether input files and corresponding layer-output files are generated"""
 
         # Get quantsim artifacts
-        quantsim, layer_output_names, _ = get_quantsim_artifacts(cls)
+        quantsim, layer_output_names, _ = get_quantsim_artifacts(QuantizationSimModelV2)
         layer_output_names = [re.sub(r"\W+", "_", name) for name in layer_output_names]
 
         # Get dataset artifacts
@@ -253,17 +248,14 @@ class TestLayerOutputUtil:
             last_layer_output = quantsim.model(torch.unsqueeze(dummy_dataset[0], dim=0))
         assert torch.equal(last_layer_output, saved_last_layer_output)
 
-    @pytest.mark.parametrize(
-        "_QuantizationSimModel", [QuantizationSimModelV1, QuantizationSimModelV2]
-    )
-    def test_layer_output_axis_transform(self, _QuantizationSimModel):
+    def test_layer_output_axis_transform(self):
         """Test to ensure the layer outputs are saved with axis-transform"""
 
         model = test_models.ModelWithOneSplit().to(device="cpu")
         input_shapes = (1, 1, 10, 10)
         dummy_input = torch.randn(input_shapes)
         qsim, layer_names, _ = get_quantsim_artifacts(
-            _QuantizationSimModel, model_and_input=(model, dummy_input)
+            QuantizationSimModelV2, model_and_input=(model, dummy_input)
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:

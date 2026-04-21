@@ -66,13 +66,8 @@ def register_aimet_common_submodules(pkg):
     """
     for _, modname, ispkg in pkgutil.iter_modules(pkg.__path__):
         if (
-            modname
-            in (
-                "libaimet_onnxrt_ops",  # will be imported by aimet_onnx separately
-                "AimetEncodingRescaler",  # unused
-                "AimetTensorQuantizer",  # will be imported by aimet_torch.common.aimet_tensor_quantizer
-            )
-        ):
+            modname == "libaimet_onnxrt_ops"
+        ):  # will be imported by aimet_onnx separately
             continue
 
         module = importlib.import_module(f"{pkg.__name__}.{modname}")

@@ -22,7 +22,6 @@ from aimet_common.defs import (
 
 import aimet_torch._base.quantsim
 
-# import aimet_torch.v1.quantsim
 from aimet_torch.quantsim_config import quantsim_config as qsim_config
 from aimet_torch.quantsim_config.quantsim_config import get_all_ops_in_neighborhood
 from aimet_torch import utils
@@ -37,7 +36,6 @@ from aimet_torch.v2.quantization.float import FloatQuantizeDequantize
 
 from ..models_.models_to_test import (
     SingleResidual,
-    QuantSimTinyModel,
     MultiInput,
     SingleResidualWithModuleAdd,
     SingleResidualWithAvgPool,

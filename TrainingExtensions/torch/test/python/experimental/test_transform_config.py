@@ -15,7 +15,6 @@ from transformers.models.phi3.modeling_phi3 import Phi3DecoderLayer, Phi3RMSNorm
 from transformers.models.phi3.modeling_phi3 import Phi3Config
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLDecoderLayer,
-    Qwen2_5_VLPatchMerger,
 )
 
 # Handle transformers version differences
@@ -32,7 +31,6 @@ except AttributeError:
 
 from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
     Qwen2_5_VLTextConfig,
-    Qwen2_5_VLVisionConfig,
 )
 from transformers.models.qwen3_vl.modeling_qwen3_vl import (
     Qwen3VLTextDecoderLayer,
@@ -52,7 +50,6 @@ from aimet_torch.experimental.transforms.transform_config import (
     Phi3BlockInterface,
     Qwen2dot5VLBackboneBlockInterface,
     Qwen3VLBackboneBlockInterface,
-    Qwen25VLMergerInterface,
     Qwen3VLMergerInterface,
 )
 

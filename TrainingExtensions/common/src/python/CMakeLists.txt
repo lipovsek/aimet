@@ -3,13 +3,13 @@
 
 project(aimet_common)
 
-if(NOT TARGET PyModelOptimizations)
+if(ENABLE_ONNX AND NOT TARGET PyModelOptimizations)
     add_subdirectory("../../../../" "${CMAKE_CURRENT_BINARY_DIR}/aimet" EXCLUDE_FROM_ALL)
     install(
         FILES $<TARGET_FILE:PyModelOptimizations>
         DESTINATION ${CMAKE_INSTALL_PREFIX}
     )
-else()
+elseif(TARGET PyModelOptimizations OR NOT ENABLE_ONNX)
     if(SKBUILD)
     install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/aimet_common
         DESTINATION .

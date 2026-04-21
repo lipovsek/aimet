@@ -26,12 +26,7 @@ from aimet_torch import torchscript_utils
 from aimet_torch.onnx_utils import OnnxSaver, OnnxExportApiArgs
 from aimet_torch.v2.nn.base import BaseQuantizationMixin
 
-try:
-    from aimet_torch.v1.qc_quantize_recurrent import QcQuantizeRecurrent
-
-    _quantized_module_types = (_QuantizedModuleProtocol, QcQuantizeRecurrent)
-except ImportError:
-    _quantized_module_types = (_QuantizedModuleProtocol,)
+_quantized_module_types = (_QuantizedModuleProtocol,)
 
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LayerOutputs)
@@ -312,10 +307,7 @@ class LayerOutput:
         :return: dictionary of layer-name to layer-output name
         """
         # pylint: disable=import-outside-toplevel, cyclic-import
-        if any(isinstance(module, BaseQuantizationMixin) for module in model.modules()):
-            from aimet_torch.v2.quantsim import QuantizationSimModel
-        else:
-            from aimet_torch.v1.quantsim import QuantizationSimModel
+        from aimet_torch.v2.quantsim import QuantizationSimModel
 
         # Restore original model by removing quantization wrappers if present.
         original_model = QuantizationSimModel.get_original_model(model)

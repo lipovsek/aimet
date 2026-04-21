@@ -7,23 +7,16 @@
 from contextlib import contextmanager
 import json
 import os
-import pytest
 from typing import List
 import tempfile
 
 import torch
 from aimet_common import quantsim
 from aimet_torch.experimental.v2.quantsim.export_utils import EncodingType
-from aimet_torch.v1.quantsim import (
-    QuantizationSimModel as QuantizationSimModelV1,
-    QuantizationDataType,
-)
+from aimet_torch.common.defs import QuantizationDataType
 from aimet_torch.v2.quantsim import QuantizationSimModel as QuantizationSimModelV2
 from aimet_torch.v2.quantization.base import QuantizerBase
-from aimet_torch.v2.quantization.affine.quantizer import (
-    QuantizeDequantize,
-    GroupedBlockQuantizeDequantize,
-)
+from aimet_torch.v2.quantization.affine.quantizer import GroupedBlockQuantizeDequantize
 from ....models.test_models import SingleResidualWithAvgPool
 
 
@@ -41,9 +34,6 @@ def test_export_1_0_0_per_tensor():
     model = SingleResidualWithAvgPool().eval()
     dummy_inp = torch.randn(1, 3, 32, 32)
     for qsim in (
-        QuantizationSimModelV1(
-            model, dummy_input=dummy_inp, default_param_bw=4, default_output_bw=16
-        ),
         QuantizationSimModelV2(
             model, dummy_input=dummy_inp, default_param_bw=4, default_output_bw=16
         ),
@@ -99,13 +89,6 @@ def test_export_1_0_0_fp16():
     model = SingleResidualWithAvgPool().eval()
     dummy_inp = torch.randn(1, 3, 32, 32)
     for qsim in (
-        QuantizationSimModelV1(
-            model,
-            dummy_input=dummy_inp,
-            default_param_bw=16,
-            default_output_bw=16,
-            default_data_type=QuantizationDataType.float,
-        ),
         QuantizationSimModelV2(
             model,
             dummy_input=dummy_inp,
@@ -176,12 +159,6 @@ def test_export_1_0_0_per_channel():
         model = SingleResidualWithAvgPool().eval()
         dummy_inp = torch.randn(1, 3, 32, 32)
         for qsim in (
-            QuantizationSimModelV1(
-                model,
-                dummy_input=dummy_inp,
-                default_param_bw=4,
-                config_file=os.path.join(tmp_dir, "config_file.json"),
-            ),
             QuantizationSimModelV2(
                 model,
                 dummy_input=dummy_inp,

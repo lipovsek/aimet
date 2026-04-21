@@ -35,12 +35,13 @@ from ..models.test_models import (
     CustomFunctionalConv,
 )
 from aimet_torch.model_validator.model_validator import ModelValidator
-from aimet_torch.v1.quantsim import QuantizationSimModel, QuantParams
+from aimet_torch.quantsim import QuantizationSimModel, QuantParams
+from aimet_torch.nn import QuantizationMixin
 from aimet_torch.utils import create_fake_data_loader, get_device, in_eval_mode
 from aimet_torch.model_preparer import prepare_model, _find_functional_name_for_node
 from aimet_torch.batch_norm_fold import fold_all_batch_norms
 from aimet_torch.cross_layer_equalization import equalize_model
-from aimet_torch.v1.adaround.adaround_weight import Adaround, AdaroundParameters
+from aimet_torch.adaround.adaround_weight import Adaround, AdaroundParameters
 from aimet_torch import bias_correction
 from aimet_torch.meta import connectedgraph_utils
 from aimet_torch.model_preparer import prepare_pt_transformer_for_quantsim
@@ -226,48 +227,19 @@ class TestFX:
         quant_sim_for_modified_model = QuantizationSimModel(
             model_transformed, dummy_input=input_tensor
         )
-        print(quant_sim_for_modified_model)
 
         # Conv --> ReLU supergroup is detected correctly
-        assert (
-            quant_sim_for_modified_model.model.conv1.output_quantizers[0].enabled
-            == False
-        )
-        assert (
-            quant_sim_for_modified_model.model.module_relu.output_quantizers[0].enabled
-            == True
-        )
+        assert not quant_sim_for_modified_model.model.conv1.output_quantizers[0]
+        assert quant_sim_for_modified_model.model.module_relu.output_quantizers[0]
 
-        assert (
-            quant_sim_for_modified_model.model.conv2.output_quantizers[0].enabled
-            == False
-        )
-        assert (
-            quant_sim_for_modified_model.model.module_relu_1.output_quantizers[
-                0
-            ].enabled
-            == True
-        )
+        assert not quant_sim_for_modified_model.model.conv2.output_quantizers[0]
+        assert quant_sim_for_modified_model.model.module_relu_1.output_quantizers[0]
 
-        assert (
-            quant_sim_for_modified_model.model.fc1.output_quantizers[0].enabled == False
-        )
-        assert (
-            quant_sim_for_modified_model.model.module_relu_2.output_quantizers[
-                0
-            ].enabled
-            == True
-        )
+        assert not quant_sim_for_modified_model.model.fc1.output_quantizers[0]
+        assert quant_sim_for_modified_model.model.module_relu_2.output_quantizers[0]
 
-        assert (
-            quant_sim_for_modified_model.model.fc2.output_quantizers[0].enabled == False
-        )
-        assert (
-            quant_sim_for_modified_model.model.module_relu_3.output_quantizers[
-                0
-            ].enabled
-            == True
-        )
+        assert not quant_sim_for_modified_model.model.fc2.output_quantizers[0]
+        assert quant_sim_for_modified_model.model.module_relu_3.output_quantizers[0]
 
     def test_fx_with_functional_relu_quantsim_eval(self):
         """
@@ -306,18 +278,10 @@ class TestFX:
             )
 
             # Disable output activation quantizer for ReLUs to compare with original quantsim.model eval
-            quant_sim_for_modified_model.model.module_relu.output_quantizers[
-                0
-            ].enabled = False
-            quant_sim_for_modified_model.model.module_relu_1.output_quantizers[
-                0
-            ].enabled = False
-            quant_sim_for_modified_model.model.module_relu_2.output_quantizers[
-                0
-            ].enabled = False
-            quant_sim_for_modified_model.model.module_relu_3.output_quantizers[
-                0
-            ].enabled = False
+            quant_sim_for_modified_model.model.module_relu.output_quantizers[0] = None
+            quant_sim_for_modified_model.model.module_relu_1.output_quantizers[0] = None
+            quant_sim_for_modified_model.model.module_relu_2.output_quantizers[0] = None
+            quant_sim_for_modified_model.model.module_relu_3.output_quantizers[0] = None
 
             quant_sim_for_original_model.compute_encodings(evaluate, input_tensor)
             quant_sim_for_modified_model.compute_encodings(evaluate, input_tensor)
@@ -330,10 +294,8 @@ class TestFX:
 
             # Compare encodings for last layer for both models
             assert (
-                quant_sim_for_original_model.model.fc2.output_quantizers[0].encoding.min
-                == quant_sim_for_modified_model.model.fc2.output_quantizers[
-                    0
-                ].encoding.min
+                quant_sim_for_original_model.model.fc2.output_quantizers[0].get_min()
+                == quant_sim_for_modified_model.model.fc2.output_quantizers[0].get_min()
             )
 
     def test_fx_with_elementwise_add_quantsim(self):
@@ -357,13 +319,9 @@ class TestFX:
         # Add + ReLU Supergroup
         # Add's output quantizer should be disabled, and ReLU's output quantizer should be enabled
         assert (
-            quant_sim_for_modified_model.model.module_add.output_quantizers[0].enabled
-            == False
+            quant_sim_for_modified_model.model.module_add.output_quantizers[0] is None
         )
-        assert (
-            quant_sim_for_modified_model.model.relu3.output_quantizers[0].enabled
-            == True
-        )
+        assert quant_sim_for_modified_model.model.relu3.output_quantizers[0] is not None
 
     def test_fx_with_functional_relu_training(self):
         """
@@ -412,9 +370,7 @@ class TestFX:
         quant_sim_for_original_model.compute_encodings(evaluate, input_tensor)
         quant_sim_for_modified_model.compute_encodings(evaluate, input_tensor)
 
-        before_training_weight = (
-            quant_sim_for_modified_model.model.conv1._module_to_wrap.weight.clone()
-        )
+        before_training_weight = quant_sim_for_modified_model.model.conv1.weight.clone()
         print(before_training_weight[0, 0, :, :].detach().numpy())
 
         # QAT
@@ -426,9 +382,7 @@ class TestFX:
             quant_sim_for_modified_model.model, data_loader
         )
 
-        after_training_weight = (
-            quant_sim_for_modified_model.model.conv1._module_to_wrap.weight
-        )
+        after_training_weight = quant_sim_for_modified_model.model.conv1.weight
         print(after_training_weight[0, 0, :, :].detach().numpy())
 
         # Compare loss after one iteration of training
@@ -1030,7 +984,7 @@ class TestFX:
         assert isinstance(model_transformed.module_cat, aimet_modules.Concat)
 
         quant_sim = QuantizationSimModel(model_transformed, dummy_input=input_tensor)
-        assert quant_sim.model.module_cat.output_quantizers[0].enabled == True
+        assert quant_sim.model.module_cat.output_quantizers[0] is not None
 
     def test_fx_with_elementwise_subtract(self):
         """
@@ -1091,7 +1045,7 @@ class TestFX:
         assert isinstance(model_transformed.module_mul, aimet_modules.Multiply)
 
         quant_sim = QuantizationSimModel(model_transformed, dummy_input=input_tensor)
-        assert quant_sim.model.module_mul.output_quantizers[0].enabled == True
+        assert quant_sim.model.module_mul.output_quantizers[0] is not None
 
     def test_fx_with_elementwise_div(self):
         """
@@ -1123,7 +1077,7 @@ class TestFX:
         assert isinstance(model_transformed.module_div, aimet_modules.Divide)
 
         quant_sim = QuantizationSimModel(model_transformed, dummy_input=input_tensor)
-        assert quant_sim.model.module_div.output_quantizers[0].enabled == True
+        assert quant_sim.model.module_div.output_quantizers[0] is not None
 
     def test_fx_with_elementwise_matmul(self):
         """
@@ -1155,7 +1109,7 @@ class TestFX:
         assert isinstance(model_transformed.module_matmul, aimet_modules.MatMul)
 
         quant_sim = QuantizationSimModel(model_transformed, dummy_input=input_tensor)
-        assert quant_sim.model.module_matmul.output_quantizers[0].enabled == True
+        assert quant_sim.model.module_matmul.output_quantizers[0] is not None
 
     def test_fx_with_elementwise_cat_default_dim(self):
         """
@@ -1187,7 +1141,7 @@ class TestFX:
         assert isinstance(model_transformed.module_cat, aimet_modules.Concat)
 
         quant_sim = QuantizationSimModel(model_transformed, dummy_input=input_tensor)
-        assert quant_sim.model.module_cat.output_quantizers[0].enabled == True
+        assert quant_sim.model.module_cat.output_quantizers[0] is not None
 
     def test_fx_with_elementwise_cat_input_as_list_and_dim_as_kwargs(self):
         """
@@ -1219,7 +1173,7 @@ class TestFX:
         assert isinstance(model_transformed.module_cat, aimet_modules.Concat)
 
         quant_sim = QuantizationSimModel(model_transformed, dummy_input=input_tensor)
-        assert quant_sim.model.module_cat.output_quantizers[0].enabled == True
+        assert quant_sim.model.module_cat.output_quantizers[0] is not None
 
     def verify_mean_op(self, model):
         """
@@ -1236,7 +1190,7 @@ class TestFX:
         assert isinstance(model_transformed.module_mean, aimet_modules.Mean)
 
         quant_sim = QuantizationSimModel(model_transformed, dummy_input=input_tensor)
-        assert quant_sim.model.module_mean.output_quantizers[0].enabled == True
+        assert quant_sim.model.module_mean.output_quantizers[0] is not None
 
     def test_fx_with_elementwise_mean_dim_as_args_keepdim_as_kwargs(self):
         """
@@ -1809,8 +1763,7 @@ class TestFX:
         sim.compute_encodings(evaluate, forward_pass_callback_args=dummy_input)
 
         # All quantizers for maxpool will be disabled
-        assert not sim.model.module_max_pool2d_with_indices.output_quantizers[0].enabled
-        assert not sim.model.module_max_pool2d_with_indices.output_quantizers[1].enabled
+        assert not sim.model.module_max_pool2d_with_indices.output_quantizers[0]
 
     def test_find_functional_name_for_node(self):
         assert _find_functional_name_for_node("add_123") == "add"
@@ -1866,8 +1819,8 @@ class TestFX:
         sim.compute_encodings(evaluate, forward_pass_callback_args=dummy_input)
 
         # Quantizer enabled for output
-        assert sim.model.module_batch_norm.output_quantizers[0].enabled
-        assert sim.model.module_batch_norm_1.output_quantizers[0].enabled
+        assert sim.model.module_batch_norm.output_quantizers[0]
+        assert sim.model.module_batch_norm_1.output_quantizers[0]
 
         # Apply Batchnorm folding
         fold_all_batch_norms(model_transformed, input_shape)
@@ -1908,12 +1861,12 @@ class TestFX:
         sim.compute_encodings(evaluate, dummy_input)
 
         # Check encodings are computed correctly for both (sigmoid + mul) for all three CustomSiLUs
-        assert sim.model.silu.sigmoid.output_quantizers[0].encoding
-        assert sim.model.silu.mul.output_quantizers[0].encoding
-        assert sim.model.module_silu_1.sigmoid.output_quantizers[0].encoding
-        assert sim.model.module_silu_1.mul.output_quantizers[0].encoding
-        assert sim.model.module_silu_2.sigmoid.output_quantizers[0].encoding
-        assert sim.model.module_silu_2.mul.output_quantizers[0].encoding
+        assert sim.model.silu.sigmoid.output_quantizers[0].is_initialized()
+        assert sim.model.silu.mul.output_quantizers[0].is_initialized()
+        assert sim.model.module_silu_1.sigmoid.output_quantizers[0].is_initialized()
+        assert sim.model.module_silu_1.mul.output_quantizers[0].is_initialized()
+        assert sim.model.module_silu_2.sigmoid.output_quantizers[0].is_initialized()
+        assert sim.model.module_silu_2.mul.output_quantizers[0].is_initialized()
 
         # Verify Quantsim Export workflow.
         with tempfile.TemporaryDirectory() as tempdir:
@@ -1960,8 +1913,8 @@ class TestFX:
         sim = QuantizationSimModel(prepared_model, dummy_input)
         sim.compute_encodings(evaluate, dummy_input)
         sim.model(*dummy_input)
-        assert sim.model.module_baddbmm.output_quantizers[0].encoding
-        assert sim.model.module_baddbmm_1.output_quantizers[0].encoding
+        assert sim.model.module_baddbmm.output_quantizers[0].is_initialized()
+        assert sim.model.module_baddbmm_1.output_quantizers[0].is_initialized()
 
     def test_fx_with_addmm(self):
         """test torch fx with addmm"""
@@ -1996,9 +1949,9 @@ class TestFX:
         sim = QuantizationSimModel(prepared_model, dummy_input)
         sim.compute_encodings(evaluate, dummy_input)
         sim.model(*dummy_input)
-        assert sim.model.module_addmm.output_quantizers[0].encoding
-        assert sim.model.module_addmm_1.output_quantizers[0].encoding
-        assert sim.model.module_addmm_2.output_quantizers[0].encoding
+        assert sim.model.module_addmm.output_quantizers[0].is_initialized()
+        assert sim.model.module_addmm_1.output_quantizers[0].is_initialized()
+        assert sim.model.module_addmm_2.output_quantizers[0].is_initialized()
 
     def test_fx_with_bmm(self):
         """test torch fx with bmm"""
@@ -2031,8 +1984,8 @@ class TestFX:
         sim = QuantizationSimModel(prepared_model, dummy_input)
         sim.compute_encodings(evaluate, dummy_input)
         sim.model(*dummy_input)
-        assert sim.model.module_bmm.output_quantizers[0].encoding
-        assert sim.model.module_bmm_1.output_quantizers[0].encoding
+        assert sim.model.module_bmm.output_quantizers[0].is_initialized()
+        assert sim.model.module_bmm_1.output_quantizers[0].is_initialized()
 
     def test_fx_with_module_classes_to_exclude(self):
         """test torch fx with module_classes_to_exclude"""
@@ -2044,6 +1997,14 @@ class TestFX:
             @staticmethod
             def forward(x):
                 return torch.square(x)
+
+        @QuantizationMixin.implements(Square)
+        class QuantizedSquare(QuantizationMixin, Square):
+            def forward(self, x):
+                out = super().forward(x)
+                if self.output_quantizers[0]:
+                    out = self.output_quantizers[0](out)
+                return out
 
         class Model(torch.nn.Module):
             def __init__(self):
@@ -2076,8 +2037,8 @@ class TestFX:
         sim = QuantizationSimModel(prepared_model, dummy_input)
         sim.compute_encodings(evaluate, dummy_input)
         sim.model(*dummy_input)
-        assert sim.model.square1.output_quantizers[0].encoding
-        assert sim.model.square2.output_quantizers[0].encoding
+        assert sim.model.square1.output_quantizers[0].is_initialized()
+        assert sim.model.square2.output_quantizers[0].is_initialized()
 
     def test_fx_with_cumsum(self):
         """test torch fx with cumsum taking kwargs"""
@@ -2108,7 +2069,7 @@ class TestFX:
         sim = QuantizationSimModel(prepared_model, dummy_input)
         sim.compute_encodings(evaluate, dummy_input)
         sim.model(dummy_input)
-        assert sim.model.module_cumsum.output_quantizers[0].encoding
+        assert sim.model.module_cumsum.output_quantizers[0].is_initialized()
 
     def test_const_as_first_operand(self):
         class SampleModel(torch.nn.Module):
@@ -2116,12 +2077,12 @@ class TestFX:
                 super(SampleModel, self).__init__()
 
             def forward(self, x):
-                x = torch.mul(x, 1.5)  # module_mul
-                x = torch.mul(2, x)  # module_mul_1
-                x = x * 3  # module_mul_2
-                x = 4 * x  # module_mul_3
-                x = torch.tensor(5.0) + x  # module_add
-                x = 6 + x  # module_add_1
+                x = torch.add(x, 1.5)  # module_add
+                x = torch.add(2, x)  # module_add_1
+                x = x + 3  # module_add_2
+                x = 4 + x  # module_add_3
+                x = torch.tensor(5.0) + x  # module_add_4
+                x = 6 + x  # module_add_5
                 x = 7.1 - x  # module_sub
                 return x
 
@@ -2133,7 +2094,6 @@ class TestFX:
             model,
             dummy_input=dummy_inp,
             quant_scheme="tf_enhanced",
-            rounding_mode="nearest",
             default_output_bw=8,
             default_param_bw=8,
             in_place=False,
@@ -2143,33 +2103,51 @@ class TestFX:
             forward_pass_callback=evaluate, forward_pass_callback_args=dummy_inp
         )
 
-        assert qsim_model.model.module_mul.input_quantizers[0].enabled
-        assert qsim_model.model.module_mul.input_quantizers[1].enabled
-        assert qsim_model.model.module_mul.output_quantizers[0].enabled
+        assert qsim_model.model.module_add.input_quantizers[0].is_initialized()
+        assert (
+            qsim_model.model.module_add.input_quantizers[1]
+            and not qsim_model.model.module_add.input_quantizers[1].is_initialized()
+        )
+        assert qsim_model.model.module_add.output_quantizers[0].is_initialized()
 
-        assert not qsim_model.model.module_mul_1.input_quantizers[0].enabled
-        assert not qsim_model.model.module_mul_1.input_quantizers[1].enabled
-        assert qsim_model.model.module_mul_1.output_quantizers[0].enabled
+        assert (
+            qsim_model.model.module_add_1.input_quantizers[0]
+            and not qsim_model.model.module_add_1.input_quantizers[0].is_initialized()
+        )
+        assert not qsim_model.model.module_add_1.input_quantizers[1]
+        assert qsim_model.model.module_add_1.output_quantizers[0].is_initialized()
 
-        assert not qsim_model.model.module_mul_2.input_quantizers[0].enabled
-        assert not qsim_model.model.module_mul_2.input_quantizers[1].enabled
-        assert qsim_model.model.module_mul_2.output_quantizers[0].enabled
+        assert not qsim_model.model.module_add_2.input_quantizers[0]
+        assert (
+            qsim_model.model.module_add_2.input_quantizers[1]
+            and not qsim_model.model.module_add_2.input_quantizers[1].is_initialized()
+        )
+        assert qsim_model.model.module_add_2.output_quantizers[0].is_initialized()
 
-        assert not qsim_model.model.module_mul_3.input_quantizers[0].enabled
-        assert not qsim_model.model.module_mul_3.input_quantizers[1].enabled
-        assert qsim_model.model.module_mul_3.output_quantizers[0].enabled
+        assert (
+            qsim_model.model.module_add_3.input_quantizers[0]
+            and not qsim_model.model.module_add_3.input_quantizers[0].is_initialized()
+        )
+        assert not qsim_model.model.module_add_3.input_quantizers[1]
+        assert qsim_model.model.module_add_3.output_quantizers[0].is_initialized()
 
-        assert qsim_model.model.module_add.input_quantizers[0].enabled
-        assert not qsim_model.model.module_add.input_quantizers[1].enabled
-        assert qsim_model.model.module_add.output_quantizers[0].enabled
+        assert qsim_model.model.module_add_4.input_quantizers[0].is_initialized()
+        assert not qsim_model.model.module_add_4.input_quantizers[1]
+        assert qsim_model.model.module_add_4.output_quantizers[0].is_initialized()
 
-        assert not qsim_model.model.module_add_1.input_quantizers[0].enabled
-        assert not qsim_model.model.module_add_1.input_quantizers[1].enabled
-        assert qsim_model.model.module_add_1.output_quantizers[0].enabled
+        assert (
+            qsim_model.model.module_add_5.input_quantizers[0]
+            and not qsim_model.model.module_add_5.input_quantizers[0].is_initialized()
+        )
+        assert not qsim_model.model.module_add_5.input_quantizers[1]
+        assert qsim_model.model.module_add_5.output_quantizers[0].is_initialized()
 
-        assert qsim_model.model.module_sub.input_quantizers[0].enabled
-        assert not qsim_model.model.module_sub.input_quantizers[1].enabled
-        assert qsim_model.model.module_sub.output_quantizers[0].enabled
+        assert (
+            qsim_model.model.module_sub.input_quantizers[0]
+            and not qsim_model.model.module_sub.input_quantizers[0].is_initialized()
+        )
+        assert not qsim_model.model.module_sub.input_quantizers[1]
+        assert qsim_model.model.module_sub.output_quantizers[0].is_initialized()
 
     def test_prepare_custom_functional_conv(self):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

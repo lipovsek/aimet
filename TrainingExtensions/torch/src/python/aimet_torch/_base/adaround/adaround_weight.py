@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-"""Defines Adaround base classes shared across aimet_torch.v1 and v2"""
+"""Defines Adaround base classes for aimet_torch"""
 
 from abc import ABC, abstractmethod
 import os

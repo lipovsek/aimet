@@ -14,7 +14,6 @@ from unittest import mock
 
 from aimet_common.defs import QuantScheme
 import aimet_torch._base.nn.modules.custom as aimet_modules
-import aimet_torch.v1.quantsim as v1
 import aimet_torch.v2.quantsim as v2
 
 
@@ -80,9 +79,7 @@ class TestTrainingExtensionElementwiseOps:
         out1 = input1 + input2
         assert np.allclose(out, out1)
 
-    @pytest.mark.parametrize(
-        "QuantizationSimModel", [v1.QuantizationSimModel, v2.QuantizationSimModel]
-    )
+    @pytest.mark.parametrize("QuantizationSimModel", [v2.QuantizationSimModel])
     def test_quantsim_export(self, QuantizationSimModel):
         torch.manual_seed(10)
         model = Model2(aimet_modules.Add())
@@ -147,9 +144,7 @@ class TestTrainingExtensionElementwiseOps:
         out1 = torch.cat((input1, input2, input3, input4), 0)
         assert np.allclose(out, out1)
 
-    @pytest.mark.parametrize(
-        "QuantizationSimModel", [v1.QuantizationSimModel, v2.QuantizationSimModel]
-    )
+    @pytest.mark.parametrize("QuantizationSimModel", [v2.QuantizationSimModel])
     def test_concat_compute_encodings(self, QuantizationSimModel):
         torch.manual_seed(10)
         model = Model3(aimet_modules.Concat())
@@ -171,9 +166,7 @@ class TestTrainingExtensionElementwiseOps:
         out1 = torch.matmul(tensor1, tensor2)
         assert np.allclose(out, out1)
 
-    @pytest.mark.parametrize(
-        "QuantizationSimModel", [v1.QuantizationSimModel, v2.QuantizationSimModel]
-    )
+    @pytest.mark.parametrize("QuantizationSimModel", [v2.QuantizationSimModel])
     def test_concat_op_with_qat(self, QuantizationSimModel):
         """
         Test torch.cat op for both QAT and QAT-range learning
@@ -229,9 +222,7 @@ class TestTrainingExtensionElementwiseOps:
             loss.backward()
             assert quant_sim.model.cat.output_quantizers[0] is not None
 
-    @pytest.mark.parametrize(
-        "QuantizationSimModel", [v1.QuantizationSimModel, v2.QuantizationSimModel]
-    )
+    @pytest.mark.parametrize("QuantizationSimModel", [v2.QuantizationSimModel])
     def test_dtypes_to_ignore_for_quantization(self, QuantizationSimModel):
         """
         test dtypes to be ignored for quantization when inputs to elementwise ops are scalar numbers.
@@ -268,9 +259,7 @@ class TestTrainingExtensionElementwiseOps:
             e is not None for e in sim.model.mul.export_output_encodings("0.6.1")
         )
 
-    @pytest.mark.parametrize(
-        "QuantizationSimModel", [v1.QuantizationSimModel, v2.QuantizationSimModel]
-    )
+    @pytest.mark.parametrize("QuantizationSimModel", [v2.QuantizationSimModel])
     def test_dtypes_to_ignore_for_quantization_quant_scheme_range_learning(
         self, QuantizationSimModel
     ):

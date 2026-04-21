@@ -947,11 +947,10 @@ class SqnrEncodingAnalyzer(_LpNormEncodingAnalyzer):
 
 class TfEnhancedEncodingAnalyzer(SqnrEncodingAnalyzer):
     """
-    Subclass of SQNR encoding analyzer which mimics the behavior of v1 tf-enhanced encodng analyzer
+    Subclass of SQNR encoding analyzer which mimics the legacy tf-enhanced encoding analyzer behavior.
 
-    This class is only meant to encourage aimet_torch.v1 users to switch to v2
-    without accuracy degradation, since some of the models of the v1 users
-    are reliant on the hardcoded hyperparameters (and even some bugs) of v1 tf-enhanced.
+    This class provides backward compatibility for users migrating from older AIMET versions
+    who rely on the hardcoded hyperparameters of the legacy tf-enhanced implementation.
     """
 
     # Hardcoded hyperparameters in v1 tf-enhanced

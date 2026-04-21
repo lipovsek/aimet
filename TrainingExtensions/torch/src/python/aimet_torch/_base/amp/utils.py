@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-"""Utilities for mixed precision feature in aimet_torch.v1"""
+"""Utilities for mixed precision feature in aimet_torch"""
 
 from typing import Union, Tuple, List, Dict
 from collections import defaultdict

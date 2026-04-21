@@ -4,8 +4,8 @@
 
 import tempfile
 import torch
-from peft import PeftMixedModel, PeftModel
-from peft import LoraConfig, get_peft_model
+from peft import PeftMixedModel
+from peft import LoraConfig
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.lora.peft_utils import (
     freeze_base_model_activation_quantizers,

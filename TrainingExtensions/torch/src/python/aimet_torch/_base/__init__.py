@@ -2,4 +2,4 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-"""Base package to define the interface/base classes common in aimet_torch.v1 and v2"""
+"""Base package to define interface/base classes for aimet_torch"""

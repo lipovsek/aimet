@@ -36,7 +36,6 @@ from ..models_.test_models import (
 )
 from ..models_.models_to_test import ModelWith5Output
 from aimet_torch.onnx_utils import OnnxExportApiArgs
-from aimet_torch.v1.qc_quantize_op import StaticGridQuantWrapper
 from aimet_torch.v2.quantsim import (
     check_accumulator_overflow,
     compute_encodings_for_sims,
@@ -230,14 +229,7 @@ class ModuleListModel(nn.Module):
                 nn.Linear(3, 32),
                 nn.Linear(32, 64),
                 nn.Conv2d(1, 32, 5),
-                StaticGridQuantWrapper(
-                    nn.Conv2d(1, 10, 5),
-                    weight_bw=8,
-                    activation_bw=8,
-                    round_mode="nearest",
-                    quant_scheme=QuantScheme.post_training_tf_enhanced,
-                    data_type=QuantizationDataType.int,
-                ),
+                nn.Conv2d(1, 10, 5),
                 nn.ModuleList([nn.MaxPool2d(2), nn.PReLU()]),
             ]
         )
@@ -462,52 +454,6 @@ class TestQuantizationSimStaticGrad:
             model,
             dummy_input=torch.rand(1, 1, 12, 12),
             quant_scheme=QuantScheme.post_training_tf,
-        )
-
-        self.verify_quantization_wrappers(model, sim.model)
-
-    @pytest.mark.skip("_add_quantization_wrappers not supported yet")
-    def test_add_quantization_wrappers_with_preexisting_quantization_layers(self):
-        """With a one-deep model"""
-
-        class Net(nn.Module):
-            def __init__(self):
-                super(Net, self).__init__()
-                self.conv1 = StaticGridQuantWrapper(
-                    nn.Conv2d(1, 10, 5),
-                    weight_bw=8,
-                    activation_bw=8,
-                    round_mode="stochastic",
-                    quant_scheme=QuantScheme.post_training_tf_enhanced,
-                    data_type=QuantizationDataType.int,
-                )
-                self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
-                self.conv2_drop = nn.Dropout2d()
-                self.fc1 = nn.Linear(320, 50)
-                self.fc2 = nn.Linear(50, 10)
-
-            def forward(self, *inputs):
-                x = self.conv1(inputs[0])
-                x = self.conv2(x)
-                x = self.conv2_drop(x)
-                x = x.view(x.size(0), -1)
-                x = self.fc1(x)
-                x = self.fc2(x)
-                return x
-
-        net = Net()
-        model = net.to(torch.device("cpu"))
-
-        sim = QuantizationSimModel(
-            model,
-            dummy_input=torch.rand(1, 1, 12, 12),
-            in_place=True,
-            quant_scheme=QuantScheme.post_training_tf,
-        )
-
-        # Add wrappers again, expect to be a nop
-        sim._add_quantization_wrappers(
-            model, num_inout_tensors={}, default_data_type=QuantizationDataType.int
         )
 
         self.verify_quantization_wrappers(model, sim.model)

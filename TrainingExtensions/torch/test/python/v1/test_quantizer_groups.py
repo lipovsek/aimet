@@ -8,18 +8,20 @@ import torch
 from aimet_common.defs import QuantizationDataType
 from aimet_common.amp.quantizer_groups import reformat_supported_kernels
 from aimet_torch.batch_norm_fold import fold_all_batch_norms
-from aimet_torch.v1.quantsim import QuantizationSimModel, QuantScheme
+from aimet_torch.quantsim import QuantizationSimModel
 from aimet_torch.amp.quantizer_groups import (
     find_quantizer_group,
     find_op_groups,
     find_supported_candidates,
     QuantizerGroup,
 )
+from aimet_torch.v2.amp.utils import _mock_v1_quantizers
 from aimet_torch import utils
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch import onnx_utils
 from aimet_torch._base.nn.modules import custom
 from aimet_torch.nn.modules.custom import Add, Multiply
+from aimet_torch.nn import QuantizationMixin
 from torchvision.models import mobilenet_v3_large as mobilenetv3
 from ..models import test_models
 
@@ -105,9 +107,11 @@ class TestQuantizerGroups:
         dummy_input = torch.randn(1, 1, 10, 10)
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
         # Temporary hack before dropout is disabled in default_config.json
-        sim.model.conv2_drop.output_quantizers[0].enabled = False
-        sim.model.dropout.output_quantizers[0].enabled = False
-        _, quantizer_groups = find_quantizer_group(sim)
+        sim.model.conv2_drop.output_quantizers[0] = None
+        sim.model.dropout.output_quantizers[0] = None
+
+        with _mock_v1_quantizers(sim):
+            _, quantizer_groups = find_quantizer_group(sim)
 
         assert len(quantizer_groups) == 8
         assert len(quantizer_groups[0].input_quantizers) == 1
@@ -131,7 +135,9 @@ class TestQuantizerGroups:
         dummy_input = (torch.randn(1, 3), torch.randn(1, 3), torch.randn(1, 3))
         sim = QuantizationSimModel(model, dummy_input)
         sim.compute_encodings(lambda m, _: m(*dummy_input), None)
-        _, groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            _, groups = find_quantizer_group(sim)
 
         assert len(groups) == 5
         expected_quantizers = {
@@ -152,7 +158,10 @@ class TestQuantizerGroups:
         model = test_models.ModelWithMatMul3()
         dummy_input = torch.randn(10, 10)
         sim = QuantizationSimModel(model, dummy_input=(dummy_input, dummy_input))
-        _, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            _, quantizer_groups = find_quantizer_group(sim)
+
         assert len(quantizer_groups) == 3
         assert quantizer_groups[0].get_input_quantizer_modules() == ("matmul_1",)
         assert quantizer_groups[1].get_input_quantizer_modules() == ("matmul_1",)
@@ -169,7 +178,10 @@ class TestQuantizerGroups:
         model = test_models.ModelWithTwoInputsTwoOutputs()
 
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        _, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            _, quantizer_groups = find_quantizer_group(sim)
+
         assert len(quantizer_groups) == 6
         assert len(quantizer_groups[0].input_quantizers) == 1
         assert len(quantizer_groups[1].input_quantizers) == 1
@@ -191,7 +203,9 @@ class TestQuantizerGroups:
         )
 
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        _, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            _, quantizer_groups = find_quantizer_group(sim)
 
         # TODO: #5597: Update require in quantizer groups index
         assert quantizer_groups[5].to_list() == [("output", "features.1.block.1.0")]
@@ -252,7 +266,9 @@ class TestQuantizerGroups:
         model = test_models.SmallMnist()
         dummy_input = torch.randn(1, 1, 10, 10)
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        module_name_to_module_dict, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            module_name_to_module_dict, quantizer_groups = find_quantizer_group(sim)
 
         amp_candidates = [
             ((8, QuantizationDataType.int), (8, QuantizationDataType.int)),
@@ -283,7 +299,9 @@ class TestQuantizerGroups:
         model = test_models.SmallMnist()
         dummy_input = torch.randn(1, 1, 10, 10)
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        module_name_to_module_dict, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            module_name_to_module_dict, quantizer_groups = find_quantizer_group(sim)
 
         amp_candidates = [
             ((8, QuantizationDataType.int), (8, QuantizationDataType.int)),
@@ -314,7 +332,9 @@ class TestQuantizerGroups:
         model = test_models.SmallMnist()
         dummy_input = torch.randn(1, 1, 10, 10)
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        module_name_to_module_dict, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            module_name_to_module_dict, quantizer_groups = find_quantizer_group(sim)
 
         amp_candidates = [
             ((8, QuantizationDataType.int), (8, QuantizationDataType.int)),
@@ -346,7 +366,9 @@ class TestQuantizerGroups:
         model = test_models.SmallMnist()
         dummy_input = torch.randn(1, 1, 10, 10)
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        module_name_to_module_dict, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            module_name_to_module_dict, quantizer_groups = find_quantizer_group(sim)
 
         amp_candidates = [
             ((8, QuantizationDataType.int), (8, QuantizationDataType.int)),
@@ -377,7 +399,9 @@ class TestQuantizerGroups:
         model = test_models.SmallMnist()
         dummy_input = torch.randn(1, 1, 10, 10)
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        module_name_to_module_dict, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            module_name_to_module_dict, quantizer_groups = find_quantizer_group(sim)
 
         amp_candidates = [
             ((8, QuantizationDataType.int), (8, QuantizationDataType.int)),
@@ -421,7 +445,9 @@ class TestQuantizerGroups:
             for op in supported_kernel_ops:
                 onnx_types.append(
                     onnx_utils.map_torch_types_to_onnx.get(
-                        type(module_name_to_module_dict[op]._module_to_wrap)
+                        QuantizationMixin.qcls_to_cls[
+                            type(module_name_to_module_dict[op])
+                        ]
                     )
                 )
 
@@ -437,28 +463,15 @@ class TestQuantizerGroups:
                 for c in candidates:
                     assert c in candidates_default
 
-    def test_resnet18_quantizer_groups(self):
-        from torchvision.models import resnet18
-
-        model = resnet18(pretrained=True)
-        # NOTE: resnet18 has several relu layers reused which are not addressed in AMP directly.
-        # Please do not use resnet18 without going through Model Preparer (Pro)
-        dummy_input = torch.randn(1, 3, 224, 224)
-        fold_all_batch_norms(model, (1, 3, 224, 224))
-
-        sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        _, quantizer_groups = find_quantizer_group(sim)
-        assert len(quantizer_groups) == 23
-        assert quantizer_groups[21].output_quantizers == ("avgpool",)
-        assert quantizer_groups[21].parameter_quantizers == ("fc",)
-        assert quantizer_groups[22].output_quantizers == ("fc",)
-
     def test_model_with_flatten(self):
         model = test_models.ModelWithFlatten()
         input_shape = (1, 3, 32, 32)
         dummy_input = torch.randn(*input_shape)
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        _, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            _, quantizer_groups = find_quantizer_group(sim)
+
         assert len(quantizer_groups) == 4
         assert quantizer_groups[2].output_quantizers == ("relu_1",)
         assert quantizer_groups[2].parameter_quantizers == ("fc_1",)
@@ -470,7 +483,10 @@ class TestQuantizerGroups:
         input_shape = (1, 3, 32, 32)
         dummy_input = torch.randn(*input_shape)
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        _, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            _, quantizer_groups = find_quantizer_group(sim)
+
         assert len(quantizer_groups) == 5
 
     def test_supported_kernel_ops(self):
@@ -494,7 +510,10 @@ class TestQuantizerGroups:
         model = Model()
         dummy_input = (torch.randn(1, 3), torch.randn(1, 3))
         sim = QuantizationSimModel(model, dummy_input=dummy_input)
-        _, quantizer_groups = find_quantizer_group(sim)
+
+        with _mock_v1_quantizers(sim):
+            _, quantizer_groups = find_quantizer_group(sim)
+
         assert len(quantizer_groups) == 7
 
         expected_groups = [

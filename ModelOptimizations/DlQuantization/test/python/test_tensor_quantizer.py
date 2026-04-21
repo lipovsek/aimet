@@ -2,13 +2,16 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
+import pytest
 import unittest
 import numpy as np
 
 try:
     import aimet_onnx.common.libpymo as libpymo
 except ImportError:
-    import aimet_torch.common.libpymo as libpymo
+    import aimet_torch
+
+    pytest.skip(reason="aimet-torch doesn't have libpymo", allow_module_level=True)
 
 
 class TestTensorQuantizer(unittest.TestCase):

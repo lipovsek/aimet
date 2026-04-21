@@ -37,7 +37,7 @@ class QuantizedQwen3_5RMSNorm(QuantizationMixin, modeling_qwen3_5.Qwen3_5RMSNorm
         self.output_quantizers = torch.nn.ModuleList([None])
         self.param_quantizers = torch.nn.ModuleDict({"weight": None})
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:  # pylint: disable=arguments-differ
         if self.input_quantizers[0]:
             hidden_states = self.input_quantizers[0](hidden_states)
 
@@ -63,7 +63,7 @@ class QuantizedQwen3_5RMSNormGated(
         self.output_quantizers = torch.nn.ModuleList([None])
         self.param_quantizers = torch.nn.ModuleDict({"weight": None})
 
-    def forward(self, hidden_states: torch.Tensor, gate=None) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, gate=None) -> torch.Tensor:  # pylint: disable=arguments-differ
         if self.input_quantizers[0]:
             hidden_states = self.input_quantizers[0](hidden_states)
         if gate is not None and self.input_quantizers[1]:

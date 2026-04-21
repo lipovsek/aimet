@@ -171,9 +171,11 @@ class PerBlockCheckpointManager:
         )
         save_file(flat_params, block_checkpoint_path)
 
-        _logger.info(f"Block {block_idx} checkpoint saved to: {block_checkpoint_path}")
         _logger.info(
-            f"Size: {block_checkpoint_path.stat().st_size / 1024 / 1024:.2f} MB"
+            "Block %d checkpoint saved to: %s", block_idx, block_checkpoint_path
+        )
+        _logger.info(
+            "Size: %.2f MB", block_checkpoint_path.stat().st_size / 1024 / 1024
         )
 
         # Update progress tracker
@@ -195,7 +197,7 @@ class PerBlockCheckpointManager:
 
         AdaScale.restore_adascale_params(block, flat_params)
 
-        _logger.info(f"Loaded checkpoint for block {block_idx} successfully")
+        _logger.info("Loaded checkpoint for block %d successfully", block_idx)
 
     def get_progress(self) -> Dict:
         """Get current progress information"""
@@ -330,12 +332,12 @@ class AdaScale:
 
             if all_blocks_done:
                 _logger.info(
-                    f"All {start_block_idx} blocks have been optimized for AdaScale."
+                    "All %d blocks have been optimized for AdaScale.", start_block_idx
                 )
-                _logger.info(f"Loading checkpoints and skipping AdaScale.")
+                _logger.info("Loading checkpoints and skipping AdaScale.")
             else:
                 if start_block_idx > 0:
-                    _logger.info(f"Resuming from block {start_block_idx}")
+                    _logger.info("Resuming from block %d", start_block_idx)
                 else:
                     _logger.info("Starting fresh AdaScale optimization")
 
@@ -352,7 +354,7 @@ class AdaScale:
             metadata = {
                 "total_blocks": len(adascale_blocks),
             }
-
+            # pylint: disable=protected-access
             checkpoint_manager._update_progress(
                 start_block_idx, completed=False, **metadata
             )
@@ -383,7 +385,7 @@ class AdaScale:
                     block_idx
                 ):
                     _logger.info(
-                        f"Block {block_idx} already completed, loading checkpoint..."
+                        "Block %d already completed, loading checkpoint...", block_idx
                     )
                     temp_device = get_device(block)
                     temp_dtype = next(block.parameters()).dtype

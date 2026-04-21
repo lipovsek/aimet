@@ -25,7 +25,6 @@ from aimet_torch.experimental.fptquant.fptquant_transforms import (
     ScalingTransformOp,
     GroupedHadamardTransformOp,
     MultiHeadValueTransformOp,
-    RotationTransformOp,
 )
 
 

@@ -78,7 +78,14 @@ jobs:
           export SKBUILD_BUILD_TARGETS="$AIMET_BUILD_TARGETS"
 
           python -m build --wheel --no-isolation .
-          auditwheel repair --plat manylinux_2_34_x86_64 $MANYLINUX_EXCLUDE_LIBS dist/aimet*.whl
+
+          # Run auditwheel only for aimet_onnx. (aimet_torch doesn't contain any shared library)
+          if [ -n "${{ matrix.VER_ONNXRUNTIME }}" ]; then
+            auditwheel repair --plat manylinux_2_34_x86_64 $MANYLINUX_EXCLUDE_LIBS dist/aimet*.whl
+          else
+            mkdir -p wheelhouse
+            cp dist/aimet*.whl wheelhouse/
+          fi
 
           if [ "${{ matrix.id }}" == "onnx-torch-cpu" ] ; then
             # Unzip aimet*.whl in current directory to upload Docs
@@ -103,7 +110,7 @@ jobs:
           retention-days: 30d
       - name: Upload compiled C++ unit tests
         uses: actions/upload-artifact@v3
-        if: matrix.id != 'onnx-torch-cpu'
+        if: matrix.id == 'onnx-cpu' || matrix.id == 'onnx-gpu'
         with:
           name: "${{ matrix.id }}-tests"
           path: build/**/MoDl*Test

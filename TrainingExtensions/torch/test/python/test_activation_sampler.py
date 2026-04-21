@@ -8,9 +8,7 @@ import pytest
 import torch
 
 from aimet_common.utils import AimetLogger
-import aimet_torch.v1.quantsim as v1
 import aimet_torch.v2.quantsim as v2
-from aimet_torch.v1.qc_quantize_op import QcQuantizeWrapper
 from .models.test_models import TinyModel
 from aimet_torch.utils import create_fake_data_loader, CachedDataset
 from aimet_torch._base.adaround.activation_sampler import ActivationSampler
@@ -25,26 +23,17 @@ def model():
 
 
 @pytest.fixture
-def sim(request, model):
-    QuantizationSimModel = request.param
-    assert QuantizationSimModel in (v1.QuantizationSimModel, v2.QuantizationSimModel)
-    sim = QuantizationSimModel(
+def sim(model):
+    sim = v2.QuantizationSimModel(
         model,
         dummy_input=torch.randn(1, 3, 32, 32),
         quant_scheme="tf_enhanced",
         default_param_bw=4,
     )
 
-    if QuantizationSimModel == v1.QuantizationSimModel:
-        for module in sim.model.modules():
-            if isinstance(module, QcQuantizeWrapper):
-                for quantizer in module.input_quantizers + module.output_quantizers:
-                    quantizer.enabled = False
-                    quantizer.enabled = False
-    else:
-        for module in sim.model.modules():
-            if isinstance(module, BaseQuantizationMixin):
-                module._remove_activation_quantizers()
+    for module in sim.model.modules():
+        if isinstance(module, BaseQuantizationMixin):
+            module._remove_activation_quantizers()
 
     return sim
 
@@ -54,9 +43,6 @@ class TestAdaroundActivationSampler:
     Adaround unit tests
     """
 
-    @pytest.mark.parametrize(
-        "sim", [v1.QuantizationSimModel, v2.QuantizationSimModel], indirect=True
-    )
     def test_activation_sampler_conv(self, sim, model, tmpdir):
         """Test ActivationSampler for a Conv module"""
         dataset_size = 100
@@ -80,9 +66,6 @@ class TestAdaroundActivationSampler:
         assert list(quant_inp.shape) == [batch_size * possible_batches, 3, 32, 32]
         assert list(orig_out.shape) == [batch_size * possible_batches, 32, 18, 18]
 
-    @pytest.mark.parametrize(
-        "sim", [v1.QuantizationSimModel, v2.QuantizationSimModel], indirect=True
-    )
     def test_activation_sampler_fully_connected_module(self, sim, model, tmpdir):
         """Test ActivationSampler for a fully connected module"""
         dataset_size = 100

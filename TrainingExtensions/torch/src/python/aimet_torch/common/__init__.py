@@ -17,13 +17,11 @@ def register_aimet_common_submodules(pkg):
     Define aimet_torch.common.* as alias to _aimet_common.*
     """
     for _, modname, ispkg in pkgutil.iter_modules(pkg.__path__):
-        if (
-            modname
-            in (
-                "libaimet_onnxrt_ops",  # will be imported by aimet_onnx separately
-                "AimetEncodingRescaler",  # unused
-                "AimetTensorQuantizer",  # will be imported by aimet_torch.common.aimet_tensor_quantizer
-            )
+        if modname in (
+            "libaimet_onnxrt_ops",  # will be imported by aimet_onnx separately
+            "libpymo",  # only used by aimet_onnx
+            "_libpymo",  # only used by aimet_onnx
+            "py_libpymo",  # only used by aimet_onnx
         ):
             continue
 

@@ -7,23 +7,25 @@ if (ENABLE_TESTS)
     add_subdirectory(test)
 endif()
 
-add_custom_target(whl_prep_cp_common DEPENDS
-    whl_prep_cp_common_DlCompression
-    whl_prep_cp_common_DlEqualization
-    whl_prep_cp_common_DlQuantization
-    whl_prep_cp_common_PyModelOptimizations
-)
-add_dependencies(whl_prep_cp whl_prep_cp_common)
+if (ENABLE_ONNX)
+    add_custom_target(whl_prep_cp_common DEPENDS
+        whl_prep_cp_common_DlCompression
+        whl_prep_cp_common_DlEqualization
+        whl_prep_cp_common_DlQuantization
+        whl_prep_cp_common_PyModelOptimizations
+    )
+    add_dependencies(whl_prep_cp whl_prep_cp_common)
 
-add_custom_target(whl_prep_ln_common DEPENDS
-    whl_prep_ln_common_DlCompression
-    whl_prep_ln_common_DlEqualization
-    whl_prep_ln_common_DlQuantization
-    whl_prep_ln_common_PyModelOptimizations
-)
+    add_custom_target(whl_prep_ln_common DEPENDS
+        whl_prep_ln_common_DlCompression
+        whl_prep_ln_common_DlEqualization
+        whl_prep_ln_common_DlQuantization
+        whl_prep_ln_common_PyModelOptimizations
+    )
+endif()
 
 message(STATUS "Package rename command: ${src_packaging_dir}/convert_wheel_format.sh ${CMAKE_BINARY_DIR}")
-add_custom_target(generate_deps
+execute_process(
     COMMAND ${Python3_EXECUTABLE}
             "${CMAKE_CURRENT_SOURCE_DIR}/src/python/_aimet_common/_gen.py"
             --output-dir ${CMAKE_BINARY_DIR}/artifacts/_aimet_common
@@ -50,5 +52,7 @@ install(DIRECTORY ${CMAKE_BINARY_DIR}/artifacts/_aimet_common/
       )
 endif()
 
-add_dependencies(whl_prep_ln whl_prep_ln_common)
+if (ENABLE_ONNX)
+    add_dependencies(whl_prep_ln whl_prep_ln_common)
+endif()
 whl_add_whl_action_target(common)

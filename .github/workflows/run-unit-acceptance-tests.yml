@@ -95,6 +95,7 @@ jobs:
           name: "${{ inputs.env_name }}-wheel"
           path: "downloads"
       - uses: actions/download-artifact@v3
+        if: inputs.ver_onnxruntime != ''
         with:
           name: "${{ inputs.env_name }}-tests"
           path: "downloads"
@@ -155,10 +156,10 @@ jobs:
               $target
           done
 
-          PYTEST_TARGETS="./ModelOptimizations/DlQuantization/test"
-          PYTEST_TARGETS="$PYTEST_TARGETS ./TrainingExtensions/common/test"
+          PYTEST_TARGETS="./TrainingExtensions/common/test"
 
           if [ "${{ inputs.ver_onnxruntime }}" != "" ] ; then
+              PYTEST_TARGETS="./ModelOptimizations/DlQuantization/test $PYTEST_TARGETS"
               PYTEST_TARGETS="$PYTEST_TARGETS ./TrainingExtensions/onnx/test"
           elif [ "${{ inputs.ver_torch }}" != "" ] ; then
               PYTEST_TARGETS="$PYTEST_TARGETS ./TrainingExtensions/torch/test"

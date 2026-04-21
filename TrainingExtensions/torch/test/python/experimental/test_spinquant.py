@@ -6,7 +6,7 @@
 import copy
 import pytest
 import torch
-from transformers import PreTrainedModel, DynamicCache
+from transformers import PreTrainedModel
 from transformers.models.llama.modeling_llama import (
     LlamaRMSNorm,
     LlamaForCausalLM,

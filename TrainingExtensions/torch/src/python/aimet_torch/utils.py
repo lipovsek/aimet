@@ -1077,30 +1077,6 @@ def place_model(model: torch.nn.Module, device: torch.device):
         model.to(device=original_device)
 
 
-__migrated__ = {
-    "compute_encoding_for_given_bitwidth",
-    "compute_partial_encoding",
-    "create_encoding_dict",
-    "create_encoding_from_dict",
-    "get_per_channel_quantizer_from_per_tensor",
-    "get_per_tensor_quantizer_from_per_channel",
-    "_validate_is_symmetric_flag",
-    "validate_is_symmetric_flag",
-}
-
-
-def __getattr__(name: str):
-    try:
-        return globals()[name]
-    except KeyError as e:
-        if name in __migrated__:
-            msg = f'"{name}" has been moved to aimet_torch.v1.utils since aimet-torch==2.0.0'
-            raise NameError(msg) from e
-
-        msg = f"module '{__name__}' has no attribute '{name}'"
-        raise AttributeError(msg) from e
-
-
 def get_param_channel_axis(module: torch.nn.Module, param_name: str):
     """
     Given a module and its param name, this method returns the channel axis of the given parameter.

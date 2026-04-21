@@ -20,7 +20,8 @@ except ImportError:
         _is_bias_out_of_int32_range,
         _get_adjusted_weight_scale,
     )
-    from aimet_torch.common import libpymo
+
+    libpymo = None
 
 
 class TestCommonQuantSim:
@@ -117,6 +118,7 @@ class TestCommonQuantSim:
         assert np.allclose(delta, expected_delta)
         assert np.array_equal(offset, expected_offset)
 
+    @pytest.mark.skipif(libpymo is None, reason="aimet-torch has no libpymo")
     @pytest.mark.parametrize(
         "enc_min, enc_max, is_symmetric, is_strict",
         [

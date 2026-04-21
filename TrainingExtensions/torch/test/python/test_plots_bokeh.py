@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-import os
 import unittest
 import numpy as np
 import torch
@@ -11,7 +10,6 @@ from bokeh.models import Range1d
 from bokeh.plotting import figure
 from aimet_common.utils import (
     AimetLogger,
-    kill_process_with_name_and_port_number,
     start_bokeh_server_session,
 )
 from aimet_common import bokeh_plots

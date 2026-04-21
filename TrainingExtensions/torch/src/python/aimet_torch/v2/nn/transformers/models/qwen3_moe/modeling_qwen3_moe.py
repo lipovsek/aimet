@@ -34,7 +34,7 @@ class QuantizedQwen3MoeRMSNorm(QuantizationMixin, modeling_qwen3_moe.Qwen3MoeRMS
         self.output_quantizers = torch.nn.ModuleList([None])
         self.param_quantizers = torch.nn.ModuleDict({"weight": None})
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states):  # pylint: disable=arguments-differ
         # Quantize input tensors
         if self.input_quantizers[0]:
             hidden_states = self.input_quantizers[0](hidden_states)

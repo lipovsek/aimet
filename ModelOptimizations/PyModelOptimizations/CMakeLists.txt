@@ -51,8 +51,6 @@ set_target_properties(PyModelOptimizations
          PREFIX "_lib"
       )
 
-add_dependencies(PyModelOptimizations generate_deps)
-
 if (SKBUILD)
     if (APPLE)
         set_target_properties(PyModelOptimizations PROPERTIES
@@ -62,11 +60,6 @@ if (SKBUILD)
         set_target_properties(PyModelOptimizations PROPERTIES
             INSTALL_RPATH "\$ORIGIN:\$ORIGIN/../../.."
             )
-    endif()
-    if (ENABLE_TORCH)
-        install(TARGETS PyModelOptimizations
-                LIBRARY DESTINATION aimet_torch/common
-                RUNTIME DESTINATION aimet_torch/common)
     endif()
     if (ENABLE_ONNX)
         install(TARGETS PyModelOptimizations

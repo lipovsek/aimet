@@ -30,10 +30,8 @@
 #          +-------------+-------------+
 #          v                           v
 #  whl_prep_(cp/ln)_torch    whl_prep_(cp/ln)_common
-#          |                           |
-#          |                           |
-#          v                           |
-# build AimetTensorQuantizer           v
+#                                      |
+#                                      v
 #                       whl_prep_(cp/ln)_common_DlQuantization -------+
 #                       whl_prep_(cp/ln)_common_PyModelOptimizations -|
 #                                        |                            |

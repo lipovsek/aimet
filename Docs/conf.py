@@ -240,15 +240,6 @@ autosummary_generate = True
 # contains a list of modules to be mocked up which are not available during docs build time
 autodoc_mock_imports = []
 
-# aimet_torch
-autodoc_mock_imports.extend(
-    [
-        "aimet_torch.common.aimet_tensor_quantizer",
-        "aimet_torch.common.AimetTensorQuantizer",
-        "aimet_torch.common.libpymo",
-    ]
-)
-
 # aimet_onnx
 autodoc_mock_imports.extend(
     [

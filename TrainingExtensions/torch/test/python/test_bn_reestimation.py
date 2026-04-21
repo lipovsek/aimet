@@ -3,16 +3,8 @@
 
 
 import copy
-from unittest.mock import patch
-from torch.nn.modules.batchnorm import _BatchNorm
-from aimet_torch.v1.qc_quantize_op import StaticGridQuantWrapper
 import pytest
-import aimet_torch.v1.quantsim as v1
 import aimet_torch.v2.quantsim as v2
-from aimet_torch.v1.tensor_quantizer import (
-    StaticGridTensorQuantizer,
-    LearnedGridTensorQuantizer,
-)
 from aimet_torch.v2.quantization.base import QuantizerBase
 from aimet_common.defs import QuantScheme
 from aimet_torch.bn_reestimation import reestimate_bn_stats, _get_active_bn_modules
@@ -86,27 +78,15 @@ def test_reestimation_with_fp32_model(fp32_model, data_loader):
         QuantScheme.training_range_learning_with_tf_enhanced_init,
     ],
 )
-@pytest.mark.parametrize(
-    "QuantizationSimModel", [v1.QuantizationSimModel, v2.QuantizationSimModel]
-)
 def test_reestimation_with_quantsim_model(
-    QuantizationSimModel, fp32_model, dummy_input, quant_scheme, data_loader
+    fp32_model, dummy_input, quant_scheme, data_loader
 ):
-    sim = QuantizationSimModel(fp32_model, dummy_input, quant_scheme=quant_scheme)
+    sim = v2.QuantizationSimModel(fp32_model, dummy_input, quant_scheme=quant_scheme)
     sim.compute_encodings(lambda model, _: model(dummy_input), None)
     model = sim.model
 
     def quantize_input(data):
         input_quantizer = model._bn.input_quantizers[0]
-        if isinstance(input_quantizer, StaticGridTensorQuantizer):
-            return input_quantizer.quantize_dequantize(data, input_quantizer.round_mode)
-
-        if isinstance(input_quantizer, LearnedGridTensorQuantizer):
-            encoding = input_quantizer.encoding
-            encoding_min = torch.tensor([encoding.min])
-            encoding_max = torch.tensor([encoding.max])
-            return input_quantizer.quantize_dequantize(data, encoding_min, encoding_max)
-
         if isinstance(input_quantizer, QuantizerBase):
             return input_quantizer(data)
 
@@ -121,23 +101,6 @@ def test_reestimation_with_quantsim_model(
         torch.var(quantize_input(data), dim=(0, 2, 3)) for data in data_loader
     ]
     expected_var = sum(expected_var) / len(data_loader)
-
-    def update_encoding_stats(*args, **kwargs):
-        raise AssertionError(
-            "Expected `update_encoding_stats` not to be called "
-            "during batchnorm re-esimtation."
-        )
-
-    # `update_encoding_stats` should not be called except for batchnorm quant wrappers
-    for module in model.modules():
-        if not isinstance(module, StaticGridQuantWrapper):
-            continue
-        if isinstance(module._module_to_wrap, _BatchNorm):
-            continue
-        for quantizer in module.param_quantizers.values():
-            patch.object(
-                quantizer, "update_encoding_stats", wraps=update_encoding_stats
-            ).__enter__()
 
     _test_reestimation(model, data_loader, expected_mean, expected_var)
 

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-import json
 import os
 import pytest
 import unittest.mock
@@ -21,7 +20,6 @@ from aimet_common.utils import round_up_to_multiplicity, round_down_to_multiplic
 from aimet_torch import utils
 import aimet_torch._base.nn.modules.custom as aimet_modules
 
-import aimet_torch.v1.quantsim as v1
 import aimet_torch.v2.quantsim as v2
 from .models.test_models import (
     TinyModel,
@@ -30,7 +28,6 @@ from .models.test_models import (
     SingleResidual,
     EmbeddingModel,
 )
-from safetensors.numpy import save_file as save_safetensor_file
 
 
 class TestTrainingExtensionsUtils(unittest.TestCase):
@@ -704,27 +701,6 @@ class TestTrainingExtensionsUtils(unittest.TestCase):
     def test_disable_all_quantizers(self):
         model = TinyModel().to(device="cpu")
         dummy_input = torch.rand(1, 3, 32, 32)
-        sim = v1.QuantizationSimModel(model, dummy_input=dummy_input)
-
-        all_quantizers = sum(utils.get_all_quantizers(sim.model), start=[])
-        active_quantizers = set(
-            quantizer for quantizer in all_quantizers if quantizer.enabled
-        )
-
-        # Disable all the quantizers within with-as block
-        with utils.disable_all_quantizers(sim.model):
-            for quantizer in all_quantizers:
-                assert not quantizer.enabled
-
-        # Check the function disables quantizers temporarily
-        for quantizer in active_quantizers:
-            assert quantizer.enabled
-
-        # Disable all the quantizers without employing context manager
-        utils.disable_all_quantizers(sim.model)
-        for quantizer in all_quantizers:
-            assert not quantizer.enabled
-
         sim = v2.QuantizationSimModel(model, dummy_input=dummy_input)
 
         all_quantizers = sum(utils.get_all_quantizers(sim.model), start=[])

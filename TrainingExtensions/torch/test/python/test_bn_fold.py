@@ -2,9 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-import copy
 import pytest
-from contextlib import contextmanager
 import torch
 from torchvision import models
 
@@ -17,7 +15,6 @@ from aimet_torch.batch_norm_fold import (
 )
 from .models.test_models import TransposedConvModel, Conv3dModel, Conv3dModel1
 from aimet_torch.utils import create_rand_tensors_given_shapes, get_device
-import aimet_torch._base.batch_norm_fold as batch_norm_fold
 from torch.nn.modules.batchnorm import _BatchNorm
 
 torch.manual_seed(1228)
