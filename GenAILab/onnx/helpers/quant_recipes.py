@@ -228,8 +228,17 @@ class SpinQuant(QuantizationTechnique):
         **kwargs,
     ):
         if component == "backbone":
-            apply_spinquant(quantsim)
+            if isinstance(generator, VLM_Generator):
+                apply_spinquant(
+                    backbone_sim=quantsim,
+                    visual_sim=generator.vision_model.quantsim,
+                    embedding=generator.embedding.weight,
+                )
+            else:
+                apply_spinquant(quantsim)
         elif component == "visual":
-            raise NotImplementedError(
-                "ONNX SpinQuant does not yet support visual encoder components."
+            print(
+                "WARNING: SpinQuant is a no-op on visual — rotation was already applied "
+                "to merger_linear2 when SpinQuant ran on the backbone."
             )
+            return

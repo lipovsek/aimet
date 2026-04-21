@@ -25,6 +25,7 @@ Terminology:
     Gather        | [vocab, hidden] | W @ R   (axis -1)
 """
 
+from typing import List
 import numpy as np
 from onnx import numpy_helper
 
@@ -41,7 +42,7 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 def apply_r1_rotation(
     model: ModelProto,
     role_map: DecoderModelRoleMap,
-    hidden_size: int,
+    backbone_hidden_size: int,
 ):
     """Apply R1 Hadamard rotation to linear weights in role_map in-place.
 
@@ -53,10 +54,15 @@ def apply_r1_rotation(
 
     :param model: ONNX ModelProto.
     :param role_map: Role map produced by get_decoder_role_map.
-    :param hidden_size: Dimension of the Hadamard rotation matrix.
+    :param backbone_hidden_size: Language backbone hidden size.
     """
-    R1 = (get_hadamard_matrix(hidden_size) / np.sqrt(hidden_size)).astype(np.float64)
-    _logger.info("Applying R1 Hadamard rotation with hidden_size=%d.", hidden_size)
+    R1 = (
+        get_hadamard_matrix(backbone_hidden_size) / np.sqrt(backbone_hidden_size)
+    ).astype(np.float64)
+    _logger.info(
+        "Backbone: Applying R1 Hadamard rotation with backbone_hidden_size=%d.",
+        backbone_hidden_size,
+    )
 
     # embed_tokens: right_hand_transform(R1)
     for op in role_map.embed_tokens:
@@ -82,8 +88,40 @@ def apply_r1_rotation(
             _rotate_linear_weight(model, op, R1, is_writing=True)
 
 
+def apply_r1_rotation_merger(
+    model: ModelProto,
+    merger_linear2: List[Op],
+    backbone_hidden_size: int,
+):
+    """Apply R_L Hadamard rotation to PatchMerger linear_fc2 weights in-place.
+
+    Rotates merger_linear2 (linear_fc2) with R_L — the language backbone rotation
+    matrix. This is non-negotiable: whenever the backbone is SpinQuant-rotated,
+    merger_linear2 must also be rotated so its outputs land in the rotated backbone
+    residual stream space.
+
+    :param model: ONNX ModelProto (modified in-place).
+    :param merger_linear2: List of merger linear_fc2 ops from find_merger_linear2.
+    :param backbone_hidden_size: Language backbone hidden size.
+    """
+    R_L = (
+        get_hadamard_matrix(backbone_hidden_size) / np.sqrt(backbone_hidden_size)
+    ).astype(np.float64)
+    _logger.info(
+        "Visual: Applying R1 Hadamard rotation to merger_linear2 with backbone_hidden_size=%d.",
+        backbone_hidden_size,
+    )
+
+    for op in merger_linear2:
+        _rotate_linear_weight(model, op, R_L, is_writing=True)
+
+
 def _infer_hidden_size(model: ModelProto, role_map: DecoderModelRoleMap) -> int:
-    """Infer the model hidden size from the first embed_tokens weight in ``role_map``.
+    """Infer the model hidden size from embed_tokens or lm_head weights in ``role_map``.
+
+    Tries embed_tokens first (Gather weight [vocab, hidden], last dim = hidden).
+    Falls back to lm_head for VLM backbones exported with use_inputs_embeds=True
+    that have no Gather op: reading-layer weight has hidden on the input axis.
 
     :param model: ONNX ModelProto.
     :param role_map: Role map produced by get_decoder_role_map
@@ -95,12 +133,57 @@ def _infer_hidden_size(model: ModelProto, role_map: DecoderModelRoleMap) -> int:
                 tensor = ParamUtils.get_param_by_name(model, inp.name)
                 if tensor is not None:
                     return numpy_helper.to_array(tensor).shape[-1]
+
+    # Fallback: lm_head reading layer.
+    # Gemm transB=1 stores W [vocab, hidden] → hidden = shape[-1].
+    # MatMul stores W [hidden, vocab]        → hidden = shape[0].
+    # Conv 1x1 stores W [vocab, hidden, 1, 1] → hidden = shape[1].
+    for op in role_map.lm_head:
+        weight_inp, is_transposed = _get_weight_product(op)
+        if weight_inp is not None:
+            tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
+            if tensor is not None:
+                W = numpy_helper.to_array(tensor)
+                if op.type == "Conv":
+                    return W.shape[1]  # [out_ch, in_ch, *k]: in_ch = hidden
+                return W.shape[-1] if is_transposed else W.shape[0]
+
     raise ValueError(
-        "Cannot infer hidden_size: no embed_tokens initializer weight found in role_map."
+        "Cannot infer hidden_size: no embed_tokens or lm_head initializer weight found in role_map."
     )
 
 
-def _validate_all_weights(
+def _get_bias_product(op: Op):
+    """Return the bias Product for Gemm/Conv (third static input) or MatMul followed by Add.
+
+    Writing layers (o_proj, down_proj, patch_embed) whose output is added to the residual
+    stream must have their bias rotated alongside the weight. This function locates that
+    bias initializer so the caller can apply ``b_rot = b @ R``.
+
+    Handles three patterns:
+    - Gemm (transB=1): inputs are [X, W, B]; B is the second static input.
+    - Conv:            inputs are [X, W, B]; B is the second static input.
+    - MatMul + Add:    a downstream Add whose second input is a static initializer.
+
+    :param op: A MatMul, Gemm, or Conv Op.
+    :return: The bias Product, or None if no static bias is found.
+    """
+    if op.type in ("Gemm", "Conv"):
+        static_inputs = [inp for inp in op.inputs if inp.is_parm or inp.is_const]
+        if len(static_inputs) >= 2:
+            return static_inputs[1]
+
+    if op.type == "MatMul":
+        for out_op in op.output_ops:
+            if out_op.type == "Add":
+                for inp in out_op.inputs:
+                    if inp.is_parm or inp.is_const:
+                        return inp
+
+    return None
+
+
+def _validate_backbone_weights(
     model: ModelProto, role_map: DecoderModelRoleMap, hidden_size: int
 ):
     """Verify that every weight in role_map exists and has the correct shape.
@@ -164,6 +247,39 @@ def _validate_all_weights(
             )
 
 
+def _validate_merger_linear2(
+    model: ModelProto,
+    merger_linear2: List[Op],
+    backbone_hidden_size: int,
+):
+    """Verify that every merger_linear2 weight exists and writes into backbone_hidden_size.
+
+    :param model: ONNX ModelProto to validate against.
+    :param merger_linear2: List of merger_linear2 ops from find_merger_linear2.
+    :param backbone_hidden_size: Language backbone hidden dimension d_L.
+    """
+    for op in merger_linear2:
+        weight_inp, is_transposed = _get_weight_product(op)
+        if weight_inp is None:
+            raise RuntimeError(
+                f"merger_linear2 op '{op.name}': no static weight found. Cannot apply R_L rotation."
+            )
+        tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
+        if tensor is None:
+            raise RuntimeError(
+                f"merger_linear2 op '{op.name}': weight '{weight_inp.name}' not found in initializers."
+            )
+        shape = numpy_helper.to_array(tensor).shape
+        # writing layer: output axis = backbone_hidden_size
+        # Conv/transposed [out, in]: axis 0; MatMul [in, out]: axis -1
+        rotated_axis = 0 if (op.type == "Conv" or is_transposed) else -1
+        if shape[rotated_axis] != backbone_hidden_size:
+            raise RuntimeError(
+                f"merger_linear2 op '{op.name}': weight shape {shape}, axis {rotated_axis} "
+                f"= {shape[rotated_axis]}, expected backbone_hidden_size={backbone_hidden_size}."
+            )
+
+
 def _rotate_gather_weight(model: ModelProto, op: Op, R: np.ndarray):
     """Apply the R1 rotation to the weight of embed_tokens op (Gather).
 
@@ -218,6 +334,20 @@ def _rotate_linear_weight(model: ModelProto, op: Op, R: np.ndarray, is_writing: 
         is_writing,
         W.shape,
     )
+
+    if is_writing:
+        bias_inp = _get_bias_product(op)
+        if bias_inp is not None:
+            bias_tensor = ParamUtils.get_param_by_name(model, bias_inp.name)
+            if bias_tensor is not None:
+                b = numpy_helper.to_array(bias_tensor)
+                b_rot = _right_multiply(b, R, axis=-1).astype(b.dtype)
+                bias_tensor.CopyFrom(
+                    numpy_helper.from_array(b_rot, name=bias_tensor.name)
+                )
+                _logger.debug(
+                    "Rotated bias for writing op '%s' shape %s.", op.name, b.shape
+                )
 
 
 def _apply_transform(

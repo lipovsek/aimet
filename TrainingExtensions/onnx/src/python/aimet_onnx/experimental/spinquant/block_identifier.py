@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from aimet_onnx.common.utils import AimetLogger
-
 from aimet_onnx.experimental.spinquant.fuse_norm import (
     ActiveNorm,
     find_active_norms,
@@ -125,7 +124,7 @@ def get_decoder_block_boundaries(
         resolved_norms_per_block = remainder // expected_num_blocks
     else:
         resolved_norms_per_block = 2  # default: Llama/Qwen2/Mistral/Phi family
-        _logger.warning(
+        _logger.debug(
             "Neither expected_num_blocks nor active_norms_per_block was provided. "
             "Defaulting to active_norms_per_block=2 (Llama/Qwen2/Mistral/Phi). "
             "Pass expected_num_blocks=<N> to validate the detected block count."
@@ -143,7 +142,7 @@ def get_decoder_block_boundaries(
         raise ValueError(
             f"Expected {expected_num_blocks} decoder blocks but detected {num_blocks}."
         )
-    _logger.info(
+    _logger.debug(
         "Detected %d decoder block(s) from %d active norm(s) (%d per block).",
         num_blocks,
         num_active_norms,
@@ -192,11 +191,7 @@ def get_decoder_role_map(
     :param active_norms_per_block: Expected number of active norms per decoder
         block. Must match the value used in :func:`get_decoder_block_boundaries`.
         Defaults to 2 (Llama/Qwen2/Mistral/Phi family).
-    :return: :class:`DecoderModelRoleMap` with all roles populated.
-    :raises ValueError: If the active norm count inside any block does not equal
-        ``active_norms_per_block``; if no ``o_proj`` / ``down_proj`` candidates
-        are found in any block; if ``lm_head`` or ``embed_tokens`` are not
-        detected.
+    :return: DecoderModelRoleMap with all roles populated.
     """
     op_topo_idx = {id(op): i for i, op in enumerate(connected_graph.ordered_ops)}
 
@@ -325,11 +320,72 @@ def get_decoder_role_map(
         and any(inp.is_parm or inp.is_const for inp in op.inputs)
     ]
     if not result.embed_tokens:
-        raise ValueError(
-            "embed_tokens not detected: no Gather op with a static weight found before "
-            "the first block boundary. The model must have a token embedding op "
-            "before the first decoder block."
+        _logger.info(
+            "Backbone: embed_tokens not detected, no Gather op with a static weight found before "
+            "the first block boundary. This is expected for VLM backbones exported with "
+            "use_inputs_embeds=True. Rotate embedding.pth separately."
         )
     _logger.debug("embed_tokens: %s", [op.name for op in result.embed_tokens])
 
+    _logger.info(
+        "Backbone: %d block(s), embed_tokens=%s, lm_head=%s.",
+        len(result.blocks),
+        [op.name for op in result.embed_tokens],
+        [op.name for op in result.lm_head],
+    )
+
+    return result
+
+
+def find_merger_linear2(connected_graph: ConnectedGraph) -> List[Op]:
+    """Find PatchMerger linear_fc2 ops in a visual encoder ONNX graph.
+
+    Identifies all weighted linear ops that are leaf nodes in the weighted-linear
+    subgraph — i.e. have no downstream weighted linear consumers. These are the
+    PatchMerger linear_fc2 layers that write into the language backbone residual
+    stream and must always be rotated with R_L when the backbone is SpinQuant-rotated.
+
+    NOTE:
+        Assumes the PatchMerger linear_fc2 is the topological leaf of the weighted-linear
+        subgraph — i.e. no downstream weighted linear follows it. This holds for Qwen2.5-VL
+        and Qwen3-VL. Unknown architectures will be misdetected; an
+        explicit override will be added as part of the general block-detection fallback.
+
+    :param connected_graph: ConnectedGraph built from visual.onnx.
+    :return: List of merger_linear2 ops in topological order.
+    :raises ValueError: If no merger_linear2 ops are found.
+    """
+    weighted_linears_topo = [
+        op
+        for op in connected_graph.ordered_ops
+        if op.type in _LINEAR_TYPES and _get_weight_product(op)[0] is not None
+    ]
+    weighted_linear_ids = {id(op) for op in weighted_linears_topo}
+
+    def _has_downstream_weighted_linear(op: Op) -> bool:
+        visited = set()
+        stack = list(op.output_ops)
+        while stack:
+            cur = stack.pop()
+            if id(cur) in visited:
+                continue
+            visited.add(id(cur))
+            if id(cur) in weighted_linear_ids:
+                return True
+            stack.extend(cur.output_ops)
+        return False
+
+    result = [
+        op for op in weighted_linears_topo if not _has_downstream_weighted_linear(op)
+    ]
+
+    if not result:
+        raise ValueError(
+            "merger_linear2 not detected: no leaf weighted linear op found in the ViT graph."
+        )
+
+    _logger.info(
+        "Visual: merger_linear2=%s will be rotated with R_L.",
+        [op.name for op in result],
+    )
     return result

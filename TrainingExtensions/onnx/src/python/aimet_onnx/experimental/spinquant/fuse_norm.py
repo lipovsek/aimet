@@ -76,7 +76,7 @@ def find_active_norms(
                 norm_op=op, scale_name=scale_name, downstream_linears=downstream_linears
             )
         )
-    _logger.info("Found %d active norm(s).", len(result))
+    _logger.debug("Found %d active norm(s).", len(result))
     return result
 
 
@@ -129,18 +129,48 @@ def fuse_norm_layers_into_linears(model: ModelProto, active_norms: List[ActiveNo
             W = numpy_helper.to_array(weight_tensor)
             orig_dtype = W.dtype
 
+            # Determine in_features based on storage layout (needed for tiling check below).
+            if linear_op.type == "Conv":
+                in_features = W.shape[1]  # [out, in, *k]
+            elif is_transposed:
+                in_features = W.shape[1]  # [out, in]
+            else:
+                in_features = W.shape[0]  # [in, out]
+
+            # Repeat gamma when its length is smaller than in_features.
+            scale_f64_effective = scale_f64
+            if len(scale_f64) < in_features:
+                if in_features % len(scale_f64) != 0:
+                    raise ValueError(
+                        f"RMSNorm scale '{scale_name}' length {len(scale_f64)} does not "
+                        f"divide in_features={in_features} of op '{linear_op.name}'."
+                    )
+                tile_factor = in_features // len(scale_f64)
+                scale_f64_effective = np.tile(scale_f64, tile_factor)
+                _logger.debug(
+                    "Repeating RMSNorm scale '%s' by %d for op '%s' "
+                    "(gamma dim %d < in_features %d).",
+                    scale_name,
+                    tile_factor,
+                    linear_op.name,
+                    len(scale_f64),
+                    in_features,
+                )
+
             if linear_op.type == "Conv":
                 # W shape: [out_channels, in_channels, *kernel]
                 # gamma [in_channels] is absorbed along axis 1
-                scale_broadcast = scale_f64.reshape(1, -1, *([1] * (W.ndim - 2)))
+                scale_broadcast = scale_f64_effective.reshape(
+                    1, -1, *([1] * (W.ndim - 2))
+                )
             elif is_transposed:
                 # Gemm transB=1 or W → Transpose → MatMul: stored W is [out, in]
                 # gamma [in_features] is absorbed along axis 1
-                scale_broadcast = scale_f64[None, :]
+                scale_broadcast = scale_f64_effective[None, :]
             else:
                 # MatMul or Gemm transB=0: W shape [in_features, out_features]
                 # gamma [in_features] is absorbed along axis 0
-                scale_broadcast = scale_f64[:, None]
+                scale_broadcast = scale_f64_effective[:, None]
 
             W_fused = (scale_broadcast * W.astype(np.float64)).astype(orig_dtype)
             weight_tensor.CopyFrom(

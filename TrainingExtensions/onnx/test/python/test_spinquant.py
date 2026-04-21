@@ -17,6 +17,7 @@ from onnxruntime import GraphOptimizationLevel, InferenceSession, SessionOptions
 from .models.test_models import RMSNorm
 from .utils import add_genai_tests_path
 from aimet_onnx.common.utils import AimetLogger
+from aimet_onnx.common.hadamard import get_hadamard_matrix
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import ParamUtils
@@ -34,14 +35,19 @@ from aimet_onnx.experimental.spinquant.block_identifier import (
     DecoderModelRoleMap,
     get_decoder_block_boundaries,
     get_decoder_role_map,
+    find_merger_linear2,
 )
 from aimet_onnx.experimental.spinquant.apply_rotation import (
     apply_r1_rotation,
+    apply_r1_rotation_merger,
     _apply_transform,
     _right_multiply,
     _left_multiply,
+    _get_bias_product,
+    _validate_merger_linear2,
 )
 from aimet_onnx.experimental.spinquant import apply_spinquant
+from aimet_onnx.experimental.spinquant.apply_rotation import _infer_hidden_size
 
 AimetLogger.set_level_for_all_areas(logging.INFO)
 
@@ -162,6 +168,11 @@ def _collect_all_weights(model: onnx.ModelProto, role_map: DecoderModelRoleMap) 
             tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
             if tensor is not None:
                 weights[weight_inp.name] = numpy_helper.to_array(tensor).copy()
+        bias_inp = _get_bias_product(op)
+        if bias_inp is not None:
+            tensor = ParamUtils.get_param_by_name(model, bias_inp.name)
+            if tensor is not None:
+                weights[bias_inp.name] = numpy_helper.to_array(tensor).copy()
 
     def _store_gather(op):
         for inp in op.inputs:
@@ -263,6 +274,28 @@ class RMSNormConvViaTranspose(nn.Module):
         return self.conv(y)  # [B, out_channels, seq]
 
 
+class RMSNormReshapeLinear(nn.Module):
+    """RMSNorm(d_v) -> Reshape(1, s_sq*d_v) -> Gemm(s_sq*d_v)"""
+
+    def __init__(
+        self,
+        d_v: int,
+        s_sq: int,
+        mul_for_pow: bool,
+        mul_rsqrt_pattern: str,
+    ):
+        super().__init__()
+        self.norm = RMSNorm(
+            d_v, mul_for_pow=mul_for_pow, mul_rsqrt_pattern=mul_rsqrt_pattern
+        )
+        self.linear = nn.Linear(d_v * s_sq, d_v * s_sq, bias=True)
+
+    def forward(self, x):
+        y = self.norm(x)
+        y = y.reshape(1, -1)
+        return self.linear(y)
+
+
 class TestFuseNormLayers:
     """Unit tests for fuse_norm_layers_into_linears.
 
@@ -272,6 +305,7 @@ class TestFuseNormLayers:
     4. RMSNorm → three parallel Gemm ops  (Q / K / V)
     5. RMSNorm → Transpose → Conv  (SHA_Conv reshape-chain pattern)
     6. Non-affine RMSNorm (no gamma)  → no-op, weights unchanged
+    7. RMSNorm → Reshape → Linear    (gamma tiling, VLM merger ln_q pattern)
     """
 
     IN = 8
@@ -433,11 +467,86 @@ class TestFuseNormLayers:
         assert np.array_equal(w_after, w_before)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
+    @pytest.mark.parametrize("mul_for_pow", [True, False])
+    @pytest.mark.parametrize(
+        "mul_rsqrt_pattern", ["mul_rsqrt", "div_sqrt", "mul_reciprocal_sqrt"]
+    )
+    def test_gamma_tiling(self, mul_for_pow, mul_rsqrt_pattern):
+        """RMSNorm(d_v) -> Reshape -> Gemm(s_sq*d_v): gamma tiled s_sq times before fusion."""
+        d_v = 4
+        s_sq = 2
+        torch.manual_seed(0)
+        np.random.seed(0)
+        module = RMSNormReshapeLinear(d_v, s_sq, mul_for_pow, mul_rsqrt_pattern)
+        x = np.random.randn(s_sq, d_v).astype(np.float32)
+        model = _export_to_onnx(module, torch.from_numpy(x))
+        cg = ConnectedGraph(model)
+
+        y_before = _run_model(model, x)
+
+        # Collect pre-fusion state manually: gamma is [d_v] but weight in_features is s_sq*d_v
+        active_norms = find_active_norms(model, cg)
+        assert len(active_norms) == 1
+        scale_name = active_norms[0].scale_name
+        gamma_before = numpy_helper.to_array(
+            ParamUtils.get_param_by_name(model, scale_name)
+        ).copy()
+        assert gamma_before.shape == (d_v,)
+
+        linear_ops = active_norms[0].downstream_linears
+        assert len(linear_ops) == 1
+        weight_inp, is_transposed = _get_weight_product(linear_ops[0])
+        W_before = numpy_helper.to_array(
+            ParamUtils.get_param_by_name(model, weight_inp.name)
+        ).copy()
+        in_features = W_before.shape[1] if is_transposed else W_before.shape[0]
+        assert in_features == d_v * s_sq
+
+        """
+        When: fuse_norm_layers_into_linears is applied
+        Then: Gamma must be reset to ones (original d_v shape),
+         weight must be scaled by gamma tiled s_sq times
+        """
+
+        fuse_norm_layers_into_linears(model, active_norms)
+
+        gamma_after = numpy_helper.to_array(
+            ParamUtils.get_param_by_name(model, scale_name)
+        )
+        assert np.array_equal(gamma_after, np.ones(d_v, dtype=gamma_before.dtype))
+
+        gamma_tiled = np.tile(gamma_before.astype(np.float64), s_sq)
+        W_after = numpy_helper.to_array(
+            ParamUtils.get_param_by_name(model, weight_inp.name)
+        )
+        if is_transposed:
+            # Gemm transB=1: stored W[out, in], gamma absorbed along axis 1
+            W_expected = (gamma_tiled[None, :] * W_before.astype(np.float64)).astype(
+                W_before.dtype
+            )
+        else:
+            # MatMul: stored W[in, out], gamma absorbed along axis 0
+            W_expected = (gamma_tiled[:, None] * W_before.astype(np.float64)).astype(
+                W_before.dtype
+            )
+        assert np.allclose(W_after, W_expected)
+        assert np.allclose(_run_model(model, x), y_before)
+
 
 _NORM_KW = dict(mul_for_pow=False, mul_rsqrt_pattern="mul_rsqrt")
 _H, _I = 8, 16  # hidden dim, intermediate dim
 _VOCAB = 16
 _B, _SEQ = 1, 4  # batch, sequence length
+
+_VIT_D, _VIT_I = 8, 12  # ViT hidden size, intermediate dim
+_VIT_S_SQ = 4
+_VIT_N = 8
+_VIT_D_L = _H  # language hidden size; must equal backbone _H for VLM integration tests
+
+
+def _export_vit(module: nn.Module) -> onnx.ModelProto:
+    x = torch.randn(_VIT_N, _VIT_D)
+    return _export_to_onnx(module, x)
 
 
 def _export_decoder(module: nn.Module) -> onnx.ModelProto:
@@ -455,19 +564,22 @@ class _LlamaBlock(nn.Module):
 
     input_norm feeds q/k/v projections.
     post_attn_norm feeds gate/up projections.
+
+    :param bias: When True, enables bias on the writing layers (o_proj, down_proj).
+        Reading layers (q, k, v, gate, up) always have bias=False.
     """
 
-    def __init__(self):
+    def __init__(self, bias: bool = False):
         super().__init__()
         self.input_norm = RMSNorm(_H, **_NORM_KW)
         self.q = nn.Linear(_H, _H, bias=False)
         self.k = nn.Linear(_H, _H, bias=False)
         self.v = nn.Linear(_H, _H, bias=False)
-        self.o = nn.Linear(_H, _H, bias=False)
+        self.o = nn.Linear(_H, _H, bias=bias)
         self.post_attn_norm = RMSNorm(_H, **_NORM_KW)
         self.gate = nn.Linear(_H, _I, bias=False)
         self.up = nn.Linear(_H, _I, bias=False)
-        self.down = nn.Linear(_I, _H, bias=False)
+        self.down = nn.Linear(_I, _H, bias=bias)
 
     def forward(self, x):
         h = self.input_norm(x)
@@ -478,13 +590,16 @@ class _LlamaBlock(nn.Module):
 
 
 class LlamaStyleDecoder(nn.Module):
-    """2-block LLaMA decoder + embed_tokens + final norm + lm_head: 5 active norms total."""
+    """2-block LLaMA decoder + embed_tokens + final norm + lm_head: 5 active norms total.
 
-    def __init__(self):
+    :param bias: When True, enables bias on the writing layers (o_proj, down_proj) in each block.
+    """
+
+    def __init__(self, bias: bool = False):
         super().__init__()
         self.embed_tokens = nn.Embedding(_VOCAB, _H)
-        self.block0 = _LlamaBlock()
-        self.block1 = _LlamaBlock()
+        self.block0 = _LlamaBlock(bias=bias)
+        self.block1 = _LlamaBlock(bias=bias)
         self.norm = RMSNorm(_H, **_NORM_KW)
         self.lm_head = nn.Linear(_H, _VOCAB, bias=False)
 
@@ -579,6 +694,129 @@ class Phi3StyleDecoder(nn.Module):
         x = self.block0(x)
         x = self.block1(x)
         return self.lm_head(self.norm(x))
+
+
+class _ViTBlock(nn.Module):
+    """Minimal ViT transformer block."""
+
+    def __init__(self):
+        super().__init__()
+        self.norm1 = RMSNorm(_VIT_D, **_NORM_KW)
+        self.qkv = nn.Linear(_VIT_D, _VIT_D, bias=False)  # reading — no bias rotation
+        self.proj = nn.Linear(
+            _VIT_D, _VIT_D, bias=True
+        )  # writing — bias rotated with R_V
+        self.norm2 = RMSNorm(_VIT_D, **_NORM_KW)
+        self.gate_proj = nn.Linear(
+            _VIT_D, _VIT_I, bias=False
+        )  # reading — no bias rotation
+        self.up_proj = nn.Linear(
+            _VIT_D, _VIT_I, bias=False
+        )  # reading — no bias rotation
+        self.down_proj = nn.Linear(
+            _VIT_I, _VIT_D, bias=True
+        )  # writing — bias rotated with R_V
+
+    def forward(self, x):
+        h = self.norm1(x)
+        x = x + self.proj(self.qkv(h))
+        h2 = self.norm2(x)
+        return x + self.down_proj(self.gate_proj(h2) * self.up_proj(h2))
+
+
+class _ViTMerger(nn.Module):
+    """PatchMerger: ln_q -> view(-1, s²·d_V) -> linear1 -> GELU -> linear2."""
+
+    def __init__(self):
+        super().__init__()
+        self.ln_q = RMSNorm(_VIT_D, **_NORM_KW)
+        self.linear1 = nn.Linear(
+            _VIT_D * _VIT_S_SQ, _VIT_D * _VIT_S_SQ, bias=False
+        )  # reading — no bias rotation
+        self.linear2 = nn.Linear(
+            _VIT_D * _VIT_S_SQ, _VIT_D_L, bias=True
+        )  # writing — bias rotated with R_L
+
+    def forward(self, x):
+        x = self.ln_q(x)
+        x = x.reshape(-1, _VIT_D * _VIT_S_SQ)
+        x = torch.nn.functional.gelu(self.linear1(x))
+        return self.linear2(x)
+
+
+class ViTEncoder(nn.Module):
+    """ViT encoder: Conv patch_embed -> 2 ViT blocks -> PatchMerger."""
+
+    def __init__(self):
+        super().__init__()
+        self.patch_embed = nn.Conv1d(_VIT_D, _VIT_D, kernel_size=1, bias=False)
+        self.block0 = _ViTBlock()
+        self.block1 = _ViTBlock()
+        self.merger = _ViTMerger()
+
+    def forward(self, x):
+        h = self.patch_embed(x.T.unsqueeze(0)).squeeze(0).T
+        h = self.block0(h)
+        h = self.block1(h)
+        return self.merger(h)
+
+
+class _LayerNormViTBlock(nn.Module):
+    """Qwen3-VL style ViT block using LayerNorm."""
+
+    def __init__(self):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(_VIT_D)
+        self.qkv = nn.Linear(_VIT_D, _VIT_D, bias=False)
+        self.proj = nn.Linear(_VIT_D, _VIT_D, bias=False)
+        self.norm2 = nn.LayerNorm(_VIT_D)
+        self.gate_proj = nn.Linear(_VIT_D, _VIT_I, bias=False)
+        self.up_proj = nn.Linear(_VIT_D, _VIT_I, bias=False)
+        self.down_proj = nn.Linear(_VIT_I, _VIT_D, bias=False)
+
+    def forward(self, x):
+        h = self.norm1(x)
+        x = x + self.proj(self.qkv(h))
+        h2 = self.norm2(x)
+        return x + self.down_proj(self.gate_proj(h2) * self.up_proj(h2))
+
+
+class LayerNormViTEncoder(nn.Module):
+    """Qwen3-VL style ViT encoder."""
+
+    def __init__(self):
+        super().__init__()
+        self.patch_embed = nn.Conv1d(_VIT_D, _VIT_D, kernel_size=1, bias=False)
+        self.block0 = _LayerNormViTBlock()
+        self.block1 = _LayerNormViTBlock()
+        self.linear2 = nn.Linear(_VIT_D, _VIT_D_L, bias=False)
+
+    def forward(self, x):
+        h = self.patch_embed(x.T.unsqueeze(0)).squeeze(0).T
+        h = self.block0(h)
+        h = self.block1(h)
+        return self.linear2(h)
+
+
+class VLMBackbone(nn.Module):
+    """Backbone for VLM: takes inputs_embeds, no embed_tokens Gather."""
+
+    def __init__(self):
+        super().__init__()
+        self.block0 = _LlamaBlock()
+        self.block1 = _LlamaBlock()
+        self.norm = RMSNorm(_H, **_NORM_KW)
+        self.lm_head = nn.Linear(_H, _VOCAB, bias=False)
+
+    def forward(self, inputs_embeds):
+        x = self.block0(inputs_embeds)
+        x = self.block1(x)
+        return self.lm_head(self.norm(x))
+
+
+def _export_vlm_backbone(module: nn.Module) -> onnx.ModelProto:
+    inputs_embeds = torch.randn(_B, _SEQ, _H)
+    return _export_to_onnx(module, inputs_embeds)
 
 
 class TestBlockIdentifier:
@@ -768,8 +1006,8 @@ class TestDecoderRoleMap:
         for block in role_map.blocks:
             assert len(block.qkv_linears) == 3
 
-    def test_missing_embed_tokens_raises(self):
-        """A model without a Gather embedding before the first block raises ValueError."""
+    def test_missing_embed_tokens_warns(self):
+        """A model without a Gather embedding (e.g. VLM backbone) warns, not raises."""
         torch.manual_seed(0)
 
         class _NoEmbedDecoder(nn.Module):
@@ -788,8 +1026,9 @@ class TestDecoderRoleMap:
         model = _export_decoder(_NoEmbedDecoder())
         cg = ConnectedGraph(model)
         blocks, active_norms = get_decoder_block_boundaries(model, cg)
-        with pytest.raises(ValueError, match="embed_tokens"):
-            get_decoder_role_map(cg, blocks, active_norms)
+        # Must not raise — VLM backbones exported with use_inputs_embeds=True have no Gather.
+        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        assert role_map.embed_tokens == []
 
     def test_wrong_active_norms_per_block_raises(self):
         """Passing active_norms_per_block inconsistent with detected norms raises ValueError."""
@@ -835,13 +1074,49 @@ class TestDecoderRoleMap:
         finally:
             shutil.rmtree(cache_dir, ignore_errors=True)
 
+    def test_find_merger_linear2_rmsorm_vit(self):
+        """ViTEncoder (RMSNorm blocks + PatchMerger): find_merger_linear2 returns linear_fc2."""
+        torch.manual_seed(0)
+        model = _export_vit(ViTEncoder())
+        cg = ConnectedGraph(model)
+
+        """
+        When: find_merger_linear2 is called on a ViT with a PatchMerger.
+        Then: exactly 1 merger_linear2 op (linear_fc2) detected as the leaf weighted linear.
+        """
+        merger_linear2 = find_merger_linear2(cg)
+
+        assert len(merger_linear2) == 1
+        assert merger_linear2[0].type in ("MatMul", "Gemm")
+
+    def test_find_merger_linear2_layernorm_vit(self):
+        """Qwen3-VL style (LayerNorm): find_merger_linear2 detects the single output projection."""
+        torch.manual_seed(0)
+        model = _export_vit(LayerNormViTEncoder())
+        cg = ConnectedGraph(model)
+
+        """
+        When: find_merger_linear2 is called on a ViT with LayerNorm (no active RMSNorms).
+        Then: exactly 1 merger_linear2 op detected (leaf linear / graph output).
+        """
+        merger_linear2 = find_merger_linear2(cg)
+
+        assert len(merger_linear2) == 1
+        assert merger_linear2[0].type in ("MatMul", "Gemm")
+
 
 class TestApplyR1Rotation:
     """Tests for apply_r1_rotation."""
 
     @pytest.mark.parametrize(
         "decoder_cls",
-        [LlamaStyleDecoder, Qwen3StyleDecoder, Phi3StyleDecoder],
+        [
+            LlamaStyleDecoder,
+            lambda: LlamaStyleDecoder(bias=True),
+            Qwen3StyleDecoder,
+            Phi3StyleDecoder,
+        ],
+        ids=["llama", "llama_bias", "qwen3", "phi3"],
     )
     def test_output_preserved_after_rotation(self, decoder_cls):
         """Model output must be numerically same before and after R1 rotation."""
@@ -866,14 +1141,20 @@ class TestApplyR1Rotation:
         When: apply_r1_rotation is applied
         Then: Model output is preserved numerically after rotation (R1 @ R1^T = I).
         """
-        apply_r1_rotation(model, role_map, hidden_size=_H)
+        apply_r1_rotation(model, role_map, backbone_hidden_size=_H)
 
         y_after = _run_model(model, token_ids)
         assert np.allclose(y_after, y_before)
 
     @pytest.mark.parametrize(
         "decoder_cls",
-        [LlamaStyleDecoder, Qwen3StyleDecoder, Phi3StyleDecoder],
+        [
+            LlamaStyleDecoder,
+            lambda: LlamaStyleDecoder(bias=True),
+            Qwen3StyleDecoder,
+            Phi3StyleDecoder,
+        ],
+        ids=["llama", "llama_bias", "qwen3", "phi3"],
     )
     def test_double_rotation_recovers_original_weights(self, decoder_cls):
         """Applying R1 rotation twice must recover the original weights (R1 @ R1^T = I)."""
@@ -890,8 +1171,8 @@ class TestApplyR1Rotation:
         When: apply_r1_rotation is applied twice
         Then: Linear layer weights are recovered.
         """
-        apply_r1_rotation(model, role_map, hidden_size=_H)
-        apply_r1_rotation(model, role_map, hidden_size=_H)
+        apply_r1_rotation(model, role_map, backbone_hidden_size=_H)
+        apply_r1_rotation(model, role_map, backbone_hidden_size=_H)
 
         weights_recovered = _collect_all_weights(model, role_map)
         for name, W_orig in weights_original.items():
@@ -953,6 +1234,78 @@ class TestApplyR1Rotation:
         )
         assert np.allclose(_left_multiply(_left_multiply(W, R, axis=0), R.T, axis=0), W)
 
+    @pytest.mark.parametrize(
+        "vit_cls,vit_input_shape",
+        [
+            (ViTEncoder, (_VIT_N, _VIT_D)),
+            (LayerNormViTEncoder, (_VIT_N, _VIT_D)),
+        ],
+        ids=["rmsnorm_vit", "layernorm_vit"],
+    )
+    def test_merger_output_rotated_by_r_l(self, vit_cls, vit_input_shape):
+        """apply_r1_rotation_merger: ViT output must equal y_before @ R_L."""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_vit(vit_cls())
+        cg = ConnectedGraph(model)
+        merger_linear2 = find_merger_linear2(cg)
+
+        x = np.random.randn(*vit_input_shape).astype(np.float32)
+        y_before = _run_model(model, x)
+
+        """
+        When: apply_r1_rotation_merger is applied to merger_linear2 with R_L.
+        Then: output equals y_before @ R_L (merger_linear2 writes into R_L-rotated language space).
+        """
+        apply_r1_rotation_merger(model, merger_linear2, backbone_hidden_size=_VIT_D_L)
+
+        R_L = (get_hadamard_matrix(_VIT_D_L) / np.sqrt(_VIT_D_L)).astype(np.float32)
+        y_after = _run_model(model, x)
+        assert np.allclose(y_after, y_before @ R_L)
+
+    @pytest.mark.parametrize(
+        "vit_cls",
+        [ViTEncoder, LayerNormViTEncoder],
+        ids=["rmsnorm_vit", "layernorm_vit"],
+    )
+    def test_merger_double_rotation_recovers_weights(self, vit_cls):
+        """Applying apply_r1_rotation_merger twice must recover the original merger_linear2 weight."""
+        torch.manual_seed(0)
+        model = _export_vit(vit_cls())
+        cg = ConnectedGraph(model)
+        merger_linear2 = find_merger_linear2(cg)
+
+        weights_original = {
+            t.name: numpy_helper.to_array(t).copy() for t in model.graph.initializer
+        }
+
+        """
+        When: apply_r1_rotation_merger is applied twice.
+        Then: all initializers are recovered (R @ R^T = I).
+        """
+        apply_r1_rotation_merger(model, merger_linear2, backbone_hidden_size=_VIT_D_L)
+        apply_r1_rotation_merger(model, merger_linear2, backbone_hidden_size=_VIT_D_L)
+
+        for name, W_orig in weights_original.items():
+            W_rec = numpy_helper.to_array(ParamUtils.get_param_by_name(model, name))
+            assert np.allclose(W_rec, W_orig, atol=1e-5)
+
+    def test_validate_merger_linear2_wrong_shape_raises(self):
+        """_validate_merger_linear2 must raise RuntimeError when backbone_hidden_size doesn't match."""
+        torch.manual_seed(0)
+        model = _export_vit(ViTEncoder())
+        cg = ConnectedGraph(model)
+        merger_linear2 = find_merger_linear2(cg)
+
+        """
+        When: _validate_merger_linear2 is called with wrong backbone_hidden_size.
+        Then: RuntimeError is raised.
+        """
+        with pytest.raises(RuntimeError):
+            _validate_merger_linear2(
+                model, merger_linear2, backbone_hidden_size=_VIT_D_L + 1
+            )
+
 
 class TestApplySpinquant:
     """End-to-end tests for apply_spinquant"""
@@ -984,7 +1337,7 @@ class TestApplySpinquant:
             copy.deepcopy(sim.model.model)
         )
         y_after = _run_model(rotated_float, token_ids)
-        assert np.allclose(y_before, y_after, atol=1e-5)
+        assert np.allclose(y_before, y_after)
 
     @pytest.mark.parametrize(
         "decoder_cls",
@@ -1020,20 +1373,20 @@ class TestApplySpinquant:
         torch.manual_seed(0)
         np.random.seed(0)
 
-        class _NoEmbedDecoder(nn.Module):
+        class _OddNormDecoder(nn.Module):
+            """1 block + embed_tokens + lm_head, no final norm → 2 active norms.
+            (2-1) % 2 = 1, so block detection raises ValueError."""
+
             def __init__(self):
                 super().__init__()
+                self.embed_tokens = nn.Embedding(_VOCAB, _H)
                 self.block0 = _LlamaBlock()
-                self.block1 = _LlamaBlock()
-                self.norm = RMSNorm(_H, **_NORM_KW)
                 self.lm_head = nn.Linear(_H, _VOCAB, bias=False)
 
-            def forward(self, x):
-                x = self.block0(x)
-                x = self.block1(x)
-                return self.lm_head(self.norm(x))
+            def forward(self, token_ids):
+                return self.lm_head(self.block0(self.embed_tokens(token_ids)))
 
-        model = _export_decoder(_NoEmbedDecoder())  # 2 blocks
+        model = _export_decoder_with_ids(_OddNormDecoder())
         token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
 
         sim = QuantizationSimModel(model, dummy_input={"input": token_ids})
@@ -1058,3 +1411,90 @@ class TestApplySpinquant:
                 ParamUtils.get_param_by_name(sim.model.model, name)
             )
             assert np.array_equal(arr_before, arr_after)
+
+    def test_embedding_weight_rotated(self):
+        """External embedding.pth weight (raw tensor) must be rotated by R_L after apply_spinquant."""
+        torch.manual_seed(0)
+
+        backbone_model = _export_vlm_backbone(VLMBackbone())
+        inputs_embeds = np.random.randn(_B, _SEQ, _H).astype(np.float32)
+
+        # Simulate torch.load("embedding.pth") → raw tensor [vocab, hidden]
+        embedding = torch.randn(_VOCAB, _H)
+        W_before = embedding.clone()
+
+        backbone_sim = QuantizationSimModel(
+            backbone_model, dummy_input={"input": inputs_embeds}
+        )
+
+        """
+        When: apply_spinquant is called with an external embedding tensor.
+        Then: tensor is modified in-place (rotated by R_L).
+        """
+        apply_spinquant(backbone_sim, embedding=embedding)
+
+        assert not torch.equal(embedding, W_before)
+
+    def test_embedding_rotation_consistent_with_backbone(self):
+        """Backbone(embedding_rotated[i]) == backbone_rotated(embedding_orig[i])."""
+        torch.manual_seed(0)
+        np.random.seed(0)
+
+        backbone_model = _export_vlm_backbone(VLMBackbone())
+        inputs_embeds = np.random.randn(_B, _SEQ, _H).astype(np.float32)
+
+        embedding = torch.randn(_VOCAB, _H)
+        W_orig = embedding.clone().numpy()  # [vocab, H]
+
+        # Baseline: original backbone on original embedding rows
+        y_before = _run_model(backbone_model, W_orig[:_SEQ].reshape(1, _SEQ, _H))
+
+        backbone_sim = QuantizationSimModel(
+            backbone_model, dummy_input={"input": inputs_embeds}
+        )
+        apply_spinquant(backbone_sim, embedding=embedding)
+
+        rotated_float = QuantizationSimModel.remove_quantizers(
+            copy.deepcopy(backbone_sim.model.model)
+        )
+        W_rot = embedding.numpy()  # rotated in-place by R_L
+
+        """
+        When: backbone_rotated receives embedding_rotated rows as inputs_embeds.
+        Then: output matches baseline (original backbone on original embedding).
+        """
+        y_after = _run_model(rotated_float, W_rot[:_SEQ].reshape(1, _SEQ, _H))
+        assert np.allclose(y_before, y_after, atol=1e-5)
+
+    def test_visual_output_rotated_by_r_l(self):
+        """Visual encoder output must equal y_before @ R_L after apply_spinquant."""
+        torch.manual_seed(0)
+        np.random.seed(0)
+
+        backbone_model = _export_vlm_backbone(VLMBackbone())
+        visual_model = _export_vit(ViTEncoder())
+
+        inputs_embeds = np.random.randn(_B, _SEQ, _H).astype(np.float32)
+        x_vit = np.random.randn(_VIT_N, _VIT_D).astype(np.float32)
+
+        y_vit_before = _run_model(visual_model, x_vit)
+
+        backbone_sim = QuantizationSimModel(
+            backbone_model, dummy_input={"input": inputs_embeds}
+        )
+        visual_sim = QuantizationSimModel(visual_model, dummy_input={"input": x_vit})
+
+        """
+        When: apply_spinquant is called with backbone_sim and visual_sim.
+        Then: visual encoder output equals y_before @ R_L.
+        """
+        embedding = torch.randn(_VOCAB, _H)
+        apply_spinquant(backbone_sim, visual_sim=visual_sim, embedding=embedding)
+
+        R_L = (get_hadamard_matrix(_VIT_D_L) / np.sqrt(_VIT_D_L)).astype(np.float32)
+
+        rotated_visual_float = QuantizationSimModel.remove_quantizers(
+            copy.deepcopy(visual_sim.model.model)
+        )
+        y_vit_after = _run_model(rotated_visual_float, x_vit)
+        assert np.allclose(y_vit_after, y_vit_before @ R_L)
