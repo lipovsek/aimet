@@ -4,33 +4,47 @@
 SpinQuant
 #########
 
+.. note::
+   This feature is currently experimental. The API may change in the future.
+
 Context
 =======
 
-SpinQuant is a PTQ technique which improves the accuracy of the quantized model by inserting rotations at specific points in the model to help with outliers in activation quantization: https://arxiv.org/pdf/2405.16406.
+SpinQuant (`arXiv:2405.16406 <https://arxiv.org/pdf/2405.16406>`_) is a post-training quantization
+technique that reduces activation outliers by inserting orthogonal Hadamard rotations at key points
+in the model. Because the rotations are absorbed into adjacent weight matrices, the final model
+architecture is unchanged.
 
-In the paper, 4 rotation types are described: R1, R2, R3, and R4 rotations. **The current AIMET implementation of SpinQuant enables R1 rotations without optimization only.**
-As these rotations can be merged with adjacent layer weights, the final model architecture will not be changed.
+AIMET implements **R1 rotations** (fixed Hadamard, no optimization). R1 rotation fuses RMSNorm
+scale weights into downstream linear layers, then applies a Hadamard rotation across the residual
+stream to reduce outliers in Q/K/V/O and gate/up/down projections.
 
-Applying rotations does not require a quantized model, so either an FP model or a quantized model can be used as input.
-Since rotations need to be inserted at well known points in the model, the feature determines proper insertion points through use of a mapping table to define pre-determined insertion points for known model types.
+.. list-table:: Supported architectures
+   :widths: 30 20 20
+   :header-rows: 1
 
-Currently supported model types include
-
-- LlamaForCausalLM
-- Qwen2ForCausalLM
-- MistralForCausalLM
-
-We expose the mapping dictionary as a module level object in case users need to register their own insertion points for other model types.
+   * - Model family
+     - PyTorch
+     - ONNX
+   * - ``LlamaForCausalLM``
+     - ✓
+     - ✓
+   * - ``Qwen2ForCausalLM``, ``Qwen3ForCausalLM``
+     - ✓
+     - ✓
+   * - ``MistralForCausalLM``
+     - ✓
+     - ✓
+   * - ``Phi3ForCausalLM``
+     - ✓
+     - ✓
+   * - ``Qwen2.5-VL``, ``Qwen3-VL``
+     - ✓
+     - ✓
 
 .. note::
-   This feature is currently marked as experimental. The API may change in the future.
-
-.. note::
-   This feature is currently only supported for PyTorch framework.
-
-.. note::
-   Only R1 rotations without optmization are currently supported.
+   Support for additional model families is added continuously as new architectures are validated.
+   See the :ref:`release notes <rn-index>` for the latest additions.
 
 Workflow
 ========
@@ -38,15 +52,28 @@ Workflow
 Prerequisites
 -------------
 
-To use SpinQuant, you must:
+To use SpinQuant, you need:
 
-- Load a pre-trained model
+- A pre-trained model loaded from HuggingFace.
+- **ONNX only**: the model must be exported to ONNX — `Step 2`_ handles this.
+
+.. note::
+   For a complete working example, see
+   `Examples/torch/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/torch/quantize.py>`_
+   or
+   `Examples/onnx/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/onnx/quantize.py>`_
+   (run with ``--recipe pcq_spinquant``).
 
 Procedure
 ---------
 
-Setup
-~~~~~
+.. _Step 1:
+
+Step 1: Load model
+~~~~~~~~~~~~~~~~~~
+
+Load the HuggingFace model and wrap it with ``ONNXExportableModuleWithCache`` to enable JIT tracing
+with a static graph.
 
 .. tab-set::
     :sync-group: platform
@@ -56,56 +83,24 @@ Setup
 
         .. literalinclude:: ../snippets/torch/apply_spinquant.py
             :language: python
-            :start-after: # [setup]
-            :end-before: # End of [setup]
+            :start-after: # [model-setup]
+            :end-before: # End of [model-setup]
 
-Step 1
-~~~~~~
+    .. tab-item:: ONNX
+        :sync: onnx
 
-Register RMSNorm fusion locations and R1 insertion points if needed. The below code shows an example for a model of type MyModel.
-RMSNorm fusion is a transformation for folding RMSNorm weights into adjacent linear layers. The resulting RMSNorm op will have weights of all 1's and bias 0.
-The folded model is mathematically equivalent to the original model in floating point computation, and is necessary for R1 transforms to be added later.
-
-To prepare SpinQuant to take effect for a model other than what is already supported, users need to register the model type with two functions:
-
-- A function which, when given a model object, returns a list of tuples, where each tuple consists of an rmsnorm layer and a list of linear layers it should fuse with
-- A function which, when given a model object, returns a list of tuples, where each tuple consists of a linear layer and a boolean.
-- A boolean of True denotes R1 fusion occurring before the linear, while False denotes R1 fusion occurring after the linear.
-
-For typical HuggingFace models which share similar architecture, _default_rmsnorm_linear_pairs_func() and _default_r1_fusion_func() can be used. For example, Llama, Qwen, and Mistral all share the same functions.
-
-.. tab-set::
-    :sync-group: platform
-
-    .. tab-item:: PyTorch
-        :sync: torch
-
-        .. literalinclude:: ../snippets/torch/apply_spinquant.py
+        .. literalinclude:: ../snippets/onnx/apply_spinquant.py
             :language: python
-            :start-after: # [register-rmsnorm-r1-points]
-            :end-before: # End of [register-rmsnorm-r1-points]
+            :start-after: # [model-setup]
+            :end-before: # End of [model-setup]
 
-Step 2
-~~~~~~
+.. _Step 2:
 
-Apply SpinQuant to the model.
+Step 2: Create QuantizationSimModel
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. tab-set::
-    :sync-group: platform
-
-    .. tab-item:: PyTorch
-        :sync: torch
-
-        .. literalinclude:: ../snippets/torch/apply_spinquant.py
-            :language: python
-            :start-after: # [apply-spinquant]
-            :end-before: # End of [apply-spinquant]
-
-Step 3
-~~~~~~
-
-The subsequent steps are not strictly to do with SpinQuant, but serve as an example for how to quantize the model and evaluate.
-Use AIMET's :ref:`quantization simulation<quantsim-index>` to create a QuantSimModel object.
+Create a :ref:`QuantizationSimModel <quantsim-index>` with the desired quantization configuration.
+For ONNX, this step also exports the model to ONNX.
 
 .. tab-set::
     :sync-group: platform
@@ -118,10 +113,24 @@ Use AIMET's :ref:`quantization simulation<quantsim-index>` to create a QuantSimM
             :start-after: # [create-sim]
             :end-before: # End of [create-sim]
 
-Step 4
-~~~~~~
+    .. tab-item:: ONNX
+        :sync: onnx
 
-Instantiate a dataloader and compute encodings for remaining parameters of the model.
+        .. literalinclude:: ../snippets/onnx/apply_spinquant.py
+            :language: python
+            :start-after: # [create-sim]
+            :end-before: # End of [create-sim]
+
+Step 3: Apply SpinQuant
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Apply SpinQuant to the model. This fuses RMSNorm scale weights into downstream linear layers and
+applies the R1 Hadamard rotation to all weight matrices in-place.
+
+.. important::
+   ``apply_spinquant`` must be called **before** ``compute_encodings``. The rotation modifies float
+   weight initializers; ``compute_encodings`` must run afterward to calibrate quantizer scales on
+   the rotated weights.
 
 .. tab-set::
     :sync-group: platform
@@ -131,18 +140,45 @@ Instantiate a dataloader and compute encodings for remaining parameters of the m
 
         .. literalinclude:: ../snippets/torch/apply_spinquant.py
             :language: python
-            :start-after: # [prepare-dataloader]
-            :end-before: # End of [prepare-dataloader]
+            :start-after: # [spinquant-apply]
+            :end-before: # End of [spinquant-apply]
+
+    .. tab-item:: ONNX
+        :sync: onnx
+
+        .. literalinclude:: ../snippets/onnx/apply_spinquant.py
+            :language: python
+            :start-after: # [spinquant-apply]
+            :end-before: # End of [spinquant-apply]
+
+Step 4: Compute activation encodings
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Calibrate activation quantizers by running the model through a representative dataset.
+
+.. tab-set::
+    :sync-group: platform
+
+    .. tab-item:: PyTorch
+        :sync: torch
 
         .. literalinclude:: ../snippets/torch/apply_spinquant.py
             :language: python
-            :start-after: # [compute_encodings]
-            :end-before: # End of [compute_encodings]
+            :start-after: # [compute-encodings]
+            :end-before: # End of [compute-encodings]
 
-Step 5
-~~~~~~
+    .. tab-item:: ONNX
+        :sync: onnx
 
-At this point, the quantized model is ready to be evaluated.
+        .. literalinclude:: ../snippets/onnx/apply_spinquant.py
+            :language: python
+            :start-after: # [compute-encodings]
+            :end-before: # End of [compute-encodings]
+
+After completing these steps, export the quantized model:
+
+- **PyTorch**: ``quantsim.export(...)``
+- **ONNX**: ``quantsim.export(...)``
 
 API
 ===
@@ -154,4 +190,10 @@ API
         :sync: torch
 
         .. include:: ../apiref/torch/spinquant.rst
+            :start-after: # start-after
+
+    .. tab-item:: ONNX
+        :sync: onnx
+
+        .. include:: ../apiref/onnx/spinquant.rst
             :start-after: # start-after

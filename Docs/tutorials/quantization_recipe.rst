@@ -60,9 +60,6 @@ Workflow Overview
 #. Apply the selected Quantization recipe
     - Use ``aimet-torch`` for `PyTorch <https://pytorch.org/>`_ based workflows or
     - Use ``aimet-onnx`` for `ONNX <https://onnx.ai/>`_ based workflows.
-    - .. note::
-
-        The :ref:`SpinQuant <ptq-spinquant>` technique is currently available only in ``aimet-torch``. You can apply SpinQuant on the FP32 model before exporting it to ONNX, and then continue the workflow using ``aimet-onnx``.
 #. Compute Activations encodings
     - Both ``aimet-torch`` and ``aimet-onnx`` compute activation encodings using representative data. In this tutorial, we use `WikiText (English) <https://github.com/quic/aimet/blob/develop/GenAILab/shared/helpers/datasets.py>`_ for calibration.
     - For ``aimet-torch`` only:

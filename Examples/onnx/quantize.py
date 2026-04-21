@@ -30,6 +30,7 @@ from GenAILab.onnx.helpers.quant_recipes import (
 from GenAILab.shared.models.base import LLM
 from GenAILab.shared.models.generator import Generator
 from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.shared.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAILab.shared.helpers.datasets import Wikitext
 
 SEQUENCE_LENGTH = 2048
@@ -88,24 +89,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def apply_spinquant_if_needed(hf_model: torch.nn.Module, recipe: str):
+def apply_spinquant_if_needed(quantsim: QuantizationSimModel, recipe: str):
     """Apply SpinQuant when needed"""
     if recipe != "pcq_spinquant_adascale":
         return
 
-    from aimet_torch.experimental.spinquant import apply_spinquant
+    from aimet_onnx.experimental.spinquant import apply_spinquant
 
-    # Embedding layer and lm_head need to be separated for SpinQuant to be applied
-    old_weight = hf_model.lm_head.weight
-    new_weight = torch.nn.Parameter(
-        old_weight.data.clone().detach().to(old_weight.device),
-        requires_grad=True,
-    )
-    hf_model.lm_head.weight = new_weight
-
-    # Apply SpinQuant to make model activations easier to quantize
-    apply_spinquant(hf_model)
-    print(f"SpinQuant applied successfully.")
+    apply_spinquant(quantsim)
+    print("SpinQuant applied successfully.")
 
 
 def apply_recipe_lpbq_seqmse(quantsim, prefilled_inputs):
@@ -164,9 +156,6 @@ if __name__ == "__main__":
         args.model_id, use_fast=True, trust_remote_code=True
     )
 
-    # Apply SpinQuant to model to change weights in-place
-    apply_spinquant_if_needed(hf_model, args.recipe)
-
     # Need to wrap model in this in order to enable JIT trace
     traceable_model = ONNXExportableModuleWithCache(hf_model)
 
@@ -187,9 +176,11 @@ if __name__ == "__main__":
             traceable_model,
             assembled_dummy_inputs,
             os.path.join(tmpdir, "model.onnx"),
-            input_names=LLM.get_backbone_input_names(hf_model.config.num_hidden_layers),
+            input_names=LLM.get_backbone_input_names(
+                build_layer_cache_descriptors(hf_model.config)
+            ),
             output_names=LLM.get_backbone_output_names(
-                hf_model.config.num_hidden_layers
+                build_layer_cache_descriptors(hf_model.config)
             ),
             opset_version=17,
             dynamo=False,
@@ -210,6 +201,9 @@ if __name__ == "__main__":
     _set_lm_head_precision(quantsim, WeightPrecision(qtype=int8, granularity="PCQ"))
     # Tie kv_cache
     _tie_quantizers_for_kv_cache(quantsim)
+
+    # Apply SpinQuant to quantsim weights in-place before compute_encodings
+    apply_spinquant_if_needed(quantsim, args.recipe)
 
     # Create a generator object to accurately simulate inference with static graph constraints while maintaining the
     # same interface. Use the generator object to do all forward passes through the model, including calibration, eval

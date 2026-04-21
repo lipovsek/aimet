@@ -45,9 +45,6 @@ assembled_dummy_inputs = Generator.prepare_inputs(
     sequence_length=SEQUENCE_LENGTH,
 )
 
-# Export to ONNX using LLM.get_backbone_input_names to produce the input naming
-# convention required by AdaScale (input_ids, attention_mask, position_ids,
-# past_key_0_in, past_value_0_in, ...)
 with tempfile.TemporaryDirectory() as tmpdir:
     torch.onnx.export(
         traceable_model,
@@ -64,11 +61,10 @@ quantsim = QuantizationSimModel(
     model=onnx_model,
     quant_scheme="min_max",
     default_activation_bw=16,
-    default_param_bw=4,
+    default_param_bw=8,
     config_file="htp_v73",
     providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
 )
-# Setting kv_cache and some other layers to 8-bit
 _set_tensors_to_output_n_bit_symmmetric(quantsim, kv_bits=8)
 _set_lm_head_precision(quantsim, WeightPrecision(qtype=int8, granularity="PCQ"))
 _tie_quantizers_for_kv_cache(quantsim)
@@ -77,33 +73,19 @@ quantsim_with_torch_interface = TorchONNXInterface(quantsim, hf_model.config)
 generator = Generator(quantsim_with_torch_interface, tokenizer, SEQUENCE_LENGTH, CONTEXT_LENGTH)
 # End of [create-sim]
 
-# [adascale-apply]
-from aimet_onnx.experimental.adascale.adascale_optimizer import (
-    AdaScale,
-    adascale_model_config_dict,
-)
-from GenAILab.shared.helpers.datasets import Wikitext
-from GenAILab.onnx.helpers.quant_recipes import _prefill_inputs
+# [spinquant-apply]
+from aimet_onnx.experimental.spinquant import apply_spinquant
 
-ADASCALE_NUM_BATCHES = 128   # reduce for larger models to control runtime
-ADASCALE_NUM_ITERATIONS = 2048  # reduce for larger models; see quantization recipes
-
-train_dataset = Wikitext.load_encoded_dataset(tokenizer, CONTEXT_LENGTH, "train")
-prefilled_inputs = _prefill_inputs(
-    quantsim, generator, train_dataset, num_batches=ADASCALE_NUM_BATCHES
-)
-
-AdaScale.apply_adascale(
-    quantsim,
-    prefilled_inputs,
-    adascale_model_config=adascale_model_config_dict[generator.config.model_type],
-    num_iterations=ADASCALE_NUM_ITERATIONS,
-)
-# End of [adascale-apply]
+# apply_spinquant modifies quantsim in-place. Must be called BEFORE compute_encodings.
+apply_spinquant(quantsim)
+# End of [spinquant-apply]
 
 # [compute-encodings]
 from tqdm import tqdm
+from GenAILab.shared.helpers.datasets import Wikitext
+from GenAILab.onnx.helpers.quant_recipes import _prefill_inputs
 
+train_dataset = Wikitext.load_encoded_dataset(tokenizer, CONTEXT_LENGTH, "train")
 calib_inputs = _prefill_inputs(quantsim, generator, train_dataset, num_batches=20)
 
 

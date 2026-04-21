@@ -61,9 +61,9 @@ Following table summarizes basic technique such as `Calibration` to advanced tec
 | [BatchNorm Folding](https://quic.github.io/aimet-pages/releases/latest/ptq_techniques/bnf.html) | ✅ | ✅ | Folds batchnorm to bridge the gap between simulation and on-target |
 | [Cross Layer Equalization](https://quic.github.io/aimet-pages/releases/latest/ptq_techniques/cle.html) | ✅ | ✅ | Rescales the weight to reduce range imbalance |
 | [BatchNorm re-estimation](https://quic.github.io/aimet-pages/releases/latest/ptq_techniques/bn.html) | ✅ | ✅ | Re-estimates batchnorm statistics |
-| [AdaScale](https://quic.github.io/aimet-pages/releases/latest/ptq_techniques/adascale.html) | ✅ | ✅ | Optimizes quantized weights |
+| [AdaScale](https://quic.github.io/aimet-pages/releases/latest/ptq_techniques/adascale.html) | ✅ | ✅ | Learns per-weight scales via blockwise optimization to minimize quantization error |
 | [OmniQuant](https://quic.github.io/aimet-pages/releases/latest/ptq_techniques/omniquant.html) | ❌ | ✅ | Optimizes quantized weights |
-| [SpinQuant](https://quic.github.io/aimet-pages/releases/latest/ptq_techniques/spinquant.html) | ❌ | ✅ | Optimizes quantized weights |
+| [SpinQuant](https://quic.github.io/aimet-pages/releases/latest/ptq_techniques/spinquant.html) | ✅ | ✅ | Reduces activation outliers via Hadamard rotations |
 
 ### Quantization Aware Training(QAT)
 
