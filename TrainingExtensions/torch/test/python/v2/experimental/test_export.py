@@ -178,6 +178,10 @@ def test_export(model_factory, compile: bool, tmp_path: Path):
     assert not (ep.state_dict.keys() - all_targets)
     assert not (ep.constants.keys() - all_targets)
 
+    from torch._export.utils import _detect_fake_mode_from_gm
+
+    _detect_fake_mode_from_gm(ep.graph_module)  # Shouldn't raise error
+
 
 def test_shared_weight(tmp_path: Path):
     """

@@ -460,6 +460,7 @@ def _insert_placeholder(
     consumer: torch.fx.Node,
 ):
     from torch.export.graph_signature import InputKind, InputSpec, TensorArgument
+    from torch._export.utils import _detect_fake_mode_from_gm
 
     with ep.graph.inserting_before(consumer):
         node = ep.graph.create_node(
@@ -467,7 +468,8 @@ def _insert_placeholder(
             target=node_name,
             name=node_name,
         )
-    fake_mode = FakeTensorMode()
+
+    fake_mode = _detect_fake_mode_from_gm(ep.graph_module) or FakeTensorMode()
     converter = fake_mode.fake_tensor_converter
     fake_tensor = converter.from_real_tensor(fake_mode, val)
     node.meta.update(
