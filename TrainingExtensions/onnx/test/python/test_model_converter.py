@@ -174,6 +174,135 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
         _check_onnx_weights(sim.model.model, layers_to_check, are_zeros=False)
 
 
+@pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+@pytest.mark.parametrize(
+    "dynamo, opset_version",
+    [(False, 17), (False, 18), (True, 18), (False, 19), (False, 20), (False, 21)],
+)
+def test_model_round_trip_with_qwen_dynamo(
+    add_genai_tests_path, tmp_dir, dynamo, opset_version
+):
+    from unittest.mock import patch
+    from GenAILab.shared.models.generator import Generator
+    from GenAILab.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
+    from GenAILab.onnx.helpers.quant_recipes import _prefill_inputs
+    from GenAILab.shared.helpers.datasets import Wikitext
+    from GenAILab.onnx.models.llm import LLM_ONNX
+    from transformers import AutoConfig
+
+    small_model = True
+    context_length = 32
+    sequence_length = 16
+    model_id = "Qwen/Qwen2.5-0.5B"
+
+    _real_export = torch.onnx.export
+
+    def _patched_export(*args, **kwargs):
+        kwargs["dynamo"] = dynamo
+        kwargs["opset_version"] = opset_version
+        return _real_export(*args, **kwargs)
+
+    with (
+        patch(
+            "GenAILab.onnx.models.utils.torch_onnx_export_utils.ONNX_OPSET_VERSION",
+            opset_version,
+        ),
+        patch(
+            "GenAILab.onnx.models.utils.torch_onnx_export_utils.torch.onnx.export",
+            side_effect=_patched_export,
+        ),
+    ):
+        collection = LLM_ONNX.instantiate_quantsim(
+            model_id, context_length, sequence_length, small_model=small_model
+        )
+
+    sim = collection.backbone
+    llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    if small_model:
+        llm_config.num_hidden_layers = 2
+
+    tokenizer = LLM_ONNX.instantiate_tokenizer(model_id)
+    train_dataset = Wikitext.load_encoded_dataset(tokenizer, context_length, "train")
+    quantsim_with_torch_interface = TorchONNXInterface(sim, llm_config)
+    generator = Generator(
+        quantsim_with_torch_interface, tokenizer, sequence_length, context_length
+    )
+
+    inputs = _prefill_inputs(sim, generator, train_dataset, num_iterations=5)
+
+    CHECKPOINT_DIR = str(os.path.join(tmp_dir, "onnx_checkpoints_debugging"))
+    CHECKPOINT_FP_DIR = str(os.path.join(CHECKPOINT_DIR, "fp_model.onnx"))
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+    fp32_model = copy.deepcopy(sim.model.model)
+    fp32_model = QuantizationSimModel.remove_quantizers(fp32_model)
+    onnx.save_model(
+        fp32_model,
+        CHECKPOINT_FP_DIR,
+        save_as_external_data=True,
+        all_tensors_to_one_file=True,
+        location="fp_model.data",
+    )
+    common_inputs = ["attention_mask", "position_ids"]
+    adascale_blocks_end_points = get_decoder_blocks_end_points(sim, "qwen2")
+    block_inputs = [adascale_blocks_end_points[0][0].inputs[0].name]
+
+    model_before_block = os.path.join(CHECKPOINT_DIR, "before_decoder_block.onnx")
+    fp_model_path = CHECKPOINT_FP_DIR
+    extract_model(
+        fp_model_path, model_before_block, list(inputs[0].keys()), block_inputs
+    )
+    before_session = ort.InferenceSession(
+        model_before_block, providers=["CPUExecutionProvider"]
+    )
+    block_input_tensor = before_session.run(block_inputs, inputs[0])
+    for block_id, (block_start, block_end) in enumerate(
+        get_decoder_blocks_end_points(sim, "qwen2")
+    ):
+        block_inputs = [block_start.inputs[0].name]
+        block_input_names = (
+            block_inputs
+            + common_inputs
+            + [f"past_key_{block_id}_in", f"past_value_{block_id}_in"]
+        )
+        block_output_names = [block_end.inputs[0].name]
+        block_input_output_names = (block_input_names, block_output_names)
+        pt_block, param_map = get_pt_block(sim.model.model, block_input_output_names)
+
+        block_model_path = os.path.join(CHECKPOINT_DIR, "block_fp32.onnx")
+        extract_model(
+            fp_model_path, block_model_path, block_input_names, block_output_names
+        )
+        onnx_fp_block_sess = ort.InferenceSession(
+            block_model_path, providers=["CPUExecutionProvider"]
+        )
+        block_test_inputs = inputs[0].copy()
+        block_test_inputs[block_inputs[0]] = block_input_tensor[0]
+        for name in inputs[0].keys():
+            if name not in block_input_names:
+                del block_test_inputs[name]
+        onnx_fp_out = onnx_fp_block_sess.run(None, block_test_inputs)
+
+        torch_out = (
+            pt_block(
+                torch.from_numpy(block_input_tensor[0]).float(),
+                torch.from_numpy(inputs[0]["attention_mask"]).long(),
+                torch.from_numpy(inputs[0]["position_ids"]).long(),
+                torch.from_numpy(inputs[0][f"past_key_{block_id}_in"]).float(),
+                torch.from_numpy(inputs[0][f"past_value_{block_id}_in"]).float(),
+            )
+            .detach()
+            .numpy()
+        )
+        assert compute_psnr(onnx_fp_out[0], torch_out) == 100
+
+        _update_torch_weights(pt_block, set_zeros=False)
+        copy_pt_weights_to_onnx(pt_block, sim.model.model, param_map)
+
+        layers_to_check = set(param_map.values())
+        _check_onnx_weights(sim.model.model, layers_to_check, are_zeros=False)
+
+
 class SimpleConvModel(nn.Module):
     def __init__(self):
         super(SimpleConvModel, self).__init__()
@@ -303,6 +432,44 @@ def test_model_with_ModelWithConsecutiveConvBlocks(
     torch_out = pt_block(dummy_input_for_extracted_graph)
     diff = onnx_output[0] - torch_out.detach().numpy()
     assert diff.max() <= 0.00001
+    assert compute_psnr(onnx_output[0], torch_out.detach().numpy()) == 100
+    # update pt wts call copy wts
+    _update_torch_weights(pt_block, set_zeros=False)
+
+    copy_pt_weights_to_onnx(pt_block, onnx_model, param_map)
+    layers_to_check = set(param_map.values())
+    _check_onnx_weights(onnx_model, layers_to_check, are_zeros=False)
+
+
+@pytest.mark.parametrize(
+    "dynamo, opset_version", [(False, 17), (False, 18), (True, 18)]
+)
+def test_model_with_conv_with_dynamo(tmp_dir, dynamo, opset_version):
+    # Instantiate and export the model
+    model = SimpleConvModel()
+    dummy_input = torch.randn(1, 3, 64, 64)  # Batch size 1, 3 channels, 64x64 image
+
+    onnx_model_path = os.path.join(tmp_dir, "simple_conv_model.onnx")
+    torch.onnx.export(
+        model,
+        dummy_input,
+        onnx_model_path,
+        input_names=["input"],
+        output_names=["output"],
+        dynamo=dynamo,
+        opset_version=opset_version,
+    )
+    onnx_model = onnx.load(onnx_model_path)
+    pt_block, param_map = get_pt_block(onnx_model, (["input"], ["output"]))
+    # forwardpass through onnx == forward pass through pt Block
+    onnx_block_model_sess = ort.InferenceSession(
+        onnx_model_path, providers=["CPUExecutionProvider"]
+    )
+
+    onnx_output = onnx_block_model_sess.run(None, {"input": dummy_input.numpy()})
+    torch_out = pt_block(dummy_input)
+    diff = onnx_output[0] - torch_out.detach().numpy()
+    assert diff.max() <= 0.000001
     assert compute_psnr(onnx_output[0], torch_out.detach().numpy()) == 100
     # update pt wts call copy wts
     _update_torch_weights(pt_block, set_zeros=False)
