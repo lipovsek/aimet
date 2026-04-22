@@ -23,10 +23,6 @@ libpymo_classes = [
     "ModelOpDefParser",
     "TfEncoding",
     "Quantizer",
-    "QuantizationEncodingAnalyzer",
-    "EncodingAnalyzerForPython",
-    "TensorQuantizationSimForPython",
-    "TensorQuantizer",
     "TensorParams",
     "BlockTensorQuantizer",
 ]
@@ -34,10 +30,7 @@ libpymo_classes = [
 libpymo_functions = [
     "str_to_dtype",
     "str_to_rank",
-    "GetQuantizationEncodingAnalyzerInstance",
     "PtrToInt64",
-    "getScaleFactor",
-    "getRescaledOutputAndBias",
 ]
 
 
@@ -86,24 +79,6 @@ for libpymo_function in libpymo_functions:
     globals()[libpymo_function] = create_unavailable_function(libpymo_function)
 
 
-class ComputationMode(enum.Enum):
-    """
-    ComputationMode
-    """
-
-    COMP_MODE_CPU = 0
-    COMP_MODE_GPU = 1
-
-
-class LayerInOut(enum.Enum):
-    """
-    LayerInOut
-    """
-
-    LAYER_INPUT = 0
-    LAYER_OUTPUT = 1
-
-
 class QuantizationMode(enum.Enum):
     """
     QuantizationMode
@@ -126,42 +101,6 @@ class RoundingMode(enum.Enum):
     ROUND_STOCHASTIC = 1
 
 
-class SVD_COMPRESS_TYPE(enum.Enum):
-    """
-    SVD_COMPRESS_TYPE
-    """
-
-    TYPE_NONE = 0
-    TYPE_SINGLE = 1
-    TYPE_SUCCESSIVE = 2
-
-
-class QnnDatatype(enum.Enum):
-    """
-    QnnDatatype
-    """
-
-    QNN_DATATYPE_INT_8 = 0
-    QNN_DATATYPE_INT_16 = 1
-    QNN_DATATYPE_INT_32 = 2
-    QNN_DATATYPE_INT_64 = 3
-    QNN_DATATYPE_UINT_8 = 4
-    QNN_DATATYPE_UINT_16 = 5
-    QNN_DATATYPE_UINT_32 = 6
-    QNN_DATATYPE_UINT_64 = 7
-    QNN_DATATYPE_FLOAT_16 = 8
-    QNN_DATATYPE_FLOAT_32 = 9
-    QNN_DATATYPE_SFIXED_POINT_8 = 10
-    QNN_DATATYPE_SFIXED_POINT_16 = 11
-    QNN_DATATYPE_SFIXED_POINT_32 = 12
-    QNN_DATATYPE_UFIXED_POINT_8 = 13
-    QNN_DATATYPE_UFIXED_POINT_16 = 14
-    QNN_DATATYPE_UFIXED_POINT_32 = 15
-    QNN_DATATYPE_BOOL_8 = 16
-    QNN_DATATYPE_BACKEND_SPECIFIC = 17
-    QNN_DATATYPE_UNDEFINED = 18
-
-
 class TensorQuantizerOpMode(enum.Enum):
     """
     TensorQuantizerOpMode
@@ -173,27 +112,8 @@ class TensorQuantizerOpMode(enum.Enum):
     passThrough = 3
 
 
-class QnnRank(enum.Enum):
-    """
-    QnnRank
-    """
-
-    QNN_SCALAR = 0
-    QNN_RANK_1 = 1
-    QNN_RANK_2 = 2
-    QNN_RANK_3 = 3
-    QNN_RANK_4 = 4
-    QNN_RANK_5 = 5
-    QNN_RANK_N = 6
-    QNN_RANK_INVALID = 7
-
-
 libpymo_enums = [
-    QnnDatatype,
-    QnnRank,
-    ComputationMode,
     QuantizationMode,
-    LayerInOut,
     RoundingMode,
     TensorQuantizerOpMode,
 ]

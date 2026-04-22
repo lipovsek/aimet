@@ -31,20 +31,6 @@ class QuantizationMode(IntEnum):
     QUANTIZATION_ENTROPY = 5
 
 
-class ComputationMode(IntEnum):
-    """Computation mode (CPU or GPU)."""
-
-    COMP_MODE_CPU = 0
-    COMP_MODE_GPU = 1
-
-
-class LayerInOut(IntEnum):
-    """Layer input/output indicator."""
-
-    LAYER_INPUT = 0
-    LAYER_OUTPUT = 1
-
-
 class RoundingMode(IntEnum):
     """Rounding mode for quantization."""
 

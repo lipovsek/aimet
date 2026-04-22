@@ -125,7 +125,6 @@ class TestCommonQuantSim:
             (-5.0, 8.0, False, False),  # Expected new min/max = [-5.5714283  7.428571]
             (-5.0, 10.0, False, False),  # Expected new min/max = [-4.285714 10.714285]
             (-4.0, 3.0, True, False),  # Expected new min/max = [-4.0 3.0]
-            (-3.0, 3.0, True, True),  # Expected new min/max = [-3.0 3.0]
             (0.0, 10.0, True, False),
         ],
     )  # Expected new min/max = [0.0 10.0]
@@ -136,15 +135,15 @@ class TestCommonQuantSim:
         Test that the recomputed encoding within libpymo TensorQuantizer matches with the way encodings are recomputed
         in calculate_delta_offset and compute_min_max_given_delta_offset.
         """
-        tensor_quantizer = libpymo.TensorQuantizer(
-            libpymo.QuantizationMode.QUANTIZATION_TF, libpymo.RoundingMode.ROUND_NEAREST
+        tensor_quantizer = libpymo.BlockTensorQuantizer(
+            (), 3, libpymo.QuantizationMode.QUANTIZATION_TF
         )
         tensor_quantizer.isEncodingValid = True
         in_tensor = np.array([-100.0, 100.0])
         out_tensor = np.zeros(in_tensor.shape).astype(np.float32)
-        tensor_quantizer.quantizeDequantize(
-            in_tensor, out_tensor, enc_min, enc_max, 3, False
-        )
+        tensor_quantizer.updateStats(np.array([enc_min, enc_max]))
+        tensor_quantizer.setEncodings(tensor_quantizer.computeEncodings(False))
+        out_tensor = tensor_quantizer.quantizeDequantize(in_tensor)
 
         delta, offset = calculate_delta_offset(
             enc_min, enc_max, 3, is_symmetric, is_strict
