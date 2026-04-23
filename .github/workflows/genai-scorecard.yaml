@@ -26,8 +26,12 @@ on:
     - cron: '0 1 * * 6'   # Weekly — Friday at 6PM PT (Saturday 01:00 UTC)
 
   push:
+    branches: [ develop ] # Runs for all commits post-merge
+
+  pull_request:
+    branches: [ develop, release-* ]
     paths:
-      - 'GenAILab/**'
+      - 'GenAILab/**' # Only run on pull requests that modify files in the GenAILab directory
 
   workflow_dispatch:
     inputs:
@@ -52,6 +56,10 @@ on:
           - onnx
         default: 'both'
 
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('genai-pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 ################################################################################
 # Cadence resolution
 # - schedule cron '0 9 * * *' → nightly
@@ -75,6 +83,7 @@ jobs:
   # ===========================================================================
   build-aimet-onnx-gpu:
     name: Build aimet_onnx
+    if: github.server_url != 'https://github.com'
     uses: ./.github/workflows/build-wheels.yml
     with:
       variants: >
@@ -93,9 +102,10 @@ jobs:
   build-aimet-torch-gpu:
     name: Build aimet_torch
     if: |
-      github.event_name != 'workflow_dispatch' ||
+      github.server_url != 'https://github.com' &&
+      (github.event_name != 'workflow_dispatch' ||
       github.event.inputs.run_mode != 'ad_hoc' ||
-      github.event.inputs.ad_hoc_variants != 'onnx'
+      github.event.inputs.ad_hoc_variants != 'onnx')
     uses: ./.github/workflows/build-wheels.yml
     with:
       variants: >
@@ -119,9 +129,10 @@ jobs:
     name: Start ONNX runner
     if: |
       always() &&
-      github.event_name != 'workflow_dispatch' ||
+      github.server_url != 'https://github.com' &&
+      (github.event_name != 'workflow_dispatch' ||
       github.event.inputs.run_mode != 'ad_hoc' ||
-      github.event.inputs.ad_hoc_variants != 'torch'
+      github.event.inputs.ad_hoc_variants != 'torch')
     runs-on: ubuntu-latest
     outputs:
       runner-label: ${{ steps.start.outputs.runner-label }}
@@ -141,9 +152,10 @@ jobs:
     name: Start Torch runner
     if: |
       always() &&
-      github.event_name != 'workflow_dispatch' ||
+      github.server_url != 'https://github.com' &&
+      (github.event_name != 'workflow_dispatch' ||
       github.event.inputs.run_mode != 'ad_hoc' ||
-      github.event.inputs.ad_hoc_variants != 'onnx'
+      github.event.inputs.ad_hoc_variants != 'onnx')
     runs-on: ubuntu-latest
     outputs:
       runner-label: ${{ steps.start.outputs.runner-label }}
@@ -167,6 +179,7 @@ jobs:
     needs: [build-aimet-torch-gpu, build-aimet-onnx-gpu, start-runner-torch]
     if: |
       !cancelled() &&
+      github.server_url != 'https://github.com' &&
       needs.build-aimet-torch-gpu.result == 'success' &&
       needs.build-aimet-onnx-gpu.result == 'success' &&
       needs.start-runner-torch.result == 'success'
@@ -195,6 +208,7 @@ jobs:
     needs: [build-aimet-onnx-gpu, start-runner-onnx]
     if: |
       !cancelled() &&
+      github.server_url != 'https://github.com' &&
       needs.build-aimet-onnx-gpu.result == 'success' &&
       needs.start-runner-onnx.result == 'success'
     runs-on: ${{ needs.start-runner-onnx.outputs.runner-label }}
@@ -223,7 +237,7 @@ jobs:
   cleanup-runners:
     name: Cleanup runners
     needs: [test-torch, test-onnx, start-runner-torch, start-runner-onnx]
-    if: always()
+    if: always() && github.server_url != 'https://github.com'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -3,6 +3,7 @@
 
 """Metrics for GenAI testing"""
 
+import time
 import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -639,6 +640,51 @@ class MMMUJSDivergence(_JSDivergenceCompute, _MMMUDistanceBase):
     """Jensen-Shannon divergence between FP and quantized MMMU distributions."""
 
 
+class TimedStreamer(TextStreamer):
+    """TextStreamer that records prefill and decode timing stats."""
+
+    def __init__(self, *args, num_input_tokens: int = 0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.num_input_tokens = num_input_tokens
+        self.num_output_tokens = 0
+        self.first_token_time = None
+        self.end_time = None
+        self.start_time = time.perf_counter()
+
+    def put(self, value):
+        if self.first_token_time is None:
+            self.first_token_time = time.perf_counter()
+        self.num_output_tokens += value.numel()
+        super().put(value)
+
+    def end(self):
+        self.end_time = time.perf_counter()
+        super().end()
+        self._print_stats()
+
+    def _print_stats(self):
+        ttft = (
+            self.first_token_time - self.start_time if self.first_token_time else None
+        )
+        decode_tokens = max(self.num_output_tokens - 1, 0)
+        decode_time = (
+            (self.end_time - self.first_token_time) if self.first_token_time else 0
+        )
+
+        print(f"\n--- Generation Stats ---")
+        print(f"  Input tokens:  {self.num_input_tokens}")
+        print(f"  Output tokens: {self.num_output_tokens}")
+        if ttft is not None:
+            print(
+                f"  TTFT:          {ttft:.3f}s  ({self.num_input_tokens / ttft:.1f} prefill tok/s)"
+            )
+        if decode_time > 0 and decode_tokens > 0:
+            print(
+                f"  Decode:        {decode_time:.3f}s  ({decode_tokens / decode_time:.1f} tok/s)"
+            )
+        print(f"  Total:         {self.end_time - self.start_time:.3f}s")
+
+
 @YAMLConfigParser.register_metric
 class Interactive(TextEvaluationMetric):
     @staticmethod
@@ -696,7 +742,11 @@ class Interactive(TextEvaluationMetric):
         if highlight_output:
             print("\033[0;31m", end="")  # Start red color for output
 
-        streamer = TextStreamer(tokenizer=tokenizer, skip_prompt=True)
+        streamer = TimedStreamer(
+            tokenizer=tokenizer,
+            skip_prompt=True,
+            num_input_tokens=tokenized_user_input["input_ids"].shape[-1],
+        )
         outputs = model.generate(
             inputs=tokenized_user_input["input_ids"],
             attention_mask=tokenized_user_input["attention_mask"],
