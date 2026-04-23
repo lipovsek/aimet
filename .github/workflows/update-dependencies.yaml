@@ -17,8 +17,12 @@ permissions:
   contents: write
   pull-requests: write
 
+env:
+  BUMP_BRANCH: auto/dep-bump
+
 jobs:
   check-and-bump:
+    if: github.server_url != 'https://github.com'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,11 +31,23 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Install and configure GitHub CLI
+        run: |
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+            | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+            | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt-get update && sudo apt-get install -y gh
+          GH_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||')
+          gh auth login --hostname "$GH_HOST" --with-token <<< "$GH_TOKEN"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Check for existing bump PR
         id: existing
         run: |
           PR_URL=$(gh pr list \
-            --head "auto/update-dependencies" \
+            --head "${{ env.BUMP_BRANCH }}" \
             --state open \
             --json url \
             --jq '.[0].url // empty')
@@ -66,7 +82,7 @@ jobs:
         run: |
           cp /tmp/updated-pinned.txt GenAILab/requirements-pinned.txt
 
-          BRANCH="auto/dep-bump"
+          BRANCH="${{ env.BUMP_BRANCH }}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
