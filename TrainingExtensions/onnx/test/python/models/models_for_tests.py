@@ -1330,8 +1330,10 @@ def unfusable_matmul_add(opset_version=_DEFAULT_OPSET_VERSION):
 
 
 def depthwise_conv_model(opset_version=_DEFAULT_OPSET_VERSION):
+    torch.manual_seed(10)
     x = torch.randn(1, 3, 224, 224, requires_grad=True)
     model = MockMobileNetV1()
+    initialize_bn_params(model)
 
     buffer = io.BytesIO()
     # Export the model
@@ -1536,6 +1538,34 @@ class BNAfterConvWithSharedWeights(torch.nn.Module):
         x2 = self.relu0b(x2)
         x2 = self.conv2(x2)
         x2 = self.bn2(x2)
+        x2 = self.relu2(x2)
+
+        return x1 + x2
+
+
+class ParallelConvSharedWeights(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv0a = torch.nn.Conv2d(10, 20, 1, bias=True)
+        self.conv0b = torch.nn.Conv2d(10, 20, 1, bias=True)
+        self.relu0a = torch.nn.ReLU()
+        self.relu0b = torch.nn.ReLU()
+        self.conv1 = torch.nn.Conv2d(20, 20, 3, padding=1, bias=True)
+        self.conv2 = torch.nn.Conv2d(20, 20, 3, padding=1, bias=True)
+        self.conv2.weight = self.conv1.weight
+        self.conv2.bias = self.conv1.bias
+        self.relu1 = torch.nn.ReLU()
+        self.relu2 = torch.nn.ReLU()
+
+    def forward(self, x):
+        x1 = self.conv0a(x)
+        x1 = self.relu0a(x1)
+        x1 = self.conv1(x1)
+        x1 = self.relu1(x1)
+
+        x2 = self.conv0b(x)
+        x2 = self.relu0b(x2)
+        x2 = self.conv2(x2)
         x2 = self.relu2(x2)
 
         return x1 + x2

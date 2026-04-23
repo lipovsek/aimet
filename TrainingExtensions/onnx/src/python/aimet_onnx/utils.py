@@ -66,6 +66,27 @@ OP_TYPES_WITH_PARAMS = [
 ]
 
 
+def find_shared_param_names(
+    connected_graph, param_types: Optional[Tuple[str, ...]] = None
+) -> set:
+    """
+    Find parameter names shared by multiple nodes.
+
+    :param connected_graph: Connected graph to analyze
+    :param param_types: If provided, only consider parameters matching these types (e.g. ("weight",)).
+                        If None, consider all parameter types.
+    :return: Set of parameter names used by more than one node
+    """
+    usage_count: Dict[str, int] = {}
+    for op in connected_graph.ordered_ops:
+        for product, ptype in op.parameters.values():
+            if param_types is not None and ptype not in param_types:
+                continue
+            usage_count[product.name] = usage_count.get(product.name, 0) + 1
+
+    return {name for name, count in usage_count.items() if count > 1}
+
+
 def remove_nodes_with_type(node_type: str, onnx_graph: onnx.GraphProto):
     """
     Remove specific type of nodes from graph

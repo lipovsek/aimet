@@ -35,6 +35,7 @@ from aimet_onnx.utils import (
     transpose_tensor,
     ParamUtils,
     retrieve_constant_input,
+    find_shared_param_names,
 )
 
 # pylint: disable=no-name-in-module, ungrouped-imports
@@ -48,24 +49,6 @@ logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.BatchNormFolding)
 ConvType = ["Conv", "ConvTranspose"]
 LinearType = ["Gemm", "MatMul"]
 BatchNormType = ["BatchNormalization"]
-
-
-def _find_shared_weight_names(connected_graph: ConnectedGraph) -> set:
-    """
-    Find all weight initializer names that are shared by multiple Conv/Linear nodes.
-
-    :param model: ONNX model to analyze
-    :return: Set of initializer names that are used as weights by more than one node
-    """
-    weight_usage_count: Dict[str, int] = {}
-    for op in connected_graph.ordered_ops:
-        if op.type not in ConvType + LinearType:
-            continue
-        for param, _ in op.parameters.values():
-            param_name = param.name
-            weight_usage_count[param_name] = weight_usage_count.get(param_name, 0) + 1
-
-    return {name for name, count in weight_usage_count.items() if count > 1}
 
 
 def _has_shared_weight(node: Op, shared_weight_names: set) -> bool:
@@ -153,7 +136,7 @@ def find_all_batch_norms_to_fold(
     bn_picked_for_folding = set()
 
     # Find weights that are shared between multiple Conv/Linear nodes
-    shared_weight_names = _find_shared_weight_names(connected_graph)
+    shared_weight_names = find_shared_param_names(connected_graph)
 
     ordered_conv_fc_nodes = get_ordered_conv_linears(connected_graph)
 

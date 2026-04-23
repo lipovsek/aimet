@@ -27,6 +27,7 @@ from .models.models_for_tests import (
     BNAfterConv1d,
     BNAfterLinear,
     BNBeforeLinear,
+    ParallelConvSharedWeights,
     _convert_to_onnx_no_fold,
 )
 
@@ -265,6 +266,21 @@ class TestCLS:
         cls_set_infos = cls.scale_model()
         # Squeezenet1_0 doesn't have any scalable sets
         assert not cls_set_infos
+
+    def test_scale_model_shared_weights(self):
+        torch.manual_seed(10)
+        model = _convert_to_onnx_no_fold(
+            ParallelConvSharedWeights(), torch.randn(2, 10, 24, 24)
+        )
+        input_shape = (2, 10, 24, 24)
+        test_data = np.random.randn(*input_shape).astype(np.float32)
+        session = _build_session(model)
+        output_before_cls = session.run(None, {"input": test_data})
+        cls = CrossLayerScaling(model)
+        cls.scale_model()
+        session = _build_session(model)
+        output_after_cls = session.run(None, {"input": test_data})
+        assert np.allclose(output_after_cls, output_before_cls, rtol=1e-2, atol=1e-5)
 
     @pytest.mark.parametrize(
         "model",

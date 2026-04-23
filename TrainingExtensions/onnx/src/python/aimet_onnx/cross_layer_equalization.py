@@ -31,6 +31,7 @@ from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import (
     ParamUtils,
     replace_relu6_with_relu,
+    find_shared_param_names,
 )
 from aimet_onnx.batch_norm_fold import BNLayer, fold_all_batch_norms_to_weight
 
@@ -129,6 +130,24 @@ class CrossLayerScaling(CLS):
         for layer_group in layer_groups:
             cls_set = GraphSearchUtils.convert_layer_group_to_cls_sets(layer_group)
             cls_sets += cls_set
+
+        # Skip CLS sets that contain layers with shared parameters
+        shared_param_names = find_shared_param_names(connected_graph)
+        filtered_cls_sets = []
+        for cls_set in cls_sets:
+            if any(
+                shared_param_names.intersection(
+                    p.name for p, _ in op.parameters.values()
+                )
+                for op in cls_set
+            ):
+                logger.info(
+                    "Skipping CLS set due to shared weights: %s",
+                    [op.name for op in cls_set],
+                )
+            else:
+                filtered_cls_sets.append(cls_set)
+        cls_sets = filtered_cls_sets
 
         # Scale the CLS sets
         scale_factors = self.scale_cls_sets(cls_sets)
