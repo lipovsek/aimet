@@ -11,10 +11,12 @@ import glob
 from transformers import AutoConfig
 from huggingface_hub import HfApi
 
-ONNX_OPSET_VERSION = 17
+ONNX_OPSET_VERSION = 18
 
 
 def is_huggingface_ckpt(model_id: str) -> bool:
+    if os.path.isdir(model_id):
+        return False
     hf_api = HfApi()
     try:
         _ = hf_api.model_info(model_id)
@@ -101,9 +103,9 @@ def load_model_components_from_disk(
 
     embedding_path = os.path.join(checkpoint, "embedding.pth")
     if os.path.exists(embedding_path):
-        weights = torch.load(
-            embedding_path, map_location="cpu"
-        )  # -> torch.Tensor of shape [V, D]
+        weights = torch.load(embedding_path, map_location="cpu")
+        if isinstance(weights, dict) and "weight" in weights:
+            weights = weights["weight"]
         if not isinstance(weights, torch.Tensor) or weights.ndim != 2:
             raise ValueError("Expected a 2D embedding tensor in embedding.pth")
 
@@ -113,6 +115,42 @@ def load_model_components_from_disk(
         embedding = None
 
     return backbone, visual, embedding
+
+
+def _dynamo_export(
+    model,
+    sample_input,
+    path,
+    *,
+    input_names,
+    output_names,
+    opset_version,
+    custom_translation_table=None,
+):
+    """Run a dynamo-based ONNX export via draft_export.
+
+    Uses ``torch.export.draft_export`` to produce an ExportedProgram that
+    tolerates data-dependent branching, then hands it to ``torch.onnx.export``
+    which skips the capture step and goes straight to ONNX translation.
+    """
+    import time
+
+    export_kwargs = {}
+    if custom_translation_table:
+        export_kwargs["custom_translation_table"] = custom_translation_table
+
+    program = torch.export.draft_export(model, sample_input, strict=False)
+
+    torch.onnx.export(
+        program,
+        (),  # args ignored for ExportedProgram
+        path,
+        input_names=input_names,
+        output_names=output_names,
+        opset_version=opset_version,
+        dynamo=True,
+        **export_kwargs,
+    )
 
 
 def get_onnx_model(
@@ -127,6 +165,9 @@ def get_onnx_model(
     sample_visual_input: tuple[torch.Tensor, ...] | None = None,
     visual_input_names: tuple[str, ...] | None = None,
     visual_output_names: tuple[str, ...] | None = None,
+    dynamo: bool = False,
+    visual_dynamo: bool | None = None,
+    custom_translation_table: dict | None = None,
 ) -> tuple[onnx.ModelProto, onnx.ModelProto | None]:
     # Create the checkpoint directory if it does not exist.
     os.makedirs(checkpoint, exist_ok=True)
@@ -161,26 +202,56 @@ def get_onnx_model(
         fp_backbone_model.config.save_pretrained(checkpoint)
         with torch.no_grad():
             os.makedirs(os.path.join(checkpoint, "backbone"), exist_ok=True)
-            torch.onnx.export(
-                fp_backbone_model,
-                sample_input,
-                onnx_backbone_path,
-                input_names=input_names,
-                output_names=output_names,
-                opset_version=ONNX_OPSET_VERSION,
-                dynamo=False,
+            print(
+                "Backbone exporting..." + (" (dynamo)" if dynamo else " (torchscript)")
             )
-            if visual_model_exists:
-                os.makedirs(os.path.join(checkpoint, "visual"), exist_ok=True)
+            if dynamo:
+                _dynamo_export(
+                    fp_backbone_model,
+                    sample_input,
+                    onnx_backbone_path,
+                    input_names=input_names,
+                    output_names=output_names,
+                    opset_version=ONNX_OPSET_VERSION,
+                    custom_translation_table=custom_translation_table,
+                )
+            else:
                 torch.onnx.export(
-                    fp_visual_model,
-                    sample_visual_input,
-                    onnx_visual_path,
-                    input_names=visual_input_names,
-                    output_names=visual_output_names,
+                    fp_backbone_model,
+                    sample_input,
+                    onnx_backbone_path,
+                    input_names=input_names,
+                    output_names=output_names,
                     opset_version=ONNX_OPSET_VERSION,
                     dynamo=False,
                 )
+            if visual_model_exists:
+                os.makedirs(os.path.join(checkpoint, "visual"), exist_ok=True)
+                vis_dynamo = visual_dynamo if visual_dynamo is not None else dynamo
+                print(
+                    "Visual exporting..."
+                    + (" (dynamo)" if vis_dynamo else " (torchscript)")
+                )
+                if vis_dynamo:
+                    _dynamo_export(
+                        fp_visual_model,
+                        sample_visual_input,
+                        onnx_visual_path,
+                        input_names=visual_input_names,
+                        output_names=visual_output_names,
+                        opset_version=ONNX_OPSET_VERSION,
+                        custom_translation_table=custom_translation_table,
+                    )
+                else:
+                    torch.onnx.export(
+                        fp_visual_model,
+                        sample_visual_input,
+                        onnx_visual_path,
+                        input_names=visual_input_names,
+                        output_names=visual_output_names,
+                        opset_version=ONNX_OPSET_VERSION,
+                        dynamo=False,
+                    )
 
         print("Loading ONNX model(s)...")
         model = onnx.load(onnx_backbone_path)

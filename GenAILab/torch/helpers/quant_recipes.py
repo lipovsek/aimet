@@ -39,14 +39,13 @@ def _prefill_inputs(
             total=num_iterations if num_iterations else len(dataloader),
             desc="Pre-filling calibration data",
         ):
+            sample_kwargs = {
+                k: v.to(device=generator.device) if isinstance(v, torch.Tensor) else v
+                for k, v in sample.items()
+            }
             inputs.extend(
                 change_tensor_device_placement(
-                    list(
-                        generator.prefill(
-                            sample["input_ids"].to(device=generator.device),
-                            sample["attention_mask"].to(device=generator.device),
-                        )
-                    ),
+                    list(generator.prefill(**sample_kwargs)),
                     device=device if device else generator.device,
                 )
             )

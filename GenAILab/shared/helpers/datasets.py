@@ -565,7 +565,10 @@ class LazyMMMUDataset(torch.utils.data.Dataset):
         # Apply chat template to get the text with image markers
         messages = [{"role": "user", "content": content}]
         text = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
         )
         if self.image_size is not None:
             ordered_images = [image.resize(self.image_size) for image in ordered_images]

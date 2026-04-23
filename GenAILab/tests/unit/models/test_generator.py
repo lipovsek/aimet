@@ -14,7 +14,12 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from GenAILab.shared.models.generator import (
     Generator,
+    _FlatListCache,
     get_past_keyval_with_shift,
+)
+from GenAILab.shared.models.utils.layer_cache import (
+    AttentionType,
+    LayerCacheDescriptor,
 )
 
 
@@ -486,3 +491,143 @@ class TestCombineOutputs:
         gen.combine_local_and_global_outputs(3, local_outputs, global_outputs)
         # Only 3 valid tokens from an 8-wide padded output
         assert global_outputs["logits"].shape[1] == 3
+
+
+# ---------------------------------------------------------------------------
+# _FlatListCache
+# ---------------------------------------------------------------------------
+
+
+def _make_descriptors(types):
+    """Create minimal LayerCacheDescriptor list from a sequence of AttentionTypes."""
+    return [
+        LayerCacheDescriptor(
+            layer_idx=i,
+            attention_type=t,
+            num_kv_heads=4,
+            head_dim=16,
+        )
+        for i, t in enumerate(types)
+    ]
+
+
+class TestFlatListCache:
+    def test_seq_length_from_full_attention_layer(self):
+        descs = _make_descriptors(
+            [AttentionType.LINEAR, AttentionType.FULL, AttentionType.FULL]
+        )
+        # Layer 0 (linear): 2D state, no seq dim
+        # Layer 1 (full): key shape (1, 4, 7, 16) → seq_length = 7
+        # Layer 2 (full): key shape (1, 4, 5, 16)
+        flat = [
+            torch.randn(1, 256, 4),  # layer 0 conv_state
+            torch.randn(1, 8, 64, 128),  # layer 0 recurrent_state
+            torch.randn(1, 4, 7, 16),  # layer 1 key
+            torch.randn(1, 4, 7, 16),  # layer 1 value
+            torch.randn(1, 4, 5, 16),  # layer 2 key
+            torch.randn(1, 4, 5, 16),  # layer 2 value
+        ]
+        cache = _FlatListCache(flat, descs)
+        assert cache.get_seq_length() == 7
+
+    def test_seq_length_empty_cache(self):
+        descs = _make_descriptors([AttentionType.FULL])
+        cache = _FlatListCache([], descs)
+        assert cache.get_seq_length() == 0
+
+    def test_seq_length_all_linear(self):
+        descs = _make_descriptors([AttentionType.LINEAR, AttentionType.LINEAR])
+        flat = [
+            torch.randn(1, 256, 4),
+            torch.randn(1, 8, 64, 128),
+            torch.randn(1, 256, 4),
+            torch.randn(1, 8, 64, 128),
+        ]
+        cache = _FlatListCache(flat, descs)
+        # Falls back to layer 0 — conv_state is 3D so shape[-2] = 256
+        assert cache.get_seq_length() == 256
+
+    def test_to_legacy_cache(self):
+        descs = _make_descriptors([AttentionType.FULL, AttentionType.FULL])
+        k0, v0 = torch.randn(1, 4, 3, 16), torch.randn(1, 4, 3, 16)
+        k1, v1 = torch.randn(1, 4, 3, 16), torch.randn(1, 4, 3, 16)
+        cache = _FlatListCache([k0, v0, k1, v1], descs)
+        legacy = cache.to_legacy_cache()
+        assert len(legacy) == 2
+        assert torch.equal(legacy[0][0], k0)
+        assert torch.equal(legacy[0][1], v0)
+        assert torch.equal(legacy[1][0], k1)
+        assert torch.equal(legacy[1][1], v1)
+
+
+# ---------------------------------------------------------------------------
+# get_past_keyval_with_shift — linear attention
+# ---------------------------------------------------------------------------
+
+
+class TestGetPastKeyvalLinearAttention:
+    def test_linear_layer_state_replaced_not_concatenated(self):
+        descs = _make_descriptors([AttentionType.LINEAR])
+        past = [torch.ones(1, 8, 64, 128), torch.ones(1, 8, 64, 128)]
+        new = [torch.full((1, 8, 64, 128), 2.0), torch.full((1, 8, 64, 128), 3.0)]
+        result = get_past_keyval_with_shift(
+            past, new, length=10, layer_cache_descriptors=descs
+        )
+        assert len(result) == 2
+        # New state should replace old, not concatenate
+        assert torch.equal(result[0], new[0])
+        assert torch.equal(result[1], new[1])
+
+    def test_mixed_layers_linear_replaced_full_concatenated(self):
+        descs = _make_descriptors([AttentionType.LINEAR, AttentionType.FULL])
+        past = [
+            torch.ones(1, 8, 64, 128),  # layer 0 (linear) state A
+            torch.ones(1, 8, 64, 128),  # layer 0 (linear) state B
+            torch.randn(1, 4, 3, 16),  # layer 1 (full) key
+            torch.randn(1, 4, 3, 16),  # layer 1 (full) value
+        ]
+        new = [
+            torch.full((1, 8, 64, 128), 5.0),  # layer 0 new state A
+            torch.full((1, 8, 64, 128), 6.0),  # layer 0 new state B
+            torch.randn(1, 4, 2, 16),  # layer 1 new key
+            torch.randn(1, 4, 2, 16),  # layer 1 new value
+        ]
+        result = get_past_keyval_with_shift(
+            past, new, length=20, layer_cache_descriptors=descs
+        )
+        # Linear layer: replaced
+        assert result[0].flatten()[0].item() == 5.0
+        assert result[1].flatten()[0].item() == 6.0
+        # Full layer: concatenated (3 + 2 = 5)
+        assert result[2].shape[2] == 5
+        assert result[3].shape[2] == 5
+
+    def test_empty_past_linear_layer(self):
+        descs = _make_descriptors([AttentionType.LINEAR])
+        new = [torch.randn(1, 8, 64, 128), torch.randn(1, 8, 64, 128)]
+        result = get_past_keyval_with_shift(
+            [], new, length=10, layer_cache_descriptors=descs
+        )
+        # Should create zeros_like past, then replace with new
+        assert torch.equal(result[0], new[0])
+        assert torch.equal(result[1], new[1])
+
+
+# ---------------------------------------------------------------------------
+# layer_cache_descriptors property
+# ---------------------------------------------------------------------------
+
+
+class TestLayerCacheDescriptorsProperty:
+    def test_builds_from_config(self, model, tokenizer):
+        gen = Generator(
+            model=model,
+            tokenizer=tokenizer,
+            sequence_length=8,
+            context_length=32,
+        )
+        descs = gen.layer_cache_descriptors
+        assert len(descs) == 2  # _Cfg has num_hidden_layers=2
+        assert all(d.attention_type == AttentionType.FULL for d in descs)
+        assert descs[0].num_kv_heads == 4
+        assert descs[0].head_dim == 16

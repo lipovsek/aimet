@@ -121,6 +121,7 @@ def test_llm_quantization(
         visual_output_names=model_cls.get_visual_output_names()
         if issubclass(model_cls, VLM)
         else None,
+        image_size=image_size,
         **model_kwargs,
     )
 
@@ -189,22 +190,26 @@ def test_llm_quantization(
 
     visual_steps = []
     if "visual" in all_recipes and sim_collection.visual is not None:
-        visual_steps = apply_recipe_chain(
-            all_recipes["visual"],
-            sim_collection.visual,
-            generator,
-            tokenizer,
-            context_length,
-            image_size,
-            profiler_kwargs,
-            profiler_capture_intermediate_data,
-            framework="onnx",
-            model_id=model_id,
-            precision=precision,
-            model_kwargs=model_kwargs,
-            component="visual",
-            recipe_cache=recipe_cache,
-        )
+        # Disable backbone quantizers during visual recipes and switch
+        # the generator to yield vision model inputs from prefill().
+        backbone_ctx = _disable_onnx_quantizers(sim_collection.backbone)
+        with backbone_ctx, generator.visual_quantization_mode():
+            visual_steps = apply_recipe_chain(
+                all_recipes["visual"],
+                sim_collection.visual,
+                generator,
+                tokenizer,
+                context_length,
+                image_size,
+                profiler_kwargs,
+                profiler_capture_intermediate_data,
+                framework="onnx",
+                model_id=model_id,
+                precision=precision,
+                model_kwargs=model_kwargs,
+                component="visual",
+                recipe_cache=recipe_cache,
+            )
 
     # Finalize embedding quantization after recipes have had a chance to
     # transform the weights (e.g. SpinQuant rotation).

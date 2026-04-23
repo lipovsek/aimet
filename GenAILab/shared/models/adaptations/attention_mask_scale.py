@@ -32,12 +32,12 @@ def _get_decoder_layers(hf_model: torch.nn.Module) -> torch.nn.ModuleList:
     Handles both top-level decoders (``model.layers``) and nested ones
     (``model.model.layers``).
     """
-    if hasattr(hf_model, "layers"):
-        return hf_model.layers
-    if hasattr(hf_model, "model") and hasattr(hf_model.model, "layers"):
-        return hf_model.model.layers
+    hf_model = getattr(hf_model, "model", hf_model)
+    language_model = getattr(hf_model, "language_model", hf_model)
+    if hasattr(language_model, "layers"):
+        return language_model.layers
     raise AttributeError(
-        f"Cannot find decoder layers on {type(hf_model).__name__}. "
+        f"Cannot find decoder layers on {type(language_model).__name__}. "
         "Expected a `.layers` or `.model.layers` attribute."
     )
 

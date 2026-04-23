@@ -6,9 +6,11 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 
 from GenAILab.shared.models.base import SimCollection
 from GenAILab.shared.models.generator import Generator, VLM_Generator
+from GenAILab.onnx.models.utils.generator_utils import _VisualONNXAdapter
 
 
 class TestBuildFpMode:
@@ -137,3 +139,48 @@ class TestGeneratorFactory:
             )
             assert mock_interface.call_count == 2
             assert isinstance(gen, VLM_Generator)
+
+
+class TestVisualONNXAdapter:
+    def _make_adapter(self, num_list_outputs=0):
+        interface = MagicMock()
+        interface.config = MagicMock(name="config")
+        interface.device = torch.device("cpu")
+        interface.dtype = torch.float32
+        return _VisualONNXAdapter(interface, num_list_outputs)
+
+    def test_forwards_properties(self):
+        adapter = self._make_adapter()
+        assert adapter.config is adapter.interface.config
+        assert adapter.device == torch.device("cpu")
+        assert adapter.dtype == torch.float32
+
+    def test_reassembles_list_outputs(self):
+        adapter = self._make_adapter(num_list_outputs=3)
+        # Simulate 5 flat outputs: 2 base + 3 deepstack layers
+        flat = (
+            torch.randn(4, 64),  # image_embeddings
+            torch.randn(1, 8),  # visual_pos_masks
+            torch.randn(4, 64),  # deepstack layer 0
+            torch.randn(4, 64),  # deepstack layer 1
+            torch.randn(4, 64),  # deepstack layer 2
+        )
+        adapter.interface.return_value = flat
+        result = adapter(torch.randn(1, 3, 224, 224))
+
+        # Should be (image_embeddings, visual_pos_masks, [ds0, ds1, ds2])
+        assert len(result) == 3
+        assert torch.equal(result[0], flat[0])
+        assert torch.equal(result[1], flat[1])
+        assert isinstance(result[2], list)
+        assert len(result[2]) == 3
+        assert torch.equal(result[2][0], flat[2])
+        assert torch.equal(result[2][2], flat[4])
+
+    def test_no_list_outputs_passthrough(self):
+        adapter = self._make_adapter(num_list_outputs=0)
+        out = (torch.randn(4, 64), torch.randn(1, 8))
+        adapter.interface.return_value = out
+        result = adapter(torch.randn(1, 3, 224, 224))
+
+        assert result is out

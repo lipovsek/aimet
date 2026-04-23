@@ -22,6 +22,7 @@ class AdaptationInfo:
 
     mixin_cls: type
     exclusive: bool = False  # If True, cannot combine with other adaptations
+    required_for_export: bool = False  # If True, auto-enforced when exporting
 
 
 class YAMLConfigParser:
@@ -83,6 +84,7 @@ class YAMLConfigParser:
         model_type: str = "*",
         *,
         exclusive: bool = False,
+        required_for_export: bool = False,
     ):
         """Register an adaptation mixin.
 
@@ -90,6 +92,9 @@ class YAMLConfigParser:
             adaptation_name: Name used in config (e.g., "SHA", "AIHM")
             model_type: HuggingFace model_type this applies to, or "*" for all
             exclusive: If True, cannot combine with other adaptations
+            required_for_export: If True, this adaptation is enforced when the
+                model will be exported. Skipped when an exclusive adaptation
+                (which owns the full pipeline) is already selected.
 
         Usage:
             @YAMLConfigParser.register_adaptation("SHA", model_type="llama")
@@ -102,7 +107,11 @@ class YAMLConfigParser:
         """
 
         def decorator(mixin_cls):
-            info = AdaptationInfo(mixin_cls=mixin_cls, exclusive=exclusive)
+            info = AdaptationInfo(
+                mixin_cls=mixin_cls,
+                exclusive=exclusive,
+                required_for_export=required_for_export,
+            )
             cls.adaptation_lookup[(model_type, adaptation_name)] = info
             return mixin_cls
 
@@ -255,6 +264,15 @@ class YAMLConfigParser:
                     f"Adaptation '{name}' is exclusive and cannot be combined with "
                     f"other adaptations: {[a for a in adaptations if a != name]}"
                 )
+
+    @classmethod
+    def get_required_export_adaptations(cls, model_type: str) -> list[str]:
+        """Return non-exclusive adaptation names required for export for a model_type."""
+        return [
+            name
+            for (mt, name), info in cls.adaptation_lookup.items()
+            if mt == model_type and info.required_for_export and not info.exclusive
+        ]
 
     @classmethod
     def get_model_class(
@@ -455,6 +473,30 @@ class YAMLConfigParser:
                 f"Failed to configure model for model_id='{model_id}', "
                 f"adaptations={adaptation_names}."
             ) from exc
+
+        # Check that required export adaptations are present.
+        # Skip when an exclusive adaptation (e.g. AIHM) is selected — it owns
+        # the full pipeline including export.
+        # A local directory as model_id means the model is already exported.
+        is_local_checkpoint = os.path.isdir(model_id)
+        will_export = task_params["export"] or (
+            "ONNX" in cls.get_default_llm().__name__ and not is_local_checkpoint
+        )
+        has_exclusive = any(
+            cls._get_adaptation_info(model_type, a).exclusive for a in adaptation_names
+        )
+        if will_export and not has_exclusive:
+            required = cls.get_required_export_adaptations(model_type)
+            missing = [a for a in required if a not in adaptation_names]
+            if missing:
+                raise ValueError(
+                    f"ONNX export for model_type '{model_type}' requires the "
+                    f"following adaptation(s): {missing}.\n"
+                    f"Add them under 'model.adaptations' in your YAML config:\n"
+                    f"  model:\n"
+                    f"    model_id: {model_id}\n"
+                    f"    adaptations:\n" + "".join(f"      - {a}\n" for a in missing)
+                )
 
         # Precision config
         precision = PrecisionConfig.from_dict(doc.pop("precision", None))

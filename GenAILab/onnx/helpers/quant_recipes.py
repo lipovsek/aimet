@@ -173,7 +173,14 @@ class SeqMSE(QuantizationTechnique):
         # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(quantsim, generator, dataloader, num_iterations)
 
-        # Step 2: Optimize weight quantization parameters to minimize layer-wise MSE.
+        # Step 2: Pre-compute param encodings with a real input so that
+        # SequentialMse's internal _compute_param_encodings(overwrite=False)
+        # finds them already initialized and skips make_dummy_input, which
+        # generates random values that break structured inputs like
+        # image_grid_thw in vision models.
+        quantsim._compute_param_encodings(dummy_input=inputs[0], overwrite=False)
+
+        # Step 3: Optimize weight quantization parameters to minimize layer-wise MSE.
         print("Starting Sequential MSE...")
         params = SeqMseParams(num_batches=num_iterations)
         seq_mse = SequentialMse(
@@ -206,7 +213,11 @@ class AdaScale(QuantizationTechnique):
         # Step 1: Collect calibration inputs in FP mode.
         inputs = _prefill_inputs(quantsim, generator, dataloader, num_batches)
 
-        # Step 2: Optimize quantization parameters using AdaScale.
+        # Step 2: Pre-compute param encodings with a real input (same
+        # reason as SeqMSE — avoids make_dummy_input for vision models).
+        quantsim._compute_param_encodings(dummy_input=inputs[0], overwrite=False)
+
+        # Step 3: Optimize quantization parameters using AdaScale.
         apply_adascale(
             quantsim,
             inputs,

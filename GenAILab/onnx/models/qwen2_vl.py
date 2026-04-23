@@ -224,6 +224,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
             ),
             visual_input_names=cls.get_visual_input_names(),
             visual_output_names=cls.get_visual_output_names(),
+            dynamo=cls.use_dynamo_export(),
         )
 
         embedding = model.model.language_model.embed_tokens

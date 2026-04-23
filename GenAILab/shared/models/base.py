@@ -3,7 +3,6 @@
 
 """LLM base class for GenAI test framework"""
 
-import itertools
 import types
 from abc import abstractmethod, ABC
 from pathlib import Path
@@ -91,6 +90,8 @@ class LLM(ABC):
         context_length: int,
         sequence_length: int,
         layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+        *args,
+        **kwargs,
     ) -> tuple[torch.Tensor, ...]:
         """Get sample inputs for LLM backbone QuantSim instantiation or ONNX export"""
         dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
@@ -165,6 +166,13 @@ class LLM(ABC):
         return tuple(names)
 
     @staticmethod
+    def use_dynamo_export() -> bool:
+        """Whether to use dynamo-based ONNX export. Models with ops unsupported
+        by the TorchScript tracer (e.g. data-dependent control flow) should
+        override this to return True."""
+        return False
+
+    @staticmethod
     def get_generator_cls() -> type[Generator]:
         return Generator
 
@@ -178,7 +186,11 @@ class VLM(LLM):
     @classmethod
     @abstractmethod
     def get_sample_vision_inputs(
-        cls, config: PretrainedConfig, image_size: tuple[int, int] | None = None
+        cls,
+        config: PretrainedConfig,
+        image_size: tuple[int, int] | None = None,
+        *args,
+        **kwargs,
     ) -> tuple[torch.Tensor, ...]:
         """Get sample inputs for visual model QuantSim instantiation or ONNX export"""
         pass

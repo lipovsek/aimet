@@ -111,11 +111,17 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
 
     def _build_cache(self, past_key_values: tuple[tuple[torch.Tensor, ...], ...]):
         """Build a cache object from flattened state pairs using ``self.cache_type``."""
-        kv_cache = self.cache_type()
-        for layer_idx, (k, v) in enumerate(
+        kv_cache = self.cache_type(config=self.config)
+        layer_types = getattr(self.config, "layer_types", None)
+        for layer_idx, (state_a, state_b) in enumerate(
             zip(past_key_values[::2], past_key_values[1::2])
         ):
-            kv_cache.update(k, v, layer_idx, {})
+            if layer_types and layer_types[layer_idx] == "linear_attention":
+                # Linear attention layers use conv_states / recurrent_states
+                kv_cache.conv_states[layer_idx] = state_a
+                kv_cache.recurrent_states[layer_idx] = state_b
+            else:
+                kv_cache.update(state_a, state_b, layer_idx, {})
         return kv_cache
 
     # pylint: disable=keyword-arg-before-vararg
@@ -134,23 +140,20 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
         The number of extra inputs is determined by len(self.extra_input_names).
         KV cache pairs come before extra inputs in *args.
         """
-        if (
-            len(args) != 0
-            and len(args)
-            != len(self.extra_input_names) + 2 * self.model.config.num_hidden_layers
-        ):
+        num_kv = 2 * self.model.config.num_hidden_layers
+        num_extra = len(self.extra_input_names)
+        expected = num_kv + num_extra
+        if len(args) != 0 and len(args) < num_kv:
             raise RuntimeError(
-                "Expected number of args does not match configuration parameters of ONNXExportableModuleWithCache."
+                f"Expected at least {num_kv} args (KV pairs) but got {len(args)}."
             )
 
         # Split args into KV cache and extra inputs
-        num_extra = len(self.extra_input_names)
-        if num_extra > 0:
-            past_key_values = args[:-num_extra]
-            extra_inputs = args[-num_extra:]
+        past_key_values = args[:num_kv]
+        if num_extra > 0 and len(args) >= expected:
+            extra_inputs = args[num_kv : num_kv + num_extra]
             extra_kwargs = dict(zip(self.extra_input_names, extra_inputs))
         else:
-            past_key_values = args
             extra_kwargs = {}
 
         # Build cache from flattened state pairs
@@ -184,16 +187,27 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
 
         # Flatten output KV cache
         flat_output_past_key_values = []
+        layer_types = getattr(self.config, "layer_types", None)
         for layer in range(len(new_past_key_values)):
-            if hasattr(new_past_key_values, "value_cache"):
+            if layer_types and layer_types[layer] == "linear_attention":
+                # Linear attention: extract conv_state and recurrent_state
+                flat_output_past_key_values.append(
+                    new_past_key_values.conv_states[layer]
+                )
+                flat_output_past_key_values.append(
+                    new_past_key_values.recurrent_states[layer]
+                )
+            elif hasattr(new_past_key_values, "value_cache"):
                 keys = new_past_key_values.key_cache[layer]
                 values = new_past_key_values.value_cache[layer]
+                flat_output_past_key_values += [keys, values]
             elif hasattr(new_past_key_values.layers[layer], "keys"):
                 keys = new_past_key_values.layers[layer].keys
                 values = new_past_key_values.layers[layer].values
+                flat_output_past_key_values += [keys, values]
             else:
                 keys = new_past_key_values.layers[layer][0]
                 values = new_past_key_values.layers[layer][1]
-            flat_output_past_key_values += [keys, values]
+                flat_output_past_key_values += [keys, values]
 
         return lm_logits, *flat_output_past_key_values

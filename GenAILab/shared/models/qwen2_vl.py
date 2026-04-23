@@ -17,6 +17,8 @@ from GenAILab.shared.models.utils.model_utils import (
     compute_vision_input_shapes,
 )
 
+from .utils.layer_cache import LayerCacheDescriptor
+
 
 class Qwen_25_VL(VLM):
     """Generic quantized Qwen 2.5 VL"""
@@ -52,7 +54,13 @@ class Qwen_25_VL(VLM):
 
     @classmethod
     def get_sample_backbone_inputs(
-        cls, model, context_length, sequence_length, layer_cache_descriptors
+        cls,
+        model,
+        context_length: int,
+        sequence_length: int,
+        layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+        *args,
+        **kwargs,
     ):
         dummy_inputs_embeds = torch.zeros(
             (1, sequence_length, model.config.hidden_size), dtype=torch.int

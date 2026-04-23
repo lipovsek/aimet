@@ -16,16 +16,18 @@ import pytest
 import torch
 import onnxruntime as ort
 
-from GenAILab.shared.models.generator import Generator, VLM_Generator
+from GenAILab.shared.models.generator import Generator
 from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
 from GenAILab.shared.models.utils.layer_cache import build_layer_cache_descriptors
-from GenAILab.shared.models.base import LLM, VLM
+from GenAILab.shared.models.base import LLM
 from GenAILab.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
+from GenAILab.onnx.models.utils.torch_onnx_export_utils import ONNX_OPSET_VERSION
 
 from .conftest import (
     SEQUENCE_LENGTHS,
     CONTEXT_LENGTH,
     ATTENTION_MASK_MIN,
+    build_ort_vlm_generator,
     tokenize,
     make_test_image,
 )
@@ -42,6 +44,7 @@ def _export_and_load_ort_session(
     input_names: tuple[str, ...],
     output_names: tuple[str, ...],
     dynamic_axes: dict[str, dict[int, str]] | None = None,
+    dynamo: bool = False,
 ) -> ort.InferenceSession:
     """Export a wrapped model to ONNX and return an ORT InferenceSession."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -53,8 +56,8 @@ def _export_and_load_ort_session(
                 onnx_path,
                 input_names=list(input_names),
                 output_names=list(output_names),
-                opset_version=17,
-                dynamo=False,
+                opset_version=ONNX_OPSET_VERSION,
+                dynamo=dynamo,
                 dynamic_axes=dynamic_axes,
             )
         session = ort.InferenceSession(
@@ -64,44 +67,46 @@ def _export_and_load_ort_session(
     return session
 
 
-def _build_ort_llm_generator(model, tokenizer, sequence_length):
+_ort_llm_session_cache: dict[tuple, ort.InferenceSession] = {}
+
+
+def _build_ort_llm_generator(model, tokenizer, model_id, sequence_length):
     """Export an LLM to ONNX, load via ORT, and wrap in Generator."""
-    wrapped = ONNXExportableModuleWithCache(model)
-    wrapped.eval()
+    key = (model_id, sequence_length)
+    if key not in _ort_llm_session_cache:
+        wrapped = ONNXExportableModuleWithCache(model)
+        wrapped.eval()
 
-    layer_cache_descriptors = build_layer_cache_descriptors(model.config)
-    input_names = LLM.get_backbone_input_names(layer_cache_descriptors)
-    output_names = LLM.get_backbone_output_names(layer_cache_descriptors)
+        layer_cache_descriptors = build_layer_cache_descriptors(model.config)
+        input_names = LLM.get_backbone_input_names(layer_cache_descriptors)
+        output_names = LLM.get_backbone_output_names(layer_cache_descriptors)
 
-    # Build sample inputs using Generator.prepare_inputs
-    dummy_ids = torch.zeros((1, 1), dtype=torch.int32)
-    dummy_mask = torch.ones((1, 1), dtype=torch.int32)
-    sample_inputs = Generator.prepare_inputs(
-        model=wrapped,
-        input_ids=dummy_ids,
-        attention_mask=dummy_mask,
-        past_key_values=[],
-        sequence_length=sequence_length,
-        context_length=CONTEXT_LENGTH,
-        layer_cache_descriptors=layer_cache_descriptors,
-    )
+        dummy_ids = torch.zeros((1, 1), dtype=torch.int32)
+        dummy_mask = torch.ones((1, 1), dtype=torch.int32)
+        sample_inputs = Generator.prepare_inputs(
+            model=wrapped,
+            input_ids=dummy_ids,
+            attention_mask=dummy_mask,
+            past_key_values=[],
+            sequence_length=sequence_length,
+            context_length=CONTEXT_LENGTH,
+            layer_cache_descriptors=layer_cache_descriptors,
+        )
 
-    session = _export_and_load_ort_session(
-        wrapped, sample_inputs, input_names, output_names
-    )
+        _ort_llm_session_cache[key] = _export_and_load_ort_session(
+            wrapped, sample_inputs, input_names, output_names
+        )
 
-    # TorchONNXInterface expects quantsim.session — use a simple namespace
-    mock_quantsim = SimpleNamespace(session=session)
+    mock_quantsim = SimpleNamespace(session=_ort_llm_session_cache[key])
     ort_model = TorchONNXInterface(mock_quantsim, model.config)
 
-    generator = Generator(
+    return Generator(
         model=ort_model,
         tokenizer=tokenizer,
         sequence_length=sequence_length,
         context_length=CONTEXT_LENGTH,
         attention_mask_min=ATTENTION_MASK_MIN,
     )
-    return generator
 
 
 # ============================================================================
@@ -114,7 +119,7 @@ class TestLLMOnnxGeneratorParity:
 
     @pytest.mark.parametrize("sequence_length", SEQUENCE_LENGTHS)
     def test_logits_match(self, llm_bundle, sequence_length):
-        model, tokenizer, _ = llm_bundle
+        model, tokenizer, model_id = llm_bundle
         tokens = tokenize(tokenizer, self.TEXT)
 
         if tokens["input_ids"].shape[1] > sequence_length:
@@ -125,7 +130,9 @@ class TestLLMOnnxGeneratorParity:
             hf_out = model(**tokens)
 
         # --- ONNX Generator ---
-        generator = _build_ort_llm_generator(model, tokenizer, sequence_length)
+        generator = _build_ort_llm_generator(
+            model, tokenizer, model_id, sequence_length
+        )
         with torch.no_grad():
             gen_out = generator(
                 input_ids=tokens["input_ids"],
@@ -142,7 +149,7 @@ class TestLLMOnnxGeneratorParity:
     @pytest.mark.parametrize("sequence_length", SEQUENCE_LENGTHS)
     def test_argmax_match(self, llm_bundle, sequence_length):
         """Stronger check: predicted tokens are identical."""
-        model, tokenizer, _ = llm_bundle
+        model, tokenizer, model_id = llm_bundle
         tokens = tokenize(tokenizer, self.TEXT)
 
         if tokens["input_ids"].shape[1] > sequence_length:
@@ -151,7 +158,9 @@ class TestLLMOnnxGeneratorParity:
         with torch.no_grad():
             hf_out = model(**tokens)
 
-        generator = _build_ort_llm_generator(model, tokenizer, sequence_length)
+        generator = _build_ort_llm_generator(
+            model, tokenizer, model_id, sequence_length
+        )
         with torch.no_grad():
             gen_out = generator(
                 input_ids=tokens["input_ids"],
@@ -166,7 +175,7 @@ class TestLLMOnnxGeneratorParity:
 
     def test_multi_slice_logits_match(self, llm_bundle):
         """When input exceeds sequence_length, Generator processes in slices."""
-        model, tokenizer, _ = llm_bundle
+        model, tokenizer, model_id = llm_bundle
         long_text = " ".join(["hello world"] * 20)
         tokens = tokenize(tokenizer, long_text)
         seq_len = 32
@@ -177,7 +186,7 @@ class TestLLMOnnxGeneratorParity:
         with torch.no_grad():
             hf_out = model(**tokens)
 
-        generator = _build_ort_llm_generator(model, tokenizer, seq_len)
+        generator = _build_ort_llm_generator(model, tokenizer, model_id, seq_len)
         with torch.no_grad():
             gen_out = generator(
                 input_ids=tokens["input_ids"],
@@ -195,91 +204,7 @@ class TestLLMOnnxGeneratorParity:
 # VLM tests
 # ============================================================================
 class TestVLMOnnxGeneratorParity:
-    """Compare VLM_Generator(TorchONNXInterface(ORT)) vs vanilla Qwen2.5-VL."""
-
-    def _build_ort_vlm_generator(self, model, sequence_length):
-        """Export both backbone and vision to ONNX, wrap in VLM_Generator."""
-        from GenAILab.shared.models.qwen2_vl import Qwen_25_VL, Qwen2VLVisualWrapper
-
-        # --- Backbone ---
-        backbone_wrapped = ONNXExportableModuleWithCache(
-            model.model.language_model,
-            lm_head=model.lm_head,
-            use_inputs_embeds=True,
-            cache_type=Qwen_25_VL.get_cache_type(),
-        )
-        backbone_wrapped.eval()
-
-        layer_cache_descriptors = build_layer_cache_descriptors(
-            model.config.text_config
-        )
-        backbone_input_names = VLM.get_backbone_input_names(layer_cache_descriptors)
-        backbone_output_names = LLM.get_backbone_output_names(layer_cache_descriptors)
-
-        embedding = model.model.language_model.embed_tokens
-        embed_dim = embedding.embedding_dim
-
-        # Build sample backbone inputs (inputs_embeds instead of input_ids)
-        # Qwen2.5-VL uses 3D position_ids: [3, batch, seq_len]
-        dummy_embeds = torch.zeros((1, 1, embed_dim), dtype=torch.float32)
-        dummy_mask = torch.ones((1, 1), dtype=torch.int32)
-        dummy_position_ids = torch.zeros((3, 1, 1), dtype=torch.int32)
-        backbone_sample = Generator.prepare_inputs(
-            model=backbone_wrapped,
-            input_ids=None,
-            inputs_embeds=dummy_embeds,
-            attention_mask=dummy_mask,
-            past_key_values=[],
-            sequence_length=sequence_length,
-            context_length=CONTEXT_LENGTH,
-            layer_cache_descriptors=layer_cache_descriptors,
-            position_ids=dummy_position_ids,
-        )
-
-        backbone_session = _export_and_load_ort_session(
-            backbone_wrapped,
-            backbone_sample,
-            backbone_input_names,
-            backbone_output_names,
-        )
-        mock_backbone = SimpleNamespace(session=backbone_session)
-        ort_backbone = TorchONNXInterface(mock_backbone, model.config.text_config)
-
-        # --- Vision ---
-        vision_wrapped = Qwen2VLVisualWrapper(model.model.visual)
-        vision_wrapped.eval()
-
-        visual_input_names = Qwen_25_VL.get_visual_input_names()
-        visual_output_names = Qwen_25_VL.get_visual_output_names()
-
-        # Sample vision inputs — use dynamic axes so pixel_values can vary
-        sample_vision = Qwen_25_VL.get_sample_vision_inputs(model.config)
-        vision_dynamic_axes = {
-            name: {0: "num_patches"} for name in visual_input_names if name != "mask"
-        }
-        vision_dynamic_axes[visual_output_names[0]] = {0: "num_patches"}
-        vision_session = _export_and_load_ort_session(
-            vision_wrapped,
-            sample_vision,
-            visual_input_names,
-            visual_output_names,
-            dynamic_axes=vision_dynamic_axes,
-        )
-        mock_visual = SimpleNamespace(session=vision_session)
-        ort_vision = TorchONNXInterface(mock_visual, model.config)
-
-        generator = VLM_Generator(
-            backbone_model=ort_backbone,
-            vision_model=ort_vision,
-            embedding=embedding,
-            tokenizer=None,
-            sequence_length=sequence_length,
-            context_length=CONTEXT_LENGTH,
-            position_id_processor=Qwen_25_VL.generate_position_ids,
-            config=model.config,
-            attention_mask_min=ATTENTION_MASK_MIN,
-        )
-        return generator
+    """Compare VLM_Generator(TorchONNXInterface(ORT)) vs vanilla VLM forward."""
 
     def _prepare_text_only_inputs(self, processor, text="Describe this scene."):
         """Prepare VLM inputs without any images."""
@@ -327,7 +252,7 @@ class TestVLMOnnxGeneratorParity:
 
     @pytest.mark.parametrize("sequence_length", [64, 128])
     def test_text_only(self, vlm_bundle, sequence_length):
-        model, processor, _ = vlm_bundle
+        model, processor, model_id = vlm_bundle
         inputs = self._prepare_text_only_inputs(processor)
 
         if inputs["input_ids"].shape[1] > sequence_length:
@@ -336,7 +261,9 @@ class TestVLMOnnxGeneratorParity:
         with torch.no_grad():
             hf_out = model(**inputs)
 
-        generator = self._build_ort_vlm_generator(model, sequence_length)
+        generator = build_ort_vlm_generator(
+            model, model_id, sequence_length, _export_and_load_ort_session
+        )
         gen_inputs = {
             "input_ids": inputs["input_ids"],
             "attention_mask": inputs["attention_mask"],
@@ -355,14 +282,16 @@ class TestVLMOnnxGeneratorParity:
         strict=True,
     )
     def test_single_image(self, vlm_bundle):
-        model, processor, _ = vlm_bundle
+        model, processor, model_id = vlm_bundle
         inputs = self._prepare_single_image_inputs(processor)
         seq_len = max(128, inputs["input_ids"].shape[1])
 
         with torch.no_grad():
             hf_out = model(**inputs)
 
-        generator = self._build_ort_vlm_generator(model, seq_len)
+        generator = build_ort_vlm_generator(
+            model, model_id, seq_len, _export_and_load_ort_session
+        )
         with torch.no_grad():
             gen_out = generator(**inputs)
 
@@ -377,14 +306,16 @@ class TestVLMOnnxGeneratorParity:
         strict=True,
     )
     def test_multi_image(self, vlm_bundle):
-        model, processor, _ = vlm_bundle
+        model, processor, model_id = vlm_bundle
         inputs = self._prepare_multi_image_inputs(processor)
         seq_len = max(128, inputs["input_ids"].shape[1])
 
         with torch.no_grad():
             hf_out = model(**inputs)
 
-        generator = self._build_ort_vlm_generator(model, seq_len)
+        generator = build_ort_vlm_generator(
+            model, model_id, seq_len, _export_and_load_ort_session
+        )
         with torch.no_grad():
             gen_out = generator(**inputs)
 

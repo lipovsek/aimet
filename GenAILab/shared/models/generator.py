@@ -31,6 +31,42 @@ from GenAILab.shared.models.utils.layer_cache import (
 from GenAILab.shared.models.utils.rope_embedding import RopeEmbedding
 
 
+class _FlatListCache:
+    """Lightweight cache wrapper for hybrid attention models.
+
+    Stores the flattened state list (2 tensors per layer) and exposes the
+    ``get_seq_length()`` / ``to_legacy_cache()`` interface expected by
+    HuggingFace's generation loop, routing ``get_seq_length`` queries to the
+    first full-attention layer.
+    """
+
+    def __init__(
+        self,
+        flat_list: list[torch.Tensor],
+        descriptors: list,
+    ):
+        self._flat = flat_list
+        self._descriptors = descriptors
+        # Find the first full-attention layer index for seq_length queries
+        self._full_attn_idx: int | None = None
+        for desc in descriptors:
+            if desc.attention_type == AttentionType.FULL:
+                self._full_attn_idx = desc.layer_idx
+                break
+
+    def get_seq_length(self, layer_idx: int = 0) -> int:
+        if not self._flat:
+            return 0
+        idx = self._full_attn_idx if self._full_attn_idx is not None else 0
+        tensor = self._flat[idx * 2]  # key tensor for this layer
+        return tensor.shape[-2] if tensor.ndim >= 3 else 0
+
+    def to_legacy_cache(self):
+        return [
+            (self._flat[i], self._flat[i + 1]) for i in range(0, len(self._flat), 2)
+        ]
+
+
 def get_past_keyval_with_shift(
     past_key_vals: list[torch.Tensor],
     new_key_vals: list[torch.Tensor],
@@ -233,10 +269,24 @@ class Generator(GenerationMixin, torch.nn.Module):
             if input_ids is not None
             else {"inputs_embeds": inputs_embeds[:, num_processed_tokens:, :]}
         )
-        return inputs | {
-            "past_key_values": past_key_values,
-            "attention_mask": attention_mask,
+        # Forward VLM-specific kwargs so they reach VLM_Generator.forward().
+        # Do NOT forward all kwargs — HF's generate adds internal keys like
+        # cache_position that would be misinterpreted as extra model inputs.
+        _VLM_KEYS = {
+            "pixel_values",
+            "pixel_values_videos",
+            "image_grid_thw",
+            "video_grid_thw",
         }
+        vlm_kwargs = {k: v for k, v in kwargs.items() if k in _VLM_KEYS}
+        return (
+            inputs
+            | {
+                "past_key_values": past_key_values,
+                "attention_mask": attention_mask,
+            }
+            | vlm_kwargs
+        )
 
     @staticmethod
     def slice_inputs_for_inference(
@@ -341,9 +391,11 @@ class Generator(GenerationMixin, torch.nn.Module):
         # Create dummy KV cache / recurrent state per layer
         dummy_past_key_values = []
         for desc in layer_cache_descriptors:
-            shape = desc.dummy_state_shape(batch_size, context_length, sequence_length)
-            dummy_past_key_values.append(torch.zeros(shape, device=device))
-            dummy_past_key_values.append(torch.zeros(shape, device=device))
+            shape_a, shape_b = desc.dummy_state_shapes(
+                batch_size, context_length, sequence_length
+            )
+            dummy_past_key_values.append(torch.zeros(shape_a, device=device))
+            dummy_past_key_values.append(torch.zeros(shape_b, device=device))
 
         # Determine current KV cache length (skip linear attention, sliding window attention layers)
         current_key_value_length = 0
@@ -440,7 +492,7 @@ class Generator(GenerationMixin, torch.nn.Module):
             prepared_attention_mask,
             position_ids,
             *padded_past_key_values,
-            *[kwargs[k] for k in kwargs],
+            *[v for v in kwargs.values() if isinstance(v, torch.Tensor)],
         )
 
     def combine_local_and_global_outputs(
@@ -569,12 +621,24 @@ class Generator(GenerationMixin, torch.nn.Module):
             )
         )
 
-        # Convert KV Cache outputs into HF DynamicCache
-        past_key_values = DynamicCache()
-        keys = past_key_values_list[::2]
-        values = past_key_values_list[1::2]
-        for layer_idx, (k, v) in enumerate(zip(keys, values)):
-            past_key_values.update(k, v, layer_idx=layer_idx)
+        # Convert KV Cache outputs into a cache object compatible with HF's
+        # generation loop.  For hybrid models (linear + full attention) we use
+        # a lightweight wrapper so that ``get_seq_length()`` queries only the
+        # full-attention layers.
+        has_linear = any(
+            d.attention_type == AttentionType.LINEAR
+            for d in self.layer_cache_descriptors
+        )
+        if has_linear:
+            past_key_values = _FlatListCache(
+                past_key_values_list, self.layer_cache_descriptors
+            )
+        else:
+            past_key_values = DynamicCache()
+            keys = past_key_values_list[::2]
+            values = past_key_values_list[1::2]
+            for layer_idx, (k, v) in enumerate(zip(keys, values)):
+                past_key_values.update(k, v, layer_idx=layer_idx)
         return CausalLMOutputWithPast(logits=logits, past_key_values=past_key_values)
 
     def prefill(
@@ -775,6 +839,7 @@ class VLM_Generator(Generator):
         config: Union[PretrainedConfig | None] = None,
         attention_mask_min: int = -100,
         visual_output_names: tuple[str, ...] = ("image_embeddings",),
+        image_size: tuple[int, int] | None = None,
         *args,
         **kwargs,
     ):
@@ -791,12 +856,30 @@ class VLM_Generator(Generator):
 
         self.vision_model = vision_model
         self.embedding = embedding
+        self.image_size = image_size
+        self._visual_quantization_mode = False
         self.position_id_processor = (
             types.MethodType(position_id_processor, self)
             if position_id_processor
             else None
         )
         self.visual_output_names = visual_output_names
+
+    @contextlib.contextmanager
+    def visual_quantization_mode(self):
+        """Rewire prefill to yield vision model inputs instead of backbone inputs.
+
+        When active, :meth:`prefill` iterates over per-image pixel data and
+        yields the input tuples that would normally be passed to
+        ``self.vision_model()``.  This allows recipes like Calibration and
+        SeqMSE to operate on the vision encoder without any changes to their
+        own code.
+        """
+        self._visual_quantization_mode = True
+        try:
+            yield
+        finally:
+            self._visual_quantization_mode = False
 
     def fuse_text_image_video(
         self,
@@ -813,12 +896,13 @@ class VLM_Generator(Generator):
         # 2) Process each image individually through the vision model.
         #    This aligns with ONNX export (fixed single-image input shape)
         #    and on-target deployment (one vision encoder call per image).
-        image_mask = (
+        image_mask_3d = (
             (input_ids == self.config.image_token_id)
             .unsqueeze(-1)
             .expand_as(inputs_embeds)
             .to(inputs_embeds.device)
         )
+        image_mask_2d = self._build_image_mask_2d(input_ids, pixel_values)
 
         if pixel_values is not None and image_grid_thw is not None:
             # Split pixel_values into per-image chunks and process individually
@@ -832,7 +916,7 @@ class VLM_Generator(Generator):
                 vision_output = self.vision_model(
                     pixel_values=pixels_i,
                     image_grid_thw=grid_i.unsqueeze(0),
-                    mask=image_mask,
+                    mask=image_mask_2d,
                 )
 
                 if isinstance(vision_output, tuple):
@@ -864,7 +948,7 @@ class VLM_Generator(Generator):
             vision_output = self.vision_model(
                 pixel_values=pixel_values,
                 image_grid_thw=image_grid_thw,
-                mask=image_mask,
+                mask=image_mask_2d,
             )
             if isinstance(vision_output, tuple):
                 image_embeddings = vision_output[0]
@@ -879,7 +963,9 @@ class VLM_Generator(Generator):
             image_embeddings = image_embeddings.to(
                 device=inputs_embeds.device, dtype=inputs_embeds.dtype
             )
-            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeddings)
+            inputs_embeds = inputs_embeds.masked_scatter(
+                image_mask_3d, image_embeddings
+            )
 
         if pixel_values_videos is not None or video_grid_thw is not None:
             raise RuntimeError("No support for video yet.")
@@ -945,6 +1031,52 @@ class VLM_Generator(Generator):
             **{**kwargs, **extra_kwargs},
         )
 
+    def _build_image_mask_2d(self, input_ids, pixel_values):
+        """Build the 2D image mask padded to sequence_length.
+
+        Shared by :meth:`fuse_text_image_video` and the visual-quantization
+        path in :meth:`prefill`.
+        """
+        if input_ids is not None:
+            image_mask_2d = (input_ids == self.config.image_token_id).to(
+                input_ids.device
+            )
+        else:
+            device = pixel_values.device if pixel_values is not None else "cpu"
+            image_mask_2d = torch.zeros(
+                1, self.sequence_length, dtype=torch.bool, device=device
+            )
+        pad_len = self.sequence_length - image_mask_2d.shape[1]
+        if pad_len > 0:
+            image_mask_2d = torch.nn.functional.pad(
+                image_mask_2d, (0, pad_len), value=False
+            )
+        return image_mask_2d
+
+    def _prefill_visual(
+        self,
+        input_ids: torch.Tensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+        **kwargs,
+    ) -> typing.Generator[tuple[torch.Tensor, ...], None, None]:
+        """Yield per-image vision model input tuples.
+
+        Each yielded tuple contains the arguments that would be passed to
+        ``self.vision_model()`` for a single image: ``(pixel_values_i,
+        image_grid_thw_i, mask)``.  This is the visual-quantization
+        counterpart of the normal :meth:`prefill` path.
+        """
+        image_mask_2d = self._build_image_mask_2d(input_ids, pixel_values)
+
+        if pixel_values is not None and image_grid_thw is not None:
+            per_image_sizes = image_grid_thw.prod(-1).tolist()
+            per_image_pixels = torch.split(pixel_values, per_image_sizes, dim=0)
+            for pixels_i, grid_i in zip(per_image_pixels, image_grid_thw):
+                yield (pixels_i, grid_i.unsqueeze(0), image_mask_2d)
+        elif pixel_values is not None:
+            yield (pixel_values, image_grid_thw, image_mask_2d)
+
     def prefill(
         self,
         input_ids: torch.Tensor | None = None,
@@ -958,7 +1090,14 @@ class VLM_Generator(Generator):
         video_grid_thw: torch.Tensor | None = None,
         **kwargs,
     ) -> typing.Generator[tuple[torch.Tensor, ...], None, None]:
-        kwargs.pop("mm_token_type_ids", None)
+        if self._visual_quantization_mode:
+            yield from self._prefill_visual(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                **kwargs,
+            )
+            return
 
         # 1) Obtain fused input embeddings and extra vision outputs
         inputs_embeds, mm_token_type_ids, extra_kwargs = self.fuse_text_image_video(

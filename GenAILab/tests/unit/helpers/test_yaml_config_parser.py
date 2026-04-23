@@ -101,6 +101,18 @@ class TestRegistration:
         key = ("*", "AIHM")
         assert YAMLConfigParser.adaptation_lookup[key].exclusive is True
 
+    def test_register_adaptation_required_for_export(self):
+        @YAMLConfigParser.register_adaptation(
+            "ExportHelper", model_type="llama", required_for_export=True
+        )
+        class ExportHelperMixin:
+            pass
+
+        key = ("llama", "ExportHelper")
+        info = YAMLConfigParser.adaptation_lookup[key]
+        assert info.required_for_export is True
+        assert info.exclusive is False
+
     def test_register_default_llm(self):
         class FakeLLM:
             pass
@@ -224,6 +236,100 @@ class TestAdaptationResolution:
         YAMLConfigParser._default_llm_cls = FakeLLM
         with pytest.raises(LookupError, match="No 'Nonexistent'"):
             YAMLConfigParser.get_model_class("llama", adaptations=["Nonexistent"])
+
+    def test_get_required_export_adaptations(self):
+        @YAMLConfigParser.register_adaptation(
+            "ReqA", model_type="llama", required_for_export=True
+        )
+        class ReqAMixin:
+            pass
+
+        @YAMLConfigParser.register_adaptation(
+            "OptB", model_type="llama", required_for_export=False
+        )
+        class OptBMixin:
+            pass
+
+        @YAMLConfigParser.register_adaptation(
+            "ReqOther", model_type="qwen2", required_for_export=True
+        )
+        class ReqOtherMixin:
+            pass
+
+        result = YAMLConfigParser.get_required_export_adaptations("llama")
+        assert "ReqA" in result
+        assert "OptB" not in result
+        assert "ReqOther" not in result
+
+    def test_get_required_export_adaptations_excludes_exclusive(self):
+        @YAMLConfigParser.register_adaptation(
+            "ExclReq",
+            model_type="llama",
+            exclusive=True,
+            required_for_export=True,
+        )
+        class ExclReqMixin:
+            pass
+
+        result = YAMLConfigParser.get_required_export_adaptations("llama")
+        assert "ExclReq" not in result
+
+    def test_adaptation_kwargs_set_as_class_attrs(self):
+        class FakeLLM:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM
+
+        @YAMLConfigParser.register_adaptation("Scale", model_type="llama")
+        class ScaleMixin:
+            layer_multipliers: dict = {}
+
+        result_cls = YAMLConfigParser.get_model_class(
+            "llama",
+            adaptations=["Scale"],
+            adaptation_kwargs={"Scale": {"layer_multipliers": {0: 2.0}}},
+        )
+        assert result_cls.layer_multipliers == {0: 2.0}
+
+
+# ---------------------------------------------------------------------------
+# Normalize adaptations
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeAdaptations:
+    def test_string_entries(self):
+        names, kwargs = YAMLConfigParser._normalize_adaptations(["SHA", "FastExport"])
+        assert names == ["SHA", "FastExport"]
+        assert kwargs == {}
+
+    def test_dict_entries(self):
+        raw = [{"AttentionMaskScale": {"layer_multipliers": {0: 10.0}}}]
+        names, kwargs = YAMLConfigParser._normalize_adaptations(raw)
+        assert names == ["AttentionMaskScale"]
+        assert kwargs["AttentionMaskScale"] == {"layer_multipliers": {0: 10.0}}
+
+    def test_mixed_entries(self):
+        raw = ["SHA", {"AttentionMaskScale": {"layer_multipliers": {0: 2.0}}}]
+        names, kwargs = YAMLConfigParser._normalize_adaptations(raw)
+        assert names == ["SHA", "AttentionMaskScale"]
+        assert "SHA" not in kwargs
+        assert kwargs["AttentionMaskScale"] == {"layer_multipliers": {0: 2.0}}
+
+    def test_dict_with_none_value(self):
+        raw = [{"NoArgs": None}]
+        names, kwargs = YAMLConfigParser._normalize_adaptations(raw)
+        assert names == ["NoArgs"]
+        assert kwargs["NoArgs"] == {}
+
+    def test_multi_key_dict_raises(self):
+        raw = [{"A": {}, "B": {}}]
+        with pytest.raises(ValueError, match="exactly one key"):
+            YAMLConfigParser._normalize_adaptations(raw)
+
+    def test_invalid_type_raises(self):
+        with pytest.raises(ValueError, match="string or single-key dict"):
+            YAMLConfigParser._normalize_adaptations([42])
 
 
 # ---------------------------------------------------------------------------
@@ -472,3 +578,78 @@ class TestParseDocument:
         }
         with pytest.raises(ValueError, match="Unrecognized"):
             YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="test_model")
+    def test_export_enforces_required_adaptations(self, mock_detect, tmp_path):
+        """Exporting without a required adaptation raises ValueError."""
+
+        @YAMLConfigParser.register_adaptation(
+            "RequiredAdapt", model_type="test_model", required_for_export=True
+        )
+        class RequiredMixin:
+            pass
+
+        # Register the model so use_dynamo_export can be checked
+        @YAMLConfigParser.register_model("test_model")
+        class TestModel:
+            @staticmethod
+            def use_dynamo_export():
+                return True
+
+        # The default LLM name must contain "ONNX" for the export path to trigger
+        class FakeLLM_ONNX:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM_ONNX
+
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "metrics": [{"name": "PPL"}],
+        }
+        with pytest.raises(ValueError, match="RequiredAdapt"):
+            YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="test_model")
+    def test_export_required_adaptation_skipped_with_exclusive(
+        self, mock_detect, tmp_path
+    ):
+        """An exclusive adaptation suppresses required-for-export enforcement."""
+
+        @YAMLConfigParser.register_adaptation(
+            "RequiredAdapt", model_type="test_model", required_for_export=True
+        )
+        class RequiredMixin:
+            pass
+
+        @YAMLConfigParser.register_adaptation(
+            "FullPipeline", model_type="test_model", exclusive=True
+        )
+        class FullPipelineMixin:
+            pass
+
+        @YAMLConfigParser.register_model("test_model")
+        class TestModel:
+            @staticmethod
+            def use_dynamo_export():
+                return True
+
+        class FakeLLM_ONNX:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM_ONNX
+
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+                "adaptations": ["FullPipeline"],
+            },
+            "metrics": [{"name": "PPL"}],
+        }
+        # Should NOT raise — exclusive adaptation bypasses the check
+        result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))

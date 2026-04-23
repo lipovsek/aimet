@@ -5,10 +5,42 @@
 
 import contextlib
 
+import torch
+
 from GenAILab.shared.models.base import SimCollection
 from GenAILab.shared.models.generator import Generator, VLM_Generator
 
 from GenAILab.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
+
+
+class _VisualONNXAdapter(torch.nn.Module):
+    """Reassembles flat ONNX visual outputs into the list structure expected
+    by the generator (e.g. deepstack_visual_embeds as a list of tensors)."""
+
+    def __init__(self, interface: TorchONNXInterface, num_list_outputs: int):
+        super().__init__()
+        self.interface = interface
+        self.num_list_outputs = num_list_outputs
+
+    @property
+    def config(self):
+        return self.interface.config
+
+    @property
+    def device(self):
+        return self.interface.device
+
+    @property
+    def dtype(self):
+        return self.interface.dtype
+
+    def forward(self, *args, **kwargs):
+        outputs = self.interface(*args, **kwargs)
+        if self.num_list_outputs > 0 and isinstance(outputs, (list, tuple)):
+            base = list(outputs[: -self.num_list_outputs])
+            tail = list(outputs[-self.num_list_outputs :])
+            return tuple(base + [tail])
+        return outputs
 
 
 def _build_fp_mode(sim_collection: SimCollection):
@@ -49,13 +81,21 @@ def generator_factory(
 
     if sim_collection.is_vlm():
         assert issubclass(generator_cls, VLM_Generator)
+        vision_interface = TorchONNXInterface(
+            sim_collection.visual, sim_collection.config
+        )
+        # Wrap vision interface to reassemble list outputs (e.g. deepstack)
+        vis_cfg = getattr(sim_collection.config, "vision_config", None)
+        ds_indexes = getattr(vis_cfg, "deepstack_visual_indexes", None)
+        if ds_indexes:
+            vision_interface = _VisualONNXAdapter(
+                vision_interface, num_list_outputs=len(ds_indexes)
+            )
         return generator_cls(
             backbone_model=TorchONNXInterface(
                 sim_collection.backbone, sim_collection.config.text_config
             ),
-            vision_model=TorchONNXInterface(
-                sim_collection.visual, sim_collection.config
-            ),
+            vision_model=vision_interface,
             embedding=sim_collection.embedding,
             tokenizer=tokenizer,
             position_id_processor=sim_collection.position_id_processor,

@@ -197,6 +197,7 @@ class LLM_ONNX(LLM):
             output_names=cls.get_backbone_output_names(
                 build_layer_cache_descriptors(exportable_model.config)
             ),
+            dynamo=cls.use_dynamo_export(),
         )
 
         return ModelCacheEntry(

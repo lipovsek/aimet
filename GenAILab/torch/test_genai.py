@@ -96,6 +96,7 @@ def test_llm_quantization(
         visual_output_names=model_cls.get_visual_output_names()
         if issubclass(model_cls, VLM)
         else None,
+        image_size=image_size,
         **model_kwargs,
     )
 
@@ -147,22 +148,26 @@ def test_llm_quantization(
 
         visual_steps = []
         if "visual" in all_recipes and sim_collection.visual is not None:
-            visual_steps = apply_recipe_chain(
-                all_recipes["visual"],
-                sim_collection.visual,
-                generator,
-                tokenizer,
-                context_length,
-                image_size,
-                profiler_kwargs,
-                profiler_capture_intermediate_data,
-                framework="torch",
-                model_id=model_id,
-                precision=precision,
-                model_kwargs=model_kwargs,
-                component="visual",
-                recipe_cache=recipe_cache,
-            )
+            # Disable backbone quantizers during visual recipes and switch
+            # the generator to yield vision model inputs from prefill().
+            backbone_ctx = remove_all_quantizers(sim_collection.backbone.model)
+            with backbone_ctx, generator.visual_quantization_mode():
+                visual_steps = apply_recipe_chain(
+                    all_recipes["visual"],
+                    sim_collection.visual,
+                    generator,
+                    tokenizer,
+                    context_length,
+                    image_size,
+                    profiler_kwargs,
+                    profiler_capture_intermediate_data,
+                    framework="torch",
+                    model_id=model_id,
+                    precision=precision,
+                    model_kwargs=model_kwargs,
+                    component="visual",
+                    recipe_cache=recipe_cache,
+                )
 
         # Finalize embedding quantization after recipes have had a chance to
         # transform the weights (e.g. SpinQuant rotation).
@@ -183,7 +188,8 @@ def test_llm_quantization(
 
     run_group = None
     export_dir = test_parameters["export"] if test_parameters["export"] else None
-    if export_dir:
+    # TODO: remove skip exports for models that require Dynamo export
+    if export_dir and not model_cls.use_dynamo_export():
         tokenizer.save_pretrained(export_dir)
         sim_collection.config.save_pretrained(export_dir)
 
@@ -196,6 +202,8 @@ def test_llm_quantization(
                 context_length=context_length,
                 sequence_length=sequence_length,
                 layer_cache_descriptors=generator.layer_cache_descriptors,
+                image_size=image_size,
+                config=sim_collection.config,
             ),
             input_names=model_cls.get_backbone_input_names(
                 build_layer_cache_descriptors(
@@ -208,7 +216,7 @@ def test_llm_quantization(
                 )
             ),
             opset_version=17,
-            dynamo=False,
+            dynamo=model_cls.use_dynamo_export(),
             export_int32_bias=False,
         )
 
@@ -223,7 +231,7 @@ def test_llm_quantization(
                 input_names=model_cls.get_visual_input_names(),
                 output_names=model_cls.get_visual_output_names(),
                 opset_version=17,
-                dynamo=False,
+                dynamo=model_cls.use_dynamo_export(),
                 export_int32_bias=False,
             )
 

@@ -61,8 +61,9 @@ class _DummyVision(torch.nn.Module):
     def forward(self, pixel_values=None, image_grid_thw=None, mask=None, **kwargs):
         if pixel_values is None:
             return None
-        # Return embeddings matching the image token count
-        num_image_tokens = mask[..., 0].sum().item() if mask is not None else 4
+        # Return embeddings matching the image token count.
+        # mask is a 2D boolean tensor (batch, padded_seq_len).
+        num_image_tokens = mask.sum().item() if mask is not None else 4
         return torch.randn(int(num_image_tokens), self.hidden_size)
 
 

@@ -35,24 +35,42 @@ class LayerCacheDescriptor:
     num_kv_heads: int
     head_dim: int
     sliding_window_size: int | None = None
+    # Linear attention specific dimensions
+    conv_dim: int | None = None
+    conv_kernel_size: int | None = None
+    linear_num_v_heads: int | None = None
+    linear_head_k_dim: int | None = None
+    linear_head_v_dim: int | None = None
 
-    def dummy_state_shape(
+    def dummy_state_shapes(
         self, batch_size: int, context_length: int, sequence_length: int
-    ) -> tuple[int, ...]:
-        """Shape of the dummy state tensor for this layer during prepare_inputs.
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        """Shapes for the two state tensors of this layer during prepare_inputs.
+
+        Returns a pair ``(shape_a, shape_b)`` where *shape_a* corresponds to the
+        first flattened tensor (key or conv_state) and *shape_b* to the second
+        (value or recurrent_state).
 
         Full and sliding_window layers are padded to the full context length so
         that a single 4D attention mask can be applied across all layers.
         """
         if self.attention_type in (AttentionType.FULL, AttentionType.SLIDING_WINDOW):
-            return (
+            shape = (
                 batch_size,
                 self.num_kv_heads,
                 context_length - sequence_length,
                 self.head_dim,
             )
+            return shape, shape
         if self.attention_type == AttentionType.LINEAR:
-            return (batch_size, self.num_kv_heads, self.head_dim, self.head_dim)
+            conv_shape = (batch_size, self.conv_dim, self.conv_kernel_size)
+            recurrent_shape = (
+                batch_size,
+                self.linear_num_v_heads,
+                self.linear_head_k_dim,
+                self.linear_head_v_dim,
+            )
+            return conv_shape, recurrent_shape
         raise ValueError(f"Unknown attention type: {self.attention_type}")
 
     def clip_length(self, max_length: int) -> int | None:
@@ -87,6 +105,27 @@ def build_layer_cache_descriptors(
     sliding_window = getattr(config, "sliding_window", None)
     layer_types = getattr(config, "layer_types", None)
 
+    # Extract linear attention dimensions from config (e.g. Qwen 3.5)
+    linear_num_k_heads = getattr(config, "linear_num_key_heads", None)
+    linear_num_v_heads = getattr(config, "linear_num_value_heads", None)
+    linear_head_k_dim = getattr(config, "linear_key_head_dim", None)
+    linear_head_v_dim = getattr(config, "linear_value_head_dim", None)
+    linear_conv_kernel_dim = getattr(config, "linear_conv_kernel_dim", None)
+
+    # conv_dim = key_dim * 2 + value_dim
+    if (
+        linear_num_k_heads
+        and linear_head_k_dim
+        and linear_num_v_heads
+        and linear_head_v_dim
+    ):
+        conv_dim = (
+            linear_head_k_dim * linear_num_k_heads * 2
+            + linear_head_v_dim * linear_num_v_heads
+        )
+    else:
+        conv_dim = None
+
     descriptors: list[LayerCacheDescriptor] = []
     for i in range(num_layers):
         hf_layer_type = layer_types[i] if layer_types else None
@@ -103,6 +142,17 @@ def build_layer_cache_descriptors(
             sliding_window if attention_type == AttentionType.SLIDING_WINDOW else None
         )
 
+        # Include linear attention dimensions when applicable
+        linear_kwargs = {}
+        if attention_type == AttentionType.LINEAR:
+            linear_kwargs = dict(
+                conv_dim=conv_dim,
+                conv_kernel_size=linear_conv_kernel_dim,
+                linear_num_v_heads=linear_num_v_heads,
+                linear_head_k_dim=linear_head_k_dim,
+                linear_head_v_dim=linear_head_v_dim,
+            )
+
         descriptors.append(
             LayerCacheDescriptor(
                 layer_idx=i,
@@ -110,6 +160,7 @@ def build_layer_cache_descriptors(
                 num_kv_heads=num_kv_heads,
                 head_dim=head_dim,
                 sliding_window_size=sw_size,
+                **linear_kwargs,
             )
         )
 

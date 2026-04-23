@@ -5,6 +5,7 @@
 
 import warnings
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -14,7 +15,7 @@ from transformers.processing_utils import ProcessorMixin
 
 from GenAILab.shared.helpers.yaml_config_parser import YAMLConfigParser
 from GenAILab.shared.helpers.eval_context import EvaluationContext
-from GenAILab.shared.models.generator import Generator
+from GenAILab.shared.models.generator import Generator, VLM_Generator
 from .datasets import (
     Wikitext,
     TinyMMLU as TinyMMLUDataset,
@@ -790,5 +791,86 @@ class Prompts(Interactive):
             generated_text.append(
                 cls.generate_output(model, tokenizer, unformatted_prompt=prompt)
             )
+        print("===============================")
+        return generated_text
+
+
+@YAMLConfigParser.register_metric
+class MultimodalPrompts(EvaluationMetric):
+    BASE_DIR = Path(__file__).parent / "sample_images"
+
+    prompts = {
+        "bear.png": "Describe this image.",
+        "dog.jpg": "Describe this image.",
+    }
+
+    @classmethod
+    def evaluate(
+        cls,
+        model: Generator,
+        processor: ProcessorMixin,
+        context_length: int,
+        *,
+        eval_ctx: EvaluationContext = None,
+        **kwargs,
+    ) -> list[str]:
+        if not isinstance(model, VLM_Generator):
+            raise ValueError("MultimodalPrompts metric requires a VL model.")
+
+        if model.generation_config is None:
+            model.generation_config = GenerationConfig()
+
+        from PIL import Image
+
+        tokenizer = getattr(processor, "tokenizer", processor)
+        generated_text = []
+
+        for image_file, prompt_text in cls.prompts.items():
+            print("===============================")
+            image_path = cls.BASE_DIR / image_file
+            image = Image.open(image_path).convert("RGB")
+            if model.image_size is not None:
+                image = image.resize(model.image_size)
+
+            content = [
+                {"type": "image"},
+                {"type": "text", "text": prompt_text},
+            ]
+            messages = [{"role": "user", "content": content}]
+            text = processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+            inputs = processor(
+                text=[text],
+                images=[image],
+                return_tensors="pt",
+            )
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+            inputs.pop("mm_token_type_ids", None)
+
+            generation_config = GenerationConfig(
+                max_new_tokens=200,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.pad_token_id,
+                do_sample=False,
+            )
+
+            streamer = TextStreamer(tokenizer=tokenizer, skip_prompt=True)
+            print(text, end="")
+            outputs = model.generate(
+                **inputs,
+                generation_config=generation_config,
+                streamer=streamer,
+            )
+
+            generated_tokens = (
+                outputs[0] if isinstance(outputs, (list, tuple)) else outputs
+            )
+            result = tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
+            generated_text.append(result)
+
         print("===============================")
         return generated_text

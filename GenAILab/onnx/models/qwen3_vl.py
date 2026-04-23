@@ -200,6 +200,8 @@ class Qwen_3_VL_ONNX(Qwen_3_VL):
         )
         traceable_visual = Qwen3VLVisualWrapper(model.model.visual)
 
+        layer_cache_descs = build_layer_cache_descriptors(traceable_backbone.config)
+
         backbone_onnx_model, visual_onnx_model = get_onnx_model(
             checkpoint=directory,
             fp_backbone_model=traceable_backbone,
@@ -209,22 +211,22 @@ class Qwen_3_VL_ONNX(Qwen_3_VL):
                 traceable_backbone,
                 context_length,
                 sequence_length,
-                layer_cache_descriptors=build_layer_cache_descriptors(
-                    traceable_backbone.config
-                ),
+                layer_cache_descriptors=layer_cache_descs,
+                image_size=image_size,
+                config=model.config,
             ),
             input_names=cls.get_backbone_input_names(
-                build_layer_cache_descriptors(traceable_backbone.config)
+                layer_cache_descs, config=model.config
             ),
-            output_names=cls.get_backbone_output_names(
-                build_layer_cache_descriptors(traceable_backbone.config)
-            ),
+            output_names=cls.get_backbone_output_names(layer_cache_descs),
             fp_visual_model=traceable_visual,
             sample_visual_input=cls.get_sample_vision_inputs(
                 model.config, image_size=image_size
             ),
             visual_input_names=cls.get_visual_input_names(),
-            visual_output_names=cls.get_visual_output_names(),
+            visual_output_names=cls.get_visual_output_names(config=model.config),
+            dynamo=cls.use_dynamo_export(),
+            visual_dynamo=False,
         )
 
         embedding = model.model.language_model.embed_tokens

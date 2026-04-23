@@ -44,6 +44,17 @@ def mock_torch_onnx_inference(
     return output_tensors
 
 
+def _flatten_tensor_args(args):
+    """Flatten any tensor lists in positional args for ONNX session input."""
+    flat = []
+    for a in args:
+        if isinstance(a, list) and a and isinstance(a[0], torch.Tensor):
+            flat.extend(a)
+        else:
+            flat.append(a)
+    return tuple(flat)
+
+
 class TorchONNXInterface(torch.nn.Module):
     def __init__(self, quantsim, config):
         super().__init__()
@@ -70,7 +81,11 @@ class TorchONNXInterface(torch.nn.Module):
         **kwargs: torch.Tensor,
     ) -> torch.Tensor | Collection[torch.Tensor]:
         """
-        QuantSim forward pass with torch.Tensor
+        QuantSim forward pass with torch.Tensor.
+
+        Tensor lists in positional args (e.g. deepstack_visual_embeds) are
+        flattened to match the ONNX graph's flat input layout.
         """
         assert self.quantsim is not None
-        return mock_torch_onnx_inference(self.quantsim.session, *args, **kwargs)
+        flat_args = _flatten_tensor_args(args)
+        return mock_torch_onnx_inference(self.quantsim.session, *flat_args, **kwargs)
