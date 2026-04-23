@@ -3678,6 +3678,7 @@ def matmul_with_constant_first_input():
                     "Unsqueeze",
                     inputs=["model_input", "axes"],
                     outputs=["matmul_input"],
+                    name="/Unsqueeze",
                 ),
                 helper.make_node(
                     "MatMul",

@@ -6,9 +6,12 @@ import copy
 import numpy as np
 import torch
 from onnx import numpy_helper, load_model
+import onnx_ir
+import onnx_ir.passes.common
 import tempfile
 import pytest
 
+import aimet_onnx
 from aimet_onnx import QuantizationSimModel
 from aimet_onnx.experimental.adascale.adascale_optimizer import (
     AdaScale,
@@ -561,8 +564,11 @@ class TestAdascaleQuantizer:
                     (["input"], ["/blocks.0/layer2/Add_output_0"]),
                     (["/blocks.0/layer2/Add_output_0"], ["output"]),
                 ]
+                sim_model: onnx_ir.Model = onnx_ir.from_proto(sim.model.model)
+                onnx_ir.passes.common.TopologicalSortPass().call(sim_model)
                 AdaScale.optimize_adascale_block(
-                    sim,
+                    sim_model,
+                    sim.qc_quantize_op_dict,
                     dummy_input,
                     qt_input,
                     block_input_output_names=block_input_output_names[i],
@@ -570,6 +576,7 @@ class TestAdascaleQuantizer:
                     scales_lr=5e-4,
                     num_iterations=100,
                 )
+                sim.model.model.CopyFrom(onnx_ir.to_proto(sim_model))
 
             updated_weights = {}
             for initializer in sim.model.model.graph.initializer:
@@ -666,8 +673,11 @@ class TestAdascaleQuantizer:
             torch.optim.Adam.step = step_with_memory_tracking
             try:
                 block_input_output_names = (["input1", "input2"], ["output"])
+                sim_model = onnx_ir.from_proto(sim.model.model)
+                onnx_ir.passes.common.TopologicalSortPass().call(sim_model)
                 AdaScale.optimize_adascale_block(
-                    sim,
+                    sim_model,
+                    sim.qc_quantize_op_dict,
                     fp_inputs,
                     quantized_inputs,
                     block_input_output_names=block_input_output_names,
@@ -676,6 +686,7 @@ class TestAdascaleQuantizer:
                     num_iterations=15,
                     device=torch.device("cuda:0"),
                 )
+                sim.model.model.CopyFrom(onnx_ir.to_proto(sim_model))
             finally:
                 torch.optim.Adam.step = original_adam_step
 

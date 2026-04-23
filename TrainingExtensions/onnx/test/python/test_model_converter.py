@@ -14,6 +14,7 @@ import pytest
 import os
 import torch
 from onnx import numpy_helper
+import onnx_ir
 import numpy as np
 from dataclasses import dataclass
 import copy
@@ -51,10 +52,10 @@ def _check_torch_weights(model, are_zeros: bool = False):
 
 
 def _check_onnx_weights(model, layers_to_check: set = None, are_zeros: bool = False):
-    for initializer in model.graph.initializer:
+    for initializer in model.graph.initializers.values():
         if layers_to_check is not None and initializer.name not in layers_to_check:
             continue
-        weight_array = numpy_helper.to_array(initializer)
+        weight_array = initializer.const_value.numpy()
         if are_zeros:
             assert (weight_array == 0.0).all()
         else:
@@ -135,7 +136,9 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
         )
         block_output_names = [block_end.inputs[0].name]
         block_input_output_names = (block_input_names, block_output_names)
-        pt_block, param_map = get_pt_block(sim.model.model, block_input_output_names)
+        sim_model = onnx_ir.from_proto(sim.model.model)
+        onnx_ir.passes.common.TopologicalSortPass().call(sim_model)
+        pt_block, param_map = get_pt_block(sim_model, block_input_output_names)
         ################ run forward pass 1 through onnx block
         block_model_path = os.path.join(CHECKPOINT_DIR, "block_fp32.onnx")
         extract_model(
@@ -167,11 +170,10 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
         ################ Update torch weights to 1
         _update_torch_weights(pt_block, set_zeros=False)
         ################ copy_pt_weights_to_onnx copies updated wts to onnx from pt
-        copy_pt_weights_to_onnx(pt_block, sim.model.model, param_map)
-
+        copy_pt_weights_to_onnx(pt_block, sim_model, param_map)
         layers_to_check = set(param_map.values())
         ################ check if the onnx wts are updated for `layers of interest`
-        _check_onnx_weights(sim.model.model, layers_to_check, are_zeros=False)
+        _check_onnx_weights(sim_model, layers_to_check, are_zeros=False)
 
 
 @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
@@ -267,7 +269,9 @@ def test_model_round_trip_with_qwen_dynamo(
         )
         block_output_names = [block_end.inputs[0].name]
         block_input_output_names = (block_input_names, block_output_names)
-        pt_block, param_map = get_pt_block(sim.model.model, block_input_output_names)
+        sim.model.topological_sort()
+        sim_model = onnx_ir.from_proto(sim.model.model)
+        pt_block, param_map = get_pt_block(sim_model, block_input_output_names)
 
         block_model_path = os.path.join(CHECKPOINT_DIR, "block_fp32.onnx")
         extract_model(
@@ -297,10 +301,10 @@ def test_model_round_trip_with_qwen_dynamo(
         assert compute_psnr(onnx_fp_out[0], torch_out) == 100
 
         _update_torch_weights(pt_block, set_zeros=False)
-        copy_pt_weights_to_onnx(pt_block, sim.model.model, param_map)
+        copy_pt_weights_to_onnx(pt_block, sim_model, param_map)
 
         layers_to_check = set(param_map.values())
-        _check_onnx_weights(sim.model.model, layers_to_check, are_zeros=False)
+        _check_onnx_weights(sim_model, layers_to_check, are_zeros=False)
 
 
 class SimpleConvModel(nn.Module):
@@ -361,7 +365,7 @@ def test_model_with_conv(tmp_dir):
         output_names=["output"],
         dynamo=False,
     )
-    onnx_model = onnx.load(onnx_model_path)
+    onnx_model = onnx_ir.load(onnx_model_path)
     pt_block, param_map = get_pt_block(onnx_model, (["input"], ["output"]))
     # forwardpass through onnx == forward pass through pt Block
     onnx_block_model_sess = ort.InferenceSession(
@@ -419,6 +423,7 @@ def test_model_with_ModelWithConsecutiveConvBlocks(
     get_onnx_block_model = extract_model(
         onnx_model_path, "extracted.onnx", input_names, output_names
     )
+    onnx_model = onnx_ir.from_proto(onnx_model)
     pt_block, param_map = get_pt_block(onnx_model, (input_names, output_names))
 
     # forwardpass through onnx == forward pass through pt Block
@@ -459,7 +464,7 @@ def test_model_with_conv_with_dynamo(tmp_dir, dynamo, opset_version):
         dynamo=dynamo,
         opset_version=opset_version,
     )
-    onnx_model = onnx.load(onnx_model_path)
+    onnx_model = onnx_ir.load(onnx_model_path)
     pt_block, param_map = get_pt_block(onnx_model, (["input"], ["output"]))
     # forwardpass through onnx == forward pass through pt Block
     onnx_block_model_sess = ort.InferenceSession(

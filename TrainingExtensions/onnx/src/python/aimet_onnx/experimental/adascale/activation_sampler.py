@@ -6,22 +6,11 @@
 from typing import List, Dict, Union, Optional, Sequence, Tuple, Any
 
 import numpy as np
-import onnx
-from packaging import version
-import os
+import onnx_ir
 
 from aimet_onnx.utils import (
-    add_hook_to_get_activation,
-    remove_activation_hooks,
-    create_input_dict,
     OrtInferenceSession,
 )
-
-# pylint: disable=no-name-in-module, ungrouped-imports
-if version.parse(onnx.__version__) >= version.parse("1.14.0"):
-    from onnx import ModelProto
-else:
-    from onnx.onnx_pb import ModelProto
 
 
 class ActivationSampler:
@@ -32,57 +21,43 @@ class ActivationSampler:
     def __init__(
         self,
         activation_name: str,
-        model_or_path: Union[ModelProto, str],
+        model_path: str,
         providers: Optional[Sequence[str | Tuple[str, Dict[Any, Any]]]] = None,
-        path: str = None,
     ):
         """
         :param activation_name: tensor name of the module whose output we want to retrieve
-        :param model_or_path: ONNX ModelProto or path to an ONNX model file
+        :param model_path: Path to an ONNX model file
         :param providers: List of providers to use
-        :param path: path of stored fp model
         :return: Input data to quant op, Output data from original op
         """
         self._activation_name = activation_name
-        (
-            self._sess,
-            self._handle,
-            self._model,
-        ) = self.create_session(model_or_path, activation_name, providers, path)
+        self._sess, self._model = self.create_session(
+            model_path, activation_name, providers
+        )
 
     @staticmethod
     def create_session(
-        model_or_path: Union[ModelProto, str],
+        model_path: str,
         activation: Union[str, List[str]],
         providers,
-        path: str,
     ):
         """
         Helper to create a session using both module's input and output tensor names
 
-        :param model_or_path: ONNX ModelProto or path to an ONNX model file
+        :param model_path: Path to an ONNX model file
         :param activation: activation to add a hook to
         :param providers: List of providers to use
-        :param path: path to store the onnx model
         """
-        if isinstance(model_or_path, str):
-            model = onnx.load(model_or_path, load_external_data=False)
-            handle = add_hook_to_get_activation(model, activation)
-            model_path = os.path.join(path, "fp32_model.onnx")
-            onnx.save(model, model_path)
-            sess = OrtInferenceSession(model_path, providers)
-        else:
-            model = model_or_path
-            handle = add_hook_to_get_activation(model, activation)
-            sess = OrtInferenceSession(model, providers)
-
-        return sess, handle, model
-
-    def restore_graph(self):
-        """
-        Remove all the additional model outputs added to the graph and restore its original state
-        """
-        remove_activation_hooks(self._model, self._handle)
+        ir_model = onnx_ir.load(model_path)
+        if isinstance(activation, str):
+            activation = [activation]
+        ir_model.graph = onnx_ir.convenience.extract(
+            ir_model.graph, inputs=ir_model.graph.inputs, outputs=activation
+        )
+        subgraph_path = model_path.replace(".onnx", "_subgraph.onnx")
+        onnx_ir.save(ir_model, subgraph_path)
+        sess = OrtInferenceSession(subgraph_path, providers)
+        return sess, ir_model
 
     @staticmethod
     def run_session(
@@ -121,13 +96,12 @@ class ActivationSampler:
 
         return all_data
 
-    def sample_acts(self, model_inputs: Dict[str, List[np.ndarray]]) -> List:
+    def sample_acts(self, model_inputs: Dict[str, np.ndarray]) -> List:
         """
         Given the model_inputs retrieve the activation tensors corresponding to activation_name
         :param model_inputs: inputs to the model
         :return: Tuple of module's quantized input activation and its fp activation output
         """
-        model_inputs = create_input_dict(self._model, model_inputs)
         module_input_act = self.run_session(
             self._sess, model_inputs, self._activation_name
         )

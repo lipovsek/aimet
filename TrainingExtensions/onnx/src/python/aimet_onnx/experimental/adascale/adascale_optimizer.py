@@ -5,15 +5,13 @@
 
 import contextlib
 from typing import Collection, Dict, List, Tuple
-import copy
 from dataclasses import dataclass
 import numpy as np
 import torch
 import tqdm
 import tempfile
 import gc
-import onnx
-from pathlib import Path
+import onnx_ir
 import os
 
 from aimet_onnx.common.utils import AimetLogger  # pylint: disable=import-error
@@ -21,9 +19,11 @@ from aimet_onnx.experimental.adascale.utils import (
     convert_to_torch,
     change_tensor_device_placement,
 )
+from aimet_onnx.qc_quantize_op import QcQuantizeOp
 from aimet_onnx.utils import (
     get_torch_device,
 )
+from aimet_onnx import ir_utils
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.experimental.adascale.find_blocks import (
     get_decoder_blocks_end_points,
@@ -160,16 +160,16 @@ class AdaScale:
             torch.cuda.empty_cache()
 
             with tempfile.TemporaryDirectory() as tempdir:
-                fp32_model = copy.deepcopy(sim.model.model)
-                fp32_model = QuantizationSimModel.remove_quantizers(fp32_model)
-                model_path = os.path.join(tempdir, "model.onnx")
-                onnx.save_model(
-                    fp32_model,
-                    model_path,
-                    save_as_external_data=True,
-                    all_tensors_to_one_file=True,
-                    location=Path(model_path).name + ".data",
-                )
+                fp32_path = os.path.join(tempdir, "fp32_model.onnx")
+                sim_path = os.path.join(tempdir, "sim_model.onnx")
+                # Deep copy the model to ensure original weights are maintained
+                sim_model: onnx_ir.Model = onnx_ir.from_proto(sim.model.model)
+                onnx_ir.passes.common.TopologicalSortPass().call(sim_model)
+                fp32_model = sim_model.clone()
+                ir_utils.remove_aimet_quantizers(fp32_model)
+
+                # Save fp32 model + weights once
+                onnx_ir.save(fp32_model, fp32_path, external_data="fp32_model.data")
 
                 for idx in range(len(blocks_end_points)):
                     if (
@@ -207,9 +207,12 @@ class AdaScale:
                             )
                         block_input_names.extend(block_kv_tensor_names)
 
+                    onnx_ir.save(
+                        sim_model, path=sim_path, external_data="sim_model.data"
+                    )
                     qsim_sess = ActivationSampler(
                         blocks_end_points[idx][0].inputs[0].name,
-                        sim.model.model,
+                        sim_path,
                         sim.providers,
                     )
 
@@ -217,20 +220,17 @@ class AdaScale:
                     for input in inputs:  # pylint: disable=redefined-builtin
                         qsim_inputs.append(qsim_sess.sample_acts(input))
 
-                    qsim_sess.restore_graph()
                     del qsim_sess
 
                     fp32_sampler = ActivationSampler(
                         blocks_end_points[idx][0].inputs[0].name,
-                        model_path,
+                        fp32_path,
                         sim.providers,
-                        tempdir,
                     )
 
                     for input in inputs:
                         fp_inputs.append(fp32_sampler.sample_acts(input))
 
-                    fp32_sampler.restore_graph()
                     del fp32_sampler
 
                     fp_input_list = []
@@ -250,7 +250,8 @@ class AdaScale:
                     )
 
                     AdaScale.optimize_adascale_block(
-                        sim,
+                        sim_model,
+                        sim.qc_quantize_op_dict,
                         fp_input_list,
                         qsim_input_list,
                         block_input_output_names,
@@ -263,6 +264,7 @@ class AdaScale:
                     gc.collect()
                     torch.cuda.empty_cache()
 
+                sim.model.model.CopyFrom(onnx_ir.to_proto(sim_model))
                 sim._rebuild_session()  # pylint: disable=protected-access
 
     @staticmethod
@@ -278,7 +280,8 @@ class AdaScale:
 
     @staticmethod
     def optimize_adascale_block(
-        sim: QuantizationSimModel,
+        sim_model: onnx_ir.Model,
+        quantizer_dict: Dict[str, QcQuantizeOp],
         fp_inputs: List[np.ndarray],
         quantized_inputs: List[np.ndarray],
         block_input_output_names: Tuple[List[str], List[str]],
@@ -310,7 +313,7 @@ class AdaScale:
 
         """
         pytorch_block, pt_weights_to_onnx_initializers = get_pt_block(
-            copy.deepcopy(sim.model.model), block_input_output_names
+            sim_model, block_input_output_names
         )
         pytorch_block.requires_grad_(False)
 
@@ -401,9 +404,11 @@ class AdaScale:
                 del quant_out, batch_fp_out, loss, input_tensor, fp_input, quant_input
 
         copy_pt_weights_to_onnx(
-            pytorch_block, sim.model.model, pt_weights_to_onnx_initializers
+            pytorch_block, sim_model, pt_weights_to_onnx_initializers
         )
-        copy_pt_encodings_to_sim(pytorch_block, sim, pt_weights_to_onnx_initializers)
+        copy_pt_encodings_to_sim(
+            pytorch_block, quantizer_dict, pt_weights_to_onnx_initializers
+        )
 
         del (
             pytorch_block,
