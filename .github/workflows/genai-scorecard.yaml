@@ -80,7 +80,6 @@ jobs:
       variants: >
         {"include":[{
           "id":"onnx-gpu",
-          "runs-on":"k8s-gpu",
           "VER_PYTHON":"3.10",
           "VER_ONNXRUNTIME":"1.19.2",
           "VER_CUDA":"12.6.0",
@@ -88,6 +87,7 @@ jobs:
           "PIP_INDEX":""
         }]}
       image-tag: latest
+      use-ephemeral-runner: true
     secrets: inherit
 
   build-aimet-torch-gpu:
@@ -101,7 +101,6 @@ jobs:
       variants: >
         {"include":[{
           "id":"torch-gpu",
-          "runs-on":"k8s-gpu",
           "VER_PYTHON":"3.10",
           "VER_TORCH":"2.*",
           "VER_ONNXRUNTIME": "",
@@ -110,6 +109,7 @@ jobs:
           "PIP_INDEX":""
         }]}
       image-tag: latest
+      use-ephemeral-runner: true
     secrets: inherit
 
   # ===========================================================================

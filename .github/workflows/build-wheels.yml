@@ -9,6 +9,10 @@ on:
       image-tag:
         required: true
         type: string
+      use-ephemeral-runner:
+        required: false
+        type: boolean
+        default: false
       build-windows-wheel:
         required: false
         type: boolean
@@ -16,6 +20,7 @@ on:
 
 jobs:
   build-linux:
+    if: ${{ !inputs.use-ephemeral-runner }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.variants) }}
@@ -30,100 +35,70 @@ jobs:
         password: ${{ secrets.DOCKER_CREDENTIALS }}
     steps:
       - uses: actions/checkout@v4
-      - name: Check if tests should be run
-        id: check_tests
-        run: echo "status=${{ matrix.RUN_UNIT_TESTS == 'ON' || matrix.RUN_ACCEPTANCE_TESTS == 'ON' }}" >> $GITHUB_OUTPUT
-      - name: "Generate CMAKE_ARGS"
-        run: |
-          set -x
-          CMAKE_ARGS=""
-          CMAKE_ARGS="-DENABLE_CUDA=$([ "${{ matrix.VER_CUDA }}" = "" ] && echo OFF || echo ON) $CMAKE_ARGS"
-          CMAKE_ARGS="-DENABLE_TORCH=$([ "${{ matrix.VER_TORCH }}" = "" ] && echo OFF || echo ON) $CMAKE_ARGS"
-          CMAKE_ARGS="-DENABLE_ONNX=$([ "${{ matrix.VER_ONNXRUNTIME }}" = "" ] && echo OFF || echo ON) $CMAKE_ARGS"
-          CMAKE_ARGS="-DENABLE_TESTS=$([ ! ${{ steps.check_tests.outputs.status }} ] && echo OFF || echo ON) $CMAKE_ARGS"
-          CMAKE_ARGS="-DPIP_INDEX=${{ matrix.PIP_INDEX }} $CMAKE_ARGS"
-          echo "AIMET_CMAKE_ARGS=$CMAKE_ARGS" >> $GITHUB_ENV
-
-          BUILD_TARGETS="${{ matrix.BUILD_TARGETS }}"
-          echo "AIMET_BUILD_TARGETS=$BUILD_TARGETS" >> $GITHUB_ENV
-      - name: "Exclude Torch libraries from dependencies for manylinux"
-        if: matrix.VER_TORCH || matrix.VER_ONNXRUNTIME
-        run: |
-          . ${VIRTUAL_ENV}/bin/activate
-          TORCH_DIR=$(python -c 'import torch; print(f"{torch.utils.cmake_prefix_path}/../../lib")')
-          MANYLINUX_EXCLUDE_LIBS="$MANYLINUX_EXCLUDE_LIBS $(find $TORCH_DIR -name '*.so*' | xargs -r patchelf --print-soname | xargs -r printf -- '--exclude %s ')"
-          set -x
-          echo "MANYLINUX_EXCLUDE_LIBS=$MANYLINUX_EXCLUDE_LIBS" >> $GITHUB_ENV
-      - name: "Exclude CUDA libraries from dependencies for manylinux"
-        if: matrix.VER_CUDA
-        run: |
-          . ${VIRTUAL_ENV}/bin/activate
-          CUDART_DIR=$(python -c 'import sysconfig ; from pathlib import Path; print(Path(sysconfig.get_config_var("prefix"), "lib"))')
-          MANYLINUX_EXCLUDE_LIBS="$MANYLINUX_EXCLUDE_LIBS $(find $CUDART_DIR -name 'libcu*.so*' -o -name 'libnv*.so*' -o -name 'libnp*.so*' | xargs -r patchelf --print-soname | xargs -r printf -- '--exclude %s ')"
-          set -x
-          echo "MANYLINUX_EXCLUDE_LIBS=$MANYLINUX_EXCLUDE_LIBS" >> $GITHUB_ENV
-      - name: "Exclude libpython libraries from dependencies for manylinux"
-        run: |
-          . ${VIRTUAL_ENV}/bin/activate
-          LIBS_DIR=$(python -c 'import sysconfig ; from pathlib import Path; print(Path(sysconfig.get_config_var("prefix"), "lib"))')
-          MANYLINUX_EXCLUDE_LIBS="$MANYLINUX_EXCLUDE_LIBS $(find $LIBS_DIR -name 'libpython*.so*' | xargs -r patchelf --print-soname | xargs -r printf -- '--exclude %s ')"
-          set -x
-          echo "MANYLINUX_EXCLUDE_LIBS=$MANYLINUX_EXCLUDE_LIBS" >> $GITHUB_ENV
-      - name: "Build AIMET wheel package"
-        run: |
-          set -x
-          . ${VIRTUAL_ENV}/bin/activate
-          rm -rf build dist
-          export CMAKE_ARGS="$AIMET_CMAKE_ARGS"
-          export SKBUILD_BUILD_TARGETS="$AIMET_BUILD_TARGETS"
-
-          python -m build --wheel --no-isolation .
-
-          # Run auditwheel only for aimet_onnx. (aimet_torch doesn't contain any shared library)
-          if [ -n "${{ matrix.VER_ONNXRUNTIME }}" ]; then
-            auditwheel repair --plat manylinux_2_34_x86_64 $MANYLINUX_EXCLUDE_LIBS dist/aimet*.whl
-          else
-            mkdir -p wheelhouse
-            cp dist/aimet*.whl wheelhouse/
-          fi
-
-          if [ "${{ matrix.id }}" == "onnx-torch-cpu" ] ; then
-            # Unzip aimet*.whl in current directory to upload Docs
-            uv pip install -t wheelhouse --no-deps wheelhouse/aimet*.whl
-          fi
-      - name: "Re-tag aimet-torch wheel files"
-        if: matrix.VER_TORCH
-        run: |
-          set -x
-          . ${VIRTUAL_ENV}/bin/activate
-          uv pip install --force-reinstall wheel
-          wheel tags --remove --python-tag=py310 --abi-tag=none --platform-tag=any wheelhouse/aimet*.whl
-          ls -al wheelhouse/
-      - name: Upload AIMET wheel file
-        uses: actions/upload-artifact@v3
-        if: matrix.id != 'onnx-torch-cpu'
+      - uses: ./.github/actions/build-wheel
         with:
-          name: "${{ matrix.id }}-wheel"
-          path: |
-            wheelhouse/aimet*.whl
-          if-no-files-found: error
-          retention-days: 30d
-      - name: Upload compiled C++ unit tests
-        uses: actions/upload-artifact@v3
-        if: matrix.id == 'onnx-cpu' || matrix.id == 'onnx-gpu'
+          id: ${{ matrix.id }}
+          ver-torch: ${{ matrix.VER_TORCH }}
+          ver-onnxruntime: ${{ matrix.VER_ONNXRUNTIME }}
+          ver-cuda: ${{ matrix.VER_CUDA }}
+          pip-index: ${{ matrix.PIP_INDEX }}
+          build-targets: ${{ matrix.BUILD_TARGETS }}
+          build-tests: ${{ (matrix.RUN_UNIT_TESTS == 'ON' || matrix.RUN_ACCEPTANCE_TESTS == 'ON') && 'ON' || 'OFF' }}
+
+  start-runner:
+    if: ${{ inputs.use-ephemeral-runner }}
+    name: Start GPU runner (${{ matrix.id }})
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.variants) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/start-gpu-runner
         with:
-          name: "${{ matrix.id }}-tests"
-          path: build/**/MoDl*Test
-          if-no-files-found: error
-          retention-days: 1d
-      - name: Upload AIMET documentation
-        if: matrix.id == 'onnx-torch-cpu'
-        uses: actions/upload-artifact@v3
+          runner-id: ${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          gpu-request: "0"
+          docker-image: ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}:${{ inputs.image-tag }}
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
+
+  build-linux-ephemeral:
+    if: ${{ inputs.use-ephemeral-runner }}
+    needs: [start-runner]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.variants) }}
+    runs-on: ${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-wheel
         with:
-          name: Docs
-          path: wheelhouse/Docs/
-          if-no-files-found: error
-          retention-days: 30d
+          id: ${{ matrix.id }}
+          ver-torch: ${{ matrix.VER_TORCH }}
+          ver-onnxruntime: ${{ matrix.VER_ONNXRUNTIME }}
+          ver-cuda: ${{ matrix.VER_CUDA }}
+          pip-index: ${{ matrix.PIP_INDEX }}
+          build-targets: ${{ matrix.BUILD_TARGETS }}
+          build-tests: ${{ (matrix.RUN_UNIT_TESTS == 'ON' || matrix.RUN_ACCEPTANCE_TESTS == 'ON') && 'ON' || 'OFF' }}
+
+  cleanup-runner:
+    if: always() && inputs.use-ephemeral-runner
+    name: Cleanup GPU runner (${{ matrix.id }})
+    needs: [start-runner, build-linux-ephemeral]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.variants) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stop-gpu-runner
+        with:
+          runner-ids: ${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
   build-windows:
     runs-on: [self-hosted, Windows, X64]
@@ -245,4 +220,3 @@ jobs:
             dist/aimet*.whl
           if-no-files-found: error
           retention-days: 30d
-
