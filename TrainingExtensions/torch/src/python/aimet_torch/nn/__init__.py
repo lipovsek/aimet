@@ -11,6 +11,7 @@ from .true_quant import *
 from .base import *
 from .modules import custom
 from . import lora
+from ..quantization.base import QuantizerBase
 
 try:
     from . import transformers
@@ -27,14 +28,28 @@ def compute_encodings(model: torch.nn.Module):
         Encodings of the quantizers loaded with :ref:`QuantizationSimModel.load_encodings`
         with ``allow_overwrite=False`` will be kept unchanged.
     """
+    entered = set()
     with (
         _register_zero3_forward_hooks(model, use_dummy_params=False),
         contextlib.ExitStack() as stack,
     ):
         for module in model.modules():
+            if module in entered:
+                continue
             if isinstance(module, BaseQuantizationMixin):  # pylint: disable=undefined-variable
                 ctx = module.compute_encodings()
                 stack.enter_context(ctx)
+                entered |= set(
+                    itertools.chain(
+                        module.param_quantizers.values(),
+                        module.output_quantizers,
+                        module.input_quantizers,
+                    )
+                )
+            elif isinstance(module, QuantizerBase):
+                ctx = module.compute_encodings()
+                stack.enter_context(ctx)
+                entered.add(module)
 
         yield
 

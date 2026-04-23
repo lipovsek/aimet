@@ -45,3 +45,31 @@ def test_encoding_analyzer_cleared_after_computing_param_encodings():
             observer_stats = q.encoding_analyzer.observer.get_stats()
             assert observer_stats.min is None and observer_stats.max is None
             assert q.is_initialized()
+
+
+def test_compute_encodings_standalone_qdq():
+    """
+    When: Run compute_encodings on a model with standalone QDQ modules
+    Then: Encodings of the standalone QDQ modules should be computed without error
+    """
+
+    class ModelWithStandaloneQDQ(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv2d(3, 16, 3, padding=1)
+            self.qdq = aimet.quantization.affine.QuantizeDequantize(
+                (), qmin=0, qmax=255, symmetric=False
+            )
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            x = self.conv(x)
+            x = self.qdq(x)
+            return x
+
+    model = ModelWithStandaloneQDQ()
+    dummy_input = torch.rand(1, 3, 32, 32)
+
+    with aimet.nn.compute_encodings(model):
+        _ = model(dummy_input)
+
+    assert model.qdq.is_initialized()
