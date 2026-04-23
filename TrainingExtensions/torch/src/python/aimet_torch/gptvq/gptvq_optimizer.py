@@ -19,10 +19,10 @@ from aimet_torch.gptvq.utils import (
     quantize_dequantize_codebook,
     get_2d_tensor_shape,
 )
-from aimet_torch.v2.nn import BaseQuantizationMixin
-from aimet_torch.v2.quantization.affine import QuantizeDequantize
-from aimet_torch.v2.quantization.affine.encoding import AffineEncoding, VectorEncoding
-from aimet_torch.v2.quantization.tensor import DequantizedTensor
+from aimet_torch.nn import BaseQuantizationMixin
+from aimet_torch.quantization.affine import QuantizeDequantize
+from aimet_torch.quantization.affine.encoding import AffineEncoding, VectorEncoding
+from aimet_torch.quantization.tensor import DequantizedTensor
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
 

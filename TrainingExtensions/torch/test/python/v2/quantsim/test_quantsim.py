@@ -40,7 +40,7 @@ from aimet_torch.nn import (
     QuantizedLinear,
     QuantizedReLU,
 )
-from aimet_torch.v2.nn.fake_quant import _legacy_impl
+from aimet_torch.nn.fake_quant import _legacy_impl
 import aimet_torch.nn.modules.custom as custom
 from aimet_torch.v2.batch_norm_fold import fold_all_batch_norms_to_scale
 from aimet_torch.mixed_precision import choose_mixed_precision

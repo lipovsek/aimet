@@ -10,9 +10,9 @@ from typing import Optional
 
 import torch
 
-from aimet_torch.v2.quantization import DequantizedTensor
-from aimet_torch.v2.quantization.affine import QuantizeDequantize
-from aimet_torch.v2.quantization._utils import concretize_block_size, interleave
+from aimet_torch.quantization import DequantizedTensor
+from aimet_torch.quantization.affine import QuantizeDequantize
+from aimet_torch.quantization._utils import concretize_block_size, interleave
 
 use_adascale_lwc: bool = True
 

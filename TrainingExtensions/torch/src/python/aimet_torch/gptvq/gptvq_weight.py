@@ -23,10 +23,10 @@ from aimet_torch.gptvq.gptvq_optimizer import GPTVQOptimizer
 from aimet_torch.gptvq.utils import get_module_name_to_hessian_tensor
 from aimet_torch._base.quantsim import _QuantizedModuleProtocol
 from aimet_torch.save_utils import SaveUtils
-from aimet_torch.v2.nn import BaseQuantizationMixin
-from aimet_torch.v2.quantization.affine.quantizer import QuantizeDequantize
-from aimet_torch.v2.quantization.tensor import QuantizedTensorBase
-from aimet_torch.v2.quantsim import QuantizationSimModel
+from aimet_torch.nn import BaseQuantizationMixin
+from aimet_torch.quantization.affine.quantizer import QuantizeDequantize
+from aimet_torch.quantization.tensor import QuantizedTensorBase
+from aimet_torch.quantsim import QuantizationSimModel
 
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)

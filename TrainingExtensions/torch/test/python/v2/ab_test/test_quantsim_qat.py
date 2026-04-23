@@ -125,7 +125,7 @@ class TestQuantsimV2QAT:
         aimetgrad_qsim.model(dummy_input).sum().backward()
         # Patch backend of auto_grad_qsim to autograd-based backend
         with patch(
-            "aimet_torch.v2.quantization.affine.quantizer.quantize_dequantize",
+            "aimet_torch.quantization.affine.quantizer.quantize_dequantize",
             autograd_based_qdq,
         ):
             autograd_qsim.model(dummy_input).sum().backward()

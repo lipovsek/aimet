@@ -4,5 +4,5 @@
 
 # pylint: disable=all
 
-from ...v2.quantization.float.encoding import *
-from ...v2.quantization.float.quantizer import *
+from .encoding import *
+from .quantizer import *

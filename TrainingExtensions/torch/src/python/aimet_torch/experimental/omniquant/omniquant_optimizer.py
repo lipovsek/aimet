@@ -22,9 +22,9 @@ from aimet_torch.blockwise_sampler import (
     change_tensor_and_cache_device_placement,
 )
 from aimet_torch.utils import disable_all_quantizers
-from aimet_torch.v2.quantsim import QuantizationSimModel
-from aimet_torch.v2.nn.true_quant import QuantizationMixin
-from aimet_torch.v2.nn import compute_param_encodings
+from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch.nn.true_quant import QuantizationMixin
+from aimet_torch.nn import compute_param_encodings
 from aimet_torch.common.utils import AimetLogger
 from .decoder_processor import get_transformer_processor
 

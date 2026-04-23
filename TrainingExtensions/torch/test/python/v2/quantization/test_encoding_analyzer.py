@@ -13,8 +13,8 @@ from aimet_torch.v2.quantization.encoding_analyzer import (
     PercentileEncodingAnalyzer,
     MinMaxEncodingAnalyzer,
     _HistogramObserver,
-    _get_minimum_scale,
 )
+from aimet_torch.common.quantsim import _get_minimum_scale
 
 
 @pytest.fixture(autouse=True)

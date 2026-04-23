@@ -84,7 +84,7 @@ class LazyQuantizeWrapper(torch.nn.Module, ABC):  # pylint: disable=too-many-ins
         self.param_quantizers = {}
 
         # pylint: disable=import-outside-toplevel, cyclic-import
-        from aimet_torch.v2.nn import BaseQuantizationMixin
+        from aimet_torch.nn import BaseQuantizationMixin
 
         if isinstance(module_to_wrap, BaseQuantizationMixin):
             # NOTE: AIMET v2 qmodule always only quantizes the paramters that it directly owns
@@ -106,7 +106,7 @@ class LazyQuantizeWrapper(torch.nn.Module, ABC):  # pylint: disable=too-many-ins
                 enabled_by_default=True,
                 data_type=data_type,
             )
-            from aimet_torch.v2.deepspeed_utils import _get_shape
+            from aimet_torch.deepspeed_utils import _get_shape
 
             qtzr.input_tensor_shape = _get_shape(param)
             self.param_quantizers[name] = qtzr

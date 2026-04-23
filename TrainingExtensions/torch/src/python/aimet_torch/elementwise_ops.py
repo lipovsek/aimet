@@ -9,7 +9,7 @@ from aimet_torch._base.nn.modules.custom import *  # pylint: disable=wildcard-im
 
 if __name__ != "__main__":
     import aimet_torch._base.nn.modules.custom as modules
-    from aimet_torch.utils import _red
+    from aimet_torch.common.utils import _red
     import warnings
 
     warnings.warn(

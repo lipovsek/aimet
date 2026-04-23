@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 from aimet_torch.v2.quantization.affine.backends import quantize_dequantize
 from aimet_torch.v2.quantization.affine import QuantizeDequantize
-from aimet_torch.v2.nn.fake_quant._legacy_impl import (
+from aimet_torch.nn.fake_quant._legacy_impl import (
     FakeQuantizedSoftmax,
     FakeQuantizedReshape,
 )

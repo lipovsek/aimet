@@ -49,13 +49,13 @@ except ImportError:
 
 from aimet_torch.common.utils import AimetLogger
 from aimet_torch import QuantizationSimModel
-from aimet_torch.v2.nn import QuantizedLinear, compute_param_encodings, QuantizedConv2d
-from aimet_torch.v2.utils import (
+from aimet_torch.nn import QuantizedLinear, compute_param_encodings, QuantizedConv2d
+from aimet_torch.utils import (
     default_forward_fn,
     remove_all_quantizers,
     remove_activation_quantizers,
 )
-from aimet_torch.v2.quantization.affine import QuantizeDequantize
+from aimet_torch.quantization.affine import QuantizeDequantize
 from aimet_torch.experimental.adascale.adascale_quantizer import (
     AdaScaleQuantizeDequantize,
     AdaScaleLinearQuantizeDequantize,

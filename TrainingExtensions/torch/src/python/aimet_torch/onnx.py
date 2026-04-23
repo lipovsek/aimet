@@ -18,7 +18,7 @@ import torch
 from torch.onnx import _constants
 
 import aimet_torch
-from aimet_torch.v2.utils import patch_attr
+from aimet_torch.utils import patch_attr
 from aimet_torch.common.onnx._utils import (
     _add_onnx_qdq_nodes,
     _convert_version,
@@ -32,10 +32,10 @@ from .quantization import DequantizedTensor
 from .quantization.base import EncodingBase
 from .quantization.affine import AffineQuantizerBase, AffineEncoding
 from .quantization.float import FloatQuantizeDequantize, FloatEncoding
-from .v2.quantization.float._finfo import _finfo
+from .quantization.float._finfo import _finfo
 from .quantsim import QuantizationSimModel
-from .v2.experimental import onnx as _onnx
-from .v2.experimental.onnx._export import _get_all_constants
+from .experimental import onnx as _onnx
+from .experimental.onnx._export import _get_all_constants
 
 
 _TORCH_VERSION = version.parse(torch.__version__)

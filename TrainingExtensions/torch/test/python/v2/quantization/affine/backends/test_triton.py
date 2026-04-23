@@ -979,7 +979,7 @@ class TestTritonBackend:
         assert torch.allclose(offset.grad, offset_.grad)
 
     def test_compile_error_fallback(self):
-        from aimet_torch.v2.quantization.affine.backends.triton import _compile_success
+        from aimet_torch.quantization.affine.backends.triton import _compile_success
 
         _orig = _compile_success.copy()
         input = torch.randn((10, 10), device="cuda", requires_grad=True)

@@ -12,10 +12,10 @@ from torch import nn
 from .transform_ops import TransformOp
 
 from aimet_torch.common.utils import AimetLogger
-from aimet_torch.v2.utils import patch_attr
-from aimet_torch.v2.nn import compute_param_encodings
-from aimet_torch.v2.nn.true_quant import QuantizationMixin
-from aimet_torch.v2.quantization.affine import QuantizeDequantize
+from aimet_torch.utils import patch_attr
+from aimet_torch.nn import compute_param_encodings
+from aimet_torch.nn.true_quant import QuantizationMixin
+from aimet_torch.quantization.affine import QuantizeDequantize
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.FPTQuant)
 

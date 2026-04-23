@@ -32,7 +32,7 @@ from aimet_torch._base.adaround.activation_sampler import (
     get_block_inputs,
     get_block_outputs,
 )
-from aimet_torch.v2.utils import default_forward_fn
+from aimet_torch.utils import default_forward_fn
 
 # The following modules with weights are supported
 SUPPORTED_MODULES = (

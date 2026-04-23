@@ -2,20 +2,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-# pylint: disable=all
+"""
+Backwards compatibility shim for aimet_torch.v2.mixed_precision
 
-from .manual_mixed_precision import MixedPrecisionConfigurator
-from .utils import Precision, SupportedDType
+All contents have been moved to aimet_torch.mixed_precision.
+This module re-exports everything from the new location for backwards compatibility.
+"""
 
-from aimet_torch._base.mixed_precision import (
-    choose_mixed_precision as _choose_mixed_precision,
-)
-from aimet_torch.v2.quantsim import QuantizationSimModel
-from aimet_torch.v2.amp.utils import _mock_v1_quantizers
-
-
-def choose_mixed_precision(sim: QuantizationSimModel, *args, **kwargs):
-    __doc__ = _choose_mixed_precision.__doc__  # pylint: disable=redefined-builtin, unused-variable
-
-    with _mock_v1_quantizers(sim):
-        return _choose_mixed_precision(sim, *args, **kwargs)
+from aimet_torch.mixed_precision import *

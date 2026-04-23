@@ -374,7 +374,7 @@ def patch_ptq_techniques(
 
     with (
         patch(
-            "aimet_torch.v2.auto_quant.QuantizationSimModel",
+            "aimet_torch.auto_quant.QuantizationSimModel",
             side_effect=_QuantizationSimModel,
         ) as mock_qsim,
         patch(
@@ -384,10 +384,10 @@ def patch_ptq_techniques(
             "aimet_torch._base.auto_quant.equalize_model", side_effect=cle
         ) as mock_cle,
         patch(
-            "aimet_torch.v2.auto_quant.Adaround._apply_adaround", side_effect=adaround
+            "aimet_torch.auto_quant.Adaround._apply_adaround", side_effect=adaround
         ) as mock_adaround,
         patch(
-            "aimet_torch.v2.auto_quant.GreedyMixedPrecisionAlgo",
+            "aimet_torch.auto_quant.GreedyMixedPrecisionAlgo",
             side_effect=_GreedyMixedPrecisionAlgo,
         ) as mock_amp,
     ):
@@ -413,11 +413,11 @@ def patch_dependencies():
 
     with (
         patch(
-            "aimet_torch.v2.auto_quant.create_pareto_curve",
+            "aimet_torch.auto_quant.create_pareto_curve",
             side_effect=bokeh_model_factory,
         ),
         patch(
-            "aimet_torch.v2.auto_quant.create_sensitivity_plot",
+            "aimet_torch.auto_quant.create_sensitivity_plot",
             side_effect=bokeh_model_factory,
         ),
     ):
@@ -790,7 +790,7 @@ class TestAutoQuant:
                 auto_quant.set_mixed_precision_params(candidates=[_W8A8, _W8A16, _FP16])
 
                 with patch(
-                    "aimet_torch.v2.auto_quant.Adaround._apply_adaround",
+                    "aimet_torch.auto_quant.Adaround._apply_adaround",
                     side_effect=error_fn,
                 ):
                     # If adaround fails, should return AMP results
@@ -820,7 +820,7 @@ class TestAutoQuant:
                 auto_quant.set_mixed_precision_params(candidates=[_W8A8, _W8A16, _FP16])
 
                 with patch(
-                    "aimet_torch.v2.auto_quant.GreedyMixedPrecisionAlgo",
+                    "aimet_torch.auto_quant.GreedyMixedPrecisionAlgo",
                     side_effect=error_fn,
                 ):
                     # If AMP fails, should return adaround results
@@ -859,11 +859,11 @@ class TestAutoQuant:
                         side_effect=error_fn,
                     ),
                     patch(
-                        "aimet_torch.v2.auto_quant.Adaround._apply_adaround",
+                        "aimet_torch.auto_quant.Adaround._apply_adaround",
                         side_effect=error_fn,
                     ),
                     patch(
-                        "aimet_torch.v2.auto_quant.GreedyMixedPrecisionAlgo",
+                        "aimet_torch.auto_quant.GreedyMixedPrecisionAlgo",
                         side_effect=error_fn,
                     ),
                 ):
@@ -894,7 +894,7 @@ class TestAutoQuant:
                 auto_quant.set_mixed_precision_params(candidates=[_W8A8, _W8A16, _FP16])
 
                 with patch(
-                    "aimet_torch.v2.auto_quant.Adaround._apply_adaround",
+                    "aimet_torch.auto_quant.Adaround._apply_adaround",
                     side_effect=error_fn,
                 ):
                     # Hard stop

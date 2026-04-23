@@ -1,34 +1,12 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-# /usr/bin/env python
 
-"""Base directory to hold quantized transformers modules"""
+"""
+Backwards compatibility shim for aimet_torch.v2.nn.transformers.models
 
-from .llama import *
-from .gemma3 import *
-from .qwen2 import *
-from .qwen2_5_vl import *
-from .phi3 import *
-from .mistral import *
-from .internvl import *
+All contents have been moved to aimet_torch.nn.transformers.models. This module re-exports everything
+from the new location for backwards compatibility.
+"""
 
-try:
-    from .qwen3 import *
-except ImportError:
-    pass
-
-try:
-    from .qwen3_vl import *
-except ImportError:
-    pass
-
-try:
-    from .qwen3_moe import *
-except ImportError:
-    pass
-
-try:
-    from .qwen3_5 import *
-except ImportError:
-    pass
+from .....nn.transformers.models import *  # pylint: disable=wildcard-import, unused-wildcard-import

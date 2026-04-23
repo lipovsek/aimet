@@ -4,7 +4,7 @@
 
 """Helping functions for Omniquant."""
 
-from aimet_torch.v2.nn import (
+from aimet_torch.nn import (
     QuantizedLinear,
     QuantizedLayerNorm,
     QuantizedConv2d,
@@ -15,19 +15,19 @@ from .let_quantizer import (
     OmqGemmaWeightQuantizer,
 )
 
-from aimet_torch.v2.quantization.affine import QuantizeDequantize
-from aimet_torch.v2.quantsim import QuantizationSimModel
-from aimet_torch.v2.nn.true_quant import QuantizationMixin
-from aimet_torch.v2.nn.transformers.models.llama.modeling_llama import (
+from aimet_torch.quantization.affine import QuantizeDequantize
+from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch.nn.true_quant import QuantizationMixin
+from aimet_torch.nn.transformers.models.llama.modeling_llama import (
     QuantizedLlamaRMSNorm,
 )
-from aimet_torch.v2.nn.transformers.models.gemma3.modeling_gemma3 import (
+from aimet_torch.nn.transformers.models.gemma3.modeling_gemma3 import (
     QuantizedGemma3RMSNorm,
 )
-from aimet_torch.v2.nn.transformers.models.qwen2.modeling_qwen2 import (
+from aimet_torch.nn.transformers.models.qwen2.modeling_qwen2 import (
     QuantizedQwen2RMSNorm,
 )
-from aimet_torch.v2.nn.transformers.models.mistral.modeling_mistral import (
+from aimet_torch.nn.transformers.models.mistral.modeling_mistral import (
     QuantizedMistralRMSNorm,
 )
 

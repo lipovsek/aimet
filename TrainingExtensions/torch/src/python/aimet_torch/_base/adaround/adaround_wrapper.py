@@ -10,7 +10,7 @@ import torch
 
 from aimet_torch.common.defs import AdaroundConstants
 from aimet_torch._base.quantsim import _QuantizedModuleProtocol
-from aimet_torch.v2.utils import patch_attr
+from aimet_torch.utils import patch_attr
 
 
 class AdaroundWrapperBase(abc.ABC, torch.nn.Module):

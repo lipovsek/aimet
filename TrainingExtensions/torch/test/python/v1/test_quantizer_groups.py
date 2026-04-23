@@ -15,7 +15,7 @@ from aimet_torch.amp.quantizer_groups import (
     find_supported_candidates,
     QuantizerGroup,
 )
-from aimet_torch.v2.amp.utils import _mock_v1_quantizers
+from aimet_torch.amp.utils import _mock_v1_quantizers
 from aimet_torch import utils
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch import onnx_utils

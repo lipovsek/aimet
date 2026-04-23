@@ -2,6 +2,21 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-# pylint: disable=all
+"""
+Backwards compatibility shim for aimet_torch.v2.quantsim
 
-from .quantsim import *
+All contents have been moved to aimet_torch.quantsim. This module re-exports everything
+from the new location for backwards compatibility.
+"""
+
+from ...quantsim import (
+    QuantizationSimModel,
+    QuantizationSimModelOnnxExporter,
+    QuantParams,
+    ExportableQuantModule,
+    save_checkpoint,
+    load_checkpoint,
+    check_accumulator_overflow,
+    load_encodings_to_sim,
+    compute_encodings_for_sims,
+)

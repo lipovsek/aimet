@@ -1,4 +1,12 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from .modeling_qwen3_5 import *
+
+"""
+Backwards compatibility shim for aimet_torch.v2.nn.transformers.models.qwen3_5
+
+All contents have been moved to aimet_torch.nn.transformers.models.qwen3_5. This module re-exports everything
+from the new location for backwards compatibility.
+"""
+
+from ......nn.transformers.models.qwen3_5 import *  # pylint: disable=wildcard-import, unused-wildcard-import

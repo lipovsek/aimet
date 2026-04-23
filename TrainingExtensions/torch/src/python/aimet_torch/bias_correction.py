@@ -29,7 +29,7 @@ from aimet_torch._base.quantsim import _QuantizedModuleProtocol, QuantParams
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch.save_utils import SaveUtils
 from aimet_torch.utils import get_ordered_lists_of_conv_fc
-from aimet_torch.v2.nn.base import BaseQuantizationMixin
+from aimet_torch.nn.base import BaseQuantizationMixin
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
 

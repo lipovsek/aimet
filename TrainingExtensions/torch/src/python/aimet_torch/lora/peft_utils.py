@@ -7,7 +7,7 @@
 # pylint: disable=import-error
 # pylint: disable=no-name-in-module
 from aimet_torch.quantsim import QuantizationSimModel
-from aimet_torch.v2.nn import BaseQuantizationMixin, lora as qlora
+from aimet_torch.nn import BaseQuantizationMixin, lora as qlora
 
 
 def _get_lora_layer_except_base_layer(sim: QuantizationSimModel):

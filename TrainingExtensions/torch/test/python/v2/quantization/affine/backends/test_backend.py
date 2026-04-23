@@ -11,8 +11,10 @@ from aimet_torch.v2.quantization.affine.backends import (
     torch_builtins,
     triton as _triton,
 )
-from aimet_torch.v2.quantization.affine.backends.torch_builtins import (
+from aimet_torch.quantization.affine.backends.torch_builtins import (
     _validate_arguments,
+    _use_compiled_impl,
+    _torch_fake_quantize,
 )
 from aimet_torch.v2.quantization.affine.backends.utils import _SUPPORTED_BACKENDS
 from aimet_torch.v2.utils import ste_round
@@ -249,13 +251,13 @@ if torch.cuda.is_available() and torch.cuda.get_device_capability() >= (7, 0):
     @pytest.fixture(params=[True, False])
     def use_compiled_impl(request):
         flag = request.param
-        with torch_builtins._use_compiled_impl(flag):
+        with _use_compiled_impl(flag):
             yield
 else:
 
     @pytest.fixture
     def use_compiled_impl():
-        with torch_builtins._use_compiled_impl(False):
+        with _use_compiled_impl(False):
             yield
 
 
@@ -1067,9 +1069,7 @@ def test_cross_validate_torch_fake_quantize(
     out2 = torch_builtins.QuantDequantFunc.apply(
         tensor, scale, offset, qmin, qmax, 0.0
     ).to(dtype)
-    out3 = torch_builtins._torch_fake_quantize(
-        tensor, scale.detach(), offset.detach(), qmin, qmax
-    )
+    out3 = _torch_fake_quantize(tensor, scale.detach(), offset.detach(), qmin, qmax)
 
     assert torch.allclose(out1, expected, atol=atol, rtol=1e-3)
     assert torch.allclose(out2, expected, atol=atol, rtol=1e-3)
@@ -1085,9 +1085,7 @@ def test_cross_validate_torch_fake_quantize(
     out2 = torch_builtins.QuantDequantFunc.apply(
         tensor, scale, offset, qmin, qmax, 0.0
     ).to(dtype)
-    out3 = torch_builtins._torch_fake_quantize(
-        tensor, scale.detach(), offset.detach(), qmin, qmax
-    )
+    out3 = _torch_fake_quantize(tensor, scale.detach(), offset.detach(), qmin, qmax)
 
     assert torch.allclose(out1, expected, atol=atol, rtol=1e-3)
     assert torch.allclose(out2, expected, atol=atol, rtol=1e-3)

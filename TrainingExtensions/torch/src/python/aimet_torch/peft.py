@@ -18,10 +18,10 @@ from peft.tuners.lora.layer import Conv2d as PeftConv2d
 
 from aimet_torch.utils import replace_modules
 from aimet_torch._base.nn.modules.custom import Add, Multiply
-from aimet_torch.v2.quantsim import QuantizationSimModel
-from aimet_torch.v2.quantization.affine import QuantizeDequantize
+from aimet_torch.quantsim import QuantizationSimModel
+from aimet_torch.quantization.affine import QuantizeDequantize
 from aimet_torch._base.quantsim import _QuantizedModuleProtocol
-from aimet_torch.v2.nn import BaseQuantizationMixin
+from aimet_torch.nn import BaseQuantizationMixin
 
 
 class LoraLayer(torch.nn.Module):

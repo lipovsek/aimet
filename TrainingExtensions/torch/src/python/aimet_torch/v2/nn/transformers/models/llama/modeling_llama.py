@@ -1,53 +1,12 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-# /usr/bin/env python
 
-"""Quantized Llama modules"""
+"""
+Backwards compatibility shim for aimet_torch.v2.nn.transformers.models.llama.modeling_llama
 
-import torch
-from aimet_torch.v2.nn.true_quant import QuantizationMixin
+All contents have been moved to aimet_torch.nn.transformers.models.llama.modeling_llama. This module re-exports everything
+from the new location for backwards compatibility.
+"""
 
-try:
-    from transformers.models.llama import modeling_llama
-except ImportError as exc:
-    raise ImportError(
-        "aimet_torch.v2.nn.transformers.models.llama.modeling_llama cannot be imported. Please make sure "
-        "that you have transformers installed in your environment."
-    ) from exc
-
-from aimet_torch.onnx_utils import map_torch_types_to_onnx
-
-
-# Map LlamaRMSNorm to ONNX RMSNormalization so that
-# quantsim config for RMSNormalization will be applied to LlamaRMSNorm
-map_torch_types_to_onnx[modeling_llama.LlamaRMSNorm] = ["RMSNormalization"]
-
-# Don't simulate quantization on rotary embedding layers
-QuantizationMixin.ignore(modeling_llama.LlamaRotaryEmbedding)
-
-
-@QuantizationMixin.implements(modeling_llama.LlamaRMSNorm)
-class QuantizedLlamaRMSNorm(QuantizationMixin, modeling_llama.LlamaRMSNorm):
-    """Implement Quantized LLama RMS Norm"""
-
-    def __quant_init__(self):
-        # pylint: disable=useless-parent-delegation
-        super().__quant_init__()
-
-        self.input_quantizers = torch.nn.ModuleList([None])
-        self.output_quantizers = torch.nn.ModuleList([None])
-        self.param_quantizers = torch.nn.ModuleDict({"weight": None})
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        # pylint: disable=arguments-differ
-        if self.input_quantizers[0]:
-            hidden_states = self.input_quantizers[0](hidden_states)
-
-        with self._patch_quantized_parameters():
-            ret = super().forward(hidden_states)
-
-        if self.output_quantizers[0]:
-            ret = self.output_quantizers[0](ret)
-
-        return ret
+from ......nn.transformers.models.llama.modeling_llama import *  # pylint: disable=wildcard-import, unused-wildcard-import

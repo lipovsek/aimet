@@ -69,11 +69,11 @@ from aimet_torch._base.nn.modules.custom import Outer
 from aimet_torch.quantsim_config.quantsim_config import QuantSimConfigurator
 from aimet_torch._base.nn.modules.custom import MatMul, Cast
 from aimet_torch.onnx_utils import OnnxSaver, OnnxExportApiArgs, CustomMarker
-from aimet_torch.experimental.v2.quantsim.export_utils import _export_to_1_0_0
+from aimet_torch.experimental.quantsim._export_utils import _export_to_1_0_0
 
 if TYPE_CHECKING:
     # pylint: disable=cyclic-import
-    from aimet_torch.v2.quantization.base.encoding import EncodingBase
+    from aimet_torch.quantization.base.encoding import EncodingBase
 
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
@@ -612,7 +612,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         Apply exception rules to specific op. For example, a rule can override high bitwidth to Embedding module
         """
         # pylint: disable=import-outside-toplevel, cyclic-import
-        from aimet_torch.v2.nn import BaseQuantizationMixin
+        from aimet_torch.nn import BaseQuantizationMixin
 
         for wrapper in self.qmodules():
             if isinstance(wrapper, BaseQuantizationMixin):

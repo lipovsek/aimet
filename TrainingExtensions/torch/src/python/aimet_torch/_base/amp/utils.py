@@ -12,7 +12,7 @@ from aimet_torch.common.amp.utils import CANDIDATE_WITH_DTYPE, get_effective_bit
 from aimet_torch.cost_calculator import CostCalculator
 from aimet_torch.layer_database import LayerDatabase
 from aimet_torch._base.amp.quantizer_groups import QuantizerGroup
-from aimet_torch.v2.nn.base import BaseQuantizationMixin
+from aimet_torch.nn.base import BaseQuantizationMixin
 
 
 def find_bit_ops_reduction(

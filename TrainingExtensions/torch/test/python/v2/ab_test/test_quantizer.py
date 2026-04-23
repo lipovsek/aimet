@@ -41,7 +41,7 @@ from aimet_torch.v2.quantsim import (
     compute_encodings_for_sims,
 )
 import aimet_torch.v2.nn as aimet_nn
-from aimet_torch.v2.nn.fake_quant._legacy_impl import _FakeQuantizedUnaryOpMixin
+from aimet_torch.nn.fake_quant._legacy_impl import _FakeQuantizedUnaryOpMixin
 from aimet_torch.v2.quantization.affine import QuantizeDequantize
 from aimet_torch.v2.quantization.float import FloatQuantizeDequantize
 from aimet_torch.v2.quantsim import QuantizationSimModel, load_encodings_to_sim

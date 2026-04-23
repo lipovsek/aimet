@@ -1,8 +1,12 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-# /usr/bin/env python
 
-"""Base directory to hold quantized transformers Mistral modules"""
+"""
+Backwards compatibility shim for aimet_torch.v2.nn.transformers.models.mistral
 
-from .modeling_mistral import QuantizedMistralRMSNorm
+All contents have been moved to aimet_torch.nn.transformers.models.mistral. This module re-exports everything
+from the new location for backwards compatibility.
+"""
+
+from ......nn.transformers.models.mistral import *  # pylint: disable=wildcard-import, unused-wildcard-import

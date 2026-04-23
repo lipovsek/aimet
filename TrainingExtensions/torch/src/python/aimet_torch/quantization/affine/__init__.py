@@ -4,6 +4,6 @@
 
 # pylint: disable=all
 
-from ...v2.quantization.affine.encoding import *
-from ...v2.quantization.affine.quantizer import *
-from ...v2.quantization.affine.backends import *
+from .encoding import *
+from .quantizer import *
+from .backends import *

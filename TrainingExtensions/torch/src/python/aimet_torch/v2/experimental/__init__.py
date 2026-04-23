@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-# pylint: disable=missing-docstring
-try:
-    from . import export
-except ImportError:
-    pass
+"""
+Backwards compatibility shim for aimet_torch.v2.experimental
 
-from . import onnx
-from .quantsim_utils import *
+All contents have been moved to aimet_torch.experimental.
+This module re-exports everything from the new location for backwards compatibility.
+"""
+
+from aimet_torch.experimental import *

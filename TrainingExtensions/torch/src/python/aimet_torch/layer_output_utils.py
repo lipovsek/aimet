@@ -24,7 +24,7 @@ from aimet_torch._base.quantsim import _QuantizedModuleProtocol
 from aimet_torch import utils
 from aimet_torch import torchscript_utils
 from aimet_torch.onnx_utils import OnnxSaver, OnnxExportApiArgs
-from aimet_torch.v2.nn.base import BaseQuantizationMixin
+from aimet_torch.nn.base import BaseQuantizationMixin
 
 _quantized_module_types = (_QuantizedModuleProtocol,)
 
@@ -307,7 +307,7 @@ class LayerOutput:
         :return: dictionary of layer-name to layer-output name
         """
         # pylint: disable=import-outside-toplevel, cyclic-import
-        from aimet_torch.v2.quantsim import QuantizationSimModel
+        from aimet_torch.quantsim import QuantizationSimModel
 
         # Restore original model by removing quantization wrappers if present.
         original_model = QuantizationSimModel.get_original_model(model)

@@ -5,8 +5,8 @@
 
 import torch
 
-from aimet_torch.v2.nn import QuantizationMixin
-from aimet_torch.v2.nn.modules.custom import QuantizedHadamardRotation
+from aimet_torch.nn import QuantizationMixin
+from aimet_torch.nn.modules.custom import QuantizedHadamardRotation
 from aimet_torch._base.nn.modules.custom import HadamardRotation
 from aimet_torch.experimental.transforms.transform_ops import (
     InvertibleTransformOp,

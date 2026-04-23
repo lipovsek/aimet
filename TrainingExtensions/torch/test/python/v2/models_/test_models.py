@@ -997,7 +997,7 @@ class RoiAlignPyTorch(torch.nn.Module):
         )
 
 
-from aimet_torch.v2.nn.fake_quant._legacy_impl import _FakeQuantizedUnaryOpMixin
+from aimet_torch.nn.fake_quant._legacy_impl import _FakeQuantizedUnaryOpMixin
 
 FakeQuantizedRoiAlignPyTorch = _FakeQuantizedUnaryOpMixin.wrap(RoiAlignPyTorch)
 

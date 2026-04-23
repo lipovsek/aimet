@@ -11,11 +11,11 @@ from typing import Optional, List, Tuple, Dict
 import torch
 from torch import nn
 
-import aimet_torch.v2.quantization as Q
+import aimet_torch.quantization as Q
 from aimet_torch.gptvq.activation_sampler import ActivationSampler
 from aimet_torch.gptvq.defs import GPTVQParameters
-from aimet_torch.v2.nn import BaseQuantizationMixin
-from aimet_torch.v2.quantsim import QuantizationSimModel
+from aimet_torch.nn import BaseQuantizationMixin
+from aimet_torch.quantsim import QuantizationSimModel
 
 HESSIAN_WEIGHTED_LOOKUP = False
 DO_CODEBOOK_FINE_TUNING = False

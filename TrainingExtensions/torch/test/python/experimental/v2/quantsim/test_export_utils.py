@@ -12,7 +12,7 @@ import tempfile
 
 import torch
 from aimet_common import quantsim
-from aimet_torch.experimental.v2.quantsim.export_utils import EncodingType
+from aimet_torch.experimental.quantsim._export_utils import EncodingType
 from aimet_torch.common.defs import QuantizationDataType
 from aimet_torch.v2.quantsim import QuantizationSimModel as QuantizationSimModelV2
 from aimet_torch.v2.quantization.base import QuantizerBase

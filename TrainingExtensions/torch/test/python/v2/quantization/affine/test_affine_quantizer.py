@@ -21,10 +21,8 @@ import warnings
 from torch import nn
 from torch.optim import SGD, RMSprop, Adagrad, Adam, AdamW
 
-from aimet_torch.v2.quantization.encoding_analyzer import (
-    MinMaxEncodingAnalyzer,
-    _get_minimum_scale,
-)
+from aimet_torch.common.quantsim import _get_minimum_scale
+from aimet_torch.v2.quantization.encoding_analyzer import MinMaxEncodingAnalyzer
 from aimet_torch.v2.quantization.affine import (
     AffineEncoding,
     AffineQuantizerBase,

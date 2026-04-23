@@ -3,9 +3,5 @@
 
 
 # pylint: disable=missing-module-docstring
-from ..v2.adaround import (
-    adaround_weight,
-    Adaround,
-    AdaroundWrapper,
-    AdaroundParameters,
-)
+from . import adaround_weight
+from .adaround_weight import Adaround, AdaroundWrapper, AdaroundParameters

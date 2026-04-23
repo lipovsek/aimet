@@ -16,8 +16,8 @@ import aimet_torch
 from aimet_torch.v2.quantization.encoding_analyzer import MinMaxEncodingAnalyzer
 from aimet_torch.v2.quantization import DequantizedTensor
 from aimet_torch.v2.quantization.float import FloatQuantizeDequantize, FloatEncoding
-from aimet_torch.v2.quantization.float.quantizer import _fake_cast_to_ieee_float
-from aimet_torch.v2.quantization.float._finfo import _finfo, _float8_e4m3fn
+from aimet_torch.quantization.float.quantizer import _fake_cast_to_ieee_float
+from aimet_torch.quantization.float._finfo import _finfo, _float8_e4m3fn
 
 
 @pytest.fixture(autouse=True)

@@ -8,8 +8,8 @@
 import torch
 from typing import Optional
 
-from aimet_torch.v2.quantization import DequantizedTensor
-from aimet_torch.v2.quantization.affine import QuantizeDequantize
+from aimet_torch.quantization import DequantizedTensor
+from aimet_torch.quantization.affine import QuantizeDequantize
 
 
 # pylint: disable=no-member

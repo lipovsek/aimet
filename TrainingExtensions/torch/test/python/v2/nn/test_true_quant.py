@@ -51,8 +51,8 @@ from aimet_torch.v2.nn import (
     QuantizedSoftmax,
     UnknownModuleError,
 )
-from aimet_torch.v2.nn.fake_quant import _legacy_impl
-from aimet_torch.v2.nn.true_quant import _dispatch, _dispatchable_torch_functions
+from aimet_torch.nn.fake_quant import _legacy_impl
+from aimet_torch.nn.true_quant import _dispatch, _dispatchable_torch_functions
 from aimet_torch.v2.quantization.tensor import QuantizedTensor, DequantizedTensor
 from aimet_torch.v2.utils import enable_recompute
 from aimet_torch.v2.nn import custom

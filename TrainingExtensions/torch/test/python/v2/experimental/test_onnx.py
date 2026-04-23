@@ -27,7 +27,7 @@ from aimet_common.quantsim_config.utils import (
 )
 import aimet_torch.v2 as aimet
 import aimet_torch.v2.quantization as Q
-from aimet_torch.v2.quantization.float._finfo import (
+from aimet_torch.quantization.float._finfo import (
     _finfo,
     _float4_e2m1fn,
     _float8_e5m2,
@@ -41,7 +41,7 @@ from aimet_torch.onnx import (
     _derive_data_movement_op_encodings,
 )
 from torchvision.models import resnet18, mobilenet_v3_small
-from aimet_torch.v2.experimental.onnx._export import (
+from aimet_torch.experimental.onnx._export import (
     export as _export,
     _get_all_constants,
 )
@@ -2428,7 +2428,7 @@ def test_disable_C_jit_pass_onnx_deduplicate_initializers(tmp_path: pathlib.Path
 
     # Temporarily patch the threshold to 0 to disable onnx_deduplicate_initializers pass
     with patch_attr(
-        aimet_torch.v2.experimental.onnx._export,
+        aimet_torch.experimental.onnx._export,
         "_LARGE_MODEL_THRESHOLD_NUM_NN_PARAMETER_OBJECTS",
         0,
     ):

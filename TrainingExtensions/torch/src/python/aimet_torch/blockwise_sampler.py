@@ -17,7 +17,7 @@ from typing import List, Union, Tuple, Generator, Callable
 import torch
 from torch.utils.data import DataLoader
 
-from aimet_torch.v2.utils import default_forward_fn, patch_attr
+from aimet_torch.utils import default_forward_fn, patch_attr
 from aimet_torch.utils import change_tensor_device_placement, nested_map, get_device
 from aimet_torch import QuantizationSimModel, utils
 

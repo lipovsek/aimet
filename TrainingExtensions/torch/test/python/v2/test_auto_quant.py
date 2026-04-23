@@ -334,7 +334,7 @@ def patch_ptq_techniques(
 
     with (
         patch(
-            "aimet_torch.v2.auto_quant.QuantizationSimModel",
+            "aimet_torch.auto_quant.QuantizationSimModel",
             side_effect=_QuantizationSimModel,
         ) as mock_qsim,
         patch(
@@ -344,7 +344,7 @@ def patch_ptq_techniques(
             "aimet_torch._base.auto_quant.equalize_model", side_effect=cle
         ) as mock_cle,
         patch(
-            "aimet_torch.v2.auto_quant.Adaround._apply_adaround", side_effect=adaround
+            "aimet_torch.auto_quant.Adaround._apply_adaround", side_effect=adaround
         ) as mock_adaround,
         patch("aimet_torch._base.auto_quant.Spinner"),
     ):
@@ -805,7 +805,7 @@ class TestAutoQuant:
                     strict_validation=False,
                 )
                 with patch(
-                    "aimet_torch.v2.auto_quant.Adaround._apply_adaround",
+                    "aimet_torch.auto_quant.Adaround._apply_adaround",
                     side_effect=error_fn,
                 ):
                     # If adaround fails, should return CLE results
@@ -841,7 +841,7 @@ class TestAutoQuant:
                         side_effect=error_fn,
                     ),
                     patch(
-                        "aimet_torch.v2.auto_quant.Adaround._apply_adaround",
+                        "aimet_torch.auto_quant.Adaround._apply_adaround",
                         side_effect=error_fn,
                     ),
                 ):
@@ -1018,7 +1018,7 @@ class TestAutoQuant:
                 )
                 return ret
 
-            with patch("aimet_torch.v2.auto_quant.AutoQuant.optimize", optimize):
+            with patch("aimet_torch.auto_quant.AutoQuant.optimize", optimize):
                 auto_quant = AutoQuant(
                     cpu_model, dummy_input, unlabeled_data_loader, eval_callback
                 )

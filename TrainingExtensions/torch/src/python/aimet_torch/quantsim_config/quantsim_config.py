@@ -968,7 +968,7 @@ def _create_module_to_quantsim_wrapper_dict(
     """
     # pylint: disable=import-outside-toplevel, cyclic-import
     from aimet_torch._base.quantsim import _QuantizedModuleProtocol
-    from aimet_torch.v2.nn import BaseQuantizationMixin
+    from aimet_torch.nn import BaseQuantizationMixin
 
     module_to_quantsim_wrapper_dict = {}
     for _, module in model.named_modules():

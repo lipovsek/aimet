@@ -2,6 +2,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-"""Utility APIs for onnx export"""
+"""
+Backwards compatibility shim for aimet_torch.v2.experimental.onnx
 
-from ._export import export, remove_quantization_nodes_from_onnx_graph
+All contents have been moved to aimet_torch.experimental.onnx
+This module re-exports everything from the new location for backwards compatibility.
+"""
+
+from aimet_torch.experimental.onnx import *

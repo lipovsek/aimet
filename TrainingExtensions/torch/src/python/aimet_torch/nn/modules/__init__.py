@@ -5,4 +5,4 @@
 """Alias to v1/v2 nn.modules"""
 
 from ..._base.nn.modules import *  # pylint: disable=wildcard-import, unused-wildcard-import
-from ...v2.nn.modules import *  # pylint: disable=wildcard-import, unused-wildcard-import
+from .custom import *  # pylint: disable=wildcard-import, unused-wildcard-import
