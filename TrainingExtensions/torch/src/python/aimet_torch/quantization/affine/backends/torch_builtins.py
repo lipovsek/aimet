@@ -329,8 +329,8 @@ def _torch_fake_quantize(
         )
         output = _call_torch_fake_quantize_per_tensor(
             tensor,
-            scale.view(()) if scale.dim() > 0 else scale,
-            zp.view(()) if zp.dim() > 0 else zp,
+            scale,
+            zp,
             qmin,
             qmax,
         )
@@ -432,8 +432,8 @@ def _call_torch_fake_quantize_per_tensor(
 
     return torch.fake_quantize_per_tensor_affine(
         input,
-        scale,
-        zero_point,
+        scale.view(()) if scale.dim() > 0 else scale,
+        zero_point.view(()) if zero_point.dim() > 0 else zero_point,
         qmin,
         qmax,
     )

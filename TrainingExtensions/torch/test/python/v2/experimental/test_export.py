@@ -38,6 +38,13 @@ def conv_relu(**_):
     )
 
 
+def conv_prelu(**_):
+    return torch.nn.Sequential(
+        torch.nn.Conv2d(3, 3, 3),
+        torch.nn.PReLU(),
+    )
+
+
 def custom_rmsnorm(**_):
     return torch.nn.Sequential(
         aimet_torch.nn.modules.custom.RmsNorm([1, 3, 224, 224], [-1], epsilon=1e-6)
@@ -59,6 +66,7 @@ def llama_rms_norm(**_):
     [
         conv,
         conv_relu,
+        conv_prelu,
         conv_flatten,
         custom_rmsnorm,
         llama_rms_norm,
