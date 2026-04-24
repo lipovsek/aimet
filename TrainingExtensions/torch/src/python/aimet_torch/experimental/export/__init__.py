@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 # pylint: disable=protected-access
+import itertools
 import contextlib
 from typing import Any, Tuple, Optional
 from packaging.version import parse
@@ -12,6 +13,7 @@ from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch._subclasses.fake_tensor import FakeTensorMode
 from ..onnx._export import _precompute_encodings
 from ...utils import patch_attr
+from ...quantization import QuantizedTensorBase
 
 
 def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
@@ -37,12 +39,19 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
     from aimet_torch.nn import QuantizationMixin
     from aimet_torch.quantization.affine import AffineQuantizerBase
 
-    #  If no quantizers are initialized, raise error
-    if all(
-        not qtzr.is_initialized()
-        for qtzr in mod.modules()
-        if isinstance(qtzr, AffineQuantizerBase)
+    quantizers = [
+        qtzr for qtzr in mod.modules() if isinstance(qtzr, AffineQuantizerBase)
+    ]
+
+    if not quantizers and not any(
+        isinstance(param_or_buffer, QuantizedTensorBase)
+        for param_or_buffer in itertools.chain(mod.parameters(), mod.buffers())
     ):
+        # No quantizer or quantized tensor. Export directly without extra processing
+        return torch.export.export(mod, *args, **kwargs)
+
+    #  If no quantizers are initialized, raise error
+    if not any(qtzr.is_initialized() for qtzr in quantizers):
         raise RuntimeError(
             "Please ensure that the quantizers are initialized before exporting. "
             "You can do this by running a forward pass with representative data "

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import itertools
+import io
 import functools
 from pathlib import Path
 from packaging import version
@@ -274,3 +275,21 @@ def test_triton(tmp_path: Path):
         torch.manual_seed(seed)
         x = torch.randn(1, 3, 32, 32)
         assert torch.equal(ep_builtin.module()(x), ep_triton.module()(x))
+
+
+def test_fp_model():
+    """
+    When: Export a non-quantized model with aimet_torch.export.export
+    Then: The resulting ExportedProgram should be equal to that of torch.export.export
+    """
+
+    fp_model = conv_relu()
+    x = torch.randn(1, 3, 32, 32)
+    ep_aimet = aimet_torch.experimental.export.export(fp_model, (x,))
+    ep_torch = torch.export.export(fp_model, (x,))
+
+    f1 = io.BytesIO()
+    f2 = io.BytesIO()
+    torch.export.save(ep_aimet, f1)
+    torch.export.save(ep_torch, f2)
+    assert f1.getvalue() == f2.getvalue()
