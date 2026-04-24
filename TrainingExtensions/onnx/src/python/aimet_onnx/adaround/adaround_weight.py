@@ -18,6 +18,7 @@ from aimet_onnx.adaround.adaround_tensor_quantizer import AdaroundTensorQuantize
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.meta.utils import get_module_act_func_pair
 from aimet_onnx import utils
+from aimet_onnx.utils import find_shared_param_names
 from aimet_onnx.adaround.adaround_optimizer import AdaroundOptimizer
 from aimet_onnx.adaround.utils import (
     ModelData,
@@ -90,12 +91,23 @@ class Adaround:
             quantized_layer_to_input_tensor_name = (
                 Adaround._get_quantized_layer_input_tensor_name(sim)
             )
+            shared_param_names = find_shared_param_names(sim.connected_graph)
+
             # AdaRound must be applied to modules in the order of occurrence
             for module in tqdm(sim.connected_graph.ordered_ops):
                 name = module.name
                 module_info = model_data.module_to_info[name]
 
                 if nodes_to_include and module.name not in nodes_to_include:
+                    continue
+
+                if shared_param_names.intersection(
+                    p.name for p, _ in module.parameters.values()
+                ):
+                    logger.info(
+                        "Skipping AdaRound for module with shared parameters: %s",
+                        name,
+                    )
                     continue
 
                 if (

@@ -18,7 +18,11 @@ from aimet_onnx import apply_adaround, QuantizationSimModel
 from aimet_onnx.adaround.utils import AdaroundSupportedModules, ModelData
 from aimet_onnx.utils import make_dummy_input, ParamUtils
 from .models import models_for_tests
-from .models.models_for_tests import conv_prelu_model
+from .models.models_for_tests import (
+    conv_prelu_model,
+    ParallelConvSharedWeights,
+    _convert_to_onnx_no_fold,
+)
 from .utils import tmp_dir
 
 
@@ -315,6 +319,43 @@ class TestAdaround:
 
             print([name for name in ops_processed])
             assert ops_processed.sort() == expected.sort()
+
+    def test_adaround_skips_shared_weights(self):
+        torch.manual_seed(10)
+        model = _convert_to_onnx_no_fold(
+            ParallelConvSharedWeights(), torch.randn(2, 10, 24, 24)
+        )
+        inputs = [make_dummy_input(model.model) for _ in range(2)]
+        sim = QuantizationSimModel(
+            copy.deepcopy(model.model), providers=["CPUExecutionProvider"]
+        )
+
+        from aimet_onnx.utils import find_shared_param_names
+
+        shared_param_names = find_shared_param_names(sim.connected_graph)
+
+        shared_weight_names = set()
+        non_shared_weight_names = set()
+        for op in sim.connected_graph.ordered_ops:
+            if op.type not in AdaroundSupportedModules:
+                continue
+            for product, param_type in op.parameters.values():
+                if param_type != "weight":
+                    continue
+                if product.name in shared_param_names:
+                    shared_weight_names.add(product.name)
+                else:
+                    non_shared_weight_names.add(product.name)
+
+        assert shared_weight_names
+        assert non_shared_weight_names
+
+        apply_adaround(sim, inputs, num_iterations=5)
+
+        for name in shared_weight_names:
+            assert not sim.qc_quantize_op_dict[name].is_encoding_frozen()
+        for name in non_shared_weight_names:
+            assert sim.qc_quantize_op_dict[name].is_encoding_frozen()
 
     def test_activation_with_param(self):
         if not torch.cuda.is_available():
