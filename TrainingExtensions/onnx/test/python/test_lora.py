@@ -31,7 +31,11 @@ from aimet_onnx.experimental.lora import (
     configure_lora_onnx,
     export_peft_to_onnx,
     add_lora_branches,
+    prepare_lora_onnx,
+    disable_lora_quantizers,
+    enable_lora_calibration,
     set_lora_bitwidth,
+    set_lora_weights,
     freeze_base_param_quantizers,
     freeze_base_activation_quantizers,
     freeze_base_model,
@@ -40,6 +44,10 @@ from aimet_onnx.experimental.lora import (
     set_lora_encodings,
     get_zero_weights,
     get_adapter_scale_weights,
+    get_adapter_names,
+    get_adapter_lora_names,
+    build_concurrent_feed_dict,
+    adapt_base_encodings_for_lora,
     write_lora_weight_list,
     write_lora_config,
     write_adapter_list,
@@ -2725,3 +2733,656 @@ def test_tinyllama_configure_lora_onnx_v3():
         # 11. Export
         sim.export(tmpdir, "tinyllama_v3", export_model=False)
         assert os.path.exists(os.path.join(tmpdir, "tinyllama_v3.encodings"))
+
+
+# =========================================================================
+# prepare_lora_onnx tests (dynamo=False PeftModel exports)
+# =========================================================================
+
+
+def _generate_peft_dynamo_false_export(output_dir: str, rank: int = 8) -> dict:
+    """Export a PeftModel with dynamo=False and save adapter artifacts."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_model = _build_tiny_transformer()
+    peft_model = _apply_peft_lora(base_model, rank=rank)
+    peft_model.eval()
+
+    sample = torch.randint(0, 512, (1, 32))
+    onnx_path = str(output_dir / "peft_model.onnx")
+    torch.onnx.export(
+        peft_model,
+        (sample,),
+        onnx_path,
+        dynamo=False,
+        input_names=["input_ids"],
+        output_names=["logits"],
+    )
+
+    # Save adapter config — read target_modules directly from the PEFT
+    # config (set by _apply_peft_lora BEFORE wrapping, so it has the real
+    # module names: q_proj, k_proj, etc. — not PEFT wrappers).
+    peft_cfg = peft_model.peft_config[next(iter(peft_model.peft_config))]
+    target_modules = list(peft_cfg.target_modules)
+
+    config = {
+        "r": rank,
+        "lora_alpha": 16,
+        "target_modules": target_modules,
+        "bias": "none",
+    }
+    config_path = str(output_dir / "adapter_config.json")
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f)
+
+    # Save safetensors (default adapter weights)
+    from peft import get_peft_model_state_dict
+
+    state = get_peft_model_state_dict(peft_model)
+    np_state = {k: v.cpu().numpy() for k, v in state.items()}
+    from safetensors.numpy import save_file
+
+    save_file(np_state, str(output_dir / "adapter_model.safetensors"))
+
+    # Save adapter B with different weights
+    _randomize_lora_weights(peft_model, seed=99)
+    adapter_b_dir = str(output_dir / "adapter_B")
+    peft_model.save_pretrained(adapter_b_dir)
+
+    return {
+        "onnx_path": onnx_path,
+        "config_path": config_path,
+        "output_dir": str(output_dir),
+        "peft_keys": sorted(np_state.keys()),
+        "peft_shapes": {k: v.shape for k, v in np_state.items()},
+        "adapter_b_dir": adapter_b_dir,
+        "target_modules": target_modules,
+    }
+
+
+@pytest.fixture(scope="session")
+def peft_dynamo_false_artifacts(tmp_path_factory):
+    """Generate PeftModel dynamo=False export once per test session."""
+    artifacts_dir = tmp_path_factory.mktemp("peft_dynamo_false")
+    return _generate_peft_dynamo_false_export(str(artifacts_dir))
+
+
+@pytest.fixture
+def prepared_dynamo_false(peft_dynamo_false_artifacts) -> tuple:
+    """Run prepare_lora_onnx and return (model, lora_names, artifacts)."""
+    arts = peft_dynamo_false_artifacts
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out_path = os.path.join(tmpdir, "prepared.onnx")
+        _, lora_names = prepare_lora_onnx(
+            arts["onnx_path"], arts["config_path"], out_path
+        )
+        # Reload with external data in memory (temp dir cleaned after yield)
+        model = onnx.load(out_path)
+        onnx.external_data_helper.load_external_data_for_model(model, tmpdir)
+        yield model, lora_names, arts
+
+
+def test_prepare_lora_onnx_basic(prepared_dynamo_false):
+    """prepare_lora_onnx finds patterns and produces a valid ONNX model."""
+    model, lora_names, arts = prepared_dynamo_false
+
+    assert len(lora_names["params"]) > 0, "Should find LoRA params"
+    assert len(lora_names["activations"]) > 0, "Should find LoRA activations"
+    assert len(lora_names["scales"]) > 0, "Should find LoRA scales"
+
+    # ORT inference works
+    sess = ort.InferenceSession(model.SerializeToString())
+    inp = {"input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64)}
+    output = sess.run(None, inp)
+    assert output[0].shape[0] == 1
+    assert np.all(np.isfinite(output[0]))
+
+
+def test_prepare_lora_onnx_safetensors_match(prepared_dynamo_false):
+    """Renamed init names match PEFT safetensors keys.
+
+    Shapes are stored in MatMul convention in the ONNX graph (transposed
+    vs PEFT convention). The transposition is applied at load time by
+    _remap_safetensors_to_onnx using lora_names["transposed_params"].
+    """
+    model, lora_names, arts = prepared_dynamo_false
+    peft_keys = set(arts["peft_keys"])
+    param_names = set(lora_names["params"])
+
+    assert param_names == peft_keys, (
+        f"Key mismatch:\n"
+        f"  In params but not safetensors: {param_names - peft_keys}\n"
+        f"  In safetensors but not params: {peft_keys - param_names}"
+    )
+
+    # Shapes are transposed in the graph (MatMul convention).
+    # Verify transposed_params records the graph shape and it's the
+    # reverse of the PEFT safetensors shape.
+    init_map = {i.name: tuple(i.dims) for i in model.graph.initializer}
+    transposed_params = lora_names.get("transposed_params", {})
+    for key, peft_shape in arts["peft_shapes"].items():
+        assert key in init_map, f"Init {key} not found in model"
+        onnx_shape = init_map[key]
+        if len(peft_shape) == 2:
+            # ONNX stores in MatMul convention — reversed vs PEFT
+            assert onnx_shape == tuple(reversed(peft_shape)), (
+                f"Shape for {key}: onnx={onnx_shape} should be "
+                f"reverse of peft={peft_shape}"
+            )
+            assert key in transposed_params, (
+                f"{key} not in transposed_params — safetensors load will fail"
+            )
+
+
+def test_prepare_lora_onnx_initializer_only(prepared_dynamo_false):
+    """LoRA params should be initializer-only (not in graph.input)."""
+    model, lora_names, _ = prepared_dynamo_false
+    graph_input_names = {inp.name for inp in model.graph.input}
+
+    for param_name in lora_names["params"]:
+        assert param_name not in graph_input_names, (
+            f"LoRA param {param_name} should not be in graph.input "
+            f"(initializer-only mode)"
+        )
+
+    for scale_name in lora_names["scales"]:
+        assert scale_name not in graph_input_names, (
+            f"LoRA scale {scale_name} should not be in graph.input"
+        )
+
+
+def test_prepare_lora_onnx_scales(prepared_dynamo_false):
+    """Scale constants are converted to named initializers with correct values."""
+    model, lora_names, arts = prepared_dynamo_false
+    rank = arts.get("peft_shapes", {})
+    # alpha=16, r=8 → scale = 2.0
+    for scale_name, scale_value in lora_names["scales"].items():
+        assert scale_value == pytest.approx(2.0), (
+            f"Scale {scale_name} = {scale_value}, expected 2.0 (alpha=16/r=8)"
+        )
+        assert "lora_scale" in scale_name
+
+
+def test_prepare_lora_onnx_target_module_coverage(prepared_dynamo_false):
+    """All target_modules from adapter_config are found in the graph."""
+    _, lora_names, arts = prepared_dynamo_false
+    target_modules = set(arts["target_modules"])
+
+    found_modules = set()
+    for param_name in lora_names["params"]:
+        # base_model.model.layers.0.self_attn.q_proj.lora_A.weight → q_proj
+        parts = (
+            param_name.replace(".lora_A.weight", "")
+            .replace(".lora_B.weight", "")
+            .split(".")
+        )
+        found_modules.add(parts[-1])
+
+    assert target_modules <= found_modules, (
+        f"Missing target modules: {target_modules - found_modules}"
+    )
+
+
+def test_prepare_lora_onnx_no_patterns_raises():
+    """prepare_lora_onnx raises ValueError for a model without LoRA patterns."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Export a plain model (no PEFT)
+        base_model = _build_tiny_transformer()
+        base_model.eval()
+        sample = torch.randint(0, 512, (1, 32))
+        onnx_path = os.path.join(tmpdir, "base.onnx")
+        torch.onnx.export(
+            base_model,
+            (sample,),
+            onnx_path,
+            dynamo=False,
+            input_names=["input_ids"],
+            output_names=["logits"],
+        )
+        config_path = os.path.join(tmpdir, "adapter_config.json")
+        with open(config_path, "w") as f:
+            json.dump({"r": 8, "lora_alpha": 16, "target_modules": ["q_proj"]}, f)
+
+        with pytest.raises(ValueError, match="No LoRA patterns found"):
+            prepare_lora_onnx(onnx_path, config_path, os.path.join(tmpdir, "out.onnx"))
+
+
+def test_disable_enable_lora_quantizers(prepared_dynamo_false):
+    """disable_lora_quantizers disables and enable_lora_calibration re-enables."""
+    model, lora_names, _ = prepared_dynamo_false
+    dummy_input = {"input_ids": np.random.randint(0, 512, (1, 32)).astype(np.int64)}
+    sim = QuantizationSimModel(model, dummy_input=dummy_input)
+
+    # Phase 2: disable
+    disabled_count = disable_lora_quantizers(sim, lora_names)
+    assert disabled_count > 0
+
+    all_lora = lora_names["params"] + lora_names["activations"]
+    for name in all_lora:
+        if name in sim.qc_quantize_op_dict:
+            assert not sim.qc_quantize_op_dict[name].enabled, (
+                f"LoRA quantizer {name} should be disabled"
+            )
+
+    # Phase 3: enable
+    enabled_count = enable_lora_calibration(
+        sim, lora_names, param_type="int16", activation_type="int8"
+    )
+    assert enabled_count > 0
+
+    for name in all_lora:
+        if name in sim.qc_quantize_op_dict:
+            assert sim.qc_quantize_op_dict[name].enabled, (
+                f"LoRA quantizer {name} should be enabled after enable_lora_calibration"
+            )
+
+
+def test_lora_params_initializer_only(prepared_dynamo_false):
+    """LoRA params are initializer-only (not in graph.input) after prepare."""
+    model, lora_names, _ = prepared_dynamo_false
+    graph_input_names = {inp.name for inp in model.graph.input}
+    init_names = {init.name for init in model.graph.initializer}
+
+    for name in lora_names["params"]:
+        assert name in init_names, f"{name} should be in graph.initializer"
+        assert name not in graph_input_names, f"{name} should not be in graph.input"
+
+
+# ===========================================================================
+# Multi-adapter tests
+# ===========================================================================
+
+
+def _generate_multi_adapter_export(output_dir: str) -> dict:
+    """Export PeftMixedModel with 2 adapters (different targets/ranks)."""
+    from peft import LoraConfig, get_peft_model
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_model = _build_tiny_transformer()
+
+    # Adapter "code": targets q_proj + v_proj, rank=8
+    config_code = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=["q_proj", "v_proj"],
+        bias="none",
+    )
+    peft = get_peft_model(base_model, config_code, adapter_name="code", mixed=True)
+
+    # Adapter "medical": targets q_proj only, rank=4
+    config_medical = LoraConfig(
+        r=4,
+        lora_alpha=8,
+        target_modules=["q_proj"],
+        bias="none",
+    )
+    peft.add_adapter("medical", config_medical)
+    peft.set_adapter(["code", "medical"])
+    peft.eval()
+
+    sample = torch.randint(0, 512, (1, 32))
+    onnx_path = str(output_dir / "multi_adapter.onnx")
+    torch.onnx.export(
+        peft,
+        (sample,),
+        onnx_path,
+        dynamo=False,
+        input_names=["input_ids"],
+        output_names=["logits"],
+    )
+
+    # Save adapter configs
+    code_config = {"r": 8, "lora_alpha": 16, "target_modules": ["q_proj", "v_proj"]}
+    medical_config = {"r": 4, "lora_alpha": 8, "target_modules": ["q_proj"]}
+
+    code_cfg_path = str(output_dir / "code_config.json")
+    medical_cfg_path = str(output_dir / "medical_config.json")
+    with open(code_cfg_path, "w") as f:
+        json.dump(code_config, f)
+    with open(medical_cfg_path, "w") as f:
+        json.dump(medical_config, f)
+
+    # Save safetensors per adapter
+    from peft import get_peft_model_state_dict
+    from safetensors.numpy import save_file
+
+    # Code adapter weights
+    peft.set_adapter(["code"])
+    code_state = get_peft_model_state_dict(peft, adapter_name="code")
+    code_np = {k: v.cpu().numpy() for k, v in code_state.items()}
+    save_file(code_np, str(output_dir / "code_weights.safetensors"))
+
+    # Medical adapter weights
+    peft.set_adapter(["medical"])
+    medical_state = get_peft_model_state_dict(peft, adapter_name="medical")
+    medical_np = {k: v.cpu().numpy() for k, v in medical_state.items()}
+    save_file(medical_np, str(output_dir / "medical_weights.safetensors"))
+
+    return {
+        "onnx_path": onnx_path,
+        "code_config_path": code_cfg_path,
+        "medical_config_path": medical_cfg_path,
+        "code_weights_path": str(output_dir / "code_weights.safetensors"),
+        "medical_weights_path": str(output_dir / "medical_weights.safetensors"),
+        "output_dir": str(output_dir),
+    }
+
+
+@pytest.fixture(scope="session")
+def prepare_multi_adapter_artifacts(tmp_path_factory):
+    """Generate multi-adapter PeftMixedModel export once per session."""
+    arts_dir = tmp_path_factory.mktemp("prepare_multi_adapter")
+    return _generate_multi_adapter_export(str(arts_dir))
+
+
+@pytest.fixture
+def prepared_multi_adapter(prepare_multi_adapter_artifacts) -> tuple:
+    """Run prepare_lora_onnx with multi-adapter configs."""
+    arts = prepare_multi_adapter_artifacts
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out_path = os.path.join(tmpdir, "prepared_multi.onnx")
+        _, lora_names = prepare_lora_onnx(
+            arts["onnx_path"],
+            adapter_config=[arts["code_config_path"], arts["medical_config_path"]],
+            output_path=out_path,
+        )
+        # Reload with external data in memory (temp dir cleaned after yield)
+        model = onnx.load(out_path)
+        onnx.external_data_helper.load_external_data_for_model(model, tmpdir)
+        yield model, lora_names, arts
+
+
+def test_prepare_multi_adapter_basic(prepared_multi_adapter):
+    """Multi-adapter: discovers both adapters, returns per-adapter lora_names."""
+    model, lora_names, arts = prepared_multi_adapter
+
+    # Should have "adapters" key
+    assert "adapters" in lora_names
+    assert "code" in lora_names["adapters"]
+    assert "medical" in lora_names["adapters"]
+
+    # Each adapter has params, activations, scales
+    for adapter_name in ["code", "medical"]:
+        adapter_ln = lora_names["adapters"][adapter_name]
+        assert "params" in adapter_ln
+        assert "activations" in adapter_ln
+        assert "scales" in adapter_ln
+        assert len(adapter_ln["params"]) > 0
+
+    # Flat lists contain union of all adapters
+    assert len(lora_names["params"]) == (
+        len(lora_names["adapters"]["code"]["params"])
+        + len(lora_names["adapters"]["medical"]["params"])
+    )
+
+
+def test_prepare_multi_adapter_diff_targets(prepared_multi_adapter):
+    """Multi-adapter: code targets q+v, medical targets q only."""
+    _, lora_names, _ = prepared_multi_adapter
+
+    code_params = lora_names["adapters"]["code"]["params"]
+    medical_params = lora_names["adapters"]["medical"]["params"]
+
+    # Code targets 2 modules (q_proj, v_proj) × 2 layers × 2 weights (A+B) = 8
+    assert len(code_params) == 8
+
+    # Medical targets 1 module (q_proj) × 2 layers × 2 weights (A+B) = 4
+    assert len(medical_params) == 4
+
+    # Medical params should reference q_proj but not v_proj
+    for p in medical_params:
+        assert "q_proj" in p
+        assert "v_proj" not in p
+
+
+def test_prepare_multi_adapter_diff_ranks(prepared_multi_adapter):
+    """Multi-adapter: code rank=8, medical rank=4 — different shapes.
+
+    lora_A is stored in MatMul convention: (in_features, rank).
+    """
+    model, lora_names, _ = prepared_multi_adapter
+
+    init_map = {init.name: init for init in model.graph.initializer}
+
+    code_params = lora_names["adapters"]["code"]["params"]
+    medical_params = lora_names["adapters"]["medical"]["params"]
+
+    # Code lora_A shape is (in_features, rank=8)
+    code_lora_a = [p for p in code_params if "lora_A" in p][0]
+    assert init_map[code_lora_a].dims[1] == 8
+
+    # Medical lora_A shape is (in_features, rank=4)
+    medical_lora_a = [p for p in medical_params if "lora_A" in p][0]
+    assert init_map[medical_lora_a].dims[1] == 4
+
+
+def test_prepare_multi_adapter_ort_inference(prepared_multi_adapter):
+    """Multi-adapter: ORT inference works and produces valid output."""
+    import onnxruntime as ort
+
+    model, lora_names, _ = prepared_multi_adapter
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model_path = os.path.join(tmpdir, "model.onnx")
+        onnx.save_model(
+            model,
+            model_path,
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location="model.onnx.data",
+        )
+        session = ort.InferenceSession(model_path)
+
+        input_name = session.get_inputs()[0].name
+        dummy_input = np.random.randint(0, 512, (1, 32)).astype(np.int64)
+
+        # Model runs with baked-in initializer weights (all adapters active)
+        output = session.run(None, {input_name: dummy_input})[0]
+        assert output.shape[0] == 1
+        assert np.all(np.isfinite(output))
+
+
+def test_prepare_multi_adapter_concurrent(prepared_multi_adapter):
+    """Multi-adapter: build_concurrent_feed_dict returns empty when LoRA not in graph.input."""
+    model, lora_names, arts = prepared_multi_adapter
+    code_wts = load_file(arts["code_weights_path"])
+
+    # Before promotion, feed dict should be empty (no graph inputs for LoRA)
+    feed = build_concurrent_feed_dict(
+        model, lora_names, active_adapters={"code": code_wts}
+    )
+    # All LoRA params are initializer-only → nothing to feed
+    assert len(feed) == 0, (
+        "Before enable_lora_calibration, feed dict should be empty "
+        "(LoRA weights are initializer-only, not graph inputs)"
+    )
+
+
+def test_prepare_single_adapter_backward_compat(prepared_dynamo_false):
+    """Single-adapter: no 'adapters' key — backward compatible format."""
+    _, lora_names, _ = prepared_dynamo_false
+
+    # Should NOT have "adapters" key for single-adapter
+    assert "adapters" not in lora_names
+    # Should have flat structure
+    assert "params" in lora_names
+    assert "activations" in lora_names
+    assert "scales" in lora_names
+
+
+# ===========================================================================
+# TinyLlama multi-adapter E2E test (prepare_lora_onnx + PeftMixedModel)
+# ===========================================================================
+
+
+@pytest.mark.skip(reason="Local only — requires TinyLlama + adapters cached")
+def test_tinyllama_multi_adapter_prepare_lora_onnx():
+    """E2E multi-adapter workflow with TinyLlama using prepare_lora_onnx.
+
+    Uses PeftMixedModel to export with both adapters active (dynamo=False),
+    then runs the full quantization workflow:
+    prepare_lora_onnx -> QuantSim -> disable LoRA -> base cal -> freeze
+    -> enable LoRA -> per-adapter: set_lora_weights + compute_encodings
+    + get_lora_encodings -> set_lora_weights + set_lora_encodings for
+    inference -> verify outputs differ between adapters.
+
+    Adapter A (TLDR): barissglc/tinyllama-tarot-v1
+        target_modules=[q_proj, v_proj], rank=8, alpha=16
+
+    Adapter B (Skills): cahlen/tinyllama-offline-practical-skills-qa-qlora
+        target_modules=[q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+        rank=64, alpha=16
+    """
+    from peft import PeftConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    adapter_a_path = _resolve_hf_adapter(_ADAPTER_A_ID)
+    adapter_b_path = _resolve_hf_adapter(_ADAPTER_B_ID)
+
+    base_model = AutoModelForCausalLM.from_pretrained(
+        _TINYLLAMA_BASE,
+        cache_dir=HF_CACHE,
+        torch_dtype=torch.float32,
+    )
+
+    config_a = PeftConfig.from_pretrained(adapter_a_path)
+    peft_model = get_peft_model(base_model, config_a, adapter_name="tarot", mixed=True)
+
+    from safetensors.torch import load_file as load_torch_safetensors
+
+    state_a = load_torch_safetensors(
+        os.path.join(adapter_a_path, "adapter_model.safetensors")
+    )
+    peft_model.load_state_dict(state_a, strict=False)
+
+    config_b = PeftConfig.from_pretrained(adapter_b_path)
+    peft_model.add_adapter("skills", config_b)
+
+    state_b = load_torch_safetensors(
+        os.path.join(adapter_b_path, "adapter_model.safetensors")
+    )
+    peft_model.load_state_dict(state_b, strict=False)
+
+    peft_model.set_adapter(["tarot", "skills"])
+    peft_model.eval()
+
+    sample_inputs = (torch.randint(0, 32000, (1, 16)),)
+
+    with tempfile.TemporaryDirectory(dir="/local/mnt/workspace") as tmpdir:
+        onnx_path = os.path.join(tmpdir, "tinyllama_mixed.onnx")
+        torch.onnx.export(
+            peft_model,
+            sample_inputs,
+            onnx_path,
+            dynamo=False,
+            input_names=["input_ids"],
+            output_names=["logits"],
+        )
+
+        cfg_a = {
+            "r": config_a.r,
+            "lora_alpha": config_a.lora_alpha,
+            "target_modules": list(config_a.target_modules),
+        }
+        cfg_b = {
+            "r": config_b.r,
+            "lora_alpha": config_b.lora_alpha,
+            "target_modules": list(config_b.target_modules),
+        }
+        cfg_a_path = os.path.join(tmpdir, "tarot_config.json")
+        cfg_b_path = os.path.join(tmpdir, "skills_config.json")
+        with open(cfg_a_path, "w") as f:
+            json.dump(cfg_a, f)
+        with open(cfg_b_path, "w") as f:
+            json.dump(cfg_b, f)
+
+        out_path = os.path.join(tmpdir, "prepared.onnx")
+        model, lora_names = prepare_lora_onnx(
+            onnx_path,
+            adapter_config=[cfg_a_path, cfg_b_path],
+            output_path=out_path,
+        )
+
+        assert "adapters" in lora_names
+        assert "tarot" in lora_names["adapters"]
+        assert "skills" in lora_names["adapters"]
+        assert len(lora_names["adapters"]["skills"]["params"]) > len(
+            lora_names["adapters"]["tarot"]["params"]
+        )
+
+        dummy_input = {
+            "input_ids": np.random.randint(0, 32000, (1, 16)).astype(np.int64),
+        }
+        sim = QuantizationSimModel(
+            model,
+            dummy_input=dummy_input,
+            param_type=int4,
+            activation_type=int16,
+        )
+
+        disable_lora_quantizers(sim, lora_names)
+
+        def base_cal(session):
+            for _ in range(3):
+                batch = {
+                    "input_ids": np.random.randint(0, 32000, (1, 16)).astype(np.int64)
+                }
+                session.run(None, batch)
+
+        sim.compute_encodings(base_cal)
+        freeze_base_model(sim, lora_names)
+
+        enable_lora_calibration(
+            sim, lora_names, param_type="int16", activation_type="int16"
+        )
+
+        adapter_wts = {
+            "tarot": load_file(
+                os.path.join(adapter_a_path, "adapter_model.safetensors")
+            ),
+            "skills": load_file(
+                os.path.join(adapter_b_path, "adapter_model.safetensors")
+            ),
+        }
+        adapter_encodings = {}
+
+        for name, wts in adapter_wts.items():
+            unfreeze_lora_quantizers(sim, lora_names)
+            set_lora_weights(sim, lora_names, name, wts)
+
+            def cal_fn(session):
+                for _ in range(3):
+                    batch = {
+                        "input_ids": np.random.randint(0, 32000, (1, 16)).astype(
+                            np.int64
+                        )
+                    }
+                    session.run(None, batch)
+
+            sim.compute_encodings(cal_fn)
+            adapter_encodings[name] = get_lora_encodings(sim, lora_names)
+
+        any_differ = any(
+            adapter_encodings["tarot"].get(n) != adapter_encodings["skills"].get(n)
+            for n in adapter_encodings["tarot"]
+        )
+        assert any_differ
+
+        input_data = {
+            "input_ids": np.array([[1, 2, 3, 4, 5] + [0] * 11], dtype=np.int64)
+        }
+
+        set_lora_weights(sim, lora_names, "tarot", adapter_wts["tarot"])
+        set_lora_encodings(sim, adapter_encodings["tarot"])
+        output_a = sim.session.run(None, input_data)[0]
+
+        set_lora_weights(sim, lora_names, "skills", adapter_wts["skills"])
+        set_lora_encodings(sim, adapter_encodings["skills"])
+        output_b = sim.session.run(None, input_data)[0]
+
+        assert np.all(np.isfinite(output_a))
+        assert np.all(np.isfinite(output_b))
+        assert not np.allclose(output_a, output_b, atol=1e-6)
