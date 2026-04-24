@@ -11,7 +11,7 @@
 #   ./scripts/download_checkpoint.sh https://my-bucket.s3.amazonaws.com/exports/2026/03/04/12345678/Llama-3.2-1B-Instruct_143022.zip
 
 set -euo pipefail
-AWS_PROFILE="saml"
+AWS_PROFILE="genai-laboratory"
 
 # Ensure AWS CLI is installed
 if ! command -v aws &>/dev/null; then
@@ -34,9 +34,9 @@ if ! command -v saml2aws &>/dev/null; then
   echo "saml2aws installed to /usr/local/bin/saml2aws"
 fi
 
-# Configure saml2aws if no config exists
-if [ ! -f ~/.saml2aws ]; then
-  echo "Configuring saml2aws..."
+# Configure saml2aws if the profile is not present
+if [ ! -f ~/.saml2aws ] || ! grep -q "^name\s*=\s*${AWS_PROFILE}\s*$" ~/.saml2aws; then
+  echo "Profile '${AWS_PROFILE}' not found in ~/.saml2aws, configuring..."
   if [ -z "${SAML2AWS_APP_ID:-}" ]; then
     echo "SAML2AWS_APP_ID is not set."
     read -rp "Enter your Azure AD App ID: " SAML2AWS_APP_ID
@@ -53,7 +53,7 @@ if [ ! -f ~/.saml2aws ]; then
     --mfa Auto \
     --profile "$AWS_PROFILE" \
     --skip-prompt
-  echo "saml2aws configured."
+  echo "saml2aws profile '${AWS_PROFILE}' configured."
 fi
 
 # Ensure we have valid AWS credentials
