@@ -5,6 +5,7 @@
 
 import time
 import warnings
+import yaml
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -820,11 +821,12 @@ class TrickyPrompts(Interactive):
 
 @YAMLConfigParser.register_metric
 class Prompts(Interactive):
-    prompts = [
-        "What is gravity?",
-        "What is a llama?",
-        "Write a short story about a person who discovers a hidden room in their house. The story should include a plot twist and a clear resolution at the end.",
-    ]
+    PROMPTS_FILE = Path(__file__).parent / "prompts" / "text_prompts.yaml"
+
+    @classmethod
+    def _load_prompts(cls):
+        with open(cls.PROMPTS_FILE) as f:
+            return yaml.safe_load(f)
 
     @classmethod
     def evaluate(
@@ -836,7 +838,7 @@ class Prompts(Interactive):
         eval_ctx: EvaluationContext = None,
     ) -> list[str]:
         generated_text = []
-        for prompt in Prompts.prompts:
+        for prompt in cls._load_prompts():
             print("===============================")
             generated_text.append(
                 cls.generate_output(model, tokenizer, unformatted_prompt=prompt)
@@ -847,12 +849,13 @@ class Prompts(Interactive):
 
 @YAMLConfigParser.register_metric
 class MultimodalPrompts(EvaluationMetric):
-    BASE_DIR = Path(__file__).parent / "sample_images"
+    PROMPTS_FILE = Path(__file__).parent / "prompts" / "multimodal_prompts.yaml"
+    IMAGE_DIR = Path(__file__).parent / "prompts" / "sample_images"
 
-    prompts = {
-        "bear.png": "Describe this image.",
-        "dog.jpg": "Describe this image.",
-    }
+    @classmethod
+    def _load_prompts(cls):
+        with open(cls.PROMPTS_FILE) as f:
+            return yaml.safe_load(f)
 
     @classmethod
     def evaluate(
@@ -875,9 +878,11 @@ class MultimodalPrompts(EvaluationMetric):
         tokenizer = getattr(processor, "tokenizer", processor)
         generated_text = []
 
-        for image_file, prompt_text in cls.prompts.items():
+        for entry in cls._load_prompts():
+            image_file = entry["image"]
+            prompt_text = entry["prompt"]
             print("===============================")
-            image_path = cls.BASE_DIR / image_file
+            image_path = cls.IMAGE_DIR / image_file
             image = Image.open(image_path).convert("RGB")
             if model.image_size is not None:
                 image = image.resize(model.image_size)

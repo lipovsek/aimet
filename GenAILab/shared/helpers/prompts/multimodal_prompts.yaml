@@ -1,0 +1,98 @@
+# Prompts for evaluating quantized VLM generation quality.
+# Each entry pairs a sample image with a question.
+#
+# Image sources:
+#   bear.png      - pre-existing sample image
+#   dog.jpg       - pre-existing sample image
+#   chart.jpg     - Unsplash, by Cht Gsml (Unsplash License)
+#   street.jpg    - Unsplash, by Brendan Church (Unsplash License)
+#   market.jpg    - Unsplash, by Calvin Craig (Unsplash License)
+#   flowchart.jpg - Pexels, by RDNE Stock project (Pexels License)
+#   food.jpg      - Unsplash, by Stefan Vladimirov (Unsplash License)
+#   satellite.jpg - Unsplash, by USGS (Unsplash License)
+#   basketball.jpg - Unsplash, by setengah limasore (Unsplash License)
+#   handwriting.jpg - Wikimedia Commons, William Burke 1829 (public domain)
+
+# --- General description ---
+- image: bear.png
+  prompt: Describe this image.
+- image: dog.jpg
+  prompt: Describe this image.
+- image: food.jpg
+  prompt: Describe this image in detail.
+- image: basketball.jpg
+  prompt: Describe what is happening in this image.
+
+# --- Detailed visual understanding ---
+- image: bear.png
+  prompt: What species of bear is this, and what clues in the image help identify it?
+- image: dog.jpg
+  prompt: What breed of dog is this? Describe its physical features.
+- image: dog.jpg
+  prompt: Describe the setting and environment in this photo.
+- image: bear.png
+  prompt: What is the bear doing, and what can you infer about its environment?
+
+# --- Chart and data reading ---
+- image: chart.jpg
+  prompt: What types of charts are shown in this image?
+- image: chart.jpg
+  prompt: Describe the data visualization in this image. What do the charts appear to represent?
+- image: chart.jpg
+  prompt: Which color segment appears largest in the pie chart?
+
+# --- OCR and text recognition ---
+- image: street.jpg
+  prompt: What text is visible on the signs in this image?
+- image: street.jpg
+  prompt: What city could this photo have been taken in? What clues suggest this?
+- image: flowchart.jpg
+  prompt: Read all the text written on the whiteboard in this image.
+- image: flowchart.jpg
+  prompt: Describe the structure of the diagram. What is the central concept and what branches connect to it?
+
+# --- Object counting and spatial reasoning ---
+- image: market.jpg
+  prompt: List all the different types of fruits and vegetables you can identify in this image.
+- image: market.jpg
+  prompt: How many distinct groups or piles of produce can you count on the table?
+- image: food.jpg
+  prompt: How many plates of food are on the table?
+- image: food.jpg
+  prompt: What different dishes can you identify on the table? List each one.
+- image: market.jpg
+  prompt: Describe the spatial layout of this market stall from front to back.
+
+# --- Geographical and satellite imagery ---
+- image: satellite.jpg
+  prompt: What kind of image is this? Describe what you see.
+- image: satellite.jpg
+  prompt: Can you identify any geographical features such as waterways, urban areas, or farmland in this image?
+- image: satellite.jpg
+  prompt: Based on the features visible, what city or region could this satellite image be showing?
+
+# --- Action and activity recognition ---
+- image: basketball.jpg
+  prompt: What sport are the people playing?
+- image: basketball.jpg
+  prompt: How many people are visible on the court, and what are they doing?
+- image: basketball.jpg
+  prompt: Describe the basketball court and its surroundings.
+
+# --- Handwriting recognition ---
+- image: handwriting.jpg
+  prompt: Transcribe the handwritten text in this image as accurately as you can.
+- image: handwriting.jpg
+  prompt: What language and time period does this handwriting appear to be from?
+- image: handwriting.jpg
+  prompt: Who wrote this document and what is its subject matter?
+
+# --- Comparative and reasoning ---
+- image: food.jpg
+  prompt: Does this appear to be a restaurant meal or a home-cooked meal? Explain your reasoning.
+- image: market.jpg
+  prompt: Is this an indoor or outdoor market? What visual clues support your answer?
+- image: street.jpg
+  prompt: Is it daytime or nighttime in this photo? How can you tell?
+- image: flowchart.jpg
+  prompt: Is this diagram hand-drawn or computer-generated? What evidence supports your answer?
