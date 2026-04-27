@@ -81,7 +81,7 @@ class LayerCacheDescriptor:
         if self.attention_type == AttentionType.FULL:
             return max_length
         if self.attention_type == AttentionType.SLIDING_WINDOW:
-            return min(self.sliding_window_size, max_length)
+            return max_length
         if self.attention_type == AttentionType.LINEAR:
             return None
         raise ValueError(f"Unknown attention type: {self.attention_type}")

@@ -614,6 +614,162 @@ class TestGetPastKeyvalLinearAttention:
 
 
 # ---------------------------------------------------------------------------
+# get_past_keyval_with_shift — sliding window attention
+# ---------------------------------------------------------------------------
+
+
+def _make_sliding_descriptors(window_size=32):
+    """5 sliding + 1 full, like Gemma 3 pattern."""
+    types = [AttentionType.SLIDING_WINDOW] * 5 + [AttentionType.FULL]
+    return [
+        LayerCacheDescriptor(
+            layer_idx=i,
+            attention_type=t,
+            num_kv_heads=4,
+            head_dim=16,
+            sliding_window_size=window_size
+            if t == AttentionType.SLIDING_WINDOW
+            else None,
+        )
+        for i, t in enumerate(types)
+    ]
+
+
+class TestGetPastKeyvalSlidingWindow:
+    def test_sliding_window_same_length_as_full(self):
+        descs = _make_sliding_descriptors(window_size=4)
+        past = [torch.randn(1, 4, 8, 16) for _ in range(12)]
+        new = [torch.randn(1, 4, 2, 16) for _ in range(12)]
+        result = get_past_keyval_with_shift(
+            past, new, length=10, layer_cache_descriptors=descs
+        )
+        for i in range(0, 12, 2):
+            assert result[i].shape[2] == 10
+
+    def test_sliding_window_not_clipped_below_length(self):
+        descs = _make_sliding_descriptors(window_size=4)
+        past = [torch.randn(1, 4, 3, 16) for _ in range(12)]
+        new = [torch.randn(1, 4, 2, 16) for _ in range(12)]
+        result = get_past_keyval_with_shift(
+            past, new, length=10, layer_cache_descriptors=descs
+        )
+        for i in range(0, 12, 2):
+            assert result[i].shape[2] == 5
+
+
+# ---------------------------------------------------------------------------
+# prepare_inputs — mixed sliding window + full attention
+# ---------------------------------------------------------------------------
+
+
+class _MixedAttnCfg:
+    num_hidden_layers = 6
+    num_attention_heads = 4
+    num_key_value_heads = 4
+    hidden_size = 64
+    head_dim = 16
+    vocab_size = 256
+    sliding_window = 32
+    layer_types = [
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "sliding_attention",
+        "full_attention",
+    ]
+
+
+class _MixedAttnModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.cfg = _MixedAttnCfg()
+        self._param = torch.nn.Parameter(torch.zeros(1))
+
+    @property
+    def config(self):
+        return self.cfg
+
+    @property
+    def device(self):
+        return torch.device("cpu")
+
+    @property
+    def dtype(self):
+        return torch.float32
+
+    def forward(self, *args):
+        input_tokens = args[0]
+        batch = input_tokens.shape[0]
+        seq_len = input_tokens.shape[1]
+        logits = torch.randn(batch, seq_len, self.cfg.vocab_size)
+        kv_shape = (batch, self.cfg.num_key_value_heads, seq_len, self.cfg.head_dim)
+        kv_tensors = [
+            torch.randn(kv_shape) for _ in range(self.cfg.num_hidden_layers * 2)
+        ]
+        return (logits, *kv_tensors)
+
+
+class TestPrepareInputsMixedAttention:
+    def test_returns_dict_attention_mask(self):
+        model = _MixedAttnModel()
+        input_ids = torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8]])
+        attn = torch.ones(1, 8, dtype=torch.int32)
+        result = Generator.prepare_inputs(
+            model=model,
+            input_ids=input_ids,
+            attention_mask=attn,
+            past_key_values=[],
+            sequence_length=8,
+            context_length=32,
+        )
+        mask = result[1]
+        assert isinstance(mask, dict)
+        assert "full_attention" in mask
+        assert "sliding_attention" in mask
+
+    def test_kv_cache_shapes_uniform(self):
+        model = _MixedAttnModel()
+        input_ids = torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8]])
+        attn = torch.ones(1, 8, dtype=torch.int32)
+        result = Generator.prepare_inputs(
+            model=model,
+            input_ids=input_ids,
+            attention_mask=attn,
+            past_key_values=[],
+            sequence_length=8,
+            context_length=32,
+        )
+        kv_tensors = result[3:]
+        expected_kv_len = 32 - 8  # context - sequence
+        for kv in kv_tensors:
+            assert kv.shape[2] == expected_kv_len
+
+    def test_kv_shapes_uniform_with_existing_cache(self):
+        model = _MixedAttnModel()
+        cfg = model.cfg
+        kv_len = 5
+        past_kvs = [
+            torch.randn(1, cfg.num_key_value_heads, kv_len, cfg.head_dim)
+            for _ in range(cfg.num_hidden_layers * 2)
+        ]
+        input_ids = torch.tensor([[1, 2, 3, 4, 5, 6, 7, 8]])
+        attn = torch.ones(1, 8, dtype=torch.int32)
+        result = Generator.prepare_inputs(
+            model=model,
+            input_ids=input_ids,
+            attention_mask=attn,
+            past_key_values=past_kvs,
+            sequence_length=8,
+            context_length=32,
+        )
+        kv_tensors = result[3:]
+        expected_kv_len = 32 - 8
+        for kv in kv_tensors:
+            assert kv.shape[2] == expected_kv_len
+
+
+# ---------------------------------------------------------------------------
 # layer_cache_descriptors property
 # ---------------------------------------------------------------------------
 

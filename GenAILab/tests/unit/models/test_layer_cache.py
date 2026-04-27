@@ -64,7 +64,7 @@ class TestLayerCacheDescriptor:
             head_dim=16,
             sliding_window_size=32,
         )
-        assert desc.clip_length(100) == 32
+        assert desc.clip_length(100) == 100
         assert desc.clip_length(16) == 16
 
     def test_clip_length_linear(self):

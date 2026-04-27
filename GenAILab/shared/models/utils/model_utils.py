@@ -111,7 +111,13 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
 
     def _build_cache(self, past_key_values: tuple[tuple[torch.Tensor, ...], ...]):
         """Build a cache object from flattened state pairs using ``self.cache_type``."""
-        kv_cache = self.cache_type(config=self.config)
+        # Avoid passing config to DynamicCache — it creates DynamicSlidingWindowLayer
+        # for sliding-window layers, which clips KV entries internally. Our 4D attention
+        # mask already handles the windowing semantics, so we need uniform-sized caches.
+        if self.cache_type is DynamicCache:
+            kv_cache = DynamicCache()
+        else:
+            kv_cache = self.cache_type(config=self.config)
         layer_types = getattr(self.config, "layer_types", None)
         for layer_idx, (state_a, state_b) in enumerate(
             zip(past_key_values[::2], past_key_values[1::2])

@@ -447,7 +447,7 @@ class Generator(GenerationMixin, torch.nn.Module):
                         padded_attention_mask,
                         sequence_length,
                         context_length,
-                        desc.window_size,
+                        desc.sliding_window_size,
                     )
                 )
                 cm_sliding_attention_mask = cm_sliding_attention_mask.clip(
