@@ -1096,6 +1096,8 @@ class QuantizationSimModel:
                 for param_quantizer in param_quantizers.values():
                     if not param_quantizer.enabled:
                         continue
+                    if param_quantizer.data_type != QuantizationDataType.int:
+                        continue
                     param_quantizer.set_bitwidth(max(param_quantizer.bitwidth, 8))
                     if output_bw:
                         param_quantizer.set_bitwidth(output_bw)

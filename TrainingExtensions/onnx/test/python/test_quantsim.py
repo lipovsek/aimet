@@ -2314,6 +2314,23 @@ class TestQuantSim:
         )
         assert not sim.qc_quantize_op_dict["layer_norm.weight"].use_symmetric_encodings
 
+    def test_layernorm_exception_rule_float_weights(self, tmp_path):
+        model = layernorm_model()
+        sim = aimet_onnx.QuantizationSimModel(
+            model,
+            param_type=aimet_onnx.float16,
+            activation_type=aimet_onnx.int8,
+            config_file="htp_v81",
+        )
+        for quantizer in sim.qc_quantize_op_dict.values():
+            assert not (
+                quantizer.bitwidth == 8
+                and quantizer.data_type == QuantizationDataType.float
+            )
+        sim.compute_encodings([make_dummy_input(model)])
+        sim.export(tmp_path, "model", encoding_version="2.0.0")
+        sim.to_onnx_qdq()
+
     @pytest.mark.parametrize(
         "param_type", [aimet_onnx.int4, aimet_onnx.int8, aimet_onnx.int16]
     )
