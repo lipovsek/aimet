@@ -28,8 +28,6 @@ void quantizeDequantizeFp16ForGPU(const float* in, uint64_t cnt, float* out, voi
 
 #ifdef ONNX_CUDA
 void convertFloatToFp16KernelForGPU(const float* in, uint64_t cnt, __half* out, void* stream);
-
-void convertFp16ToFloatKernelForGPU(const __half* in, uint64_t cnt, float* out, void* stream);
 #endif
 
 template <typename DTYPE>

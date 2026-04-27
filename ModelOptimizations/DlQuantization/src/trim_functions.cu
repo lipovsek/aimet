@@ -132,23 +132,6 @@ void convertFloatToFp16KernelForGPU(const float* in, uint64_t cnt, __half* out, 
 }
 
 
-__global__ void convertFp16ToFloatKernel(const __half* in, uint64_t cnt, float* out)
-{
-    CUDA_KERNEL_LOOP(i, cnt)
-    {
-        *(out + i) = __half2float(*(in + i));
-    }
-}
-
-
-void convertFp16ToFloatKernelForGPU(const __half* in, uint64_t cnt, float* out, void* stream)
-{
-    convertFp16ToFloatKernel<<<CUDA_NUM_BLOCKS(cnt), CUDA_NUM_THREADS, 0, reinterpret_cast<cudaStream_t>(stream)>>>(
-        in, cnt, out);
-}
-
-
-
 template <typename DTYPE>
 void quantizeToFxpGpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding,
                       DTYPE* out, RoundingMode rounding_mode, bool shiftToSigned)

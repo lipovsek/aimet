@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "tensor_utils.hpp"
+#include <Eigen/Core>
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
@@ -180,5 +181,28 @@ template void permuteKernelCPU(const float* inTensor, float* outTensor, size_t n
 
 template void permuteKernelCPU(const double* inTensor, double* outTensor, size_t numel, const TensorDims& inputStrides,
                                const TensorDims& outputStrides);
+
+template void permute(const Eigen::half* input, Eigen::half* output, const TensorDims& inputShape,
+                      std::vector<size_t> order, ComputationMode mode, void* stream);
+
+template void permuteKernelCPU(const Eigen::half* inTensor, Eigen::half* outTensor, size_t numel,
+                               const TensorDims& inputStrides, const TensorDims& outputStrides);
+
+void convertHalfToFloat(const Eigen::half* input, float* output, size_t count, ComputationMode mode, void* stream)
+{
+    if (mode == COMP_MODE_GPU)
+    {
+#ifdef GPU_QUANTIZATION_ENABLED
+        convertHalfToFloat_gpu(input, count, output, stream);
+#else
+        throw std::runtime_error("Not compiled for GPU mode.");
+#endif
+    }
+    else
+    {
+        for (size_t i = 0; i < count; i++)
+            output[i] = static_cast<float>(input[i]);
+    }
+}
 
 }   // namespace DlQuantization

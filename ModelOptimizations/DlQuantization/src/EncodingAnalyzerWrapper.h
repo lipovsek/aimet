@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <memory>
 
-#include "ContiguousEncodingAnalyzer.h"
+#include "DlQuantization/IQuantizationEncodingAnalyzer.hpp"
 
 namespace DlQuantization
 {
@@ -17,10 +17,16 @@ namespace DlQuantization
  * @brief Wrapper over legacy encoding analyzers enabling blockwise behavior
  */
 template <typename DTYPE>
-class EncodingAnalyzerWrapper : public ContiguousEncodingAnalyzerBase<DTYPE>
+class EncodingAnalyzerWrapper : public IBlockEncodingAnalyzer<DTYPE>
 {
 public:
     EncodingAnalyzerWrapper(TensorDims shape, QuantizationMode mode);
+
+    void updateStats(const DTYPE* tensor, const TensorDims& tensorShape, ComputationMode tensorCpuGpuMode,
+                     IAllocator* allocator = nullptr, void* stream = nullptr) override;
+
+    void updateStats(const Eigen::half* tensor, const TensorDims& tensorShape, ComputationMode tensorCpuGpuMode,
+                     IAllocator* allocator = nullptr, void* stream = nullptr) override;
 
     void resetStats() override;
 
@@ -33,13 +39,11 @@ public:
 
     float getPercentileValue() override;
 
-
-protected:
+private:
     void updateStatsContiguous(const DTYPE* tensor, const TensorDims& shape, size_t blockSize,
                                ComputationMode tensorCpuGpuMode, IAllocator* allocator = nullptr,
-                               void* stream = nullptr) override;
+                               void* stream = nullptr);
 
-private:
     std::vector<std::unique_ptr<IQuantizationEncodingAnalyzer<DTYPE>>> _encodingAnalyzers;
 };
 

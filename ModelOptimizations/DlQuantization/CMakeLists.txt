@@ -16,8 +16,6 @@ add_library(MoDlQuantization STATIC
       src/tensor_utils.cpp
       src/tensor_utils.hpp
 
-      src/ContiguousEncodingAnalyzer.cpp
-      src/ContiguousEncodingAnalyzer.h
       src/EntropyEncodingAnalyzer.cpp
       src/EntropyEncodingAnalyzer.h
       src/MinMaxEncodingAnalyzer.cpp

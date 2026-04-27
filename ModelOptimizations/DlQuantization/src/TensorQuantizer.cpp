@@ -10,6 +10,7 @@
 #include <cassert>
 #include <numeric>
 #include <stdexcept>
+#include <type_traits>
 
 namespace DlQuantization
 {
@@ -336,11 +337,23 @@ void BlockTensorQuantizer::resetEncodingStats()
 void BlockTensorQuantizer::updateStats(const float* tensor, const TensorDims& tensorShape, bool useCuda,
                                        IAllocator* alloc, void* stream)
 {
+    updateStats<float>(tensor, tensorShape, useCuda, alloc, stream);
+}
+
+template <typename T>
+void BlockTensorQuantizer::updateStats(const T* tensor, const TensorDims& tensorShape, bool useCuda, IAllocator* alloc,
+                                       void* stream)
+{
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, Eigen::half>,
+                  "BlockTensorQuantizer::updateStats only supports float and Eigen::half");
     _validStats                = true;
     ComputationMode cpuGpuMode = useCuda ? COMP_MODE_GPU : COMP_MODE_CPU;
     _encodingAnalyzer->updateStats(tensor, tensorShape, cpuGpuMode, alloc, stream);
 }
 
+template void BlockTensorQuantizer::updateStats<float>(const float*, const TensorDims&, bool, IAllocator*, void*);
+template void BlockTensorQuantizer::updateStats<Eigen::half>(const Eigen::half*, const TensorDims&, bool, IAllocator*,
+                                                             void*);
 
 // TODO: Let BlockTensorQuantizer own the encodings vector, do not take as argument
 template <typename T>

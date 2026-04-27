@@ -3,6 +3,7 @@
 
 #include "cuda_util.hpp"
 #include "tensor_utils.hpp"
+#include <Eigen/Core>
 
 namespace DlQuantization
 {
@@ -60,11 +61,28 @@ void synchronizeCudaStream(void* stream)
     cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
 }
 
+__global__ void convertHalfToFloatKernel(const __half* in, uint64_t cnt, float* out)
+{
+    CUDA_KERNEL_LOOP(i, cnt)
+    {
+        *(out + i) = __half2float(*(in + i));
+    }
+}
+
+void convertHalfToFloat_gpu(const Eigen::half* in, size_t cnt, float* out, void* stream)
+{
+    convertHalfToFloatKernel<<<CUDA_NUM_BLOCKS(cnt), CUDA_NUM_THREADS, 0, reinterpret_cast<cudaStream_t>(stream)>>>(
+        reinterpret_cast<const __half*>(in), cnt, out);
+}
+
 
 template void permuteKernelGPU(const float* intensor, float* outTensor, size_t numel, const TensorDims& inputStrides,
                                const TensorDims& outputStrides, void* stream);
 
 template void permuteKernelGPU(const double* intensor, double* outTensor, size_t numel, const TensorDims& inputStrides,
                                const TensorDims& outputStrides, void* stream);
+
+template void permuteKernelGPU(const Eigen::half* intensor, Eigen::half* outTensor, size_t numel,
+                               const TensorDims& inputStrides, const TensorDims& outputStrides, void* stream);
 
 }   // namespace DlQuantization

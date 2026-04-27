@@ -12,6 +12,11 @@
 
 #include "DlQuantization/Quantization.hpp"
 
+namespace Eigen
+{
+struct half;
+}
+
 namespace DlQuantization
 {
 /**

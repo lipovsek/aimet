@@ -11,6 +11,7 @@
 
 #include "DlQuantization/Quantization.hpp"
 #include "math_functions.hpp"
+#include <Eigen/Core>
 
 #ifdef GPU_QUANTIZATION_ENABLED
 
@@ -323,7 +324,7 @@ void GetHistogram(const DTYPE* data, uint64_t cnt, uint32_t histogram[PDF_SIZE],
 template <typename DTYPE>
 DTYPE GetMax_cpu(const DTYPE* data, uint64_t cnt)
 {
-    DTYPE val = -numeric_limits<double>::max();
+    DTYPE val = numeric_limits<DTYPE>::lowest();
     for (uint64_t i = 0; i < cnt; ++i)
     {
         val = max(val, data[i]);
@@ -334,7 +335,7 @@ DTYPE GetMax_cpu(const DTYPE* data, uint64_t cnt)
 template <typename DTYPE>
 DTYPE GetMin_cpu(const DTYPE* data, uint64_t cnt)
 {
-    DTYPE val = numeric_limits<double>::max();
+    DTYPE val = numeric_limits<DTYPE>::max();
     for (uint64_t i = 0; i < cnt; ++i)
     {
         val = min(val, data[i]);
@@ -656,6 +657,11 @@ GetMinMax(const float* data, uint64_t cnt, uint64_t blockSize, ComputationMode c
 
 template std::tuple<std::vector<double>, std::vector<double>>
 GetMinMax(const double* data, uint64_t cnt, uint64_t blockSize, ComputationMode cpuGpuMode, IAllocator* allocator, void* stream);
+
+template std::tuple<std::vector<Eigen::half>, std::vector<Eigen::half>> GetMinMax(const Eigen::half* data, uint64_t cnt,
+                                                                                  uint64_t blockSize,
+                                                                                  ComputationMode cpuGpuMode,
+                                                                                  IAllocator* allocator, void* stream);
 
 template void UpdatePdf(const double* data, uint64_t cnt, ComputationMode mode_cpu_gpu, bool signed_vals, PDF& pdf,
                         IAllocator* allocator);

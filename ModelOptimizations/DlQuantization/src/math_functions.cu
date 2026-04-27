@@ -11,10 +11,33 @@
 
 #include "cuda_util.hpp"
 #include "math_functions.hpp"
+#include <Eigen/Core>
 
 
 namespace DlQuantization
 {
+
+// Custom min/max reduction operators. Unlike cub::Min/cub::Max, these resolve comparisons through
+// Eigen::half's operator< which provides __device__ implementations via __hlt/__hgt intrinsics,
+// avoiding the ambiguous __half implicit conversion operators that break cub::Min/Max on CUDA 12.0.
+struct ReduceMin
+{
+    template <typename T>
+    __host__ __device__ __forceinline__ T operator()(const T& a, const T& b) const
+    {
+        return (b < a) ? b : a;
+    }
+};
+
+struct ReduceMax
+{
+    template <typename T>
+    __host__ __device__ __forceinline__ T operator()(const T& a, const T& b) const
+    {
+        return (a < b) ? b : a;
+    }
+};
+
 template <typename DTYPE>
 DTYPE GetMax_gpu(const DTYPE* data, uint64_t cnt)
 {
@@ -77,10 +100,12 @@ std::tuple<std::vector<DTYPE>, std::vector<DTYPE>> GetMinMax_gpu(const DTYPE* da
     // temporary storage necessary for computation.
     // Use the maximum storage needed for min and max calculations (these will likely be identical, this is just to be
     // safe)
-    cub::DeviceSegmentedReduce::Min(dTempStorage, tempStorageBytesMin, data, dMinMaxOut, numBlocks, offsetIterator,
-                                    offsetIterator + 1);
-    cub::DeviceSegmentedReduce::Max(dTempStorage, tempStorageBytesMax, data, dMinMaxOut + numBlocks, numBlocks,
-                                    offsetIterator, offsetIterator + 1);
+    DTYPE initMin = std::numeric_limits<DTYPE>::max();
+    DTYPE initMax = std::numeric_limits<DTYPE>::lowest();
+    cub::DeviceSegmentedReduce::Reduce(dTempStorage, tempStorageBytesMin, data, dMinMaxOut, numBlocks, offsetIterator,
+                                       offsetIterator + 1, ReduceMin(), initMin);
+    cub::DeviceSegmentedReduce::Reduce(dTempStorage, tempStorageBytesMax, data, dMinMaxOut + numBlocks, numBlocks,
+                                       offsetIterator, offsetIterator + 1, ReduceMax(), initMax);
     size_t tempStorageBytes = std::max(tempStorageBytesMin, tempStorageBytesMax);
 
     // Allocate the temporary device storage
@@ -88,10 +113,10 @@ std::tuple<std::vector<DTYPE>, std::vector<DTYPE>> GetMinMax_gpu(const DTYPE* da
                                                  : MemoryAllocation_gpu(tempStorageBytes));
 
     // Perform the actual min/max reductions
-    cub::DeviceSegmentedReduce::Min(dTempStorage, tempStorageBytes, data, dMinMaxOut, numBlocks, offsetIterator,
-                                    offsetIterator + 1, computeStream);
-    cub::DeviceSegmentedReduce::Max(dTempStorage, tempStorageBytes, data, dMinMaxOut + numBlocks, numBlocks,
-                                    offsetIterator, offsetIterator + 1, computeStream);
+    cub::DeviceSegmentedReduce::Reduce(dTempStorage, tempStorageBytes, data, dMinMaxOut, numBlocks, offsetIterator,
+                                       offsetIterator + 1, ReduceMin(), initMin, computeStream);
+    cub::DeviceSegmentedReduce::Reduce(dTempStorage, tempStorageBytes, data, dMinMaxOut + numBlocks, numBlocks,
+                                       offsetIterator, offsetIterator + 1, ReduceMax(), initMax, computeStream);
 
     // Transfer reduced min/max to CPU
     cudaStreamSynchronize(computeStream);
@@ -120,16 +145,18 @@ std::tuple<DTYPE, DTYPE> GetMinMax_gpu(const DTYPE* data, uint64_t cnt)
     // When dTempStorage is nullptr, this does not do any device computation, but sets tempStorageBytes to the size of
     // temporary storage necessary for computation.
     // Use the maximum storage needed for min and max calculations (these will likely be identical, this is just to be safe)
-    cub::DeviceReduce::Min(dTempStorage, tempStorageBytesMin, data, dMinMaxOut, cnt);
-    cub::DeviceReduce::Max(dTempStorage, tempStorageBytesMax, data, dMinMaxOut + 1, cnt);
+    DTYPE initMin = std::numeric_limits<DTYPE>::max();
+    DTYPE initMax = std::numeric_limits<DTYPE>::lowest();
+    cub::DeviceReduce::Reduce(dTempStorage, tempStorageBytesMin, data, dMinMaxOut, cnt, ReduceMin(), initMin);
+    cub::DeviceReduce::Reduce(dTempStorage, tempStorageBytesMax, data, dMinMaxOut + 1, cnt, ReduceMax(), initMax);
     size_t tempStorageBytes = std::max(tempStorageBytesMin, tempStorageBytesMax);
 
     // Allocate the temporary device storage
     cudaMalloc(&dTempStorage, tempStorageBytes);
 
     // Perform the actual min/max reductions
-    cub::DeviceReduce::Min(dTempStorage, tempStorageBytes, data, dMinMaxOut, cnt);
-    cub::DeviceReduce::Max(dTempStorage, tempStorageBytes, data, dMinMaxOut + 1, cnt);
+    cub::DeviceReduce::Reduce(dTempStorage, tempStorageBytes, data, dMinMaxOut, cnt, ReduceMin(), initMin);
+    cub::DeviceReduce::Reduce(dTempStorage, tempStorageBytes, data, dMinMaxOut + 1, cnt, ReduceMax(), initMax);
 
     // Transfer reduce min/max to CPU
     cudaMemcpy(minMaxOut, dMinMaxOut, 2 * sizeof(DTYPE), cudaMemcpyDeviceToHost);
@@ -192,6 +219,11 @@ template std::tuple<std::vector<float>, std::vector<float>> GetMinMax_gpu(const 
 template std::tuple<float, float> GetMinMax_gpu(const float* data, uint64_t cnt);
 
 template std::tuple<double, double> GetMinMax_gpu(const double* data, uint64_t cnt);
+
+template std::tuple<std::vector<Eigen::half>, std::vector<Eigen::half>>
+GetMinMax_gpu(const Eigen::half* data, uint64_t cnt, uint64_t blockSize, IAllocator* allocator, void* stream);
+
+template std::tuple<Eigen::half, Eigen::half> GetMinMax_gpu(const Eigen::half* data, uint64_t cnt);
 
 template <typename DTYPE>
 void GetHistogram_gpu(const DTYPE* data,

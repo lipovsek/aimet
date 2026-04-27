@@ -9,6 +9,7 @@
 #include "math_functions.hpp"
 #include "quantization_utils.hpp"
 #include "tensor_utils.hpp"
+#include <Eigen/Core>
 
 #include "MinMaxEncodingAnalyzer.h"
 
@@ -27,18 +28,49 @@ MinMaxEncodingAnalyzer<DTYPE>::MinMaxEncodingAnalyzer(TensorDims shape)
 }
 
 template <typename DTYPE>
-void MinMaxEncodingAnalyzer<DTYPE>::updateStatsContiguous(const DTYPE* tensor, const TensorDims& shape,
-                                                          size_t blockSize, ComputationMode tensorCpuGpuMode,
-                                                          IAllocator* allocator, void* stream)
+template <typename T>
+void MinMaxEncodingAnalyzer<DTYPE>::_updateStats(const T* tensor, const TensorDims& tensorShape,
+                                                 ComputationMode tensorCpuGpuMode, IAllocator* allocator, void* stream)
 {
-    size_t cnt                 = getNumel(shape);
-    auto currMinMax            = GetMinMax(tensor, cnt, blockSize, tensorCpuGpuMode, allocator, stream);
-    std::vector<DTYPE> currMin = std::get<0>(currMinMax);
-    std::vector<DTYPE> currMax = std::get<1>(currMinMax);
-    for (size_t idx = 0; idx < _minStats.size(); idx++)
+    withContiguousBlocks(tensor, tensorShape, this->_shape, tensorCpuGpuMode, allocator, stream,
+                         [this](const T* data, const TensorDims& shape, size_t blockSize, ComputationMode mode,
+                                IAllocator* alloc, void* str)
+                         {
+                             size_t cnt      = getNumel(shape);
+                             auto currMinMax = GetMinMax(data, cnt, blockSize, mode, alloc, str);
+                             auto currMin    = std::get<0>(currMinMax);
+                             auto currMax    = std::get<1>(currMinMax);
+                             for (size_t idx = 0; idx < _minStats.size(); idx++)
+                             {
+                                 _minStats[idx] = std::min(_minStats[idx], DTYPE(currMin[idx]));
+                                 _maxStats[idx] = std::max(_maxStats[idx], DTYPE(currMax[idx]));
+                             }
+                         });
+}
+
+template <typename DTYPE>
+void MinMaxEncodingAnalyzer<DTYPE>::updateStats(const DTYPE* tensor, const TensorDims& tensorShape,
+                                                ComputationMode tensorCpuGpuMode, IAllocator* allocator, void* stream)
+{
+    _updateStats(tensor, tensorShape, tensorCpuGpuMode, allocator, stream);
+}
+
+template <typename DTYPE>
+void MinMaxEncodingAnalyzer<DTYPE>::updateStats(const Eigen::half* tensor, const TensorDims& tensorShape,
+                                                ComputationMode tensorCpuGpuMode, IAllocator* allocator, void* stream)
+{
+    if (tensorCpuGpuMode == COMP_MODE_GPU)
     {
-        _minStats[idx] = std::min(_minStats[idx], currMin[idx]);
-        _maxStats[idx] = std::max(_maxStats[idx], currMax[idx]);
+        _updateStats(tensor, tensorShape, tensorCpuGpuMode, allocator, stream);
+    }
+    else
+    {
+        size_t numel   = getNumel(tensorShape);
+        float* fp32Buf = static_cast<float*>(allocator ? allocator->allocateRaw(sizeof(float) * numel)
+                                                       : MemoryAllocation(tensorCpuGpuMode, sizeof(float) * numel));
+        convertHalfToFloat(tensor, fp32Buf, numel, tensorCpuGpuMode, stream);
+        _updateStats(fp32Buf, tensorShape, tensorCpuGpuMode, allocator, stream);
+        allocator ? allocator->deleteRaw(fp32Buf) : MemoryFree(tensorCpuGpuMode, fp32Buf);
     }
 }
 

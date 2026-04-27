@@ -4,17 +4,23 @@
 #ifndef DL_QUANTIZATION_MIN_MAX_ENCODING_ANALYZER_H
 #define DL_QUANTIZATION_MIN_MAX_ENCODING_ANALYZER_H
 
-#include "ContiguousEncodingAnalyzer.h"
+#include "DlQuantization/IQuantizationEncodingAnalyzer.hpp"
 
 
 namespace DlQuantization
 {
 
 template <typename DTYPE>
-class MinMaxEncodingAnalyzer : public ContiguousEncodingAnalyzerBase<DTYPE>
+class MinMaxEncodingAnalyzer : public IBlockEncodingAnalyzer<DTYPE>
 {
 public:
     MinMaxEncodingAnalyzer(TensorDims shape);
+
+    void updateStats(const DTYPE* tensor, const TensorDims& tensorShape, ComputationMode tensorCpuGpuMode,
+                     IAllocator* allocator = nullptr, void* stream = nullptr) override;
+
+    void updateStats(const Eigen::half* tensor, const TensorDims& tensorShape, ComputationMode tensorCpuGpuMode,
+                     IAllocator* allocator = nullptr, void* stream = nullptr) override;
 
     void resetStats() override;
 
@@ -25,11 +31,11 @@ public:
 
     std::vector<std::vector<std::tuple<double, double>>> getStatsHistogram() const override;
 
-protected:
-    void updateStatsContiguous(const DTYPE* tensor, const TensorDims& shape, size_t blockSize,
-                               ComputationMode tensorCpuGpuMode, IAllocator* allocator, void* stream) override;
-
 private:
+    template <typename T>
+    void _updateStats(const T* tensor, const TensorDims& tensorShape, ComputationMode tensorCpuGpuMode,
+                      IAllocator* allocator, void* stream);
+
     std::vector<DTYPE> _minStats;
     std::vector<DTYPE> _maxStats;
 };

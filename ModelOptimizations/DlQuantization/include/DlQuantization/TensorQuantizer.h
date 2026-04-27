@@ -273,6 +273,10 @@ public:
     void updateStats(const float* tensor, const TensorDims& tensorShape, bool useCuda, IAllocator* alloc = nullptr,
                      void* stream = nullptr);
 
+    template <typename T>
+    void updateStats(const T* tensor, const TensorDims& tensorShape, bool useCuda, IAllocator* alloc = nullptr,
+                     void* stream = nullptr);
+
     /**
      * sets quantScheme and creates new encoding analyzer instance
      * @param quantScheme Quantization scheme (e.g. TF-Enhanced)

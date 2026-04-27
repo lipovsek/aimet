@@ -798,16 +798,14 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestBlockQuantizationEndToEnd)
     Blob<TypeParam> outputBlob(out, numElements);
     bool useCuda = TypeParam::modeCpuGpu == COMP_MODE_GPU;
 
-    // Note: Calibration on fp16 tensor not yet supported
-    if constexpr (std::is_same_v<DataType, float>)
-        tensorQuantizer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, useCuda);
-    else
-        tensorQuantizer.updateStats(inF32, inputShape, false);
+    tensorQuantizer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, useCuda);
 
     auto encodings = tensorQuantizer.computeEncodings(symmetric);
     tensorQuantizer.setEncodings(encodings);
 
-    float expectedMax[4] = {10.f, 23.1f, 10.f * 127./128., .3f};
+    // Expected max values go through DataType cast for fp16 representability
+    float expectedMax[4] = {float(DataType(10.f)), float(DataType(23.1f)), float(float(DataType(10.f)) * 127.f / 128.f),
+                            float(DataType(.3f))};
     for (size_t i = 0; i < 4; i++)
     {
         auto enc = encodings[i];
@@ -869,15 +867,12 @@ TYPED_TEST(TestBlockQuantizerCpuGpu, TestQuantizerZeroPointShift)
     Blob<TypeParam> outputBlob(out, numElements);
     bool useCuda = TypeParam::modeCpuGpu == COMP_MODE_GPU;
 
-    if constexpr (std::is_same_v<DataType, float>)
-        tensorQuantizer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, useCuda);
-    else
-        tensorQuantizer.updateStats(inF32, inputShape, false);
+    tensorQuantizer.updateStats(inputBlob.getDataPtrOnDevice(), inputShape, useCuda);
 
     auto encodings = tensorQuantizer.computeEncodings(symmetric);
     tensorQuantizer.setEncodings(encodings);
 
-    float expectedMax[2] = {3.0f, 6.0f};
+    float expectedMax[2] = {float(DataType(3.0f)), float(DataType(6.0f))};
     for (size_t i = 0; i < 2; i++)
     {
         auto enc = encodings[i];

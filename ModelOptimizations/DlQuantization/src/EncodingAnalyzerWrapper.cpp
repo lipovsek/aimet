@@ -3,9 +3,10 @@
 
 #include "EncodingAnalyzerWrapper.h"
 #include "DlQuantization/QuantizerFactory.hpp"
-#include "math_functions.hpp"
 #include "quantization_utils.hpp"
 #include "tensor_utils.hpp"
+#include <Eigen/Core>
+#include <type_traits>
 
 
 namespace DlQuantization
@@ -21,6 +22,16 @@ EncodingAnalyzerWrapper<DTYPE>::EncodingAnalyzerWrapper(TensorDims shape, Quanti
     {
         ptr = getEncodingAnalyzerInstance<DTYPE>(mode);
     }
+}
+
+template <typename DTYPE>
+void EncodingAnalyzerWrapper<DTYPE>::updateStats(const DTYPE* tensor, const TensorDims& tensorShape,
+                                                 ComputationMode tensorCpuGpuMode, IAllocator* allocator, void* stream)
+{
+    withContiguousBlocks(tensor, tensorShape, this->_shape, tensorCpuGpuMode, allocator, stream,
+                         [this](const DTYPE* data, const TensorDims& shape, size_t blockSize, ComputationMode mode,
+                                IAllocator* alloc, void* str)
+                         { updateStatsContiguous(data, shape, blockSize, mode, alloc, str); });
 }
 
 template <typename DTYPE>
@@ -86,6 +97,25 @@ template <typename DTYPE>
 float EncodingAnalyzerWrapper<DTYPE>::getPercentileValue()
 {
     return _encodingAnalyzers[0]->getPercentileValue();
+}
+
+template <typename DTYPE>
+void EncodingAnalyzerWrapper<DTYPE>::updateStats(const Eigen::half* tensor, const TensorDims& tensorShape,
+                                                 ComputationMode tensorCpuGpuMode, IAllocator* allocator, void* stream)
+{
+    if constexpr (std::is_same_v<DTYPE, float>)
+    {
+        size_t numel   = getNumel(tensorShape);
+        float* fp32Buf = static_cast<float*>(allocator ? allocator->allocateRaw(sizeof(float) * numel)
+                                                       : MemoryAllocation(tensorCpuGpuMode, sizeof(float) * numel));
+        convertHalfToFloat(tensor, fp32Buf, numel, tensorCpuGpuMode, stream);
+        updateStats(fp32Buf, tensorShape, tensorCpuGpuMode, allocator, stream);
+        allocator ? allocator->deleteRaw(fp32Buf) : MemoryFree(tensorCpuGpuMode, fp32Buf);
+    }
+    else
+    {
+        throw std::runtime_error("fp16 calibration only supported with float accumulators");
+    }
 }
 
 template class EncodingAnalyzerWrapper<double>;

@@ -9,6 +9,11 @@
 #include <cstdint>
 #include <stdexcept>
 
+namespace Eigen
+{
+struct half;
+}
+
 namespace DlQuantization
 {
 template <typename DTYPE>
@@ -112,6 +117,17 @@ public:
                              IAllocator* allocator = nullptr, void* stream = nullptr) = 0;
 
     /**
+     * @brief Given an fp16 tensor, update running stats for this encoding analyzer.
+     *        Default implementation throws; override to support fp16 calibration.
+     */
+    virtual void updateStats(const Eigen::half* tensor, const TensorDims& tensorShape,
+                             ComputationMode tensorCpuGpuMode, IAllocator* allocator = nullptr,
+                             void* stream = nullptr)
+    {
+        throw std::runtime_error("fp16 calibration not supported for this encoding analyzer");
+    }
+
+    /**
      * @brief Reset running stats
      */
     virtual void resetStats() = 0;
@@ -162,7 +178,13 @@ public:
         throw std::runtime_error("getPercentileValue is only applicable for percentile encoding analyzers");
     }
 
-    virtual TensorDims getShape() = 0;
+    TensorDims getShape() const
+    {
+        return _shape;
+    }
+
+protected:
+    TensorDims _shape;
 };
 
 
