@@ -23,13 +23,12 @@ if [ "$(grep '^Signed-off-by: ' "$1" | wc -l)" -le 0 ]; then
 	exit 1
 fi
 
-FORBIDDEN_DOMAIN="qualcomm.com"
-EMAIL_DOMAIN=$(printf '%s\n' "$AUTHORINFO" | grep -o "${FORBIDDEN_DOMAIN}")
-if [[ "$EMAIL_DOMAIN" == "${FORBIDDEN_DOMAIN}" ]]; then
-	echo >&2 "Error: Invalid email domain. Please commit with the correct email domain name."
+QUIC_DOMAIN="quicinc.com"
+EMAIL_DOMAIN=$(printf '%s\n' "$AUTHORINFO" | grep -o "${QUIC_DOMAIN}")
+if [[ "$EMAIL_DOMAIN" == "${QUIC_DOMAIN}" ]]; then
+	echo >&2 "Error: quic email domain has been discontinued since May 2026."
 	echo >&2 "  Your author information was $AUTHORINFO."
-	echo >&2 "  Your remote information was $GITREMOTE."
 	echo >&2 "Run the following in your local repository and then re-try your commit:"
-	echo >&2 "  git config user.email \"quic_${USER}@quicinc.com\" "
+	echo >&2 "  git config user.email \"<your QC username>@qti.qualcomm.com\" "
 	exit 1
 fi

@@ -42,6 +42,7 @@ jobs:
           EXAMPLES_SRC_CODE:                "Examples/"
           GENAI_TEST_CODE:                  "GenAILab/"
           ONNXREGRESSION_TEST_CODE:         "AIMETRegression/"
+          GIT_HOOKS_SRC_CODE:               ".githooks/"
         shell: bash
         run: |
           set -x
@@ -68,6 +69,8 @@ jobs:
               fi
             elif [[ "$file" == "$ONNXREGRESSION_TEST_CODE"* ]]; then
               : # AIMETRegression tests change doesn't require running unit tests
+            elif [[ "$file" == "$GIT_HOOKS_SRC_CODE"* ]]; then
+              : # Git hooks change doesn't require running unit tests
             else
               TORCH_TEST_REQUIRED='true'
               ONNX_TEST_REQUIRED='true'
