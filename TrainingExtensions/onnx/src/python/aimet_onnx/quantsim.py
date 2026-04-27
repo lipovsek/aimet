@@ -1957,6 +1957,31 @@ class QuantizationSimModel:
         with open(encoding_path) as json_file:
             encodings = json.load(json_file)
 
+        encoding_version = None
+        if isinstance(encodings, dict):
+            encoding_version = encodings.get("version", None)
+        if encoding_version is not None:
+            if encoding_version not in VALID_ENCODING_VERSIONS:
+                raise NotImplementedError(
+                    f"Encoding version should be one of {VALID_ENCODING_VERSIONS}; "
+                    f"got {encoding_version}"
+                )
+
+            if encoding_version in ("0.6.1", "1.0.0"):
+                encodings = encodings["param_encodings"]
+            elif encoding_version == "2.0.0":
+                # For version 2.0.0, filter only parameter encodings
+                param_names_set = set(self.param_names)
+                encodings = [
+                    enc
+                    for enc in encodings["encodings"]
+                    if enc["name"] in param_names_set
+                ]
+            else:
+                raise NotImplementedError(
+                    f"Unsupported encoding version {encoding_version} in encodings file. "
+                )
+
         # TODO: handle this more cleanly
         if isinstance(encodings, dict):
             encodings = _convert_encoding_format_0_6_1_to_1_0_0(encodings)

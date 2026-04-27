@@ -5033,6 +5033,71 @@ class TestEncodingPropagation:
             assert np.allclose(pre_load_out, pre_load_out_2)
             assert np.allclose(post_load_out, post_load_out_2)
 
+    def test_set_and_freeze_param_encodings_with_full_encodings(self):
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = single_residual_model().model
+        model_2 = copy.deepcopy(model)
+        model_3 = copy.deepcopy(model)
+        model_4 = copy.deepcopy(model)
+        dummy_tensor = {"input": np.random.rand(1, 3, 32, 32).astype(np.float32)}
+        with tempfile.TemporaryDirectory() as tempdir:
+            sim = QuantizationSimModel(model)
+            sim.compute_encodings([dummy_tensor])
+            pre_load_out = sim.session.run(None, dummy_tensor)
+            new_encoding = libpymo.TfEncoding()
+            new_encoding.min = -16.0
+            new_encoding.max = 15.875
+            new_encoding.bw = 8
+            new_encoding.delta = 0.125
+            new_encoding.offset = -128
+            sim.qc_quantize_op_dict["conv3.weight"].load_encodings([new_encoding] * 8)
+            post_load_out = sim.session.run(None, dummy_tensor)
+
+            sim.export(tempdir, "onnx_sim_0_6_1", encoding_version="0.6.1")
+            sim.export(tempdir, "onnx_sim_1_0_0", encoding_version="1.0.0")
+            sim.export(tempdir, "onnx_sim_2_0_0", encoding_version="2.0.0")
+
+            del sim
+
+            sim = QuantizationSimModel(model_2)
+            sim.compute_encodings([dummy_tensor])
+            pre_load_out_2 = sim.session.run(None, dummy_tensor)
+
+            sim.set_and_freeze_param_encodings(
+                os.path.join(tempdir, "onnx_sim_0_6_1.encodings")
+            )
+            post_load_out_2 = sim.session.run(None, dummy_tensor)
+
+            del sim
+
+            sim = QuantizationSimModel(model_3)
+            sim.compute_encodings([dummy_tensor])
+            pre_load_out_3 = sim.session.run(None, dummy_tensor)
+
+            sim.set_and_freeze_param_encodings(
+                os.path.join(tempdir, "onnx_sim_1_0_0.encodings")
+            )
+            post_load_out_3 = sim.session.run(None, dummy_tensor)
+
+            del sim
+
+            sim = QuantizationSimModel(model_4)
+            sim.compute_encodings([dummy_tensor])
+            pre_load_out_4 = sim.session.run(None, dummy_tensor)
+
+            sim.set_and_freeze_param_encodings(
+                os.path.join(tempdir, "onnx_sim_2_0_0.encodings")
+            )
+            post_load_out_4 = sim.session.run(None, dummy_tensor)
+
+            assert np.allclose(pre_load_out, pre_load_out_2)
+            assert np.allclose(post_load_out, post_load_out_2)
+            assert np.allclose(pre_load_out, pre_load_out_3)
+            assert np.allclose(post_load_out, post_load_out_3)
+            assert np.allclose(pre_load_out, pre_load_out_4)
+            assert np.allclose(post_load_out, post_load_out_4)
+
     @pytest.mark.parametrize(
         "model_factory,             input_shape, block_size, lpbq",
         [
