@@ -14,6 +14,10 @@ from aimet_onnx.quantsim import (
     set_lpbq_for_params,
 )
 
+from aimet_onnx.experimental.llm_configurator.llm_configurator import (
+    _tie_quantizers_for_kv_cache,
+)
+
 from GenAILab.shared.helpers.precision_config import (
     Granularity,
     PrecisionConfig,
@@ -88,19 +92,13 @@ def _resolve_kv_cache_quantization(
         # todo place KV cache quantizers in float mode
         pass
     else:
-        _tie_quantizers_for_kv_cache(quantsim_model)
+        kv_io_dict = {
+            inp.name: inp.name.replace("in", "out")
+            for inp in quantsim_model.model.model.graph.input
+            if "past_key" in inp.name or "past_value" in inp.name
+        }
+        _tie_quantizers_for_kv_cache(quantsim_model, kv_io_dict)
         _set_tensors_to_output_n_bit_symmmetric(quantsim_model, precision.bits)
-
-
-def _tie_quantizers_for_kv_cache(quantsim_model: QuantizationSimModel) -> None:
-    quantizer_mapping = dict()
-    for input_name in quantsim_model.model.graph().input:
-        if "past_key" in input_name.name or "past_value" in input_name.name:
-            output_name = input_name.name.replace("in", "out")
-            quantizer_mapping[input_name.name] = quantsim_model.qc_quantize_op_dict[
-                output_name
-            ]
-    quantsim_model.set_quantizers(quantizer_mapping)
 
 
 def _set_tensors_to_output_n_bit_symmmetric(

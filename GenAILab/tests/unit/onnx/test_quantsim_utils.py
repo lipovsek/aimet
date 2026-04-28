@@ -69,35 +69,52 @@ class TestAttributePatch:
 
 
 class TestTieQuantizersForKvCache:
-    def test_ties_past_key_value_quantizers(self):
+    def test_ties_past_key_value_quantizers(self, tmp_path):
+        import onnx
+        from aimet_onnx.quantsim import QuantizationSimModel
         from GenAILab.onnx.models.utils.quantsim_utils import (
             _tie_quantizers_for_kv_cache,
         )
 
-        mock_input_0 = MagicMock()
-        mock_input_0.name = "past_key_0_in"
-        mock_input_1 = MagicMock()
-        mock_input_1.name = "past_value_0_in"
+        class KVCacheModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
 
-        mock_graph = MagicMock()
-        mock_graph.input = [mock_input_0, mock_input_1]
+            def forward(self, x, past_key_0_in):
+                curr = self.linear(x)
+                past_key_0_out = torch.cat([past_key_0_in, curr], dim=1)
+                output = self.linear(past_key_0_out)
+                return output, past_key_0_out
 
-        mock_qsim = MagicMock()
-        mock_qsim.model.graph.return_value = mock_graph
+        model = KVCacheModel().eval()
+        x = torch.randn(1, 2, 4)
+        past = torch.randn(1, 3, 4)
+        onnx_path = tmp_path / "kv_model.onnx"
+        torch.onnx.export(
+            model,
+            (x, past),
+            str(onnx_path),
+            input_names=["x", "past_key_0_in"],
+            output_names=["output", "past_key_0_out"],
+            dynamic_axes={
+                "x": {1: "curr_seq"},
+                "past_key_0_in": {1: "past_seq"},
+                "past_key_0_out": {1: "total_seq"},
+                "output": {1: "total_seq"},
+            },
+            opset_version=17,
+        )
 
-        out_quantizer_key = MagicMock()
-        out_quantizer_val = MagicMock()
-        mock_qsim.qc_quantize_op_dict = {
-            "past_key_0_out": out_quantizer_key,
-            "past_value_0_out": out_quantizer_val,
-        }
+        onnx_model = onnx.load(str(onnx_path))
+        dummy_input = {"x": x.numpy(), "past_key_0_in": past.numpy()}
+        sim = QuantizationSimModel(onnx_model, dummy_input=dummy_input)
 
-        _tie_quantizers_for_kv_cache(mock_qsim)
+        _tie_quantizers_for_kv_cache(sim, {"past_key_0_in": "past_key_0_out"})
 
-        mock_qsim.set_quantizers.assert_called_once()
-        mapping = mock_qsim.set_quantizers.call_args[0][0]
-        assert mapping["past_key_0_in"] is out_quantizer_key
-        assert mapping["past_value_0_in"] is out_quantizer_val
+        in_q = sim.qc_quantize_op_dict["past_key_0_in"]
+        out_q = sim.qc_quantize_op_dict["past_key_0_out"]
+        assert in_q is out_q
 
 
 class TestRemoveActivationQuantizers:
