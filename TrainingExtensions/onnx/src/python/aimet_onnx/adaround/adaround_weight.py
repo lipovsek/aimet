@@ -91,7 +91,9 @@ class Adaround:
             quantized_layer_to_input_tensor_name = (
                 Adaround._get_quantized_layer_input_tensor_name(sim)
             )
-            shared_param_names = find_shared_param_names(sim.connected_graph)
+            shared_param_names = find_shared_param_names(
+                sim.connected_graph, param_types=("weight",)
+            )
 
             # AdaRound must be applied to modules in the order of occurrence
             for module in tqdm(sim.connected_graph.ordered_ops):

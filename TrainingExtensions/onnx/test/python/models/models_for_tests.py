@@ -2173,6 +2173,24 @@ def build_dummy_model_with_dynamic_input():
     return model
 
 
+def conv_model_with_shared_bias(tmp_path):
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv1 = torch.nn.Conv2d(10, 10, 3)
+            self.conv2 = torch.nn.Conv2d(10, 10, 3)
+            self.conv1.bias = self.conv2.bias
+
+        def forward(self, x):
+            return self.conv2(self.conv1(x))
+
+    model_path = os.path.join(tmp_path, "model.onnx")
+    torch.onnx.export(Model(), torch.randn(1, 10, 32, 32), model_path)
+    onnx_model = onnx.load(model_path)
+    onnx.checker.check_model(onnx_model)
+    return onnx_model
+
+
 def simple_relu_model(opset_version=_DEFAULT_OPSET_VERSION):
     class ReLUModel(torch.nn.Module):
         def __init__(self):

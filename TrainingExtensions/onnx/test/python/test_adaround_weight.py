@@ -370,6 +370,24 @@ class TestAdaround:
         # check adaround went through fine
         assert sim.qc_quantize_op_dict["conv1.weight"]._is_encoding_frozen == True
 
+    def test_adaround_optimizes_model_with_shared_bias(self, tmp_path):
+        onnx_model = models_for_tests.conv_model_with_shared_bias(tmp_path)
+        sim = QuantizationSimModel(onnx_model)
+        dummy_input = make_dummy_input(onnx_model)
+        sim.compute_encodings([dummy_input])
+        out_before_ada = sim.session.run(None, dummy_input)
+
+        # Check output changes after adaround (weights should be updated)
+        apply_adaround(sim, [dummy_input for _ in range(2)], 5)
+        out_after_ada = sim.session.run(None, dummy_input)
+        assert not np.array_equal(out_before_ada[0], out_after_ada[0])
+
+        # Check weight encodings get frozen
+        conv1_weight = sim.connected_graph.ordered_ops[0].inputs[1].name
+        conv2_weight = sim.connected_graph.ordered_ops[1].inputs[1].name
+        assert sim.qc_quantize_op_dict[conv1_weight].is_encoding_frozen()
+        assert sim.qc_quantize_op_dict[conv2_weight].is_encoding_frozen()
+
 
 def dataloader(input_shape: tuple, batch_size=2):
     class DataLoader:
