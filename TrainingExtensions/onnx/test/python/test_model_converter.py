@@ -446,6 +446,7 @@ def test_model_with_ModelWithConsecutiveConvBlocks(
     _check_onnx_weights(onnx_model, layers_to_check, are_zeros=False)
 
 
+@pytest.mark.skip_on_windows_amd64("Dynamo export fails on amd64")
 @pytest.mark.skip_on_windows_arm64("Dynamo export fails on arm64")
 @pytest.mark.parametrize(
     "dynamo, opset_version", [(False, 17), (False, 18), (True, 18)]

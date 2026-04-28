@@ -2185,7 +2185,7 @@ def conv_model_with_shared_bias(tmp_path):
             return self.conv2(self.conv1(x))
 
     model_path = os.path.join(tmp_path, "model.onnx")
-    torch.onnx.export(Model(), torch.randn(1, 10, 32, 32), model_path)
+    torch.onnx.export(Model(), torch.randn(1, 10, 32, 32), model_path, dynamo=False)
     onnx_model = onnx.load(model_path)
     onnx.checker.check_model(onnx_model)
     return onnx_model

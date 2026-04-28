@@ -141,6 +141,7 @@ def _assert_ts_names_in_fixed(ts_model, fixed_model, label):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip_on_windows_amd64("Dynamo export fails on amd64")
 @pytest.mark.skip_on_windows_arm64("Dynamo export fails on arm64")
 def test_fix_node_names_residual_model(tmp_path):
     torch_model = DummyModel()
@@ -152,6 +153,7 @@ def test_fix_node_names_residual_model(tmp_path):
     _assert_ts_names_in_fixed(ts_model, fixed_model, "DummyModel")
 
 
+@pytest.mark.skip_on_windows_amd64("Dynamo export fails on amd64")
 @pytest.mark.skip_on_windows_arm64("Dynamo export fails on arm64")
 def test_fix_node_names_sequential(tmp_path):
     torch_model = SequentialModel()

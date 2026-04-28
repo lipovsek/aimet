@@ -3559,6 +3559,8 @@ class TestQuantSim:
 
     @pytest.mark.parametrize("providers", [CPU_PROVIDERS, CUDA_PROVIDERS])
     def test_fp16_model_encodings(self, providers):
+        ort.set_seed(1)
+        np.random.seed(1)
         if "CUDAExecutionProvider" in providers and not torch.cuda.is_available():
             pytest.skip("Cuda not available")
 
