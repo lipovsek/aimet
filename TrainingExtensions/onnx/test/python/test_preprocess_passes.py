@@ -9,6 +9,7 @@ from aimet_onnx.prepare_passes.fix_node_names_in_dynamo_exported_onnx import (
     fix_node_names_pass,
 )
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Model definitions
@@ -140,6 +141,7 @@ def _assert_ts_names_in_fixed(ts_model, fixed_model, label):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip_on_windows_arm64("Dynamo export fails on arm64")
 def test_fix_node_names_residual_model(tmp_path):
     torch_model = DummyModel()
     dummy_input = torch.randn(1, 3, 224, 224)
@@ -150,6 +152,7 @@ def test_fix_node_names_residual_model(tmp_path):
     _assert_ts_names_in_fixed(ts_model, fixed_model, "DummyModel")
 
 
+@pytest.mark.skip_on_windows_arm64("Dynamo export fails on arm64")
 def test_fix_node_names_sequential(tmp_path):
     torch_model = SequentialModel()
     dummy_input = torch.randn(1, 3, 224, 224)
