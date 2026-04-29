@@ -14,9 +14,9 @@ import yaml
 # graph optimisation notes) that clutter test output.  Level 3 = ERROR only.
 ort.set_default_logger_severity(3)
 
-from GenAILab.shared.helpers.fp_cache import DiskBackedFPCache
-from GenAILab.shared.helpers.model_cache import DiskBackedModelCache
-from GenAILab.shared.helpers.recipe_cache import RecipeCache
+from GenAILab.bench.fp_cache import DiskBackedFPCache
+from GenAILab.bench.model_cache import DiskBackedModelCache
+from GenAILab.bench.recipe_cache import RecipeCache
 
 # All generated artifacts live under GenAILab/artifacts/ so they don't
 # clutter the repo root and can be excluded from rsync with a single path.

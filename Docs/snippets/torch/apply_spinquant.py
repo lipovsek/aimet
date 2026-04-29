@@ -6,7 +6,7 @@
 # [model-setup]
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
 
 SEQUENCE_LENGTH = 2048
 CONTEXT_LENGTH = 4096
@@ -22,7 +22,7 @@ traceable_model = ONNXExportableModuleWithCache(hf_model)
 # [create-sim]
 from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
-from GenAILab.shared.models.generator import Generator
+from GenAILab.qai_hub_lm.models.generator import Generator
 
 assembled_dummy_inputs = Generator.prepare_inputs(
     model=traceable_model,
@@ -56,7 +56,7 @@ apply_spinquant(model=quantsim.model)
 # [compute-encodings]
 import itertools
 from tqdm import tqdm
-from GenAILab.shared.helpers.datasets import Wikitext
+from GenAILab.bench.datasets import Wikitext
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 train_dataset = Wikitext.load_encoded_dataset(tokenizer, CONTEXT_LENGTH, "train")

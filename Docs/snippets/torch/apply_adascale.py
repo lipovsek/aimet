@@ -6,7 +6,7 @@
 # [model-setup]
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
 
 SEQUENCE_LENGTH = 2048
 CONTEXT_LENGTH = 4096
@@ -22,8 +22,8 @@ traceable_model = ONNXExportableModuleWithCache(hf_model)
 # [create-sim]
 from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
-from GenAILab.shared.models.base import LLM
-from GenAILab.shared.models.generator import Generator
+from GenAILab.qai_hub_lm.models.base import LLM
+from GenAILab.qai_hub_lm.models.generator import Generator
 
 assembled_dummy_inputs = Generator.prepare_inputs(
     model=traceable_model,
@@ -49,8 +49,8 @@ generator = Generator(quantsim.model, tokenizer, SEQUENCE_LENGTH, CONTEXT_LENGTH
 
 # [adascale-apply]
 from aimet_torch.experimental.adascale.adascale_optimizer import apply_adascale
-from GenAILab.shared.helpers.datasets import Wikitext
-from GenAILab.torch.helpers.quant_recipes import _prefill_inputs
+from GenAILab.bench.datasets import Wikitext
+from GenAILab.bench.torch.quant_recipes import _prefill_inputs
 
 ADASCALE_NUM_BATCHES = 128   # reduce for larger models to control runtime
 ADASCALE_NUM_ITERATIONS = 2048  # reduce for larger models; see quantization recipes

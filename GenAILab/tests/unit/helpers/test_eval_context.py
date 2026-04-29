@@ -6,8 +6,8 @@
 import pytest
 import torch
 
-from GenAILab.shared.helpers.fp_cache import DiskBackedFPCache
-from GenAILab.shared.helpers.eval_context import EvaluationContext
+from GenAILab.bench.fp_cache import DiskBackedFPCache
+from GenAILab.bench.eval_context import EvaluationContext
 
 
 @pytest.fixture

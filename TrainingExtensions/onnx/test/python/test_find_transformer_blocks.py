@@ -61,7 +61,7 @@ def verify_find_blocks(sim, model_type):
 
 
 def test_get_decoder_blocks(add_genai_tests_path):
-    from GenAILab.onnx.models.llm import LLM_ONNX
+    from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
 
     collection = LLM_ONNX.instantiate_quantsim(
         "Qwen/Qwen2-0.5B", 32, 16, small_model=True
@@ -70,7 +70,7 @@ def test_get_decoder_blocks(add_genai_tests_path):
 
 
 def test_get_decoder_blocks_qwen3(add_genai_tests_path):
-    from GenAILab.onnx.models.llm import LLM_ONNX
+    from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
 
     collection = LLM_ONNX.instantiate_quantsim(
         "Qwen/Qwen3-0.6B", 32, 16, small_model=True
@@ -80,7 +80,7 @@ def test_get_decoder_blocks_qwen3(add_genai_tests_path):
 
 @pytest.mark.skip(reason="This takes long to run, similar test for Qwen exists")
 def test_get_decoder_blocks_phi(add_genai_tests_path):
-    from GenAILab.onnx.models.llm import LLM_ONNX
+    from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
 
     collection = LLM_ONNX.instantiate_quantsim(
         "microsoft/Phi-3-mini-4k-instruct", 32, 16, small_model=True

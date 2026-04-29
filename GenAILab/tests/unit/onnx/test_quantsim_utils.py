@@ -11,13 +11,13 @@ import torch
 
 class TestGetOrtProviders:
     def test_cpu_device(self):
-        from GenAILab.onnx.models.utils.quantsim_utils import get_ort_providers
+        from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import get_ort_providers
 
         providers = get_ort_providers(torch.device("cpu"))
         assert providers == ["CPUExecutionProvider"]
 
     def test_cuda_device_with_index(self):
-        from GenAILab.onnx.models.utils.quantsim_utils import get_ort_providers
+        from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import get_ort_providers
 
         providers = get_ort_providers(torch.device("cuda", 0))
         assert len(providers) == 2
@@ -25,7 +25,7 @@ class TestGetOrtProviders:
         assert providers[1] == "CPUExecutionProvider"
 
     def test_cuda_device_without_index(self):
-        from GenAILab.onnx.models.utils.quantsim_utils import get_ort_providers
+        from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import get_ort_providers
 
         providers = get_ort_providers(torch.device("cuda"))
         assert providers == ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -33,7 +33,7 @@ class TestGetOrtProviders:
 
 class TestAttributePatch:
     def test_sets_and_restores_attribute(self):
-        from GenAILab.onnx.models.utils.quantsim_utils import AttributePatch
+        from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import AttributePatch
 
         class Obj:
             x = 10
@@ -44,7 +44,7 @@ class TestAttributePatch:
         assert obj.x == 10
 
     def test_creates_and_removes_new_attribute(self):
-        from GenAILab.onnx.models.utils.quantsim_utils import AttributePatch
+        from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import AttributePatch
 
         class Obj:
             pass
@@ -56,7 +56,7 @@ class TestAttributePatch:
         assert not hasattr(obj, "y")
 
     def test_restores_class_level_attribute(self):
-        from GenAILab.onnx.models.utils.quantsim_utils import AttributePatch
+        from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import AttributePatch
 
         class Obj:
             z = "original"
@@ -72,7 +72,7 @@ class TestTieQuantizersForKvCache:
     def test_ties_past_key_value_quantizers(self, tmp_path):
         import onnx
         from aimet_onnx.quantsim import QuantizationSimModel
-        from GenAILab.onnx.models.utils.quantsim_utils import (
+        from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
             _tie_quantizers_for_kv_cache,
         )
 
@@ -119,7 +119,7 @@ class TestTieQuantizersForKvCache:
 
 class TestRemoveActivationQuantizers:
     def test_disables_activation_quantizers(self):
-        from GenAILab.onnx.models.utils.quantsim_utils import (
+        from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
             _remove_activation_quantizers,
         )
 
@@ -141,7 +141,7 @@ class TestRemoveActivationQuantizers:
 
 class TestResolveKvCacheQuantization:
     def test_float_precision_skips_tying(self):
-        from GenAILab.onnx.models.utils.quantsim_utils import (
+        from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
             _resolve_kv_cache_quantization,
         )
         from aimet_onnx.common.defs import float16
@@ -152,7 +152,7 @@ class TestResolveKvCacheQuantization:
         mock_qsim.set_quantizers.assert_not_called()
 
     def test_int_precision_ties_and_sets_symmetric(self):
-        from GenAILab.onnx.models.utils.quantsim_utils import (
+        from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
             _resolve_kv_cache_quantization,
             _tie_quantizers_for_kv_cache,
         )

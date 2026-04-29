@@ -5,7 +5,7 @@
 
 import torch
 
-from GenAILab.shared.helpers.datasets import ChunkedDataset, MMLU, MMMLU
+from GenAILab.bench.datasets import ChunkedDataset, MMLU, MMMLU
 
 
 class TestChunkedDataset:

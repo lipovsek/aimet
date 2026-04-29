@@ -5,7 +5,7 @@
 
 import pytest
 
-from GenAILab.shared.helpers.precision_config import (
+from GenAILab.qai_hub_lm.precision import (
     Granularity,
     PrecisionConfig,
     WeightPrecision,

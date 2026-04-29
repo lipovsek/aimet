@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 import torch
 
-from GenAILab.shared.helpers.precision_config import PrecisionConfig
+from GenAILab.qai_hub_lm.precision import PrecisionConfig
 
 
 @pytest.fixture
@@ -49,20 +49,26 @@ class TestInstantiateQuantsimOrchestration:
     def test_default_precision_used_when_none(self):
         """When precision=None, a default PrecisionConfig should be created."""
         with (
-            patch("GenAILab.torch.models.llm.LLM_Torch.instantiate_model") as mock_inst,
-            patch("GenAILab.torch.models.llm.QuantizationSimModel") as mock_qsim,
-            patch("GenAILab.torch.models.llm._set_lm_head_precision") as mock_lm,
             patch(
-                "GenAILab.torch.models.llm._apply_block_granularity_to_decoder_stack"
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.instantiate_model"
+            ) as mock_inst,
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.QuantizationSimModel"
+            ) as mock_qsim,
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm._set_lm_head_precision"
+            ) as mock_lm,
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm._apply_block_granularity_to_decoder_stack"
             ) as mock_bg,
             patch(
-                "GenAILab.torch.models.llm.ONNXExportableModuleWithCache"
+                "GenAILab.qai_hub_lm.backends.torch.llm.ONNXExportableModuleWithCache"
             ) as mock_wrap,
             patch(
-                "GenAILab.torch.models.llm.LLM_Torch.get_sample_backbone_inputs"
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_sample_backbone_inputs"
             ) as mock_sample,
             patch(
-                "GenAILab.torch.models.llm.LLM_Torch.get_quantsim_config"
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_quantsim_config"
             ) as mock_cfg,
         ):
             mock_model = MagicMock()
@@ -74,7 +80,7 @@ class TestInstantiateQuantsimOrchestration:
             mock_sim.model.modules.return_value = []
             mock_qsim.return_value = mock_sim
 
-            from GenAILab.torch.models.llm import LLM_Torch
+            from GenAILab.qai_hub_lm.backends.torch.llm import LLM_Torch
 
             result = LLM_Torch.instantiate_quantsim(
                 model_id="test",
@@ -88,7 +94,7 @@ class TestInstantiateQuantsimOrchestration:
 
     def test_float16_activations_removes_quantizers(self):
         """When activations are float16, remove_activation_quantizers should be called."""
-        from GenAILab.shared.helpers.precision_config import float16
+        from GenAILab.qai_hub_lm.precision import float16
 
         precision = PrecisionConfig.from_dict(
             {"blocks": {"default": {"qtype": 4}}, "activations": "float16"}
@@ -96,20 +102,28 @@ class TestInstantiateQuantsimOrchestration:
         assert precision.activations == float16
 
         with (
-            patch("GenAILab.torch.models.llm.LLM_Torch.instantiate_model") as mock_inst,
-            patch("GenAILab.torch.models.llm.QuantizationSimModel") as mock_qsim,
             patch(
-                "GenAILab.torch.models.llm.remove_activation_quantizers"
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.instantiate_model"
+            ) as mock_inst,
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.QuantizationSimModel"
+            ) as mock_qsim,
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.remove_activation_quantizers"
             ) as mock_remove,
-            patch("GenAILab.torch.models.llm._set_lm_head_precision"),
+            patch("GenAILab.qai_hub_lm.backends.torch.llm._set_lm_head_precision"),
             patch(
-                "GenAILab.torch.models.llm._apply_block_granularity_to_decoder_stack"
+                "GenAILab.qai_hub_lm.backends.torch.llm._apply_block_granularity_to_decoder_stack"
             ),
             patch(
-                "GenAILab.torch.models.llm.ONNXExportableModuleWithCache"
+                "GenAILab.qai_hub_lm.backends.torch.llm.ONNXExportableModuleWithCache"
             ) as mock_wrap,
-            patch("GenAILab.torch.models.llm.LLM_Torch.get_sample_backbone_inputs"),
-            patch("GenAILab.torch.models.llm.LLM_Torch.get_quantsim_config"),
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_sample_backbone_inputs"
+            ),
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_quantsim_config"
+            ),
         ):
             mock_model = MagicMock()
             mock_model.to.return_value = mock_model
@@ -120,7 +134,7 @@ class TestInstantiateQuantsimOrchestration:
             mock_sim.model.modules.return_value = []
             mock_qsim.return_value = mock_sim
 
-            from GenAILab.torch.models.llm import LLM_Torch
+            from GenAILab.qai_hub_lm.backends.torch.llm import LLM_Torch
 
             LLM_Torch.instantiate_quantsim(
                 model_id="test",
@@ -133,19 +147,27 @@ class TestInstantiateQuantsimOrchestration:
     def test_rms_norm_set_to_16_bits(self):
         """Quantized RMSNorm modules should have weight bitwidth set to 16."""
         with (
-            patch("GenAILab.torch.models.llm.LLM_Torch.instantiate_model") as mock_inst,
-            patch("GenAILab.torch.models.llm.QuantizationSimModel") as mock_qsim,
-            patch("GenAILab.torch.models.llm._set_lm_head_precision"),
             patch(
-                "GenAILab.torch.models.llm._apply_block_granularity_to_decoder_stack"
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.instantiate_model"
+            ) as mock_inst,
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.QuantizationSimModel"
+            ) as mock_qsim,
+            patch("GenAILab.qai_hub_lm.backends.torch.llm._set_lm_head_precision"),
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm._apply_block_granularity_to_decoder_stack"
             ),
             patch(
-                "GenAILab.torch.models.llm.ONNXExportableModuleWithCache"
+                "GenAILab.qai_hub_lm.backends.torch.llm.ONNXExportableModuleWithCache"
             ) as mock_wrap,
-            patch("GenAILab.torch.models.llm.LLM_Torch.get_sample_backbone_inputs"),
-            patch("GenAILab.torch.models.llm.LLM_Torch.get_quantsim_config"),
             patch(
-                "GenAILab.torch.models.llm.LLM_Torch._is_quantized_rms_norm"
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_sample_backbone_inputs"
+            ),
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_quantsim_config"
+            ),
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch._is_quantized_rms_norm"
             ) as mock_is_rms,
         ):
             mock_model = MagicMock()
@@ -164,7 +186,7 @@ class TestInstantiateQuantsimOrchestration:
 
             mock_is_rms.side_effect = lambda m: m is rms_module
 
-            from GenAILab.torch.models.llm import LLM_Torch
+            from GenAILab.qai_hub_lm.backends.torch.llm import LLM_Torch
 
             LLM_Torch.instantiate_quantsim(
                 model_id="test",
@@ -178,17 +200,25 @@ class TestInstantiateQuantsimOrchestration:
     def test_returns_sim_collection(self):
         """Should return a SimCollection with the quantsim as backbone."""
         with (
-            patch("GenAILab.torch.models.llm.LLM_Torch.instantiate_model") as mock_inst,
-            patch("GenAILab.torch.models.llm.QuantizationSimModel") as mock_qsim,
-            patch("GenAILab.torch.models.llm._set_lm_head_precision"),
             patch(
-                "GenAILab.torch.models.llm._apply_block_granularity_to_decoder_stack"
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.instantiate_model"
+            ) as mock_inst,
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.QuantizationSimModel"
+            ) as mock_qsim,
+            patch("GenAILab.qai_hub_lm.backends.torch.llm._set_lm_head_precision"),
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm._apply_block_granularity_to_decoder_stack"
             ),
             patch(
-                "GenAILab.torch.models.llm.ONNXExportableModuleWithCache"
+                "GenAILab.qai_hub_lm.backends.torch.llm.ONNXExportableModuleWithCache"
             ) as mock_wrap,
-            patch("GenAILab.torch.models.llm.LLM_Torch.get_sample_backbone_inputs"),
-            patch("GenAILab.torch.models.llm.LLM_Torch.get_quantsim_config"),
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_sample_backbone_inputs"
+            ),
+            patch(
+                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_quantsim_config"
+            ),
         ):
             mock_model = MagicMock()
             mock_model.to.return_value = mock_model
@@ -199,8 +229,8 @@ class TestInstantiateQuantsimOrchestration:
             mock_sim.model.modules.return_value = []
             mock_qsim.return_value = mock_sim
 
-            from GenAILab.torch.models.llm import LLM_Torch
-            from GenAILab.shared.models.base import SimCollection
+            from GenAILab.qai_hub_lm.backends.torch.llm import LLM_Torch
+            from GenAILab.qai_hub_lm.models.base import SimCollection
 
             result = LLM_Torch.instantiate_quantsim(
                 model_id="test",
@@ -213,20 +243,20 @@ class TestInstantiateQuantsimOrchestration:
 
 class TestIsQuantizedRmsNorm:
     def test_true_for_rms_norm(self):
-        from GenAILab.torch.models.llm import LLM_Torch
+        from GenAILab.qai_hub_lm.backends.torch.llm import LLM_Torch
         from aimet_torch.v2.nn.true_quant import QuantizationMixin
 
         mock_module = MagicMock(spec=QuantizationMixin)
         mock_module.__class__ = type("MockRMS", (QuantizationMixin,), {})
 
         with patch(
-            "GenAILab.torch.models.llm.map_torch_types_to_onnx",
+            "GenAILab.qai_hub_lm.backends.torch.llm.map_torch_types_to_onnx",
             {type(mock_module): ["RMSNormalization"]},
         ):
             assert LLM_Torch._is_quantized_rms_norm(mock_module)
 
     def test_false_for_non_rms(self):
-        from GenAILab.torch.models.llm import LLM_Torch
+        from GenAILab.qai_hub_lm.backends.torch.llm import LLM_Torch
 
         mock_module = MagicMock()
         # Not a QuantizationMixin instance

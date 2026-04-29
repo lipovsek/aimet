@@ -10,8 +10,8 @@ to run on CPU in under a minute each.
 import pytest
 import torch
 
-from GenAILab.shared.models.generator import Generator
-from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.generator import Generator
+from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
 
 from .conftest import (
     SEQUENCE_LENGTHS,

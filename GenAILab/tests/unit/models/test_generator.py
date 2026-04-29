@@ -12,12 +12,12 @@ import torch
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from GenAILab.shared.models.generator import (
+from GenAILab.qai_hub_lm.models.generator import (
     Generator,
     _FlatListCache,
     get_past_keyval_with_shift,
 )
-from GenAILab.shared.models.utils.layer_cache import (
+from GenAILab.qai_hub_lm.utils.layer_cache import (
     AttentionType,
     LayerCacheDescriptor,
 )

@@ -6,7 +6,7 @@
 # [model-setup]
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
 
 SEQUENCE_LENGTH = 2048
 CONTEXT_LENGTH = 4096
@@ -24,16 +24,16 @@ import os
 import tempfile
 import onnx
 from aimet_onnx.quantsim import QuantizationSimModel
-from GenAILab.shared.models.base import LLM
-from GenAILab.shared.models.utils.layer_cache import build_layer_cache_descriptors
-from GenAILab.shared.models.generator import Generator
-from GenAILab.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
-from GenAILab.onnx.models.utils.quantsim_utils import (
+from GenAILab.qai_hub_lm.models.base import LLM
+from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.models.generator import Generator
+from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import TorchONNXInterface
+from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
     _set_tensors_to_output_n_bit_symmmetric,
     _tie_quantizers_for_kv_cache,
     _set_lm_head_precision,
 )
-from GenAILab.shared.helpers.precision_config import WeightPrecision
+from GenAILab.qai_hub_lm.precision import WeightPrecision
 from aimet_onnx.common.defs import int8
 
 assembled_dummy_inputs = Generator.prepare_inputs(
@@ -82,8 +82,8 @@ apply_spinquant(quantsim)
 
 # [compute-encodings]
 from tqdm import tqdm
-from GenAILab.shared.helpers.datasets import Wikitext
-from GenAILab.onnx.helpers.quant_recipes import _prefill_inputs
+from GenAILab.bench.datasets import Wikitext
+from GenAILab.bench.onnx.quant_recipes import _prefill_inputs
 
 train_dataset = Wikitext.load_encoded_dataset(tokenizer, CONTEXT_LENGTH, "train")
 calib_inputs = _prefill_inputs(quantsim, generator, train_dataset, num_batches=20)

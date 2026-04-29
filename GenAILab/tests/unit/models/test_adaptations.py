@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from GenAILab.shared.helpers.yaml_config_parser import YAMLConfigParser
+from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 
 
 @pytest.fixture(autouse=True)

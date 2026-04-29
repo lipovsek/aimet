@@ -10,7 +10,7 @@ import pytest
 import torch
 from transformers.models.llama import LlamaConfig
 
-from GenAILab.shared.models.generator import HubCompatibleGenerator
+from GenAILab.qai_hub_lm.models.generator import HubCompatibleGenerator
 
 
 @pytest.fixture

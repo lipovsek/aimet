@@ -6,7 +6,7 @@
 import pytest
 import torch
 
-from GenAILab.shared.helpers.metrics import (
+from GenAILab.bench.metrics import (
     PPL,
     _KLDivergenceCompute,
     _ReverseKLDivergenceCompute,

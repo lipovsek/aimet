@@ -83,7 +83,7 @@ class TestRunLocal:
             run_local(args, [])
             mock_call.assert_called_once()
             cmd = mock_call.call_args[0][0]
-            assert "GenAILab/torch/test_genai.py" in cmd
+            assert "GenAILab/bench/torch/test_genai.py" in cmd
         assert exc_info.value.code == 0
 
     def test_both_runs_torch_and_onnx(self):

@@ -5,7 +5,7 @@
 
 import re
 
-from GenAILab.shared.helpers.export import get_test_artifacts_path
+from GenAILab.bench.export import get_test_artifacts_path
 
 
 class TestGetTestArtifactsPath:

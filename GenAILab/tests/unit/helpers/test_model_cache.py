@@ -5,7 +5,7 @@
 
 import pytest
 
-from GenAILab.shared.helpers.model_cache import DiskBackedModelCache
+from GenAILab.bench.model_cache import DiskBackedModelCache
 
 
 class TestBuildKey:

@@ -8,14 +8,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from GenAILab.shared.models.base import SimCollection
-from GenAILab.shared.models.generator import Generator, VLM_Generator
-from GenAILab.onnx.models.utils.generator_utils import _VisualONNXAdapter
+from GenAILab.qai_hub_lm.models.base import SimCollection
+from GenAILab.qai_hub_lm.models.generator import Generator, VLM_Generator
+from GenAILab.qai_hub_lm.backends.onnx.generator_utils import _VisualONNXAdapter
 
 
 class TestBuildFpMode:
     def test_returns_context_manager_factory(self):
-        from GenAILab.onnx.models.utils.generator_utils import _build_fp_mode
+        from GenAILab.qai_hub_lm.backends.onnx.generator_utils import _build_fp_mode
 
         mock_backbone = MagicMock()
         mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
@@ -28,7 +28,7 @@ class TestBuildFpMode:
         assert callable(fp_mode)
 
     def test_calls_remove_and_rebuild(self):
-        from GenAILab.onnx.models.utils.generator_utils import _build_fp_mode
+        from GenAILab.qai_hub_lm.backends.onnx.generator_utils import _build_fp_mode
 
         mock_backbone = MagicMock()
         mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
@@ -43,7 +43,7 @@ class TestBuildFpMode:
             mock_backbone._rebuild_session.assert_called()
 
     def test_handles_visual_model(self):
-        from GenAILab.onnx.models.utils.generator_utils import _build_fp_mode
+        from GenAILab.qai_hub_lm.backends.onnx.generator_utils import _build_fp_mode
 
         mock_backbone = MagicMock()
         mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
@@ -66,7 +66,7 @@ class TestBuildFpMode:
 
 class TestGeneratorFactory:
     def test_wraps_backbone_in_torch_onnx_interface(self):
-        from GenAILab.onnx.models.utils.generator_utils import generator_factory
+        from GenAILab.qai_hub_lm.backends.onnx.generator_utils import generator_factory
 
         mock_backbone = MagicMock()
         mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
@@ -80,7 +80,7 @@ class TestGeneratorFactory:
         tok.eos_token_id = 0
 
         with patch(
-            "GenAILab.onnx.models.utils.generator_utils.TorchONNXInterface"
+            "GenAILab.qai_hub_lm.backends.onnx.generator_utils.TorchONNXInterface"
         ) as mock_interface:
             mock_interface.return_value = MagicMock()
             mock_interface.return_value.config = mock_config
@@ -97,7 +97,7 @@ class TestGeneratorFactory:
             assert isinstance(gen, Generator)
 
     def test_vlm_wraps_both_models(self):
-        from GenAILab.onnx.models.utils.generator_utils import generator_factory
+        from GenAILab.qai_hub_lm.backends.onnx.generator_utils import generator_factory
 
         mock_backbone = MagicMock()
         mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
@@ -124,7 +124,7 @@ class TestGeneratorFactory:
         tok.eos_token_id = 0
 
         with patch(
-            "GenAILab.onnx.models.utils.generator_utils.TorchONNXInterface"
+            "GenAILab.qai_hub_lm.backends.onnx.generator_utils.TorchONNXInterface"
         ) as mock_interface:
             mock_bb_wrapped = MagicMock()
             mock_vis_wrapped = MagicMock()

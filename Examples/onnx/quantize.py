@@ -14,24 +14,24 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from aimet_onnx.quantsim import QuantizationSimModel
 
-from GenAILab.onnx.models.utils.torch_onnx_interface import (
+from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import (
     TorchONNXInterface,
 )
-from GenAILab.onnx.models.utils.quantsim_utils import (
+from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
     _set_tensors_to_output_n_bit_symmmetric,
     _tie_quantizers_for_kv_cache,
     _set_lm_head_precision,
 )
-from GenAILab.shared.helpers.precision_config import WeightPrecision
+from GenAILab.qai_hub_lm.precision import WeightPrecision
 from aimet_onnx.common.defs import int8
-from GenAILab.onnx.helpers.quant_recipes import (
+from GenAILab.bench.onnx.quant_recipes import (
     _prefill_inputs,
 )
-from GenAILab.shared.models.base import LLM
-from GenAILab.shared.models.generator import Generator
-from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
-from GenAILab.shared.models.utils.layer_cache import build_layer_cache_descriptors
-from GenAILab.shared.helpers.datasets import Wikitext
+from GenAILab.qai_hub_lm.models.base import LLM
+from GenAILab.qai_hub_lm.models.generator import Generator
+from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.bench.datasets import Wikitext
 
 SEQUENCE_LENGTH = 2048
 CONTEXT_LENGTH = 4096

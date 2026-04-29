@@ -124,7 +124,7 @@ def sample_config():
 
 @pytest.fixture
 def sample_precision():
-    from GenAILab.shared.helpers.precision_config import PrecisionConfig
+    from GenAILab.qai_hub_lm.precision import PrecisionConfig
 
     return PrecisionConfig()
 
@@ -146,7 +146,7 @@ def tmp_cache_dir(tmp_path):
 
 @pytest.fixture
 def sample_metric_results():
-    from GenAILab.shared.helpers.profiler import MetricResult
+    from GenAILab.bench.profiler import MetricResult
 
     return [
         MetricResult(metric_name="PPL", result=12.5, profiler=None),
@@ -156,7 +156,7 @@ def sample_metric_results():
 
 @pytest.fixture
 def sample_components():
-    from GenAILab.shared.helpers.profiler import ComponentRecipeStats
+    from GenAILab.bench.profiler import ComponentRecipeStats
 
     return {
         "backbone": ComponentRecipeStats(

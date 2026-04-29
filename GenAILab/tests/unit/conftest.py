@@ -5,7 +5,7 @@
 
 import pytest
 
-from GenAILab.shared.helpers.yaml_config_parser import YAMLConfigParser
+from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 
 _orig_register_llm = YAMLConfigParser.register_default_llm
 _orig_register_model = YAMLConfigParser.register_model

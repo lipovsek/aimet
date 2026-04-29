@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from GenAILab.shared.helpers.yaml_config_parser import (
+from GenAILab.bench.yaml_config_parser import (
     YAMLConfigParser,
     AdaptationInfo,
 )
@@ -560,7 +560,7 @@ class TestParseDocument:
             "precision": {"activations": 8, "kv_cache": 4},
         }
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
-        from GenAILab.shared.helpers.precision_config import int8, int4
+        from GenAILab.qai_hub_lm.precision import int8, int4
 
         assert result["precision"].activations == int8
         assert result["precision"].kv_cache == int4

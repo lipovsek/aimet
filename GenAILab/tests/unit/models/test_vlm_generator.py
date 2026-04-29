@@ -11,7 +11,7 @@ import torch
 from transformers.cache_utils import DynamicCache
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from GenAILab.shared.models.generator import VLM_Generator
+from GenAILab.qai_hub_lm.models.generator import VLM_Generator
 
 
 @dataclass

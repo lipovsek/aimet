@@ -11,30 +11,30 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from GenAILab.shared.helpers.precision_config import PrecisionConfig
+from GenAILab.qai_hub_lm.precision import PrecisionConfig
 
 
 class TestOnnxInstantiateQuantsimOrchestration:
     def _run_instantiate(self, precision=None, extra_patches=None):
         """Helper to run instantiate_quantsim with all heavy deps mocked."""
         patches = {
-            "GenAILab.onnx.models.llm.is_huggingface_ckpt": MagicMock(
+            "GenAILab.qai_hub_lm.backends.onnx.llm.is_huggingface_ckpt": MagicMock(
                 return_value=False
             ),
-            "GenAILab.onnx.models.llm.load_model_components_from_disk": MagicMock(
+            "GenAILab.qai_hub_lm.backends.onnx.llm.load_model_components_from_disk": MagicMock(
                 return_value=(MagicMock(), None)
             ),
-            "GenAILab.onnx.models.llm.AutoConfig": MagicMock(),
-            "GenAILab.onnx.models.llm.QuantizationSimModel": MagicMock(),
-            "GenAILab.onnx.models.llm._set_lm_head_precision": MagicMock(),
-            "GenAILab.onnx.models.llm._resolve_kv_cache_quantization": MagicMock(),
-            "GenAILab.onnx.models.llm._apply_block_granularity_to_decoder_stack": MagicMock(),
-            "GenAILab.onnx.models.llm._remove_activation_quantizers": MagicMock(),
-            "GenAILab.onnx.models.llm.get_ort_providers": MagicMock(
+            "GenAILab.qai_hub_lm.backends.onnx.llm.AutoConfig": MagicMock(),
+            "GenAILab.qai_hub_lm.backends.onnx.llm.QuantizationSimModel": MagicMock(),
+            "GenAILab.qai_hub_lm.backends.onnx.llm._set_lm_head_precision": MagicMock(),
+            "GenAILab.qai_hub_lm.backends.onnx.llm._resolve_kv_cache_quantization": MagicMock(),
+            "GenAILab.qai_hub_lm.backends.onnx.llm._apply_block_granularity_to_decoder_stack": MagicMock(),
+            "GenAILab.qai_hub_lm.backends.onnx.llm._remove_activation_quantizers": MagicMock(),
+            "GenAILab.qai_hub_lm.backends.onnx.llm.get_ort_providers": MagicMock(
                 return_value=["CPUExecutionProvider"]
             ),
-            "GenAILab.onnx.models.llm.AttributePatch": MagicMock(),
-            "GenAILab.onnx.models.llm.LLM_ONNX.get_quantsim_config": MagicMock(
+            "GenAILab.qai_hub_lm.backends.onnx.llm.AttributePatch": MagicMock(),
+            "GenAILab.qai_hub_lm.backends.onnx.llm.LLM_ONNX.get_quantsim_config": MagicMock(
                 return_value="config.json"
             ),
         }
@@ -47,7 +47,7 @@ class TestOnnxInstantiateQuantsimOrchestration:
             mocks[k] = p.start()
 
         try:
-            from GenAILab.onnx.models.llm import LLM_ONNX
+            from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
 
             result = LLM_ONNX.instantiate_quantsim(
                 model_id="/fake/path",
@@ -63,24 +63,26 @@ class TestOnnxInstantiateQuantsimOrchestration:
     def test_default_precision_when_none(self):
         result, mocks = self._run_instantiate(precision=None)
         # Should not fail — default PrecisionConfig should be used
-        from GenAILab.shared.models.base import SimCollection
+        from GenAILab.qai_hub_lm.models.base import SimCollection
 
         assert isinstance(result, SimCollection)
 
     def test_calls_set_lm_head_precision(self):
         result, mocks = self._run_instantiate()
-        mocks["GenAILab.onnx.models.llm._set_lm_head_precision"].assert_called_once()
+        mocks[
+            "GenAILab.qai_hub_lm.backends.onnx.llm._set_lm_head_precision"
+        ].assert_called_once()
 
     def test_calls_resolve_kv_cache(self):
         result, mocks = self._run_instantiate()
         mocks[
-            "GenAILab.onnx.models.llm._resolve_kv_cache_quantization"
+            "GenAILab.qai_hub_lm.backends.onnx.llm._resolve_kv_cache_quantization"
         ].assert_called_once()
 
     def test_calls_block_granularity(self):
         result, mocks = self._run_instantiate()
         mocks[
-            "GenAILab.onnx.models.llm._apply_block_granularity_to_decoder_stack"
+            "GenAILab.qai_hub_lm.backends.onnx.llm._apply_block_granularity_to_decoder_stack"
         ].assert_called_once()
 
     def test_non_float32_does_not_remove_activations(self):
@@ -89,12 +91,12 @@ class TestOnnxInstantiateQuantsimOrchestration:
         )
         result, mocks = self._run_instantiate(precision=precision)
         mocks[
-            "GenAILab.onnx.models.llm._remove_activation_quantizers"
+            "GenAILab.qai_hub_lm.backends.onnx.llm._remove_activation_quantizers"
         ].assert_not_called()
 
     def test_returns_sim_collection_with_config(self):
         result, mocks = self._run_instantiate()
-        from GenAILab.shared.models.base import SimCollection
+        from GenAILab.qai_hub_lm.models.base import SimCollection
 
         assert isinstance(result, SimCollection)
         # Config should be set from AutoConfig

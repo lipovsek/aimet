@@ -149,7 +149,7 @@ def run_local(args, extra_pytest_args):
             "-m",
             "pytest",
             "-s",
-            f"GenAILab/{framework}/test_genai.py",
+            f"GenAILab/bench/{framework}/test_genai.py",
             "--config",
             args.config,
             *forwarded,
@@ -165,7 +165,7 @@ def run_local(args, extra_pytest_args):
 def _print_summary(results_dir, config_path=None):
     results_json = os.path.join(results_dir, "profiling_data.json")
     if os.path.exists(results_json):
-        from GenAILab.shared.helpers.summary import print_summary
+        from GenAILab.bench.summary import print_summary
 
         print_summary(results_json, config_path)
 
@@ -338,7 +338,7 @@ def _stamp_entries_as_online(json_path, ci_metadata):
 
 def _download_and_merge(gh, run_id, results_dir, frameworks):
     """Download artifacts for the given run ID and merge into local results."""
-    from GenAILab.shared.helpers.profiler import merge_csv_results, merge_json_results
+    from GenAILab.bench.profiler import merge_csv_results, merge_json_results
 
     os.makedirs(results_dir, exist_ok=True)
 

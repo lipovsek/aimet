@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from GenAILab.shared.models.utils.layer_cache import (
+from GenAILab.qai_hub_lm.utils.layer_cache import (
     AttentionType,
     LayerCacheDescriptor,
     build_layer_cache_descriptors,

@@ -713,7 +713,7 @@ class TestAdascaleQuantizer:
 @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
 def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     from transformers import AutoConfig
-    from GenAILab.onnx.models.llm import LLM_ONNX
+    from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
     import random
 
     context_length = 32
@@ -805,12 +805,14 @@ def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
         new=2,
     ):
         from transformers import AutoConfig
-        from GenAILab.onnx.models.llm import LLM_ONNX
-        from GenAILab.shared.models.generator import Generator
-        from GenAILab.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
-        from GenAILab.onnx.helpers.quant_recipes import _prefill_inputs
-        from GenAILab.shared.helpers.datasets import Wikitext
-        from GenAILab.shared.helpers.metrics import PPL
+        from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
+        from GenAILab.qai_hub_lm.models.generator import Generator
+        from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import (
+            TorchONNXInterface,
+        )
+        from GenAILab.bench.onnx.quant_recipes import _prefill_inputs
+        from GenAILab.bench.datasets import Wikitext
+        from GenAILab.bench.metrics import PPL
 
         context_length = 512
         sequence_length = 512

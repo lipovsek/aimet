@@ -7,10 +7,10 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from GenAILab.shared.models.generator import VLM_Generator
-from GenAILab.shared.models.utils.model_utils import ONNXExportableModuleWithCache
-from GenAILab.shared.models.utils.layer_cache import build_layer_cache_descriptors
-from GenAILab.shared.models.base import LLM
+from GenAILab.qai_hub_lm.models.generator import VLM_Generator
+from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.models.base import LLM
 
 
 # ---------------------------------------------------------------------------
@@ -60,11 +60,11 @@ VLM_MODELS = [
 def _get_vlm_class(model_id: str):
     """Return the VLM descriptor class for a given model ID."""
     if "Qwen2.5-VL" in model_id:
-        from GenAILab.shared.models.qwen2_vl import Qwen_25_VL
+        from GenAILab.qai_hub_lm.models.qwen2_vl import Qwen_25_VL
 
         return Qwen_25_VL
     if "Qwen3-VL" in model_id:
-        from GenAILab.shared.models.qwen3_vl import Qwen_3_VL
+        from GenAILab.qai_hub_lm.models.qwen3_vl import Qwen_3_VL
 
         return Qwen_3_VL
     raise ValueError(f"No VLM class registered for {model_id}")
@@ -73,11 +73,11 @@ def _get_vlm_class(model_id: str):
 def _get_visual_wrapper(model_id: str):
     """Return the visual wrapper class for a given model ID."""
     if "Qwen2.5-VL" in model_id:
-        from GenAILab.shared.models.qwen2_vl import Qwen2VLVisualWrapper
+        from GenAILab.qai_hub_lm.models.qwen2_vl import Qwen2VLVisualWrapper
 
         return Qwen2VLVisualWrapper
     if "Qwen3-VL" in model_id:
-        from GenAILab.shared.models.qwen3_vl import Qwen3VLVisualWrapper
+        from GenAILab.qai_hub_lm.models.qwen3_vl import Qwen3VLVisualWrapper
 
         return Qwen3VLVisualWrapper
     raise ValueError(f"No visual wrapper registered for {model_id}")
@@ -146,7 +146,9 @@ def build_ort_vlm_generator(
     module (kept there because it depends on ``onnxruntime``).
     """
     from types import SimpleNamespace
-    from GenAILab.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
+    from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import (
+        TorchONNXInterface,
+    )
 
     vlm_cls = _get_vlm_class(model_id)
     wrapper_cls = _get_visual_wrapper(model_id)

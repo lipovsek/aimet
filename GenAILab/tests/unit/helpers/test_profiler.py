@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from GenAILab.shared.helpers.profiler import (
+from GenAILab.bench.profiler import (
     write_stats_to_disk,
     merge_json_results,
     merge_csv_results,

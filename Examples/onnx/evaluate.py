@@ -8,9 +8,9 @@ import argparse
 from pathlib import Path
 from transformers import AutoConfig, AutoTokenizer
 
-from GenAILab.shared.models.base import LLM
-from GenAILab.shared.models.generator import Generator
-from GenAILab.shared.helpers.metrics import PPL, MMLU, Interactive
+from GenAILab.qai_hub_lm.models.base import LLM
+from GenAILab.qai_hub_lm.models.generator import Generator
+from GenAILab.bench.metrics import PPL, MMLU, Interactive
 
 import onnx
 from aimet_onnx.quantsim import (
@@ -18,13 +18,13 @@ from aimet_onnx.quantsim import (
     load_encodings_to_sim,
     set_grouped_blockwise_quantization_for_weights,
 )
-from GenAILab.onnx.models.utils.torch_onnx_interface import TorchONNXInterface
-from GenAILab.onnx.models.utils.quantsim_utils import (
+from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import TorchONNXInterface
+from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
     _set_tensors_to_output_n_bit_symmmetric,
     _tie_quantizers_for_kv_cache,
     _set_lm_head_precision,
 )
-from GenAILab.shared.helpers.precision_config import WeightPrecision
+from GenAILab.qai_hub_lm.precision import WeightPrecision
 from aimet_onnx.common.defs import int8
 
 SEQUENCE_LENGTH = 2048

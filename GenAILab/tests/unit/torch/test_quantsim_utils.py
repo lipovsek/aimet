@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from GenAILab.shared.helpers.precision_config import (
+from GenAILab.qai_hub_lm.precision import (
     Granularity,
     PrecisionConfig,
     WeightPrecision,
@@ -18,7 +18,7 @@ from GenAILab.shared.helpers.precision_config import (
 
 class TestApplyBlockGranularityToDecoderStack:
     def test_lpbq_calls_grouped_blockwise(self):
-        from GenAILab.torch.models.utils import quantsim_utils
+        from GenAILab.qai_hub_lm.backends.torch import quantsim_utils
 
         precision = PrecisionConfig.from_dict(
             {
@@ -43,7 +43,7 @@ class TestApplyBlockGranularityToDecoderStack:
             assert kwargs[1]["decompressed_bw"] == 8
 
     def test_bq_calls_blockwise(self):
-        from GenAILab.torch.models.utils import quantsim_utils
+        from GenAILab.qai_hub_lm.backends.torch import quantsim_utils
 
         precision = PrecisionConfig.from_dict(
             {"blocks": {"default": {"qtype": 4, "granularity": "BQ", "block_size": 64}}}
@@ -63,7 +63,7 @@ class TestApplyBlockGranularityToDecoderStack:
             assert kwargs[1]["symmetric"] is True
 
     def test_pcq_does_not_call_block_functions(self):
-        from GenAILab.torch.models.utils import quantsim_utils
+        from GenAILab.qai_hub_lm.backends.torch import quantsim_utils
 
         precision = PrecisionConfig.from_dict({"blocks": {"default": {"qtype": 8}}})
         mock_sim = MagicMock()
@@ -85,7 +85,7 @@ class TestApplyBlockGranularityToDecoderStack:
 
 class TestSetLmHeadPrecision:
     def test_lpbq_calls_grouped_blockwise(self):
-        from GenAILab.torch.models.utils import quantsim_utils
+        from GenAILab.qai_hub_lm.backends.torch import quantsim_utils
 
         precision = WeightPrecision(
             qtype=int4, granularity=Granularity.LPBQ, block_size=128
@@ -101,7 +101,7 @@ class TestSetLmHeadPrecision:
             assert mock_gbq.call_args[1]["block_size"] == 128
 
     def test_bq_calls_blockwise(self):
-        from GenAILab.torch.models.utils import quantsim_utils
+        from GenAILab.qai_hub_lm.backends.torch import quantsim_utils
 
         precision = WeightPrecision(
             qtype=int4, granularity=Granularity.BQ, block_size=64
@@ -115,7 +115,7 @@ class TestSetLmHeadPrecision:
             mock_bq.assert_called_once()
 
     def test_pcq_sets_bitwidth_directly(self):
-        from GenAILab.torch.models.utils import quantsim_utils
+        from GenAILab.qai_hub_lm.backends.torch import quantsim_utils
 
         precision = WeightPrecision(qtype=int8)
         mock_sim = MagicMock()

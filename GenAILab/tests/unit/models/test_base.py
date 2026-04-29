@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from GenAILab.shared.models.base import LLM, VLM, SimCollection
-from GenAILab.shared.models.utils.layer_cache import (
+from GenAILab.qai_hub_lm.models.base import LLM, VLM, SimCollection
+from GenAILab.qai_hub_lm.utils.layer_cache import (
     LayerCacheDescriptor,
     AttentionType,
 )
