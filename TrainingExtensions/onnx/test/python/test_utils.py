@@ -11,6 +11,17 @@ import torch
 from packaging import version
 import pytest
 
+import copy
+
+import numpy as np
+from onnx import numpy_helper, helper, TensorProto
+from onnxruntime.quantization.onnx_quantizer import ONNXModel
+from aimet_onnx.meta.connectedgraph import ConnectedGraph
+from aimet_onnx.utils import (
+    find_shared_param_names,
+    duplicate_shared_tensors,
+    OrtInferenceSession,
+)
 import aimet_onnx.utils as utils
 from aimet_onnx.utils import ParamUtils, disable_quantizers, LazyExtractor
 from aimet_onnx.adaround.utils import ModelData
@@ -268,6 +279,359 @@ class TestUtils:
         assert utils.contains_tensor_type(model, onnx.TensorProto.BFLOAT16)
         assert utils.contains_tensor_type(model, onnx.TensorProto.FLOAT)
         assert not utils.contains_tensor_type(model, onnx.TensorProto.FLOAT16)
+
+
+class TestDuplicateSharedTensors:
+    """
+    Tests for utils.duplicate_shared_tensors and its interaction with find_shared_param_names.
+    """
+
+    @staticmethod
+    def _make_shared_weight_model() -> onnx.ModelProto:
+        """
+        Build a minimal two-Conv model whose weight initializer is shared:
+
+            input --> Conv(weight) --> Conv(weight) --> output
+
+        Both Conv nodes reference the same initializer name, so the graph
+        contains one shared tensor before duplication.
+        """
+        CHANNELS = 4
+        weight = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="shared.weight",
+        )
+        nodes = [
+            helper.make_node(
+                "Conv",
+                inputs=["model_input", weight.name],
+                outputs=["conv_1.output"],
+                name="conv_1",
+            ),
+            helper.make_node(
+                "Conv",
+                inputs=["conv_1.output", weight.name],
+                outputs=["model_output"],
+                name="conv_2",
+            ),
+        ]
+        graph = helper.make_graph(
+            nodes,
+            "SharedWeightModel",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "model_input", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    "model_output", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            initializer=[weight],
+        )
+        model = models_for_tests.make_model(graph)
+        onnx.checker.check_model(model)
+        return model
+
+    def test_duplicate_shared_tensors_output_equivalence(self):
+        """
+        After calling duplicate_shared_tensors the model must produce identical
+        outputs to the original model for the same input.
+        """
+        original = self._make_shared_weight_model()
+        duplicated = copy.deepcopy(original)
+
+        n_duplicates = duplicate_shared_tensors(duplicated.graph)
+        assert n_duplicates > 0
+
+        dummy_input = utils.make_dummy_input(original)
+        providers = ["CPUExecutionProvider"]
+
+        original_output = OrtInferenceSession(original, providers).run(
+            None, dummy_input
+        )
+        duplicated_output = OrtInferenceSession(duplicated, providers).run(
+            None, dummy_input
+        )
+
+        assert len(original_output) == len(duplicated_output)
+        for orig, dup in zip(original_output, duplicated_output):
+            np.testing.assert_array_equal(orig, dup)
+
+    def test_duplicate_shared_tensors_no_shared_params_after_duplication(self):
+        """
+        After calling duplicate_shared_tensors, find_shared_param_names must
+        return an empty set — no initializer should be referenced by more than
+        one node.
+        """
+        model = ONNXModel(self._make_shared_weight_model())
+        conn_graph = ConnectedGraph(model)
+
+        # Confirm the model has shared params before duplication
+        assert find_shared_param_names(conn_graph), (
+            "Expected shared params in the original model"
+        )
+
+        duplicate_shared_tensors(model.model.graph)
+
+        # Re-build connected graph on the modified model
+        conn_graph_after = ConnectedGraph(model)
+        assert not find_shared_param_names(conn_graph_after), (
+            "Expected no shared params after duplicate_shared_tensors"
+        )
+
+    @pytest.mark.parametrize("shared_conv_weight", [True, False])
+    @pytest.mark.parametrize("shared_bn_weight", [True, False])
+    @pytest.mark.parametrize("shared_stat", [True, False])
+    def test_duplicate_shared_tensors_with_batchnorm_model(
+        self, shared_conv_weight, shared_bn_weight, shared_stat
+    ):
+        """
+        Verify output equivalence and absence of shared params after duplication
+        on the richer shared-tensor BN model used in test_bn_fold.
+        """
+        original = models_for_tests.shared_tensor_batchnorm_model_with_identities(
+            shared_conv_weight=shared_conv_weight,
+            shared_bn_weight=shared_bn_weight,
+            shared_stat=shared_stat,
+        )
+        duplicated = copy.deepcopy(original)
+        duplicate_shared_tensors(duplicated.graph)
+
+        dummy_input = utils.make_dummy_input(original)
+        providers = ["CPUExecutionProvider"]
+
+        original_output = OrtInferenceSession(original, providers).run(
+            None, dummy_input
+        )
+        duplicated_output = OrtInferenceSession(duplicated, providers).run(
+            None, dummy_input
+        )
+
+        assert len(original_output) == len(duplicated_output)
+        for orig, dup in zip(original_output, duplicated_output):
+            np.testing.assert_array_equal(orig, dup)
+
+        conn_graph_after = ConnectedGraph(ONNXModel(duplicated))
+        assert not find_shared_param_names(conn_graph_after), (
+            "Expected no shared params after duplicate_shared_tensors"
+        )
+
+    def test_duplicate_shared_bias(self, tmp_path):
+        """
+        Shared bias (not weight) between two Conv nodes must also be duplicated.
+        Uses conv_model_with_shared_bias from models_for_tests.
+        """
+        original = models_for_tests.conv_model_with_shared_bias(tmp_path)
+        duplicated = copy.deepcopy(original)
+
+        n_duplicates = duplicate_shared_tensors(duplicated.graph)
+        assert n_duplicates > 0
+
+        dummy_input = utils.make_dummy_input(original)
+        providers = ["CPUExecutionProvider"]
+
+        original_output = OrtInferenceSession(original, providers).run(
+            None, dummy_input
+        )
+        duplicated_output = OrtInferenceSession(duplicated, providers).run(
+            None, dummy_input
+        )
+
+        assert len(original_output) == len(duplicated_output)
+        for orig, dup in zip(original_output, duplicated_output):
+            np.testing.assert_array_equal(orig, dup)
+
+    def test_duplicate_shared_weight_and_bias_parallel_branches(self):
+        """
+        ParallelConvSharedWeights has two Conv nodes that share both weight and
+        bias.  After duplication both tensors must be independent and the model
+        output must be unchanged.
+        """
+        torch_model = models_for_tests.ParallelConvSharedWeights()
+        original = models_for_tests._convert_to_onnx_no_fold(
+            torch_model, torch.randn(2, 10, 24, 24)
+        ).model
+        duplicated = copy.deepcopy(original)
+
+        n_duplicates = duplicate_shared_tensors(duplicated.graph)
+        assert n_duplicates > 0
+
+        dummy_input = utils.make_dummy_input(original)
+        providers = ["CPUExecutionProvider"]
+
+        original_output = OrtInferenceSession(original, providers).run(
+            None, dummy_input
+        )
+        duplicated_output = OrtInferenceSession(duplicated, providers).run(
+            None, dummy_input
+        )
+
+        assert len(original_output) == len(duplicated_output)
+        for orig, dup in zip(original_output, duplicated_output):
+            np.testing.assert_array_equal(orig, dup)
+
+        conn_graph_after = ConnectedGraph(ONNXModel(duplicated))
+        assert not find_shared_param_names(conn_graph_after)
+
+    def test_duplicate_tensor_shared_by_three_nodes(self):
+        """
+        A single initializer referenced by three nodes must produce two copies
+        (one per extra usage) and the model output must remain identical.
+        """
+        CHANNELS = 4
+        weight = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="triple.weight",
+        )
+        nodes = [
+            helper.make_node(
+                "Conv", inputs=["input", weight.name], outputs=["out1"], name="conv_1"
+            ),
+            helper.make_node(
+                "Conv", inputs=["out1", weight.name], outputs=["out2"], name="conv_2"
+            ),
+            helper.make_node(
+                "Conv", inputs=["out2", weight.name], outputs=["output"], name="conv_3"
+            ),
+        ]
+        graph = helper.make_graph(
+            nodes,
+            "TripleSharedWeight",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "input", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    "output", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            initializer=[weight],
+        )
+        original = models_for_tests.make_model(graph)
+        onnx.checker.check_model(original)
+        duplicated = copy.deepcopy(original)
+
+        n_duplicates = duplicate_shared_tensors(duplicated.graph)
+        assert n_duplicates == 2  # two extra copies needed for 3 usages
+
+        # All three nodes must now reference distinct initializer names
+        init_names = {init.name for init in duplicated.graph.initializer}
+        for node in duplicated.graph.node:
+            assert node.input[1] in init_names
+        node_weights = [node.input[1] for node in duplicated.graph.node]
+        assert len(set(node_weights)) == 3, "Each node must own a unique weight copy"
+
+        dummy_input = utils.make_dummy_input(original)
+        providers = ["CPUExecutionProvider"]
+        original_output = OrtInferenceSession(original, providers).run(
+            None, dummy_input
+        )
+        duplicated_output = OrtInferenceSession(duplicated, providers).run(
+            None, dummy_input
+        )
+        for orig, dup in zip(original_output, duplicated_output):
+            np.testing.assert_array_equal(orig, dup)
+
+    def test_duplicate_shared_tensors_is_idempotent_on_non_shared_model(self):
+        """
+        Calling duplicate_shared_tensors on a model with no shared initializers
+        must return 0 and leave the model unchanged.
+        """
+        original = models_for_tests.build_dummy_model()
+        n_init_before = len(original.graph.initializer)
+
+        n_duplicates = duplicate_shared_tensors(original.graph)
+
+        assert n_duplicates == 0
+        assert len(original.graph.initializer) == n_init_before
+
+    def test_duplicate_shared_tensors_empty_graph(self):
+        """
+        duplicate_shared_tensors must return 0 and not raise on an empty graph
+        (no nodes, no initializers).
+        """
+        graph = helper.make_graph(
+            [],
+            "EmptyGraph",
+            inputs=[helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 4])],
+            outputs=[helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 4])],
+            initializer=[],
+        )
+        model = models_for_tests.make_model(graph)
+        assert duplicate_shared_tensors(model.graph) == 0
+
+    def test_duplicate_shared_tensors_name_collision(self):
+        """
+        If a copy name (e.g. 'w_copy_1') already exists as an initializer,
+        the function must still produce a valid model with unique names and
+        correct outputs.
+        """
+        CHANNELS = 4
+        weight = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="w",
+        )
+        # Pre-existing initializer whose name collides with the auto-generated copy name
+        weight_copy_1 = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="w_copy_1",
+        )
+        nodes = [
+            helper.make_node(
+                "Conv", inputs=["input", weight.name], outputs=["out1"], name="conv_1"
+            ),
+            helper.make_node(
+                "Conv", inputs=["out1", weight.name], outputs=["out2"], name="conv_2"
+            ),
+            helper.make_node(
+                "Conv",
+                inputs=["out2", weight_copy_1.name],
+                outputs=["output"],
+                name="conv_3",
+            ),
+        ]
+        graph = helper.make_graph(
+            nodes,
+            "NameCollisionModel",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "input", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    "output", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            initializer=[weight, weight_copy_1],
+        )
+        original = models_for_tests.make_model(graph)
+        onnx.checker.check_model(original)
+        duplicated = copy.deepcopy(original)
+
+        duplicate_shared_tensors(duplicated.graph)
+
+        # All node inputs must still resolve to a valid initializer
+        init_names = {init.name for init in duplicated.graph.initializer}
+        for node in duplicated.graph.node:
+            assert node.input[1] in init_names, (
+                f"Node '{node.name}' references unknown initializer '{node.input[1]}'"
+            )
+
+        dummy_input = utils.make_dummy_input(original)
+        providers = ["CPUExecutionProvider"]
+        original_output = OrtInferenceSession(original, providers).run(
+            None, dummy_input
+        )
+        duplicated_output = OrtInferenceSession(duplicated, providers).run(
+            None, dummy_input
+        )
+        for orig, dup in zip(original_output, duplicated_output):
+            np.testing.assert_array_equal(orig, dup)
 
 
 class TestORTInferenceSession:

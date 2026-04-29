@@ -980,3 +980,74 @@ def _add_value_info(model: onnx.ModelProto):
         # Restore original value info
         model.graph.ClearField("value_info")
         model.graph.value_info.extend(initial_value_info)
+
+
+def duplicate_shared_tensors(graph: GraphProto) -> int:
+    """
+    Duplicate initializers that are shared across multiple nodes.
+
+    For each initializer referenced by more than one node, create an independent
+    copy for every usage beyond the first and update the corresponding node inputs
+    to point to the new copies.  This ensures each node owns a unique tensor,
+    which is required by some downstream passes (e.g. per-node quantization).
+
+    :param graph: ONNX GraphProto to modify in-place
+    :return: Number of duplicate initializers created
+    """
+    if not graph.node:
+        return 0
+
+    initializer_map = {init.name: init for init in graph.initializer}
+    if not initializer_map:
+        return 0
+
+    # Map each initializer name to the list of (node, input_index) pairs that reference it
+    usage_map: Dict[str, List[Tuple[NodeProto, int]]] = {}
+    for node in graph.node:
+        for input_idx, input_name in enumerate(node.input):
+            if input_name and input_name in initializer_map:
+                usage_map.setdefault(input_name, []).append((node, input_idx))
+
+    new_initializers: List[TensorProto] = []
+    duplicate_count = 0
+    existing_names = (
+        set(initializer_map)
+        | {out for node in graph.node for out in node.output}
+        | {inp.name for inp in graph.input}
+    )
+
+    for tensor_name, usages in usage_map.items():
+        if len(usages) <= 1:
+            continue
+
+        original = initializer_map[tensor_name]
+        logger.debug(
+            "Duplicating shared initializer '%s' (shape=%s) for %d additional usages",
+            tensor_name,
+            list(original.dims),
+            len(usages) - 1,
+        )
+
+        for node, input_idx in usages[1:]:
+            # Find a unique name that does not collide with any existing initializer
+            counter = 1
+            new_name = f"{tensor_name}_copy_{counter}"
+            while new_name in existing_names:
+                counter += 1
+                new_name = f"{tensor_name}_copy_{counter}"
+            existing_names.add(new_name)
+
+            new_init = TensorProto()
+            new_init.CopyFrom(original)
+            new_init.name = new_name
+            new_initializers.append(new_init)
+            node.input[input_idx] = new_name
+            duplicate_count += 1
+
+    graph.initializer.extend(new_initializers)
+    logger.info(
+        "duplicate_shared_tensors: created %d duplicate initializer(s) for %d shared tensor(s)",
+        duplicate_count,
+        sum(1 for usages in usage_map.values() if len(usages) > 1),
+    )
+    return duplicate_count
