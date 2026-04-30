@@ -23,6 +23,9 @@ jobs:
 
   variants:
     name: Define supported AIMET variants
+    # use-ephemeral-runner is a transitional flag, currently consumed only by build-wheels.
+    # Once run-unit-acceptance-tests also supports ephemeral runners, GPU variants can pass
+    # the ephemeral runner label directly via runs-on and this flag can be removed.
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.final.outputs.value }}
@@ -204,6 +207,7 @@ jobs:
     with:
       variants: ${{ needs.variants.outputs.matrix }}
       image-tag: ${{ needs.docker-tag.outputs.tag }}
+      use-ephemeral-runner: true
       build-windows-wheel: false
     secrets: inherit
 
