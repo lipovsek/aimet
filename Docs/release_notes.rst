@@ -6,6 +6,41 @@
 Release notes
 #############
 
+2.30.0
+======
+
+* New Features
+    * ONNX
+        * Extend SpinQuant support for Vision-Language Models (VLM) (`e5cd62847`_)
+
+    * Torch
+        * Remove legacy aimet_torch v1. v2 is now the sole API (`4192da749`_, `00e3c7220`_)
+
+* Bug fixes and Improvements
+    * ONNX
+        * Improve set_and_freeze_param_encodings (`39bf1f69b`_, `d320cae7e`_)
+        * Optimize GPU calibration for fp16 models (`d7faee0e9`_)
+        * Only save model with external data if necessary (`29fbef23e`_)
+
+    * Common
+        * Fix exception rule bug with mixed precision (`c9add2219`_)
+
+* Documentation
+    * Add SpinQuant ONNX documentation and examples (`37454b34e`_)
+    * Document 2.0.0 encoding specification (`7e54291c3`_)
+
+.. _e5cd62847: https://github.com/quic/aimet/commit/e5cd62847
+.. _4192da749: https://github.com/quic/aimet/commit/4192da749
+.. _00e3c7220: https://github.com/quic/aimet/commit/00e3c7220
+.. _39bf1f69b: https://github.com/quic/aimet/commit/39bf1f69b
+.. _d320cae7e: https://github.com/quic/aimet/commit/d320cae7e
+.. _d7faee0e9: https://github.com/quic/aimet/commit/d7faee0e9
+.. _29fbef23e: https://github.com/quic/aimet/commit/29fbef23e
+.. _c9add2219: https://github.com/quic/aimet/commit/c9add2219
+.. _37454b34e: https://github.com/quic/aimet/commit/37454b34e
+.. _7e54291c3: https://github.com/quic/aimet/commit/7e54291c3
+
+
 2.29.0
 ======
 
