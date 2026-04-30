@@ -20,16 +20,11 @@ def _error_message():
 
 
 libpymo_classes = [
-    "ModelOpDefParser",
     "TfEncoding",
-    "Quantizer",
-    "TensorParams",
     "BlockTensorQuantizer",
 ]
 
 libpymo_functions = [
-    "str_to_dtype",
-    "str_to_rank",
     "PtrToInt64",
 ]
 
@@ -88,8 +83,6 @@ class QuantizationMode(enum.Enum):
     QUANTIZATION_TF_ENHANCED = 1
     QUANTIZATION_RANGE_LEARNING = 2
     QUANTIZATION_PERCENTILE = 3
-    QUANTIZATION_MSE = 4
-    QUANTIZATION_ENTROPY = 5
 
 
 class RoundingMode(enum.Enum):

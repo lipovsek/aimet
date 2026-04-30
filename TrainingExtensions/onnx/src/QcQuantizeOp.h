@@ -30,7 +30,6 @@ protected:
     struct QcQuantizeInfo* quantInfo;
 
 private:
-    std::unique_ptr<DlQuantization::ITensorQuantizationSim<float>> tensorQuantizationSim;
     const OrtKernelInfo* info_;
     OrtApi api_;
 };

@@ -118,8 +118,6 @@ void EncodingAnalyzerWrapper<DTYPE>::updateStats(const Eigen::half* tensor, cons
     }
 }
 
-template class EncodingAnalyzerWrapper<double>;
-
 template class EncodingAnalyzerWrapper<float>;
 
 }   // namespace DlQuantization

@@ -186,9 +186,6 @@ float PercentileEncodingAnalyzer<DTYPE>::getPercentileValue()
     return this->_percentile;
 }
 
-// Explicit instantiations
-template class PercentileEncodingAnalyzer<double>;
-
 template class PercentileEncodingAnalyzer<float>;
 
 }   // namespace DlQuantization

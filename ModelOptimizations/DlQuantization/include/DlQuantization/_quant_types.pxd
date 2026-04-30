@@ -25,8 +25,6 @@ cdef extern from "DlQuantization/Quantization.hpp" namespace "DlQuantization":
         QUANTIZATION_TF_ENHANCED "DlQuantization::QUANTIZATION_TF_ENHANCED"
         QUANTIZATION_RANGE_LEARNING "DlQuantization::QUANTIZATION_RANGE_LEARNING"
         QUANTIZATION_PERCENTILE "DlQuantization::QUANTIZATION_PERCENTILE"
-        QUANTIZATION_MSE "DlQuantization::QUANTIZATION_MSE"
-        QUANTIZATION_ENTROPY "DlQuantization::QUANTIZATION_ENTROPY"
 
     cdef cppclass CppTfEncoding "DlQuantization::TfEncoding":
         CppTfEncoding() except +
@@ -39,13 +37,11 @@ cdef extern from "DlQuantization/Quantization.hpp" namespace "DlQuantization":
     ctypedef vector[CppTfEncoding] Encodings
 
 
-cdef extern from "DlQuantization/TensorQuantizerOpFacade.h" namespace "DlQuantization":
+cdef extern from "DlQuantization/TensorQuantizer.h" namespace "DlQuantization":
     cdef enum CppTensorQuantizerOpMode "DlQuantization::TensorQuantizerOpMode":
         cpp_updateStats "DlQuantization::TensorQuantizerOpMode::updateStats"
         cpp_oneShotQuantizeDequantize "DlQuantization::TensorQuantizerOpMode::oneShotQuantizeDequantize"
         cpp_quantizeDequantize "DlQuantization::TensorQuantizerOpMode::quantizeDequantize"
         cpp_passThrough "DlQuantization::TensorQuantizerOpMode::passThrough"
 
-
-cdef extern from "DlQuantization/TensorQuantizer.h" namespace "DlQuantization":
     ctypedef vector[int64_t] TensorDims

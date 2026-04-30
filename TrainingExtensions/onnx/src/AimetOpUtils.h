@@ -8,7 +8,6 @@
 #include "DlQuantization/IForLoopRunner.h"
 #include "DlQuantization/Quantization.hpp"
 #include "DlQuantization/TensorQuantizer.h"
-#include "DlQuantization/TensorQuantizerOpFacade.h"
 #include "Eigen/Core"
 #include "OnnxOpUtils.h"
 #include <numeric>

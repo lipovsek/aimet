@@ -79,9 +79,6 @@ void convertHalfToFloat_gpu(const Eigen::half* in, size_t cnt, float* out, void*
 template void permuteKernelGPU(const float* intensor, float* outTensor, size_t numel, const TensorDims& inputStrides,
                                const TensorDims& outputStrides, void* stream);
 
-template void permuteKernelGPU(const double* intensor, double* outTensor, size_t numel, const TensorDims& inputStrides,
-                               const TensorDims& outputStrides, void* stream);
-
 template void permuteKernelGPU(const Eigen::half* intensor, Eigen::half* outTensor, size_t numel,
                                const TensorDims& inputStrides, const TensorDims& outputStrides, void* stream);
 

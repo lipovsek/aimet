@@ -210,16 +210,8 @@ void quantizeDequantizeBroadcastGpu(const DTYPE* in, DTYPE* out, const Encodings
 }
 
 
-// Explicit instantiations
-template void quantizeDequantizeGpu(const double* in, uint64_t cnt, const TfEncoding& encoding, double* out,
-                                    RoundingMode rounding_mode, void* stream);
-
 template void quantizeDequantizeGpu(const float* in, uint64_t cnt, const TfEncoding& encoding, float* out,
                                     RoundingMode rounding_mode, void* stream);
-
-template void quantizeToFxpGpu(const double* in, uint64_t cnt, const TfEncoding& encoding, double* out,
-                               RoundingMode rounding_mode, bool shiftToSigned);
-
 
 template void quantizeToFxpGpu(const float* in, uint64_t cnt, const TfEncoding& encoding, float* out,
                                RoundingMode rounding_mode, bool shiftToSigned);
@@ -227,11 +219,6 @@ template void quantizeToFxpGpu(const float* in, uint64_t cnt, const TfEncoding& 
 template void quantizeDequantizePerChannelGpu(const float* in, int numChannel, int numElement, int numElementPerChannel,
                                               float* out, float* encodingMin, float* encodingMax, float* encodingDelta,
                                               float* encodingOffset, RoundingMode roundingMode, void* stream);
-
-template void quantizeDequantizePerChannelGpu(const double* in, int numChannel, int numElement,
-                                              int numElementPerChannel, double* out, double* encodingMin,
-                                              double* encodingMax, double* encodingDelta, double* encodingOffset,
-                                              RoundingMode roundingMode, void* stream);
 
 template void quantizeDequantizeBroadcastGpu(const float* in, float* out, const Encodings& encodings,
                                              int64_t numElements, const TensorDims& inputStrides,

@@ -377,9 +377,6 @@ void TfEnhancedEncodingAnalyzer<DTYPE>::getComputedEncodings(int bw, TfEncoding&
 }
 
 
-// Explicit instantiations
-template class TfEnhancedEncodingAnalyzer<double>;
-
 template class TfEnhancedEncodingAnalyzer<float>;
 
 }   // namespace DlQuantization

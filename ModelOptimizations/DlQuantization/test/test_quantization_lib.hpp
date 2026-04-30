@@ -17,7 +17,7 @@
 #endif   // GPU_QUANTIZATION_ENABLED
 
 // Definition of test template
-typedef ::testing::Types<float, double> TestDtypes;
+typedef ::testing::Types<float> TestDtypes;
 
 template <typename DataType>
 struct CpuDevice
@@ -28,7 +28,7 @@ struct CpuDevice
 
 #ifndef GPU_QUANTIZATION_ENABLED
 
-typedef ::testing::Types<CpuDevice<float>, CpuDevice<double> > TestDataTypesAndDevices;
+typedef ::testing::Types<CpuDevice<float> > TestDataTypesAndDevices;
 
 typedef ::testing::Types<CpuDevice<float>, CpuDevice<Eigen::half> > TestDeviceTypes;
 
@@ -41,8 +41,7 @@ struct GpuDevice
     static const DlQuantization::ComputationMode modeCpuGpu = DlQuantization::COMP_MODE_GPU;
 };
 
-typedef ::testing::Types<CpuDevice<float>, CpuDevice<double>, GpuDevice<float>, GpuDevice<double> >
-    TestDataTypesAndDevices;
+typedef ::testing::Types<CpuDevice<float>, GpuDevice<float> > TestDataTypesAndDevices;
 
 typedef ::testing::Types<CpuDevice<float>, GpuDevice<float>, CpuDevice<Eigen::half>, GpuDevice<Eigen::half> >
     TestDeviceTypes;

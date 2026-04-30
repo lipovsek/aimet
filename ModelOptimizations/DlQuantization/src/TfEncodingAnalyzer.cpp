@@ -75,9 +75,6 @@ TfEncoding TfEncodingAnalyzer<DTYPE>::computeEncoding(uint8_t bw, bool useSymmet
 }
 
 
-// Explicit instantiations
-template class TfEncodingAnalyzer<double>;
-
 template class TfEncodingAnalyzer<float>;
 
 }   // namespace DlQuantization

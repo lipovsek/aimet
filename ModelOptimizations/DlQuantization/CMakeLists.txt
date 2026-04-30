@@ -3,9 +3,6 @@
 
 add_library(MoDlQuantization STATIC
 
-      src/IQuantizationAlgorithm.hpp
-      src/spec_functions.hpp
-      src/spec_functions.cpp
       src/math_functions.cpp
       src/math_functions.hpp
       src/quantization_utils.cpp
@@ -16,12 +13,8 @@ add_library(MoDlQuantization STATIC
       src/tensor_utils.cpp
       src/tensor_utils.hpp
 
-      src/EntropyEncodingAnalyzer.cpp
-      src/EntropyEncodingAnalyzer.h
       src/MinMaxEncodingAnalyzer.cpp
       src/MinMaxEncodingAnalyzer.h
-      src/MseEncodingAnalyzer.cpp
-      src/MseEncodingAnalyzer.h
       src/PercentileEncodingAnalyzer.cpp
       src/PercentileEncodingAnalyzer.h
       src/TfEnhancedEncodingAnalyzer.cpp
@@ -30,19 +23,14 @@ add_library(MoDlQuantization STATIC
       src/TfEncodingAnalyzer.cpp
       src/EncodingAnalyzerWrapper.h
       src/EncodingAnalyzerWrapper.cpp
-      src/TensorQuantizationSim.h
-      src/TensorQuantizationSim.cpp
       src/TensorQuantizer.cpp
       src/Fp16Quantization.cpp
 
-      include/DlQuantization/IQuantizer.hpp
       include/DlQuantization/Quantization.hpp
       include/DlQuantization/QuantizerFactory.hpp
       include/DlQuantization/IQuantizationEncodingAnalyzer.hpp
-      include/DlQuantization/ITensorQuantizationSim.h
       include/DlQuantization/TensorQuantizer.h
       include/DlQuantization/Fp16Quantization.hpp
-      include/DlQuantization/EncodingRescale.hpp
       )
 
 
@@ -68,9 +56,6 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 if (ENABLE_CUDA)
 
     add_library(MoDlQuantizationCuda
-      src/spec_functions.cuh
-      src/spec_functions.cu
-
       src/cuda_util.cu
       src/trim_functions.cu
       src/cuda_util.hpp

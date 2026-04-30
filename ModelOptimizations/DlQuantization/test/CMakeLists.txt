@@ -9,15 +9,11 @@ add_executable(MoDlQuantizationTest
       test_quantization_lib.hpp
       TestTfEnhancedEncodingAnalyzer.cpp
       TestTfEncodingAnalyzer.cpp
-      TestTensorQuantizationSim.cpp
       TestTensorQuantizer.cpp
       TestUtilities.cpp
       TestPercentileEncodingAnalyzer.cpp
       TestMinMaxEncodingAnalyzer.cpp
-      TestMseEncodingAnalyzer.cpp
-      TestEntropyEncodingAnalyzer.cpp
       TestQuantizationFunctions.cpp
-      TestEncodingRescale.cpp
       TestEncodingAnalyzerWrapper.cpp
       )
 

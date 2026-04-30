@@ -173,13 +173,7 @@ void synchronizeStream(ComputationMode mode, void* stream)
 template void permute(const float* input, float* output, const TensorDims& inputShape, std::vector<size_t> order,
                       ComputationMode mode, void* stream);
 
-template void permute(const double* input, double* output, const TensorDims& inputShape, std::vector<size_t> order,
-                      ComputationMode mode, void* stream);
-
 template void permuteKernelCPU(const float* inTensor, float* outTensor, size_t numel, const TensorDims& inputStrides,
-                               const TensorDims& outputStrides);
-
-template void permuteKernelCPU(const double* inTensor, double* outTensor, size_t numel, const TensorDims& inputStrides,
                                const TensorDims& outputStrides);
 
 template void permute(const Eigen::half* input, Eigen::half* output, const TensorDims& inputShape,

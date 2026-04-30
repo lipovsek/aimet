@@ -120,7 +120,6 @@ void MinMaxEncodingAnalyzer<DTYPE>::resetStats()
 }
 
 
-template class MinMaxEncodingAnalyzer<double>;
 template class MinMaxEncodingAnalyzer<float>;
 
 

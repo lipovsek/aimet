@@ -18,8 +18,6 @@ from DlQuantization._quant_types cimport (
     QUANTIZATION_TF_ENHANCED,
     QUANTIZATION_RANGE_LEARNING,
     QUANTIZATION_PERCENTILE,
-    QUANTIZATION_MSE,
-    QUANTIZATION_ENTROPY,
     CppTfEncoding,
     Encodings,
     CppTensorQuantizerOpMode,

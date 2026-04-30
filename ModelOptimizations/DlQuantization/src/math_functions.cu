@@ -201,24 +201,14 @@ bool MemoryFree_gpu(void* data)
     return cudaSuccess == cudaFree(data);
 }
 
-// Explicit instantiations
-template double GetMax_gpu(const double* data, uint64_t cnt);
-
 template float GetMax_gpu(const float* data, uint64_t cnt);
 
-template double GetMin_gpu(const double* data, uint64_t cnt);
-
 template float GetMin_gpu(const float* data, uint64_t cnt);
-
-template std::tuple<std::vector<double>, std::vector<double>> GetMinMax_gpu(const double* data, uint64_t cnt, uint64_t blockSize,
-                                                                            IAllocator* allocator, void* stream);
 
 template std::tuple<std::vector<float>, std::vector<float>> GetMinMax_gpu(const float* data, uint64_t cnt, uint64_t blockSize,
                                                                           IAllocator* allocator, void* stream);
 
 template std::tuple<float, float> GetMinMax_gpu(const float* data, uint64_t cnt);
-
-template std::tuple<double, double> GetMinMax_gpu(const double* data, uint64_t cnt);
 
 template std::tuple<std::vector<Eigen::half>, std::vector<Eigen::half>>
 GetMinMax_gpu(const Eigen::half* data, uint64_t cnt, uint64_t blockSize, IAllocator* allocator, void* stream);
@@ -266,13 +256,6 @@ void GetHistogram_gpu(const DTYPE* data,
 
 
 template void GetHistogram_gpu(const float* data,
-                               uint64_t cnt,
-                               uint32_t histogram[PDF_SIZE],
-                               const double bucket_size,
-                               const int pdf_offset,
-                               const bool is_signed,
-                               IAllocator* allocator);
-template void GetHistogram_gpu(const double* data,
                                uint64_t cnt,
                                uint32_t histogram[PDF_SIZE],
                                const double bucket_size,

@@ -27,8 +27,6 @@ class QuantizationMode(IntEnum):
     QUANTIZATION_TF_ENHANCED = 1
     QUANTIZATION_RANGE_LEARNING = 2
     QUANTIZATION_PERCENTILE = 3
-    QUANTIZATION_MSE = 4
-    QUANTIZATION_ENTROPY = 5
 
 
 class RoundingMode(IntEnum):

@@ -639,42 +639,24 @@ std::vector<double> rescaleHistogram(const std::vector<double>& srcHist, const d
     return destHist;
 }
 
-// Explicit instantiations
-template double GetMax(const double* data, uint64_t cnt, ComputationMode mode_cpu_gpu);
-
 template float GetMax(const float* data, uint64_t cnt, ComputationMode mode_cpu_gpu);
-
-template double GetMin(const double* data, uint64_t cnt, ComputationMode mode_cpu_gpu);
 
 template float GetMin(const float* data, uint64_t cnt, ComputationMode mode_cpu_gpu);
 
 template std::tuple<float, float> GetMinMax(const float* data, uint64_t cnt, ComputationMode cpuGpuMode);
 
-template std::tuple<double, double> GetMinMax(const double* data, uint64_t cnt, ComputationMode cpuGpuMode);
-
 template std::tuple<std::vector<float>, std::vector<float>>
 GetMinMax(const float* data, uint64_t cnt, uint64_t blockSize, ComputationMode cpuGpuMode, IAllocator* allocator, void* stream);
-
-template std::tuple<std::vector<double>, std::vector<double>>
-GetMinMax(const double* data, uint64_t cnt, uint64_t blockSize, ComputationMode cpuGpuMode, IAllocator* allocator, void* stream);
 
 template std::tuple<std::vector<Eigen::half>, std::vector<Eigen::half>> GetMinMax(const Eigen::half* data, uint64_t cnt,
                                                                                   uint64_t blockSize,
                                                                                   ComputationMode cpuGpuMode,
                                                                                   IAllocator* allocator, void* stream);
 
-template void UpdatePdf(const double* data, uint64_t cnt, ComputationMode mode_cpu_gpu, bool signed_vals, PDF& pdf,
-                        IAllocator* allocator);
-
 template void UpdatePdf(const float* data, uint64_t cnt, ComputationMode mode_cpu_gpu, bool signed_vals, PDF& pdf,
                         IAllocator* allocator);
 
-template std::tuple<double, double> findOriginalRange(const PDF& pdf);
-
 template std::tuple<float, float> findOriginalRange(const PDF& pdf);
-
-template void updateTensorHistogram(const double* data, uint64_t tensorSize, ComputationMode mode_cpu_gpu,
-                                    TensorProfilingParams& tpp);
 
 template void updateTensorHistogram(const float* data, uint64_t tensorSize, ComputationMode mode_cpu_gpu,
                                     TensorProfilingParams& tpp);

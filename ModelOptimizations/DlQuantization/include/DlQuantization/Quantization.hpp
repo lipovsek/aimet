@@ -61,14 +61,6 @@ enum QuantizationMode
     // Percentile calibration. Compute the encoding by adjusting the min/max range of the tensor
     // by clipping percentile of outliers.
     QUANTIZATION_PERCENTILE,
-
-    // Compute the encoding by adjusting the min/max range of the tensor based on the mean square
-    // error due to quantization of the tensor.
-    QUANTIZATION_MSE,
-
-    // Compute the optimal quantization range (thresholds) for a tensor based on minimizing the
-    // Kullback-Leibler divergence.
-    QUANTIZATION_ENTROPY,
 };
 
 /**
@@ -84,26 +76,6 @@ struct TfEncoding
     double delta;
     double offset;
     int bw;
-};
-
-/**
- * @brief The fixed point format of activations in a given network layer.
- */
-struct TfEncodingLayer
-{
-    // The encoding of input tensors.
-    std::vector<TfEncoding> in;
-    // The encoding of output tensors.
-    std::vector<TfEncoding> out;
-};
-
-/**
- * @brief Layer input or output activations.
- */
-enum LayerInOut
-{
-    LAYER_INPUT,
-    LAYER_OUTPUT
 };
 
 /**

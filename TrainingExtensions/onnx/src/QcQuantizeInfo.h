@@ -3,8 +3,6 @@
 
 #pragma once
 
-#include "DlQuantization/IQuantizationEncodingAnalyzer.hpp"
-#include "DlQuantization/QuantizerFactory.hpp"
 #include "DlQuantization/TensorQuantizer.h"
 #include <string>
 
