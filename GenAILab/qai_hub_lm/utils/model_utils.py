@@ -7,6 +7,30 @@ import torch
 from transformers import PreTrainedModel, DynamicCache
 
 
+def _patch_sdpa_mask():
+    # In transformers >=5.3.0, _preprocess_mask_arguments derives q_length from
+    # inputs_embeds.shape[1], which under torch.jit.trace yields a 0-dim tensor
+    # instead of a Python int.
+    # Fix: convert 0-dim tensors to int.
+    try:
+        import transformers.masking_utils as _mu
+
+        _orig = _mu.sdpa_mask
+
+        def _patched(batch_size, q_length, *args, **kwargs):
+            if isinstance(q_length, torch.Tensor) and q_length.ndim == 0:
+                q_length = q_length.item()
+            return _orig(batch_size, q_length, *args, **kwargs)
+
+        _mu.ALL_MASK_ATTENTION_FUNCTIONS["sdpa"] = _patched
+    except (ImportError, AttributeError):
+        pass
+
+
+# TODO: Remove this patch once the fix applied in transformers itself.
+_patch_sdpa_mask()
+
+
 def compute_vision_input_shapes(
     image_size: tuple[int, int],
     vision_config,
