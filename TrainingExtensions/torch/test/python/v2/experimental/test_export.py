@@ -14,9 +14,13 @@ from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.experimental.export import export
 import aimet_torch.v2.quantization as Q
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
-import aimet_torch.v2.nn.transformers.models.llama
 from aimet_torch.quantization.affine import AffineQuantizerBase
+from aimet_torch.experimental.export.exported_program import (
+    ExportedProgram as AimetExportedProgram,
+)
 from aimet_torch.model_preparer import prepare_model
+from aimet_torch.experimental.export.exported_program import _is_torch_ao_qdq_node
+from aimet_torch.batch_norm_fold import fold_all_batch_norms
 import pytest
 
 
@@ -301,3 +305,50 @@ def test_fp_model():
     torch.export.save(ep_aimet, f1)
     torch.export.save(ep_torch, f2)
     assert f1.getvalue() == f2.getvalue()
+
+
+def test_compute_missing_encodings():
+    """
+    Given: Model with functional ops
+    When: Export with aimet_torch.export.export and compute missing encodings
+    Then: All nodes should take input from dequantize node and produce output to quantize node
+    """
+
+    model = resnet18(pretrained=False).eval()
+    example_inputs = (torch.randn(1, 3, 224, 224),)
+    fold_all_batch_norms(model, None, dummy_input=example_inputs)
+    sim = QuantizationSimModel(model, example_inputs, config_file="htp_v81")
+
+    # Remove activation quantizers to create a scenario where some nodes are missing output quantizers
+    aimet_torch.utils.remove_activation_quantizers(sim.model)
+    sim.compute_encodings(lambda model: model(*example_inputs))
+
+    ep = aimet_torch.experimental.export.export(sim.model, example_inputs)
+    ep = AimetExportedProgram.from_torch_exported_program(ep)
+
+    with ep.compute_missing_encodings():
+        output = ep.module()(*example_inputs)
+        assert isinstance(output, Q.DequantizedTensor)
+
+    for node in ep.graph.nodes:
+        if _is_torch_ao_qdq_node(node):
+            continue
+
+        for inp in node.all_input_nodes:
+            assert _is_torch_ao_qdq_node(inp)
+
+        for user in node.users:
+            assert _is_torch_ao_qdq_node(user)
+
+            if node is user.all_input_nodes[0]:
+                quantized_dtype = user.args[-1]
+                expected_dtype = (
+                    torch.int32
+                    if node.name.endswith("bias") or node.name.endswith("bias_int32")
+                    else torch.int8
+                    if node.name.endswith("weight") or node.name.endswith("weight_int8")
+                    else torch.uint16
+                )
+                assert quantized_dtype == expected_dtype, (
+                    f"{node.name} has quantized dtype {quantized_dtype}, expected {expected_dtype}"
+                )

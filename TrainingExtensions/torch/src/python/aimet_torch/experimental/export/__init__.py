@@ -14,6 +14,7 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 from ..onnx._export import _precompute_encodings
 from ...utils import patch_attr
 from ...quantization import QuantizedTensorBase
+from ._utils import _is_grid_preserving_op
 
 
 def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
@@ -320,80 +321,6 @@ def _is_qdq_op(node: torch.fx.Node) -> bool:
     )
 
 
-def _is_grid_preserving_op(node: torch.fx.Node) -> bool:
-    if not isinstance(node.target, torch._ops.OpOverload):
-        return False
-
-    name, *_ = node.target.name().split(".")
-    return name in (
-        "aten::contiguous",
-        "aten::copy",
-        "aten::copy_",
-        "aten::detach",
-        "aten::diag",
-        "aten::diag_embed",
-        "aten::diagonal",
-        "aten::diagonal_backward",
-        "aten::diagonal_copy",
-        "aten::dropout",
-        "aten::dropout_",
-        "aten::embedding",
-        "aten::expand",
-        "aten::flatten",
-        "aten::gather",
-        "aten::item",
-        "aten::kthvalue",
-        "aten::masked_select",
-        "aten::max_pool1d",
-        "aten::max_pool2d",
-        "aten::max_pool2d_with_indices",
-        "aten::max_pool3d",
-        "aten::max_pool3d_with_indices",
-        "aten::max",
-        "aten::min",
-        "aten::narrow",
-        "aten::narrow_copy",
-        "aten::native_dropout",
-        "aten::nonzero",
-        "aten::pad",
-        "aten::permute",
-        "aten::permute_copy",
-        "aten::reflection_pad1d",
-        "aten::reflection_pad2d",
-        "aten::reflection_pad3d",
-        "aten::relu",
-        "aten::relu_",
-        "aten::repeat",
-        "aten::repeat_interleave",
-        "aten::replication_pad1d",
-        "aten::replication_pad2d",
-        "aten::replication_pad3d",
-        "aten::reshape",
-        "aten::rot90",
-        "aten::select",
-        "aten::slice",
-        "aten::squeeze",
-        "aten::t",
-        "aten::t_",
-        "aten::t_copy",
-        "aten::take",
-        "aten::tile",
-        "aten::topk",
-        "aten::transpose",
-        "aten::transpose_",
-        "aten::transpose_copy",
-        "aten::unfold",
-        "aten::unfold_backward",
-        "aten::unfold_copy",
-        "aten::unsqueeze",
-        "aten::unsqueeze_",
-        "aten::unsqueeze_copy",
-        "aten::view",
-        "aten::view_copy",
-        "aten::zeros_like",
-    )
-
-
 def _remove_dangling_nodes(ep: ExportedProgram):
     output_node = ep.graph.output_node()
     visited: set[torch.fx.Node] = set()
@@ -418,11 +345,13 @@ def _remove_dangling_nodes(ep: ExportedProgram):
     ep.graph.eliminate_dead_code()
     ep.graph_module.recompile()
 
+    node_name_to_input_spec = {
+        spec.arg.name: spec for spec in ep.graph_signature.input_specs
+    }
     # Clean up graph_signature and state_dict
     ep.graph_signature.input_specs = [
-        input_spec
-        for input_spec in ep.graph_signature.input_specs
-        if ep.graph.find_nodes(op="placeholder", target=input_spec.arg.name, sort=False)
+        node_name_to_input_spec[input_node.name]
+        for input_node in ep.graph.find_nodes(op="placeholder", sort=False)
     ]
     all_targets: set[str | None] = set(
         input_spec.target for input_spec in ep.graph_signature.input_specs
