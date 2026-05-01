@@ -87,6 +87,18 @@ class LayerCacheDescriptor:
         raise ValueError(f"Unknown attention type: {self.attention_type}")
 
 
+def _resolve_text_config(config: PretrainedConfig) -> PretrainedConfig:
+    """Resolve a composite VLM config to its text decoder config.
+
+    VLM configs (e.g. Gemma3Config) nest text decoder attributes under
+    ``text_config``.  Pure text LLM configs have them at the top level.
+    """
+    text_config = getattr(config, "text_config", None)
+    if text_config is not None and hasattr(text_config, "num_hidden_layers"):
+        return text_config
+    return config
+
+
 def build_layer_cache_descriptors(
     config: PretrainedConfig,
 ) -> list[LayerCacheDescriptor]:
@@ -94,7 +106,11 @@ def build_layer_cache_descriptors(
 
     Inspects ``config.layer_types``, ``config.sliding_window``, and
     ``config.sliding_window_pattern`` to determine each layer's cache type.
+
+    For composite VLM configs the text decoder sub-config is resolved
+    automatically via :func:`_resolve_text_config`.
     """
+    config = _resolve_text_config(config)
     num_layers = config.num_hidden_layers
     head_dim = (
         config.head_dim

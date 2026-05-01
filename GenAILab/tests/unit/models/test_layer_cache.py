@@ -10,6 +10,7 @@ import pytest
 from GenAILab.qai_hub_lm.utils.layer_cache import (
     AttentionType,
     LayerCacheDescriptor,
+    _resolve_text_config,
     build_layer_cache_descriptors,
 )
 
@@ -181,3 +182,82 @@ class TestBuildLayerCacheDescriptors:
         assert descs[2].attention_type == AttentionType.SLIDING_WINDOW
         assert descs[3].attention_type == AttentionType.FULL
         assert descs[0].sliding_window_size == 32
+
+    def test_vlm_composite_config_resolved(self):
+        """build_layer_cache_descriptors should resolve a VLM composite config
+        to its nested text_config automatically."""
+
+        @dataclass
+        class TextCfg:
+            num_hidden_layers: int = 4
+            num_attention_heads: int = 8
+            num_key_value_heads: int = 4
+            hidden_size: int = 128
+            head_dim: int = 16
+
+        @dataclass
+        class VLMCfg:
+            text_config: TextCfg = None
+            model_type: str = "gemma3"
+
+        vlm_cfg = VLMCfg(text_config=TextCfg())
+        descs = build_layer_cache_descriptors(vlm_cfg)
+        assert len(descs) == 4
+        assert all(d.attention_type == AttentionType.FULL for d in descs)
+        assert all(d.head_dim == 16 for d in descs)
+
+    def test_vlm_composite_config_with_sliding_window(self):
+        """VLM composite configs should propagate sliding window settings
+        from the nested text_config."""
+
+        @dataclass
+        class TextCfg:
+            num_hidden_layers: int = 4
+            num_attention_heads: int = 8
+            num_key_value_heads: int = 4
+            hidden_size: int = 128
+            head_dim: int = 16
+            sliding_window: int = 64
+            sliding_window_pattern: int = 2
+
+        @dataclass
+        class VLMCfg:
+            text_config: TextCfg = None
+            model_type: str = "gemma3"
+
+        vlm_cfg = VLMCfg(text_config=TextCfg())
+        descs = build_layer_cache_descriptors(vlm_cfg)
+        assert descs[0].attention_type == AttentionType.SLIDING_WINDOW
+        assert descs[1].attention_type == AttentionType.FULL
+        assert descs[0].sliding_window_size == 64
+
+
+class TestResolveTextConfig:
+    def test_returns_text_config_when_present(self):
+        @dataclass
+        class TextCfg:
+            num_hidden_layers: int = 4
+
+        @dataclass
+        class VLMCfg:
+            text_config: TextCfg = None
+
+        vlm_cfg = VLMCfg(text_config=TextCfg())
+        assert _resolve_text_config(vlm_cfg) is vlm_cfg.text_config
+
+    def test_returns_same_config_for_plain_llm(self):
+        @dataclass
+        class LLMCfg:
+            num_hidden_layers: int = 4
+
+        cfg = LLMCfg()
+        assert _resolve_text_config(cfg) is cfg
+
+    def test_ignores_non_config_text_config(self):
+        @dataclass
+        class Cfg:
+            num_hidden_layers: int = 4
+            text_config: dict = None
+
+        cfg = Cfg(text_config={"num_hidden_layers": 8})
+        assert _resolve_text_config(cfg) is cfg

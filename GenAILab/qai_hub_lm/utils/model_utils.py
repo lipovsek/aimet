@@ -6,6 +6,8 @@
 import torch
 from transformers import PreTrainedModel, DynamicCache
 
+from GenAILab.qai_hub_lm.utils.layer_cache import _resolve_text_config
+
 
 def _patch_sdpa_mask():
     # In transformers >=5.3.0, _preprocess_mask_arguments derives q_length from
@@ -170,7 +172,7 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
         The number of extra inputs is determined by len(self.extra_input_names).
         KV cache pairs come before extra inputs in *args.
         """
-        num_kv = 2 * self.model.config.num_hidden_layers
+        num_kv = 2 * _resolve_text_config(self.model.config).num_hidden_layers
         num_extra = len(self.extra_input_names)
         expected = num_kv + num_extra
         if len(args) != 0 and len(args) < num_kv:
