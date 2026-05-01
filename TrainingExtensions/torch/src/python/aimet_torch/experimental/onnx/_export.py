@@ -679,7 +679,7 @@ _LARGE_MODEL_THRESHOLD_NUM_NN_PARAMETER_OBJECTS = 2048
 @contextmanager
 def _maybe_disable_C_jit_pass_onnx_deduplicate_initializers(model: torch.nn.Module):
     """
-    Temporarily disable torch._C._jit_pass_onnx_deduplicate_initializers.
+    Temporarily disable torch._C._jit_pass_onnx_deduplicate_initializers for large models.
 
     This is to work around O(N^2) loop in torch._C._jit_pass_onnx_deduplicate_initializers,
     where N = # nn.Parameter objects in the model.
@@ -699,8 +699,13 @@ def _maybe_disable_C_jit_pass_onnx_deduplicate_initializers(model: torch.nn.Modu
     num_nn_param_objects = len(list(model.named_parameters(remove_duplicate=False)))
 
     if (
-        model_size >= _LARGE_MODEL_THRESHOLD_NUM_PARAMS
-        or num_nn_param_objects >= _LARGE_MODEL_THRESHOLD_NUM_NN_PARAMETER_OBJECTS
+        # O(N^2) loop in deduplication pass has been resolved in torch v2.12
+        # https://github.com/pytorch/pytorch/pull/175888
+        version.parse(torch.__version__) < version.parse("2.12.0")
+        and (
+            model_size >= _LARGE_MODEL_THRESHOLD_NUM_PARAMS
+            or num_nn_param_objects >= _LARGE_MODEL_THRESHOLD_NUM_NN_PARAMETER_OBJECTS
+        )
     ):
         ctx = patch_attr(_C, "_jit_pass_onnx_deduplicate_initializers", no_op)
     else:
