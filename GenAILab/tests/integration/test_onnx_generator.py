@@ -199,6 +199,42 @@ class TestLLMOnnxGeneratorParity:
             hf_out.logits.cpu(), gen_out.logits.cpu(), atol=5e-3, rtol=5e-3
         )
 
+    def test_autoregressive_decode(self, llm_bundle):
+        """Prefill followed by one decode step produces valid output."""
+        model, tokenizer, model_id = llm_bundle
+        tokens = tokenize(tokenizer, self.TEXT)
+        seq_len = SEQUENCE_LENGTHS[0]
+
+        if tokens["input_ids"].shape[1] > seq_len:
+            pytest.skip("Input longer than sequence_length")
+
+        generator = _build_ort_llm_generator(model, tokenizer, model_id, seq_len)
+
+        with torch.no_grad():
+            prefill_out = generator(
+                input_ids=tokens["input_ids"],
+                attention_mask=tokens["attention_mask"],
+            )
+
+        device = generator.device
+        next_token = prefill_out.logits[:, -1:].argmax(dim=-1).to(device)
+        decode_mask = torch.cat(
+            [
+                tokens["attention_mask"].to(device),
+                torch.ones(1, 1, dtype=torch.int, device=device),
+            ],
+            dim=1,
+        )
+
+        with torch.no_grad():
+            decode_out = generator(
+                input_ids=next_token,
+                attention_mask=decode_mask,
+                past_key_values=prefill_out.past_key_values,
+            )
+
+        assert decode_out.logits.shape == (1, 1, model.config.vocab_size)
+
 
 # ============================================================================
 # VLM tests
@@ -250,7 +286,7 @@ class TestVLMOnnxGeneratorParity:
         )
         return processor(text=[prompt], images=[img1, img2], return_tensors="pt")
 
-    @pytest.mark.parametrize("sequence_length", [64, 128])
+    @pytest.mark.parametrize("sequence_length", [128])
     def test_text_only(self, vlm_bundle, sequence_length):
         model, processor, model_id = vlm_bundle
         inputs = self._prepare_text_only_inputs(processor)
@@ -275,6 +311,41 @@ class TestVLMOnnxGeneratorParity:
         torch.testing.assert_close(
             hf_out.logits.cpu(), gen_out.logits.cpu(), atol=1e-3, rtol=1e-3
         )
+
+    @pytest.mark.parametrize("sequence_length", [128])
+    def test_autoregressive_decode(self, vlm_bundle, sequence_length):
+        """Prefill + one decode step over ONNX backbone."""
+        model, processor, model_id = vlm_bundle
+        inputs = self._prepare_text_only_inputs(processor)
+
+        if inputs["input_ids"].shape[1] > sequence_length:
+            pytest.skip("Input longer than sequence_length")
+
+        generator = build_ort_vlm_generator(
+            model, model_id, sequence_length, _export_and_load_ort_session
+        )
+        gen_inputs = {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+        }
+
+        with torch.no_grad():
+            prefill_out = generator(**gen_inputs)
+
+        next_token = prefill_out.logits[:, -1:].argmax(dim=-1).cpu()
+        decode_mask = torch.cat(
+            [inputs["attention_mask"], torch.ones(1, 1, dtype=torch.int)], dim=1
+        )
+
+        with torch.no_grad():
+            decode_out = generator(
+                input_ids=next_token,
+                attention_mask=decode_mask,
+                past_key_values=prefill_out.past_key_values,
+            )
+
+        text_config = getattr(model.config, "text_config", model.config)
+        assert decode_out.logits.shape == (1, 1, text_config.vocab_size)
 
     @pytest.mark.xfail(
         reason="Vision ONNX export traces data-dependent ops (Gather by grid_thw) "

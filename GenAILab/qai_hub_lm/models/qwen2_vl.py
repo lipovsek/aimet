@@ -98,12 +98,21 @@ class Qwen_25_VL(VLM):
             ),
         )
 
-    def generate_position_ids(self, *args, **kwargs):
+    def generate_position_ids(
+        self,
+        *args,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        **kwargs,
+    ):
+        num_new_tokens = input_ids.shape[1]
+        attention_mask = attention_mask[:, -num_new_tokens:]
+
         ctx = PositionIdContext(self.config, modeling_qwen2_5_vl.Qwen2_5_VLModel)
         position_ids, *_ = modeling_qwen2_5_vl.Qwen2_5_VLModel.get_rope_index(
-            ctx, *args, **kwargs
+            ctx, *args, input_ids=input_ids, attention_mask=attention_mask, **kwargs
         )
-        return position_ids.to(dtype=torch.int32)
+        return position_ids[..., -num_new_tokens:].to(dtype=torch.int32)
 
     @staticmethod
     def get_visual_input_names() -> tuple[str, ...]:

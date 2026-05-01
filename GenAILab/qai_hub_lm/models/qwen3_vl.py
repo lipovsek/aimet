@@ -109,6 +109,7 @@ class Qwen_3_VL(VLM):
             config = model.config
 
         num_visual_tokens = cls.get_num_visual_tokens(config, image_size)
+        effective_visual_tokens = min(num_visual_tokens, sequence_length)
         num_deepstack = cls.get_num_deepstack_layers(config)
         hidden_size = model.config.hidden_size
 
@@ -119,12 +120,13 @@ class Qwen_3_VL(VLM):
         dummy_position_ids = torch.zeros((3, 1, sequence_length), dtype=torch.int)
 
         dummy_visual_pos_masks = torch.zeros((1, sequence_length), dtype=torch.bool)
-        start = (sequence_length - num_visual_tokens) // 2
-        end = start + num_visual_tokens
+        start = (sequence_length - effective_visual_tokens) // 2
+        end = start + effective_visual_tokens
         dummy_visual_pos_masks[0, start:end] = True
 
         dummy_deepstack_visual_embeds = [
-            torch.zeros(num_visual_tokens, hidden_size) for _ in range(num_deepstack)
+            torch.zeros(effective_visual_tokens, hidden_size)
+            for _ in range(num_deepstack)
         ]
 
         # Use the same prepare_inputs path as inference so export and
@@ -156,12 +158,21 @@ class Qwen_3_VL(VLM):
             torch.zeros((1, 2048), dtype=torch.bool),
         )
 
-    def generate_position_ids(self, *args, **kwargs):
+    def generate_position_ids(
+        self,
+        *args,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        **kwargs,
+    ):
+        num_new_tokens = input_ids.shape[1]
+        attention_mask = attention_mask[:, -num_new_tokens:]
+
         ctx = PositionIdContext(self.config, modeling_qwen3_vl.Qwen3VLModel)
         position_ids, *_ = modeling_qwen3_vl.Qwen3VLModel.get_rope_index(
-            ctx, *args, **kwargs
+            ctx, *args, input_ids=input_ids, attention_mask=attention_mask, **kwargs
         )
-        return position_ids.to(dtype=torch.int32)
+        return position_ids[..., -num_new_tokens:].to(dtype=torch.int32)
 
     @classmethod
     def get_backbone_input_names(
@@ -248,17 +259,18 @@ class Qwen3VL_Generator(VLM_Generator):
         return list(zip(starts, ends))
 
     def _make_dummy_visual_kwargs(
-        self, slice_len, num_visual_tokens, num_deepstack, hidden_size, device, dtype
+        self, num_visual_tokens, num_deepstack, hidden_size, device, dtype
     ):
         """Build dummy visual extras for a text-only sub-slice."""
         batch_size = 1
+        effective_tokens = min(num_visual_tokens, self.sequence_length)
         dummy_mask = torch.zeros(
-            (batch_size, slice_len), dtype=torch.bool, device=device
+            (batch_size, self.sequence_length), dtype=torch.bool, device=device
         )
-        start = (slice_len - num_visual_tokens) // 2
-        dummy_mask[:, start : start + num_visual_tokens] = True
+        start = (self.sequence_length - effective_tokens) // 2
+        dummy_mask[:, start : start + effective_tokens] = True
         dummy_ds = [
-            torch.zeros(num_visual_tokens, hidden_size, device=device, dtype=dtype)
+            torch.zeros(effective_tokens, hidden_size, device=device, dtype=dtype)
             for _ in range(num_deepstack)
         ]
         return {"visual_pos_masks": dummy_mask, "deepstack_visual_embeds": dummy_ds}
@@ -335,7 +347,6 @@ class Qwen3VL_Generator(VLM_Generator):
             if visual_pos_masks is None:
                 # Text-only: provide dummy visual extras matching traced shapes
                 extra_kwargs = self._make_dummy_visual_kwargs(
-                    input_slice.shape[1],
                     num_visual_tokens,
                     num_deepstack,
                     hidden_size,

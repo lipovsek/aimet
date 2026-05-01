@@ -128,6 +128,44 @@ class TestLLMTorchGeneratorParity:
         # Multi-slice may accumulate slightly more error
         torch.testing.assert_close(hf_out.logits, gen_out.logits, atol=5e-3, rtol=5e-3)
 
+    def test_autoregressive_decode(self, llm_bundle):
+        """Prefill followed by one decode step produces valid output."""
+        model, tokenizer, _ = llm_bundle
+        tokens = tokenize(tokenizer, self.TEXT)
+        seq_len = SEQUENCE_LENGTHS[0]
+
+        if tokens["input_ids"].shape[1] > seq_len:
+            pytest.skip("Input longer than sequence_length")
+
+        wrapped = ONNXExportableModuleWithCache(model)
+        generator = Generator(
+            model=wrapped,
+            tokenizer=tokenizer,
+            sequence_length=seq_len,
+            context_length=CONTEXT_LENGTH,
+            attention_mask_min=ATTENTION_MASK_MIN,
+        )
+
+        with torch.no_grad():
+            prefill_out = generator(
+                input_ids=tokens["input_ids"],
+                attention_mask=tokens["attention_mask"],
+            )
+
+        next_token = prefill_out.logits[:, -1:].argmax(dim=-1)
+        decode_mask = torch.cat(
+            [tokens["attention_mask"], torch.ones(1, 1, dtype=torch.int)], dim=1
+        )
+
+        with torch.no_grad():
+            decode_out = generator(
+                input_ids=next_token,
+                attention_mask=decode_mask,
+                past_key_values=prefill_out.past_key_values,
+            )
+
+        assert decode_out.logits.shape == (1, 1, model.config.vocab_size)
+
 
 # ============================================================================
 # VLM tests
@@ -182,11 +220,6 @@ class TestVLMTorchGeneratorParity:
     @pytest.mark.parametrize("sequence_length", [64, 128])
     def test_text_only(self, vlm_bundle, sequence_length):
         model, processor, model_id = vlm_bundle
-        if "Qwen3-VL" in model_id:
-            pytest.xfail(
-                "Qwen3-VL deepstack: dummy visual kwargs forwarded in text-only "
-                "path cause shape mismatch in HF _deepstack_process"
-            )
         inputs = self._prepare_text_only_inputs(processor)
 
         if inputs["input_ids"].shape[1] > sequence_length:
@@ -225,6 +258,32 @@ class TestVLMTorchGeneratorParity:
 
         assert hf_out.logits.shape == gen_out.logits.shape
         torch.testing.assert_close(hf_out.logits, gen_out.logits, atol=1e-3, rtol=1e-3)
+
+    def test_autoregressive_decode(self, vlm_bundle):
+        """Prefill + one decode step — catches position processor shape mismatches."""
+        model, processor, model_id = vlm_bundle
+        inputs = self._prepare_single_image_inputs(processor)
+        seq_len = max(128, inputs["input_ids"].shape[1])
+
+        generator = build_vlm_generator(model, model_id, seq_len)
+
+        with torch.no_grad():
+            prefill_out = generator(**inputs)
+
+        next_token = prefill_out.logits[:, -1:].argmax(dim=-1)
+        decode_mask = torch.cat(
+            [inputs["attention_mask"], torch.ones(1, 1, dtype=torch.int)], dim=1
+        )
+
+        with torch.no_grad():
+            decode_out = generator(
+                input_ids=next_token,
+                attention_mask=decode_mask,
+                past_key_values=prefill_out.past_key_values,
+            )
+
+        text_config = getattr(model.config, "text_config", model.config)
+        assert decode_out.logits.shape == (1, 1, text_config.vocab_size)
 
     def test_multi_image(self, vlm_bundle):
         model, processor, model_id = vlm_bundle
