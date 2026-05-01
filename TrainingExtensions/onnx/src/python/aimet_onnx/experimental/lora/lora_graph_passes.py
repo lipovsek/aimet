@@ -24,6 +24,18 @@ NodeChain = Tuple[onnx_ir.Node, ...]
 
 LORA_MATMUL_ADAPTER_PATTERN: Tuple[str, ...] = ("MatMul", "MatMul", "Mul", "Add")
 LORA_CONV_ADAPTER_PATTERN: Tuple[str, ...] = ("Conv", "Conv", "Mul", "Add")
+LORA_MATMUL_ADAPTER_PATTERN_WITH_SCALE_VECTOR: Tuple[str, ...] = (
+    "MatMul",
+    "Mul",
+    "MatMul",
+    "Add",
+)
+LORA_CONV_ADAPTER_PATTERN_WITH_SCALE_VECTOR: Tuple[str, ...] = (
+    "Conv",
+    "Mul",
+    "Conv",
+    "Add",
+)
 
 
 def _walk_through_grid_preserving_ops(
@@ -165,9 +177,12 @@ def _find_adapter_chains(
     # Step 2: Identify all LoRA adapter chains
     # Strategy: Find all chains matching the LoRA adapter patterns
     # ------------------------------------------
-    all_adapter_chains = _find_op_chain(
-        ir_model, LORA_MATMUL_ADAPTER_PATTERN
-    ) + _find_op_chain(ir_model, LORA_CONV_ADAPTER_PATTERN)
+    all_adapter_chains = (
+        _find_op_chain(ir_model, LORA_MATMUL_ADAPTER_PATTERN)
+        + _find_op_chain(ir_model, LORA_CONV_ADAPTER_PATTERN)
+        + _find_op_chain(ir_model, LORA_MATMUL_ADAPTER_PATTERN_WITH_SCALE_VECTOR)
+        + _find_op_chain(ir_model, LORA_CONV_ADAPTER_PATTERN_WITH_SCALE_VECTOR)
+    )
 
     # ------------------------------------------
     # Step 3: Create a dictionary of Add nodes in the chain to the full chain for quick lookup

@@ -158,7 +158,6 @@ class AdaScale:
             del sim.session
             gc.collect()
             torch.cuda.empty_cache()
-
             with tempfile.TemporaryDirectory() as tempdir:
                 fp32_path = os.path.join(tempdir, "fp32_model.onnx")
                 sim_path = os.path.join(tempdir, "sim_model.onnx")
@@ -319,7 +318,6 @@ class AdaScale:
 
         torch_fp_input = convert_to_torch(fp_inputs)
         torch_quant_input = convert_to_torch(quantized_inputs)
-
         pytorch_block.to(device)
         fp_out = []
         with torch.no_grad():
@@ -404,7 +402,7 @@ class AdaScale:
                 del quant_out, batch_fp_out, loss, input_tensor, fp_input, quant_input
 
         copy_pt_weights_to_onnx(
-            pytorch_block, sim_model, pt_weights_to_onnx_initializers
+            pytorch_block, sim_model, pt_weights_to_onnx_initializers, quantizer_dict
         )
         copy_pt_encodings_to_sim(
             pytorch_block, quantizer_dict, pt_weights_to_onnx_initializers

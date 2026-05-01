@@ -594,7 +594,9 @@ def _try_match_lora_add(
 ) -> _LoRAPattern | None:
     """Try to match an Add node as a LoRA merge point.
 
-    Expected pattern::
+    Supports two layout variants:
+
+    **Standard (non-adapted)**::
 
         Add(
             base_layer/MatMul_output,              # base path
@@ -606,6 +608,14 @@ def _try_match_lora_add(
                 Constant(scale)
             )
         )
+
+    **Conv-adapted** (scale between lora_A and lora_B)::
+
+        Add(
+            base_layer/Conv → Squeeze,             # base path
+            lora_B/Conv → Squeeze,                 # LoRA path (no Mul at Add)
+        )
+        where lora_B input is Mul(lora_A_output, scale)
     """
     input_a, input_b = add_node.input[0], add_node.input[1]
     producer_a = producer_map.get(input_a)
@@ -622,7 +632,9 @@ def _try_match_lora_add(
         mul_node = producer_b
         base_input = input_a
     else:
-        return None
+        # Conv-adapted fallback: neither input is Mul.
+        # Trace both sides through passthrough ops to find base_layer and lora_B.
+        return _try_match_conv_adapted_lora_add(add_node, producer_map, init_names)
 
     # Base path: trace through passthrough ops (Squeeze/Transpose/Cast)
     # to find the actual compute node (MatMul/Gemm/Conv)
@@ -647,6 +659,13 @@ def _try_match_lora_add(
                     scale_value = float(numpy_helper.to_array(attr.t))
         elif inp in init_names:
             # Scale could also be an initializer
+            scale_input = inp
+        elif (
+            prod is not None
+            and prod.op_type == "Identity"
+            and prod.input[0] in init_names
+        ):
+            # Scale shared via Identity (dynamo=False shares scalar inits)
             scale_input = inp
         elif mul_lora_input is None:
             # Trace through passthrough ops to find lora_B compute node
@@ -680,6 +699,145 @@ def _try_match_lora_add(
             break
     if lora_a_matmul is None:
         return None
+
+    # Find lora_A's weight init
+    lora_a_init, _ = _find_weight_init(lora_a_matmul, init_names, producer_map)
+    if lora_a_init is None:
+        return None
+
+    # Extract module path from Add node name
+    module_path = _extract_module_path(add_node.name)
+    if module_path is None:
+        return None
+
+    target_module = module_path.split(".")[-1]
+
+    # Extract adapter name from lora_A node name or init name
+    adapter_name = _extract_adapter_name(lora_a_matmul.name, lora_a_init, init_names)
+
+    return _LoRAPattern(
+        module_path=module_path,
+        target_module=target_module,
+        adapter_name=adapter_name,
+        add_node=add_node,
+        mul_node=mul_node,
+        lora_b_matmul=lora_b_matmul,
+        lora_a_matmul=lora_a_matmul,
+        base_node=base_node,
+        lora_a_init=lora_a_init,
+        lora_b_init=lora_b_init,
+        lora_b_actual_init=lora_b_actual_init,
+        scale_input=scale_input,
+        scale_value=scale_value,
+    )
+
+
+def _try_match_conv_adapted_lora_add(
+    add_node: onnx.NodeProto,
+    producer_map: dict,
+    init_names: set,
+) -> _LoRAPattern | None:
+    """Match Conv-adapted LoRA pattern where scale Mul sits between lora_A and lora_B.
+
+    Conv-adapted topology::
+
+        Add(
+            base_layer/Conv → Transpose → Squeeze,   # base path
+            lora_B/Conv → Transpose → Squeeze,        # LoRA path
+        )
+        where lora_B's activation input is:
+            Mul(lora_A/Conv → ... → Squeeze, scale) → Unsqueeze → Transpose
+
+    The scale Mul is between lora_A output and lora_B input, not at the Add level.
+    """
+    input_a, input_b = add_node.input[0], add_node.input[1]
+
+    # Trace both sides to compute ops
+    node_a, _ = _trace_to_compute_op(producer_map, input_a)
+    node_b, _ = _trace_to_compute_op(producer_map, input_b)
+
+    if node_a is None or node_b is None:
+        return None
+
+    # Identify which side is base_layer and which is lora_B
+    if "base_layer" in node_a.name and node_a.op_type in _LORA_COMPUTE_OPS:
+        base_node = node_a
+        lora_b_matmul = node_b
+    elif "base_layer" in node_b.name and node_b.op_type in _LORA_COMPUTE_OPS:
+        base_node = node_b
+        lora_b_matmul = node_a
+    else:
+        return None
+
+    if lora_b_matmul.op_type not in _LORA_COMPUTE_OPS:
+        return None
+
+    # Verify lora_B node name contains "lora_B"
+    if "lora_B" not in lora_b_matmul.name:
+        return None
+
+    # Find lora_B's weight init
+    lora_b_init, lora_b_actual_init = _find_weight_init(
+        lora_b_matmul, init_names, producer_map
+    )
+    if lora_b_init is None:
+        return None
+
+    # Trace lora_B's non-weight input back to find the Mul (scale) node,
+    # then through it to find lora_A.
+    mul_node = None
+    scale_input = None
+    scale_value = None
+    lora_a_matmul = None
+
+    for inp in lora_b_matmul.input:
+        if inp == lora_b_init:
+            continue
+        # Trace through passthrough ops — expecting to hit a Mul node
+        traced_node, _ = _trace_to_compute_op(producer_map, inp)
+        if traced_node is not None and traced_node.op_type == "Mul":
+            mul_node = traced_node
+            break
+
+    if mul_node is None:
+        # No scale Mul found — try direct lora_A connection (scale=1.0)
+        for inp in lora_b_matmul.input:
+            if inp == lora_b_init:
+                continue
+            compute_op, _ = _trace_to_compute_op(producer_map, inp)
+            if compute_op is not None and compute_op.op_type in _LORA_COMPUTE_OPS:
+                lora_a_matmul = compute_op
+                break
+        if lora_a_matmul is None:
+            return None
+        # No explicit scale — default to 1.0
+        scale_input = ""
+        scale_value = 1.0
+    else:
+        # Parse Mul inputs: one is scale Constant/init/Identity, other is lora_A output
+        for inp in mul_node.input:
+            prod = producer_map.get(inp)
+            if prod is not None and prod.op_type == "Constant":
+                scale_input = inp
+                for attr in prod.attribute:
+                    if attr.name == "value":
+                        scale_value = float(numpy_helper.to_array(attr.t))
+            elif inp in init_names:
+                scale_input = inp
+            elif (
+                prod is not None
+                and prod.op_type == "Identity"
+                and prod.input[0] in init_names
+            ):
+                # Scale shared via Identity (dynamo=False shares scalar inits)
+                scale_input = inp
+            elif lora_a_matmul is None:
+                compute_op, _ = _trace_to_compute_op(producer_map, inp)
+                if compute_op is not None and compute_op.op_type in _LORA_COMPUTE_OPS:
+                    lora_a_matmul = compute_op
+
+        if lora_a_matmul is None or scale_input is None:
+            return None
 
     # Find lora_A's weight init
     lora_a_init, _ = _find_weight_init(lora_a_matmul, init_names, producer_map)
@@ -748,7 +906,113 @@ def _try_match_lora_add_chained(
         mul_node = producer_b
         chain_parent_add = producer_map.get(input_a)
     else:
-        return None
+        # Conv-adapted fallback: neither input is Mul.
+        # One side should be a matched Add output, other is lora_B through passthrough ops.
+        if input_a in matched_add_outputs:
+            chain_parent_add = producer_map.get(input_a)
+            lora_side = input_b
+        elif input_b in matched_add_outputs:
+            chain_parent_add = producer_map.get(input_b)
+            lora_side = input_a
+        else:
+            return None
+
+        lora_b_matmul, _ = _trace_to_compute_op(producer_map, lora_side)
+        if lora_b_matmul is None or lora_b_matmul.op_type not in _LORA_COMPUTE_OPS:
+            return None
+        if "lora_B" not in lora_b_matmul.name:
+            return None
+
+        lora_b_init, lora_b_actual_init = _find_weight_init(
+            lora_b_matmul, init_names, producer_map
+        )
+        if lora_b_init is None:
+            return None
+
+        # Find Mul (scale) between lora_A and lora_B
+        mul_node = None
+        scale_input = None
+        scale_value = None
+        lora_a_matmul = None
+        for inp in lora_b_matmul.input:
+            if inp == lora_b_init:
+                continue
+            traced_node, _ = _trace_to_compute_op(producer_map, inp)
+            if traced_node is not None and traced_node.op_type == "Mul":
+                mul_node = traced_node
+                break
+
+        if mul_node is not None:
+            for inp in mul_node.input:
+                prod = producer_map.get(inp)
+                if prod is not None and prod.op_type == "Constant":
+                    scale_input = inp
+                    for attr in prod.attribute:
+                        if attr.name == "value":
+                            scale_value = float(numpy_helper.to_array(attr.t))
+                elif inp in init_names:
+                    scale_input = inp
+                elif (
+                    prod is not None
+                    and prod.op_type == "Identity"
+                    and prod.input[0] in init_names
+                ):
+                    scale_input = inp
+                elif lora_a_matmul is None:
+                    compute_op, _ = _trace_to_compute_op(producer_map, inp)
+                    if (
+                        compute_op is not None
+                        and compute_op.op_type in _LORA_COMPUTE_OPS
+                    ):
+                        lora_a_matmul = compute_op
+            if lora_a_matmul is None or scale_input is None:
+                return None
+        else:
+            # No scale Mul — direct connection
+            for inp in lora_b_matmul.input:
+                if inp == lora_b_init:
+                    continue
+                compute_op, _ = _trace_to_compute_op(producer_map, inp)
+                if compute_op is not None and compute_op.op_type in _LORA_COMPUTE_OPS:
+                    lora_a_matmul = compute_op
+                    break
+            if lora_a_matmul is None:
+                return None
+            scale_input = ""
+            scale_value = 1.0
+
+        lora_a_init, _ = _find_weight_init(lora_a_matmul, init_names, producer_map)
+        if lora_a_init is None:
+            return None
+
+        module_path = _extract_module_path_from_lora_node(lora_a_matmul.name)
+        if module_path is None:
+            module_path = _extract_module_path(add_node.name)
+        if module_path is None:
+            return None
+
+        target_module = module_path.split(".")[-1]
+        adapter_name = _extract_adapter_name(
+            lora_a_matmul.name, lora_a_init, init_names
+        )
+
+        return _LoRAPattern(
+            module_path=module_path,
+            target_module=target_module,
+            adapter_name=adapter_name,
+            add_node=add_node,
+            mul_node=mul_node,
+            lora_b_matmul=lora_b_matmul,
+            lora_a_matmul=lora_a_matmul,
+            base_node=None,
+            lora_a_init=lora_a_init,
+            lora_b_init=lora_b_init,
+            lora_b_actual_init=lora_b_actual_init,
+            scale_input=scale_input,
+            scale_value=scale_value,
+            is_chained=True,
+            chain_parent_add=chain_parent_add,
+        )
 
     # Trace Mul inputs: one is the lora_B output, other is the scale
     mul_lora_input = None
@@ -762,6 +1026,13 @@ def _try_match_lora_add_chained(
                 if attr.name == "value":
                     scale_value = float(numpy_helper.to_array(attr.t))
         elif inp in init_names:
+            scale_input = inp
+        elif (
+            prod is not None
+            and prod.op_type == "Identity"
+            and prod.input[0] in init_names
+        ):
+            # Scale shared via Identity (dynamo=False shares scalar inits)
             scale_input = inp
         elif mul_lora_input is None:
             compute_op, _ = _trace_to_compute_op(producer_map, inp)
@@ -861,7 +1132,15 @@ def _extract_module_path_from_lora_node(node_name: str) -> str | None:
     # Strip PEFT internal names and adapter-related segments
     # The adapter name is the LAST segment (since module path comes first)
     # e.g., ["q_proj", "code"] → module path is everything except last
-    tokens = [t for t in tokens if t not in ("base_layer", "lora_A", "lora_B")]
+    # Also strip Conv-adapted segments like "lora_A.0", "lora_B.0", "add_lora_to_res.0"
+    _LORA_INTERNAL = {"base_layer", "lora_A", "lora_B"}
+    _LORA_INTERNAL_PREFIXES = ("add_lora_to_res", "mul_scale", "lora_A", "lora_B")
+    tokens = [
+        t
+        for t in tokens
+        if t not in _LORA_INTERNAL
+        and not any(t.startswith(pfx) for pfx in _LORA_INTERNAL_PREFIXES)
+    ]
 
     if not tokens:
         return None
@@ -932,13 +1211,15 @@ def _extract_adapter_name(node_name: str, init_name: str, init_names: set) -> st
     """
     # Strategy 1: Parse from init name (dynamo=True produces named inits)
     # Pattern: ...lora_A.{adapter_name}.weight or ...lora_B.{adapter_name}.weight
+    # Conv-adapted pattern: ...lora_A.0.weight (numeric = ModuleList index, not adapter)
     if init_name in init_names or "lora_A" in init_name or "lora_B" in init_name:
         parts = init_name.split(".")
         for i, part in enumerate(parts):
             if part in ("lora_A", "lora_B") and i + 2 < len(parts):
                 # Next part is adapter name, last part is "weight"
                 candidate = parts[i + 1]
-                if candidate != "weight":
+                # Skip "weight" and pure numeric indices (Conv-adapted ModuleList)
+                if candidate != "weight" and not candidate.isdigit():
                     return candidate
 
     # Strategy 2: Parse from node name (dynamo=False produces structured names)
@@ -1011,8 +1292,16 @@ def _extract_module_path(node_name: str) -> str | None:
     while tokens and tokens[0] in ("model", "base_model"):
         tokens = tokens[1:]
 
-    # Strip PEFT internal layer names
-    tokens = [t for t in tokens if t not in ("base_layer",)]
+    # Strip PEFT internal layer names and Conv-adapted LoRA segments
+    # (e.g., "base_layer", "add_lora_to_res.0", "mul_scale.0", "lora_A.0", "lora_B.0")
+    _PEFT_INTERNAL = {"base_layer"}
+    _PEFT_INTERNAL_PREFIXES = ("add_lora_to_res", "mul_scale", "lora_A", "lora_B")
+    tokens = [
+        t
+        for t in tokens
+        if t not in _PEFT_INTERNAL
+        and not any(t.startswith(pfx) for pfx in _PEFT_INTERNAL_PREFIXES)
+    ]
 
     if not tokens:
         return None
@@ -1214,14 +1503,33 @@ def _convert_scale_constants(
         if pattern.scale_input in init_names and "lora_scale" in pattern.scale_input:
             continue
 
-        # Get scale value from the Constant node
-        scale_value = pattern.scale_value
+        # Get scale value from the Constant node, initializer, or Identity chain.
+        # Scale may be scalar (standard PEFT) or vector (concat adapter with
+        # per-rank scaling).
+        scale_value = pattern.scale_value  # float or None
+        scale_data = None  # numpy array for creating initializer
         if scale_value is None:
             prod = producer_map.get(pattern.scale_input)
             if prod and prod.op_type == "Constant":
                 for attr in prod.attribute:
                     if attr.name == "value":
-                        scale_value = float(numpy_helper.to_array(attr.t))
+                        arr = numpy_helper.to_array(attr.t)
+                        scale_data = arr.astype(np.float32)
+                        scale_value = float(arr) if arr.ndim == 0 else arr.tolist()
+            elif pattern.scale_input in init_names:
+                for init in model.graph.initializer:
+                    if init.name == pattern.scale_input:
+                        arr = numpy_helper.to_array(init)
+                        scale_data = arr.astype(np.float32)
+                        scale_value = float(arr) if arr.ndim == 0 else arr.tolist()
+                        break
+            elif prod and prod.op_type == "Identity" and prod.input[0] in init_names:
+                for init in model.graph.initializer:
+                    if init.name == prod.input[0]:
+                        arr = numpy_helper.to_array(init)
+                        scale_data = arr.astype(np.float32)
+                        scale_value = float(arr) if arr.ndim == 0 else arr.tolist()
+                        break
 
         if scale_value is None:
             logger.warning(
@@ -1231,7 +1539,8 @@ def _convert_scale_constants(
             continue
 
         # Create named initializer
-        scale_data = np.array(scale_value, dtype=np.float32)
+        if scale_data is None:
+            scale_data = np.array(scale_value, dtype=np.float32)
         scale_init = numpy_helper.from_array(scale_data, name=scale_name)
         model.graph.initializer.append(scale_init)
 

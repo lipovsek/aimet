@@ -94,15 +94,20 @@ def copy_pt_weights_to_onnx(
     pt_block: torch.fx.GraphModule,
     onnx_model: onnx_ir.Model,
     param_map: Collection[Dict[str, str]],
+    quantizer_dict: Dict[str, QcQuantizeOp] = None,
 ):
     """
     Given a pt_block with adascale params computed, copy the params to onnx model
     :param pt_block: pytorch block with adascale weight quantizers
     :param onnx_model: onnx model before adascale
     :param pt_weights_to_onnx_initializers: Mapping between PT weight names to ONNX initializers
+    :param quantizer_dict: Optional quantizer dict; params whose quantizer is
+        disabled are skipped (e.g. LoRA params during base-model AdaScale).
     """
     for name, module in pt_block.named_modules():
         if param_map.get(name) is None:
+            continue
+        if quantizer_dict is not None and not quantizer_dict[param_map[name]].enabled:
             continue
         if isinstance(module, (QuantizedLinear, QuantizedConv2d)):
             pytorch_weight = (
@@ -146,13 +151,15 @@ def copy_pt_encodings_to_sim(
     for name, module in pt_block.named_modules():
         if isinstance(module, (QuantizedLinear, QuantizedConv2d)):
             onnx_param_name = pt_weights_to_onnx_initializers[name]
-
+            #### TODO Check the modules
             # copy encodings over to onnx quantizers
             new_min = module.param_quantizers["weight"].get_min().detach().cpu().numpy()
             new_max = module.param_quantizers["weight"].get_max().detach().cpu().numpy()
 
             enc = quantizer_dict[onnx_param_name].get_encodings()
-
+            if enc is None:
+                # quantizer is disabled (e.g. LoRA params skipped during AdaScale) — skip
+                continue
             if len(new_min) != len(enc) or len(new_max) != len(enc):
                 raise RuntimeError(
                     "Encodings of the onnx quantizer and adascale quantizer have different lengths"
