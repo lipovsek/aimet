@@ -45,7 +45,7 @@ def _prefill_inputs(
             }
             inputs.extend(
                 change_tensor_device_placement(
-                    list(generator.prefill(**sample_kwargs)),
+                    [tuple(d.values()) for d in generator.prefill(**sample_kwargs)],
                     device=device if device else generator.device,
                 )
             )

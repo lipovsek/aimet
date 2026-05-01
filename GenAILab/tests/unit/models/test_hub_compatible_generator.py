@@ -3,6 +3,7 @@
 
 """Tests for HubCompatibleGenerator — RoPE injection and KV permutations."""
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
@@ -82,18 +83,16 @@ class TestHubCompatibleGenerator:
             sequence_length=8,
             context_length=32,
         )
-        # Should have: padded_input, attention_mask, cos, sin, *kv_pairs
-        # cos and sin are at indices 2 and 3
-        assert len(result) >= 4
-        cos = result[2]
-        sin = result[3]
-        assert cos.shape[-1] > 0
-        assert sin.shape[-1] > 0
+        assert isinstance(result, OrderedDict)
+        assert "position_ids_cos" in result
+        assert "position_ids_sin" in result
+        assert "position_ids" not in result
+        assert result["position_ids_cos"].shape[-1] > 0
+        assert result["position_ids_sin"].shape[-1] > 0
 
     def test_prepare_inputs_kv_permutation(self, hub_gen, llama_config):
         input_ids = torch.randint(0, 256, (1, 8))
         attn = torch.ones(1, 8, dtype=torch.int32)
-        # Create past KVs in HF format: (B, H, S, D)
         B, H = 1, llama_config.num_key_value_heads
         D = llama_config.hidden_size // llama_config.num_attention_heads
         S = 24  # context_length - sequence_length
@@ -110,27 +109,30 @@ class TestHubCompatibleGenerator:
             sequence_length=8,
             context_length=32,
         )
-        # KV pairs start at index 4 (after input, mask, cos, sin)
-        kv_pairs = result[4:]
-        assert len(kv_pairs) == llama_config.num_hidden_layers * 2
+        kv_keys = [
+            k
+            for k in result
+            if k.startswith("past_key_") or k.startswith("past_value_")
+        ]
+        assert len(kv_keys) == llama_config.num_hidden_layers * 2
         # Keys should be in hub format: (H, B, D, S)
-        key = kv_pairs[0]
-        assert key.shape[0] == H  # num_heads first
+        key = result["past_key_0_in"]
+        assert key.shape[0] == H
         # Values should be in hub format: (H, B, S, D)
-        value = kv_pairs[1]
+        value = result["past_value_0_in"]
         assert value.shape[0] == H
 
-    def test_extra_kwargs_raises(self, hub_gen, llama_config):
-        with pytest.raises(AssertionError, match="does not support extra kwargs"):
-            hub_gen.prepare_inputs(
-                model=hub_gen.model,
-                input_ids=torch.randint(0, 256, (1, 8)),
-                attention_mask=torch.ones(1, 8, dtype=torch.int32),
-                past_key_values=[],
-                sequence_length=8,
-                context_length=32,
-                extra_kwarg=torch.zeros(1),
-            )
+    def test_extra_kwargs_accepted_as_tensors(self, hub_gen, llama_config):
+        result = hub_gen.prepare_inputs(
+            model=hub_gen.model,
+            input_ids=torch.randint(0, 256, (1, 8)),
+            attention_mask=torch.ones(1, 8, dtype=torch.int32),
+            past_key_values=[],
+            sequence_length=8,
+            context_length=32,
+            extra_kwarg=torch.zeros(1),
+        )
+        assert "extra_kwarg" in result
 
     def test_combine_outputs_kv_back_to_hf(self, hub_gen, llama_config):
         B, H = 1, llama_config.num_key_value_heads
@@ -139,12 +141,13 @@ class TestHubCompatibleGenerator:
 
         global_outputs = {"past_key_values": [], "logits": torch.randn(1, 4, 256)}
         logits = torch.randn(B, S, 256)
-        kvs = []
+        raw_kvs = []
         for _ in range(llama_config.num_hidden_layers):
-            kvs.append(torch.randn(H, B, D, S))  # hub key format
-            kvs.append(torch.randn(H, B, S, D))  # hub value format
-        local_outputs = (logits, *kvs)
+            raw_kvs.append(torch.randn(H, B, D, S))  # hub key format
+            raw_kvs.append(torch.randn(H, B, S, D))  # hub value format
+        raw_outputs = (logits, *raw_kvs)
 
+        local_outputs = hub_gen.parse_model_outputs(raw_outputs)
         hub_gen.combine_local_and_global_outputs(4, local_outputs, global_outputs)
         # After combine, KV should be in HF format: (B, H, S, D)
         kv_cache = global_outputs["past_key_values"]

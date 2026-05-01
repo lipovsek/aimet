@@ -97,7 +97,7 @@ class LLM(ABC):
         dummy_input_ids = torch.zeros((1, sequence_length), dtype=torch.int)
         dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
 
-        assembled_dummy_inputs = Generator.prepare_inputs(
+        prepared = Generator.prepare_inputs(
             model=model,
             input_ids=dummy_input_ids,
             attention_mask=dummy_attention_mask,
@@ -106,7 +106,7 @@ class LLM(ABC):
             sequence_length=sequence_length,
             layer_cache_descriptors=layer_cache_descriptors,
         )
-        return assembled_dummy_inputs
+        return tuple(prepared.values())
 
     @staticmethod
     def get_quantsim_config() -> str:

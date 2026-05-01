@@ -83,14 +83,16 @@ def _build_ort_llm_generator(model, tokenizer, model_id, sequence_length):
 
         dummy_ids = torch.zeros((1, 1), dtype=torch.int32)
         dummy_mask = torch.ones((1, 1), dtype=torch.int32)
-        sample_inputs = Generator.prepare_inputs(
-            model=wrapped,
-            input_ids=dummy_ids,
-            attention_mask=dummy_mask,
-            past_key_values=[],
-            sequence_length=sequence_length,
-            context_length=CONTEXT_LENGTH,
-            layer_cache_descriptors=layer_cache_descriptors,
+        sample_inputs = tuple(
+            Generator.prepare_inputs(
+                model=wrapped,
+                input_ids=dummy_ids,
+                attention_mask=dummy_mask,
+                past_key_values=[],
+                sequence_length=sequence_length,
+                context_length=CONTEXT_LENGTH,
+                layer_cache_descriptors=layer_cache_descriptors,
+            ).values()
         )
 
         _ort_llm_session_cache[key] = _export_and_load_ort_session(

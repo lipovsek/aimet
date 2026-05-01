@@ -55,10 +55,11 @@ def _prefill_inputs(
     if num_iterations is not None:
         dataloader = itertools.islice(dataloader, num_iterations)
 
-    def _to_numpy(tensors: tuple[torch.Tensor, ...]) -> dict[str, np.ndarray]:
+    def _to_numpy(prepared: dict[str, torch.Tensor]) -> dict[str, np.ndarray]:
         return {
             k: v.cpu().detach().numpy()
-            for k, v in kwargs_to_dict(input_names, *tensors).items()
+            for k, v in prepared.items()
+            if isinstance(v, torch.Tensor)
         }
 
     with generator.fp_mode():

@@ -5,6 +5,8 @@
 
 import contextlib
 import typing
+from collections import OrderedDict
+
 import torch
 
 from transformers import AutoConfig, AutoProcessor, PreTrainedModel, ProcessorMixin
@@ -131,7 +133,7 @@ class Qwen_3_VL(VLM):
 
         # Use the same prepare_inputs path as inference so export and
         # runtime shapes are guaranteed to match.
-        return Qwen3VL_Generator.prepare_inputs(
+        prepared = Qwen3VL_Generator.prepare_inputs(
             model=model,
             input_ids=None,
             attention_mask=dummy_attention_mask,
@@ -144,6 +146,7 @@ class Qwen_3_VL(VLM):
             visual_pos_masks=dummy_visual_pos_masks,
             deepstack_visual_embeds=dummy_deepstack_visual_embeds,
         )
+        return tuple(prepared.values())
 
     @classmethod
     def get_sample_vision_inputs(cls, config, image_size=(512, 512)):
@@ -468,7 +471,7 @@ class Qwen3VL_Generator(VLM_Generator):
         position_ids: torch.Tensor | None = None,
         visual_pos_masks: torch.Tensor | None = None,
         **kwargs,
-    ) -> tuple[torch.Tensor, ...]:
+    ) -> OrderedDict[str, torch.Tensor]:
         if visual_pos_masks is not None:
             visual_pos_mask_padding_size = sequence_length - visual_pos_masks.shape[1]
             if visual_pos_mask_padding_size > 0:
@@ -481,8 +484,6 @@ class Qwen3VL_Generator(VLM_Generator):
                     (visual_pos_masks_padding, visual_pos_masks), dim=-1
                 )
 
-        # Stack deepstack list into a single tensor so it passes through
-        # the isinstance(v, torch.Tensor) filter in Generator.prepare_inputs.
         ds_list = kwargs.get("deepstack_visual_embeds", None)
         if isinstance(ds_list, list):
             kwargs["deepstack_visual_embeds"] = torch.stack(ds_list)

@@ -173,4 +173,6 @@ class TestVLMPrefill:
         input_ids = torch.randint(0, 100, (1, 4))
         slices = list(vlm_gen.prefill(input_ids=input_ids))
         assert len(slices) >= 1
-        assert isinstance(slices[0], tuple)
+        from collections import OrderedDict
+
+        assert isinstance(slices[0], OrderedDict)

@@ -68,7 +68,7 @@ class Qwen_25_VL(VLM):
         dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
         dummy_position_ids = torch.zeros((3, 1, sequence_length), dtype=torch.int)
 
-        assembled_dummy_inputs = VLM_Generator.prepare_inputs(
+        prepared = VLM_Generator.prepare_inputs(
             model=model,
             input_ids=None,
             attention_mask=dummy_attention_mask,
@@ -79,7 +79,7 @@ class Qwen_25_VL(VLM):
             position_ids=dummy_position_ids,
             layer_cache_descriptors=layer_cache_descriptors,
         )
-        return assembled_dummy_inputs
+        return tuple(prepared.values())
 
     @classmethod
     def get_sample_vision_inputs(cls, config, image_size=(512, 512)):

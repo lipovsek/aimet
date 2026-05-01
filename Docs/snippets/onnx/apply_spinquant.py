@@ -36,22 +36,25 @@ from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
 from GenAILab.qai_hub_lm.precision import WeightPrecision
 from aimet_onnx.common.defs import int8
 
-assembled_dummy_inputs = Generator.prepare_inputs(
-    model=traceable_model,
-    input_ids=torch.zeros((1, SEQUENCE_LENGTH), dtype=torch.int),
-    attention_mask=torch.ones((1, SEQUENCE_LENGTH), dtype=torch.int),
-    past_key_values=[],
-    context_length=CONTEXT_LENGTH,
-    sequence_length=SEQUENCE_LENGTH,
+assembled_dummy_inputs = tuple(
+    Generator.prepare_inputs(
+        model=traceable_model,
+        input_ids=torch.zeros((1, SEQUENCE_LENGTH), dtype=torch.int),
+        attention_mask=torch.ones((1, SEQUENCE_LENGTH), dtype=torch.int),
+        past_key_values=[],
+        context_length=CONTEXT_LENGTH,
+        sequence_length=SEQUENCE_LENGTH,
+    ).values()
 )
 
+layer_cache_descs = build_layer_cache_descriptors(hf_model.config)
 with tempfile.TemporaryDirectory() as tmpdir:
     torch.onnx.export(
         traceable_model,
         assembled_dummy_inputs,
         os.path.join(tmpdir, "model.onnx"),
-        input_names=LLM.get_backbone_input_names(build_layer_cache_descriptors(hf_model.config)),
-        output_names=LLM.get_backbone_output_names(build_layer_cache_descriptors(hf_model.config)),
+        input_names=LLM.get_backbone_input_names(layer_cache_descs),
+        output_names=LLM.get_backbone_output_names(layer_cache_descs),
         opset_version=17,
         dynamo=False,
     )

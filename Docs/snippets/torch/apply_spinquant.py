@@ -24,13 +24,15 @@ from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
 from GenAILab.qai_hub_lm.models.generator import Generator
 
-assembled_dummy_inputs = Generator.prepare_inputs(
-    model=traceable_model,
-    input_ids=torch.zeros((1, SEQUENCE_LENGTH), dtype=torch.int),
-    attention_mask=torch.ones((1, SEQUENCE_LENGTH), dtype=torch.int),
-    past_key_values=[],
-    context_length=CONTEXT_LENGTH,
-    sequence_length=SEQUENCE_LENGTH,
+assembled_dummy_inputs = tuple(
+    Generator.prepare_inputs(
+        model=traceable_model,
+        input_ids=torch.zeros((1, SEQUENCE_LENGTH), dtype=torch.int),
+        attention_mask=torch.ones((1, SEQUENCE_LENGTH), dtype=torch.int),
+        past_key_values=[],
+        context_length=CONTEXT_LENGTH,
+        sequence_length=SEQUENCE_LENGTH,
+    ).values()
 )
 
 quantsim = QuantizationSimModel(

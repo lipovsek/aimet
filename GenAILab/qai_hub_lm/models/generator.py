@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import itertools
+from collections import OrderedDict
 import typing
 from typing import Union
 import types
@@ -328,8 +329,13 @@ class Generator(GenerationMixin, torch.nn.Module):
         position_ids: torch.Tensor | None = None,
         layer_cache_descriptors: list | None = None,
         **kwargs,
-    ) -> tuple[torch.Tensor, ...]:
-        """Prepare provided inputs for model forward pass with static graph constraints"""
+    ) -> OrderedDict[str, torch.Tensor]:
+        """Prepare provided inputs for model forward pass with static graph constraints.
+
+        Returns an OrderedDict with string keys aligned to ONNX input names.
+        Callers that need a flat tuple for model invocation should use
+        ``model(*prepared.values())``.
+        """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
                 "You must specify exactly one of input_ids or inputs_embeds"
@@ -487,22 +493,57 @@ class Generator(GenerationMixin, torch.nn.Module):
                 )
                 position_ids = torch.cat((position_ids_padding, position_ids), dim=-1)
 
-        return (
-            padded_input_tokens,
-            prepared_attention_mask,
-            position_ids,
-            *padded_past_key_values,
-            *[v for v in kwargs.values() if isinstance(v, torch.Tensor)],
-        )
+        # Build ordered dict with string keys aligned to ONNX input names
+        input_key = "inputs_embeds" if input_ids is None else "input_ids"
+        prepared = OrderedDict()
+        prepared[input_key] = padded_input_tokens
+        prepared["attention_mask"] = prepared_attention_mask
+        prepared["position_ids"] = position_ids
+        for i, desc in enumerate(layer_cache_descriptors):
+            li = desc.layer_idx
+            if desc.attention_type == AttentionType.LINEAR:
+                prepared[f"recurrent_state_k_{li}_in"] = padded_past_key_values[i * 2]
+                prepared[f"recurrent_state_v_{li}_in"] = padded_past_key_values[
+                    i * 2 + 1
+                ]
+            else:
+                prepared[f"past_key_{li}_in"] = padded_past_key_values[i * 2]
+                prepared[f"past_value_{li}_in"] = padded_past_key_values[i * 2 + 1]
+
+        for k, v in kwargs.items():
+            if isinstance(v, torch.Tensor):
+                prepared[k] = v
+
+        return prepared
+
+    @staticmethod
+    def _output_names_from_descriptors(
+        layer_cache_descriptors: list,
+    ) -> list[str]:
+        names = ["logits"]
+        for desc in layer_cache_descriptors:
+            i = desc.layer_idx
+            if desc.attention_type == AttentionType.LINEAR:
+                names += [f"recurrent_state_k_{i}_out", f"recurrent_state_v_{i}_out"]
+            else:
+                names += [f"past_key_{i}_out", f"past_value_{i}_out"]
+        return names
+
+    def parse_model_outputs(
+        self,
+        raw_outputs: tuple[torch.Tensor, ...],
+    ) -> OrderedDict[str, torch.Tensor]:
+        names = self._output_names_from_descriptors(self.layer_cache_descriptors)
+        return OrderedDict(zip(names, raw_outputs))
 
     def combine_local_and_global_outputs(
         self,
         num_valid_input_tokens: int,
-        local_outputs: tuple[torch.Tensor, ...],
+        local_outputs: OrderedDict[str, torch.Tensor],
         global_outputs: dict[str, Union[torch.Tensor | list[torch.Tensor]]],
     ):
         # strip logits corresponding to padding tokens
-        local_logits = local_outputs[0]
+        local_logits = local_outputs["logits"]
         local_logits = torch.narrow(
             local_logits,
             1,
@@ -517,10 +558,13 @@ class Generator(GenerationMixin, torch.nn.Module):
             else local_logits
         )
 
+        # Extract KV tensors from the dict in order
+        local_kv_list = [v for k, v in local_outputs.items() if k != "logits"]
+
         # strip KV cache / recurrent state corresponding to padding tokens
         local_past_key_values = get_past_keyval_with_shift(
             past_key_vals=[],
-            new_key_vals=list(local_outputs[1:]),
+            new_key_vals=local_kv_list,
             length=num_valid_input_tokens,
             device=self.device,
             layer_cache_descriptors=self.layer_cache_descriptors,
@@ -604,7 +648,8 @@ class Generator(GenerationMixin, torch.nn.Module):
                 **kwargs_slice,
             )
 
-            local_outputs = self.model(*prepared_inputs)
+            raw_outputs = self.model(*prepared_inputs.values())
+            local_outputs = self.parse_model_outputs(raw_outputs)
 
             self.combine_local_and_global_outputs(
                 input_slice.shape[1], local_outputs, global_outputs
@@ -649,7 +694,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         inputs_embeds: torch.FloatTensor | None = None,
         position_ids: torch.Tensor | None = None,
         **kwargs,
-    ) -> typing.Generator[tuple[torch.Tensor, ...], None, None]:
+    ) -> typing.Generator[OrderedDict[str, torch.Tensor], None, None]:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
                 "You must specify exactly one of input_ids or inputs_embeds"
@@ -707,7 +752,8 @@ class Generator(GenerationMixin, torch.nn.Module):
 
             yield prepared_inputs
 
-            local_outputs = self.model(*prepared_inputs)
+            raw_outputs = self.model(*prepared_inputs.values())
+            local_outputs = self.parse_model_outputs(raw_outputs)
             self.combine_local_and_global_outputs(
                 input_slice.shape[1],
                 local_outputs,
@@ -737,93 +783,82 @@ class Generator(GenerationMixin, torch.nn.Module):
         yield prefilled_inputs
 
 
-class HubCompatibleGenerator(Generator):
-    def prepare_inputs(
-        cls,
-        model: torch.nn.Module,
-        input_ids: torch.Tensor | None,
-        attention_mask: torch.Tensor,
-        past_key_values: list[torch.Tensor],
-        sequence_length: int,
-        context_length: int,
-        pad_token: int = 0,
-        attention_mask_min: int = -100,
-        inputs_embeds: torch.FloatTensor | None = None,
-        position_ids: torch.Tensor | None = None,
-        layer_cache_descriptors: list | None = None,
-        **kwargs,
-    ) -> tuple[torch.Tensor, ...]:
-        assert len(kwargs) == 0, (
-            "HubCompatibleGenerator does not support extra kwargs yet."
-        )
-        padded_input_tokens, cm_attention_mask, position_ids, *past_key_values = (
-            super().prepare_inputs(
-                model=model,
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                past_key_values=past_key_values,
-                sequence_length=sequence_length,
-                context_length=context_length,
-                pad_token=pad_token,
-                attention_mask_min=attention_mask_min,
-                inputs_embeds=inputs_embeds,
-                position_ids=position_ids,
-                layer_cache_descriptors=layer_cache_descriptors,
-            )
-        )
+class PrecomputedCosSinGeneratorMixin:
+    """Generator mixin that replaces position_ids with precomputed RoPE (cos, sin).
 
-        # todo: refactor this to belong to the model, rather than recomputing the same thing every iteration (slow)
-        # alternatively, use functools cache to make sure that this only happens once per model / config
+    Operates on the dict returned by ``prepare_inputs``: removes
+    ``position_ids`` and inserts ``position_ids_cos`` / ``position_ids_sin``.
+    """
+
+    @classmethod
+    def prepare_inputs(cls, **kwargs) -> OrderedDict[str, torch.Tensor]:
+        prepared = super().prepare_inputs(**kwargs)
+
+        model = kwargs["model"]
+        context_length = kwargs["context_length"]
+        position_ids = prepared.pop("position_ids")
         embedding = RopeEmbedding(model=model, context_length=context_length)
-        position_ids_cos, position_ids_sin = embedding.get_embedding(position_ids)
+        cos, sin = embedding.get_embedding(position_ids)
 
-        # (batch_size, num_heads, sequence_length, head_dim) -> (num_heads, batch_size, sequence_length, head_dim)
-        hf_to_hub_v_tensor_permutation = (1, 0, 2, 3)
-        # (batch_size, num_heads, sequence_length, head_dim) -> (num_heads, batch_size, head_dim, sequence_length)
-        hf_to_hub_k_tensor_permutation = (1, 0, 3, 2)
+        reordered = OrderedDict()
+        for key, value in prepared.items():
+            reordered[key] = value
+            if key == "attention_mask":
+                reordered["position_ids_cos"] = cos
+                reordered["position_ids_sin"] = sin
+        return reordered
 
-        hub_format_past_key_values = []
-        for i in range(0, len(past_key_values), 2):
-            hub_format_past_key_values.append(
-                past_key_values[i].permute(*hf_to_hub_k_tensor_permutation)
-            )
-            hub_format_past_key_values.append(
-                past_key_values[i + 1].permute(*hf_to_hub_v_tensor_permutation)
-            )
 
-        return (
-            padded_input_tokens,
-            cm_attention_mask,
-            position_ids_cos,
-            position_ids_sin,
-            *hub_format_past_key_values,
-        )
+class TransposedKVGeneratorMixin:
+    """Generator mixin that permutes KV cache between HF and Hub tensor layouts.
 
-    def combine_local_and_global_outputs(
+    HF format:  keys (B, H, S, D), values (B, H, S, D)
+    Hub format: keys (H, B, D, S), values (H, B, S, D)
+
+    Operates on the dict returned by ``prepare_inputs`` by permuting all
+    entries whose keys match ``past_key_*`` or ``past_value_*``.
+    """
+
+    _HF_TO_HUB_K = (1, 0, 3, 2)
+    _HF_TO_HUB_V = (1, 0, 2, 3)
+    _HUB_TO_HF_K = (1, 0, 3, 2)
+    _HUB_TO_HF_V = (1, 0, 2, 3)
+
+    @classmethod
+    def prepare_inputs(cls, **kwargs) -> OrderedDict[str, torch.Tensor]:
+        prepared = super().prepare_inputs(**kwargs)
+
+        for key in list(prepared.keys()):
+            if key.startswith("past_key_"):
+                prepared[key] = prepared[key].permute(*cls._HF_TO_HUB_K)
+            elif key.startswith("past_value_"):
+                prepared[key] = prepared[key].permute(*cls._HF_TO_HUB_V)
+        return prepared
+
+    def parse_model_outputs(
         self,
-        num_valid_input_tokens: int,
-        local_outputs: tuple[torch.Tensor, ...],
-        global_outputs: dict[str, Union[torch.Tensor | list[torch.Tensor]]],
-    ):
-        # (num_heads, batch_size, head_dim, sequence_length) -> (batch_size, num_heads, sequence_length, head_dim)
-        hub_to_hf_k_tensor_permutation = (1, 0, 3, 2)
-        # (num_heads, batch_size, sequence_length, head_dim) -> (batch_size, num_heads, sequence_length, head_dim)
-        hub_to_hf_v_tensor_permutation = (1, 0, 2, 3)
+        raw_outputs: tuple[torch.Tensor, ...],
+    ) -> OrderedDict[str, torch.Tensor]:
+        parsed = super().parse_model_outputs(raw_outputs)
 
-        local_past_key_values = local_outputs[1:]
-        hf_format_local_past_key_values = []
-        for i in range(0, len(local_past_key_values), 2):
-            hf_format_local_past_key_values.append(
-                local_past_key_values[i].permute(*hub_to_hf_k_tensor_permutation)
-            )
-            hf_format_local_past_key_values.append(
-                local_past_key_values[i + 1].permute(*hub_to_hf_v_tensor_permutation)
-            )
+        for key in list(parsed.keys()):
+            if key.startswith("past_key_"):
+                parsed[key] = parsed[key].permute(*self._HUB_TO_HF_K)
+            elif key.startswith("past_value_"):
+                parsed[key] = parsed[key].permute(*self._HUB_TO_HF_V)
+        return parsed
 
-        hf_format_local_outputs = (local_outputs[0], *hf_format_local_past_key_values)
-        return super().combine_local_and_global_outputs(
-            num_valid_input_tokens, hf_format_local_outputs, global_outputs
-        )
+
+class HubCompatibleGenerator(
+    PrecomputedCosSinGeneratorMixin, TransposedKVGeneratorMixin, Generator
+):
+    """Generator for AI Hub Models checkpoints.
+
+    Composes PrecomputedCosSinGeneratorMixin (RoPE cos/sin injection) and
+    TransposedKVGeneratorMixin (KV cache permutation) with the base Generator.
+    """
+
+    pass
 
 
 class VLM_Generator(Generator):

@@ -116,11 +116,29 @@ class TestPrepareInputs:
             sequence_length=8,
             context_length=32,
         )
-        padded_input = result[0]
+        padded_input = result["input_ids"]
         assert padded_input.shape == (1, 8)
         # Original tokens should be at the end
         assert padded_input[0, -1].item() == 3
         assert padded_input[0, -3].item() == 1
+
+    def test_returns_ordered_dict(self, model):
+        from collections import OrderedDict
+
+        input_ids = torch.tensor([[1, 2, 3]])
+        attn = torch.ones(1, 3, dtype=torch.int32)
+        result = Generator.prepare_inputs(
+            model=model,
+            input_ids=input_ids,
+            attention_mask=attn,
+            past_key_values=[],
+            sequence_length=8,
+            context_length=32,
+        )
+        assert isinstance(result, OrderedDict)
+        assert "input_ids" in result
+        assert "attention_mask" in result
+        assert "position_ids" in result
 
     def test_attention_mask_padding(self, model):
         input_ids = torch.tensor([[1, 2, 3]])
@@ -133,8 +151,7 @@ class TestPrepareInputs:
             sequence_length=8,
             context_length=32,
         )
-        # result[1] is the 4D attention mask
-        mask_4d = result[1]
+        mask_4d = result["attention_mask"]
         assert mask_4d.shape == (1, 1, 8, 32)
 
     def test_kv_cache_shape(self, model, cfg):
@@ -148,11 +165,14 @@ class TestPrepareInputs:
             sequence_length=8,
             context_length=32,
         )
-        # KV tensors start at index 3
-        kv_tensors = result[3:]
-        assert len(kv_tensors) == cfg.num_hidden_layers * 2
-        for kv in kv_tensors:
-            assert kv.shape == (1, cfg.num_key_value_heads, 32 - 8, cfg.head_dim)
+        kv_keys = [
+            k
+            for k in result
+            if k.startswith("past_key_") or k.startswith("past_value_")
+        ]
+        assert len(kv_keys) == cfg.num_hidden_layers * 2
+        for k in kv_keys:
+            assert result[k].shape == (1, cfg.num_key_value_heads, 32 - 8, cfg.head_dim)
 
     def test_position_ids_from_mask(self, model):
         input_ids = torch.tensor([[1, 2, 3]])
@@ -165,7 +185,7 @@ class TestPrepareInputs:
             sequence_length=8,
             context_length=32,
         )
-        position_ids = result[2]
+        position_ids = result["position_ids"]
         assert position_ids.shape[-1] == 8
 
     def test_position_ids_passthrough(self, model):
@@ -181,7 +201,7 @@ class TestPrepareInputs:
             context_length=32,
             position_ids=custom_pos,
         )
-        position_ids = result[2]
+        position_ids = result["position_ids"]
         assert position_ids.shape[-1] == 8
 
     def test_embeds_instead_of_ids(self, model, cfg):
@@ -196,7 +216,7 @@ class TestPrepareInputs:
             context_length=32,
             inputs_embeds=embeds,
         )
-        padded = result[0]
+        padded = result["inputs_embeds"]
         assert padded.shape == (1, 8, cfg.hidden_size)
 
     def test_both_ids_and_embeds_raises(self, model, cfg):
@@ -232,8 +252,7 @@ class TestPrepareInputs:
             sequence_length=8,
             context_length=32,
         )
-        # Should not raise, default mask is all-ones
-        assert result[0].shape == (1, 8)
+        assert result["input_ids"].shape == (1, 8)
 
 
 # ---------------------------------------------------------------------------
@@ -413,12 +432,13 @@ class TestForward:
 
 class TestPrefill:
     def test_yields_prepared_inputs(self, gen):
+        from collections import OrderedDict
+
         input_ids = torch.randint(0, 256, (1, 6))
         slices = list(gen.prefill(input_ids=input_ids))
         assert len(slices) >= 1
-        # Each yielded item should be a tuple of tensors
-        assert isinstance(slices[0], tuple)
-        assert isinstance(slices[0][0], torch.Tensor)
+        assert isinstance(slices[0], OrderedDict)
+        assert "input_ids" in slices[0]
 
     def test_single_slice_input(self, gen):
         input_ids = torch.randint(0, 256, (1, 4))
@@ -469,25 +489,31 @@ class TestPrepareInputsForGeneration:
 
 
 class TestCombineOutputs:
+    def _make_local_outputs(self, cfg):
+        from collections import OrderedDict
+
+        local_logits = torch.randn(1, 8, cfg.vocab_size)
+        kv_shape = (1, cfg.num_key_value_heads, 8, cfg.head_dim)
+        out = OrderedDict()
+        out["logits"] = local_logits
+        for i in range(cfg.num_hidden_layers):
+            out[f"past_key_{i}_out"] = torch.randn(kv_shape)
+            out[f"past_value_{i}_out"] = torch.randn(kv_shape)
+        return out
+
     def test_logits_concatenated(self, gen, cfg):
         global_outputs = {
             "past_key_values": [],
             "logits": torch.randn(1, 4, cfg.vocab_size),
         }
-        local_logits = torch.randn(1, 8, cfg.vocab_size)  # padded to seq_len=8
-        kv_shape = (1, cfg.num_key_value_heads, 8, cfg.head_dim)
-        local_kvs = [torch.randn(kv_shape) for _ in range(cfg.num_hidden_layers * 2)]
-        local_outputs = (local_logits, *local_kvs)
+        local_outputs = self._make_local_outputs(cfg)
         gen.combine_local_and_global_outputs(3, local_outputs, global_outputs)
         # Should be 4 existing + 3 new valid tokens
         assert global_outputs["logits"].shape[1] == 7
 
     def test_logits_strip_padding(self, gen, cfg):
         global_outputs = {"past_key_values": []}
-        local_logits = torch.randn(1, 8, cfg.vocab_size)
-        kv_shape = (1, cfg.num_key_value_heads, 8, cfg.head_dim)
-        local_kvs = [torch.randn(kv_shape) for _ in range(cfg.num_hidden_layers * 2)]
-        local_outputs = (local_logits, *local_kvs)
+        local_outputs = self._make_local_outputs(cfg)
         gen.combine_local_and_global_outputs(3, local_outputs, global_outputs)
         # Only 3 valid tokens from an 8-wide padded output
         assert global_outputs["logits"].shape[1] == 3
@@ -723,7 +749,7 @@ class TestPrepareInputsMixedAttention:
             sequence_length=8,
             context_length=32,
         )
-        mask = result[1]
+        mask = result["attention_mask"]
         assert isinstance(mask, dict)
         assert "full_attention" in mask
         assert "sliding_attention" in mask
@@ -740,10 +766,14 @@ class TestPrepareInputsMixedAttention:
             sequence_length=8,
             context_length=32,
         )
-        kv_tensors = result[3:]
+        kv_keys = [
+            k
+            for k in result
+            if k.startswith("past_key_") or k.startswith("past_value_")
+        ]
         expected_kv_len = 32 - 8  # context - sequence
-        for kv in kv_tensors:
-            assert kv.shape[2] == expected_kv_len
+        for k in kv_keys:
+            assert result[k].shape[2] == expected_kv_len
 
     def test_kv_shapes_uniform_with_existing_cache(self):
         model = _MixedAttnModel()
@@ -763,10 +793,14 @@ class TestPrepareInputsMixedAttention:
             sequence_length=8,
             context_length=32,
         )
-        kv_tensors = result[3:]
+        kv_keys = [
+            k
+            for k in result
+            if k.startswith("past_key_") or k.startswith("past_value_")
+        ]
         expected_kv_len = 32 - 8
-        for kv in kv_tensors:
-            assert kv.shape[2] == expected_kv_len
+        for k in kv_keys:
+            assert result[k].shape[2] == expected_kv_len
 
 
 # ---------------------------------------------------------------------------

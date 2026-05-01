@@ -144,13 +144,15 @@ if __name__ == "__main__":
     # Create dummy inputs used to initialize QuantizationSimModel
     dummy_input_ids = torch.zeros((1, SEQUENCE_LENGTH), dtype=torch.int)
     dummy_attention_mask = torch.ones((1, SEQUENCE_LENGTH), dtype=torch.int)
-    assembled_dummy_inputs = Generator.prepare_inputs(
-        model=traceable_model,
-        input_ids=dummy_input_ids,
-        attention_mask=dummy_attention_mask,
-        past_key_values=[],
-        context_length=CONTEXT_LENGTH,
-        sequence_length=SEQUENCE_LENGTH,
+    assembled_dummy_inputs = tuple(
+        Generator.prepare_inputs(
+            model=traceable_model,
+            input_ids=dummy_input_ids,
+            attention_mask=dummy_attention_mask,
+            past_key_values=[],
+            context_length=CONTEXT_LENGTH,
+            sequence_length=SEQUENCE_LENGTH,
+        ).values()
     )
 
     quantsim = QuantizationSimModel(
