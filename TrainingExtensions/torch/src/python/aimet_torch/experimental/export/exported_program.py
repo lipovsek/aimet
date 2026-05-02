@@ -9,7 +9,13 @@ import torch
 from torch._C import _fx_map_arg
 from torch.export.graph_signature import TensorArgument
 import aimet_torch
-from ._utils import _is_grid_preserving_op
+from aimet_torch.quantization.affine import QuantizeDequantize
+from ._utils import (
+    _is_grid_preserving_op,
+    _remove_dangling_nodes,
+    _eval_node,
+    _insert_placeholder,
+)
 
 
 class ExportedProgram(torch.export.ExportedProgram):
@@ -66,7 +72,7 @@ class ExportedProgram(torch.export.ExportedProgram):
 
         # Step 2. Add missing quantizers
         #
-        # Add aimet_torch.quantization.affine.QuantizeDequantize module after
+        # Add QuantizeDequantize module after
         # every floating-point op doesn't have quantized outputs.
         newly_added_qtzrs = self._add_missing_quantizers()
 
@@ -83,8 +89,6 @@ class ExportedProgram(torch.export.ExportedProgram):
         self.__dict__ = new_ep.__dict__
         self._fold_param_qantizers()
 
-        from . import _remove_dangling_nodes
-
         _remove_dangling_nodes(self)
 
         print(
@@ -96,9 +100,7 @@ class ExportedProgram(torch.export.ExportedProgram):
         graph_module = self.graph_module
         graph = graph_module.graph
 
-        newly_added_qtzrs: dict[
-            str, aimet_torch.quantization.affine.QuantizeDequantize
-        ] = {}
+        newly_added_qtzrs: dict[str, QuantizeDequantize] = {}
 
         def replace(args, old: torch.fx.Node, new: torch.fx.Node):
             return _fx_map_arg(args, lambda arg: new if arg is old else arg)
@@ -137,9 +139,7 @@ class ExportedProgram(torch.export.ExportedProgram):
                 bitwidth = 16
                 symmetric = False
 
-            output_qdq = aimet_torch.quantization.affine.QuantizeDequantize(
-                (), bitwidth=bitwidth, symmetric=symmetric
-            )
+            output_qdq = QuantizeDequantize((), bitwidth=bitwidth, symmetric=symmetric)
             graph_module.add_module(f"{node.name}_qdq", output_qdq)
 
             with graph.inserting_after(node):
@@ -201,8 +201,6 @@ class ExportedProgram(torch.export.ExportedProgram):
 
         if not _is_torch_ao_qdq_node(dq):
             return
-
-        from . import _eval_node, _insert_placeholder
 
         Wq: torch.Tensor = _eval_node(dq.all_input_nodes[0], self)
         _, dtype_str = str(Wq.dtype).split(".")
