@@ -470,6 +470,7 @@ class Qwen3VL_Generator(VLM_Generator):
         inputs_embeds: torch.FloatTensor | None = None,
         position_ids: torch.Tensor | None = None,
         visual_pos_masks: torch.Tensor | None = None,
+        deepstack_visual_embeds: list[torch.Tensor] | None = None,
         **kwargs,
     ) -> OrderedDict[str, torch.Tensor]:
         if visual_pos_masks is not None:
@@ -484,9 +485,9 @@ class Qwen3VL_Generator(VLM_Generator):
                     (visual_pos_masks_padding, visual_pos_masks), dim=-1
                 )
 
-        ds_list = kwargs.get("deepstack_visual_embeds", None)
-        if isinstance(ds_list, list):
-            kwargs["deepstack_visual_embeds"] = torch.stack(ds_list)
+        if isinstance(deepstack_visual_embeds, list):
+            for i, ds in enumerate(deepstack_visual_embeds):
+                kwargs[f"deepstack_visual_embeds_{i}"] = ds
 
         return super().prepare_inputs(
             model=model,

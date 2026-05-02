@@ -32,6 +32,16 @@ from GenAILab.qai_hub_lm.utils.layer_cache import (
 from GenAILab.qai_hub_lm.utils.rope_embedding import RopeEmbedding
 
 
+def ordered_dict_replace(
+    d: OrderedDict, old_key: str, replacements: list[tuple]
+) -> OrderedDict:
+    """Replace *old_key* positionally with one or more new key-value pairs."""
+    items = list(d.items())
+    idx = next(i for i, (k, _) in enumerate(items) if k == old_key)
+    items[idx : idx + 1] = replacements
+    return OrderedDict(items)
+
+
 class _FlatListCache:
     """Lightweight cache wrapper for hybrid attention models.
 
@@ -446,6 +456,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         )
         cm_attention_mask = cm_attention_mask.clip(attention_mask_min, 0)
 
+        has_sliding_window = False
         for desc in layer_cache_descriptors:
             if desc.attention_type == AttentionType.SLIDING_WINDOW:
                 cm_sliding_attention_mask = (
@@ -459,17 +470,8 @@ class Generator(GenerationMixin, torch.nn.Module):
                 cm_sliding_attention_mask = cm_sliding_attention_mask.clip(
                     attention_mask_min, 0
                 )
-
-                prepared_attention_mask = {
-                    AttentionType.FULL.value: cm_attention_mask.to(dtype=model.dtype),
-                    AttentionType.SLIDING_WINDOW.value: cm_sliding_attention_mask.to(
-                        dtype=model.dtype
-                    ),
-                }
-
+                has_sliding_window = True
                 break
-        else:
-            prepared_attention_mask = cm_attention_mask.to(dtype=model.dtype)
 
         # Compute or pad position_ids
         if position_ids is None:
@@ -497,7 +499,13 @@ class Generator(GenerationMixin, torch.nn.Module):
         input_key = "inputs_embeds" if input_ids is None else "input_ids"
         prepared = OrderedDict()
         prepared[input_key] = padded_input_tokens
-        prepared["attention_mask"] = prepared_attention_mask
+        if has_sliding_window:
+            prepared["attention_mask_full"] = cm_attention_mask.to(dtype=model.dtype)
+            prepared["attention_mask_sliding_window"] = cm_sliding_attention_mask.to(
+                dtype=model.dtype
+            )
+        else:
+            prepared["attention_mask"] = cm_attention_mask.to(dtype=model.dtype)
         prepared["position_ids"] = position_ids
         for i, desc in enumerate(layer_cache_descriptors):
             li = desc.layer_idx
@@ -796,17 +804,18 @@ class PrecomputedCosSinGeneratorMixin:
 
         model = kwargs["model"]
         context_length = kwargs["context_length"]
-        position_ids = prepared.pop("position_ids")
+        position_ids = prepared["position_ids"]
         embedding = RopeEmbedding(model=model, context_length=context_length)
         cos, sin = embedding.get_embedding(position_ids)
 
-        reordered = OrderedDict()
-        for key, value in prepared.items():
-            reordered[key] = value
-            if key == "attention_mask":
-                reordered["position_ids_cos"] = cos
-                reordered["position_ids_sin"] = sin
-        return reordered
+        return ordered_dict_replace(
+            prepared,
+            "position_ids",
+            [
+                ("position_ids_cos", cos),
+                ("position_ids_sin", sin),
+            ],
+        )
 
 
 class TransposedKVGeneratorMixin:

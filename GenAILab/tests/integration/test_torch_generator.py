@@ -11,7 +11,9 @@ import pytest
 import torch
 
 from GenAILab.qai_hub_lm.models.generator import Generator
+from GenAILab.qai_hub_lm.models.base import LLM
 from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
 
 from .conftest import (
     SEQUENCE_LENGTHS,
@@ -44,7 +46,12 @@ class TestLLMTorchGeneratorParity:
             hf_out = model(**tokens)
 
         # --- Generator ---
-        wrapped = ONNXExportableModuleWithCache(model)
+        wrapped = ONNXExportableModuleWithCache(
+            model,
+            input_names=LLM.get_backbone_input_names(
+                build_layer_cache_descriptors(model.config)
+            ),
+        )
         generator = Generator(
             model=wrapped,
             tokenizer=tokenizer,
@@ -75,7 +82,12 @@ class TestLLMTorchGeneratorParity:
         with torch.no_grad():
             hf_out = model(**tokens)
 
-        wrapped = ONNXExportableModuleWithCache(model)
+        wrapped = ONNXExportableModuleWithCache(
+            model,
+            input_names=LLM.get_backbone_input_names(
+                build_layer_cache_descriptors(model.config)
+            ),
+        )
         generator = Generator(
             model=wrapped,
             tokenizer=tokenizer,
@@ -110,7 +122,12 @@ class TestLLMTorchGeneratorParity:
         with torch.no_grad():
             hf_out = model(**tokens)
 
-        wrapped = ONNXExportableModuleWithCache(model)
+        wrapped = ONNXExportableModuleWithCache(
+            model,
+            input_names=LLM.get_backbone_input_names(
+                build_layer_cache_descriptors(model.config)
+            ),
+        )
         generator = Generator(
             model=wrapped,
             tokenizer=tokenizer,
@@ -137,7 +154,12 @@ class TestLLMTorchGeneratorParity:
         if tokens["input_ids"].shape[1] > seq_len:
             pytest.skip("Input longer than sequence_length")
 
-        wrapped = ONNXExportableModuleWithCache(model)
+        wrapped = ONNXExportableModuleWithCache(
+            model,
+            input_names=LLM.get_backbone_input_names(
+                build_layer_cache_descriptors(model.config)
+            ),
+        )
         generator = Generator(
             model=wrapped,
             tokenizer=tokenizer,

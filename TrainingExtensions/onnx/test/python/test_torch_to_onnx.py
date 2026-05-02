@@ -65,7 +65,7 @@ def test_hf_torch_to_onnx_workflow(
         num_hidden_layers=1,
         pad_token_id=999,
     )
-    model = ONNXExportableModuleWithCache(model_cls(config))
+    model = ONNXExportableModuleWithCache(model_cls(config), input_names=("input_ids",))
     input_ids = torch.randint(0, config.vocab_size, (1, 128))
 
     torch_sim = aimet_torch.QuantizationSimModel(

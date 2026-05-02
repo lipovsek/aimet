@@ -22,6 +22,7 @@ from aimet_torch.utils import place_model, remove_all_quantizers
 from GenAILab.qai_hub_lm.models.base import LLM
 from GenAILab.qai_hub_lm.models.generator import Generator
 from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
 from GenAILab.bench.datasets import Wikitext
 from GenAILab.bench.metrics import PPL
 
@@ -53,7 +54,12 @@ if __name__ == "__main__":
         args.model_id, use_fast=True, trust_remote_code=True
     )
     # Need to wrap model in this in order to enable JIT trace
-    traceable_model = ONNXExportableModuleWithCache(hf_model)
+    traceable_model = ONNXExportableModuleWithCache(
+        hf_model,
+        input_names=LLM.get_backbone_input_names(
+            build_layer_cache_descriptors(hf_model.config)
+        ),
+    )
 
     # Create dummy inputs used to initialize QuantizationSimModel
     dummy_input_ids = torch.zeros((1, SEQUENCE_LENGTH), dtype=torch.int)

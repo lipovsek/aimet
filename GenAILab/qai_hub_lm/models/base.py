@@ -19,7 +19,11 @@ from transformers import (
 from transformers.cache_utils import DynamicCache
 
 from .generator import Generator, VLM_Generator
-from GenAILab.qai_hub_lm.utils.layer_cache import AttentionType, LayerCacheDescriptor
+from GenAILab.qai_hub_lm.utils.layer_cache import (
+    LayerCacheDescriptor,
+    attention_mask_input_names,
+    cache_state_names,
+)
 
 
 @dataclass
@@ -126,44 +130,20 @@ class LLM(ABC):
     def get_backbone_input_names(
         layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
     ) -> tuple[str, ...]:
-        """Get input names for the backbone model.
-
-        When *layer_cache_descriptors* is provided, linear attention layers
-        receive ``recurrent_state_k_<i>_in`` / ``recurrent_state_v_<i>_in``
-        names instead of the standard ``past_key_<i>_in`` / ``past_value_<i>_in``.
-        """
-        names = ["input_ids", "attention_mask", "position_ids"]
-        for desc in layer_cache_descriptors:
-            i = desc.layer_idx
-            if desc.attention_type == AttentionType.LINEAR:
-                names += [
-                    f"recurrent_state_k_{i}_in",
-                    f"recurrent_state_v_{i}_in",
-                ]
-            else:
-                names += [f"past_key_{i}_in", f"past_value_{i}_in"]
-        return tuple(names)
+        """Get input names for the backbone model."""
+        return tuple(
+            ["input_ids"]
+            + attention_mask_input_names(layer_cache_descriptors)
+            + ["position_ids"]
+            + cache_state_names(layer_cache_descriptors, "in")
+        )
 
     @staticmethod
     def get_backbone_output_names(
         layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
     ) -> tuple[str, ...]:
-        """Get output names for the backbone model.
-
-        When *layer_cache_descriptors* is provided, linear attention layers
-        receive ``recurrent_state_k_<i>_out`` / ``recurrent_state_v_<i>_out``.
-        """
-        names = ["logits"]
-        for desc in layer_cache_descriptors:
-            i = desc.layer_idx
-            if desc.attention_type == AttentionType.LINEAR:
-                names += [
-                    f"recurrent_state_k_{i}_out",
-                    f"recurrent_state_v_{i}_out",
-                ]
-            else:
-                names += [f"past_key_{i}_out", f"past_value_{i}_out"]
-        return tuple(names)
+        """Get output names for the backbone model."""
+        return tuple(["logits"] + cache_state_names(layer_cache_descriptors, "out"))
 
     @staticmethod
     def use_dynamo_export() -> bool:
@@ -199,18 +179,13 @@ class VLM(LLM):
     def get_backbone_input_names(
         layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
     ) -> tuple[str, ...]:
-        """Get input names for the backbone model"""
-        names = ["inputs_embeds", "attention_mask", "position_ids"]
-        for desc in layer_cache_descriptors:
-            i = desc.layer_idx
-            if desc.attention_type == AttentionType.LINEAR:
-                names += [
-                    f"recurrent_state_k_{i}_in",
-                    f"recurrent_state_v_{i}_in",
-                ]
-            else:
-                names += [f"past_key_{i}_in", f"past_value_{i}_in"]
-        return tuple(names)
+        """Get input names for the backbone model."""
+        return tuple(
+            ["inputs_embeds"]
+            + attention_mask_input_names(layer_cache_descriptors)
+            + ["position_ids"]
+            + cache_state_names(layer_cache_descriptors, "in")
+        )
 
     @staticmethod
     @abstractmethod

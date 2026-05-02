@@ -22,6 +22,7 @@ from GenAILab.qai_hub_lm.precision import (
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.qai_hub_lm.models.base import SimCollection
 from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
 from GenAILab.qai_hub_lm.models.base import LLM
 
 from GenAILab.qai_hub_lm.backends.torch.quantsim_utils import (
@@ -60,8 +61,11 @@ class LLM_Torch(LLM):
         )
 
         # Wrap model to enable JIT trace
+        layer_cache_descs = build_layer_cache_descriptors(model.config)
         traceable_model = ONNXExportableModuleWithCache(
-            model, cache_type=cls.get_cache_type()
+            model,
+            cache_type=cls.get_cache_type(),
+            input_names=cls.get_backbone_input_names(layer_cache_descs),
         )
         quantsim = QuantizationSimModel(
             model=traceable_model,

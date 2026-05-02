@@ -749,10 +749,8 @@ class TestPrepareInputsMixedAttention:
             sequence_length=8,
             context_length=32,
         )
-        mask = result["attention_mask"]
-        assert isinstance(mask, dict)
-        assert "full_attention" in mask
-        assert "sliding_attention" in mask
+        assert "attention_mask_full" in result
+        assert "attention_mask_sliding_window" in result
 
     def test_kv_cache_shapes_uniform(self):
         model = _MixedAttnModel()

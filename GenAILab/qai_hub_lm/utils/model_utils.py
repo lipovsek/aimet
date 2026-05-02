@@ -6,7 +6,10 @@
 import torch
 from transformers import PreTrainedModel, DynamicCache
 
-from GenAILab.qai_hub_lm.utils.layer_cache import _resolve_text_config
+from GenAILab.qai_hub_lm.utils.layer_cache import (
+    AttentionType,
+    build_layer_cache_descriptors,
+)
 
 
 def _patch_sdpa_mask():
@@ -95,30 +98,61 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
     that produce and consume Cache objects. Supports both LLM and VLM backbones.
     """
 
+    _KNOWN_PREFIXES = (
+        "input_ids",
+        "inputs_embeds",
+        "attention_mask",
+        "position_ids",
+        "past_key_",
+        "past_value_",
+        "recurrent_state_",
+    )
+
     def __init__(
         self,
         model: PreTrainedModel,
         lm_head: torch.nn.Module | None = None,
-        use_inputs_embeds: bool = False,
-        extra_input_names: tuple[str, ...] = (),
         cache_type: type = DynamicCache,
+        input_names: tuple[str, ...] = (),
     ):
         """
         :param model: The HuggingFace model to wrap
         :param lm_head: Optional LM head (for VLM backbones where head is separate)
-        :param use_inputs_embeds: If True, first input is inputs_embeds; else input_ids
-        :param extra_input_names: Names of additional inputs to pass through to model
         :param cache_type: Cache class to construct from flattened KV pairs.
             Defaults to ``DynamicCache``. Models with hybrid attention (e.g.
             mixing full attention with linear/recurrent layers) can pass
             ``HybridCache`` or another cache class.
+        :param input_names: ONNX input names matching the positional arg layout.
+            ``forward`` reconstructs a name→tensor dict from ``*args`` and
+            parses by name pattern.
         """
         super().__init__()
         self.model = model
         self.lm_head = lm_head
-        self.use_inputs_embeds = use_inputs_embeds
-        self.extra_input_names = extra_input_names
         self.cache_type = cache_type
+        if not input_names:
+            input_names = self._default_input_names()
+        self.input_names = tuple(input_names)
+
+    def _default_input_names(self) -> tuple[str, ...]:
+        """Derive input names from model config when none are provided."""
+        from GenAILab.qai_hub_lm.models.base import LLM
+
+        return LLM.get_backbone_input_names(
+            build_layer_cache_descriptors(self.model.config)
+        )
+
+    @property
+    def use_inputs_embeds(self) -> bool:
+        return "inputs_embeds" in self.input_names
+
+    @property
+    def extra_input_names(self) -> tuple[str, ...]:
+        return tuple(
+            n
+            for n in self.input_names
+            if not any(n.startswith(p) for p in self._KNOWN_PREFIXES)
+        )
 
     @property
     def device(self):
@@ -156,50 +190,98 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
                 kv_cache.update(state_a, state_b, layer_idx, {})
         return kv_cache
 
-    # pylint: disable=keyword-arg-before-vararg
-    def forward(
-        self,
-        input_or_embeds: torch.Tensor = None,
-        attention_mask: torch.Tensor = None,
-        position_ids: torch.Tensor = None,
-        *args: tuple[torch.Tensor, ...],
-    ):
+    @staticmethod
+    def _parse_inputs_by_name(
+        input_names: tuple[str, ...],
+        args: tuple[torch.Tensor, ...],
+    ) -> dict[str, torch.Tensor]:
+        """Reconstruct a name→tensor dict from positional args."""
+        if len(args) != len(input_names):
+            raise RuntimeError(
+                f"Expected {len(input_names)} inputs but got {len(args)}."
+            )
+        return dict(zip(input_names, args))
+
+    @staticmethod
+    def _collect_indexed_extras(
+        extras: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
+        """Coalesce ``deepstack_visual_embeds_0, _1, ...`` back into a list.
+
+        TODO: replace with a generator-provided unflatten callback so the
+        wrapper doesn't need model-specific knowledge.
+        """
+        ds_items: list[tuple[int, torch.Tensor]] = []
+        result: dict[str, torch.Tensor | list[torch.Tensor]] = {}
+        prefix = "deepstack_visual_embeds_"
+        for k, v in extras.items():
+            if k.startswith(prefix):
+                idx = int(k[len(prefix) :])
+                ds_items.append((idx, v))
+            else:
+                result[k] = v
+        if ds_items:
+            ds_items.sort(key=lambda x: x[0])
+            result["deepstack_visual_embeds"] = [v for _, v in ds_items]
+        return result
+
+    @staticmethod
+    def _unpack_attention_mask(
+        inputs: dict[str, torch.Tensor],
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        masks = {k: v for k, v in inputs.items() if k.startswith("attention_mask")}
+        if len(masks) == 1:
+            return next(iter(masks.values()))
+
+        unpacked_attention_masks = {}
+        if "attention_mask_full" in masks:
+            unpacked_attention_masks[AttentionType.FULL.value] = masks[
+                "attention_mask_full"
+            ]
+        if "attention_mask_sliding_window" in masks:
+            unpacked_attention_masks[AttentionType.SLIDING_WINDOW.value] = masks[
+                "attention_mask_sliding_window"
+            ]
+        return unpacked_attention_masks if len(unpacked_attention_masks) > 0 else None
+
+    def forward(self, *args: torch.Tensor):
         """
         Redefine model forward to convert to/from Huggingface DynamicCache objects.
 
-        Args layout: [input_or_embeds, attention_mask, position_ids, *kv_cache_pairs, *extra_inputs]
-
-        The number of extra inputs is determined by len(self.extra_input_names).
-        KV cache pairs come before extra inputs in *args.
+        Positional ``*args`` are mapped to names via ``self.input_names`` and
+        then dispatched by name pattern (mask, position, KV cache, extras).
         """
-        num_kv = 2 * _resolve_text_config(self.model.config).num_hidden_layers
-        num_extra = len(self.extra_input_names)
-        expected = num_kv + num_extra
-        if len(args) != 0 and len(args) < num_kv:
-            raise RuntimeError(
-                f"Expected at least {num_kv} args (KV pairs) but got {len(args)}."
-            )
+        inputs = self._parse_inputs_by_name(self.input_names, args)
 
-        # Split args into KV cache and extra inputs
-        past_key_values = args[:num_kv]
-        if num_extra > 0 and len(args) >= expected:
-            extra_inputs = args[num_kv : num_kv + num_extra]
-            extra_kwargs = dict(zip(self.extra_input_names, extra_inputs))
-        else:
-            extra_kwargs = {}
+        input_or_embeds = inputs.get("inputs_embeds", inputs.get("input_ids"))
+        attention_mask = self._unpack_attention_mask(inputs)
+        position_ids = inputs.get("position_ids")
+        position_ids_cos = inputs.get("position_ids_cos")
+        position_ids_sin = inputs.get("position_ids_sin")
 
-        # Build cache from flattened state pairs
-        kv_cache = self._build_cache(past_key_values)
+        kv_pairs = [
+            v
+            for k, v in inputs.items()
+            if k.startswith(("past_key_", "past_value_", "recurrent_state_"))
+        ]
+        extra_kwargs = {k: v for k, v in inputs.items() if k in self.extra_input_names}
+        extra_kwargs = self._collect_indexed_extras(extra_kwargs)
 
-        # Build model kwargs
+        kv_cache = self._build_cache(tuple(kv_pairs))
+
         model_kwargs = {
             "attention_mask": attention_mask,
-            "position_ids": position_ids,
             "past_key_values": kv_cache,
             "num_logits_to_return": 0,
             "return_dict": False,
             **extra_kwargs,
         }
+
+        if position_ids is not None:
+            model_kwargs["position_ids"] = position_ids
+        if position_ids_cos is not None:
+            model_kwargs["position_ids_cos"] = position_ids_cos
+            model_kwargs["position_ids_sin"] = position_ids_sin
 
         if self.use_inputs_embeds:
             model_kwargs["input_ids"] = None
@@ -207,7 +289,9 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
         else:
             model_kwargs["input_ids"] = input_or_embeds
 
-        # Call underlying model
+        return self._call_model_and_flatten(model_kwargs)
+
+    def _call_model_and_flatten(self, model_kwargs):
         outputs = self.model(**model_kwargs)
         hidden_states_or_logits, new_past_key_values = outputs[0], outputs[1]
 

@@ -60,12 +60,12 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
         )
 
         # 1) Wrap LLM model to make it traceable
-        # Need to wrap model in this in order to enable JIT trace
+        layer_cache_descs = build_layer_cache_descriptors(model.config)
         traceable_backbone = ONNXExportableModuleWithCache(
             model.model.language_model,
             lm_head=model.lm_head,
-            use_inputs_embeds=True,
             cache_type=cls.get_cache_type(),
+            input_names=cls.get_backbone_input_names(layer_cache_descs),
         )
         language_sim = QuantizationSimModel(
             model=traceable_backbone,
@@ -74,9 +74,7 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
                 traceable_backbone,
                 context_length=context_length,
                 sequence_length=sequence_length,
-                layer_cache_descriptors=build_layer_cache_descriptors(
-                    model.config.text_config
-                ),
+                layer_cache_descriptors=layer_cache_descs,
             ),
             default_output_bw=default_output_bw,
             default_param_bw=default_param_bw,

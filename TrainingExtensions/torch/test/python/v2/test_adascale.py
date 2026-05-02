@@ -164,7 +164,8 @@ def fxt_dataloader():
         def __getitem__(self, idx):
             # deterministic tokens
             ids = torch.full((SEQUENCE_LENGTH,), idx % VOCAB_SIZE, dtype=torch.int)
-            return ids
+            mask = torch.full((SEQUENCE_LENGTH,), 0, dtype=torch.int)
+            return ids, mask
 
         def __len__(self):
             return self._size
@@ -180,7 +181,9 @@ def fxt_checkpoint_dir():
 
 @pytest.fixture
 def fxt_quantsim_ready_model(fxt_model, fxt_dummy_input):
-    traceable_model = ONNXExportableModuleWithCache(fxt_model)
+    traceable_model = ONNXExportableModuleWithCache(
+        fxt_model, input_names=tuple(fxt_dummy_input.keys())
+    )
     sim = QuantizationSimModel(
         model=traceable_model,
         dummy_input=tuple(fxt_dummy_input.values()),
@@ -201,7 +204,9 @@ def fxt_block(fxt_quantsim_ready_model):
 
 
 def get_quantsim_ready_model(model, dummy_input: dict):
-    traceable_model = ONNXExportableModuleWithCache(model)
+    traceable_model = ONNXExportableModuleWithCache(
+        model, input_names=tuple(dummy_input.keys())
+    )
     sim = QuantizationSimModel(
         model=traceable_model,
         dummy_input=tuple(dummy_input.values()),

@@ -74,11 +74,11 @@ def _build_ort_llm_generator(model, tokenizer, model_id, sequence_length):
     """Export an LLM to ONNX, load via ORT, and wrap in Generator."""
     key = (model_id, sequence_length)
     if key not in _ort_llm_session_cache:
-        wrapped = ONNXExportableModuleWithCache(model)
-        wrapped.eval()
-
         layer_cache_descriptors = build_layer_cache_descriptors(model.config)
         input_names = LLM.get_backbone_input_names(layer_cache_descriptors)
+
+        wrapped = ONNXExportableModuleWithCache(model, input_names=input_names)
+        wrapped.eval()
         output_names = LLM.get_backbone_output_names(layer_cache_descriptors)
 
         dummy_ids = torch.zeros((1, 1), dtype=torch.int32)

@@ -190,12 +190,13 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
     ) -> ModelCacheEntry:
         """Export the torch model to ONNX and return a :class:`ModelCacheEntry`."""
         model = cls.instantiate_model(model_id, small_model).to(dtype=torch.float32)
+        layer_cache_descs = build_layer_cache_descriptors(model.config)
 
         traceable_backbone = ONNXExportableModuleWithCache(
             model.model.language_model,
             lm_head=model.lm_head,
-            use_inputs_embeds=True,
             cache_type=cls.get_cache_type(),
+            input_names=cls.get_backbone_input_names(layer_cache_descs),
         )
         traceable_visual = Qwen2VLVisualWrapper(model.model.visual)
 
@@ -208,16 +209,10 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
                 traceable_backbone,
                 context_length,
                 sequence_length,
-                layer_cache_descriptors=build_layer_cache_descriptors(
-                    traceable_backbone.config
-                ),
+                layer_cache_descriptors=layer_cache_descs,
             ),
-            input_names=cls.get_backbone_input_names(
-                build_layer_cache_descriptors(traceable_backbone.config)
-            ),
-            output_names=cls.get_backbone_output_names(
-                build_layer_cache_descriptors(traceable_backbone.config)
-            ),
+            input_names=cls.get_backbone_input_names(layer_cache_descs),
+            output_names=cls.get_backbone_output_names(layer_cache_descs),
             fp_visual_model=traceable_visual,
             sample_visual_input=cls.get_sample_vision_inputs(
                 model.config, image_size=image_size

@@ -179,8 +179,11 @@ class LLM_ONNX(LLM):
 
         assert isinstance(instantiated_model, torch.nn.Module)
         instantiated_model = instantiated_model.to(dtype=torch.float32)
+        layer_cache_descs = build_layer_cache_descriptors(instantiated_model.config)
         exportable_model = ONNXExportableModuleWithCache(
-            instantiated_model, cache_type=cls.get_cache_type()
+            instantiated_model,
+            cache_type=cls.get_cache_type(),
+            input_names=cls.get_backbone_input_names(layer_cache_descs),
         )
 
         onnx_model, *_ = get_onnx_model(
@@ -191,12 +194,8 @@ class LLM_ONNX(LLM):
             sample_input=cls.get_sample_backbone_inputs(
                 exportable_model, context_length, sequence_length
             ),
-            input_names=cls.get_backbone_input_names(
-                build_layer_cache_descriptors(exportable_model.config)
-            ),
-            output_names=cls.get_backbone_output_names(
-                build_layer_cache_descriptors(exportable_model.config)
-            ),
+            input_names=cls.get_backbone_input_names(layer_cache_descs),
+            output_names=cls.get_backbone_output_names(layer_cache_descs),
             dynamo=cls.use_dynamo_export(),
         )
 

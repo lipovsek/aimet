@@ -108,14 +108,20 @@ def build_vlm_generator(model, model_id: str, sequence_length: int) -> VLM_Gener
     generator_cls = vlm_cls.get_generator_cls()
 
     visual_output_names = _torch_visual_output_names(vlm_cls, model.config)
-    extra_input_names = tuple(n for n in visual_output_names if n != "image_embeddings")
 
+    try:
+        backbone_input_names = vlm_cls.get_backbone_input_names(
+            build_layer_cache_descriptors(model.config), config=model.config
+        )
+    except TypeError:
+        backbone_input_names = vlm_cls.get_backbone_input_names(
+            build_layer_cache_descriptors(model.config)
+        )
     backbone = ONNXExportableModuleWithCache(
         model.model.language_model,
         lm_head=model.lm_head,
-        use_inputs_embeds=True,
-        extra_input_names=extra_input_names,
         cache_type=vlm_cls.get_cache_type(),
+        input_names=backbone_input_names,
     )
     vision = wrapper_cls(model.model.visual)
     embedding = model.model.language_model.embed_tokens
@@ -161,17 +167,6 @@ def build_ort_vlm_generator(
 
     key = (model_id, sequence_length)
     if key not in _ort_vlm_session_cache:
-        extra_input_names = visual_output_names[1:]
-
-        backbone_wrapped = ONNXExportableModuleWithCache(
-            model.model.language_model,
-            lm_head=model.lm_head,
-            use_inputs_embeds=True,
-            extra_input_names=extra_input_names,
-            cache_type=vlm_cls.get_cache_type(),
-        )
-        backbone_wrapped.eval()
-
         text_config = getattr(model.config, "text_config", model.config)
         layer_cache_descriptors = build_layer_cache_descriptors(text_config)
 
@@ -183,6 +178,14 @@ def build_ort_vlm_generator(
             backbone_input_names = vlm_cls.get_backbone_input_names(
                 layer_cache_descriptors
             )
+
+        backbone_wrapped = ONNXExportableModuleWithCache(
+            model.model.language_model,
+            lm_head=model.lm_head,
+            cache_type=vlm_cls.get_cache_type(),
+            input_names=backbone_input_names,
+        )
+        backbone_wrapped.eval()
         backbone_output_names = LLM.get_backbone_output_names(layer_cache_descriptors)
 
         backbone_sample = vlm_cls.get_sample_backbone_inputs(

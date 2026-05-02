@@ -183,6 +183,47 @@ def build_layer_cache_descriptors(
     return descriptors
 
 
+def has_sliding_window_layers(
+    descriptors: list[LayerCacheDescriptor],
+) -> bool:
+    """Return True if any descriptor uses sliding window attention."""
+    return any(d.attention_type == AttentionType.SLIDING_WINDOW for d in descriptors)
+
+
+def attention_mask_input_names(
+    layer_cache_descriptors: list[LayerCacheDescriptor],
+) -> list[str]:
+    """Return the ONNX input names for attention mask tensor(s).
+
+    Models with sliding window layers need two separate 4D masks
+    (full and sliding window); all others use a single mask.
+    """
+    if has_sliding_window_layers(layer_cache_descriptors):
+        return ["attention_mask_full", "attention_mask_sliding_window"]
+    return ["attention_mask"]
+
+
+def cache_state_names(
+    layer_cache_descriptors: list[LayerCacheDescriptor],
+    suffix: str = "in",
+) -> list[str]:
+    """Return per-layer state names for the KV / recurrent cache.
+
+    *suffix* is ``"in"`` for input names and ``"out"`` for output names.
+    """
+    names: list[str] = []
+    for desc in layer_cache_descriptors:
+        i = desc.layer_idx
+        if desc.attention_type == AttentionType.LINEAR:
+            names += [
+                f"recurrent_state_k_{i}_{suffix}",
+                f"recurrent_state_v_{i}_{suffix}",
+            ]
+        else:
+            names += [f"past_key_{i}_{suffix}", f"past_value_{i}_{suffix}"]
+    return names
+
+
 def _is_sliding_window_layer(config: PretrainedConfig, layer_idx: int) -> bool:
     """Determine whether *layer_idx* uses sliding window attention.
 
