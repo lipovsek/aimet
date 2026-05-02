@@ -36,10 +36,16 @@ on:
         required: false
         type: boolean
         default: false
+      # TODO: Once all callers are migrated to ephemeral runners, runs_on can be removed —
+      # the ephemeral path derives its runner label internally and does not use this input.
       runs_on:
         required: true
         type: string
       include_windows_tests:
+        required: false
+        type: boolean
+        default: false
+      use-ephemeral-runner:
         required: false
         type: boolean
         default: false
@@ -59,11 +65,14 @@ jobs:
           json_array=$(echo "$versions" | tr ',' '\n' | jq -R . | jq -sc .)
           echo "python_versions={\"ver_python\":$json_array}" >> $GITHUB_OUTPUT
 
+  # TODO: Once nightly and pypi-release pipelines are migrated to ephemeral runners,
+  # test_on_linux (which requires a container: block for static k8s/ubuntu runners) can be
+  # removed and test_on_linux_ephemeral will be the only Linux test job.
   test_on_linux:
     name: Run AIMET unit and acceptance tests on Ubuntu (Python ${{ matrix.ver_python }})
     needs: parse_python_versions
     runs-on: ${{ inputs.runs_on }}
-    if: inputs.run_unit_tests || inputs.run_acceptance_tests
+    if: (inputs.run_unit_tests || inputs.run_acceptance_tests) && !inputs.use-ephemeral-runner
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.parse_python_versions.outputs.python_versions) }}
@@ -192,6 +201,165 @@ jobs:
               PYTEST_ARGS="not cuda"
           fi
           python -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
+
+  start-runner:
+    if: ${{ inputs.use-ephemeral-runner && (inputs.run_unit_tests || inputs.run_acceptance_tests) }}
+    name: Start runner (${{ inputs.env_name }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/start-gpu-runner
+        with:
+          runner-id: ${{ inputs.env_name }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          gpu-request: ${{ inputs.ver_cuda != '' && '1' || '0' }}
+          docker-image: ${{ inputs.ver_cuda != '' && format('docker-registry.qualcomm.com/library/nvidia/cuda:{0}-cudnn-devel-ubuntu22.04', inputs.ver_cuda) || 'docker-registry.qualcomm.com/library/ubuntu:22.04' }}
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
+
+  test_on_linux_ephemeral:
+    name: Run AIMET unit and acceptance tests on Ubuntu - ephemeral (Python ${{ matrix.ver_python }})
+    needs: [parse_python_versions, start-runner]
+    runs-on: ${{ inputs.env_name }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
+    if: ${{ inputs.use-ephemeral-runner && (inputs.run_unit_tests || inputs.run_acceptance_tests) }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.parse_python_versions.outputs.python_versions) }}
+    env:
+      pytest_github_report: true
+      pytest_use_zeros: true
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y git curl g++ ca-certificates cmake make
+          # ref: https://qwiki.qualcomm.com/it-sec-public/QC_SSL#Machines
+          sudo curl -L 'https://pki.qualcomm.com/{qc_root_g2_cert.crt,ssl_v3_cert.crt,ssl_v4_cert.crt}' -o '/usr/local/share/ca-certificates/#1'
+          sudo update-ca-certificates
+          # Update certificate env variables
+          echo "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt" >> $GITHUB_ENV
+          echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> $GITHUB_ENV
+          rm -rf download
+      - name: Set CUDA_HOME for GPU builds
+        if: inputs.ver_cuda != ''
+        run: |
+          # Set CUDA_HOME for deepspeed and other CUDA-dependent packages
+          echo "CUDA_HOME=/usr/local/cuda" >> $GITHUB_ENV
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v3
+        with:
+          name: "${{ inputs.env_name }}-wheel"
+          path: "downloads"
+      - uses: actions/download-artifact@v3
+        if: inputs.ver_onnxruntime != ''
+        with:
+          name: "${{ inputs.env_name }}-tests"
+          path: "downloads"
+      - name: Create python virtual environment
+        if: ${{ inputs.env_name  != 'onnx-torch-cpu' }}
+        uses: ./.github/actions/setup-uv-env
+        with:
+          ENV_NAME: ${{ inputs.env_name }}
+          VER_PYTHON: ${{ matrix.ver_python }}
+      - name: Install test dependencies
+        run: |
+          . ./${{ inputs.env_name }}/bin/activate
+
+          python3 -m ensurepip --upgrade
+          python3 -m pip install uv
+
+          # Install test dependencies
+          WHEEL_PATH=$(find downloads -name "aimet_*.whl" | head -n 1)
+          cu=$(echo "${{ inputs.VER_CUDA }}" | awk -F'.' '{print ($1!="")? "cu"$1$2 : "cpu"}')
+          python3 -m uv pip install "${WHEEL_PATH}[test,v1-deps]" --extra-index-url="https://download.pytorch.org/whl/${cu}"  --index-strategy unsafe-best-match
+
+      - name: Run pylint
+        # TODO: #6789: Enable pylint for python 3.11 and 3.12
+        if: matrix.ver_python == '3.10'
+        run: |
+          . ./${{ inputs.env_name }}/bin/activate
+          UV_PYTHONPATH="./${{ inputs.env_name }}/lib/python${{ matrix.ver_python }}/site-packages"
+
+          # Set LD_LIBRARY_PATH for dynamic linking with libpython3.so
+          PYTHON_LIB_PATH=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+          export LD_LIBRARY_PATH="${PYTHON_LIB_PATH}:${LD_LIBRARY_PATH}"
+
+          # Run pylint on aimet-onnx or aimet-torch
+          if [ "${{ inputs.ver_onnxruntime }}" != "" ] ; then
+              AIMET_ONNX_PATH=$(find $UV_PYTHONPATH -regex ".*/aimet_onnx")
+              if [ -z "$AIMET_ONNX_PATH" ]; then
+                echo "aimet_onnx package not found in $UV_PYTHONPATH"
+              fi
+              python -m pylint --rcfile=.pylintrc $AIMET_ONNX_PATH
+          elif [ "${{ inputs.ver_torch }}" != "" ] ; then
+            AIMET_TORCH_PATH=$(find $UV_PYTHONPATH -regex ".*/aimet_torch")
+            if [ -z "$AIMET_TORCH_PATH" ]; then
+              echo "aimet_torch package not found in $UV_PYTHONPATH"
+            fi
+            python -m pylint --rcfile=.pylintrc $AIMET_TORCH_PATH
+          fi
+
+      - name: Run Unit tests
+        if: inputs.run_unit_tests
+        run: |
+          set -x
+          . ./${{ inputs.env_name }}/bin/activate
+
+          PYTHON_LIB_PATH=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+          export LD_LIBRARY_PATH="${PYTHON_LIB_PATH}:${LD_LIBRARY_PATH}"
+          for target in $(find downloads -name "*Test"); do
+              chmod +x $target
+              $target
+          done
+
+          PYTEST_TARGETS="./TrainingExtensions/common/test"
+
+          if [ "${{ inputs.ver_onnxruntime }}" != "" ] ; then
+              PYTEST_TARGETS="./ModelOptimizations/DlQuantization/test $PYTEST_TARGETS"
+              PYTEST_TARGETS="$PYTEST_TARGETS ./TrainingExtensions/onnx/test"
+          elif [ "${{ inputs.ver_torch }}" != "" ] ; then
+              PYTEST_TARGETS="$PYTEST_TARGETS ./TrainingExtensions/torch/test"
+          fi
+          PYTEST_ARGS="not blah"
+          if [ "${{ inputs.ver_cuda }}" = "" ] ; then
+              PYTEST_ARGS="not cuda"
+          fi
+          python -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
+      - name: Run Acceptance tests
+        if: inputs.run_acceptance_tests
+        run: |
+          set -x
+          . ./${{ inputs.env_name }}/bin/activate
+
+          # Set LD_LIBRARY_PATH for dynamic linking with libpython3.so
+          PYTHON_LIB_PATH=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+          export LD_LIBRARY_PATH="${PYTHON_LIB_PATH}:${LD_LIBRARY_PATH}"
+
+          PYTEST_TARGETS=""
+          if [ "${{ inputs.ver_onnxruntime }}" != "" ] ; then
+              PYTEST_TARGETS="$PYTEST_TARGETS ./NightlyTests/onnx"
+          elif [ "${{ inputs.ver_torch }}" != "" ] ; then
+              PYTEST_TARGETS="$PYTEST_TARGETS ./NightlyTests/torch"
+              uv pip install wget
+              python ./NightlyTests/torch/dependencies.py ./NightlyTests/torch/resnet18_eval_scores.csv
+          fi
+          PYTEST_ARGS="not blah"
+          if [ "${{ inputs.ver_cuda }}" = "" ] ; then
+              PYTEST_ARGS="not cuda"
+          fi
+          python -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
+
+  cleanup-runner:
+    if: always() && inputs.use-ephemeral-runner
+    name: Cleanup runner (${{ inputs.env_name }})
+    needs: [start-runner, test_on_linux_ephemeral]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stop-gpu-runner
+        with:
+          runner-ids: ${{ inputs.env_name }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
   test_on_windows:
     name: Run AIMET unit and acceptance tests on Windows (${{ matrix.arch }})

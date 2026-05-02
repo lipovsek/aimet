@@ -19,6 +19,9 @@ on:
         default: false
 
 jobs:
+  # TODO: Once nightly and pypi-release pipelines are migrated to ephemeral runners,
+  # build-linux (which requires a container: block for static k8s/ubuntu runners) can be
+  # removed and build-linux-ephemeral will be the only Linux build job.
   build-linux:
     if: ${{ !inputs.use-ephemeral-runner }}
     strategy:
@@ -47,7 +50,7 @@ jobs:
 
   start-runner:
     if: ${{ inputs.use-ephemeral-runner }}
-    name: Start GPU runner (${{ matrix.id }})
+    name: Start runner (${{ matrix.id }})
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.variants) }}
@@ -86,7 +89,7 @@ jobs:
 
   cleanup-runner:
     if: always() && inputs.use-ephemeral-runner
-    name: Cleanup GPU runner (${{ matrix.id }})
+    name: Cleanup runner (${{ matrix.id }})
     needs: [start-runner, build-linux-ephemeral]
     strategy:
       fail-fast: false

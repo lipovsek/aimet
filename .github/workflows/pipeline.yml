@@ -23,9 +23,6 @@ jobs:
 
   variants:
     name: Define supported AIMET variants
-    # use-ephemeral-runner is a transitional flag, currently consumed only by build-wheels.
-    # Once run-unit-acceptance-tests also supports ephemeral runners, GPU variants can pass
-    # the ephemeral runner label directly via runs-on and this flag can be removed.
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.final.outputs.value }}
@@ -110,7 +107,7 @@ jobs:
                  "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "2.*",
                  "VER_ONNXRUNTIME": "",
-                 "VER_CUDA":        "12.6.0",
+                 "VER_CUDA":        "12.8.0",
                  "RUN_UNIT_TESTS":    "ON",
                  "RUN_ACCEPTANCE_TESTS":    "OFF",
                  "BUILD_TARGETS":   "all",
@@ -143,7 +140,7 @@ jobs:
                  "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "",
                  "VER_ONNXRUNTIME": "1.19.2",
-                 "VER_CUDA":        "12.6.0",
+                 "VER_CUDA":        "12.8.0",
                  "RUN_UNIT_TESTS":    "ON",
                  "RUN_ACCEPTANCE_TESTS":    "OFF",
                  "BUILD_TARGETS":   "all",
@@ -228,6 +225,7 @@ jobs:
       runs_on: ${{ matrix.runs-on }}
       pip_index: ${{ matrix.PIP_INDEX }}
       include_windows_tests: false
+      use-ephemeral-runner: true
 
     secrets: inherit
 
