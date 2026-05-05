@@ -91,7 +91,7 @@ jobs:
           "id":"onnx-gpu",
           "VER_PYTHON":"3.10",
           "VER_ONNXRUNTIME":"1.19.2",
-          "VER_CUDA":"12.6.0",
+          "VER_CUDA":"12.6.3",
           "ENABLE_TESTS":"OFF",
           "PIP_INDEX":""
         }]}
@@ -114,7 +114,7 @@ jobs:
           "VER_PYTHON":"3.10",
           "VER_TORCH":"2.*",
           "VER_ONNXRUNTIME": "",
-          "VER_CUDA": "12.8",
+          "VER_CUDA": "12.6.3",
           "ENABLE_TESTS":"OFF",
           "PIP_INDEX":""
         }]}
