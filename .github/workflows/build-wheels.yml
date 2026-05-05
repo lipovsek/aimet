@@ -46,7 +46,7 @@ jobs:
           ver-cuda: ${{ matrix.VER_CUDA }}
           pip-index: ${{ matrix.PIP_INDEX }}
           build-targets: ${{ matrix.BUILD_TARGETS }}
-          build-tests: ${{ (matrix.RUN_UNIT_TESTS == 'ON' || matrix.RUN_ACCEPTANCE_TESTS == 'ON') && 'ON' || 'OFF' }}
+          build-tests: ${{ (matrix.id == 'onnx-cpu' || matrix.id == 'onnx-gpu') && 'ON' || 'OFF' }}
 
   start-runner:
     if: ${{ inputs.use-ephemeral-runner }}
@@ -85,7 +85,7 @@ jobs:
           ver-cuda: ${{ matrix.VER_CUDA }}
           pip-index: ${{ matrix.PIP_INDEX }}
           build-targets: ${{ matrix.BUILD_TARGETS }}
-          build-tests: ${{ (matrix.RUN_UNIT_TESTS == 'ON' || matrix.RUN_ACCEPTANCE_TESTS == 'ON') && 'ON' || 'OFF' }}
+          build-tests: ${{ (matrix.id == 'onnx-cpu' || matrix.id == 'onnx-gpu') && 'ON' || 'OFF' }}
 
   cleanup-runner:
     if: always() && inputs.use-ephemeral-runner
