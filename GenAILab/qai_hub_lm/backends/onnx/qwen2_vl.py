@@ -46,7 +46,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
         cls,
         model_id: str,
         context_length: int,
-        sequence_length: int,
+        sequence_length: int | list[int],
         small_model: bool = False,
         precision: PrecisionConfig | None = None,
         model_cache: DiskBackedModelCache | None = None,
@@ -57,6 +57,17 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
         if precision is None:
             precision = PrecisionConfig()
         precision.ensure_visual_defaults()
+
+        max_sequence_length = (
+            max(sequence_length)
+            if isinstance(sequence_length, list)
+            else sequence_length
+        )
+        cache_sl = (
+            "dynamic"
+            if isinstance(sequence_length, list) and len(sequence_length) > 1
+            else max_sequence_length
+        )
 
         if model_id is None:
             model_id = cls.DEFAULT_MODEL_ID
@@ -69,7 +80,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
                     params = {
                         "model_id": model_id,
                         "class": cls.__name__,
-                        "sequence_length": sequence_length,
+                        "sequence_length": cache_sl,
                         "context_length": context_length,
                         "small_model": small_model,
                         "image_size": image_size,
@@ -106,7 +117,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
                 load_model_components_from_disk(
                     model_id,
                     context_length=context_length,
-                    sequence_length=sequence_length,
+                    sequence_length=cache_sl,
                 )
             )
             if visual_onnx_model is None or embedding is None:
@@ -183,12 +194,18 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
         cls,
         model_id: str,
         context_length: int,
-        sequence_length: int,
+        sequence_length: int | list[int],
         small_model: bool,
         directory: str,
         image_size: tuple[int, int] | None = None,
     ) -> ModelCacheEntry:
         """Export the torch model to ONNX and return a :class:`ModelCacheEntry`."""
+        max_seq_len = (
+            max(sequence_length)
+            if isinstance(sequence_length, list)
+            else sequence_length
+        )
+
         model = cls.instantiate_model(model_id, small_model).to(dtype=torch.float32)
         layer_cache_descs = build_layer_cache_descriptors(model.config)
 
@@ -200,6 +217,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
         )
         traceable_visual = Qwen2VLVisualWrapper(model.model.visual)
 
+        layer_cache_descs = build_layer_cache_descriptors(traceable_backbone.config)
         backbone_onnx_model, visual_onnx_model = get_onnx_model(
             checkpoint=directory,
             fp_backbone_model=traceable_backbone,
@@ -208,7 +226,7 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
             sample_input=cls.get_sample_backbone_inputs(
                 traceable_backbone,
                 context_length,
-                sequence_length,
+                max_seq_len,
                 layer_cache_descriptors=layer_cache_descs,
             ),
             input_names=cls.get_backbone_input_names(layer_cache_descs),
@@ -220,6 +238,8 @@ class Qwen_25_VL_ONNX(Qwen_25_VL):
             visual_input_names=cls.get_visual_input_names(),
             visual_output_names=cls.get_visual_output_names(),
             dynamo=cls.use_dynamo_export(),
+            dynamic_axes=cls.get_backbone_dynamic_axes(layer_cache_descs),
+            visual_dynamic_axes=cls.get_visual_dynamic_axes(),
         )
 
         embedding = model.model.language_model.embed_tokens

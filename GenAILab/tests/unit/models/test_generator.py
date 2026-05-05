@@ -71,6 +71,61 @@ class _DummyModel(torch.nn.Module):
         return (logits, *kv_tensors)
 
 
+class _DeterministicModel(torch.nn.Module):
+    """Model stub with deterministic outputs for sequence-length parity tests.
+
+    Uses a fixed linear projection so that identical unmasked inputs produce
+    identical outputs regardless of padding.
+    """
+
+    def __init__(self, cfg=None):
+        super().__init__()
+        self.cfg = cfg or _Cfg()
+        torch.manual_seed(42)
+        self.proj = torch.nn.Linear(
+            self.cfg.hidden_size, self.cfg.vocab_size, bias=False
+        )
+        self.kv_proj = torch.nn.Linear(
+            self.cfg.hidden_size, self.cfg.head_dim, bias=False
+        )
+
+    @property
+    def config(self):
+        return self.cfg
+
+    @property
+    def device(self):
+        return torch.device("cpu")
+
+    @property
+    def dtype(self):
+        return torch.float32
+
+    def forward(self, *args):
+        input_tokens = args[0]  # [batch, seq_len] int or [batch, seq_len, hidden] float
+        attention_mask = args[1]  # [batch, 1, seq_len, context_len]
+        batch = input_tokens.shape[0]
+        seq_len = input_tokens.shape[1]
+
+        if input_tokens.ndim == 2:
+            hidden = torch.nn.functional.one_hot(
+                input_tokens.long() % self.cfg.hidden_size, self.cfg.hidden_size
+            ).float()
+        else:
+            hidden = input_tokens.float()
+
+        logits = self.proj(hidden)
+        kv_base = self.kv_proj(hidden)
+        kv_shape = (batch, self.cfg.num_key_value_heads, seq_len, self.cfg.head_dim)
+        kv_tensors = [
+            kv_base.view(batch, 1, seq_len, self.cfg.head_dim)
+            .expand(kv_shape)
+            .contiguous()
+            for _ in range(self.cfg.num_hidden_layers * 2)
+        ]
+        return (logits, *kv_tensors)
+
+
 @pytest.fixture
 def cfg():
     return _Cfg()
@@ -819,3 +874,185 @@ class TestLayerCacheDescriptorsProperty:
         assert all(d.attention_type == AttentionType.FULL for d in descs)
         assert descs[0].num_kv_heads == 4
         assert descs[0].head_dim == 16
+
+
+# ---------------------------------------------------------------------------
+# Multi-sequence-length support
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def multi_seq_gen(model, tokenizer):
+    return Generator(
+        model=model,
+        tokenizer=tokenizer,
+        sequence_length=[1, 8],
+        context_length=32,
+    )
+
+
+class TestMultiSequenceLength:
+    def test_sequence_lengths_sorted(self, multi_seq_gen):
+        assert multi_seq_gen.sequence_lengths == [1, 8]
+
+    def test_sequence_length_property_returns_max(self, multi_seq_gen):
+        assert multi_seq_gen.sequence_length == 8
+
+    def test_single_int_wrapped_in_list(self, gen):
+        assert gen.sequence_lengths == [8]
+        assert gen.sequence_length == 8
+
+    def test_select_picks_smallest_fit(self, multi_seq_gen):
+        assert multi_seq_gen._select_sequence_length(1) == 1
+        assert multi_seq_gen._select_sequence_length(5) == 8
+        assert multi_seq_gen._select_sequence_length(8) == 8
+
+    def test_select_falls_back_to_largest(self, multi_seq_gen):
+        assert multi_seq_gen._select_sequence_length(20) == 8
+
+    def test_forward_short_input_uses_small_seq_len(self, multi_seq_gen, cfg):
+        input_ids = torch.randint(0, 256, (1, 1))
+        result = multi_seq_gen.forward(input_ids=input_ids)
+        assert isinstance(result, CausalLMOutputWithPast)
+        assert result.logits.shape[1] == 1
+
+    def test_forward_long_input_uses_large_seq_len(self, multi_seq_gen, cfg):
+        input_ids = torch.randint(0, 256, (1, 6))
+        result = multi_seq_gen.forward(input_ids=input_ids)
+        assert result.logits.shape[1] == 6
+
+    def test_forward_multi_slice(self, multi_seq_gen, cfg):
+        input_ids = torch.randint(0, 256, (1, 20))
+        result = multi_seq_gen.forward(input_ids=input_ids)
+        assert result.logits.shape[1] == 20
+
+    def test_kv_cache_shape_matches_selected_seq_len(self, model, tokenizer, cfg):
+        gen = Generator(
+            model=model,
+            tokenizer=tokenizer,
+            sequence_length=[1, 8],
+            context_length=32,
+        )
+        # Single token: selects seq_len=1, KV cache clipped to ctx-1=31
+        input_ids = torch.randint(0, 256, (1, 1))
+        result = gen.forward(input_ids=input_ids)
+        kv_len = result.past_key_values.get_seq_length()
+        assert kv_len == 1
+
+    def test_prefill_uses_large_seq_len(self, multi_seq_gen):
+        from collections import OrderedDict
+
+        input_ids = torch.randint(0, 256, (1, 6))
+        slices = list(multi_seq_gen.prefill(input_ids=input_ids))
+        assert len(slices) == 1
+        assert isinstance(slices[0], OrderedDict)
+        assert slices[0]["input_ids"].shape[1] == 8
+
+    def test_prefill_single_token_uses_small_seq_len(self, multi_seq_gen):
+        input_ids = torch.randint(0, 256, (1, 1))
+        slices = list(multi_seq_gen.prefill(input_ids=input_ids))
+        assert len(slices) == 1
+        assert slices[0]["input_ids"].shape[1] == 1
+
+    def test_three_sequence_lengths(self, model, tokenizer):
+        gen = Generator(
+            model=model,
+            tokenizer=tokenizer,
+            sequence_length=[1, 4, 16],
+            context_length=64,
+        )
+        assert gen._select_sequence_length(1) == 1
+        assert gen._select_sequence_length(3) == 4
+        assert gen._select_sequence_length(4) == 4
+        assert gen._select_sequence_length(10) == 16
+        assert gen._select_sequence_length(50) == 16
+
+
+# ---------------------------------------------------------------------------
+# Sequence-length parity: different configs produce identical results
+# ---------------------------------------------------------------------------
+
+
+class TestSequenceLengthParity:
+    """Verify that generators with different sequence_length configs produce
+    identical logits for the same input.
+
+    A single-graph generator (sequence_length=16) and a multi-graph generator
+    (sequence_length=[1, 8, 16]) must agree on both prefill and decode, since
+    padding is masked out and should not affect the result.
+    """
+
+    @pytest.fixture
+    def det_model(self, cfg):
+        return _DeterministicModel(cfg)
+
+    def _make_generator(self, model, tokenizer, sequence_length):
+        return Generator(
+            model=model,
+            tokenizer=tokenizer,
+            sequence_length=sequence_length,
+            context_length=64,
+        )
+
+    def test_prefill_logits_identical(self, det_model, tokenizer):
+        gen_single = self._make_generator(det_model, tokenizer, 16)
+        gen_multi = self._make_generator(det_model, tokenizer, [1, 8, 16])
+
+        input_ids = torch.tensor([[10, 20, 30, 40, 50, 60]])
+        with torch.no_grad():
+            out_single = gen_single(input_ids=input_ids)
+            out_multi = gen_multi(input_ids=input_ids)
+
+        assert out_single.logits.shape == out_multi.logits.shape
+        torch.testing.assert_close(out_single.logits, out_multi.logits)
+
+    def test_decode_step_logits_identical(self, det_model, tokenizer):
+        gen_single = self._make_generator(det_model, tokenizer, 16)
+        gen_multi = self._make_generator(det_model, tokenizer, [1, 8, 16])
+
+        input_ids = torch.tensor([[10, 20, 30, 40]])
+        with torch.no_grad():
+            prefill_single = gen_single(input_ids=input_ids)
+            prefill_multi = gen_multi(input_ids=input_ids)
+
+        next_token = torch.tensor([[99]])
+        decode_mask = torch.ones(1, 5, dtype=torch.int32)
+        with torch.no_grad():
+            decode_single = gen_single(
+                input_ids=next_token,
+                attention_mask=decode_mask,
+                past_key_values=prefill_single.past_key_values,
+            )
+            decode_multi = gen_multi(
+                input_ids=next_token,
+                attention_mask=decode_mask,
+                past_key_values=prefill_multi.past_key_values,
+            )
+
+        assert decode_single.logits.shape == decode_multi.logits.shape
+        torch.testing.assert_close(decode_single.logits, decode_multi.logits)
+
+    def test_different_subset_same_max(self, det_model, tokenizer):
+        """[4, 16] vs [1, 4, 8, 16] — same max, different intermediate options."""
+        gen_a = self._make_generator(det_model, tokenizer, [4, 16])
+        gen_b = self._make_generator(det_model, tokenizer, [1, 4, 8, 16])
+
+        input_ids = torch.tensor([[1, 2, 3]])
+        with torch.no_grad():
+            out_a = gen_a(input_ids=input_ids)
+            out_b = gen_b(input_ids=input_ids)
+
+        assert out_a.logits.shape == out_b.logits.shape
+        torch.testing.assert_close(out_a.logits, out_b.logits)
+
+    def test_single_vs_list_of_one(self, det_model, tokenizer):
+        """sequence_length=16 vs sequence_length=[16] must be identical."""
+        gen_int = self._make_generator(det_model, tokenizer, 16)
+        gen_list = self._make_generator(det_model, tokenizer, [16])
+
+        input_ids = torch.tensor([[5, 10, 15, 20, 25]])
+        with torch.no_grad():
+            out_int = gen_int(input_ids=input_ids)
+            out_list = gen_list(input_ids=input_ids)
+
+        torch.testing.assert_close(out_int.logits, out_list.logits)

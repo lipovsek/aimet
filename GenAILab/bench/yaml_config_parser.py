@@ -340,6 +340,11 @@ class YAMLConfigParser:
             raise RuntimeError("Model 'model_id' not specified.")
         if "sequence_length" not in doc["model"]:
             raise RuntimeError("Sequence length not specified.")
+        sl = doc["model"]["sequence_length"]
+        if not isinstance(sl, (int, list)):
+            raise RuntimeError("sequence_length must be an int or list of ints.")
+        if isinstance(sl, list) and not all(isinstance(x, int) for x in sl):
+            raise RuntimeError("sequence_length must be an int or list of ints.")
         if "context_length" not in doc["model"]:
             raise RuntimeError("Context length not specified.")
 

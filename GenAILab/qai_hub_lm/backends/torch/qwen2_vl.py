@@ -37,7 +37,7 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
         cls,
         model_id: str,
         context_length: int,
-        sequence_length: int,
+        sequence_length: int | list[int],
         small_model: bool = False,
         dtype: torch.dtype = torch.float32,
         precision: PrecisionConfig | None = None,
@@ -48,6 +48,12 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
         if precision is None:
             precision = PrecisionConfig()
         precision.ensure_visual_defaults()
+
+        max_sequence_length = (
+            max(sequence_length)
+            if isinstance(sequence_length, list)
+            else sequence_length
+        )
 
         model = cls.instantiate_model(model_id, small_model)
         model = model.to(dtype=dtype)
@@ -73,7 +79,7 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
             dummy_input=cls.get_sample_backbone_inputs(
                 traceable_backbone,
                 context_length=context_length,
-                sequence_length=sequence_length,
+                sequence_length=max_sequence_length,
                 layer_cache_descriptors=layer_cache_descs,
             ),
             default_output_bw=default_output_bw,

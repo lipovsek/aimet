@@ -193,13 +193,33 @@ class Qwen_3_VL(VLM):
             names += ("deepstack_visual_embeds",)
         return names
 
+    @classmethod
+    def get_backbone_dynamic_axes(
+        cls,
+        layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+        config=None,
+    ) -> dict[str, dict[int, str]]:
+        axes = super().get_backbone_dynamic_axes(layer_cache_descriptors)
+        axes["visual_pos_masks"] = {1: "sequence_length"}
+        num_ds = cls.get_num_deepstack_layers(config) if config else 0
+        for i in range(num_ds):
+            axes[f"deepstack_visual_embeds_{i}"] = {0: "num_visual_tokens"}
+        return axes
+
     @staticmethod
     def use_dynamo_export() -> bool:
-        return True
+        return False
 
     @staticmethod
     def get_visual_input_names() -> tuple[str, ...]:
         return ("pixel_values", "image_grid_thw", "mask")
+
+    @staticmethod
+    def get_visual_dynamic_axes() -> dict[str, dict[int, str]]:
+        axes: dict[str, dict[int, str]] = {
+            "mask": {1: "sequence_length"},
+        }
+        return axes
 
     @classmethod
     def get_visual_output_names(cls, config=None) -> tuple[str, ...]:
@@ -262,15 +282,23 @@ class Qwen3VL_Generator(VLM_Generator):
         return list(zip(starts, ends))
 
     def _make_dummy_visual_kwargs(
-        self, num_visual_tokens, num_deepstack, hidden_size, device, dtype
+        self,
+        num_visual_tokens,
+        num_deepstack,
+        hidden_size,
+        device,
+        dtype,
+        sequence_length=None,
     ):
         """Build dummy visual extras for a text-only sub-slice."""
+        if sequence_length is None:
+            sequence_length = self.sequence_length
         batch_size = 1
-        effective_tokens = min(num_visual_tokens, self.sequence_length)
+        effective_tokens = min(num_visual_tokens, sequence_length)
         dummy_mask = torch.zeros(
-            (batch_size, self.sequence_length), dtype=torch.bool, device=device
+            (batch_size, sequence_length), dtype=torch.bool, device=device
         )
-        start = (self.sequence_length - effective_tokens) // 2
+        start = (sequence_length - effective_tokens) // 2
         dummy_mask[:, start : start + effective_tokens] = True
         dummy_ds = [
             torch.zeros(effective_tokens, hidden_size, device=device, dtype=dtype)
@@ -355,6 +383,7 @@ class Qwen3VL_Generator(VLM_Generator):
                     hidden_size,
                     inputs.device,
                     inputs.dtype,
+                    sequence_length=sequence_length,
                 )
                 yield (
                     input_slice,
@@ -601,8 +630,8 @@ def _exportable_deepstack_process(
     # gather_idx: True positions → 1..num_visual, False positions → 0
     # We prepend a zero row to visual_embeds so index 0 fetches zeros.
     gather_idx = cumsum * mask_int  # [batch, seq_len]
-    gather_idx = gather_idx.unsqueeze(-1).expand_as(
-        hidden_states
+    gather_idx = gather_idx.unsqueeze(-1).expand(
+        -1, -1, hidden_states.shape[-1]
     )  # [batch, seq_len, hidden]
 
     zero_row = torch.zeros(

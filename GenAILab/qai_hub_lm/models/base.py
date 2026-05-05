@@ -23,6 +23,7 @@ from GenAILab.qai_hub_lm.utils.layer_cache import (
     LayerCacheDescriptor,
     attention_mask_input_names,
     cache_state_names,
+    AttentionType,
 )
 
 
@@ -146,6 +147,29 @@ class LLM(ABC):
         return tuple(["logits"] + cache_state_names(layer_cache_descriptors, "out"))
 
     @staticmethod
+    def get_backbone_dynamic_axes(
+        layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+    ) -> dict[str, dict[int, str]]:
+        """Build ``dynamic_axes`` dict for ``torch.onnx.export``.
+
+        Marks the sequence_length and kv_cache_length dimensions as dynamic so
+        that a single ONNX graph can be used with varying sequence lengths.
+        """
+        axes: dict[str, dict[int, str]] = {
+            "input_ids": {1: "sequence_length"},
+            "attention_mask": {2: "sequence_length"},
+            "position_ids": {1: "sequence_length"},
+            "logits": {1: "sequence_length"},
+        }
+        for desc in layer_cache_descriptors:
+            i = desc.layer_idx
+            if desc.attention_type == AttentionType.LINEAR:
+                continue
+            axes[f"past_key_{i}_in"] = {2: "kv_cache_length"}
+            axes[f"past_value_{i}_in"] = {2: "kv_cache_length"}
+        return axes
+
+    @staticmethod
     def use_dynamo_export() -> bool:
         """Whether to use dynamo-based ONNX export. Models with ops unsupported
         by the TorchScript tracer (e.g. data-dependent control flow) should
@@ -186,6 +210,30 @@ class VLM(LLM):
             + ["position_ids"]
             + cache_state_names(layer_cache_descriptors, "in")
         )
+
+    @staticmethod
+    def get_backbone_dynamic_axes(
+        layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+    ) -> dict[str, dict[int, str]]:
+        axes: dict[str, dict[int, str]] = {
+            "inputs_embeds": {1: "sequence_length"},
+            "attention_mask": {2: "sequence_length"},
+            "position_ids": {2: "sequence_length"},
+            "logits": {1: "sequence_length"},
+        }
+        for desc in layer_cache_descriptors:
+            i = desc.layer_idx
+            if desc.attention_type == AttentionType.LINEAR:
+                continue
+            axes[f"past_key_{i}_in"] = {2: "kv_cache_length"}
+            axes[f"past_value_{i}_in"] = {2: "kv_cache_length"}
+        return axes
+
+    @staticmethod
+    def get_visual_dynamic_axes(
+        layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+    ) -> dict[str, dict[int, str]]:
+        return {}
 
     @staticmethod
     @abstractmethod

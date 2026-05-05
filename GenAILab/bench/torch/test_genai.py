@@ -193,30 +193,36 @@ def test_llm_quantization(
         tokenizer.save_pretrained(export_dir)
         sim_collection.config.save_pretrained(export_dir)
 
-        backbone_onnx_name = f"model_sl{sequence_length}_cl{context_length}.onnx"
         os.mkdir(os.path.join(export_dir, "backbone"))
+        use_dynamic = isinstance(sequence_length, list) and len(sequence_length) > 1
+        max_sl = (
+            max(sequence_length)
+            if isinstance(sequence_length, list)
+            else sequence_length
+        )
+        sl_tag = "dynamic" if use_dynamic else str(max_sl)
+        layer_cache_descs = build_layer_cache_descriptors(
+            sim_collection.backbone.model.model.config
+        )
         sim_collection.backbone.onnx.export(
-            f=os.path.join(export_dir, "backbone", backbone_onnx_name),
+            f=os.path.join(
+                export_dir, "backbone", f"model_sl{sl_tag}_cl{context_length}.onnx"
+            ),
             args=model_cls.get_sample_backbone_inputs(
                 model=sim_collection.backbone.model,
                 context_length=context_length,
-                sequence_length=sequence_length,
+                sequence_length=max_sl,
                 layer_cache_descriptors=generator.layer_cache_descriptors,
                 image_size=image_size,
                 config=sim_collection.config,
             ),
-            input_names=model_cls.get_backbone_input_names(
-                build_layer_cache_descriptors(
-                    sim_collection.backbone.model.model.config
-                )
-            ),
-            output_names=model_cls.get_backbone_output_names(
-                build_layer_cache_descriptors(
-                    sim_collection.backbone.model.model.config
-                )
-            ),
+            input_names=model_cls.get_backbone_input_names(layer_cache_descs),
+            output_names=model_cls.get_backbone_output_names(layer_cache_descs),
             opset_version=17,
             dynamo=model_cls.use_dynamo_export(),
+            dynamic_axes=model_cls.get_backbone_dynamic_axes(layer_cache_descs)
+            if use_dynamic
+            else None,
             export_int32_bias=False,
         )
 

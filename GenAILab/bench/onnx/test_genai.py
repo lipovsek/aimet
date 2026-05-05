@@ -80,6 +80,16 @@ def test_llm_quantization(
     image_size = model_kwargs.pop("image_size", None)
     precomputed_encodings = model_kwargs.pop("encodings", None)
 
+    sl_tag = (
+        "dynamic"
+        if isinstance(sequence_length, list) and len(sequence_length) > 1
+        else str(
+            max(sequence_length)
+            if isinstance(sequence_length, list)
+            else sequence_length
+        )
+    )
+
     if model_dtype is not None:
         warnings.warn(
             "User-specified dtypes are not yet supported in ONNX GenAILab. All models are FP32 by default."
@@ -129,7 +139,7 @@ def test_llm_quantization(
         backbone_encodings = os.path.join(
             precomputed_encodings,
             "backbone",
-            f"model_sl{sequence_length}_cl{context_length}.encodings",
+            f"model_sl{sl_tag}_cl{context_length}.encodings",
         )
         if os.path.exists(backbone_encodings):
             print(f"Loading precomputed backbone encodings from {backbone_encodings}.")
@@ -236,7 +246,7 @@ def test_llm_quantization(
         os.mkdir(os.path.join(export_dir, "backbone"))
         sim_collection.backbone.export(
             os.path.join(export_dir, "backbone"),
-            f"model_sl{sequence_length}_cl{context_length}",
+            f"model_sl{sl_tag}_cl{context_length}",
             export_model=True,
         )
 

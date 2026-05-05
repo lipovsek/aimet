@@ -53,7 +53,7 @@ class LLM_ONNX(LLM):
         cls,
         model_id: str,
         context_length: int,
-        sequence_length: int,
+        sequence_length: int | list[int],
         small_model: bool = False,
         precision: PrecisionConfig | None = None,
         model_cache: DiskBackedModelCache | None = None,
@@ -62,6 +62,17 @@ class LLM_ONNX(LLM):
     ) -> SimCollection:
         if precision is None:
             precision = PrecisionConfig()
+
+        max_sequence_length = (
+            max(sequence_length)
+            if isinstance(sequence_length, list)
+            else sequence_length
+        )
+        cache_sl = (
+            "dynamic"
+            if isinstance(sequence_length, list) and len(sequence_length) > 1
+            else max_sequence_length
+        )
 
         if issubclass(cls, AIHMAdaptation):
             # If we are working with AIHM adapted models, we need to change the block detection strategy for Qwen3
@@ -79,7 +90,7 @@ class LLM_ONNX(LLM):
                     params = {
                         "model_id": model_id,
                         "class": cls.__name__,
-                        "sequence_length": sequence_length,
+                        "sequence_length": cache_sl,
                         "context_length": context_length,
                         "small_model": small_model,
                     }
@@ -109,7 +120,7 @@ class LLM_ONNX(LLM):
             onnx_model, *_ = load_model_components_from_disk(
                 model_id,
                 context_length=context_length,
-                sequence_length=sequence_length,
+                sequence_length=cache_sl,
             )
             config = AutoConfig.from_pretrained(model_id)
 
@@ -160,14 +171,20 @@ class LLM_ONNX(LLM):
         cls,
         model_id: str,
         context_length: int,
-        sequence_length: int,
+        sequence_length: int | list[int],
         small_model: bool,
         directory: str,
     ) -> ModelCacheEntry:
         """Export the torch model to ONNX in a temp dir and return a :class:`ModelCacheEntry`."""
+        max_seq_len = (
+            max(sequence_length)
+            if isinstance(sequence_length, list)
+            else sequence_length
+        )
+
         instantiated_model = cls.instantiate_model(model_id, small_model)
         if isinstance(instantiated_model, tuple):
-            if context_length != 4096 or sequence_length != 2048:
+            if context_length != 4096 or max_seq_len != 2048:
                 raise ValueError(
                     "Context length and sequence length must be 4096 and 2048 for AIHM adapted models."
                 )
@@ -192,11 +209,12 @@ class LLM_ONNX(LLM):
             context_length=context_length,
             sequence_length=sequence_length,
             sample_input=cls.get_sample_backbone_inputs(
-                exportable_model, context_length, sequence_length
+                exportable_model, context_length, max_seq_len
             ),
             input_names=cls.get_backbone_input_names(layer_cache_descs),
             output_names=cls.get_backbone_output_names(layer_cache_descs),
             dynamo=cls.use_dynamo_export(),
+            dynamic_axes=cls.get_backbone_dynamic_axes(layer_cache_descs),
         )
 
         return ModelCacheEntry(

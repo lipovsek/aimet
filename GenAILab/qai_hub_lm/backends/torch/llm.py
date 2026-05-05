@@ -40,7 +40,7 @@ class LLM_Torch(LLM):
         cls,
         model_id: str,
         context_length: int,
-        sequence_length: int,
+        sequence_length: int | list[int],
         small_model: bool = False,
         dtype: torch.dtype = torch.float32,
         precision: PrecisionConfig | None = None,
@@ -49,6 +49,12 @@ class LLM_Torch(LLM):
     ) -> SimCollection:
         if precision is None:
             precision = PrecisionConfig()
+
+        max_sequence_length = (
+            max(sequence_length)
+            if isinstance(sequence_length, list)
+            else sequence_length
+        )
 
         model = cls.instantiate_model(model_id, small_model)
         model = model.to(dtype=dtype)
@@ -71,7 +77,7 @@ class LLM_Torch(LLM):
             model=traceable_model,
             quant_scheme=QuantScheme.post_training_tf,
             dummy_input=cls.get_sample_backbone_inputs(
-                traceable_model, context_length, sequence_length
+                traceable_model, context_length, max_sequence_length
             ),
             default_output_bw=default_output_bw,
             default_param_bw=default_param_bw,

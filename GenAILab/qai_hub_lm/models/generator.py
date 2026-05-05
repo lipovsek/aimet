@@ -177,7 +177,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         self,
         model,
         tokenizer: transformers.PreTrainedTokenizer,
-        sequence_length: int,
+        sequence_length: int | list[int],
         context_length: int,
         config: Union[PretrainedConfig | None] = None,
         attention_mask_min: int = -100,
@@ -189,12 +189,27 @@ class Generator(GenerationMixin, torch.nn.Module):
 
         self.model = model
         self.tokenizer = tokenizer
-        self.sequence_length = sequence_length
+        if isinstance(sequence_length, list):
+            self.sequence_lengths = sorted(sequence_length)
+        else:
+            self.sequence_lengths = [sequence_length]
         self.context_length = context_length
         self.generation_config = None
         self._config = config
         self.attention_mask_min = attention_mask_min
         self._fp_mode = fp_mode or contextlib.nullcontext
+
+    @property
+    def sequence_length(self) -> int:
+        return self.sequence_lengths[-1]
+
+    def _select_sequence_length(self, num_tokens: int) -> int:
+        """Pick the smallest sequence_length that can fit *num_tokens*."""
+        best = self.sequence_lengths[-1]
+        for sl in reversed(self.sequence_lengths):
+            if num_tokens <= sl:
+                best = sl
+        return best
 
     @staticmethod
     def can_generate() -> bool:
@@ -596,7 +611,7 @@ class Generator(GenerationMixin, torch.nn.Module):
             new_key_vals=local_past_key_values,
             length=min(
                 current_key_value_length + num_valid_input_tokens,
-                self.context_length - self.sequence_length,
+                self.context_length,
             ),
             device=self.device,
             layer_cache_descriptors=self.layer_cache_descriptors,
@@ -633,20 +648,21 @@ class Generator(GenerationMixin, torch.nn.Module):
             else [t for layer_kv in past_key_values for t in (layer_kv[0], layer_kv[1])]
         }
 
+        selected_seq_len = self._select_sequence_length(input_tokens.shape[1])
         for (
             input_slice,
             attention_mask_slice,
             position_ids_slice,
             kwargs_slice,
         ) in self.slice_inputs_for_inference(
-            input_tokens, attention_mask, self.sequence_length, position_ids, **kwargs
+            input_tokens, attention_mask, selected_seq_len, position_ids, **kwargs
         ):
             prepared_inputs = self.prepare_inputs(
                 model=self.model,
                 input_ids=input_slice if input_ids is not None else None,
                 attention_mask=attention_mask_slice,
                 past_key_values=global_outputs["past_key_values"],
-                sequence_length=self.sequence_length,
+                sequence_length=selected_seq_len,
                 context_length=self.context_length,
                 pad_token=getattr(self.tokenizer, "eos_token_id", 0),
                 attention_mask_min=self.attention_mask_min,
@@ -660,7 +676,9 @@ class Generator(GenerationMixin, torch.nn.Module):
             local_outputs = self.parse_model_outputs(raw_outputs)
 
             self.combine_local_and_global_outputs(
-                input_slice.shape[1], local_outputs, global_outputs
+                input_slice.shape[1],
+                local_outputs,
+                global_outputs,
             )
 
         # make sure all outputs are on the correct device
@@ -725,10 +743,11 @@ class Generator(GenerationMixin, torch.nn.Module):
             else [t for layer_kv in past_key_values for t in (layer_kv[0], layer_kv[1])]
         }
 
+        selected_seq_len = self._select_sequence_length(input_tokens.shape[1])
         slices_iter = self.slice_inputs_for_inference(
             input_tokens,
             attention_mask,
-            self.sequence_length,
+            selected_seq_len,
             position_ids,
             **kwargs,
         )
@@ -748,7 +767,7 @@ class Generator(GenerationMixin, torch.nn.Module):
                 input_ids=input_slice if input_ids is not None else None,
                 attention_mask=attention_mask_slice,
                 past_key_values=preconsumed_outputs["past_key_values"],
-                sequence_length=self.sequence_length,
+                sequence_length=selected_seq_len,
                 context_length=self.context_length,
                 pad_token=getattr(self.tokenizer, "eos_token_id", 0),
                 attention_mask_min=self.attention_mask_min,
@@ -779,7 +798,7 @@ class Generator(GenerationMixin, torch.nn.Module):
             input_ids=input_slice if input_ids is not None else None,
             attention_mask=attention_mask_slice,
             past_key_values=preconsumed_outputs["past_key_values"],
-            sequence_length=self.sequence_length,
+            sequence_length=selected_seq_len,
             context_length=self.context_length,
             pad_token=getattr(self.tokenizer, "eos_token_id", 0),
             attention_mask_min=self.attention_mask_min,

@@ -189,6 +189,121 @@ class TestLLMTorchGeneratorParity:
         assert decode_out.logits.shape == (1, 1, model.config.vocab_size)
 
 
+class TestSequenceLengthParity:
+    """Generators with different sequence_length configs must produce identical
+    logits for the same input, since padding is masked out."""
+
+    TEXT = "The quick brown fox jumps over the lazy dog"
+
+    def _make_generator(self, model, tokenizer, sequence_length):
+        wrapped = ONNXExportableModuleWithCache(
+            model,
+            input_names=LLM.get_backbone_input_names(
+                build_layer_cache_descriptors(model.config)
+            ),
+        )
+        return Generator(
+            model=wrapped,
+            tokenizer=tokenizer,
+            sequence_length=sequence_length,
+            context_length=CONTEXT_LENGTH,
+            attention_mask_min=ATTENTION_MASK_MIN,
+        )
+
+    def test_single_vs_multi_sequence_length(self, llm_bundle):
+        """sequence_length=64 vs [32, 64] produce identical prefill logits."""
+        model, tokenizer, _ = llm_bundle
+        tokens = tokenize(tokenizer, self.TEXT)
+
+        if tokens["input_ids"].shape[1] > 32:
+            pytest.skip("Input longer than smallest sequence_length")
+
+        gen_single = self._make_generator(model, tokenizer, 64)
+        gen_multi = self._make_generator(model, tokenizer, [32, 64])
+
+        with torch.no_grad():
+            out_single = gen_single(
+                input_ids=tokens["input_ids"],
+                attention_mask=tokens["attention_mask"],
+            )
+            out_multi = gen_multi(
+                input_ids=tokens["input_ids"],
+                attention_mask=tokens["attention_mask"],
+            )
+
+        assert out_single.logits.shape == out_multi.logits.shape
+        torch.testing.assert_close(
+            out_single.logits, out_multi.logits, atol=1e-3, rtol=1e-3
+        )
+
+    def test_decode_parity_across_configs(self, llm_bundle):
+        """Prefill + decode must agree across sequence_length configs."""
+        model, tokenizer, _ = llm_bundle
+        tokens = tokenize(tokenizer, self.TEXT)
+
+        if tokens["input_ids"].shape[1] > 32:
+            pytest.skip("Input longer than smallest sequence_length")
+
+        gen_single = self._make_generator(model, tokenizer, 64)
+        gen_multi = self._make_generator(model, tokenizer, [1, 32, 64])
+
+        with torch.no_grad():
+            prefill_single = gen_single(
+                input_ids=tokens["input_ids"],
+                attention_mask=tokens["attention_mask"],
+            )
+            prefill_multi = gen_multi(
+                input_ids=tokens["input_ids"],
+                attention_mask=tokens["attention_mask"],
+            )
+
+        next_token = prefill_single.logits[:, -1:].argmax(dim=-1)
+        decode_mask = torch.cat(
+            [tokens["attention_mask"], torch.ones(1, 1, dtype=torch.int)], dim=1
+        )
+
+        with torch.no_grad():
+            decode_single = gen_single(
+                input_ids=next_token,
+                attention_mask=decode_mask,
+                past_key_values=prefill_single.past_key_values,
+            )
+            decode_multi = gen_multi(
+                input_ids=next_token,
+                attention_mask=decode_mask,
+                past_key_values=prefill_multi.past_key_values,
+            )
+
+        torch.testing.assert_close(
+            decode_single.logits, decode_multi.logits, atol=1e-3, rtol=1e-3
+        )
+
+    def test_argmax_parity(self, llm_bundle):
+        """Predicted next tokens must match regardless of sequence_length config."""
+        model, tokenizer, _ = llm_bundle
+        tokens = tokenize(tokenizer, self.TEXT)
+
+        if tokens["input_ids"].shape[1] > 32:
+            pytest.skip("Input longer than smallest sequence_length")
+
+        gen_single = self._make_generator(model, tokenizer, 64)
+        gen_multi = self._make_generator(model, tokenizer, [32, 64])
+
+        with torch.no_grad():
+            out_single = gen_single(
+                input_ids=tokens["input_ids"],
+                attention_mask=tokens["attention_mask"],
+            )
+            out_multi = gen_multi(
+                input_ids=tokens["input_ids"],
+                attention_mask=tokens["attention_mask"],
+            )
+
+        preds_single = out_single.logits.argmax(dim=-1)
+        preds_multi = out_multi.logits.argmax(dim=-1)
+        assert torch.equal(preds_single, preds_multi)
+
+
 # ============================================================================
 # VLM tests
 # ============================================================================

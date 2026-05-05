@@ -197,11 +197,20 @@ def build_ort_vlm_generator(
         )
 
         use_dynamo = vlm_cls.use_dynamo_export()
+        try:
+            backbone_dynamic_axes = vlm_cls.get_backbone_dynamic_axes(
+                layer_cache_descriptors, config=model.config
+            )
+        except TypeError:
+            backbone_dynamic_axes = vlm_cls.get_backbone_dynamic_axes(
+                layer_cache_descriptors
+            )
         backbone_session = export_and_load_fn(
             backbone_wrapped,
             backbone_sample,
             backbone_input_names,
             backbone_output_names,
+            dynamic_axes=backbone_dynamic_axes,
             dynamo=use_dynamo,
         )
 
@@ -254,6 +263,7 @@ def build_ort_vlm_generator(
 @pytest.fixture(scope="module", params=VLM_MODELS)
 def vlm_bundle(request):
     """Load a full-size VLM and its processor (shared across tests in module)."""
+    import types
     from transformers import AutoProcessor
 
     model_id = request.param
@@ -261,6 +271,17 @@ def vlm_bundle(request):
     model = vlm_cls.instantiate_model(model_id)
     model = model.to(dtype=torch.float32).cpu()
     model.eval()
+
+    # Patch _deepstack_process for Qwen3-VL so torchscript export works
+    if "Qwen3-VL" in model_id:
+        from GenAILab.qai_hub_lm.models.qwen3_vl import (
+            _exportable_deepstack_process,
+        )
+
+        text_model = model.model.language_model
+        text_model._deepstack_process = types.MethodType(
+            _exportable_deepstack_process, text_model
+        )
 
     processor = AutoProcessor.from_pretrained(
         model_id, use_fast=True, trust_remote_code=True

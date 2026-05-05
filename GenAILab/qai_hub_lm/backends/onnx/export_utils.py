@@ -83,20 +83,25 @@ def check_opset_equal_to(filepath, opset_version: int) -> bool:
 def load_model_components_from_disk(
     checkpoint: str | os.PathLike,
     context_length: int,
-    sequence_length: int,
+    sequence_length: int | str,
 ) -> tuple[onnx.ModelProto, onnx.ModelProto | None, torch.nn.Embedding | None]:
-    aihm_format_backbone_path = os.path.join(
-        checkpoint, f"model_seqlen{sequence_length}_cl{context_length}.onnx"
-    )
-    genaitests_format_backbone_path = os.path.join(
-        checkpoint, "backbone", f"model_sl{sequence_length}_cl{context_length}.onnx"
-    )
+    candidates = [
+        os.path.join(
+            checkpoint, f"model_seqlen{sequence_length}_cl{context_length}.onnx"
+        ),
+        os.path.join(
+            checkpoint, "backbone", f"model_sl{sequence_length}_cl{context_length}.onnx"
+        ),
+    ]
+    if sequence_length != "dynamic":
+        candidates.append(
+            os.path.join(
+                checkpoint, "backbone", f"model_sldynamic_cl{context_length}.onnx"
+            )
+        )
 
-    backbone = onnx.load(
-        aihm_format_backbone_path
-        if os.path.exists(aihm_format_backbone_path)
-        else genaitests_format_backbone_path
-    )
+    backbone_path = next((p for p in candidates if os.path.exists(p)), candidates[-1])
+    backbone = onnx.load(backbone_path)
 
     visual_path = os.path.join(checkpoint, "visual", "model.onnx")
     visual = onnx.load(visual_path) if os.path.exists(visual_path) else None
@@ -133,8 +138,6 @@ def _dynamo_export(
     tolerates data-dependent branching, then hands it to ``torch.onnx.export``
     which skips the capture step and goes straight to ONNX translation.
     """
-    import time
-
     export_kwargs = {}
     if custom_translation_table:
         export_kwargs["custom_translation_table"] = custom_translation_table
@@ -157,7 +160,7 @@ def get_onnx_model(
     checkpoint: str | os.PathLike,
     fp_backbone_model: torch.nn.Module,
     context_length: int,
-    sequence_length: int,
+    sequence_length: int | list[int],
     sample_input: tuple[torch.Tensor, ...],
     input_names: tuple[str, ...],
     output_names: tuple[str, ...],
@@ -168,11 +171,24 @@ def get_onnx_model(
     dynamo: bool = False,
     visual_dynamo: bool | None = None,
     custom_translation_table: dict | None = None,
+    dynamic_axes: dict[str, dict[int, str]] | None = None,
+    visual_dynamic_axes: dict[str, dict[int, str]] | None = None,
 ) -> tuple[onnx.ModelProto, onnx.ModelProto | None]:
+    # TODO: Always enable dynamic shape export unconditionally.
+    use_dynamic = isinstance(sequence_length, list) and len(sequence_length) > 1
+    if not use_dynamic:
+        dynamic_axes = None
+        visual_dynamic_axes = None
+
+    if isinstance(sequence_length, list):
+        sequence_length = max(sequence_length)
+
+    sl_tag = "dynamic" if use_dynamic else str(sequence_length)
+
     # Create the checkpoint directory if it does not exist.
     os.makedirs(checkpoint, exist_ok=True)
     onnx_backbone_path = os.path.join(
-        checkpoint, "backbone", f"model_sl{sequence_length}_cl{context_length}.onnx"
+        checkpoint, "backbone", f"model_sl{sl_tag}_cl{context_length}.onnx"
     )
     onnx_visual_path = os.path.join(checkpoint, "visual", "model.onnx")
     config_path = os.path.join(checkpoint, "config.json")
@@ -224,6 +240,7 @@ def get_onnx_model(
                     output_names=output_names,
                     opset_version=ONNX_OPSET_VERSION,
                     dynamo=False,
+                    dynamic_axes=dynamic_axes,
                 )
             if visual_model_exists:
                 os.makedirs(os.path.join(checkpoint, "visual"), exist_ok=True)
@@ -251,6 +268,7 @@ def get_onnx_model(
                         output_names=visual_output_names,
                         opset_version=ONNX_OPSET_VERSION,
                         dynamo=False,
+                        dynamic_axes=visual_dynamic_axes,
                     )
 
         print("Loading ONNX model(s)...")
