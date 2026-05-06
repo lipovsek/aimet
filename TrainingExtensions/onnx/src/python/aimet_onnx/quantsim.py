@@ -2036,6 +2036,7 @@ class QuantizationSimModel:
         """
         Rebuilds `self.session` object to reflect any changes in the source model.
         """
+        self.session = None
         self.session = OrtInferenceSession(
             self.model.model,
             self.providers,
