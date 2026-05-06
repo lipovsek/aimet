@@ -38,3 +38,4 @@ GenAITests/artifacts/
 
 # Models
 *.onnx
+*.onnx.data
