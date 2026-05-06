@@ -3,6 +3,7 @@
 
 """ONNX supergroup fusion implementation"""
 
+from collections import defaultdict
 import onnx_ir
 from onnxscript.rewriter import pattern
 from .fusion_registry import FUSION_PASS_REGISTRY, AIMET_SUPERGROUP_DOMAIN
@@ -51,6 +52,7 @@ def fuse_supergroups(
         # Note: ORT shape inference cannot handle nested functions, unroll anything nested
         _inline_nested_functions(model)
         onnx_ir.passes.common.RemoveUnusedNodesPass().call(model)
+        _rename_supergroup_nodes(model)
 
     return model
 
@@ -69,3 +71,48 @@ def _inline_nested_functions(model: onnx_ir.Model):
     onnx_ir.passes.common.InlinePass(
         lambda f: f.identifier() in nested_supergroups
     ).call(model)
+
+
+def _rename_supergroup_nodes(model: onnx_ir.Model):
+    """Rename supergroup nodes to have more meaningful names derived from their function body, if possible."""
+    node_names = {node.name for node in model.graph.all_nodes()}
+    supergroup_nodes = [
+        node
+        for node in model.graph.all_nodes()
+        if node.domain == AIMET_SUPERGROUP_DOMAIN
+    ]
+    root_to_nodes = defaultdict(list)
+
+    # Find root name for each supergroup node
+    for node in supergroup_nodes:
+        func = model.functions.get(node.op_identifier())
+        if not func:
+            continue
+        root = _derive_function_name_from_nodes(func)
+        if not root or root in node_names:
+            continue
+
+        root_to_nodes[root].append(node)
+
+    for root, nodes in root_to_nodes.items():
+        for node in nodes:
+            # If multiple nodes share the same root, append a unique suffix for each
+            new_name = root if len(nodes) == 1 else f"{root}/{node.op_type}"
+            new_name = ir_utils.unique_name(new_name, node_names)
+            node_names.discard(node.name)
+            node_names.add(new_name)
+            node.name = new_name
+
+
+def _derive_function_name_from_nodes(func: onnx_ir.Function) -> str | None:
+    nodes = [
+        node
+        for node in func.all_nodes()
+        if node.op_type not in ("Constant", "Identity")
+    ]
+    node_roots = set(
+        node.name.rpartition("/")[0] for node in nodes if node.name and "/" in node.name
+    )
+    if node_roots and len(node_roots) == 1:
+        return node_roots.pop()
+    return None

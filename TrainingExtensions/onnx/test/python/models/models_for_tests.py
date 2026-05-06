@@ -5342,3 +5342,75 @@ def scatter_with_relu_data_model(use_scatter_nd=False):
     model = make_model(graph=graph)
     onnx.checker.check_model(model, True)
     return model
+
+
+def double_layernorm_model(tmpdir):
+    """Two sequential LayerNorm instances (ln1, ln2) at opset 13 (decomposed)."""
+
+    class DoubleLayerNormModel(torch.nn.Module):
+        def __init__(self):
+            super(DoubleLayerNormModel, self).__init__()
+            self.ln1 = torch.nn.LayerNorm(128)
+            self.ln2 = torch.nn.LayerNorm(128)
+
+        def forward(self, x):
+            x = self.ln1(x)
+            x = self.ln2(x)
+            return x
+
+    model = DoubleLayerNormModel()
+    dummy_input = torch.randn(1, 32, 128)
+    model_path = os.path.join(tmpdir, "double_layernorm.onnx")
+    torch.onnx.export(model, dummy_input, model_path, opset_version=13, dynamo=False)
+    return onnx.load(model_path)
+
+
+def matmul_add_with_shared_root_naming():
+    opset = OperatorSetIdProto()
+    opset.version = 18
+    model = helper.make_model(
+        graph=helper.make_graph(
+            name="SharedRoot",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "input", TensorProto.FLOAT, shape=[10, 10]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    "output", TensorProto.FLOAT, shape=[10, 10]
+                )
+            ],
+            initializer=[
+                numpy_helper.from_array(
+                    np.random.randn(10, 10).astype("float32"), name="w1"
+                ),
+                numpy_helper.from_array(
+                    np.random.randn(10).astype("float32"), name="b1"
+                ),
+                numpy_helper.from_array(
+                    np.random.randn(10, 10).astype("float32"), name="w2"
+                ),
+                numpy_helper.from_array(
+                    np.random.randn(10).astype("float32"), name="b2"
+                ),
+            ],
+            nodes=[
+                helper.make_node(
+                    "MatMul", ["input", "w1"], ["mm1_out"], name="/linear/MatMul"
+                ),
+                helper.make_node(
+                    "Add", ["mm1_out", "b1"], ["add1_out"], name="/linear/Add"
+                ),
+                helper.make_node(
+                    "MatMul", ["add1_out", "w2"], ["mm2_out"], name="/linear/MatMul_1"
+                ),
+                helper.make_node(
+                    "Add", ["mm2_out", "b2"], ["output"], name="/linear/Add_1"
+                ),
+            ],
+        ),
+        opset_imports=[opset],
+    )
+    onnx.checker.check_model(model)
+    return model

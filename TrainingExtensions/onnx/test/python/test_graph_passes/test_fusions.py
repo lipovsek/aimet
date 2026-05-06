@@ -233,26 +233,7 @@ class TestLayerNormFusion:
 
     def test_multiple_layernorm_instances(self, tmp_path):
         """Test fusion with multiple LayerNorm instances in the model."""
-
-        class DoubleLayerNormModel(torch.nn.Module):
-            def __init__(self):
-                super(DoubleLayerNormModel, self).__init__()
-                self.ln1 = torch.nn.LayerNorm(128)
-                self.ln2 = torch.nn.LayerNorm(128)
-
-            def forward(self, x):
-                x = self.ln1(x)
-                x = self.ln2(x)
-                return x
-
-        model = DoubleLayerNormModel()
-        dummy_input = torch.randn(1, 32, 128)
-        model_path = os.path.join(tmp_path, "double_layernorm.onnx")
-        torch.onnx.export(
-            model, dummy_input, model_path, opset_version=13, dynamo=False
-        )
-
-        model_proto = onnx.load(model_path)
+        model_proto = models_for_tests.double_layernorm_model(tmp_path)
         inputs = make_dummy_input(model_proto)
 
         session = onnxruntime.InferenceSession(model_proto.SerializeToString())
@@ -823,3 +804,61 @@ class TestInlineAllSupergroups:
             onnx_ir.to_proto(ir_model).SerializeToString()
         ).run(None, inputs)
         assert np.allclose(expected[0], actual[0], atol=1e-5)
+
+
+ALL_PATTERNS = ["LayerNormalization", "MatmulAdd", "RMSNormalization"]
+
+
+class TestSuperGroupNodeRenaming:
+    @pytest.mark.parametrize(
+        "model_factory, expected_names",
+        [
+            (
+                lambda p: create_layernorm_model(p, opset=13),
+                {"/layernorm", "/linear", "/linear2"},
+            ),
+            (create_simple_linear_model, {"/linear"}),
+            (models_for_tests.double_layernorm_model, {"/ln1", "/ln2"}),
+        ],
+    )
+    def test_conventional_naming_derives_module_name(
+        self, tmp_path, model_factory, expected_names
+    ):
+        """
+        When: Input model to supergroup fusion uses conventional torch->onnx node naming with common prefix
+        Then: Fused supergroup nodes use the common prefix as their name
+        """
+        model = onnx_ir.from_proto(model_factory(tmp_path))
+        model = fuse_supergroups(model, patterns=ALL_PATTERNS)
+
+        supergroup_names = {
+            node.name
+            for node in model.graph.all_nodes()
+            if node.domain == AIMET_SUPERGROUP_DOMAIN
+        }
+        assert supergroup_names == expected_names
+
+    @pytest.mark.parametrize(
+        "model_factory",
+        [
+            lambda _: models_for_tests.matmul_bias_add_model(),
+            lambda _: rmsnorm_model(dim=32, elementwise_affine=True),
+            lambda _: models_for_tests.matmul_add_with_shared_root_naming(),
+        ],
+    )
+    def test_non_conventional_naming_keeps_default_with_unique_names(
+        self, tmp_path, model_factory
+    ):
+        """
+        When: Input model to supergroup fusion does not use conventional torch->onnx node naming
+        Then: Fused nodes still get unique valid names
+        """
+        model = onnx_ir.from_proto(model_factory(tmp_path))
+        fuse_supergroups(model, patterns=ALL_PATTERNS)
+
+        for node in model.graph.all_nodes():
+            if node.domain == AIMET_SUPERGROUP_DOMAIN:
+                assert node.name
+
+        all_names = [node.name for node in model.graph.all_nodes()]
+        assert len(all_names) == len(set(all_names))

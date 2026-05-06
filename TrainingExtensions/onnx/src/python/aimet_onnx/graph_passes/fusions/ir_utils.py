@@ -101,3 +101,13 @@ def inline_all_supergroups(model: onnx_ir.Model) -> None:
 
     _sort_functions_hierarchically(model)
     onnx_ir.passes.common.InlinePass(lambda f: f in supergroup_functions).call(model)
+
+
+def unique_name(base: str, existing: set[str]) -> str:
+    """Generate a unique name based on the provided base that does not exist in the existing set."""
+    if base not in existing:
+        return base
+    i = 1
+    while f"{base}_{i}" in existing:
+        i += 1
+    return f"{base}_{i}"
