@@ -165,11 +165,15 @@ class Qwen_3_VL(VLM):
         self,
         *args,
         input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
         **kwargs,
     ):
         num_new_tokens = input_ids.shape[1]
-        attention_mask = attention_mask[:, -num_new_tokens:]
+        attention_mask = (
+            attention_mask[:, -num_new_tokens:]
+            if attention_mask is not None
+            else torch.ones_like(input_ids, dtype=torch.int32)
+        )
 
         ctx = PositionIdContext(self.config, modeling_qwen3_vl.Qwen3VLModel)
         position_ids, *_ = modeling_qwen3_vl.Qwen3VLModel.get_rope_index(

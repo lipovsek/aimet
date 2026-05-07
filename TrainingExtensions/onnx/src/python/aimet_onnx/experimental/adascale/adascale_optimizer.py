@@ -73,6 +73,9 @@ adascale_model_config_dict = {
     "qwen3": AdaScaleModelConfig(
         model_type="qwen3", beta_gamma_lr=1e-3, scales_lr=5e-4
     ),
+    "qwen3_vl": AdaScaleModelConfig(
+        model_type="qwen3", beta_gamma_lr=1e-3, scales_lr=5e-4
+    ),
     "phi3": AdaScaleModelConfig(model_type="phi3", beta_gamma_lr=1e-3, scales_lr=5e-4),
     "qwen2_5_vl": AdaScaleModelConfig(
         model_type="qwen2_5_vl", beta_gamma_lr=1e-3, scales_lr=5e-4
@@ -148,12 +151,15 @@ class AdaScale:
                 )
 
             # create a list of common input names to be used for graph slicing and populating input_list
+            # Exclude primary sequence inputs (consumed upstream by embedding layer)
+            # and past_key_*/past_value_* (handled per-block below)
             common_input_names = []
             for name in graph_input_names:
-                if "attention" in name:
-                    common_input_names.append(name)
-                if "position" in name:
-                    common_input_names.append(name)
+                if name == "inputs_embeds" or "input_ids" in name:
+                    continue
+                if "past_key" in name or "past_value" in name:
+                    continue
+                common_input_names.append(name)
 
             del sim.session
             gc.collect()
@@ -198,7 +204,7 @@ class AdaScale:
                         ):
                             block_kv_tensor_names.append(name)
 
-                    block_input_names = common_input_names
+                    block_input_names = list(common_input_names)
                     if len(block_kv_tensor_names) > 0:
                         if len(block_kv_tensor_names) != 2:
                             raise RuntimeError(

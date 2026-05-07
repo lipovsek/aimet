@@ -948,11 +948,11 @@ class TestMultiSequenceLength:
         assert isinstance(slices[0], OrderedDict)
         assert slices[0]["input_ids"].shape[1] == 8
 
-    def test_prefill_single_token_uses_small_seq_len(self, multi_seq_gen):
+    def test_prefill_single_token_uses_max_seq_len(self, multi_seq_gen):
         input_ids = torch.randint(0, 256, (1, 1))
         slices = list(multi_seq_gen.prefill(input_ids=input_ids))
         assert len(slices) == 1
-        assert slices[0]["input_ids"].shape[1] == 1
+        assert slices[0]["input_ids"].shape[1] == max(multi_seq_gen.sequence_lengths)
 
     def test_three_sequence_lengths(self, model, tokenizer):
         gen = Generator(
