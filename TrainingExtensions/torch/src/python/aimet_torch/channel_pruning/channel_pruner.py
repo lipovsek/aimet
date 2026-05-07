@@ -19,7 +19,7 @@ from aimet_torch.layer_database import LayerDatabase, Layer
 from aimet_torch.data_subsampler import DataSubSampler
 from aimet_torch.channel_pruning.weight_reconstruction import WeightReconstructor
 from aimet_torch import utils
-from aimet_torch.winnow.winnow import winnow_model
+from aimet_torch.winnow.winnow import _winnow_model
 
 
 class InputChannelPruner(Pruner):
@@ -171,7 +171,7 @@ class InputChannelPruner(Pruner):
         prune_indices = self._select_inp_channels(layer.module, comp_ratio)
 
         # 2) winnow - in place API
-        _, module_list = winnow_model(
+        _, module_list = _winnow_model(
             comp_layer_db.model,
             self._input_shape,
             [(layer.module, prune_indices)],

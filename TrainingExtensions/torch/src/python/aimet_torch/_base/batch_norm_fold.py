@@ -10,8 +10,9 @@ import torch
 import torch.nn
 from torch.nn.modules.batchnorm import BatchNorm1d, BatchNorm2d
 
-from aimet_torch.common.batch_norm_fold import batch_norm_fold, expand_shape_to_4d
-from aimet_torch.common.bias_correction import (
+from aimet_torch.common.batch_norm_fold import (
+    batch_norm_fold,
+    expand_shape_to_4d,
     ConvBnPatternHandler,
     CONV_OP_TYPES,
     LINEAR_OP_TYPES,

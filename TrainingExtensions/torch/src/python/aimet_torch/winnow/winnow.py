@@ -5,14 +5,13 @@
 
 from typing import List, Tuple
 import torch
-from aimet_torch.common.utils import AimetLogger, deprecated
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.winnow.mask_propagation_winnower import MaskPropagationWinnower
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Winnow)
 
 
-@deprecated(deletion_planned="v2.31.0")
-def winnow_model(
+def _winnow_model(
     model: torch.nn.Module,
     input_shape: Tuple,
     list_of_modules_to_winnow: List[Tuple[torch.nn.Module, List]] = None,

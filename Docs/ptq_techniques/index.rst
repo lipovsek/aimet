@@ -15,7 +15,6 @@ Post Training Quantization Techniques
     Batch norm re-estimation <bn>
     Quantized LoRa <quantized LoRa/index>
     OmniQuant <omniquant>
-    Automatic quantization <autoquant>
     SpinQuant <spinquant>
 
 :ref:`Adaptive rounding <ptq-adaround>`
@@ -59,11 +58,6 @@ Workflows to perform LoRa (Low-Rank Adaptation) on quantized large models.
 :ref:`OmniQuant <ptq-omniquant>`
 ==================================================
 OmniQuant is a PTQ technique to improve accuracy of the quantized model by introducing learnable parameter (scale) in the weight quantizers and by performing BKD(Blockwise Knowledge Distillation) with respect to the corresponding FP output.
-
-:ref:`Automatic quantization <ptq-autoquant>`
-======================================================
-
-Analyzes the model, determines the best sequence of AIMET post-training quantization (PTQ) techniques, and applies these techniques.
 
 :ref:`SpinQuant <ptq-spinquant>`
 ======================================================

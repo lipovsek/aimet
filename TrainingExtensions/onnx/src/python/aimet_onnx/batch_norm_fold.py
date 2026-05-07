@@ -14,8 +14,7 @@ from onnx import numpy_helper
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from packaging import version
 
-from aimet_onnx.common.batch_norm_fold import batch_norm_fold
-from aimet_onnx.common.bias_correction import ConvBnPatternHandler
+from aimet_onnx.common.batch_norm_fold import batch_norm_fold, ConvBnPatternHandler
 from aimet_onnx.common.graph_pattern_matcher import PatternType
 from aimet_onnx.common.graph_searcher import GraphSearcher
 from aimet_onnx.common.connected_graph.connectedgraph_utils import get_ordered_ops

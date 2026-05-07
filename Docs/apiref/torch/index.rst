@@ -23,7 +23,6 @@ aimet_torch API
     aimet_torch.model_validator <model_validator>
     aimet_torch.mixed_precision <mp>
     aimet_torch.quant_analyzer <quant_analyzer>
-    aimet_torch.autoquant <autoquant>
     aimet_torch.bn_reestimation <bn>
     aimet_torch.visualization_tools <interactive_visualization>
     aimet_torch.layer_output_utils <layer_output_generation>
@@ -55,7 +54,6 @@ AIMET quantization for PyTorch models provides the following functionality.
 - :ref:`aimet_torch.model_validator <apiref-torch-model-validator>`
 - :ref:`aimet_torch.mixed_precision <api-torch-mp>`
 - :ref:`aimet_torch.quant_analyzer <apiref-torch-quant-analyzer>`
-- :ref:`aimet_torch.autoquant <apiref-torch-autoquant>`
 - :ref:`aimet_torch.bn_reestimation <apiref-torch-bn>`
 - :ref:`aimet_torch.visualization_tools <api-torch-interactive-visualization>`
 - :ref:`aimet_torch.layer_output_utils <apiref-torch-layer-output-generation>`

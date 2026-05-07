@@ -41,9 +41,6 @@ Following the tables, you’ll find step-by-step instructions on how to run thes
    * - Adaptive rounding (AdaRound)
      - `Link <notebooks/onnx/quantization/adaround.ipynb>`_
      - `Link <notebooks/torch/quantization/adaround.ipynb>`_
-   * - Automatic quantization (AutoQuant)
-     - Not implemented.
-     - `Link <notebooks/torch/quantization/autoquant.ipynb>`_
    * - Automatic mixed precision (AMP)
      - `Link <notebooks/onnx/quantization/AMP.ipynb>`_
      - `Link <notebooks/torch/quantization/AMP.ipynb>`_

@@ -14,17 +14,14 @@ from functools import partial
 from typing import Tuple
 from torchvision import models
 import torch
-import torch.utils.data as torch_data
 
 # imports for AIMET
 import aimet_common
-from aimet_torch import bias_correction
 from aimet_torch.cross_layer_equalization import equalize_model
-from aimet_torch.quantsim import QuantParams, QuantizationSimModel
+from aimet_torch.quantsim import QuantizationSimModel
 
 # imports for data pipelines
 from Examples.common import image_net_config
-from Examples.torch.utils.image_net_data_loader import ImageNetDataLoader
 from Examples.torch.utils.image_net_evaluator import ImageNetEvaluator
 from Examples.torch.utils.image_net_trainer import ImageNetTrainer
 
@@ -126,38 +123,6 @@ def apply_cross_layer_equalization(model: torch.nn.Module, input_shape: tuple):
     """
 
     equalize_model(model, input_shape)
-
-
-def apply_bias_correction(model: torch.nn.Module, data_loader: torch_data.DataLoader):
-    """
-    Applies Bias-Correction on the model.
-    :param model: The model to quantize
-    :param evaluator: Evaluator used during quantization
-    :param dataloader: DataLoader used during quantization
-    :param logdir: Log directory used for storing log files
-    :return: None
-    """
-    # Rounding mode can be 'nearest' or 'stochastic'
-    rounding_mode = "nearest"
-
-    # Number of samples used during quantization
-    num_quant_samples = 16
-
-    # Number of samples used for bias correction
-    num_bias_correct_samples = 16
-
-    params = QuantParams(
-        weight_bw=8, act_bw=8, round_mode=rounding_mode, quant_scheme="tf_enhanced"
-    )
-
-    # Perform Bias Correction
-    bias_correction.correct_bias(
-        model.to(device="cuda"),
-        params,
-        num_quant_samples=num_quant_samples,
-        data_loader=data_loader,
-        num_bias_correct_samples=num_bias_correct_samples,
-    )
 
 
 def calculate_quantsim_accuracy(
@@ -266,14 +231,8 @@ def quantization_aware_training_example(config: argparse.Namespace):
     logger.info("Quantized Model top-1 accuracy = %.2f", accuracy)
 
     # For good initialization apply, apply Post Training Quantization (PTQ) methods
-    # such as Cross Layer Equalization (CLE) and Bias Correction (BC) (optional)
-    data_loader = ImageNetDataLoader(
-        is_training=False,
-        images_dir=config.dataset_dir,
-        image_size=image_net_config.dataset["image_size"],
-    ).data_loader
+    # such as Cross Layer Equalization (CLE) (optional)
     apply_cross_layer_equalization(model=model, input_shape=(1, 3, 224, 224))
-    apply_bias_correction(model=model, data_loader=data_loader)
 
     quantsim, _ = calculate_quantsim_accuracy(
         model=model,

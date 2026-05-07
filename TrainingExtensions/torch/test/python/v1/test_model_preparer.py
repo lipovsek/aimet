@@ -42,7 +42,6 @@ from aimet_torch.model_preparer import prepare_model, _find_functional_name_for_
 from aimet_torch.batch_norm_fold import fold_all_batch_norms
 from aimet_torch.cross_layer_equalization import equalize_model
 from aimet_torch.adaround.adaround_weight import Adaround, AdaroundParameters
-from aimet_torch import bias_correction
 from aimet_torch.meta import connectedgraph_utils
 from aimet_torch.model_preparer import prepare_pt_transformer_for_quantsim
 from aimet_torch import onnx_utils
@@ -520,69 +519,6 @@ class TestFX:
         original_model_fc_weight = adarounded_original_model.fc.weight.clone()
         modified_model_fc_weight = adarounded_transformed_model.fc.weight.clone()
         assert np.allclose(
-            original_model_fc_weight.detach().cpu().numpy(),
-            modified_model_fc_weight.detach().cpu().numpy(),
-        )
-
-    @pytest.mark.cuda
-    def test_fx_with_bias_correction(self):
-        """
-        test torch fx with torchvision Resnet18 - bias correction
-        """
-        seed_all(1)
-        input_shape = (1, 3, 32, 32)
-        dummy_input = torch.randn(*input_shape).cuda()
-        model = SingleResidual().cuda().eval()
-        model_copy = copy.deepcopy(model)
-
-        # create fake data loader with image size (3, 224, 224)
-        data_loader = create_fake_data_loader(
-            dataset_size=16, batch_size=16, image_size=input_shape[1:]
-        )
-        params = QuantParams(
-            weight_bw=4,
-            act_bw=4,
-            round_mode="nearest",
-            quant_scheme=QuantScheme.post_training_tf,
-        )
-        bias_correction.correct_bias(
-            model,
-            params,
-            num_quant_samples=1,
-            data_loader=data_loader,
-            num_bias_correct_samples=1,
-            perform_only_empirical_bias_corr=True,
-        )
-
-        # Apply Bias correction for transformed model
-        model_transformed = prepare_model(model_copy)
-        bias_correction.correct_bias(
-            model_transformed,
-            params,
-            num_quant_samples=1,
-            data_loader=data_loader,
-            num_bias_correct_samples=1,
-            perform_only_empirical_bias_corr=True,
-        )
-
-        # forward pass for bias corrected original and modified model
-        # output should be close for both bias corrected original and modified model
-        assert torch.allclose(model(dummy_input), model_transformed(dummy_input))
-
-        # compare bias for very first layer
-        # Bias should be same
-        original_model_conv1_weight = model.conv1.bias.clone()
-        modified_model_conv1_weight = model_transformed.conv1.bias.clone()
-        assert np.array_equal(
-            original_model_conv1_weight.detach().cpu().numpy(),
-            modified_model_conv1_weight.detach().cpu().numpy(),
-        )
-
-        # compare bias for very last layer
-        # Bias should be same
-        original_model_fc_weight = model.fc.bias.clone()
-        modified_model_fc_weight = model_transformed.fc.bias.clone()
-        assert np.array_equal(
             original_model_fc_weight.detach().cpu().numpy(),
             modified_model_fc_weight.detach().cpu().numpy(),
         )
