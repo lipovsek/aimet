@@ -301,7 +301,7 @@ Certain keys will only be present for certain quantization types, as indicated i
      - X
    * - bw
      - uint8
-     - Encoding bw (>=4 and <= 32)
+     - Encoding bw (>=2 and <= 32)
      - X
      - X
      - X
@@ -323,6 +323,13 @@ Certain keys will only be present for certain quantization types, as indicated i
    * - offset
      - int32[]
      - Flattened array of offsets
+     - X (INT only)
+     - X (INT only)
+     - X (INT only)
+     - X
+   * - zero_point_shift
+     - float32[]
+     - Flattened array of fractional zero point shifts for int2 quantization
      - X (INT only)
      - X (INT only)
      - X (INT only)
