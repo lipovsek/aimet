@@ -106,30 +106,22 @@ class Qwen_25_VL(VLM):
         **kwargs,
     ):
         num_new_tokens = input_ids.shape[1]
-        attention_mask = (
-            attention_mask[:, -num_new_tokens:]
-            if attention_mask is not None
-            else torch.ones_like(input_ids, dtype=torch.int32)
-        )
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids, dtype=torch.int32)
 
-        ctx = PositionIdContext(self.config, modeling_qwen2_5_vl.Qwen2_5_VLModel)
-        position_ids, *_ = modeling_qwen2_5_vl.Qwen2_5_VLModel.get_rope_index(
-            ctx, *args, input_ids=input_ids, attention_mask=attention_mask, **kwargs
-        )
         has_multimodal = (
             kwargs.get("image_grid_thw") is not None
             or kwargs.get("video_grid_thw") is not None
         )
 
         if has_multimodal:
-            # Prefill: compute full 3D position IDs via get_rope_index and cache rope_deltas
             trimmed_mask = attention_mask[:, -num_new_tokens:]
             ctx = PositionIdContext(self.config, modeling_qwen2_5_vl.Qwen2_5_VLModel)
             position_ids, rope_deltas = (
                 modeling_qwen2_5_vl.Qwen2_5_VLModel.get_rope_index(
                     ctx,
                     *args,
-                    input_ids=input_ids,
+                    input_ids=input_ids.long(),
                     attention_mask=trimmed_mask,
                     **kwargs,
                 )
@@ -141,7 +133,6 @@ class Qwen_25_VL(VLM):
             and hasattr(self, "_rope_deltas")
             and self._rope_deltas is not None
         ):
-            # Decode: use cached rope_deltas to infer correct positions
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids = position_ids.masked_fill(attention_mask == 0, 0)
             position_ids = position_ids[:, -num_new_tokens:]
@@ -149,13 +140,18 @@ class Qwen_25_VL(VLM):
             position_ids = position_ids + self._rope_deltas.unsqueeze(-1)
             return position_ids.to(dtype=torch.int32)
         else:
-            # New text-only prefill or no cached deltas — reset state and fall back
-            self._rope_deltas = None
             trimmed_mask = attention_mask[:, -num_new_tokens:]
             ctx = PositionIdContext(self.config, modeling_qwen2_5_vl.Qwen2_5_VLModel)
-            position_ids, *_ = modeling_qwen2_5_vl.Qwen2_5_VLModel.get_rope_index(
-                ctx, *args, input_ids=input_ids, attention_mask=trimmed_mask, **kwargs
+            position_ids, rope_deltas = (
+                modeling_qwen2_5_vl.Qwen2_5_VLModel.get_rope_index(
+                    ctx,
+                    *args,
+                    input_ids=input_ids.long(),
+                    attention_mask=trimmed_mask,
+                    **kwargs,
+                )
             )
+            self._rope_deltas = rope_deltas
             return position_ids[..., -num_new_tokens:].to(dtype=torch.int32)
 
     @staticmethod

@@ -4,12 +4,30 @@
 """Utils for building GenAI models"""
 
 import torch
-from transformers import PreTrainedModel, DynamicCache
+from transformers import PreTrainedModel, DynamicCache, PretrainedConfig
 
 from GenAILab.qai_hub_lm.utils.layer_cache import (
     AttentionType,
     build_layer_cache_descriptors,
 )
+
+
+def _resolve_text_config(config: PretrainedConfig) -> PretrainedConfig:
+    """Return the sub-config that carries layer-level attributes.
+
+    Some composite configs (e.g. Qwen3_5Config) nest num_hidden_layers and linear
+    attention dimensions under ``text_config`` rather than exposing them at
+    the top level.  This helper falls through to ``text_config`` when needed.
+    """
+    if getattr(config, "num_hidden_layers", None) is not None:
+        return config
+    text_config = getattr(config, "text_config", None)
+    if (
+        text_config is not None
+        and getattr(text_config, "num_hidden_layers", None) is not None
+    ):
+        return text_config
+    return config
 
 
 def _patch_sdpa_mask():
