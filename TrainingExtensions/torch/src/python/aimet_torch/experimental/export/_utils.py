@@ -3,6 +3,7 @@
 
 # pylint: disable=protected-access
 from typing import Any
+import operator
 
 import torch
 import torch.fx.node
@@ -12,11 +13,17 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 
 
 def _is_grid_preserving_op(node: torch.fx.Node) -> bool:
+    if node.target is operator.getitem:
+        return True
+
     if not isinstance(node.target, torch._ops.OpOverload):
         return False
 
     name, *_ = node.target.name().split(".")
     return name in (
+        "aten::alias",
+        "aten::alias_copy",
+        "aten::clone",
         "aten::contiguous",
         "aten::copy",
         "aten::copy_",
@@ -30,6 +37,7 @@ def _is_grid_preserving_op(node: torch.fx.Node) -> bool:
         "aten::dropout_",
         "aten::embedding",
         "aten::expand",
+        "aten::expand_copy",
         "aten::flatten",
         "aten::gather",
         "aten::item",
@@ -60,10 +68,13 @@ def _is_grid_preserving_op(node: torch.fx.Node) -> bool:
         "aten::replication_pad2d",
         "aten::replication_pad3d",
         "aten::reshape",
+        "aten::_reshape_alias",
+        "aten::_reshape_copy",
         "aten::rot90",
         "aten::select",
         "aten::slice",
         "aten::squeeze",
+        "aten::squeeze_copy",
         "aten::t",
         "aten::t_",
         "aten::t_copy",
