@@ -33,10 +33,7 @@ from GenAILab.bench.recipe_chain import apply_recipe_chain
 from GenAILab.bench import datasets, metrics
 from GenAILab.qai_hub_lm.backends import torch as models  # noqa: F401 — triggers registration
 from GenAILab.bench.torch import quant_recipes
-from GenAILab.qai_hub_lm.backends.torch.generator_utils import (
-    place_collection,
-    generator_factory,
-)
+from GenAILab.qai_hub_lm.backends.torch.generator_utils import generator_factory
 
 
 def test_llm_quantization(
@@ -120,7 +117,7 @@ def test_llm_quantization(
             # todo: need to update this to intelligently load encodings for embedding table if it exists
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    with place_collection(sim_collection, device):
+    with generator.on_device(device):
         # Disable visual quantizers during backbone recipes so the vision
         # encoder runs in FP mode (its quantizers aren't calibrated yet).
         visual_ctx = (
@@ -296,7 +293,7 @@ def test_llm_quantization(
             with open(os.path.join(export_dir, "onnx_eval_config.yaml"), "w") as file:
                 yaml.dump(data, file, default_flow_style=False)
 
-    with place_collection(sim_collection, device):
+    with generator.on_device(device):
         evaluation_results = []
         with torch.no_grad():
             for metric_kwargs in metrics:

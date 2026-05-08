@@ -13,37 +13,41 @@ from GenAILab.qai_hub_lm.models.generator import Generator, VLM_Generator
 from GenAILab.qai_hub_lm.backends.onnx.generator_utils import _VisualONNXAdapter
 
 
-class TestBuildFpMode:
-    def test_returns_context_manager_factory(self):
-        from GenAILab.qai_hub_lm.backends.onnx.generator_utils import _build_fp_mode
+class TestONNXFPModeMixin:
+    def test_fp_mode_removes_quant_nodes(self):
+        from GenAILab.qai_hub_lm.backends.onnx.generator_utils import generator_factory
 
         mock_backbone = MagicMock()
         mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
         mock_backbone._remove_quantization_nodes.return_value.__exit__ = MagicMock(
             return_value=False
         )
-        collection = SimCollection(backbone=mock_backbone)
+        mock_config = MagicMock()
+        collection = SimCollection(backbone=mock_backbone, config=mock_config)
 
-        fp_mode = _build_fp_mode(collection)
-        assert callable(fp_mode)
+        tok = MagicMock()
+        tok.eos_token_id = 0
 
-    def test_calls_remove_and_rebuild(self):
-        from GenAILab.qai_hub_lm.backends.onnx.generator_utils import _build_fp_mode
+        with patch(
+            "GenAILab.qai_hub_lm.backends.onnx.generator_utils.TorchONNXInterface"
+        ) as mock_interface:
+            mock_interface.return_value = MagicMock()
+            mock_interface.return_value.config = mock_config
+            mock_interface.return_value.dtype = MagicMock()
 
-        mock_backbone = MagicMock()
-        mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
-        mock_backbone._remove_quantization_nodes.return_value.__exit__ = MagicMock(
-            return_value=False
-        )
-        collection = SimCollection(backbone=mock_backbone)
-
-        fp_mode = _build_fp_mode(collection)
-        with fp_mode():
-            mock_backbone._remove_quantization_nodes.assert_called()
-            mock_backbone._rebuild_session.assert_called()
+            gen = generator_factory(
+                sim_collection=collection,
+                generator_cls=Generator,
+                tokenizer=tok,
+                sequence_length=8,
+                context_length=32,
+            )
+            with gen.fp_mode():
+                mock_backbone._remove_quantization_nodes.assert_called()
+                mock_backbone._rebuild_session.assert_called()
 
     def test_handles_visual_model(self):
-        from GenAILab.qai_hub_lm.backends.onnx.generator_utils import _build_fp_mode
+        from GenAILab.qai_hub_lm.backends.onnx.generator_utils import generator_factory
 
         mock_backbone = MagicMock()
         mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
@@ -55,13 +59,37 @@ class TestBuildFpMode:
         mock_visual._remove_quantization_nodes.return_value.__exit__ = MagicMock(
             return_value=False
         )
+        mock_config = MagicMock()
+        mock_config.text_config = MagicMock()
+        embedding = MagicMock()
 
-        collection = SimCollection(backbone=mock_backbone, visual=mock_visual)
+        collection = SimCollection(
+            backbone=mock_backbone,
+            visual=mock_visual,
+            embedding=embedding,
+            config=mock_config,
+        )
 
-        fp_mode = _build_fp_mode(collection)
-        with fp_mode():
-            mock_visual._remove_quantization_nodes.assert_called()
-            mock_visual._rebuild_session.assert_called()
+        tok = MagicMock()
+        tok.eos_token_id = 0
+
+        with patch(
+            "GenAILab.qai_hub_lm.backends.onnx.generator_utils.TorchONNXInterface"
+        ) as mock_interface:
+            mock_bb_wrapped = MagicMock()
+            mock_vis_wrapped = MagicMock()
+            mock_interface.side_effect = [mock_bb_wrapped, mock_vis_wrapped]
+
+            gen = generator_factory(
+                sim_collection=collection,
+                generator_cls=VLM_Generator,
+                tokenizer=tok,
+                sequence_length=8,
+                context_length=32,
+            )
+            with gen.fp_mode():
+                mock_visual._remove_quantization_nodes.assert_called()
+                mock_visual._rebuild_session.assert_called()
 
 
 class TestGeneratorFactory:

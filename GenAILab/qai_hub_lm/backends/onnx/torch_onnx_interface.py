@@ -76,7 +76,15 @@ def _resolve_output_shapes(
             if isinstance(dim, str):
                 sym_table[dim] = input_shapes[meta.name][i]
 
-    seq_len = input_shapes["input_ids"][1] if "input_ids" in input_shapes else None
+    if "input_ids" in input_shapes:
+        seq_len = input_shapes["input_ids"][1]
+        batch_size = input_shapes["input_ids"][0]
+    elif "inputs_embeds" in input_shapes:
+        seq_len = input_shapes["inputs_embeds"][1]
+        batch_size = input_shapes["inputs_embeds"][0]
+    else:
+        seq_len = None
+        batch_size = None
 
     output_shapes = []
     for meta in session.get_outputs():
@@ -92,8 +100,8 @@ def _resolve_output_shapes(
                     shape.append(input_shapes[in_name][2] + seq_len)
                 else:
                     return None
-            elif "logits" in meta.name and dim_idx == 0 and "input_ids" in input_shapes:
-                shape.append(input_shapes["input_ids"][0])
+            elif "logits" in meta.name and dim_idx == 0 and batch_size is not None:
+                shape.append(batch_size)
             else:
                 return None
         output_shapes.append(tuple(shape))

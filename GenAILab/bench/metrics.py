@@ -3,6 +3,7 @@
 
 """Metrics for GenAI testing"""
 
+import gc
 import time
 import warnings
 import yaml
@@ -729,7 +730,7 @@ class Interactive(TextEvaluationMetric):
             generation_config
             if generation_config is not None
             else GenerationConfig(
-                max_new_tokens=1000,
+                max_length=2048,
                 eos_token_id=tokenizer.eos_token_id,
                 pad_token_id=tokenizer.pad_token_id,
                 do_sample=True,
@@ -824,9 +825,35 @@ class Prompts(Interactive):
     PROMPTS_FILE = Path(__file__).parent / "prompts" / "text_prompts.yaml"
 
     @classmethod
+    def get_collection_name(cls):
+        return f"{cls.__name__}_generated_text"
+
+    @classmethod
     def _load_prompts(cls):
         with open(cls.PROMPTS_FILE) as f:
             return yaml.safe_load(f)
+
+    @classmethod
+    def _normalize_prompt(cls, entry) -> str:
+        if isinstance(entry, str):
+            return entry
+        if isinstance(entry, dict):
+            k, v = next(iter(entry.items()))
+            return f"{k}: {v}"
+        return str(entry)
+
+    @classmethod
+    def _generate_all(cls, model, tokenizer):
+        raw_prompts = cls._load_prompts()
+        prompts = [cls._normalize_prompt(p) for p in raw_prompts]
+        generated_text = []
+        for prompt in prompts:
+            print("===============================")
+            generated_text.append(
+                cls.generate_output(model, tokenizer, unformatted_prompt=prompt)
+            )
+        print("===============================")
+        return {"prompts": prompts, "generated_text": generated_text}
 
     @classmethod
     def evaluate(
@@ -837,14 +864,15 @@ class Prompts(Interactive):
         *,
         eval_ctx: EvaluationContext = None,
     ) -> list[str]:
-        generated_text = []
-        for prompt in cls._load_prompts():
-            print("===============================")
-            generated_text.append(
-                cls.generate_output(model, tokenizer, unformatted_prompt=prompt)
-            )
-        print("===============================")
-        return generated_text
+        def collect():
+            return cls._generate_all(model, tokenizer)
+
+        if eval_ctx is not None:
+            data = eval_ctx.get_or_compute_quant(cls.get_collection_name(), collect)
+        else:
+            data = collect()
+
+        return data["generated_text"]
 
 
 @YAMLConfigParser.register_metric
@@ -853,32 +881,26 @@ class MultimodalPrompts(EvaluationMetric):
     IMAGE_DIR = Path(__file__).parent / "prompts" / "sample_images"
 
     @classmethod
+    def get_collection_name(cls):
+        return f"{cls.__name__}_generated_text"
+
+    @classmethod
     def _load_prompts(cls):
         with open(cls.PROMPTS_FILE) as f:
             return yaml.safe_load(f)
 
     @classmethod
-    def evaluate(
-        cls,
-        model: Generator,
-        processor: ProcessorMixin,
-        context_length: int,
-        *,
-        eval_ctx: EvaluationContext = None,
-        **kwargs,
-    ) -> list[str]:
-        if not isinstance(model, VLM_Generator):
-            raise ValueError("MultimodalPrompts metric requires a VL model.")
+    def _generate_all(cls, model, processor):
+        from PIL import Image
 
         if model.generation_config is None:
             model.generation_config = GenerationConfig()
 
-        from PIL import Image
-
         tokenizer = getattr(processor, "tokenizer", processor)
+        prompts = cls._load_prompts()
         generated_text = []
 
-        for entry in cls._load_prompts():
+        for entry in prompts:
             image_file = entry["image"]
             prompt_text = entry["prompt"]
             print("===============================")
@@ -907,13 +929,17 @@ class MultimodalPrompts(EvaluationMetric):
             inputs.pop("mm_token_type_ids", None)
 
             generation_config = GenerationConfig(
-                max_new_tokens=200,
+                max_length=2048,
                 eos_token_id=tokenizer.eos_token_id,
                 pad_token_id=tokenizer.pad_token_id,
                 do_sample=False,
             )
 
-            streamer = TextStreamer(tokenizer=tokenizer, skip_prompt=True)
+            streamer = TimedStreamer(
+                tokenizer=tokenizer,
+                skip_prompt=True,
+                num_input_tokens=inputs["input_ids"].shape[-1],
+            )
             print(text, end="")
             outputs = model.generate(
                 **inputs,
@@ -928,4 +954,315 @@ class MultimodalPrompts(EvaluationMetric):
             generated_text.append(result)
 
         print("===============================")
-        return generated_text
+        return {"prompts": prompts, "generated_text": generated_text}
+
+    @classmethod
+    def evaluate(
+        cls,
+        model: Generator,
+        processor: ProcessorMixin,
+        context_length: int,
+        *,
+        eval_ctx: EvaluationContext = None,
+        **kwargs,
+    ) -> list[str]:
+        if not isinstance(model, VLM_Generator):
+            raise ValueError("MultimodalPrompts metric requires a VL model.")
+
+        def collect():
+            return cls._generate_all(model, processor)
+
+        if eval_ctx is not None:
+            data = eval_ctx.get_or_compute_quant(cls.get_collection_name(), collect)
+        else:
+            data = collect()
+
+        return data["generated_text"]
+
+
+@YAMLConfigParser.register_metric
+class AutogradedPrompts(TextEvaluationMetric):
+    """Grade generated responses with a small LLM as a 4-way classifier (A/B/C/D).
+
+    For each prompt/response pair, a single forward pass is run through the
+    grader model. The logits at the last token position are read and argmax is
+    taken over the four letter-token IDs. Points are assigned per the harness
+    config and the final score is reported as a percentage of max possible.
+    """
+
+    HARNESS_FILE = (
+        Path(__file__).parent / "prompts" / "text_prompts_autograder_harness.yaml"
+    )
+    LETTERS = ("A", "B", "C", "D")
+    DEFAULT_HARNESS_VERSION = "v1"
+
+    @classmethod
+    def _load_harness(cls, version: str = DEFAULT_HARNESS_VERSION):
+        with open(cls.HARNESS_FILE) as f:
+            harness = yaml.safe_load(f)
+        return harness[version]
+
+    @staticmethod
+    def _get_letter_token_ids(tokenizer) -> list[int]:
+        ids = []
+        for letter in AutogradedPrompts.LETTERS:
+            tok_ids = tokenizer(f" {letter}", add_special_tokens=False)["input_ids"]
+            if len(tok_ids) != 1:
+                tok_ids = tokenizer(letter, add_special_tokens=False)["input_ids"]
+            if len(tok_ids) != 1:
+                raise ValueError(
+                    f"Letter {letter!r} tokenizes to {len(tok_ids)} tokens; "
+                    f"grader needs single-token letters."
+                )
+            ids.append(tok_ids[0])
+        if len(set(ids)) != 4:
+            raise ValueError(f"Letter token ids collided: {ids}")
+        return ids
+
+    @classmethod
+    def _score_one(
+        cls,
+        grader_model,
+        grader_tokenizer,
+        grading_prompt,
+        prompt,
+        response,
+        letter_ids,
+    ) -> str:
+        text = grading_prompt.replace("{prompt}", prompt).replace(
+            "{response}", response
+        )
+        messages = [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": ""},
+        ]
+        formatted = grader_tokenizer.apply_chat_template(
+            messages, tokenize=False, continue_final_message=True, enable_thinking=False
+        )
+        input_ids = grader_tokenizer(
+            formatted, return_tensors="pt", add_special_tokens=False
+        )["input_ids"].to(grader_model.device)
+        outputs = grader_model(input_ids=input_ids)
+        logits = outputs.logits[0, -1, :].float().cpu()
+        choice_logits = {
+            letter: logits[tok_id].item()
+            for letter, tok_id in zip(cls.LETTERS, letter_ids)
+        }
+        return max(choice_logits, key=choice_logits.get)
+
+    @classmethod
+    @torch.no_grad()
+    def evaluate(
+        cls,
+        model: Generator,
+        tokenizer: PreTrainedTokenizer,
+        context_length: int,
+        *,
+        eval_ctx: EvaluationContext = None,
+        harness_version: str = DEFAULT_HARNESS_VERSION,
+        **kwargs,
+    ) -> float:
+        def collect():
+            return Prompts._generate_all(model, tokenizer)
+
+        if eval_ctx is not None:
+            data = eval_ctx.get_or_compute_quant(Prompts.get_collection_name(), collect)
+        else:
+            data = collect()
+
+        prompts = data["prompts"]
+        responses = data["generated_text"]
+
+        harness = cls._load_harness(harness_version)
+        grader_model_id = harness["model_id"]
+        grading_prompt = harness["grading_prompt"]
+        letter_points = harness["letter_points"]
+        max_points = max(letter_points.values())
+
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        with model.on_device(torch.device("cpu")):
+            grader_tokenizer = AutoTokenizer.from_pretrained(grader_model_id)
+            grader_model = AutoModelForCausalLM.from_pretrained(
+                grader_model_id,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+            )
+            grader_model.eval()
+            letter_ids = cls._get_letter_token_ids(grader_tokenizer)
+
+            total_points = 0
+            for prompt, response in tqdm(
+                zip(prompts, responses),
+                total=len(prompts),
+                desc="Autograding responses",
+            ):
+                pred = cls._score_one(
+                    grader_model,
+                    grader_tokenizer,
+                    grading_prompt,
+                    prompt,
+                    response,
+                    letter_ids,
+                )
+                total_points += letter_points[pred]
+
+            del grader_model
+            del grader_tokenizer
+
+            gc.collect()
+            torch.cuda.empty_cache()
+
+        return 100.0 * total_points / (max_points * len(prompts))
+
+
+@YAMLConfigParser.register_metric
+class AutogradedMultimodalPrompts(EvaluationMetric):
+    """Grade VLM responses with an external VLM as a 4-way classifier (A/B/C/D).
+
+    The grader model receives both the source image and the generated response.
+    Scoring uses single-forward-pass argmax over letter tokens, same as
+    AutogradedPrompts.
+    """
+
+    HARNESS_FILE = (
+        Path(__file__).parent / "prompts" / "multimodal_prompts_autograder_harness.yaml"
+    )
+    IMAGE_DIR = Path(__file__).parent / "prompts" / "sample_images"
+    LETTERS = ("A", "B", "C", "D")
+    DEFAULT_HARNESS_VERSION = "v1"
+
+    @classmethod
+    def _load_harness(cls, version: str = DEFAULT_HARNESS_VERSION):
+        with open(cls.HARNESS_FILE) as f:
+            harness = yaml.safe_load(f)
+        return harness[version]
+
+    @staticmethod
+    def _get_letter_token_ids(tokenizer) -> list[int]:
+        ids = []
+        for letter in AutogradedMultimodalPrompts.LETTERS:
+            tok_ids = tokenizer(f" {letter}", add_special_tokens=False)["input_ids"]
+            if len(tok_ids) != 1:
+                tok_ids = tokenizer(letter, add_special_tokens=False)["input_ids"]
+            if len(tok_ids) != 1:
+                raise ValueError(
+                    f"Letter {letter!r} tokenizes to {len(tok_ids)} tokens; "
+                    f"grader needs single-token letters."
+                )
+            ids.append(tok_ids[0])
+        if len(set(ids)) != 4:
+            raise ValueError(f"Letter token ids collided: {ids}")
+        return ids
+
+    @classmethod
+    def _score_one(
+        cls,
+        grader_model,
+        grader_processor,
+        grading_prompt,
+        prompt_text,
+        response,
+        image,
+        letter_ids,
+    ):
+        text = grading_prompt.replace("{prompt}", prompt_text).replace(
+            "{response}", response
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "image"}, {"type": "text", "text": text}],
+            },
+            {"role": "assistant", "content": ""},
+        ]
+        formatted = grader_processor.apply_chat_template(
+            messages, tokenize=False, continue_final_message=True, enable_thinking=False
+        )
+        inputs = grader_processor(text=[formatted], images=[image], return_tensors="pt")
+        inputs = {k: v.to(grader_model.device) for k, v in inputs.items()}
+
+        outputs = grader_model(**inputs)
+        logits = outputs.logits[0, -1, :].float().cpu()
+        choice_logits = {
+            letter: logits[tok_id].item()
+            for letter, tok_id in zip(cls.LETTERS, letter_ids)
+        }
+        return max(choice_logits, key=choice_logits.get)
+
+    @classmethod
+    @torch.no_grad()
+    def evaluate(
+        cls,
+        model: Generator,
+        processor: ProcessorMixin,
+        context_length: int,
+        *,
+        eval_ctx: EvaluationContext = None,
+        harness_version: str = DEFAULT_HARNESS_VERSION,
+        **kwargs,
+    ) -> float:
+        if not isinstance(model, VLM_Generator):
+            raise ValueError("AutogradedMultimodalPrompts requires a VL model.")
+
+        def collect():
+            return MultimodalPrompts._generate_all(model, processor)
+
+        if eval_ctx is not None:
+            data = eval_ctx.get_or_compute_quant(
+                MultimodalPrompts.get_collection_name(), collect
+            )
+        else:
+            data = collect()
+
+        prompts = data["prompts"]
+        responses = data["generated_text"]
+
+        harness = cls._load_harness(harness_version)
+        grader_model_id = harness["model_id"]
+        grading_prompt = harness["grading_prompt"]
+        letter_points = harness["letter_points"]
+        max_points = max(letter_points.values())
+
+        from PIL import Image
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+
+        with model.on_device(torch.device("cpu")):
+            grader_processor = AutoProcessor.from_pretrained(grader_model_id)
+            grader_model = AutoModelForImageTextToText.from_pretrained(
+                grader_model_id,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+            )
+            grader_model.eval()
+            grader_tokenizer = getattr(grader_processor, "tokenizer", grader_processor)
+            letter_ids = cls._get_letter_token_ids(grader_tokenizer)
+
+            total_points = 0
+            for entry, response in tqdm(
+                zip(prompts, responses),
+                total=len(prompts),
+                desc="Autograding multimodal responses",
+            ):
+                image_path = cls.IMAGE_DIR / entry["image"]
+                image = Image.open(image_path).convert("RGB")
+
+                pred = cls._score_one(
+                    grader_model,
+                    grader_processor,
+                    grading_prompt,
+                    entry["prompt"],
+                    response,
+                    image,
+                    letter_ids,
+                )
+                total_points += letter_points[pred]
+
+            del grader_model
+            del grader_processor
+
+            gc.collect()
+            torch.cuda.empty_cache()
+
+        return 100.0 * total_points / (max_points * len(prompts))

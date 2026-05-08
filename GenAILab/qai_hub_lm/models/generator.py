@@ -181,7 +181,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         context_length: int,
         config: Union[PretrainedConfig | None] = None,
         attention_mask_min: int = -100,
-        fp_mode=None,
+        sim_collection=None,
         *args,
         **kwargs,
     ):
@@ -197,7 +197,7 @@ class Generator(GenerationMixin, torch.nn.Module):
         self.generation_config = None
         self._config = config
         self.attention_mask_min = attention_mask_min
-        self._fp_mode = fp_mode or contextlib.nullcontext
+        self.sim_collection = sim_collection
 
     @property
     def sequence_length(self) -> int:
@@ -247,13 +247,23 @@ class Generator(GenerationMixin, torch.nn.Module):
     def device(self) -> torch.device:
         return self.model.device
 
+    @contextlib.contextmanager
     def fp_mode(self):
-        """Return a context manager that temporarily disables all quantizers.
+        """Context manager that temporarily disables all quantizers.
 
-        The concrete implementation is injected at construction time by the
-        framework-specific ``generator_factory``.
+        Override in framework-specific mixins (TorchFPModeMixin, ONNXFPModeMixin)
+        to provide real implementations. The base implementation is a no-op.
         """
-        return self._fp_mode()
+        yield
+
+    @contextlib.contextmanager
+    def on_device(self, device):
+        """Context manager that temporarily places all models on the given device.
+
+        Override in framework-specific mixins (TorchDevicePlacementMixin) to
+        provide a real implementation. The base implementation is a no-op.
+        """
+        yield
 
     def prepare_inputs_for_generation(
         self,
@@ -298,13 +308,23 @@ class Generator(GenerationMixin, torch.nn.Module):
         # Forward VLM-specific kwargs so they reach VLM_Generator.forward().
         # Do NOT forward all kwargs — HF's generate adds internal keys like
         # cache_position that would be misinterpreted as extra model inputs.
+        # Only forward image/video data during prefill (multiple tokens remaining).
+        # During autoregressive decode only a single new token is passed and it is
+        # never an image token, so re-running the vision encoder would be wasteful.
+        # This handles multi-turn chat: a new generate() call with prior KV cache
+        # still prefills multiple new tokens (including new images).
         _VLM_KEYS = {
             "pixel_values",
             "pixel_values_videos",
             "image_grid_thw",
             "video_grid_thw",
         }
-        vlm_kwargs = {k: v for k, v in kwargs.items() if k in _VLM_KEYS}
+        remaining_input = inputs.get("input_ids", inputs.get("inputs_embeds"))
+        is_prefill = remaining_input.shape[1] > 1
+        vlm_kwargs = (
+            {k: v for k, v in kwargs.items() if k in _VLM_KEYS} if is_prefill else {}
+        )
+
         return (
             inputs
             | {
@@ -926,6 +946,10 @@ class VLM_Generator(Generator):
             else None
         )
         self.visual_output_names = visual_output_names
+        if self.sim_collection is not None and position_id_processor is None:
+            proc = getattr(self.sim_collection, "position_id_processor", None)
+            if proc is not None:
+                self.position_id_processor = types.MethodType(proc, self)
 
     @contextlib.contextmanager
     def visual_quantization_mode(self):

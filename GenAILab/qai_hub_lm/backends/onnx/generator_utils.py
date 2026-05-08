@@ -43,29 +43,81 @@ class _VisualONNXAdapter(torch.nn.Module):
         return outputs
 
 
-def _build_fp_mode(sim_collection: SimCollection):
-    """Build a context manager factory that temporarily removes ONNX quantization nodes."""
+class ONNXFPModeMixin:
+    """Mixin that provides fp_mode() for ONNX QuantSim generators."""
 
     @contextlib.contextmanager
-    def fp_mode():
+    def fp_mode(self):
         try:
             with contextlib.ExitStack() as stack:
                 stack.enter_context(
-                    sim_collection.backbone._remove_quantization_nodes()
+                    self.sim_collection.backbone._remove_quantization_nodes()
                 )
-                sim_collection.backbone._rebuild_session()
-                if sim_collection.visual is not None:
+                self.sim_collection.backbone._rebuild_session()
+                if self.sim_collection.visual is not None:
                     stack.enter_context(
-                        sim_collection.visual._remove_quantization_nodes()
+                        self.sim_collection.visual._remove_quantization_nodes()
                     )
-                    sim_collection.visual._rebuild_session()
+                    self.sim_collection.visual._rebuild_session()
                 yield
         finally:
-            sim_collection.backbone._rebuild_session()
-            if sim_collection.visual is not None:
-                sim_collection.visual._rebuild_session()
+            self.sim_collection.backbone._rebuild_session()
+            if self.sim_collection.visual is not None:
+                self.sim_collection.visual._rebuild_session()
 
-    return fp_mode
+
+class ONNXDevicePlacementMixin:
+    """Mixin that provides on_device() for ONNX QuantSim generators.
+
+    Swaps execution providers and rebuilds sessions to move inference to the
+    target device. Currently supports moving from CUDA to CPU.
+    """
+
+    @contextlib.contextmanager
+    def on_device(self, device):
+        device = torch.device(device)
+        sims = [self.sim_collection.backbone]
+        if self.sim_collection.visual is not None:
+            sims.append(self.sim_collection.visual)
+
+        original_providers = [sim.providers for sim in sims]
+        target_providers = _providers_for_device(device)
+
+        if all(
+            _current_device_type(providers) == device.type
+            for providers in original_providers
+        ):
+            yield
+            return
+
+        try:
+            for sim in sims:
+                sim.providers = target_providers
+                sim._rebuild_session()
+            yield
+        finally:
+            for sim, orig in zip(sims, original_providers):
+                sim.providers = orig
+                sim._rebuild_session()
+
+
+def _current_device_type(providers) -> str:
+    for p in providers:
+        name = p if isinstance(p, str) else p[0]
+        if name == "CUDAExecutionProvider":
+            return "cuda"
+    return "cpu"
+
+
+def _providers_for_device(device: torch.device):
+    if device.type == "cuda":
+        if device.index is not None:
+            return [
+                ("CUDAExecutionProvider", {"device_id": device.index}),
+                "CPUExecutionProvider",
+            ]
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
 
 
 def generator_factory(
@@ -77,7 +129,12 @@ def generator_factory(
     visual_output_names=None,
     **model_kwargs,
 ) -> Generator:
-    fp_mode = _build_fp_mode(sim_collection)
+    # Compose the generator class with ONNX-specific mixins
+    mixed_cls = type(
+        generator_cls.__name__,
+        (ONNXFPModeMixin, ONNXDevicePlacementMixin, generator_cls),
+        {},
+    )
 
     if sim_collection.is_vlm():
         assert issubclass(generator_cls, VLM_Generator)
@@ -91,7 +148,7 @@ def generator_factory(
             vision_interface = _VisualONNXAdapter(
                 vision_interface, num_list_outputs=len(ds_indexes)
             )
-        return generator_cls(
+        return mixed_cls(
             backbone_model=TorchONNXInterface(
                 sim_collection.backbone, sim_collection.config.text_config
             ),
@@ -103,15 +160,15 @@ def generator_factory(
             context_length=context_length,
             config=sim_collection.config,
             visual_output_names=visual_output_names,
-            fp_mode=fp_mode,
+            sim_collection=sim_collection,
             **model_kwargs,
         )
     else:
-        return generator_cls(
+        return mixed_cls(
             model=TorchONNXInterface(sim_collection.backbone, sim_collection.config),
             tokenizer=tokenizer,
             sequence_length=sequence_length,
             context_length=context_length,
-            fp_mode=fp_mode,
+            sim_collection=sim_collection,
             **model_kwargs,
         )

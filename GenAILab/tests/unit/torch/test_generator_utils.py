@@ -48,26 +48,34 @@ class TestPlaceCollection:
                 pass
 
 
-class TestBuildFpMode:
-    def test_returns_context_manager_factory(self):
-        from GenAILab.qai_hub_lm.backends.torch.generator_utils import _build_fp_mode
+class TestTorchFPModeMixin:
+    def test_fp_mode_disables_quantizers(self):
+        from GenAILab.qai_hub_lm.backends.torch.generator_utils import generator_factory
 
         mock_sim = MagicMock()
         mock_sim.model = torch.nn.Linear(4, 4)
         collection = SimCollection(backbone=mock_sim)
+
+        tok = MagicMock()
+        tok.eos_token_id = 0
 
         with patch(
             "GenAILab.qai_hub_lm.backends.torch.generator_utils.remove_all_quantizers"
         ) as mock_remove:
             mock_remove.return_value.__enter__ = MagicMock()
             mock_remove.return_value.__exit__ = MagicMock(return_value=False)
-            fp_mode = _build_fp_mode(collection)
-            assert callable(fp_mode)
-            with fp_mode():
+            gen = generator_factory(
+                sim_collection=collection,
+                generator_cls=Generator,
+                tokenizer=tok,
+                sequence_length=8,
+                context_length=32,
+            )
+            with gen.fp_mode():
                 mock_remove.assert_called()
 
     def test_handles_visual_model(self):
-        from GenAILab.qai_hub_lm.backends.torch.generator_utils import _build_fp_mode
+        from GenAILab.qai_hub_lm.backends.torch.generator_utils import generator_factory
 
         mock_backbone = MagicMock()
         mock_backbone.model = torch.nn.Linear(4, 4)
@@ -79,15 +87,52 @@ class TestBuildFpMode:
             backbone=mock_backbone, visual=mock_visual, embedding=embedding
         )
 
+        tok = MagicMock()
+        tok.eos_token_id = 0
+
         with patch(
             "GenAILab.qai_hub_lm.backends.torch.generator_utils.remove_all_quantizers"
         ) as mock_remove:
             mock_remove.return_value.__enter__ = MagicMock()
             mock_remove.return_value.__exit__ = MagicMock(return_value=False)
-            fp_mode = _build_fp_mode(collection)
-            with fp_mode():
-                # Should be called for backbone and visual
+            gen = generator_factory(
+                sim_collection=collection,
+                generator_cls=VLM_Generator,
+                tokenizer=tok,
+                sequence_length=8,
+                context_length=32,
+            )
+            with gen.fp_mode():
+                # Should be called for backbone, visual, and embedding
                 assert mock_remove.call_count >= 2
+
+
+class TestTorchDevicePlacementMixin:
+    def test_on_device_places_models(self):
+        from GenAILab.qai_hub_lm.backends.torch.generator_utils import generator_factory
+
+        mock_sim = MagicMock(spec=QuantizationSimModel)
+        mock_sim.model = torch.nn.Linear(4, 4)
+        collection = SimCollection(backbone=mock_sim)
+
+        tok = MagicMock()
+        tok.eos_token_id = 0
+
+        with patch(
+            "GenAILab.qai_hub_lm.backends.torch.generator_utils.place_model"
+        ) as mock_place:
+            mock_place.return_value.__enter__ = MagicMock()
+            mock_place.return_value.__exit__ = MagicMock(return_value=False)
+            gen = generator_factory(
+                sim_collection=collection,
+                generator_cls=Generator,
+                tokenizer=tok,
+                sequence_length=8,
+                context_length=32,
+            )
+            with gen.on_device(torch.device("cpu")):
+                pass
+            mock_place.assert_called()
 
 
 class TestGeneratorFactory:
