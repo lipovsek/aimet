@@ -44,7 +44,7 @@ Each field in the encoding maps directly to an input or attribute of an ``onnx::
    * - ``output_dtype``
      - string
      - Yes
-     - Data type of the quantized tensor. One of: ``int2``, ``uint2``, ``int4``, ``uint4``, ``int8``, ``uint8``, ``int16``, ``uint16``, ``int32``, ``uint32``
+     - Data type of the quantized tensor. One of: ``int2``, ``uint2``, ``int4``, ``uint4``, ``int8``, ``uint8``, ``int16``, ``uint16``, ``int32``, ``float4e2m1``, ``float8e4m3fn``, ``float8e4m3fnuz``, ``float8e5m2``, ``float8e5m2fnuz``.
    * - ``y_scale``
      - float or nested list of float
      - Yes

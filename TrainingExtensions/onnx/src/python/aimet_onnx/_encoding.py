@@ -1392,3 +1392,6 @@ _float8e5m2 = FloatEncoding(
 _float8e5m2fnuz = FloatEncoding(
     exponent_bits=5, mantissa_bits=2, finite=True, unsigned_zero=True
 )
+_float4_e2m1fn = FloatEncoding(
+    exponent_bits=2, mantissa_bits=1, finite=True, unsigned_zero=False
+)
