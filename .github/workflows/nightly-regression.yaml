@@ -51,6 +51,8 @@ jobs:
     if: ${{ github.event.inputs.framework != 'torch' }}
     uses: ./.github/workflows/build-wheels.yml
     with:
+      # TODO: runs-on can be removed once ephemeral runners are fully adopted —
+      # the runner-id is dynamically generated and does not use this value.
       variants: >
         {"include":[{
           "id":"onnx-gpu",
@@ -62,6 +64,7 @@ jobs:
           "PIP_INDEX":""
         }]}
       image-tag: latest
+      use-ephemeral-runner: true
     secrets: inherit
 
   build-aimet-torch-gpu:
@@ -69,6 +72,8 @@ jobs:
     if: ${{ github.event.inputs.framework != 'onnx' }}
     uses: ./.github/workflows/build-wheels.yml
     with:
+      # TODO: runs-on can be removed once ephemeral runners are fully adopted —
+      # the runner-id is dynamically generated and does not use this value.
       variants: >
         {"include":[{
           "id":"torch-gpu",
@@ -80,23 +85,32 @@ jobs:
           "PIP_INDEX":""
         }]}
       image-tag: latest
+      use-ephemeral-runner: true
     secrets: inherit
 
   #=============================================================================
   # ONNX Regression
   #=============================================================================
-  onnx-regression:
-    name: ONNX Regression
+  start-runner-onnx:
+    name: Start runner (onnx-gpu regression)
     needs: build-aimet-onnx-gpu
     if: ${{ github.event.inputs.framework != 'torch' }}
-    runs-on: k8s-gpu-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/start-gpu-runner
+        with:
+          runner-id: onnx-gpu-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+          gpu-request: "1"
+          docker-image: ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-onnx-gpu:latest
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
-    container:
-      image: "${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-onnx-gpu:latest"
-      credentials:
-        username: ${{ secrets.DOCKER_LOGIN }}
-        password: ${{ secrets.DOCKER_CREDENTIALS }}
-      options: --gpus all
+  onnx-regression:
+    name: ONNX Regression
+    needs: start-runner-onnx
+    if: ${{ github.event.inputs.framework != 'torch' }}
+    runs-on: onnx-gpu-nightly-${{ github.run_id }}-${{ github.run_attempt }}
 
     timeout-minutes: 720
 
@@ -107,6 +121,8 @@ jobs:
       INPUT_SUITE: ${{ github.event.inputs.suite || 'nightly' }}-onnx
       WORKFLOW_FILE: "nightly-regression.yaml"
       BASELINE_SOURCE: ${{ github.event.inputs.baseline_source == 'custom' && github.event.inputs.baseline_source_custom || github.event.inputs.baseline_source || 'own' }}
+      VER_TORCH: "2.*"
+      VER_CUDA_SHORT: "cu126"
 
     steps:
       - name: Checkout code
@@ -120,18 +136,18 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          apt-get update -qq
-          apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y \
             libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 \
             libxrender-dev libgomp1 git openssh-client unzip curl
-          apt-get clean
-          rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
       - name: Setup Python environment
         run: |
           set -e
-          apt-get update -qq
-          apt-get install -y python3.10 python3.10-venv python3.10-dev
+          sudo apt-get update -qq
+          sudo apt-get install -y python3.10 python3.10-venv python3.10-dev
 
           curl -LsSf https://astral.sh/uv/install.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
@@ -139,6 +155,8 @@ jobs:
           uv venv .venv --python python3.10
           . .venv/bin/activate
 
+          # Pin torch before qai-hub-models; otherwise qai-hub-models pulls a torch version incompatible with the pod's CUDA driver
+          uv pip install torch==${{ env.VER_TORCH }} torchvision --index-url https://download.pytorch.org/whl/${{ env.VER_CUDA_SHORT }}
           uv pip install qai-hub qai-hub-models
           uv pip install onnxruntime-gpu==1.19.2
           uv pip install pynvml pytest requests
@@ -259,21 +277,42 @@ jobs:
           path: AIMETRegression/reports/**/*
           retention-days: 30
 
+  cleanup-runner-onnx:
+    name: Cleanup runner (onnx-gpu regression)
+    if: always() && github.event.inputs.framework != 'torch'
+    needs: [ start-runner-onnx, onnx-regression ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stop-gpu-runner
+        with:
+          runner-ids: onnx-gpu-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
+
   #=============================================================================
   # Torch Regression
   #=============================================================================
-  torch-regression:
-    name: Torch Regression
+  start-runner-torch:
+    name: Start runner (torch-gpu regression)
     needs: build-aimet-torch-gpu
     if: ${{ github.event.inputs.framework != 'onnx' }}
-    runs-on: k8s-gpu-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/start-gpu-runner
+        with:
+          runner-id: torch-gpu-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+          gpu-request: "1"
+          docker-image: ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-torch-gpu:latest
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
-    container:
-      image: "${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-torch-gpu:latest"
-      credentials:
-        username: ${{ secrets.DOCKER_LOGIN }}
-        password: ${{ secrets.DOCKER_CREDENTIALS }}
-      options: --gpus all
+  torch-regression:
+    name: Torch Regression
+    needs: start-runner-torch
+    if: ${{ github.event.inputs.framework != 'onnx' }}
+    runs-on: torch-gpu-nightly-${{ github.run_id }}-${{ github.run_attempt }}
 
     timeout-minutes: 720
 
@@ -301,18 +340,18 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          apt-get update -qq
-          apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y \
             libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 \
             libxrender-dev libgomp1 git openssh-client unzip curl
-          apt-get clean
-          rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
       - name: Setup Python environment
         run: |
           set -e
-          apt-get update -qq
-          apt-get install -y python${{ env.VER_PYTHON }} python${{ env.VER_PYTHON }}-venv python${{ env.VER_PYTHON }}-dev
+          sudo apt-get update -qq
+          sudo apt-get install -y python${{ env.VER_PYTHON }} python${{ env.VER_PYTHON }}-venv python${{ env.VER_PYTHON }}-dev
 
           curl -LsSf https://astral.sh/uv/install.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
@@ -320,6 +359,7 @@ jobs:
           uv venv .venv --python python${{ env.VER_PYTHON }}
           . .venv/bin/activate
 
+          # Pin torch before qai-hub-models; otherwise qai-hub-models pulls a torch version incompatible with the pod's CUDA driver
           uv pip install torch==${{ env.VER_TORCH }} torchvision --index-url https://download.pytorch.org/whl/${{ env.VER_CUDA_SHORT }}
           uv pip install qai-hub qai-hub-models
           uv pip install pynvml pytest requests object-detection-metrics
@@ -441,6 +481,19 @@ jobs:
           name: torch-reports-${{ steps.timestamp.outputs.datetime }}-${{ github.run_id }}
           path: AIMETRegression/reports/**/*
           retention-days: 30
+
+  cleanup-runner-torch:
+    name: Cleanup runner (torch-gpu regression)
+    if: always() && github.event.inputs.framework != 'onnx'
+    needs: [ start-runner-torch, torch-regression ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stop-gpu-runner
+        with:
+          runner-ids: torch-gpu-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
   #=============================================================================
   # Results

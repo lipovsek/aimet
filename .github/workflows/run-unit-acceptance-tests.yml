@@ -204,13 +204,17 @@ jobs:
 
   start-runner:
     if: ${{ inputs.use-ephemeral-runner && (inputs.run_unit_tests || inputs.run_acceptance_tests) }}
-    name: Start runner (${{ inputs.env_name }})
+    name: Start runner (${{ inputs.env_name }}, Python ${{ matrix.ver_python }})
+    needs: [parse_python_versions]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.parse_python_versions.outputs.python_versions) }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/start-gpu-runner
         with:
-          runner-id: ${{ inputs.env_name }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          runner-id: ${{ inputs.env_name }}-py${{ matrix.ver_python }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
           gpu-request: ${{ inputs.ver_cuda != '' && '1' || '0' }}
           docker-image: ${{ inputs.ver_cuda != '' && format('docker-registry.qualcomm.com/library/nvidia/cuda:{0}-cudnn-devel-ubuntu22.04', inputs.ver_cuda) || 'docker-registry.qualcomm.com/library/ubuntu:22.04' }}
           kubeconfig: ${{ secrets.KUBECONFIG }}
@@ -219,7 +223,7 @@ jobs:
   test_on_linux_ephemeral:
     name: Run AIMET unit and acceptance tests on Ubuntu - ephemeral (Python ${{ matrix.ver_python }})
     needs: [parse_python_versions, start-runner]
-    runs-on: ${{ inputs.env_name }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
+    runs-on: ${{ inputs.env_name }}-py${{ matrix.ver_python }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
     if: ${{ inputs.use-ephemeral-runner && (inputs.run_unit_tests || inputs.run_acceptance_tests) }}
     strategy:
       fail-fast: false
@@ -350,14 +354,17 @@ jobs:
 
   cleanup-runner:
     if: always() && inputs.use-ephemeral-runner
-    name: Cleanup runner (${{ inputs.env_name }})
-    needs: [start-runner, test_on_linux_ephemeral]
+    name: Cleanup runner (${{ inputs.env_name }}, Python ${{ matrix.ver_python }})
+    needs: [parse_python_versions, start-runner, test_on_linux_ephemeral]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.parse_python_versions.outputs.python_versions) }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/stop-gpu-runner
         with:
-          runner-ids: ${{ inputs.env_name }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          runner-ids: ${{ inputs.env_name }}-py${{ matrix.ver_python }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
           kubeconfig: ${{ secrets.KUBECONFIG }}
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 

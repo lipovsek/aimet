@@ -222,6 +222,7 @@ jobs:
     with:
       variants: ${{ needs.variants.outputs.matrix }}
       image-tag: ${{ needs.docker-tag.outputs.tag }}
+      use-ephemeral-runner: true
       build-windows-wheel: true
     secrets: inherit
 
@@ -242,6 +243,7 @@ jobs:
       runs_on: ${{ matrix.runs-on }}
       pip_index: ${{ matrix.PIP_INDEX }}
       include_windows_tests: true
+      use-ephemeral-runner: true
     secrets: inherit
 
   docker-push-latest:

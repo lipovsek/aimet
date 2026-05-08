@@ -45,6 +45,8 @@ jobs:
     if: ${{ github.event.inputs.framework != 'torch' }}
     uses: ./.github/workflows/build-wheels.yml
     with:
+      # TODO: runs-on can be removed once ephemeral runners are fully adopted —
+      # the runner-id is dynamically generated and does not use this value.
       variants: >
         {"include":[{
           "id":"onnx-gpu",
@@ -56,6 +58,7 @@ jobs:
           "PIP_INDEX":""
         }]}
       image-tag: latest
+      use-ephemeral-runner: true
     secrets: inherit
 
   build-aimet-torch-gpu:
@@ -63,6 +66,8 @@ jobs:
     if: ${{ github.event.inputs.framework != 'onnx' }}
     uses: ./.github/workflows/build-wheels.yml
     with:
+      # TODO: runs-on can be removed once ephemeral runners are fully adopted —
+      # the runner-id is dynamically generated and does not use this value.
       variants: >
         {"include":[{
           "id":"torch-gpu",
@@ -74,23 +79,34 @@ jobs:
           "PIP_INDEX":""
         }]}
       image-tag: latest
+      use-ephemeral-runner: true
     secrets: inherit
 
   #=============================================================================
   # ONNX Weekly Regression (GPU Runner 1)
   #=============================================================================
+  start-runner-onnx:
+    name: Start runner (onnx-gpu weekly)
+    needs: build-aimet-onnx-gpu
+    if: ${{ github.event.inputs.framework != 'torch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/start-gpu-runner
+        with:
+          runner-id: onnx-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
+          gpu-request: "1"
+          cpu-request: "16"
+          memory-request: "160Gi"
+          docker-image: ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-onnx-gpu:latest
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
+
   onnx-weekly:
     name: Run ONNX Weekly (GPU)
     if: ${{ github.event.inputs.framework != 'torch' }}
-    needs: build-aimet-onnx-gpu
-    runs-on: k8s-gpu
-
-    container:
-      image: "${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-onnx-gpu:latest"
-      credentials:
-        username: ${{ secrets.DOCKER_LOGIN }}
-        password: ${{ secrets.DOCKER_CREDENTIALS }}
-      options: --gpus all
+    needs: start-runner-onnx
+    runs-on: onnx-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
 
     timeout-minutes: 720
 
@@ -99,6 +115,8 @@ jobs:
       PYTHONUNBUFFERED: "1"
       UV_LINK_MODE: "symlink"
       BASELINE_SOURCE: ${{ github.event.inputs.baseline_source == 'custom' && github.event.inputs.baseline_source_custom || github.event.inputs.baseline_source || 'own' }}
+      VER_TORCH: "2.*"
+      VER_CUDA_SHORT: "cu126"
 
     steps:
       - name: Checkout code
@@ -124,18 +142,18 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          apt-get update -qq
-          apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y \
             libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 \
             libxrender-dev libgomp1 git openssh-client unzip curl
-          apt-get clean
-          rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
       - name: Setup Python environment with UV
         run: |
           set -e
-          apt-get update -qq
-          apt-get install -y python${{ env.VER_PYTHON }} python${{ env.VER_PYTHON }}-venv python${{ env.VER_PYTHON }}-dev
+          sudo apt-get update -qq
+          sudo apt-get install -y python${{ env.VER_PYTHON }} python${{ env.VER_PYTHON }}-venv python${{ env.VER_PYTHON }}-dev
 
           curl -LsSf https://astral.sh/uv/install.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
@@ -143,6 +161,8 @@ jobs:
           uv venv .venv --python python${{ env.VER_PYTHON }}
           . .venv/bin/activate
 
+          # Pin torch before qai-hub-models; otherwise qai-hub-models pulls a torch version incompatible with the pod's CUDA driver
+          uv pip install torch==${{ env.VER_TORCH }} torchvision --index-url https://download.pytorch.org/whl/${{ env.VER_CUDA_SHORT }}
           uv pip install qai-hub qai-hub-models==0.43.0 # TODO: Remove after next QAI Hub Models release
           uv pip install onnxruntime-gpu==1.19.2
           uv pip install pynvml pytest requests
@@ -266,21 +286,44 @@ jobs:
           path: AIMETRegression/reports/**/*
           retention-days: 30
 
+  cleanup-runner-onnx:
+    name: Cleanup runner (onnx-gpu weekly)
+    if: always() && github.event.inputs.framework != 'torch'
+    needs: [ start-runner-onnx, onnx-weekly ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stop-gpu-runner
+        with:
+          runner-ids: onnx-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
+
   #=============================================================================
   # Torch Weekly Regression (GPU Runner 2, runs in PARALLEL)
   #=============================================================================
+  start-runner-torch:
+    name: Start runner (torch-gpu weekly)
+    needs: build-aimet-torch-gpu
+    if: ${{ github.event.inputs.framework != 'onnx' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/start-gpu-runner
+        with:
+          runner-id: torch-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
+          gpu-request: "1"
+          cpu-request: "16"
+          memory-request: "160Gi"
+          docker-image: ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-torch-gpu:latest
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
+
   torch-weekly:
     name: Run Torch Weekly (GPU)
     if: ${{ github.event.inputs.framework != 'onnx' }}
-    needs: build-aimet-torch-gpu
-    runs-on: k8s-gpu
-
-    container:
-      image: "${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-torch-gpu:latest"
-      credentials:
-        username: ${{ secrets.DOCKER_LOGIN }}
-        password: ${{ secrets.DOCKER_CREDENTIALS }}
-      options: --gpus all
+    needs: start-runner-torch
+    runs-on: torch-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
 
     timeout-minutes: 720
 
@@ -289,6 +332,8 @@ jobs:
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       UV_LINK_MODE: "symlink"
       BASELINE_SOURCE: ${{ github.event.inputs.baseline_source == 'custom' && github.event.inputs.baseline_source_custom || github.event.inputs.baseline_source || 'own' }}
+      VER_TORCH: "2.*"
+      VER_CUDA_SHORT: "cu126"
 
     steps:
       - name: Checkout code
@@ -314,18 +359,18 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          apt-get update -qq
-          apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y \
             libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 \
             libxrender-dev libgomp1 git openssh-client unzip curl
-          apt-get clean
-          rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
       - name: Setup Python environment with UV
         run: |
           set -e
-          apt-get update -qq
-          apt-get install -y python${{ env.VER_PYTHON }} python${{ env.VER_PYTHON }}-venv python${{ env.VER_PYTHON }}-dev
+          sudo apt-get update -qq
+          sudo apt-get install -y python${{ env.VER_PYTHON }} python${{ env.VER_PYTHON }}-venv python${{ env.VER_PYTHON }}-dev
 
           curl -LsSf https://astral.sh/uv/install.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
@@ -333,7 +378,8 @@ jobs:
           uv venv .venv --python python${{ env.VER_PYTHON }}
           . .venv/bin/activate
 
-          uv pip install torch==2.* torchvision --index-url https://download.pytorch.org/whl/cu126
+          # Pin torch before qai-hub-models; otherwise qai-hub-models pulls a torch version incompatible with the pod's CUDA driver
+          uv pip install torch==${{ env.VER_TORCH }} torchvision --index-url https://download.pytorch.org/whl/${{ env.VER_CUDA_SHORT }}
           uv pip install qai-hub qai-hub-models==0.43.0 # TODO: Remove after next QAI Hub Models release
           uv pip install pynvml pytest requests object-detection-metrics
 
@@ -458,6 +504,19 @@ jobs:
           name: torch-weekly-reports-${{ steps.timestamp.outputs.datetime }}-${{ github.run_id }}
           path: AIMETRegression/reports/**/*
           retention-days: 30
+
+  cleanup-runner-torch:
+    name: Cleanup runner (torch-gpu weekly)
+    if: always() && github.event.inputs.framework != 'onnx'
+    needs: [ start-runner-torch, torch-weekly ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/stop-gpu-runner
+        with:
+          runner-ids: torch-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
   #=============================================================================
   # Results
