@@ -66,9 +66,11 @@ def get_decoder_blocks_end_points(
         PASS_TO_RUN = "DecoderBlock"
     elif model_type == "qwen3":
         PASS_TO_RUN = "DecoderBlockQwen3"
+    elif model_type == "gemma3":
+        PASS_TO_RUN = "DecoderBlockGemma3"
     else:
         raise ValueError(
-            f"Unsupported model type: '{model_type}'. Expected one of ['llama', 'qwen2', 'mistral', 'phi3', 'qwen3', 'qwen2_5_vl']."
+            f"Unsupported model type: '{model_type}'. Expected one of ['llama', 'qwen2', 'mistral', 'phi3', 'qwen3', 'qwen2_5_vl', 'gemma3']."
         )
 
     if PASS_TO_RUN in PASS_REGISTRY:

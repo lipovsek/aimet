@@ -80,6 +80,9 @@ adascale_model_config_dict = {
     "qwen2_5_vl": AdaScaleModelConfig(
         model_type="qwen2_5_vl", beta_gamma_lr=1e-3, scales_lr=5e-4
     ),
+    "gemma3": AdaScaleModelConfig(
+        model_type="gemma3", beta_gamma_lr=1e-3, scales_lr=5e-4
+    ),
 }
 
 
