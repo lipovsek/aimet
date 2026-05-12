@@ -16,6 +16,8 @@ from aimet_onnx.graph_passes.utils import (
 
 def match_rms_norm_pattern(op: Op, model: ModelProto) -> List[Op]:
     """Common pattern for RMSNormalization which can be re-used"""
+    if op.type == "RMSNormalization":
+        return [op]
     # Match Mul(x, x) or Pow(x, 2)
     match = match_pow_2_pattern(op, model)
     if not match or len(op.output_ops) != 1:

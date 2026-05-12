@@ -33,7 +33,7 @@ def fuse_supergroups(
     unknown_patterns = [p for p in patterns if p not in FUSION_PASS_REGISTRY]
     if unknown_patterns:
         raise ValueError(
-            f"Unknown pattern names: {unknown_patterns}. "
+            f"Graph pass requested but not found: {unknown_patterns}. "
             f"Available patterns: {list(FUSION_PASS_REGISTRY.passes.keys())}"
         )
 

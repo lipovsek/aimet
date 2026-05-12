@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from ..models.test_models import layernorm_model
+from ..utils import patch_fuse_supergroups
 from .utils import assert_on_const_quantizers, assert_on_output_quantizers
 
 
@@ -20,14 +21,15 @@ def test_layer_norm(elementwise_affine, bias):
     graph = ConnectedGraph(model)
 
     input_data = {"x": np.random.rand(1, 3, dim, dim).astype(np.float32)}
-    sim = QuantizationSimModel(
-        model,
-        input_data,
-        quant_scheme=QuantScheme.post_training_tf,
-        default_param_bw=8,
-        default_activation_bw=8,
-        config_file="htp_v81",
-    )
+    with patch_fuse_supergroups(False):
+        sim = QuantizationSimModel(
+            model,
+            input_data,
+            quant_scheme=QuantScheme.post_training_tf,
+            default_param_bw=8,
+            default_activation_bw=8,
+            config_file="htp_v81",
+        )
 
     all_ops = graph.ordered_ops
     # Check if quantization is disabled for LayerNormalization intermediate op outputs
@@ -52,14 +54,15 @@ def test_layer_norm_intermediate():
     graph = ConnectedGraph(model)
 
     input_data = {"x": np.random.rand(1, 3, dim, dim).astype(np.float32)}
-    sim = QuantizationSimModel(
-        model,
-        input_data,
-        quant_scheme=QuantScheme.post_training_tf,
-        default_param_bw=8,
-        default_activation_bw=8,
-        config_file="htp_v81",
-    )
+    with patch_fuse_supergroups(False):
+        sim = QuantizationSimModel(
+            model,
+            input_data,
+            quant_scheme=QuantScheme.post_training_tf,
+            default_param_bw=8,
+            default_activation_bw=8,
+            config_file="htp_v81",
+        )
 
     all_ops = graph.ordered_ops
     # Check if quantization is disabled for LayerNormalization intermediate op outputs

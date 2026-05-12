@@ -660,7 +660,7 @@ class TestFusion:
         model_proto = create_layernorm_model(tmp_path)
         model = onnx_ir.from_proto(model_proto)
 
-        with pytest.raises(ValueError, match="Unknown pattern names"):
+        with pytest.raises(ValueError, match="Graph pass requested but not found"):
             fuse_supergroups(model, patterns=["UnknownPattern"])
 
     @pytest.mark.parametrize(

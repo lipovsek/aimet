@@ -174,8 +174,6 @@ class TestQuantSimConfig:
         """
         Test that supergroup pass list is set correctly in configuration file
         """
-        model = models_for_tests.build_dummy_model()
-
         quantsim_config = {
             "defaults": {
                 "ops": {"is_output_quantized": "True", "is_symmetric": "False"},
@@ -199,8 +197,6 @@ class TestQuantSimConfig:
             json.dump(quantsim_config, f)
 
         qsim_config = QuantSimConfigurator(
-            model,
-            ConnectedGraph(model),
             config_file=config_path,
             param_type=qtype.int(8),
             activation_type=qtype.int(8),

@@ -10,7 +10,9 @@ from typing import List, Dict, Tuple, Union
 
 import numpy as np
 import onnx
+import onnx_ir
 from packaging import version
+from onnxruntime.quantization.onnx_quantizer import ONNXModel
 
 from aimet_onnx.common.defs import QuantizationDataType, qtype
 from aimet_onnx.common.graph_searcher import (
@@ -41,6 +43,7 @@ from aimet_onnx.meta.connectedgraph import ConnectedGraph, CONSTANT_TYPE
 from aimet_onnx.utils import get_product_name_from_quantized_name
 from aimet_onnx.qc_quantize_op import OpMode, QcQuantizeOp
 from aimet_onnx.graph_passes.pass_registry import apply_graph_passes, find_all_matches
+from aimet_onnx.graph_passes.fusions import fuse_supergroups
 
 # pylint: disable=no-name-in-module, ungrouped-imports
 if version.parse(onnx.__version__) >= version.parse("1.14.0"):
@@ -86,16 +89,14 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
 
     def __init__(
         self,
-        model: ModelProto,
-        conn_graph: ConnectedGraph,
         config_file: str,
         param_type: qtype,
         activation_type: qtype,
     ):
         super().__init__(config_file, param_type, activation_type)
 
-        self._model = model
-        self._conn_graph = conn_graph
+        self._model = None
+        self._conn_graph = None
         self._quant_ops_dict = {}
         self._param_names = {}
         self._activation_names = {}
@@ -121,6 +122,8 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
 
     def configure_quantizers(
         self,
+        model: ONNXModel,
+        conn_graph: ConnectedGraph,
         quant_ops_dict: Dict,
         param_names: List[str],
         activation_names: List[str],
@@ -129,6 +132,8 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         """
         Configures quantizers based on config file
         """
+        self._model = model
+        self._conn_graph = conn_graph
         self._quant_ops_dict = quant_ops_dict
         self._param_names = param_names
         self._activation_names = activation_names
@@ -150,11 +155,20 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         # Run supergroup passes if specified in config
         supergroup_pass_list = self._get_supergroup_pass_list()
         apply_graph_passes(
-            self._model.model,
-            self._conn_graph,
+            model.model,
+            conn_graph,
             self._quant_ops_dict,
             supergroup_pass_list,
         )
+
+    def apply_fusions(self, model: ONNXModel):
+        """
+        Fuse supergroups into onnx functions based on config file supergroup list
+        """
+        fusion_patterns = self._get_supergroup_pass_list()
+        ir_model = onnx_ir.from_proto(model.model)
+        fused_model = fuse_supergroups(ir_model, fusion_patterns)
+        return ONNXModel(onnx_ir.to_proto(fused_model))
 
     def _map_quantizers_to_ops(self) -> Dict[str, OpToQuantizers]:
         """

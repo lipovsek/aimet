@@ -21,10 +21,10 @@ def verify_find_blocks(sim, model_type):
     end_points_names = [(op1.name, op2.name) for op1, op2 in end_points]
     assert end_points_names == [
         (
-            "/model/model/layers.0/input_layernorm/Pow",
-            "/model/model/layers.1/input_layernorm/Pow",
+            "/model/model/layers.0/input_layernorm",
+            "/model/model/layers.1/input_layernorm",
         ),
-        ("/model/model/layers.1/input_layernorm/Pow", "/model/model/norm/Pow"),
+        ("/model/model/layers.1/input_layernorm", "/model/model/norm"),
     ]
     conv_linear_blocks = get_conv_linear_layers_decoder_block(sim, end_points)
     conv_linear_blocks_names = []
@@ -89,10 +89,10 @@ def test_get_decoder_blocks_phi(add_genai_tests_path):
     end_points_names = [(op1.name, op2.name) for op1, op2 in end_points]
     assert end_points_names == [
         (
-            "/model/model/layers.0/input_layernorm/Pow",
-            "/model/model/layers.1/input_layernorm/Pow",
+            "/model/model/layers.0/input_layernorm",
+            "/model/model/layers.1/input_layernorm",
         ),
-        ("/model/model/layers.1/input_layernorm/Pow", "/model/model/norm/Pow"),
+        ("/model/model/layers.1/input_layernorm", "/model/model/norm"),
     ]
     conv_linear_blocks = get_conv_linear_layers_decoder_block(
         collection.backbone, end_points

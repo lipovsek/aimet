@@ -17,7 +17,7 @@ import pytest
 import tempfile
 
 from ..models.models_for_tests import build_dummy_model
-from ..utils import tmp_dir
+from ..utils import tmp_dir, patch_fuse_supergroups
 
 
 def _generate_quantsim_config(supergroup_pass_name: str, file_path: str) -> dict:
@@ -62,14 +62,15 @@ def test_register_and_apply_graph_pass(tmp_dir):
 
     config_file = str(os.path.join(tmp_dir, "quantsim_config.json"))
     _generate_quantsim_config("DummyTestGraphPass", config_file)
-    sim = QuantizationSimModel(
-        model,
-        input_data,
-        quant_scheme=QuantScheme.post_training_tf,
-        default_param_bw=8,
-        default_activation_bw=8,
-        config_file=config_file,
-    )
+    with patch_fuse_supergroups(False):
+        sim = QuantizationSimModel(
+            model,
+            input_data,
+            quant_scheme=QuantScheme.post_training_tf,
+            default_param_bw=8,
+            default_activation_bw=8,
+            config_file=config_file,
+        )
 
     graph = ConnectedGraph(model)
     disable_quantizers = set(

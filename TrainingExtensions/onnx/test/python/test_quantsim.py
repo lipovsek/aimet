@@ -90,7 +90,7 @@ from .models.models_for_tests import (
     make_model,
     unfusable_matmul_add,
 )
-from .utils import tmp_dir
+from .utils import tmp_dir, patch_fuse_supergroups
 from .models.onnx_qdq_models import (
     qdq_relu_cast_qdq,
     qdq_relu_identity_qdq,
@@ -4785,9 +4785,6 @@ class TestEncodingPropagation:
                weight_matmul - bias_add
         """
         model = models_for_tests.matmul_bias_add_model()
-        if fuse_supergroups:
-            model = _fuse_all_supergroups(model)
-
         """
         When: Create QuantizationSimModel
         Then:
@@ -4799,7 +4796,8 @@ class TestEncodingPropagation:
             config_file = os.path.join(tempdir, "quantsim_config.json")
             with open(config_file, "w") as f:
                 json.dump(quantsim_config, f)
-            sim = QuantizationSimModel(model, config_file=config_file)
+            with patch_fuse_supergroups(fuse_supergroups):
+                sim = QuantizationSimModel(model, config_file=config_file)
 
         input_qtzr = sim.qc_quantize_op_dict[f"input"]
         weight_qtzr = sim.qc_quantize_op_dict[f"matmul.weight"]

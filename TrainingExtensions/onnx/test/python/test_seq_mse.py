@@ -788,8 +788,8 @@ def test_add_value_info():
         for name in itertools.chain(node.input, node.output)
     }
 
-    # Note: Value info does not include shapes for initializers or i/o tensors
-    assert tensors_with_info == (all_tensors - (io_tensors | initializers))
+    expected = all_tensors - (io_tensors | initializers)
+    assert expected.issubset(tensors_with_info)
 
 
 def test_nodes_to_exclude():

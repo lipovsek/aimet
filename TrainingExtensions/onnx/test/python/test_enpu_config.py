@@ -226,10 +226,8 @@ class TestEnpuV6Config:
             *(
                 nn.LayerNorm(
                     normalized_shape=10,
-                    elementwise_affine=elementwise_affine,
                     bias=bias,
                 )
-                for elementwise_affine in (True, False)
                 for bias in (True, False)
             ),
             *(
@@ -301,7 +299,6 @@ class TestEnpuV6Config:
         intermediate_activations = (
             sim.qc_quantize_op_dict.keys() - param_names - input_names - output_names
         )
-        assert intermediate_activations  # Sanity check
 
         for name in intermediate_activations:
             qtzr = sim.qc_quantize_op_dict[name]

@@ -152,6 +152,8 @@ op_types_to_tie_qtzrs = [
 ]
 _tie_qtzrs = True
 
+_fuse_supergroups = True
+
 data_types_to_quantize = [np.float32, np.float16]
 
 _DEPRECATED_ARGS = {
@@ -443,20 +445,13 @@ class QuantizationSimModel:
                 "Quantizing models with BFLOAT16 tensors is not supported"
             )
 
-        self.model = model
         self._op_domain = op_domain
         self.providers = providers
 
         if not dummy_input:
-            dummy_input = make_dummy_input(self.model.model)
+            dummy_input = make_dummy_input(model.model)
 
         self.qc_quantize_op_dict = {}
-        self.connected_graph = ConnectedGraph(self.model)
-        if _has_unfolded_batchnorms(self.model.model, self.connected_graph):
-            logger.warning(
-                "Model contains unfolded BatchNormalization layers. To accurately simulate quantization behavior, "
-                "please call aimet_onnx.batch_norm_fold.fold_all_batch_norms_to_weight(model) before creating QuantizationSimModel."
-            )
         self._quant_scheme = quant_scheme
         self._param_type = param_type
         self._activation_type = activation_type
@@ -473,6 +468,23 @@ class QuantizationSimModel:
         for lib in user_onnx_libs or []:
             self._ort_session_options.register_custom_ops_library(lib)
 
+        quantsim_configurator = QuantSimConfigurator(
+            config_file,
+            self._param_type,
+            self._activation_type,
+        )
+        if _fuse_supergroups:
+            model = quantsim_configurator.apply_fusions(model)
+
+        self.model = model
+        self.connected_graph = ConnectedGraph(self.model)
+
+        if _has_unfolded_batchnorms(self.model.model, self.connected_graph):
+            logger.warning(
+                "Model contains unfolded BatchNormalization layers. To accurately simulate quantization behavior, "
+                "please call aimet_onnx.batch_norm_fold.fold_all_batch_norms_to_weight(model) before creating QuantizationSimModel."
+            )
+
         # Get names of parameters and activations to quantize
         self._get_param_names()
         self._get_activations_to_quantize(dummy_input)
@@ -485,7 +497,14 @@ class QuantizationSimModel:
         }
 
         # Apply configurations based on provided config file.
-        quantsim_configurator = self._add_configuration_(config_file)
+        quantsim_configurator.configure_quantizers(
+            self.model,
+            self.connected_graph,
+            self.qc_quantize_op_dict,
+            self.param_names,
+            self.activation_names,
+            self.input_quantizers_name,
+        )
         self._hw_version = quantsim_configurator._get_hw_version()
         self._supported_kernels = quantsim_configurator.get_supported_kernels()
         self._op_to_supported_kernel = (
@@ -662,28 +681,6 @@ class QuantizationSimModel:
         :return: Dictionary containing supported_kernels
         """
         return self._supported_kernels
-
-    def _add_configuration_(self, config_file: str):
-        """
-        Add configuration based on config file
-
-        :param config_file: Path to Configuration file for model quantizers
-        """
-        quantsim_configurator = QuantSimConfigurator(
-            self.model,
-            self.connected_graph,
-            config_file,
-            self._param_type,
-            self._activation_type,
-        )
-        quantsim_configurator.configure_quantizers(
-            self.qc_quantize_op_dict,
-            self.param_names,
-            self.activation_names,
-            self.input_quantizers_name,
-        )
-
-        return quantsim_configurator
 
     def _get_param_names(self):
         """

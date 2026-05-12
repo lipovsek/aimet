@@ -81,7 +81,7 @@ def get_pt_block(
         output_names,
     )
     subgraph_model = onnx_ir.Model(
-        subgraph, ir_version=model.ir_version, functions=model.functions
+        subgraph, ir_version=model.ir_version, functions=list(model.functions.values())
     )
     ir_utils.remove_aimet_quantizers(subgraph_model)
     ir_utils.inline_all_supergroups(subgraph_model)
