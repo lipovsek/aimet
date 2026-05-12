@@ -27,9 +27,6 @@ Glossary
    AIMET
       :term:`AI Model Efficiency Toolkit`.
 
-   AutoQuant
-      A feature that automatically chooses optimal :term:`quantization` parameters to automate the process of model quantization.
-
    Batch Normalization
       A technique for normalizing a layer's input to accelerate the convergence of deep network models.
 
@@ -126,7 +123,7 @@ Glossary
    QAT
       :term:`Quantization Aware Training`.
 
-   QDO
+   QDQ
       Quantize and dequantize operations.
 
    Qualcomm Innovation Center
