@@ -140,6 +140,7 @@ class ExportedProgram(torch.export.ExportedProgram):
                 symmetric = False
 
             output_qdq = QuantizeDequantize((), bitwidth=bitwidth, symmetric=symmetric)
+            output_qdq.to(node.meta["val"].device)
             graph_module.add_module(f"{node.name}_qdq", output_qdq)
 
             with graph.inserting_after(node):

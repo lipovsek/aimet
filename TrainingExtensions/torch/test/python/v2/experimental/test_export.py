@@ -307,15 +307,18 @@ def test_fp_model():
     assert f1.getvalue() == f2.getvalue()
 
 
-def test_compute_missing_encodings():
+@pytest.mark.parametrize(
+    "device", ["cpu", "cuda"] if torch.cuda.is_available() else ["cpu"]
+)
+def test_compute_missing_encodings(device: str):
     """
     Given: Model with functional ops
     When: Export with aimet_torch.export.export and compute missing encodings
     Then: All nodes should take input from dequantize node and produce output to quantize node
     """
 
-    model = resnet18(pretrained=False).eval()
-    example_inputs = (torch.randn(1, 3, 224, 224),)
+    model = resnet18(pretrained=False).eval().to(device=device)
+    example_inputs = (torch.randn(1, 3, 224, 224, device=device),)
     fold_all_batch_norms(model, None, dummy_input=example_inputs)
     sim = QuantizationSimModel(model, example_inputs, config_file="htp_v81")
 
