@@ -856,6 +856,7 @@ class BaseQuantizationMixin(abc.ABC):
             action=lambda: None, cleanup=lambda: (ctx_1._cleanup(), ctx_2._cleanup())
         )
 
+    @torch.compiler.disable
     def _create_int32_bias_quantizer(self, input, _):  # pylint: disable=redefined-builtin
         assert hasattr(self, "bias")
         assert isinstance(self.bias, torch.Tensor)
