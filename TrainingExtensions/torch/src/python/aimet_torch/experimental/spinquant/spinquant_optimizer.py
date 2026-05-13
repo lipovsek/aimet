@@ -171,6 +171,13 @@ class SpinQuant:
             else model.model
         )
 
+        if not SpinQuant._screen_for_target_type(language_backbone):
+            supported = [cls.__name__ for cls in SpinQuant.model_config_dict]
+            raise ValueError(
+                f"apply_spinquant does not support model of type {type(language_backbone).__name__}. "
+                f"Supported backbone types: {supported}"
+            )
+
         SpinQuant._apply_spinquant_to_decoder_stack(language_backbone, model.lm_head)
 
         if hasattr(model.model, "visual"):

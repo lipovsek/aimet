@@ -215,8 +215,18 @@ class SpinQuant(QuantizationTechnique):
             decoder_model = wrapper.model
             lm_head = wrapper.lm_head
         else:
-            decoder_model = wrapper.model.model
+            inner = wrapper.model.model
+            decoder_model = (
+                inner.language_model if hasattr(inner, "language_model") else inner
+            )
             lm_head = wrapper.model.lm_head
+
+        if not SpinQuantOptimizer._screen_for_target_type(decoder_model):
+            supported = [cls.__name__ for cls in SpinQuantOptimizer.model_config_dict]
+            raise ValueError(
+                f"apply_spinquant does not support model of type {type(decoder_model).__name__}. "
+                f"Supported backbone types: {supported}"
+            )
 
         # Untie embed_tokens and lm_head weights if they are shared.
         if decoder_model.embed_tokens.weight is lm_head.weight:
