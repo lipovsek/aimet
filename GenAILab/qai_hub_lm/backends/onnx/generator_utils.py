@@ -34,6 +34,10 @@ class _VisualONNXAdapter(torch.nn.Module):
     def dtype(self):
         return self.interface.dtype
 
+    @property
+    def quantsim(self):
+        return self.interface.quantsim
+
     def forward(self, *args, **kwargs):
         outputs = self.interface(*args, **kwargs)
         if self.num_list_outputs > 0 and isinstance(outputs, (list, tuple)):

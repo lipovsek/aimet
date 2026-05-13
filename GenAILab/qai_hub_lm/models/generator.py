@@ -1145,7 +1145,7 @@ class VLM_Generator(Generator):
         pixel_values: torch.Tensor | None = None,
         image_grid_thw: torch.Tensor | None = None,
         **kwargs,
-    ) -> typing.Generator[tuple[torch.Tensor, ...], None, None]:
+    ) -> typing.Generator[OrderedDict[str, torch.Tensor], None, None]:
         """Yield per-image vision model input tuples.
 
         Each yielded tuple contains the arguments that would be passed to
@@ -1159,9 +1159,21 @@ class VLM_Generator(Generator):
             per_image_sizes = image_grid_thw.prod(-1).tolist()
             per_image_pixels = torch.split(pixel_values, per_image_sizes, dim=0)
             for pixels_i, grid_i in zip(per_image_pixels, image_grid_thw):
-                yield (pixels_i, grid_i.unsqueeze(0), image_mask_2d)
+                yield OrderedDict(
+                    [
+                        ("pixel_values", pixels_i),
+                        ("image_grid_thw", grid_i.unsqueeze(0)),
+                        ("mask", image_mask_2d),
+                    ]
+                )
         elif pixel_values is not None:
-            yield (pixel_values, image_grid_thw, image_mask_2d)
+            yield OrderedDict(
+                [
+                    ("pixel_values", pixel_values),
+                    ("image_grid_thw", image_grid_thw),
+                    ("mask", image_mask_2d),
+                ]
+            )
 
     def prefill(
         self,
@@ -1175,7 +1187,7 @@ class VLM_Generator(Generator):
         image_grid_thw: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
         **kwargs,
-    ) -> typing.Generator[tuple[torch.Tensor, ...], None, None]:
+    ) -> typing.Generator[OrderedDict[str, torch.Tensor], None, None]:
         if self._visual_quantization_mode:
             yield from self._prefill_visual(
                 input_ids=input_ids,

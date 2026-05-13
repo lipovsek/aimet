@@ -231,6 +231,10 @@ class AdaScale(QuantizationTechnique):
 class SpinQuant(QuantizationTechnique):
     """Apply SpinQuant: R1 rotation to model"""
 
+    @classmethod
+    def cacheable(cls):
+        return True
+
     @staticmethod
     def apply(
         quantsim: QuantizationSimModel,
