@@ -188,6 +188,26 @@ def fuse_norm_layers_into_linears(model: ModelProto, active_norms: List[ActiveNo
         scale_tensor.CopyFrom(numpy_helper.from_array(ones, name=scale_tensor.name))
 
 
+def _find_post_writing_norms(model: ModelProto, role_map) -> List[str]:
+    """Return op names of affine RMSNorms immediately after writing layers.
+
+    :param model: ONNX ModelProto.
+    :param role_map: DecoderModelRoleMap.
+    :return: List of norm op names for detected post-writing norms.
+    """
+    found = []
+    for block in role_map.blocks:
+        for writing_op in block.o_proj + block.down_proj:
+            for out_op in writing_op.output_ops:
+                candidates = out_op.output_ops if out_op.type == "Cast" else [out_op]
+                for candidate in candidates:
+                    match = _find_norm_scale_and_consumers(candidate, model)
+                    if match is not None:
+                        found.append(candidate.name)
+                        break
+    return found
+
+
 def _get_weight_product(op: Op) -> Tuple[Optional[Product], bool]:
     """
     Return (weight_product, is_transposed) for a MatMul/Gemm/Conv op.

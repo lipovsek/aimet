@@ -798,6 +798,50 @@ class LayerNormViTEncoder(nn.Module):
         return self.linear2(h)
 
 
+class _Gemma3Block(nn.Module):
+    """Gemma3-style decoder block: post-writing norms after o_proj and down_proj."""
+
+    def __init__(self):
+        super().__init__()
+        self.input_norm = RMSNorm(_H, **_NORM_KW)
+        self.q = nn.Linear(_H, _H, bias=False)
+        self.k = nn.Linear(_H, _H, bias=False)
+        self.v = nn.Linear(_H, _H, bias=False)
+        self.o = nn.Linear(_H, _H, bias=False)
+        self.post_attn_norm = RMSNorm(_H, **_NORM_KW)
+        self.pre_ffn_norm = RMSNorm(_H, **_NORM_KW)
+        self.gate = nn.Linear(_H, _I, bias=False)
+        self.up = nn.Linear(_H, _I, bias=False)
+        self.down = nn.Linear(_I, _H, bias=False)
+        self.post_ffn_norm = RMSNorm(_H, **_NORM_KW)
+
+    def forward(self, x):
+        h = self.input_norm(x)
+        attn = self.o(self.q(h) + self.k(h) + self.v(h))
+        x = x + self.post_attn_norm(attn)
+        h2 = self.pre_ffn_norm(x)
+        ffn = self.down(self.gate(h2) * self.up(h2))
+        return x + self.post_ffn_norm(ffn)
+
+
+class Gemma3StyleDecoder(nn.Module):
+    """2-block Gemma3 decoder"""
+
+    def __init__(self):
+        super().__init__()
+        self.embed_tokens = nn.Embedding(_VOCAB, _H)
+        self.block0 = _Gemma3Block()
+        self.block1 = _Gemma3Block()
+        self.norm = RMSNorm(_H, **_NORM_KW)
+        self.lm_head = nn.Linear(_H, _VOCAB, bias=False)
+
+    def forward(self, token_ids):
+        x = self.embed_tokens(token_ids)
+        x = self.block0(x)
+        x = self.block1(x)
+        return self.lm_head(self.norm(x))
+
+
 class VLMBackbone(nn.Module):
     """Backbone for VLM: takes inputs_embeds, no embed_tokens Gather."""
 
@@ -1498,3 +1542,30 @@ class TestApplySpinquant:
         )
         y_vit_after = _run_model(rotated_visual_float, x_vit)
         assert np.allclose(y_vit_after, y_vit_before @ R_L)
+
+    def test_post_writing_norm_raises_and_leaves_model_untouched(self):
+        """apply_spinquant must raise ValueError for Gemma-style architectures (post-writing norms)
+        and must not modify any initializers before raising."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(Gemma3StyleDecoder())
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+        sim = QuantizationSimModel(model, dummy_input={"input": token_ids})
+
+        init_before = {
+            t.name: numpy_helper.to_array(t).copy()
+            for t in sim.model.model.graph.initializer
+        }
+
+        """
+        When: apply_spinquant is applied for Gemma3/Gemma4 style architectures.
+        Then: Must raise ValueError and initializers are not modified.
+        """
+
+        with pytest.raises(ValueError):
+            apply_spinquant(sim)
+
+        for name, arr_before in init_before.items():
+            arr_after = numpy_helper.to_array(
+                ParamUtils.get_param_by_name(sim.model.model, name)
+            )
+            assert np.array_equal(arr_before, arr_after)

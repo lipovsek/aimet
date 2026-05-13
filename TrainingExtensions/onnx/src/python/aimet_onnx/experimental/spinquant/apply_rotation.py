@@ -34,7 +34,10 @@ from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto, ParamUtils
 from aimet_onnx.experimental.spinquant.block_identifier import DecoderModelRoleMap
-from aimet_onnx.experimental.spinquant.fuse_norm import _get_weight_product
+from aimet_onnx.experimental.spinquant.fuse_norm import (
+    _get_weight_product,
+    _find_post_writing_norms,
+)
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 
@@ -186,12 +189,23 @@ def _get_bias_product(op: Op):
 def _validate_backbone_weights(
     model: ModelProto, role_map: DecoderModelRoleMap, hidden_size: int
 ):
-    """Verify that every weight in role_map exists and has the correct shape.
+    """Verify architecture compatibility and that every weight in role_map exists and has the correct shape.
 
     :param model: ONNX ModelProto to validate against.
     :param role_map: Role map whose ops are checked.
     :param hidden_size: The hidden dimension size.
     """
+    # Architecture compatibility validation
+    post_writing_norms = _find_post_writing_norms(model, role_map)
+    if post_writing_norms:
+        raise ValueError(
+            f"R1 rotation absorption requires writing layers (o_proj, down_proj) to feed "
+            f"directly into the residual add. Detected {len(post_writing_norms)} affine "
+            f"RMSNorm(s) between writing layers and the residual add "
+            f"- R1 absorption is not feasible for this architecture."
+        )
+
+    # Weight shape validation
     for op in role_map.embed_tokens:
         found = False
         for inp in op.inputs:
