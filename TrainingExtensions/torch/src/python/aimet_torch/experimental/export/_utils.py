@@ -15,6 +15,8 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 _GRID_PRESERVING_OPS = (
     torch.ops.aten.alias,
     torch.ops.aten.alias_copy,
+    torch.ops.aten.amax,
+    torch.ops.aten.amin,
     torch.ops.aten.clone,
     torch.ops.aten.contiguous,
     torch.ops.aten.copy,
@@ -40,8 +42,9 @@ _GRID_PRESERVING_OPS = (
     torch.ops.aten.max_pool2d_with_indices,
     torch.ops.aten.max_pool3d,
     torch.ops.aten.max_pool3d_with_indices,
-    torch.ops.aten.max,
-    torch.ops.aten.min,
+    # TODO(kyunggeun): Handle ops with more than one outputs
+    # torch.ops.aten.max,
+    # torch.ops.aten.min,
     torch.ops.aten.narrow,
     torch.ops.aten.narrow_copy,
     torch.ops.aten.native_dropout,
