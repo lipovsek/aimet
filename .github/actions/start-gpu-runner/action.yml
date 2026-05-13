@@ -142,7 +142,7 @@ runs:
           STATUS=$(curl -s \
             -H "Authorization: token ${{ inputs.pat-token }}" \
             -H "Accept: application/vnd.github+json" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/actions/runners" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/actions/runners?per_page=100" \
             | jq -r --arg name "${{ inputs.runner-id }}" '.runners[] | select(.name==$name) | .status')
 
           if [ "$STATUS" = "online" ]; then
