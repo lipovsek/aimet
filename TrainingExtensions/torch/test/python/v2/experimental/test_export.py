@@ -1,9 +1,10 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
+from typing import Callable, Any
 import itertools
 import io
-import functools
+from functools import partial, lru_cache
 from pathlib import Path
 from packaging import version
 import torch
@@ -11,6 +12,7 @@ from torchvision.models import resnet18, mobilenet_v3_large
 from torch.export import ExportedProgram
 import aimet_torch
 from aimet_torch import QuantizationSimModel
+from aimet_torch.nn import QuantizationMixin
 from aimet_torch.v2.experimental.export import export
 import aimet_torch.v2.quantization as Q
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
@@ -268,7 +270,7 @@ def test_triton(tmp_path: Path):
     assert ep_builtin.graph_signature == ep_triton.graph_signature
     assert len(ep_builtin.graph.nodes) == len(ep_triton.graph.nodes)
 
-    @functools.lru_cache(maxsize=30)
+    @lru_cache(maxsize=30)
     def node_eq(node1, node2):
         return (
             node1.name == node2.name
@@ -355,3 +357,56 @@ def test_compute_missing_encodings(device: str):
                 assert quantized_dtype == expected_dtype, (
                     f"{node.name} has quantized dtype {quantized_dtype}, expected {expected_dtype}"
                 )
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        partial(torch.ops.aten.split.Tensor, split_size=5, dim=-1),
+        partial(torch.ops.aten.split.sizes, split_size=[5, 5], dim=-1),
+        partial(torch.ops.aten.split.sizes, split_size=[5, 5], dim=-1),
+        partial(torch.ops.aten.min, dim=-1),
+        partial(torch.ops.aten.max, dim=-1),
+        partial(torch.ops.aten.max_pool2d_with_indices, kernel_size=(2, 2)),
+        partial(torch.ops.aten.max_pool3d_with_indices, kernel_size=(2, 2, 2)),
+    ],
+)
+def test_multi_output_grid_preserving_ops(op: Callable[[torch.Tensor], Any]):
+    """
+    Given: Grid-preserving operator with multiple outputs with input quantizer only
+    When: Export with aimet_torch.export.export
+    Then: All output encodings should be derived from the input encoding
+    """
+
+    class MyModule(torch.nn.Module):
+        def forward(self, x):
+            return op(x)
+
+    @QuantizationMixin.implements(MyModule)
+    class QuantizedMyModule(QuantizationMixin, MyModule):
+        def forward(self, x):
+            if self.input_quantizers[0]:
+                x = self.input_quantizers[0](x)
+
+            return super().forward(x)
+
+    model = torch.nn.Sequential(MyModule())
+    x = torch.randn(1, 3, 10, 10)
+    sim = aimet_torch.QuantizationSimModel(model, x)
+    sim.compute_encodings(lambda m: m.forward(x))
+
+    ep = aimet_torch.experimental.export.export(sim.model, (x,))
+
+    for producer in ep.graph.output_node().all_input_nodes[:-1]:
+        assert (
+            producer.target.overloadpacket
+            == torch.ops.quantized_decomposed.dequantize_per_tensor
+        )
+
+    last_producer = list(ep.graph.output_node().all_input_nodes)[-1]
+
+    if last_producer.meta["tensor_meta"].dtype.is_floating_point:
+        assert (
+            last_producer.target.overloadpacket
+            == torch.ops.quantized_decomposed.dequantize_per_tensor
+        )

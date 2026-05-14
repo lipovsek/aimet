@@ -15,6 +15,7 @@ from ._utils import (
     _remove_dangling_nodes,
     _eval_node,
     _insert_placeholder,
+    _is_multi_output_op,
 )
 
 
@@ -109,6 +110,9 @@ class ExportedProgram(torch.export.ExportedProgram):
             # Exclude grid-preserving ops (aka data movement ops) if its input is already quantized.
             # This is to avoid redundant quantize-dequantize pairs around data movement ops.
             if _is_grid_preserving_op(node):
+                continue
+
+            if _is_multi_output_op(node):
                 continue
 
             # Exclude non-floating points from quantization

@@ -42,9 +42,8 @@ _GRID_PRESERVING_OPS = (
     torch.ops.aten.max_pool2d_with_indices,
     torch.ops.aten.max_pool3d,
     torch.ops.aten.max_pool3d_with_indices,
-    # TODO(kyunggeun): Handle ops with more than one outputs
-    # torch.ops.aten.max,
-    # torch.ops.aten.min,
+    torch.ops.aten.max,
+    torch.ops.aten.min,
     torch.ops.aten.narrow,
     torch.ops.aten.narrow_copy,
     torch.ops.aten.native_dropout,
@@ -68,6 +67,8 @@ _GRID_PRESERVING_OPS = (
     torch.ops.aten.rot90,
     torch.ops.aten.select,
     torch.ops.aten.slice,
+    torch.ops.aten.split,
+    torch.ops.aten.split_with_sizes,
     torch.ops.aten.squeeze,
     torch.ops.aten.squeeze_copy,
     torch.ops.aten.t,
@@ -218,3 +219,10 @@ def _eval_node(
         return node.target(*args, **kwargs)
 
     return _do_eval(arg)
+
+
+def _is_multi_output_op(node: torch.fx.Node) -> bool:
+    return (
+        all(user.target is operator.getitem for user in node.users)
+        and len(node.users) >= 1
+    )

@@ -17,6 +17,7 @@ from ._utils import (
     _remove_dangling_nodes,
     _eval_node,
     _insert_placeholder,
+    _is_multi_output_op,
 )
 
 __all__ = ["export"]
@@ -180,6 +181,23 @@ def _try_insert_output_qdq(ep: ExportedProgram, node: torch.fx.Node):
     ):
         return
 
+    if _is_multi_output_op(node):
+        for user in list(node.users):
+            if (
+                "tensor_meta" in user.meta
+                and user.meta["tensor_meta"].dtype.is_floating_point
+            ):
+                _insert_output_qdq(ep, user, input_q, input_dq)
+    else:
+        _insert_output_qdq(ep, node, input_q, input_dq)
+
+
+def _insert_output_qdq(
+    ep: ExportedProgram,
+    node: torch.fx.Node,
+    input_q: torch.fx.Node,
+    input_dq: torch.fx.Node,
+):
     qtype = input_q.args[5] if len(input_q.args) > 5 else input_q.kwargs["dtype"]
     with ep.graph.inserting_after(node):
         output_q = ep.graph.create_node(
@@ -218,6 +236,9 @@ def _try_insert_input_qdq(ep: ExportedProgram, node: torch.fx.Node):
     if node.all_input_nodes:
         input = node.all_input_nodes[0]  # pylint: disable=redefined-builtin
     else:
+        return
+
+    if _is_multi_output_op(input):
         return
 
     input_q, input_dq = _get_input_qdq(node)
@@ -276,7 +297,8 @@ def _get_output_qdq(
     if not (
         dq
         and isinstance(dq.target, torch._ops.OpOverload)
-        and dq.target.name().startswith("quantized_decomposed::dequantize_per_tensor")
+        and dq.target.overloadpacket
+        == torch.ops.quantized_decomposed.dequantize_per_tensor
     ):
         dq = None
         q = None
@@ -284,7 +306,8 @@ def _get_output_qdq(
     if not (
         q
         and isinstance(q.target, torch._ops.OpOverload)
-        and q.target.name().startswith("quantized_decomposed::quantize_per_tensor")
+        and q.target.overloadpacket
+        == torch.ops.quantized_decomposed.quantize_per_tensor
     ):
         q = None
 
@@ -300,7 +323,8 @@ def _get_input_qdq(
     if not (
         dq
         and isinstance(dq.target, torch._ops.OpOverload)
-        and dq.target.name().startswith("quantized_decomposed::dequantize_per_tensor")
+        and dq.target.overloadpacket
+        == torch.ops.quantized_decomposed.dequantize_per_tensor
     ):
         dq = None
         q = None
@@ -308,7 +332,8 @@ def _get_input_qdq(
     if not (
         q
         and isinstance(q.target, torch._ops.OpOverload)
-        and q.target.name().startswith("quantized_decomposed::quantize_per_tensor")
+        and q.target.overloadpacket
+        == torch.ops.quantized_decomposed.quantize_per_tensor
     ):
         q = None
 
