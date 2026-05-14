@@ -3,7 +3,6 @@
 
 """Qwen-3-VL model class"""
 
-import contextlib
 import typing
 from collections import OrderedDict
 
@@ -11,15 +10,12 @@ import torch
 
 from transformers import AutoConfig, AutoProcessor, PreTrainedModel, ProcessorMixin
 from transformers.models.qwen3_vl import modeling_qwen3_vl
-from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
-from GenAILab.qai_hub_lm.models.base import VLM
-from GenAILab.qai_hub_lm.models.generator import VLM_Generator
-from GenAILab.qai_hub_lm.utils.layer_cache import LayerCacheDescriptor
-from GenAILab.qai_hub_lm.utils.model_utils import (
-    PositionIdContext,
-    compute_vision_input_shapes,
-)
+from .base import VLM
+from .generator import VLM_Generator
+from .utils.layer_cache import LayerCacheDescriptor
+from .utils.compat import PositionIdContext
+from .qwen2_vl import compute_vision_input_shapes
 
 
 class Qwen_3_VL(VLM):
@@ -570,136 +566,19 @@ class Qwen3VL_Generator(VLM_Generator):
         )
 
 
-#################################  Exportable Vision Attention for ONNX  #################################
-
-
-class FastExportableQwen3VLVisionAttention(modeling_qwen3_vl.Qwen3VLVisionAttention):
-    """
-    Vision attention that uses attention masks instead of loop-based splitting.
-
-    This produces a clean ONNX graph while preserving the windowed attention
-    behavior defined by cu_seqlens.
-    """
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        rotary_pos_emb: torch.Tensor | None = None,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
-        **kwargs,
-    ) -> torch.Tensor:
-        from GenAILab.qai_hub_lm.models.qwen2_vl import _create_block_diagonal_mask
-
-        seq_length = hidden_states.shape[0]
-        query_states, key_states, value_states = (
-            self.qkv(hidden_states)
-            .reshape(seq_length, 3, self.num_heads, -1)
-            .permute(1, 0, 2, 3)
-            .unbind(0)
-        )
-        cos, sin = position_embeddings
-        query_states, key_states = modeling_qwen3_vl.apply_rotary_pos_emb_vision(
-            query_states, key_states, cos, sin
-        )
-
-        # Reshape for attention: [1, num_heads, seq_length, head_dim]
-        query_states = query_states.transpose(0, 1).unsqueeze(0)
-        key_states = key_states.transpose(0, 1).unsqueeze(0)
-        value_states = value_states.transpose(0, 1).unsqueeze(0)
-
-        # Create block-diagonal attention mask from cu_seqlens
-        # This preserves the windowed attention behavior without loops
-        attention_mask = _create_block_diagonal_mask(
-            cu_seqlens, seq_length, query_states.dtype, query_states.device
-        )
-
-        # Use the attention implementation specified in config
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[
-                self.config._attn_implementation
-            ]
-        else:
-            attention_interface = modeling_qwen3_vl.eager_attention_forward
-
-        attn_output, _ = attention_interface(
-            self,
-            query_states,
-            key_states,
-            value_states,
-            attention_mask=attention_mask,
-            scaling=self.scaling,
-            dropout=0.0 if not self.training else self.attention_dropout,
-            is_causal=False,
-            **kwargs,
-        )
-
-        attn_output = attn_output.reshape(seq_length, -1).contiguous()
-        attn_output = self.proj(attn_output)
-        return attn_output
-
-
-def _exportable_deepstack_process(
-    self,
-    hidden_states: torch.Tensor,
-    visual_pos_masks: torch.Tensor,
-    visual_embeds: torch.Tensor,
-) -> torch.Tensor:
-    """Export-friendly replacement for ``_deepstack_process``.
-
-    HF's implementation uses boolean indexing (``hidden_states[mask, :]``)
-    which creates a data-dependent intermediate shape that
-    ``torch.export.draft_export`` cannot trace.  This version uses
-    ``cumsum`` + ``gather`` so all shapes remain static.
-    """
-    visual_pos_masks = visual_pos_masks.to(hidden_states.device)
-    visual_embeds = visual_embeds.to(hidden_states.device, hidden_states.dtype)
-
-    # mask_int: [batch, seq_len]  —  1 at visual positions, 0 elsewhere
-    mask_int = visual_pos_masks.int()
-
-    # cumsum gives 1-based index of each True position within the visual
-    # sequence.  False positions get the same value as the preceding True,
-    # but we'll zero them out below.
-    cumsum = mask_int.cumsum(dim=-1)  # [batch, seq_len]
-
-    # gather_idx: True positions → 1..num_visual, False positions → 0
-    # We prepend a zero row to visual_embeds so index 0 fetches zeros.
-    gather_idx = cumsum * mask_int  # [batch, seq_len]
-    gather_idx = gather_idx.unsqueeze(-1).expand(
-        -1, -1, hidden_states.shape[-1]
-    )  # [batch, seq_len, hidden]
-
-    zero_row = torch.zeros(
-        1,
-        hidden_states.shape[-1],
-        device=hidden_states.device,
-        dtype=hidden_states.dtype,
-    )
-    # [num_visual + 1, hidden]  —  row 0 = zeros, rows 1..n = real embeds
-    visual_embeds_ext = torch.cat([zero_row, visual_embeds], dim=0)
-    visual_embeds_ext = visual_embeds_ext.unsqueeze(0).expand(
-        hidden_states.shape[0], -1, -1
-    )  # [batch, num_visual + 1, hidden]
-
-    # Gather produces a full [batch, seq_len, hidden] tensor that is zero
-    # at non-visual positions and contains the correct embed at visual ones.
-    visual_full = torch.gather(visual_embeds_ext, 1, gather_idx)
-
-    return hidden_states + visual_full
-
-
-@contextlib.contextmanager
 def enable_fast_exportable_vision_attention():
-    """
-    Context manager that temporarily replaces Qwen3VLVisionAttention with
-    the exportable version that uses attention masks instead of loop-based splitting.
-    Also patches ``_deepstack_process`` to avoid boolean indexing for export.
-    """
-    original_attn = modeling_qwen3_vl.Qwen3VLVisionAttention
-    modeling_qwen3_vl.Qwen3VLVisionAttention = FastExportableQwen3VLVisionAttention
+    """Re-export from transforms for backwards compatibility."""
+    from GenAILab.qai_hub_lm.transforms.fast_exportable import (
+        enable_qwen3_vl_fast_exportable_vision_attention,
+    )
 
-    try:
-        yield
-    finally:
-        modeling_qwen3_vl.Qwen3VLVisionAttention = original_attn
+    return enable_qwen3_vl_fast_exportable_vision_attention()
+
+
+def _exportable_deepstack_process(*args, **kwargs):
+    """Re-export from transforms for backwards compatibility."""
+    from GenAILab.qai_hub_lm.transforms.fast_exportable import (
+        _exportable_deepstack_process as _impl,
+    )
+
+    return _impl(*args, **kwargs)

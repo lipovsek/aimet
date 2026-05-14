@@ -68,8 +68,9 @@ class TestInstantiateQuantsimOrchestration:
                 "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_sample_backbone_inputs"
             ) as mock_sample,
             patch(
-                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_quantsim_config"
-            ) as mock_cfg,
+                "GenAILab.qai_hub_lm.backends.torch.llm.QUANTSIM_CONFIG",
+                "mock_config.json",
+            ),
         ):
             mock_model = MagicMock()
             mock_model.to.return_value = mock_model
@@ -122,7 +123,8 @@ class TestInstantiateQuantsimOrchestration:
                 "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_sample_backbone_inputs"
             ),
             patch(
-                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_quantsim_config"
+                "GenAILab.qai_hub_lm.backends.torch.llm.QUANTSIM_CONFIG",
+                "mock_config.json",
             ),
         ):
             mock_model = MagicMock()
@@ -164,7 +166,8 @@ class TestInstantiateQuantsimOrchestration:
                 "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_sample_backbone_inputs"
             ),
             patch(
-                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_quantsim_config"
+                "GenAILab.qai_hub_lm.backends.torch.llm.QUANTSIM_CONFIG",
+                "mock_config.json",
             ),
             patch(
                 "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch._is_quantized_rms_norm"
@@ -217,7 +220,8 @@ class TestInstantiateQuantsimOrchestration:
                 "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_sample_backbone_inputs"
             ),
             patch(
-                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.get_quantsim_config"
+                "GenAILab.qai_hub_lm.backends.torch.llm.QUANTSIM_CONFIG",
+                "mock_config.json",
             ),
         ):
             mock_model = MagicMock()

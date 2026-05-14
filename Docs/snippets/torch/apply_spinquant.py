@@ -6,7 +6,7 @@
 # [model-setup]
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
 
 SEQUENCE_LENGTH = 2048
 CONTEXT_LENGTH = 4096

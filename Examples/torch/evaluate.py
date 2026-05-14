@@ -31,7 +31,8 @@ from aimet_torch.utils import place_model
 
 from GenAILab.qai_hub_lm.models.base import LLM
 from GenAILab.qai_hub_lm.models.generator import Generator
-from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.bench.metrics import PPL, MMLU, Interactive
 
 SEQUENCE_LENGTH = 2048
@@ -162,7 +163,7 @@ if __name__ == "__main__":
         default_output_bw=16,
         default_param_bw=4,
         in_place=True,
-        config_file=LLM.get_quantsim_config(),
+        config_file=QUANTSIM_CONFIG,
     )
 
     # Apply mixed precision to model

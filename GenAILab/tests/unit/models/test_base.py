@@ -3,13 +3,12 @@
 
 """Tests for LLM/VLM/SimCollection base classes."""
 
-import os
 from unittest.mock import MagicMock
 
 import pytest
 
 from GenAILab.qai_hub_lm.models.base import LLM, VLM, SimCollection
-from GenAILab.qai_hub_lm.utils.layer_cache import (
+from GenAILab.qai_hub_lm.models.utils.layer_cache import (
     LayerCacheDescriptor,
     AttentionType,
 )
@@ -70,10 +69,6 @@ class TestLLMBase:
         assert "past_key_0_out" in names
         assert "past_value_1_out" in names
         assert len(names) == 1 + 2 * 2  # 1 logits + 4 KV
-
-    def test_get_quantsim_config_path(self):
-        path = LLM.get_quantsim_config()
-        assert os.path.basename(path) == "default_config.json"
 
 
 class TestVLMBase:

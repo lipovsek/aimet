@@ -20,16 +20,16 @@ from transformers.cache_utils import DynamicCache
 from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from GenAILab.qai_hub_lm.utils.attention_mask import (
+from .utils.attention_mask import (
     convert_2d_attention_mask_to_4d,
     convert_2d_attention_mask_to_4d_sliding_window,
 )
 
-from GenAILab.qai_hub_lm.utils.layer_cache import (
+from .utils.layer_cache import (
     AttentionType,
     build_layer_cache_descriptors,
 )
-from GenAILab.qai_hub_lm.utils.rope_embedding import RopeEmbedding
+from .utils.rope_embedding import RopeEmbedding
 
 
 def ordered_dict_replace(
@@ -166,9 +166,54 @@ def get_past_keyval_with_shift(
 
 
 class Generator(GenerationMixin, torch.nn.Module):
-    """
-    Helper class to restore HuggingFace LLM API to Torch and ONNX models with static shape requirements, including
-    the `forward` and `generate` APIs
+    """Restores HuggingFace LLM API on models with static shape constraints.
+
+    Provides ``forward`` and ``generate`` APIs that handle input padding,
+    KV cache management, and multi-slice prefill for models compiled to fixed
+    sequence lengths.
+
+    Model Contract
+    --------------
+    The ``model`` passed to ``__init__`` must satisfy:
+
+    1. **Callable as** ``model(*tensors) -> tuple[Tensor, ...]``
+       Positional tensor args in the order produced by ``prepare_inputs``.
+       Returns a flat tuple: ``(logits, *flat_kv_states)``.
+
+    2. **``.config``** — a ``PretrainedConfig`` (or compatible) exposing at
+       minimum: ``num_hidden_layers``, ``num_key_value_heads``, ``head_dim``.
+       VLM composite configs may nest these under ``text_config``.
+       Optional: ``layer_types`` (for hybrid attention), ``sliding_window``.
+
+    3. **``.device``** — ``torch.device`` where the model lives.
+
+    4. **``.dtype``** — ``torch.dtype`` used for KV cache tensor allocation.
+
+    5. **Static sequence dimension** — expects inputs padded to exactly
+       ``sequence_length`` tokens. KV cache has ``context_length -
+       sequence_length`` slots.
+
+    6. **KV cache layout** — ``(batch, num_kv_heads, seq_len, head_dim)``
+       for standard and sliding-window attention. Linear attention layers
+       use replacement semantics (state overwritten each step).
+
+    7. **4D attention mask** — shape ``(batch, 1, seq_len, context_len)``,
+       float-valued: 0 = attend, negative = block.
+
+    8. **Input order** — ``input_ids`` | ``inputs_embeds``, attention mask(s),
+       ``position_ids``, then per-layer ``past_key_{i}_in`` /
+       ``past_value_{i}_in``.
+
+    9. **Output order** — ``logits (B, seq_len, vocab)``, then per-layer
+       KV states matching the input layer order.
+
+    If the model is a raw HuggingFace ``PreTrainedModel`` (returns Cache
+    objects, not flat tensors), wrap it in ``ONNXExportableModuleWithCache``
+    first.
+
+    Tokenizer Contract
+    ------------------
+    Must expose ``.eos_token_id`` (used as pad value for input_ids).
     """
 
     _is_stateful = False

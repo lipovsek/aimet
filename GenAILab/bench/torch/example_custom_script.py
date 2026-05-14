@@ -19,10 +19,11 @@ from aimet_torch.v2.nn.transformers.models.llama.modeling_llama import (
 )
 from aimet_torch.utils import place_model, remove_all_quantizers
 
+from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.qai_hub_lm.models.base import LLM
 from GenAILab.qai_hub_lm.models.generator import Generator
-from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
-from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAILab.bench.datasets import Wikitext
 from GenAILab.bench.metrics import PPL
 
@@ -83,7 +84,7 @@ if __name__ == "__main__":
         default_output_bw=16,
         default_param_bw=4,
         in_place=True,
-        config_file=LLM.get_quantsim_config(),
+        config_file=QUANTSIM_CONFIG,
     )
 
     # Create a generator object to accurately simulate inference with static graph constraints while maintaining the

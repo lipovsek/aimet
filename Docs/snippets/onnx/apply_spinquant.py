@@ -6,7 +6,7 @@
 # [model-setup]
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
 
 SEQUENCE_LENGTH = 2048
 CONTEXT_LENGTH = 4096
@@ -25,7 +25,7 @@ import tempfile
 import onnx
 from aimet_onnx.quantsim import QuantizationSimModel
 from GenAILab.qai_hub_lm.models.base import LLM
-from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAILab.qai_hub_lm.models.generator import Generator
 from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import TorchONNXInterface
 from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (

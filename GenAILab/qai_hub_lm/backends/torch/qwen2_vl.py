@@ -15,6 +15,7 @@ from aimet_torch.v2.nn.transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import
     QuantizedQwen2_5_VLRMSNorm,
 )
 
+from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.qai_hub_lm.precision import PrecisionConfig, float16, float32
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.qai_hub_lm.models.base import SimCollection
@@ -22,8 +23,8 @@ from GenAILab.qai_hub_lm.models.qwen2_vl import (
     Qwen_25_VL,
     Qwen2VLVisualWrapper,
 )
-from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
-from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAILab.qai_hub_lm.backends.torch.quantsim_utils import (
     _apply_block_granularity_to_decoder_stack,
     _set_lm_head_precision,
@@ -85,7 +86,7 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
             default_output_bw=default_output_bw,
             default_param_bw=default_param_bw,
             in_place=True,
-            config_file=cls.get_quantsim_config(),
+            config_file=QUANTSIM_CONFIG,
         )
 
         if precision.activations in (float16, float32):
@@ -121,7 +122,7 @@ class Qwen_25_VL_Torch(Qwen_25_VL):
             default_output_bw=visual_output_bw,
             default_param_bw=visual_param_bw,
             in_place=True,
-            config_file=cls.get_quantsim_config(),
+            config_file=QUANTSIM_CONFIG,
         )
 
         visual_activation_qtype = precision.visual_activations

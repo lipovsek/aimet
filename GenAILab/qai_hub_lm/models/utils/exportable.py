@@ -1,113 +1,16 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Utils for building GenAI models"""
+"""ONNXExportableModuleWithCache — wrapper enabling ONNX export of HF models."""
 
 import torch
-from transformers import PreTrainedModel, DynamicCache, PretrainedConfig
+from transformers import PreTrainedModel, DynamicCache
 
-from GenAILab.qai_hub_lm.utils.layer_cache import (
+from .compat import _patch_sdpa_mask  # noqa: F401 — triggers the patch on import
+from .layer_cache import (
     AttentionType,
     build_layer_cache_descriptors,
 )
-
-
-def _resolve_text_config(config: PretrainedConfig) -> PretrainedConfig:
-    """Return the sub-config that carries layer-level attributes.
-
-    Some composite configs (e.g. Qwen3_5Config) nest num_hidden_layers and linear
-    attention dimensions under ``text_config`` rather than exposing them at
-    the top level.  This helper falls through to ``text_config`` when needed.
-    """
-    if getattr(config, "num_hidden_layers", None) is not None:
-        return config
-    text_config = getattr(config, "text_config", None)
-    if (
-        text_config is not None
-        and getattr(text_config, "num_hidden_layers", None) is not None
-    ):
-        return text_config
-    return config
-
-
-def _patch_sdpa_mask():
-    # In transformers >=5.3.0, _preprocess_mask_arguments derives q_length from
-    # inputs_embeds.shape[1], which under torch.jit.trace yields a 0-dim tensor
-    # instead of a Python int.
-    # Fix: convert 0-dim tensors to int.
-    try:
-        import transformers.masking_utils as _mu
-
-        _orig = _mu.sdpa_mask
-
-        def _patched(batch_size, q_length, *args, **kwargs):
-            if isinstance(q_length, torch.Tensor) and q_length.ndim == 0:
-                q_length = q_length.item()
-            return _orig(batch_size, q_length, *args, **kwargs)
-
-        _mu.ALL_MASK_ATTENTION_FUNCTIONS["sdpa"] = _patched
-    except (ImportError, AttributeError):
-        pass
-
-
-# TODO: Remove this patch once the fix applied in transformers itself.
-_patch_sdpa_mask()
-
-
-def compute_vision_input_shapes(
-    image_size: tuple[int, int],
-    vision_config,
-) -> tuple[int, int, int, int]:
-    """Compute vision encoder input shapes from a target image size.
-
-    Args:
-        image_size: Target (width, height) that images will be resized to.
-            Follows PIL convention.
-        vision_config: HF vision config with ``patch_size``,
-            ``spatial_merge_size``, ``temporal_patch_size``, and
-            ``in_channels`` attributes.
-
-    Returns:
-        (num_patches, pixel_dim, h_patches, w_patches)
-    """
-    w, h = image_size
-    patch_size = vision_config.patch_size
-    merge_size = vision_config.spatial_merge_size
-    temporal_patch_size = vision_config.temporal_patch_size
-    in_channels = vision_config.in_channels
-
-    # The HF processor rounds image dimensions down to the nearest
-    # multiple of (patch_size * spatial_merge_size).
-    factor = patch_size * merge_size
-    h_patches = (h // factor) * merge_size
-    w_patches = (w // factor) * merge_size
-
-    num_patches = h_patches * w_patches
-    pixel_dim = in_channels * temporal_patch_size * patch_size * patch_size
-
-    return num_patches, pixel_dim, h_patches, w_patches
-
-
-class PositionIdContext:
-    """Minimal stand-in for ``self`` when calling HF's unbound ``get_rope_index``.
-
-    HF's ``get_rope_index`` is an instance method that accesses ``self.config``
-    and may call sibling methods (e.g. ``self.get_vision_position_ids``).  In our
-    framework the position-ID computation must work without a real HF model
-    instance (e.g. in the ONNX path).  This proxy satisfies the ``self`` contract
-    by holding the config and delegating any other attribute lookups to the
-    original HF model *class* (bound to this proxy).
-    """
-
-    def __init__(self, config, model_cls):
-        self.config = config
-        self._model_cls = model_cls
-
-    def __getattr__(self, name):
-        attr = getattr(self._model_cls, name)
-        if callable(attr):
-            return attr.__get__(self, type(self))
-        return attr
 
 
 class ONNXExportableModuleWithCache(torch.nn.Module):
@@ -154,7 +57,7 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
 
     def _default_input_names(self) -> tuple[str, ...]:
         """Derive input names from model config when none are provided."""
-        from GenAILab.qai_hub_lm.models.base import LLM
+        from ..base import LLM
 
         return LLM.get_backbone_input_names(
             build_layer_cache_descriptors(self.model.config)

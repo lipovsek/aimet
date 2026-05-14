@@ -5,7 +5,7 @@
 
 import torch
 
-from GenAILab.qai_hub_lm.utils.attention_mask import (
+from GenAILab.qai_hub_lm.models.utils.attention_mask import (
     convert_2d_attention_mask_to_4d,
 )
 

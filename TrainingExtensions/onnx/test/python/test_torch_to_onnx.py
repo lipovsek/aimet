@@ -55,7 +55,9 @@ def test_hf_torch_to_onnx_workflow(
     Then: aimet-onnx sim should produce same output as aimet-torch sim
     """
 
-    from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+    from GenAILab.qai_hub_lm.models.utils.exportable import (
+        ONNXExportableModuleWithCache,
+    )
 
     config = config_cls(
         vocab_size=1000,

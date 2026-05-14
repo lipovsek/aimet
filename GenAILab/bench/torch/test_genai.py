@@ -17,7 +17,7 @@ from aimet_torch.v2.nn import QuantizationMixin, compute_param_encodings
 from aimet_torch.v2.utils import remove_all_quantizers
 
 from GenAILab.qai_hub_lm.models.base import LLM, VLM
-from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.bench.profiler import (
     GPUMeter,

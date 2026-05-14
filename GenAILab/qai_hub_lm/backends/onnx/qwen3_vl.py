@@ -12,6 +12,7 @@ from transformers import AutoConfig
 from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel
 
+from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.bench.model_cache import DiskBackedModelCache, ModelCacheEntry
 from GenAILab.qai_hub_lm.precision import PrecisionConfig, float16, float32
 from GenAILab.qai_hub_lm.models.base import SimCollection
@@ -20,8 +21,8 @@ from GenAILab.qai_hub_lm.models.qwen3_vl import (
     Qwen_3_VL,
     Qwen3VLVisualWrapper,
 )
-from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
-from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
 
 from GenAILab.qai_hub_lm.backends.onnx.export_utils import (
     get_onnx_model,
@@ -144,7 +145,7 @@ class Qwen_3_VL_ONNX(Qwen_3_VL):
                 quant_scheme="min_max",
                 param_type=default_param_qtype,
                 activation_type=default_activation_qtype,
-                config_file=cls.get_quantsim_config(),
+                config_file=QUANTSIM_CONFIG,
                 providers=get_ort_providers(
                     torch.device("cuda")
                     if torch.cuda.is_available()
@@ -156,7 +157,7 @@ class Qwen_3_VL_ONNX(Qwen_3_VL):
                 quant_scheme="min_max",
                 param_type=visual_param_qtype,
                 activation_type=visual_activation_qtype,
-                config_file=cls.get_quantsim_config(),
+                config_file=QUANTSIM_CONFIG,
                 providers=get_ort_providers(
                     torch.device("cuda")
                     if torch.cuda.is_available()

@@ -34,9 +34,7 @@ class TestOnnxInstantiateQuantsimOrchestration:
                 return_value=["CPUExecutionProvider"]
             ),
             "GenAILab.qai_hub_lm.backends.onnx.llm.AttributePatch": MagicMock(),
-            "GenAILab.qai_hub_lm.backends.onnx.llm.LLM_ONNX.get_quantsim_config": MagicMock(
-                return_value="config.json"
-            ),
+            "GenAILab.qai_hub_lm.backends.onnx.llm.QUANTSIM_CONFIG": "config.json",
         }
         if extra_patches:
             patches.update(extra_patches)

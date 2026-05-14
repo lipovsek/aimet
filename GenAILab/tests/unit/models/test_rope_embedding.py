@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 from transformers.models.llama import LlamaConfig
 from transformers.models.qwen2 import Qwen2Config
 
-from GenAILab.qai_hub_lm.utils.rope_embedding import RopeEmbedding
+from GenAILab.qai_hub_lm.models.utils.rope_embedding import RopeEmbedding
 
 
 def _make_model(config):

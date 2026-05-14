@@ -17,7 +17,7 @@ from GenAILab.qai_hub_lm.models.generator import (
     _FlatListCache,
     get_past_keyval_with_shift,
 )
-from GenAILab.qai_hub_lm.utils.layer_cache import (
+from GenAILab.qai_hub_lm.models.utils.layer_cache import (
     AttentionType,
     LayerCacheDescriptor,
 )

@@ -10,6 +10,7 @@ from transformers import AutoConfig, AutoTokenizer
 
 from GenAILab.qai_hub_lm.models.base import LLM
 from GenAILab.qai_hub_lm.models.generator import Generator
+from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.bench.metrics import PPL, MMLU, Interactive
 
 import onnx
@@ -117,7 +118,7 @@ if __name__ == "__main__":
         quant_scheme="min_max",
         default_activation_bw=16,
         default_param_bw=4,
-        config_file=LLM.get_quantsim_config(),
+        config_file=QUANTSIM_CONFIG,
         providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
 

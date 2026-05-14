@@ -15,6 +15,7 @@ from aimet_onnx.quantsim import (
     QuantizationSimModel,
 )
 
+from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.bench.model_cache import DiskBackedModelCache, ModelCacheEntry
 from GenAILab.qai_hub_lm.precision import (
     PrecisionConfig,
@@ -24,8 +25,8 @@ from GenAILab.qai_hub_lm.precision import (
 )
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.qai_hub_lm.models.base import LLM, SimCollection
-from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
-from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
 
 from GenAILab.qai_hub_lm.backends.onnx.adaptations.hub_models import AIHMAdaptation
 from GenAILab.qai_hub_lm.backends.onnx.export_utils import (
@@ -141,7 +142,7 @@ class LLM_ONNX(LLM):
                 quant_scheme="min_max",
                 param_type=default_param_qtype,
                 activation_type=default_activation_qtype,
-                config_file=cls.get_quantsim_config(),
+                config_file=QUANTSIM_CONFIG,
                 providers=get_ort_providers(
                     torch.device("cuda")
                     if torch.cuda.is_available()

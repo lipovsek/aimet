@@ -13,6 +13,7 @@ from GenAILab.qai_hub_lm.transforms.sha_conv import (
 )
 from GenAILab.qai_hub_lm.transforms.fast_exportable import (
     Qwen2VLFastExportableAdaptation,
+    Qwen3VLFastExportableAdaptation,
 )
 from GenAILab.qai_hub_lm.transforms.moe import (
     Qwen3MoEAdaptation,

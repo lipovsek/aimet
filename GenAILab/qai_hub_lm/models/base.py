@@ -5,7 +5,6 @@
 
 import types
 from abc import abstractmethod, ABC
-from pathlib import Path
 import torch
 from dataclasses import dataclass
 from transformers import (
@@ -19,7 +18,7 @@ from transformers import (
 from transformers.cache_utils import DynamicCache
 
 from .generator import Generator, VLM_Generator
-from GenAILab.qai_hub_lm.utils.layer_cache import (
+from .utils.layer_cache import (
     LayerCacheDescriptor,
     attention_mask_input_names,
     cache_state_names,
@@ -112,12 +111,6 @@ class LLM(ABC):
             layer_cache_descriptors=layer_cache_descriptors,
         )
         return tuple(prepared.values())
-
-    @staticmethod
-    def get_quantsim_config() -> str:
-        """Get default QuantSim config"""
-        config_path = Path(__file__).parent / "config/default_config.json"
-        return str(config_path.resolve())
 
     @staticmethod
     def get_cache_type() -> type:

@@ -12,8 +12,8 @@ import torch
 
 from GenAILab.qai_hub_lm.models.generator import Generator
 from GenAILab.qai_hub_lm.models.base import LLM
-from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
-from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
 
 from .conftest import (
     SEQUENCE_LENGTHS,

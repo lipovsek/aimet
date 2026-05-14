@@ -29,8 +29,9 @@ from GenAILab.bench.onnx.quant_recipes import (
 )
 from GenAILab.qai_hub_lm.models.base import LLM
 from GenAILab.qai_hub_lm.models.generator import Generator
-from GenAILab.qai_hub_lm.utils.model_utils import ONNXExportableModuleWithCache
-from GenAILab.qai_hub_lm.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
+from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.bench.datasets import Wikitext
 
 SEQUENCE_LENGTH = 2048
@@ -191,7 +192,7 @@ if __name__ == "__main__":
         quant_scheme="min_max",
         default_activation_bw=16,
         default_param_bw=4,
-        config_file=LLM.get_quantsim_config(),
+        config_file=QUANTSIM_CONFIG,
         providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
     # Setting kv_cache and some other layers to 8-bit
