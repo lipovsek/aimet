@@ -7,6 +7,18 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NAMESPACE="aihub"
 
+if ! command -v argo &>/dev/null || ! command -v kubectl &>/dev/null; then
+  bash "$SCRIPT_DIR/install_deps.sh"
+fi
+
+if ! kubectl auth whoami -n "$NAMESPACE" &>/dev/null; then
+  echo "ERROR: Cluster credentials are missing or expired." >&2
+  echo "" >&2
+  echo "To fix: log in to the cluster web UI, copy the kubeconfig to your" >&2
+  echo "clipboard, and paste it into ~/.kube/config" >&2
+  exit 1
+fi
+
 usage() {
   echo "Usage: $0 [options] [local-dir ...]" >&2
   echo "" >&2
