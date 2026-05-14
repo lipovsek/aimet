@@ -145,6 +145,7 @@ jobs:
           gpu-request: "1"
           cpu-request: "32"
           memory-request: "512Gi"
+          argo-namespace: "aihub"
           kubeconfig: ${{ secrets.KUBECONFIG }}
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
@@ -168,6 +169,7 @@ jobs:
           gpu-request: "1"
           cpu-request: "32"
           memory-request: "512Gi"
+          argo-namespace: "aihub"
           kubeconfig: ${{ secrets.KUBECONFIG }}
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
@@ -246,5 +248,6 @@ jobs:
           runner-ids: >-
             ${{ needs.start-runner-torch.outputs.runner-label }},
             ${{ needs.start-runner-onnx.outputs.runner-label }}
+          argo-namespace: "aihub"
           kubeconfig: ${{ secrets.KUBECONFIG }}
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}

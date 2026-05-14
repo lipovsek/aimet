@@ -26,7 +26,7 @@ inputs:
   argo-namespace:
     description: 'Argo namespace'
     required: false
-    default: "aihub"
+    default: "aihub-ci"
   kubeconfig:
     description: 'Kubeconfig file contents for cluster access'
     required: true
