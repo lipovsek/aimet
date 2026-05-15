@@ -3751,6 +3751,40 @@ class TestQuantSim:
             sim.qc_quantize_op_dict["output"].encodings[0],
         )
 
+    def test_conflicting_shared_weights(self, tmp_path: pathlib.Path):
+        """
+        Given: LM head model with shared weights as below
+        When: Create quantsim
+        Then: Raise runtime error, since Gather (embedding) and MatMul (lm_head)
+              require separate per-tensor and per-channel param quantizers respectively
+        """
+
+        class SharedLMHead(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embedding = torch.nn.Embedding(100, 100)
+                self.lm_head = torch.nn.Linear(100, 100, bias=False)
+                self.lm_head.weight = self.embedding.weight
+
+            def forward(self, input_ids):
+                embeddings = self.embedding(input_ids)
+                logits = self.lm_head(embeddings)
+                return logits
+
+        torch.onnx.export(
+            SharedLMHead(),
+            (torch.tensor([[1, 2, 3], [4, 5, 6]]),),
+            tmp_path / "shared_lmhead.onnx",
+            dynamo=True,
+        )
+        model = onnx.load(str(tmp_path / "shared_lmhead.onnx"))
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"Found shared parameter\(s\) with conflicting consumer types",
+        ):
+            _ = QuantizationSimModel(model)
+
 
 class TestEncodingPropagation:
     def test_output(self):

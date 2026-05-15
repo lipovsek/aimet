@@ -9,6 +9,7 @@ the tensors that are either input to the model (input, constant or parameter) or
 result of an operation. Furthermore the graph representation is bi-directional."""
 
 import itertools
+from collections import deque
 from typing import Optional, Union
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 import onnx
@@ -70,6 +71,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         self.starting_ops = list(self._get_starting_ops())
         # List of ops in the order they are traversed using the forward function
         self.ordered_ops = get_ordered_ops(self.starting_ops)
+        self._assert_no_conflicting_shared_parameters()
 
     def get_op_from_module_name(self, name: str) -> Op:
         """
@@ -77,6 +79,63 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         :param name: Name of the module
         """
         return self._ops[name]
+
+    def _assert_no_conflicting_shared_parameters(self):
+        """
+        Checks for shared parameters with conflicting consumer types.
+
+        Example: Shared LM head
+
+            W -+-> Gather (required per-tensor)
+               └-> Gemm   (requires per-channel)
+        """
+        all_parameters = [
+            param
+            for op in self._ops.values()
+            for param, param_type in op.parameters.values()
+            if param_type == "weight"
+        ]
+        consumers: dict[Product, list[Op]] = {}
+        conflicting_shared_parameters = []
+
+        for param in all_parameters:
+            queue = deque(param.consumers)
+
+            while queue:
+                consumer = queue.popleft()
+                if consumer.type == "Shape":
+                    continue
+                if consumer.type in ("Transpose", "Identity"):
+                    queue.extend(consumer.outputs[0].consumers)
+                else:
+                    consumers.setdefault(param, []).append(consumer)
+
+            consumer_types = set(consumer.type for consumer in consumers[param])
+
+            if len(consumer_types) > 1 and consumer_types.intersection(
+                {"Conv", "ConvTranspose", "MatMul", "Gemm"}
+            ):
+                conflicting_shared_parameters.append(param)
+
+        if not conflicting_shared_parameters:
+            return
+
+        msg = [
+            "Found shared parameter(s) with conflicting consumer types:\n",
+        ]
+
+        for param in conflicting_shared_parameters:
+            msg.append(f"  - input name: {param.name}")
+
+            for i, consumer in enumerate(consumers[param]):
+                msg.append(f"    - consumer {i}: {consumer.name} ({consumer.type})")
+
+        msg.append(
+            "\nPlease call ``aimet_onnx.utils.duplicate_shared_tensors(onnx_model.graph)``"
+            " before creating QuantizationSimModel"
+            " to ensure each consumer takes a unique copy of the initializer as input."
+        )
+        raise RuntimeError("\n".join(msg))
 
     @staticmethod
     def _create_ir_op(node: NodeProto) -> Op:

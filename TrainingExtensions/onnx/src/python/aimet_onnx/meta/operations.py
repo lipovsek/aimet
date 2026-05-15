@@ -3,13 +3,15 @@
 
 """ONNX Operation class and utilities"""
 
-from typing import Union
+from typing import Dict, Tuple, Optional
 from aimet_onnx.common.connected_graph.operation import Op as _Op
 from aimet_onnx.meta.product import Product
 
 
 class Op(_Op):
     """Subclass Op inherited from aimet_onnx.common.connected_graph.operation.Op"""
+
+    _parameters: Dict[str, Tuple[Product, Optional[str]]]
 
     def __init__(
         self,
@@ -34,11 +36,11 @@ class Op(_Op):
         self.transposed_params = False
         self.domain = domain
 
-    def add_param(self, param: str, product: Product, product_type: Union[str, None]):
+    def add_param(self, param: str, product: Product, product_type: Optional[str]):
         """Add a parameter product to parameters dictionary"""
         self._parameters[param] = (product, product_type)
 
     @property
-    def parameters(self):
+    def parameters(self) -> Dict[str, Tuple[Product, Optional[str]]]:
         """returns parameters of the op"""
         return self._parameters
