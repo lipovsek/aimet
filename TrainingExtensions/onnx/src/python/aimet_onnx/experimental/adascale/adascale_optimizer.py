@@ -83,6 +83,9 @@ adascale_model_config_dict = {
     "gemma3": AdaScaleModelConfig(
         model_type="gemma3", beta_gamma_lr=1e-3, scales_lr=5e-4
     ),
+    "gemma3_text": AdaScaleModelConfig(
+        model_type="gemma3", beta_gamma_lr=1e-3, scales_lr=5e-4
+    ),
 }
 
 
