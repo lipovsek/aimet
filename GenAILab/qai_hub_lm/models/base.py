@@ -150,9 +150,11 @@ class LLM(ABC):
         """
         axes: dict[str, dict[int, str]] = {
             "input_ids": {1: "sequence_length"},
-            "attention_mask": {2: "sequence_length"},
             "position_ids": {1: "sequence_length"},
             "logits": {1: "sequence_length"},
+        } | {
+            name: {2: "sequence_length"}
+            for name in attention_mask_input_names(layer_cache_descriptors)
         }
         for desc in layer_cache_descriptors:
             i = desc.layer_idx
