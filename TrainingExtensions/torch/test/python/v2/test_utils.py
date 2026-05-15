@@ -363,6 +363,74 @@ def test_remove_output_quantizers():
             assert all(quant is None for quant in module.output_quantizers)
 
 
+def test_remove_quantizers_tied_list():
+    """
+    Given: Two quantized modules whose input_quantizers point to the same list (tied).
+    When: remove_input_quantizers is called on both within a ``with`` block.
+    Then:
+        1) The quantizer is nulled inside the context.
+        2) The second module's removal is a no-op (same container already registered).
+        3) Exiting the context restores the quantizer.
+    """
+    dummy_input = torch.rand(1, 64, 16, 16)
+    qsim_a = QuantizationSimModel(BasicConv2d(kernel_size=3), dummy_input)
+    qsim_b = QuantizationSimModel(BasicConv2d(kernel_size=3), dummy_input)
+
+    # Tie the two modules' input_quantizers to the same list.
+    shared_list = qsim_a.model.conv.input_quantizers
+    qsim_b.model.conv.input_quantizers = shared_list
+    assert qsim_a.model.conv.input_quantizers is qsim_b.model.conv.input_quantizers
+
+    orig_qtzr = shared_list[0]
+    assert orig_qtzr is not None
+
+    with remove_input_quantizers([qsim_a.model.conv, qsim_b.model.conv]):
+        assert shared_list[0] is None
+    assert shared_list[0] is orig_qtzr
+
+
+def test_remove_quantizers_stale_registry():
+    """
+    Given: A permanent (no-context) removal leaves a stale registry entry for a list.
+    When: The original module is GC'd and a new module (potentially reusing the address) is
+          created.
+    Then: The stale entry is evicted and the new module's quantizer is correctly
+          removed/restored.
+    """
+    import gc
+
+    dummy_input = torch.rand(1, 64, 16, 16)
+
+    # Permanent removal: context is discarded, registry entry for the list stays.
+    qsim = QuantizationSimModel(BasicConv2d(kernel_size=3), dummy_input)
+    remove_input_quantizers(qsim.model)
+    for module in qsim.model.modules():
+        if isinstance(module, BaseQuantizationMixin):
+            assert all(quant is None for quant in module.input_quantizers)
+
+    # Release the sim so its input_quantizers lists may be GC'd.
+    del qsim
+    gc.collect()
+
+    # A new sim created after GC may reuse freed addresses.
+    # Stale-weakref eviction ensures the new sim is handled correctly.
+    qsim2 = QuantizationSimModel(BasicConv2d(kernel_size=3), dummy_input)
+    orig_quantizers = {
+        name: list(module.input_quantizers)
+        for name, module in qsim2.model.named_modules()
+        if isinstance(module, BaseQuantizationMixin)
+    }
+
+    with remove_input_quantizers(qsim2.model):
+        for module in qsim2.model.modules():
+            if isinstance(module, BaseQuantizationMixin):
+                assert all(quant is None for quant in module.input_quantizers)
+
+    for name, module in qsim2.model.named_modules():
+        if isinstance(module, BaseQuantizationMixin):
+            assert list(module.input_quantizers) == orig_quantizers[name]
+
+
 def test_get_all_quantizers():
     """
     When: get_all_quantizers

@@ -8,6 +8,8 @@ import abc
 import contextlib
 import inspect
 import itertools
+import threading
+import weakref
 from typing import Type, List, Dict, Union, Iterable, Mapping, Optional, Tuple
 
 import torch
@@ -1034,15 +1036,27 @@ class BaseQuantizationMixin(abc.ABC):
         return False
 
 
-def _remove_quantizers(quantizers, keys):
-    orig_quantizers = {key: quantizers[key] for key in keys}
+def _remove_quantizers(quantizers, keys, _registry=threading.local()):
+    registry = _registry.__dict__.setdefault("snapshots", {})
+    lid = id(quantizers)
 
-    def restore_quantizers():
-        for key, orig_qtzr in orig_quantizers.items():
-            quantizers[key] = orig_qtzr
+    if lid in registry:
+        stored_ref, _ = registry[lid]
+        if stored_ref() is quantizers:
+            # Same live container seen again - genuine tied-list case.
+            return _ContextManager(action=lambda: None, cleanup=lambda: None)
+        # Stale entry: the original container was GC'd and its address was reused.
+        registry.pop(lid)
 
-    ctx = _ContextManager(action=lambda: None, cleanup=restore_quantizers)
+    orig = {key: quantizers[key] for key in keys}
+    registry[lid] = (weakref.ref(quantizers), orig)
 
+    def restore():
+        registry.pop(lid, None)
+        for key, q in orig.items():
+            quantizers[key] = q
+
+    ctx = _ContextManager(action=lambda: None, cleanup=restore)
     try:
         for key in keys:
             quantizers[key] = None
