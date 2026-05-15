@@ -5,6 +5,7 @@ from typing import Callable, Any
 import itertools
 import io
 from functools import partial, lru_cache
+import numpy as np
 from pathlib import Path
 from packaging import version
 import torch
@@ -23,6 +24,7 @@ from aimet_torch.experimental.export.exported_program import (
 from aimet_torch.model_preparer import prepare_model
 from aimet_torch.experimental.export.exported_program import _is_torch_ao_qdq_node
 from aimet_torch.batch_norm_fold import fold_all_batch_norms
+from aimet_torch.nn import QuantizationMixin
 import pytest
 
 
@@ -410,3 +412,77 @@ def test_multi_output_grid_preserving_ops(op: Callable[[torch.Tensor], Any]):
             last_producer.target.overloadpacket
             == torch.ops.quantized_decomposed.dequantize_per_tensor
         )
+
+
+def test_compute_missing_encodings_with_constant():
+    """
+    Given: Model with hardcoded constant that is neither a parameter nor a buffer
+    When: Export with aimet_torch.export.export and compute missing encodings
+    Then: The constant should NOT be quantized; only parameters and buffers should be quantized
+    """
+
+    @QuantizationMixin.ignore
+    class MulConstantNumpyArr(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.arr = torch.from_numpy(np.random.randn(10).astype(np.float32))
+
+        def forward(self, x):
+            return x * self.arr
+
+    @QuantizationMixin.ignore
+    class AddConstantTensor(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.arr = torch.randn(10)
+
+        def forward(self, x):
+            return x + self.arr
+
+    model = torch.nn.Sequential(
+        MulConstantNumpyArr(),
+        AddConstantTensor(),
+    )
+    example_inputs = (torch.randn(10),)
+    sim = QuantizationSimModel(model, example_inputs, config_file="htp_v81")
+    sim.compute_encodings(lambda model: model(*example_inputs))
+
+    _ = torch.export.export(sim.model, example_inputs)
+    ep = aimet_torch.experimental.export.export(sim.model, example_inputs)
+    ep = AimetExportedProgram.from_torch_exported_program(ep)
+
+    with ep.compute_missing_encodings():
+        _ = ep.module()(*example_inputs)
+
+    mul_node = next(
+        node for node in ep.graph.nodes if node.target == torch.ops.aten.mul.Tensor
+    )
+    add_node = next(
+        node for node in ep.graph.nodes if node.target == torch.ops.aten.add.Tensor
+    )
+    assert (
+        mul_node.all_input_nodes[0].target
+        == torch.ops.quantized_decomposed.dequantize_per_tensor.default
+    )
+    assert (
+        mul_node.all_input_nodes[1].target
+        != torch.ops.quantized_decomposed.dequantize_per_tensor.default
+    )
+    assert len(mul_node.users) == 1
+    assert (
+        list(mul_node.users)[0].target
+        == torch.ops.quantized_decomposed.quantize_per_tensor.default
+    )
+    assert (
+        add_node.all_input_nodes[0].target
+        == torch.ops.quantized_decomposed.dequantize_per_tensor.default
+    )
+    assert (
+        add_node.all_input_nodes[1].target
+        != torch.ops.quantized_decomposed.dequantize_per_tensor.default
+    )
+    assert len(add_node.users) == 1
+    assert (
+        list(add_node.users)[0].target
+        == torch.ops.quantized_decomposed.quantize_per_tensor.default
+    )
