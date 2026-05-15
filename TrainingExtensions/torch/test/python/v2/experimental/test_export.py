@@ -324,16 +324,10 @@ def test_compute_missing_encodings(device: str):
     model = resnet18(pretrained=False).eval().to(device=device)
     example_inputs = (torch.randn(1, 3, 224, 224, device=device),)
     fold_all_batch_norms(model, None, dummy_input=example_inputs)
-    sim = QuantizationSimModel(model, example_inputs, config_file="htp_v81")
-
-    # Remove activation quantizers to create a scenario where some nodes are missing output quantizers
-    aimet_torch.utils.remove_activation_quantizers(sim.model)
-    sim.compute_encodings(lambda model: model(*example_inputs))
-
-    ep = aimet_torch.experimental.export.export(sim.model, example_inputs)
+    ep = aimet_torch.experimental.export.export(model, example_inputs)
     ep = AimetExportedProgram.from_torch_exported_program(ep)
 
-    with ep.compute_missing_encodings():
+    with ep.compute_missing_encodings(param_bw=8, activation_bw=16):
         output = ep.module()(*example_inputs)
         assert isinstance(output, Q.DequantizedTensor)
 
@@ -451,7 +445,7 @@ def test_compute_missing_encodings_with_constant():
     ep = aimet_torch.experimental.export.export(sim.model, example_inputs)
     ep = AimetExportedProgram.from_torch_exported_program(ep)
 
-    with ep.compute_missing_encodings():
+    with ep.compute_missing_encodings(param_bw=8, activation_bw=16):
         _ = ep.module()(*example_inputs)
 
     mul_node = next(

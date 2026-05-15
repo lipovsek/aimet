@@ -37,7 +37,7 @@ class ExportedProgram(torch.export.ExportedProgram):
         return self.from_torch_exported_program(ep)
 
     @contextmanager
-    def compute_missing_encodings(self):
+    def compute_missing_encodings(self, param_bw: int, activation_bw: int):
         """
         Add missing output quantizers and compute encodings.
 
@@ -49,7 +49,7 @@ class ExportedProgram(torch.export.ExportedProgram):
             >>> ep = aimet_torch.experimental.export.export(sim.model, (dummy_input,))
             >>> torch.export.save(ep, "partially_quantized_model.pt2")
             >>> # Add missing quantizers and compute encodings
-            >>> with ep.compute_missing_encodings():
+            >>> with ep.compute_missing_encodings(param_bw=8, activation_bw=16):
             ...     for inp in calibration_dataloader:
             ...         ep.module()(inp)
             ...
@@ -75,7 +75,7 @@ class ExportedProgram(torch.export.ExportedProgram):
         #
         # Add QuantizeDequantize module after
         # every floating-point op doesn't have quantized outputs.
-        newly_added_qtzrs = self._add_missing_quantizers()
+        newly_added_qtzrs = self._add_missing_quantizers(param_bw, activation_bw)
 
         # Step 3. Enter compute_encodings mode and yield control back to user to
         # calibrate encodings of the newly added quantizers. While the control
@@ -97,7 +97,9 @@ class ExportedProgram(torch.export.ExportedProgram):
             f"\n{list(newly_added_qtzrs.keys())}"
         )
 
-    def _add_missing_quantizers(self):
+    def _add_missing_quantizers(
+        self, param_bw: int, activation_bw: int
+    ) -> dict[str, QuantizeDequantize]:
         graph_module = self.graph_module
         graph = graph_module.graph
 
@@ -142,10 +144,10 @@ class ExportedProgram(torch.export.ExportedProgram):
                     bitwidth = 32
                     symmetric = True
                 else:  # weight
-                    bitwidth = 8
+                    bitwidth = param_bw
                     symmetric = True
             else:  # activation
-                bitwidth = 16
+                bitwidth = activation_bw
                 symmetric = False
 
             output_qdq = QuantizeDequantize((), bitwidth=bitwidth, symmetric=symmetric)
