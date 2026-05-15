@@ -690,6 +690,33 @@ class TimedStreamer(TextStreamer):
 @YAMLConfigParser.register_metric
 class Interactive(TextEvaluationMetric):
     @staticmethod
+    def _get_generation_config(model, tokenizer, **overrides) -> GenerationConfig:
+        """Build a GenerationConfig with EOS tokens merged from model config and tokenizer."""
+        eos_ids = set()
+        for src in (
+            getattr(model.config, "eos_token_id", None),
+            tokenizer.eos_token_id,
+        ):
+            if src is None:
+                continue
+            if isinstance(src, (list, tuple)):
+                eos_ids.update(src)
+            else:
+                eos_ids.add(src)
+
+        defaults = dict(
+            max_length=2048,
+            eos_token_id=sorted(eos_ids) if eos_ids else tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
+            do_sample=True,
+            top_k=40,
+            top_p=0.95,
+            temperature=0.8,
+        )
+        defaults.update(overrides)
+        return GenerationConfig(**defaults)
+
+    @staticmethod
     def get_system_prompt() -> str:
         return "You are a helpful AI assistant."
 
@@ -729,15 +756,7 @@ class Interactive(TextEvaluationMetric):
         model.generation_config = (
             generation_config
             if generation_config is not None
-            else GenerationConfig(
-                max_length=2048,
-                eos_token_id=tokenizer.eos_token_id,
-                pad_token_id=tokenizer.pad_token_id,
-                do_sample=True,
-                top_k=40,
-                top_p=0.95,
-                temperature=0.8,
-            )
+            else cls._get_generation_config(model, tokenizer)
         )
 
         print(formatted_prompt, end="")
@@ -807,10 +826,10 @@ class TrickyPrompts(Interactive):
                     model,
                     tokenizer,
                     formatted_prompt=prompt,
-                    generation_config=GenerationConfig(
+                    generation_config=cls._get_generation_config(
+                        model,
+                        tokenizer,
                         max_new_tokens=2,
-                        eos_token_id=tokenizer.eos_token_id,
-                        pad_token_id=tokenizer.pad_token_id,
                         do_sample=False,
                     ),
                     highlight_output=True,
@@ -850,7 +869,14 @@ class Prompts(Interactive):
         for prompt in prompts:
             print("===============================")
             generated_text.append(
-                cls.generate_output(model, tokenizer, unformatted_prompt=prompt)
+                cls.generate_output(
+                    model=model,
+                    tokenizer=tokenizer,
+                    unformatted_prompt=prompt,
+                    generation_config=cls._get_generation_config(
+                        model, tokenizer, do_sample=False
+                    ),
+                )
             )
         print("===============================")
         return {"prompts": prompts, "generated_text": generated_text}
@@ -928,10 +954,9 @@ class MultimodalPrompts(EvaluationMetric):
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
             inputs.pop("mm_token_type_ids", None)
 
-            generation_config = GenerationConfig(
-                max_length=2048,
-                eos_token_id=tokenizer.eos_token_id,
-                pad_token_id=tokenizer.pad_token_id,
+            generation_config = Interactive._get_generation_config(
+                model,
+                tokenizer,
                 do_sample=False,
             )
 
