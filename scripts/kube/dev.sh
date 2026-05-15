@@ -7,7 +7,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NAMESPACE="aihub"
 
-if ! command -v argo &>/dev/null || ! command -v kubectl &>/dev/null; then
+if ! command -v argo &>/dev/null || ! command -v kubectl &>/dev/null \
+   || ! command -v rsync &>/dev/null || ! command -v jq &>/dev/null \
+   || ! command -v inotifywait &>/dev/null; then
   bash "$SCRIPT_DIR/install_deps.sh"
 fi
 

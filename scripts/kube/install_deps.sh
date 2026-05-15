@@ -17,3 +17,14 @@ if ! command -v kubectl &>/dev/null; then
   sudo install /tmp/kubectl /usr/local/bin/kubectl
   rm /tmp/kubectl
 fi
+
+APT_DEPS=()
+command -v rsync &>/dev/null       || APT_DEPS+=(rsync)
+command -v jq &>/dev/null          || APT_DEPS+=(jq)
+command -v inotifywait &>/dev/null || APT_DEPS+=(inotify-tools)
+
+if [ ${#APT_DEPS[@]} -gt 0 ]; then
+  echo "Installing ${APT_DEPS[*]}..."
+  sudo apt-get update -qq
+  sudo apt-get install -yqq "${APT_DEPS[@]}"
+fi
