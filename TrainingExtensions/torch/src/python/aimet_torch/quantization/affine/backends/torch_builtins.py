@@ -171,9 +171,6 @@ def quantize(
     )
 
 
-_ALLOW_FAST_FORWARD = True  # temporary flag for debugging
-
-
 @_onnx.register_symbolic(_onnx.quantize_dequantize_symbolic)
 def quantize_dequantize(
     tensor: torch.Tensor,
@@ -201,27 +198,24 @@ def quantize_dequantize(
 
     _validate_arguments(tensor, scale, qmin, qmax, block_size)
 
-    _fast_forward = _ALLOW_FAST_FORWARD
-
-    # torch.fake_quantize doesn't support blockwise quantization
-    _fast_forward &= block_size is None
-
-    # torch.fake_quantize doesn't support JIT tracing
-    _fast_forward &= not torch.jit.is_tracing()
-
-    # torch.fake_quantize doesn't compute gradients for scale/offset
-    _fast_forward &= (not scale.requires_grad and not offset.requires_grad) or (
-        not torch.is_grad_enabled()
+    _fast_forward = (
+        # torch.fake_quantize doesn't support blockwise quantization
+        block_size is None
+        # torch.fake_quantize doesn't support JIT tracing
+        and not torch.jit.is_tracing()
+        # torch.fake_quantize doesn't compute gradients for scale/offset
+        and (
+            not scale.requires_grad
+            and not offset.requires_grad
+            or not torch.is_grad_enabled()
+        )
+        # if user explicitly designated specific rounding function, honor it strictly
+        and _round_fn == torch.round
+        and _round_fn_inplace == torch.round_
+        and zero_point_shift == 0.0
+        # PGS is not supported with torch.fake_quantize
+        and not (tensor.requires_grad and pgs.is_pgs_enabled())
     )
-
-    # if user explicitly designated specific rounding function, honor it strictly
-    _fast_forward &= _round_fn == torch.round and _round_fn_inplace == torch.round_
-
-    # if user explicitly designated specific rounding function, honor it strictly
-    _fast_forward &= zero_point_shift == 0.0
-
-    # PGS is not supported with torch.fake_quantize
-    _fast_forward &= not (tensor.requires_grad and pgs.is_pgs_enabled())
 
     if _fast_forward:
         ret = _torch_fake_quantize(tensor, scale, offset, qmin, qmax)
