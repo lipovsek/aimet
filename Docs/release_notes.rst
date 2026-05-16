@@ -6,6 +6,55 @@
 Release notes
 #############
 
+2.31.0
+======
+
+* New Features
+    * ONNX
+        * Support Qwen 3VL in AdaScale ONNX (`35d2440db`_)
+
+    * Torch
+        * Add Gemma 3 support for AdaScale (`a2da0de9c`_)
+        * LoRA integration (`0b90d8a4f`_)
+
+* Removed Features
+    * Torch
+        * Delete AutoQuant (`a2382756e`_)
+        * Delete bias correction (`a2382756e`_)
+        * Delete quantizable transformer (`a2382756e`_)
+        * Delete winnow (`a2382756e`_)
+
+* Bug fixes and Improvements
+    * ONNX
+        * Fuse supergroups to ONNX function nodes in QuantSim init (`441ac6dc8`_)
+        * Enable ONNX initializer deduplication pass in torch>=2.12 (`21dc8e05f`_)
+        * Detect post-writing norm incompatibility in ONNX SpinQuant (`85bdbdb88`_)
+        * Remove incorrect entries from grid-preserving ops list (`4007d7f3f`_)
+        * Set self.session = None to avoid double memory allocation during rebuild session (`18664a4db`_)
+        * Give fused supergroup nodes intuitive naming (`a775b6e09`_)
+
+    * Torch
+        * Raise ValueError for unsupported architectures in PyTorch SpinQuant (`a96261475`_)
+
+* Documentation
+    * Add zero_point_shift to 1.0.0 encoding spec documentation (`094deadfa`_)
+    * Add float8/float4 encoding to 2.0.0 spec documentation (`02e75aa95`_)
+
+.. _441ac6dc8: https://github.com/quic/aimet/commit/441ac6dc8
+.. _21dc8e05f: https://github.com/quic/aimet/commit/21dc8e05f
+.. _35d2440db: https://github.com/quic/aimet/commit/35d2440db
+.. _a2da0de9c: https://github.com/quic/aimet/commit/a2da0de9c
+.. _0b90d8a4f: https://github.com/quic/aimet/commit/0b90d8a4f
+.. _85bdbdb88: https://github.com/quic/aimet/commit/85bdbdb88
+.. _4007d7f3f: https://github.com/quic/aimet/commit/4007d7f3f
+.. _18664a4db: https://github.com/quic/aimet/commit/18664a4db
+.. _a775b6e09: https://github.com/quic/aimet/commit/a775b6e09
+.. _a96261475: https://github.com/quic/aimet/commit/a96261475
+.. _a2382756e: https://github.com/quic/aimet/commit/a2382756e
+.. _094deadfa: https://github.com/quic/aimet/commit/094deadfa
+.. _02e75aa95: https://github.com/quic/aimet/commit/02e75aa95
+
+
 2.30.0
 ======
 

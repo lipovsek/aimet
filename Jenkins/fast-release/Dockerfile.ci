@@ -66,6 +66,8 @@ onnxruntime-gpu$([ -n "${VER_ONNXRUNTIME}" ] && echo "==${VER_ONNXRUNTIME}") \
 RUN uv venv --python ${VER_PYTHON} ${VIRTUAL_ENV} \
     && chmod -R 777 ${VIRTUAL_ENV}
 
+ENV UV_HTTP_TIMEOUT=300
+
 RUN --mount=type=bind,target=/workspace \
     echo "Install all required dependencies" \
     && export PIP_NO_CACHE_DIR=1 \
