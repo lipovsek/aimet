@@ -2396,6 +2396,10 @@ def test_concat(tmp_path: pathlib.Path):
     assert encodings["input_uv"] == encodings["img"] == encodings["/Concat_output_0"]
 
 
+@pytest.mark.skipif(
+    version.parse(torch.__version__) >= version.parse("2.12.0"),
+    reason="Deduplication slowdown issue was resolved in PyTorch 2.12.0",
+)
 def test_disable_C_jit_pass_onnx_deduplicate_initializers(tmp_path: pathlib.Path):
     """
     Given: Model with shared parameters
