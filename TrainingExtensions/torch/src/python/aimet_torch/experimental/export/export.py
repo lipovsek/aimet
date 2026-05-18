@@ -18,6 +18,7 @@ from ._utils import (
     _eval_node,
     _insert_placeholder,
     _is_multi_output_op,
+    _refresh_output_specs,
 )
 
 __all__ = ["export"]
@@ -92,48 +93,35 @@ def export(mod: torch.nn.Module, *args, **kwargs) -> ExportedProgram:
     with _duplicate_shared_weights(mod), _precompute_encodings(mod), torch.no_grad():
         ep = torch.export.export(mod, *args, **kwargs)
 
-    original_output_names = [
-        node.name for node in ep.graph.output_node().all_input_nodes
-    ]
+    return _post_process(ep)
 
+
+@_refresh_output_specs
+def _post_process(ep: ExportedProgram) -> ExportedProgram:
+    """
+    Post-process exported program.
+
+    1. Fold scale and zero_point into constants
+    2. Insert missing quantize-dequantize pairs for grid-preserving ops
+    3. Remove dangling nodes
+    """
+
+    # 1. Fold scale and zero_point into constants
     for node in ep.graph.nodes:
         if _is_qdq_op(node):
             _try_fold_scale_and_zp(node, ep)
 
-    # Encoding propagation to insert missing q/dq nodes
+    # 2. Insert missing quantize-dequantize pairs for grid-preserving ops
     for node in ep.graph.nodes:
         if _is_grid_preserving_op(node):
             _try_insert_output_qdq(ep, node)
 
-    # Encoding propagation to insert missing q/dq nodes
     for node in reversed(ep.graph.nodes):
         if _is_grid_preserving_op(node):
             _try_insert_input_qdq(ep, node)
 
+    # 3. Remove dangling nodes
     _remove_dangling_nodes(ep)
-
-    # Edge case: if any new QDQ nodes were added before the output nodes,
-    # we need to update the output names in the graph signature accordingly
-    # Example:
-    #                         (q/dq inserted by
-    #                       encoding propagation)
-    #         reshape -----------> q -------> dq -----------------> (output)
-    #           ↑                             ↑
-    #  ep.graph_signature is           ep.graph_signature should be
-    #  still pointing to this          updated to point to this dq node
-    #  as graph output                 as graph output
-    new_output_names = {
-        old_name: node.name
-        for old_name, node in zip(
-            original_output_names,
-            ep.graph.output_node().all_input_nodes,
-        )
-    }
-    for spec in ep.graph_signature.output_specs:
-        old_output_name = spec.arg.name
-        new_output_name = new_output_names.get(old_output_name, old_output_name)
-        spec.arg.name = new_output_name
-
     return ep
 
 
@@ -352,25 +340,31 @@ def _is_qdq_op(node: torch.fx.Node) -> bool:
 
 
 def _try_fold_scale_and_zp(q_dq_node: torch.fx.Node, ep: ExportedProgram):
-    if len(q_dq_node.all_input_nodes) > 1:
+    if (
+        len(q_dq_node.all_input_nodes) > 1
+        and q_dq_node.all_input_nodes[1].op != "placeholder"
+    ):
         scale: torch.Tensor = _eval_node(q_dq_node.all_input_nodes[1], ep)
         scale_placeholder: torch.fx.Node = _insert_placeholder(
             ep,
             val=scale,
             node_name=f"p_{q_dq_node.name}_scale",
             tensor_name=f"{q_dq_node.name}_scale",
-            consumer=q_dq_node,
+            consumers=[q_dq_node],
         )
         q_dq_node.replace_input_with(q_dq_node.all_input_nodes[1], scale_placeholder)
 
-    if len(q_dq_node.all_input_nodes) > 2:
+    if (
+        len(q_dq_node.all_input_nodes) > 2
+        and q_dq_node.all_input_nodes[2].op != "placeholder"
+    ):
         zero_point: torch.Tensor = _eval_node(q_dq_node.all_input_nodes[2], ep)
         zero_point_placeholder: torch.fx.Node = _insert_placeholder(
             ep,
             val=zero_point,
             node_name=f"p_{q_dq_node.name}_zero_point",
             tensor_name=f"{q_dq_node.name}_zero_point",
-            consumer=q_dq_node,
+            consumers=[q_dq_node],
         )
         q_dq_node.replace_input_with(
             q_dq_node.all_input_nodes[2], zero_point_placeholder

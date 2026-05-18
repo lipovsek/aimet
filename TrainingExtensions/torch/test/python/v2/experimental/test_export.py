@@ -480,3 +480,29 @@ def test_compute_missing_encodings_with_constant():
         list(add_node.users)[0].target
         == torch.ops.quantized_decomposed.quantize_per_tensor.default
     )
+
+
+def test_dynamic_shape():
+    fp_model = conv_relu()
+    x = torch.randn(2, 3, 32, 32)
+
+    ep = aimet_torch.experimental.export.export(
+        fp_model,
+        (x,),
+        dynamic_shapes={"input": {0: torch.export.Dim("batch")}},
+    )
+
+    # Should work with different batch size
+    for batch_size in [1, 3, 4]:
+        _ = ep.module()(torch.randn(batch_size, 3, 32, 32))
+
+    ep = AimetExportedProgram.from_torch_exported_program(ep)
+
+    with ep.compute_missing_encodings(param_bw=8, activation_bw=16):
+        # Should still work with different batch size
+        for batch_size in [1, 3, 4]:
+            _ = ep.module()(torch.randn(batch_size, 3, 32, 32))
+
+    # Should still work with different batch size
+    for batch_size in [1, 3, 4]:
+        _ = ep.module()(torch.randn(batch_size, 3, 32, 32))

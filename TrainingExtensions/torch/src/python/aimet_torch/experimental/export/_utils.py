@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 # pylint: disable=protected-access
-from typing import Any
+from contextlib import ExitStack
+from typing import Any, Iterable
 import operator
 
 import torch
@@ -150,12 +151,15 @@ def _insert_placeholder(
     val: torch.Tensor,
     node_name: str,
     tensor_name: str,
-    consumer: torch.fx.Node,
+    consumers: Iterable[torch.fx.Node],
 ):
     from torch.export.graph_signature import InputKind, InputSpec, TensorArgument
     from torch._export.utils import _detect_fake_mode_from_gm
 
-    with ep.graph.inserting_before(consumer):
+    with ExitStack() as stack:
+        for consumer in consumers:
+            stack.enter_context(ep.graph.inserting_before(consumer))
+
         node = ep.graph.create_node(
             op="placeholder",
             target=node_name,
@@ -226,3 +230,40 @@ def _is_multi_output_op(node: torch.fx.Node) -> bool:
         all(user.target is operator.getitem for user in node.users)
         and len(node.users) >= 1
     )
+
+
+def _refresh_output_specs(fn):
+    def wrapper(*args, **kwargs):
+        ep: ExportedProgram
+
+        ep, *args = args
+        original_output_names = [
+            node.name for node in ep.graph.output_node().all_input_nodes
+        ]
+        ret = fn(ep, *args, **kwargs)
+
+        # Edge case: if any new QDQ nodes were added before the output nodes,
+        # we need to update the output names in the graph signature accordingly
+        # Example:
+        #                         (q/dq inserted by
+        #                       encoding propagation)
+        #         reshape -----------> q -------> dq -----------------> (output)
+        #           ↑                             ↑
+        #  ep.graph_signature is           ep.graph_signature should be
+        #  still pointing to this          updated to point to this dq node
+        #  as graph output                 as graph output
+        new_output_names = {
+            old_name: node.name
+            for old_name, node in zip(
+                original_output_names,
+                ep.graph.output_node().all_input_nodes,
+            )
+        }
+        for spec in ep.graph_signature.output_specs:
+            old_output_name = spec.arg.name
+            new_output_name = new_output_names.get(old_output_name, old_output_name)
+            spec.arg.name = new_output_name
+
+        return ret
+
+    return wrapper
