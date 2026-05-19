@@ -982,7 +982,7 @@ def _add_value_info(model: onnx.ModelProto):
         model.graph.value_info.extend(initial_value_info)
 
 
-def duplicate_shared_tensors(graph: GraphProto) -> int:
+def duplicate_shared_initializers(graph: GraphProto) -> int:
     """
     Duplicate initializers that are shared across multiple nodes.
 
@@ -1001,12 +1001,28 @@ def duplicate_shared_tensors(graph: GraphProto) -> int:
     if not initializer_map:
         return 0
 
-    # Map each initializer name to the list of (node, input_index) pairs that reference it
-    usage_map: Dict[str, List[Tuple[NodeProto, int]]] = {}
+    # Map each tensor name (initializer or intermediate) to its direct consumers
+    direct_consumers: Dict[str, List[Tuple[NodeProto, int]]] = {}
     for node in graph.node:
         for input_idx, input_name in enumerate(node.input):
-            if input_name and input_name in initializer_map:
-                usage_map.setdefault(input_name, []).append((node, input_idx))
+            if input_name:
+                direct_consumers.setdefault(input_name, []).append((node, input_idx))
+
+    # For each initializer, collect its leaf (non-Identity) consumer usages by
+    # traversing Identity passthrough chains. Shape consumers only read tensor
+    # metadata and are skipped to avoid unnecessary duplication.
+    usage_map: Dict[str, List[Tuple[NodeProto, int]]] = {}
+    for init_name in initializer_map:
+        stack: List[str] = [init_name]
+        while stack:
+            tensor_name = stack.pop()
+            for consumer, idx in direct_consumers.get(tensor_name, []):
+                if consumer.op_type == "Shape":
+                    continue
+                if consumer.op_type == "Identity":
+                    stack.append(consumer.output[0])
+                else:
+                    usage_map.setdefault(init_name, []).append((consumer, idx))
 
     new_initializers: List[TensorProto] = []
     duplicate_count = 0
@@ -1016,9 +1032,11 @@ def duplicate_shared_tensors(graph: GraphProto) -> int:
         | {inp.name for inp in graph.input}
     )
 
+    shared_tensor_count = 0
     for tensor_name, usages in usage_map.items():
         if len(usages) <= 1:
             continue
+        shared_tensor_count += 1
 
         original = initializer_map[tensor_name]
         logger.debug(
@@ -1028,9 +1046,9 @@ def duplicate_shared_tensors(graph: GraphProto) -> int:
             len(usages) - 1,
         )
 
+        counter = 0
         for node, input_idx in usages[1:]:
-            # Find a unique name that does not collide with any existing initializer
-            counter = 1
+            counter += 1
             new_name = f"{tensor_name}_copy_{counter}"
             while new_name in existing_names:
                 counter += 1
@@ -1046,8 +1064,8 @@ def duplicate_shared_tensors(graph: GraphProto) -> int:
 
     graph.initializer.extend(new_initializers)
     logger.info(
-        "duplicate_shared_tensors: created %d duplicate initializer(s) for %d shared tensor(s)",
+        "duplicate_shared_initializers: created %d duplicate initializer(s) for %d shared tensor(s)",
         duplicate_count,
-        sum(1 for usages in usage_map.values() if len(usages) > 1),
+        shared_tensor_count,
     )
     return duplicate_count

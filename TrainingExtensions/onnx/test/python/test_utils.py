@@ -19,7 +19,7 @@ from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import (
     find_shared_param_names,
-    duplicate_shared_tensors,
+    duplicate_shared_initializers,
     OrtInferenceSession,
 )
 import aimet_onnx.utils as utils
@@ -281,9 +281,9 @@ class TestUtils:
         assert not utils.contains_tensor_type(model, onnx.TensorProto.FLOAT16)
 
 
-class TestDuplicateSharedTensors:
+class TestDuplicateSharedInitializers:
     """
-    Tests for utils.duplicate_shared_tensors and its interaction with find_shared_param_names.
+    Tests for utils.duplicate_shared_initializers and its interaction with find_shared_param_names.
     """
 
     @staticmethod
@@ -334,15 +334,15 @@ class TestDuplicateSharedTensors:
         onnx.checker.check_model(model)
         return model
 
-    def test_duplicate_shared_tensors_output_equivalence(self):
+    def test_duplicate_shared_initializers_output_equivalence(self):
         """
-        After calling duplicate_shared_tensors the model must produce identical
+        After calling duplicate_shared_initializers the model must produce identical
         outputs to the original model for the same input.
         """
         original = self._make_shared_weight_model()
         duplicated = copy.deepcopy(original)
 
-        n_duplicates = duplicate_shared_tensors(duplicated.graph)
+        n_duplicates = duplicate_shared_initializers(duplicated.graph)
         assert n_duplicates > 0
 
         dummy_input = utils.make_dummy_input(original)
@@ -359,9 +359,9 @@ class TestDuplicateSharedTensors:
         for orig, dup in zip(original_output, duplicated_output):
             np.testing.assert_array_equal(orig, dup)
 
-    def test_duplicate_shared_tensors_no_shared_params_after_duplication(self):
+    def test_duplicate_shared_initializers_no_shared_params_after_duplication(self):
         """
-        After calling duplicate_shared_tensors, find_shared_param_names must
+        After calling duplicate_shared_initializers, find_shared_param_names must
         return an empty set — no initializer should be referenced by more than
         one node.
         """
@@ -373,18 +373,18 @@ class TestDuplicateSharedTensors:
             "Expected shared params in the original model"
         )
 
-        duplicate_shared_tensors(model.model.graph)
+        duplicate_shared_initializers(model.model.graph)
 
         # Re-build connected graph on the modified model
         conn_graph_after = ConnectedGraph(model)
         assert not find_shared_param_names(conn_graph_after), (
-            "Expected no shared params after duplicate_shared_tensors"
+            "Expected no shared params after duplicate_shared_initializers"
         )
 
     @pytest.mark.parametrize("shared_conv_weight", [True, False])
     @pytest.mark.parametrize("shared_bn_weight", [True, False])
     @pytest.mark.parametrize("shared_stat", [True, False])
-    def test_duplicate_shared_tensors_with_batchnorm_model(
+    def test_duplicate_shared_initializers_with_batchnorm_model(
         self, shared_conv_weight, shared_bn_weight, shared_stat
     ):
         """
@@ -397,7 +397,7 @@ class TestDuplicateSharedTensors:
             shared_stat=shared_stat,
         )
         duplicated = copy.deepcopy(original)
-        duplicate_shared_tensors(duplicated.graph)
+        duplicate_shared_initializers(duplicated.graph)
 
         dummy_input = utils.make_dummy_input(original)
         providers = ["CPUExecutionProvider"]
@@ -415,7 +415,7 @@ class TestDuplicateSharedTensors:
 
         conn_graph_after = ConnectedGraph(ONNXModel(duplicated))
         assert not find_shared_param_names(conn_graph_after), (
-            "Expected no shared params after duplicate_shared_tensors"
+            "Expected no shared params after duplicate_shared_initializers"
         )
 
     def test_duplicate_shared_bias(self, tmp_path):
@@ -426,7 +426,7 @@ class TestDuplicateSharedTensors:
         original = models_for_tests.conv_model_with_shared_bias(tmp_path)
         duplicated = copy.deepcopy(original)
 
-        n_duplicates = duplicate_shared_tensors(duplicated.graph)
+        n_duplicates = duplicate_shared_initializers(duplicated.graph)
         assert n_duplicates > 0
 
         dummy_input = utils.make_dummy_input(original)
@@ -455,7 +455,7 @@ class TestDuplicateSharedTensors:
         ).model
         duplicated = copy.deepcopy(original)
 
-        n_duplicates = duplicate_shared_tensors(duplicated.graph)
+        n_duplicates = duplicate_shared_initializers(duplicated.graph)
         assert n_duplicates > 0
 
         dummy_input = utils.make_dummy_input(original)
@@ -515,7 +515,7 @@ class TestDuplicateSharedTensors:
         onnx.checker.check_model(original)
         duplicated = copy.deepcopy(original)
 
-        n_duplicates = duplicate_shared_tensors(duplicated.graph)
+        n_duplicates = duplicate_shared_initializers(duplicated.graph)
         assert n_duplicates == 2  # two extra copies needed for 3 usages
 
         # All three nodes must now reference distinct initializer names
@@ -536,22 +536,22 @@ class TestDuplicateSharedTensors:
         for orig, dup in zip(original_output, duplicated_output):
             np.testing.assert_array_equal(orig, dup)
 
-    def test_duplicate_shared_tensors_is_idempotent_on_non_shared_model(self):
+    def test_duplicate_shared_initializers_is_idempotent_on_non_shared_model(self):
         """
-        Calling duplicate_shared_tensors on a model with no shared initializers
+        Calling duplicate_shared_initializers on a model with no shared initializers
         must return 0 and leave the model unchanged.
         """
         original = models_for_tests.build_dummy_model()
         n_init_before = len(original.graph.initializer)
 
-        n_duplicates = duplicate_shared_tensors(original.graph)
+        n_duplicates = duplicate_shared_initializers(original.graph)
 
         assert n_duplicates == 0
         assert len(original.graph.initializer) == n_init_before
 
-    def test_duplicate_shared_tensors_empty_graph(self):
+    def test_duplicate_shared_initializers_empty_graph(self):
         """
-        duplicate_shared_tensors must return 0 and not raise on an empty graph
+        duplicate_shared_initializers must return 0 and not raise on an empty graph
         (no nodes, no initializers).
         """
         graph = helper.make_graph(
@@ -562,9 +562,9 @@ class TestDuplicateSharedTensors:
             initializer=[],
         )
         model = models_for_tests.make_model(graph)
-        assert duplicate_shared_tensors(model.graph) == 0
+        assert duplicate_shared_initializers(model.graph) == 0
 
-    def test_duplicate_shared_tensors_name_collision(self):
+    def test_duplicate_shared_initializers_name_collision(self):
         """
         If a copy name (e.g. 'w_copy_1') already exists as an initializer,
         the function must still produce a valid model with unique names and
@@ -613,7 +613,7 @@ class TestDuplicateSharedTensors:
         onnx.checker.check_model(original)
         duplicated = copy.deepcopy(original)
 
-        duplicate_shared_tensors(duplicated.graph)
+        duplicate_shared_initializers(duplicated.graph)
 
         # All node inputs must still resolve to a valid initializer
         init_names = {init.name for init in duplicated.graph.initializer}
@@ -632,6 +632,303 @@ class TestDuplicateSharedTensors:
         )
         for orig, dup in zip(original_output, duplicated_output):
             np.testing.assert_array_equal(orig, dup)
+
+    @staticmethod
+    def _make_identity_passthrough_model(num_consumers: int = 2) -> onnx.ModelProto:
+        """
+        Build a model where one initializer is shared by ``num_consumers`` Conv
+        nodes via a single Identity passthrough:
+
+            input -+-> Conv(weight_id) -+
+                   |                    +-> Add -> ...
+                   +-> Conv(weight_id) -+
+
+        where ``weight_id`` is the output of ``Identity(weight)``.
+        """
+        CHANNELS = 4
+        weight = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="weight",
+        )
+        nodes = [
+            helper.make_node(
+                "Identity",
+                inputs=["weight"],
+                outputs=["weight_id"],
+                name="identity_weight",
+            )
+        ]
+        for i in range(num_consumers):
+            nodes.append(
+                helper.make_node(
+                    "Conv",
+                    inputs=["model_input", "weight_id"],
+                    outputs=[f"conv_{i}.output"],
+                    name=f"conv_{i}",
+                )
+            )
+        prev = "conv_0.output"
+        for i in range(1, num_consumers):
+            nodes.append(
+                helper.make_node(
+                    "Add",
+                    inputs=[prev, f"conv_{i}.output"],
+                    outputs=[f"add_{i}.output"],
+                    name=f"add_{i}",
+                )
+            )
+            prev = f"add_{i}.output"
+
+        graph = helper.make_graph(
+            nodes,
+            "IdentityPassthroughModel",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "model_input", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    prev, TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            initializer=[weight],
+        )
+        model = models_for_tests.make_model(graph)
+        onnx.checker.check_model(model)
+        return model
+
+    @staticmethod
+    def _make_identity_chain_model(
+        chain_length: int, num_consumers: int
+    ) -> onnx.ModelProto:
+        """
+        Build a model where ``weight`` flows through ``chain_length`` Identity
+        nodes (length 0 = direct), then fans out into ``num_consumers`` Conv
+        nodes whose outputs are summed into a single graph output.
+        """
+        CHANNELS = 4
+        weight = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="weight",
+        )
+        nodes: List[onnx.NodeProto] = []
+        weight_tensor = "weight"
+        for i in range(chain_length):
+            out = f"weight_id{i + 1}"
+            nodes.append(
+                helper.make_node("Identity", [weight_tensor], [out], name=f"id_{i + 1}")
+            )
+            weight_tensor = out
+        for i in range(num_consumers):
+            nodes.append(
+                helper.make_node(
+                    "Conv",
+                    inputs=["model_input", weight_tensor],
+                    outputs=[f"conv_{i}.output"],
+                    name=f"conv_{i}",
+                )
+            )
+        prev = "conv_0.output"
+        for i in range(1, num_consumers):
+            nodes.append(
+                helper.make_node(
+                    "Add",
+                    inputs=[prev, f"conv_{i}.output"],
+                    outputs=[f"add_{i}.output"],
+                    name=f"add_{i}",
+                )
+            )
+            prev = f"add_{i}.output"
+
+        graph = helper.make_graph(
+            nodes,
+            "IdentityChainModel",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "model_input", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    prev, TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            initializer=[weight],
+        )
+        model = models_for_tests.make_model(graph)
+        onnx.checker.check_model(model)
+        return model
+
+    @staticmethod
+    def _make_mixed_direct_and_identity_model() -> onnx.ModelProto:
+        """
+        ``weight`` is consumed directly by one Conv and via an Identity by
+        another Conv.  Both consumers must be treated as sharing ``weight``.
+        """
+        CHANNELS = 4
+        weight = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="weight",
+        )
+        nodes = [
+            helper.make_node("Identity", ["weight"], ["weight_id"], name="id_w"),
+            helper.make_node(
+                "Conv",
+                inputs=["model_input", "weight"],
+                outputs=["conv_direct.output"],
+                name="conv_direct",
+            ),
+            helper.make_node(
+                "Conv",
+                inputs=["model_input", "weight_id"],
+                outputs=["conv_via_id.output"],
+                name="conv_via_id",
+            ),
+            helper.make_node(
+                "Add",
+                inputs=["conv_direct.output", "conv_via_id.output"],
+                outputs=["model_output"],
+                name="add",
+            ),
+        ]
+        graph = helper.make_graph(
+            nodes,
+            "MixedSharingModel",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "model_input", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    "model_output", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            initializer=[weight],
+        )
+        model = models_for_tests.make_model(graph)
+        onnx.checker.check_model(model)
+        return model
+
+    @staticmethod
+    def _assert_identity_dup_correct(
+        original: onnx.ModelProto, expected_n_duplicates: int
+    ):
+        """
+        Common assertions for Identity-sharing duplication tests.
+
+        ORT may apply different fusion / constant-folding rules when consumers
+        bypass an Identity vs traverse it; that can introduce ~1e-6 FP drift
+        even though duplicating an initializer is mathematically bit-exact.
+        Hence ``assert_allclose`` rather than ``assert_array_equal``.
+        """
+        duplicated = copy.deepcopy(original)
+        n_duplicates = duplicate_shared_initializers(duplicated.graph)
+        assert n_duplicates == expected_n_duplicates
+
+        conv_inputs = [
+            node.input[1] for node in duplicated.graph.node if node.op_type == "Conv"
+        ]
+        assert len(set(conv_inputs)) == len(conv_inputs), (
+            "Conv consumers must reference distinct tensors after duplication"
+        )
+
+        dummy_input = utils.make_dummy_input(original)
+        providers = ["CPUExecutionProvider"]
+        original_output = OrtInferenceSession(original, providers).run(
+            None, dummy_input
+        )
+        duplicated_output = OrtInferenceSession(duplicated, providers).run(
+            None, dummy_input
+        )
+        for orig, dup in zip(original_output, duplicated_output):
+            np.testing.assert_allclose(orig, dup, rtol=1e-5, atol=1e-5)
+
+    def test_duplicate_shared_initializers_identity_passthrough(self):
+        """Single Identity feeding two Conv consumers — basic regression test
+        for the bug that the original `duplicate_shared_initializers` missed."""
+        self._assert_identity_dup_correct(
+            self._make_identity_passthrough_model(num_consumers=2),
+            expected_n_duplicates=1,
+        )
+
+    def test_duplicate_shared_initializers_identity_passthrough_three_consumers(self):
+        """Single Identity feeding three Conv consumers — verifies n-1 copies."""
+        self._assert_identity_dup_correct(
+            self._make_identity_passthrough_model(num_consumers=3),
+            expected_n_duplicates=2,
+        )
+
+    def test_duplicate_shared_initializers_chained_identity(self):
+        """Identity -> Identity -> two Conv consumers — verifies recursive
+        traversal through multi-level Identity chains."""
+        self._assert_identity_dup_correct(
+            self._make_identity_chain_model(chain_length=2, num_consumers=2),
+            expected_n_duplicates=1,
+        )
+
+    def test_duplicate_shared_initializers_mixed_direct_and_identity(self):
+        """Mix of direct reference and Identity passthrough must be merged
+        into a single shared-initializer view."""
+        self._assert_identity_dup_correct(
+            self._make_mixed_direct_and_identity_model(),
+            expected_n_duplicates=1,
+        )
+
+    def test_duplicate_shared_initializers_shape_consumer_is_skipped(self):
+        """
+        A Shape consumer only reads tensor metadata, not values, and must not
+        be treated as a real consumer.  When the only "extra" consumer is Shape,
+        the initializer must NOT be duplicated.
+        """
+        CHANNELS = 4
+        weight = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="weight",
+        )
+        nodes = [
+            helper.make_node(
+                "Conv",
+                inputs=["model_input", "weight"],
+                outputs=["conv.output"],
+                name="conv",
+            ),
+            helper.make_node(
+                "Shape",
+                inputs=["weight"],
+                outputs=["weight_shape"],
+                name="shape_w",
+            ),
+            helper.make_node(
+                "Identity",
+                inputs=["conv.output"],
+                outputs=["model_output"],
+                name="id_out",
+            ),
+        ]
+        graph = helper.make_graph(
+            nodes,
+            "WeightWithShapeConsumer",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "model_input", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    "model_output", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            initializer=[weight],
+        )
+        model = models_for_tests.make_model(graph)
+        onnx.checker.check_model(model)
+
+        n_duplicates = duplicate_shared_initializers(model.graph)
+        assert n_duplicates == 0, (
+            "Shape consumer must not trigger duplication of the shared initializer"
+        )
 
 
 class TestORTInferenceSession:

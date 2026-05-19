@@ -131,7 +131,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 msg.append(f"    - consumer {i}: {consumer.name} ({consumer.type})")
 
         msg.append(
-            "\nPlease call ``aimet_onnx.utils.duplicate_shared_tensors(onnx_model.graph)``"
+            "\nPlease call ``aimet_onnx.utils.duplicate_shared_initializers(onnx_model.graph)``"
             " before creating QuantizationSimModel"
             " to ensure each consumer takes a unique copy of the initializer as input."
         )
