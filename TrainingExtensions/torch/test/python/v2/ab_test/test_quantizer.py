@@ -813,7 +813,9 @@ class TestQuantizationSimStaticGrad:
 
         # Get Dict mapping node name to the input and output names
         sim = QuantizationSimModel(
-            resnet18, dummy_input=dummy_input, quant_scheme=QuantScheme.post_training_tf
+            resnet18,
+            dummy_input=dummy_input,
+            config_file="htp_v81",
         )
 
         def forward_pass(model, args):
@@ -852,6 +854,11 @@ class TestQuantizationSimStaticGrad:
         assert "conv1.weight" in param_encodings
         assert (
             len(param_encodings["conv1.weight"]["scale"]) == resnet18.conv1.out_channels
+        )
+
+        # There should be no shared quantizers
+        assert list(sim.model.modules(remove_duplicate=True)) == list(
+            sim.model.modules(remove_duplicate=False)
         )
 
     def test_export_with_quantizer_args(self):

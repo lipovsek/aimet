@@ -363,11 +363,11 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
         # Class instantiation for supporting sim.onnx.export()
         self._onnx_exporter = QuantizationSimModelOnnxExporter(self)
 
+        self._disable_quantizers_for_reused_modules()
+
         if self._hw_version is not None:
             # Let input/output of HTP resize ops to share same encoding
             self._propagate_encodings()
-
-        self._disable_quantizers_for_reused_modules()
 
     @property
     def onnx(self) -> "QuantizationSimModelOnnxExporter":
