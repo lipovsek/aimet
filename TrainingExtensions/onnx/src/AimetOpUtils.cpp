@@ -35,3 +35,5 @@ template void copyInputTensorsToOutputTensors(const float* inTensor, size_t coun
                                               void* stream);
 template void copyInputTensorsToOutputTensors(const Eigen::half* inTensor, size_t count, Eigen::half* outTensor,
                                               bool useCuda, void* stream);
+template void copyInputTensorsToOutputTensors(const Eigen::bfloat16* inTensor, size_t count, Eigen::bfloat16* outTensor,
+                                              bool useCuda, void* stream);

@@ -182,12 +182,19 @@ template void permute(const Eigen::half* input, Eigen::half* output, const Tenso
 template void permuteKernelCPU(const Eigen::half* inTensor, Eigen::half* outTensor, size_t numel,
                                const TensorDims& inputStrides, const TensorDims& outputStrides);
 
-void convertHalfToFloat(const Eigen::half* input, float* output, size_t count, ComputationMode mode, void* stream)
+template void permute(const Eigen::bfloat16* input, Eigen::bfloat16* output, const TensorDims& inputShape,
+                      std::vector<size_t> order, ComputationMode mode, void* stream);
+
+template void permuteKernelCPU(const Eigen::bfloat16* inTensor, Eigen::bfloat16* outTensor, size_t numel,
+                               const TensorDims& inputStrides, const TensorDims& outputStrides);
+
+template <typename T>
+void convertToFloat(const T* input, float* output, size_t count, ComputationMode mode, void* stream)
 {
     if (mode == COMP_MODE_GPU)
     {
 #ifdef GPU_QUANTIZATION_ENABLED
-        convertHalfToFloat_gpu(input, count, output, stream);
+        convertToFloat_gpu(input, count, output, stream);
 #else
         throw std::runtime_error("Not compiled for GPU mode.");
 #endif
@@ -198,5 +205,9 @@ void convertHalfToFloat(const Eigen::half* input, float* output, size_t count, C
             output[i] = static_cast<float>(input[i]);
     }
 }
+
+template void convertToFloat(const Eigen::half* input, float* output, size_t count, ComputationMode mode, void* stream);
+template void convertToFloat(const Eigen::bfloat16* input, float* output, size_t count, ComputationMode mode,
+                             void* stream);
 
 }   // namespace DlQuantization

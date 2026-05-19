@@ -28,6 +28,9 @@ public:
     void updateStats(const Eigen::half* tensor, const TensorDims& tensorShape, ComputationMode tensorCpuGpuMode,
                      IAllocator* allocator = nullptr, void* stream = nullptr) override;
 
+    void updateStats(const Eigen::bfloat16* tensor, const TensorDims& tensorShape, ComputationMode tensorCpuGpuMode,
+                     IAllocator* allocator = nullptr, void* stream = nullptr) override;
+
     void resetStats() override;
 
     std::vector<TfEncoding> computeEncoding(uint8_t bw, bool useSymmetricEncodings, bool useStrictSymmetric,

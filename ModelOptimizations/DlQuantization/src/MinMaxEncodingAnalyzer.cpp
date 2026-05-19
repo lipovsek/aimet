@@ -68,7 +68,26 @@ void MinMaxEncodingAnalyzer<DTYPE>::updateStats(const Eigen::half* tensor, const
         size_t numel   = getNumel(tensorShape);
         float* fp32Buf = static_cast<float*>(allocator ? allocator->allocateRaw(sizeof(float) * numel)
                                                        : MemoryAllocation(tensorCpuGpuMode, sizeof(float) * numel));
-        convertHalfToFloat(tensor, fp32Buf, numel, tensorCpuGpuMode, stream);
+        convertToFloat(tensor, fp32Buf, numel, tensorCpuGpuMode, stream);
+        _updateStats(fp32Buf, tensorShape, tensorCpuGpuMode, allocator, stream);
+        allocator ? allocator->deleteRaw(fp32Buf) : MemoryFree(tensorCpuGpuMode, fp32Buf);
+    }
+}
+
+template <typename DTYPE>
+void MinMaxEncodingAnalyzer<DTYPE>::updateStats(const Eigen::bfloat16* tensor, const TensorDims& tensorShape,
+                                                ComputationMode tensorCpuGpuMode, IAllocator* allocator, void* stream)
+{
+    if (tensorCpuGpuMode == COMP_MODE_GPU)
+    {
+        _updateStats(tensor, tensorShape, tensorCpuGpuMode, allocator, stream);
+    }
+    else
+    {
+        size_t numel   = getNumel(tensorShape);
+        float* fp32Buf = static_cast<float*>(allocator ? allocator->allocateRaw(sizeof(float) * numel)
+                                                       : MemoryAllocation(tensorCpuGpuMode, sizeof(float) * numel));
+        convertToFloat(tensor, fp32Buf, numel, tensorCpuGpuMode, stream);
         _updateStats(fp32Buf, tensorShape, tensorCpuGpuMode, allocator, stream);
         allocator ? allocator->deleteRaw(fp32Buf) : MemoryFree(tensorCpuGpuMode, fp32Buf);
     }

@@ -653,6 +653,10 @@ template std::tuple<std::vector<Eigen::half>, std::vector<Eigen::half>> GetMinMa
                                                                                   ComputationMode cpuGpuMode,
                                                                                   IAllocator* allocator, void* stream);
 
+template std::tuple<std::vector<Eigen::bfloat16>, std::vector<Eigen::bfloat16>>
+GetMinMax(const Eigen::bfloat16* data, uint64_t cnt, uint64_t blockSize, ComputationMode cpuGpuMode,
+          IAllocator* allocator, void* stream);
+
 template void UpdatePdf(const float* data, uint64_t cnt, ComputationMode mode_cpu_gpu, bool signed_vals, PDF& pdf,
                         IAllocator* allocator);
 

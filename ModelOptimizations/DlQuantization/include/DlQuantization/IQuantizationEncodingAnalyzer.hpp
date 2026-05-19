@@ -12,7 +12,8 @@
 namespace Eigen
 {
 struct half;
-}
+struct bfloat16;
+}   // namespace Eigen
 
 namespace DlQuantization
 {
@@ -117,14 +118,20 @@ public:
                              IAllocator* allocator = nullptr, void* stream = nullptr) = 0;
 
     /**
-     * @brief Given an fp16 tensor, update running stats for this encoding analyzer.
-     *        Default implementation throws; override to support fp16 calibration.
+     * @brief Given a low-precision float tensor, update running stats for this encoding analyzer.
+     *        Default implementation throws; override to support fp16/bf16 calibration.
      */
     virtual void updateStats(const Eigen::half* tensor, const TensorDims& tensorShape,
                              ComputationMode tensorCpuGpuMode, IAllocator* allocator = nullptr,
                              void* stream = nullptr)
     {
         throw std::runtime_error("fp16 calibration not supported for this encoding analyzer");
+    }
+
+    virtual void updateStats(const Eigen::bfloat16* tensor, const TensorDims& tensorShape,
+                             ComputationMode tensorCpuGpuMode, IAllocator* allocator = nullptr, void* stream = nullptr)
+    {
+        throw std::runtime_error("bf16 calibration not supported for this encoding analyzer");
     }
 
     /**

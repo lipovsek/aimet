@@ -108,13 +108,32 @@ void EncodingAnalyzerWrapper<DTYPE>::updateStats(const Eigen::half* tensor, cons
         size_t numel   = getNumel(tensorShape);
         float* fp32Buf = static_cast<float*>(allocator ? allocator->allocateRaw(sizeof(float) * numel)
                                                        : MemoryAllocation(tensorCpuGpuMode, sizeof(float) * numel));
-        convertHalfToFloat(tensor, fp32Buf, numel, tensorCpuGpuMode, stream);
+        convertToFloat(tensor, fp32Buf, numel, tensorCpuGpuMode, stream);
         updateStats(fp32Buf, tensorShape, tensorCpuGpuMode, allocator, stream);
         allocator ? allocator->deleteRaw(fp32Buf) : MemoryFree(tensorCpuGpuMode, fp32Buf);
     }
     else
     {
-        throw std::runtime_error("fp16 calibration only supported with float accumulators");
+        static_assert(std::is_same_v<DTYPE, float>, "fp16 calibration only supported with float accumulators");
+    }
+}
+
+template <typename DTYPE>
+void EncodingAnalyzerWrapper<DTYPE>::updateStats(const Eigen::bfloat16* tensor, const TensorDims& tensorShape,
+                                                 ComputationMode tensorCpuGpuMode, IAllocator* allocator, void* stream)
+{
+    if constexpr (std::is_same_v<DTYPE, float>)
+    {
+        size_t numel   = getNumel(tensorShape);
+        float* fp32Buf = static_cast<float*>(allocator ? allocator->allocateRaw(sizeof(float) * numel)
+                                                       : MemoryAllocation(tensorCpuGpuMode, sizeof(float) * numel));
+        convertToFloat(tensor, fp32Buf, numel, tensorCpuGpuMode, stream);
+        updateStats(fp32Buf, tensorShape, tensorCpuGpuMode, allocator, stream);
+        allocator ? allocator->deleteRaw(fp32Buf) : MemoryFree(tensorCpuGpuMode, fp32Buf);
+    }
+    else
+    {
+        static_assert(std::is_same_v<DTYPE, float>, "bf16 calibration only supported with float accumulators");
     }
 }
 

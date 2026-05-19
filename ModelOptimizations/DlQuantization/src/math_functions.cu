@@ -17,9 +17,8 @@
 namespace DlQuantization
 {
 
-// Custom min/max reduction operators. Unlike cub::Min/cub::Max, these resolve comparisons through
-// Eigen::half's operator< which provides __device__ implementations via __hlt/__hgt intrinsics,
-// avoiding the ambiguous __half implicit conversion operators that break cub::Min/Max on CUDA 12.0.
+// Custom min/max reductions: cub::Min/cub::Max break on CUDA 12.0 due to ambiguous __half
+// conversion operators. Type's operator< resolves cleanly for both Eigen::half and Eigen::bfloat16.
 struct ReduceMin
 {
     template <typename T>
@@ -214,6 +213,11 @@ template std::tuple<std::vector<Eigen::half>, std::vector<Eigen::half>>
 GetMinMax_gpu(const Eigen::half* data, uint64_t cnt, uint64_t blockSize, IAllocator* allocator, void* stream);
 
 template std::tuple<Eigen::half, Eigen::half> GetMinMax_gpu(const Eigen::half* data, uint64_t cnt);
+
+template std::tuple<std::vector<Eigen::bfloat16>, std::vector<Eigen::bfloat16>>
+GetMinMax_gpu(const Eigen::bfloat16* data, uint64_t cnt, uint64_t blockSize, IAllocator* allocator, void* stream);
+
+template std::tuple<Eigen::bfloat16, Eigen::bfloat16> GetMinMax_gpu(const Eigen::bfloat16* data, uint64_t cnt);
 
 template <typename DTYPE>
 void GetHistogram_gpu(const DTYPE* data,

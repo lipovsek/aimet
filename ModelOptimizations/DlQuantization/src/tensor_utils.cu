@@ -61,18 +61,20 @@ void synchronizeCudaStream(void* stream)
     cudaStreamSynchronize(static_cast<cudaStream_t>(stream));
 }
 
-__global__ void convertHalfToFloatKernel(const __half* in, uint64_t cnt, float* out)
+template <typename T>
+__global__ void convertToFloatKernel(const T* in, uint64_t cnt, float* out)
 {
     CUDA_KERNEL_LOOP(i, cnt)
     {
-        *(out + i) = __half2float(*(in + i));
+        *(out + i) = static_cast<float>(*(in + i));
     }
 }
 
-void convertHalfToFloat_gpu(const Eigen::half* in, size_t cnt, float* out, void* stream)
+template <typename T>
+void convertToFloat_gpu(const T* in, size_t cnt, float* out, void* stream)
 {
-    convertHalfToFloatKernel<<<CUDA_NUM_BLOCKS(cnt), CUDA_NUM_THREADS, 0, reinterpret_cast<cudaStream_t>(stream)>>>(
-        reinterpret_cast<const __half*>(in), cnt, out);
+    convertToFloatKernel<T>
+        <<<CUDA_NUM_BLOCKS(cnt), CUDA_NUM_THREADS, 0, reinterpret_cast<cudaStream_t>(stream)>>>(in, cnt, out);
 }
 
 
@@ -81,5 +83,12 @@ template void permuteKernelGPU(const float* intensor, float* outTensor, size_t n
 
 template void permuteKernelGPU(const Eigen::half* intensor, Eigen::half* outTensor, size_t numel,
                                const TensorDims& inputStrides, const TensorDims& outputStrides, void* stream);
+
+template void permuteKernelGPU(const Eigen::bfloat16* intensor, Eigen::bfloat16* outTensor, size_t numel,
+                               const TensorDims& inputStrides, const TensorDims& outputStrides, void* stream);
+
+template void convertToFloat_gpu(const Eigen::half* in, size_t cnt, float* out, void* stream);
+
+template void convertToFloat_gpu(const Eigen::bfloat16* in, size_t cnt, float* out, void* stream);
 
 }   // namespace DlQuantization

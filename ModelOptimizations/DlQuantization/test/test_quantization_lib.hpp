@@ -30,7 +30,7 @@ struct CpuDevice
 
 typedef ::testing::Types<CpuDevice<float> > TestDataTypesAndDevices;
 
-typedef ::testing::Types<CpuDevice<float>, CpuDevice<Eigen::half> > TestDeviceTypes;
+typedef ::testing::Types<CpuDevice<float>, CpuDevice<Eigen::half>, CpuDevice<Eigen::bfloat16> > TestDeviceTypes;
 
 #else
 
@@ -43,7 +43,8 @@ struct GpuDevice
 
 typedef ::testing::Types<CpuDevice<float>, GpuDevice<float> > TestDataTypesAndDevices;
 
-typedef ::testing::Types<CpuDevice<float>, GpuDevice<float>, CpuDevice<Eigen::half>, GpuDevice<Eigen::half> >
+typedef ::testing::Types<CpuDevice<float>, GpuDevice<float>, CpuDevice<Eigen::half>, GpuDevice<Eigen::half>,
+                         CpuDevice<Eigen::bfloat16>, GpuDevice<Eigen::bfloat16> >
     TestDeviceTypes;
 
 #endif

@@ -5,6 +5,7 @@
 #define UTIL_TRIM_FUNCTIONS_HPP_
 
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 #include "DlQuantization/IForLoopRunner.h"
@@ -14,9 +15,20 @@
 #include <cuda_fp16.h>
 #endif
 
+namespace Eigen
+{
+struct half;
+struct bfloat16;
+}   // namespace Eigen
+
 
 namespace DlQuantization
 {
+// Map low-precision float types (Eigen::half, Eigen::bfloat16) to fp32 for arithmetic;
+// pass through other types unchanged. Used as the encoding compute type in QDQ kernels.
+template <typename T>
+using QdqEncType = std::conditional_t<std::is_same_v<T, Eigen::half> || std::is_same_v<T, Eigen::bfloat16>, float, T>;
+
 inline double randUniformCpu();
 
 template <typename DTYPE>

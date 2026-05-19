@@ -284,6 +284,35 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeFp16)
 }
 
 
+TEST(TestOnnxTensorOps, TestQuantizeDequantizeBFloat16)
+{
+    constexpr int numel = 6;
+
+    DlQuantization::TfEncoding encoding = getTfEncoding(-0.5, 0.775, 8);
+
+    float inputF32[numel] = {-0.501, -0.2501, 0., 0.2501, 0.501, 0.8};
+    Eigen::bfloat16 input[numel];
+    Eigen::bfloat16 output[numel];
+    for (int i = 0; i < numel; i++)
+        input[i] = Eigen::bfloat16(inputF32[i]);
+
+    // fp32 reference
+    float refOutput[numel];
+    DlQuantization::quantizeDequantize(inputF32, (uint64_t) numel, encoding, refOutput, DlQuantization::COMP_MODE_CPU,
+                                       DlQuantization::ROUND_NEAREST, nullptr);
+
+    // bf16
+    DlQuantization::quantizeDequantize(input, (uint64_t) numel, encoding, output, DlQuantization::COMP_MODE_CPU,
+                                       DlQuantization::ROUND_NEAREST, nullptr);
+
+    // bf16 has 7 mantissa bits (vs fp16's 10), so use a looser tolerance.
+    for (int i = 0; i < numel; i++)
+    {
+        EXPECT_NEAR(float(output[i]), refOutput[i], 0.04);
+    }
+}
+
+
 #ifdef GPU_QUANTIZATION_ENABLED
 TEST(TestOnnxTensorOps, TestQuantizeDequantizeFp16Gpu)
 {
@@ -321,6 +350,45 @@ TEST(TestOnnxTensorOps, TestQuantizeDequantizeFp16Gpu)
     for (int i = 0; i < numel; i++)
     {
         EXPECT_NEAR(float(output[i]), refOutput[i], 0.01);
+    }
+}
+
+
+TEST(TestOnnxTensorOps, TestQuantizeDequantizeBFloat16Gpu)
+{
+    constexpr int numel = 6;
+
+    DlQuantization::TfEncoding encoding = getTfEncoding(-0.5, 0.775, 8);
+
+    float inputF32[numel] = {-0.501, -0.2501, 0., 0.2501, 0.501, 0.8};
+    Eigen::bfloat16 input[numel];
+    for (int i = 0; i < numel; i++)
+        input[i] = Eigen::bfloat16(inputF32[i]);
+
+    // fp32 reference (CPU)
+    float refOutput[numel];
+    DlQuantization::quantizeDequantize(inputF32, (uint64_t) numel, encoding, refOutput, DlQuantization::COMP_MODE_CPU,
+                                       DlQuantization::ROUND_NEAREST, nullptr);
+
+    // bf16 on GPU
+    Eigen::bfloat16* gpuIn;
+    Eigen::bfloat16* gpuOut;
+    cudaMalloc((void**) &gpuIn, sizeof(Eigen::bfloat16) * numel);
+    cudaMalloc((void**) &gpuOut, sizeof(Eigen::bfloat16) * numel);
+    cudaMemcpy(gpuIn, input, sizeof(Eigen::bfloat16) * numel, cudaMemcpyHostToDevice);
+
+    DlQuantization::quantizeDequantize(gpuIn, (uint64_t) numel, encoding, gpuOut, DlQuantization::COMP_MODE_GPU,
+                                       DlQuantization::ROUND_NEAREST, nullptr);
+
+    Eigen::bfloat16 output[numel];
+    cudaMemcpy(output, gpuOut, sizeof(Eigen::bfloat16) * numel, cudaMemcpyDeviceToHost);
+    cudaFree(gpuIn);
+    cudaFree(gpuOut);
+
+    // bf16 has 7 mantissa bits (vs fp16's 10), so use a looser tolerance.
+    for (int i = 0; i < numel; i++)
+    {
+        EXPECT_NEAR(float(output[i]), refOutput[i], 0.04);
     }
 }
 #endif

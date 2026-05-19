@@ -94,7 +94,7 @@ template <typename DTYPE>
 void quantizeDequantizeGpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out, RoundingMode rounding_mode,
                            void* stream)
 {
-    using EncType = std::conditional_t<std::is_same_v<DTYPE, Eigen::half>, float, DTYPE>;
+    using EncType = QdqEncType<DTYPE>;
     quantizeDequantizeKernel<DTYPE, EncType>
         <<<CUDA_NUM_BLOCKS(cnt), CUDA_NUM_THREADS, 0, reinterpret_cast<cudaStream_t>(stream)>>>(
             in, cnt, out, encoding.min, encoding.max, encoding.delta, encoding.offset, rounding_mode);
@@ -160,7 +160,7 @@ template <typename DTYPE>
 void quantizeDequantizeBroadcastGpu(const DTYPE* in, DTYPE* out, const Encodings& encodings, int64_t numElements,
                                     const TensorDims& inputStrides, const TensorDims& encodingStrides, void* stream)
 {
-    using EncType = std::conditional_t<std::is_same_v<DTYPE, Eigen::half>, float, DTYPE>;
+    using EncType = QdqEncType<DTYPE>;
 
     int64_t numEncodings = encodings.size();
     int64_t numDims      = inputStrides.size();
@@ -230,5 +230,13 @@ template void quantizeDequantizeGpu(const Eigen::half* in, uint64_t cnt, const T
 template void quantizeDequantizeBroadcastGpu(const Eigen::half* in, Eigen::half* out, const Encodings& encodings,
                                              int64_t numElements, const TensorDims& inputStrides,
                                              const TensorDims& encodingStrides, void* stream);
+
+template void quantizeDequantizeGpu(const Eigen::bfloat16* in, uint64_t cnt, const TfEncoding& encoding,
+                                    Eigen::bfloat16* out, RoundingMode rounding_mode, void* stream);
+
+template void quantizeDequantizeBroadcastGpu(const Eigen::bfloat16* in, Eigen::bfloat16* out,
+                                             const Encodings& encodings, int64_t numElements,
+                                             const TensorDims& inputStrides, const TensorDims& encodingStrides,
+                                             void* stream);
 
 }   // End of namespace DlQuantization

@@ -10,7 +10,8 @@
 namespace Eigen
 {
 struct half;
-}
+struct bfloat16;
+}   // namespace Eigen
 
 namespace DlQuantization
 {
@@ -37,11 +38,12 @@ template <typename T>
 void permuteKernelGPU(const T* inTensor, T* outTensor, size_t numel, const TensorDims& inputStrides,
                       const TensorDims& outputStrides, void* stream);
 
-void convertHalfToFloat(const Eigen::half* input, float* output, size_t count, ComputationMode mode,
-                        void* stream = nullptr);
+template <typename T>
+void convertToFloat(const T* input, float* output, size_t count, ComputationMode mode, void* stream = nullptr);
 
 #ifdef GPU_QUANTIZATION_ENABLED
-void convertHalfToFloat_gpu(const Eigen::half* in, size_t cnt, float* out, void* stream);
+template <typename T>
+void convertToFloat_gpu(const T* in, size_t cnt, float* out, void* stream);
 #endif
 
 void synchronizeStream(ComputationMode mode, void* stream);

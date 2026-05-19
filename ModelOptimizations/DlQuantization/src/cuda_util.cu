@@ -64,5 +64,7 @@ void copyTensorsCuda(T* outTensor, const T* inTensor, size_t count, void* stream
 template void copyTensorsCuda<float>(float* outTensor, const float* inTensor, size_t count, void* stream);
 template void copyTensorsCuda<Eigen::half>(Eigen::half* outTensor, const Eigen::half* inTensor, size_t count,
                                            void* stream);
+template void copyTensorsCuda<Eigen::bfloat16>(Eigen::bfloat16* outTensor, const Eigen::bfloat16* inTensor,
+                                               size_t count, void* stream);
 
 }   // End of namespace DlQuantization

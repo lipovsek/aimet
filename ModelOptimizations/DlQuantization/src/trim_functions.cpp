@@ -146,7 +146,7 @@ template <typename DTYPE>
 void quantizeDequantizeCpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out,
                            RoundingMode rounding_mode, IForLoopRunner* runner)
 {
-    using EncType = std::conditional_t<std::is_same_v<DTYPE, Eigen::half>, float, DTYPE>;
+    using EncType = QdqEncType<DTYPE>;
 
     auto qdqLoop = [&](size_t start, size_t end) {
         for (size_t i = start; i < end; ++i)
@@ -631,7 +631,7 @@ void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings
 {
     auto ndim = inputStrides.size();
 
-    using EncType = std::conditional_t<std::is_same_v<DTYPE, Eigen::half>, float, DTYPE>;
+    using EncType = QdqEncType<DTYPE>;
 
     auto qdqLoop = [&](size_t start, size_t end) {
         int64_t encodingIdx = 0;
@@ -787,5 +787,19 @@ template void quantizeDequantizeBroadcastCpu(const Eigen::half* in, Eigen::half*
                                              int64_t numElement, const TensorDims& inputStrides,
                                              const TensorDims& encodingStrides, const TensorDims& inputShape,
                                              IForLoopRunner* runner);
+
+template void quantizeDequantize(const Eigen::bfloat16* in, uint64_t cnt, const TfEncoding& encoding,
+                                 Eigen::bfloat16* out, ComputationMode mode_cpu_gpu, RoundingMode rounding_mode,
+                                 void* stream, IForLoopRunner* runner);
+
+template void quantizeDequantizeBroadcast(const Eigen::bfloat16* inTensor, Eigen::bfloat16* outTensor,
+                                          const Encodings& encodings, const TensorDims& inputShape,
+                                          const TensorDims& encodingShape, ComputationMode mode, void* stream,
+                                          IForLoopRunner* runner);
+
+template void quantizeDequantizeBroadcastCpu(const Eigen::bfloat16* in, Eigen::bfloat16* out,
+                                             const Encodings& encodings, int64_t numElement,
+                                             const TensorDims& inputStrides, const TensorDims& encodingStrides,
+                                             const TensorDims& inputShape, IForLoopRunner* runner);
 
 }   // End of namespace DlQuantization

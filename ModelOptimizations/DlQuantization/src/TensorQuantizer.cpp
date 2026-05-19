@@ -45,8 +45,8 @@ template <typename T>
 void BlockTensorQuantizer::updateStats(const T* tensor, const TensorDims& tensorShape, bool useCuda, IAllocator* alloc,
                                        void* stream)
 {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, Eigen::half>,
-                  "BlockTensorQuantizer::updateStats only supports float and Eigen::half");
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, Eigen::half> || std::is_same_v<T, Eigen::bfloat16>,
+                  "BlockTensorQuantizer::updateStats only supports float, Eigen::half, and Eigen::bfloat16");
     _validStats                = true;
     ComputationMode cpuGpuMode = useCuda ? COMP_MODE_GPU : COMP_MODE_CPU;
     _encodingAnalyzer->updateStats(tensor, tensorShape, cpuGpuMode, alloc, stream);
@@ -55,6 +55,8 @@ void BlockTensorQuantizer::updateStats(const T* tensor, const TensorDims& tensor
 template void BlockTensorQuantizer::updateStats<float>(const float*, const TensorDims&, bool, IAllocator*, void*);
 template void BlockTensorQuantizer::updateStats<Eigen::half>(const Eigen::half*, const TensorDims&, bool, IAllocator*,
                                                              void*);
+template void BlockTensorQuantizer::updateStats<Eigen::bfloat16>(const Eigen::bfloat16*, const TensorDims&, bool,
+                                                                 IAllocator*, void*);
 
 // TODO: Let BlockTensorQuantizer own the encodings vector, do not take as argument
 template <typename T>
@@ -82,6 +84,9 @@ template void BlockTensorQuantizer::quantizeDequantize<float>(const float*, floa
                                                               IForLoopRunner*) const;
 template void BlockTensorQuantizer::quantizeDequantize<Eigen::half>(const Eigen::half*, Eigen::half*, const TensorDims&,
                                                                     bool, void*, IForLoopRunner*) const;
+template void BlockTensorQuantizer::quantizeDequantize<Eigen::bfloat16>(const Eigen::bfloat16*, Eigen::bfloat16*,
+                                                                        const TensorDims&, bool, void*,
+                                                                        IForLoopRunner*) const;
 
 void BlockTensorQuantizer::setQuantScheme(QuantizationMode quantScheme)
 {
