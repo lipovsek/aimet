@@ -48,5 +48,5 @@ jobs:
           fi
 
           cd ${INTERNAL_REPO_DIR}
-          git remote add public-origin https://${{ secrets.AIMET_CI }}@github.com/quic/aimet.git
+          git remote add public-origin https://${{ secrets.AIMET_BOT_PUB_GITHUB_TOKEN }}@github.com/qualcomm/aimet.git
           git push public-origin $SRC_BRANCH:$DST_BRANCH
