@@ -93,10 +93,10 @@ macro(update_torch_cuda_arch_list)
 
         # Set torch cuda architecture list variable
         # Convert to the proper format (Reference: https://stackoverflow.com/a/74962874)
-        #   - Insert "." between the digits of the architecture version (ex. 50 --> 5.0)
-        #   - Repleace semi-colons in list with spaces
+        #   - Insert "." before the last digit of the architecture version (ex. 50 --> 5.0, 120 --> 12.0)
+        #   - Replace semi-colons in list with spaces
         set(TORCH_CUDA_ARCH_LIST ${CMAKE_CUDA_ARCHITECTURES})
-        list(TRANSFORM TORCH_CUDA_ARCH_LIST REPLACE "([0-9])([0-9])" "\\1.\\2")
+        list(TRANSFORM TORCH_CUDA_ARCH_LIST REPLACE "([0-9]+)([0-9])" "\\1.\\2")
         string(REPLACE ";" " " TORCH_CUDA_ARCH_LIST "${TORCH_CUDA_ARCH_LIST}")
         message(STATUS "** Updated TORCH_CUDA_ARCH_LIST to ${TORCH_CUDA_ARCH_LIST} **")
     endif()

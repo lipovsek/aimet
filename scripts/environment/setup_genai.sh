@@ -8,8 +8,19 @@
 # Usage:
 #   bash setup_genai.sh                                  # Interactive dev (defaults)
 #   bash setup_genai.sh --with-aws                       # Include AWS CLI
+#   bash setup_genai.sh --skip-aimet                     # Skip AIMET install (use with build_aimet.sh)
 #   bash setup_genai.sh --wheels-dir /path/to/wheels     # Use pre-built wheels
 #   bash setup_genai.sh --repo-dir /path/to/aimet        # Override repo location
+#
+# Options:
+#   --with-aws          Install AWS CLI v2 (for CI uploads to S3)
+#   --skip-aimet        Skip AIMET pip/wheel install. Use this when you plan to
+#                       build AIMET from source with build_aimet.sh afterwards.
+#                       Typical workflow:
+#                         1. bash setup_genai.sh --skip-aimet
+#                         2. bash build_aimet.sh --cuda-arch 80 --clean
+#   --wheels-dir <dir>  Install AIMET from pre-built wheels in <dir>
+#   --repo-dir <dir>    Override repo location (default: /scratch/aimet)
 #
 # Assumes:
 #   - Running inside a CUDA-enabled container
@@ -21,16 +32,18 @@ set -euo pipefail
 # Argument parsing
 # -----------------------------------------------------------------------
 INSTALL_AWS=false
+SKIP_AIMET=false
 WHEELS_DIR=""
 REPO_DIR="${REPO_DIR:-/scratch/aimet}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --with-aws)     INSTALL_AWS=true; shift ;;
+    --skip-aimet)   SKIP_AIMET=true; shift ;;
     --wheels-dir)   WHEELS_DIR="$2"; shift 2 ;;
     --repo-dir)     REPO_DIR="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,/^$/s/^# //p' "$0"
+      sed -n '/^# Sets up/,/^[^#]/{ /^#/s/^# \?//p }' "$0"
       exit 0
       ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -114,15 +127,19 @@ pip install -r "$REPO_DIR/GenAILab/requirements.txt"
 # -----------------------------------------------------------------------
 # AIMET
 # -----------------------------------------------------------------------
-# If pre-built wheels exist, install them. Otherwise install from PyPI
-# for dependencies only, and prepend local source to PYTHONPATH so
-# local code always takes priority over the PyPI packages.
-if ls "$WHEELS_DIR"/*.whl 1>/dev/null 2>&1; then
-  echo "Installing AIMET from pre-built wheels..."
-  pip install "$WHEELS_DIR"/*.whl
+if $SKIP_AIMET; then
+  echo "Skipping AIMET install (--skip-aimet). Use build_aimet.sh to build from source."
 else
-  echo "No pre-built wheels found. Installing from PyPI (for dependencies)..."
-  pip install aimet-torch aimet-onnx
+  # If pre-built wheels exist, install them. Otherwise install from PyPI
+  # for dependencies only, and prepend local source to PYTHONPATH so
+  # local code always takes priority over the PyPI packages.
+  if ls "$WHEELS_DIR"/*.whl 1>/dev/null 2>&1; then
+    echo "Installing AIMET from pre-built wheels..."
+    pip install "$WHEELS_DIR"/*.whl
+  else
+    echo "No pre-built wheels found. Installing from PyPI (for dependencies)..."
+    pip install aimet-torch aimet-onnx
+  fi
 fi
 
 # -----------------------------------------------------------------------
