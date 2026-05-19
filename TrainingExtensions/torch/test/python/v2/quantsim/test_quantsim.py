@@ -1500,6 +1500,34 @@ class TestQuantsim:
         out_enc.pop("name")
         assert inp_enc == out_enc
 
+    def test_tie_encodings_functional_add(self):
+        """
+        Given: Functional operator between Conv and Relu
+        When: Create quantsim with HTP V81 config
+        Then: Conv and Relu output quantizers should NOT be shared
+        """
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv1 = torch.nn.Conv2d(3, 3, 3)
+                self.conv2 = torch.nn.Conv2d(3, 3, 3)
+                self.relu = torch.nn.ReLU()
+
+            def forward(self, x):
+                x1 = self.conv1(x)
+                x2 = self.conv2(x)
+                return self.relu(x1 + x2)
+
+        model = Model()
+        x = torch.randn(1, 3, 10, 10)
+        sim = QuantizationSimModel(model, x, config_file="htp_v81")
+
+        # There should be no shared quantizers
+        assert list(sim.model.modules(remove_duplicate=True)) == list(
+            sim.model.modules(remove_duplicate=False)
+        )
+
     def test_conv_relu_supergroup(self, tmp_path: pathlib.Path):
         """
         When: Create quantsim with HTP V69 config or lower

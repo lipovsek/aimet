@@ -125,8 +125,10 @@ def _propagate_output_encodings(
             if i < len(qmodule.output_quantizers) and qmodule.output_quantizers[i]:
                 qmodule.output_quantizers[i] = qtzr
 
-        if not qmodule or _is_math_invariant_op(qmodule):
-            # 1. There is no qmodule associated with the graph node ``producer``, or
+        if (not qmodule and producer.is_grid_preserving_op()) or _is_math_invariant_op(
+            qmodule
+        ):
+            # 1. There is no qmodule associated with the grid-preserving ``producer``, or
             # 2. qmodule is a math invariant op (reshape, permute, etc).
             # In these cases, propagate encoding further to the ancestors
             for input in producer.inputs:
