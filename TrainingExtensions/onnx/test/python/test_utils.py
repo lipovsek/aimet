@@ -7,6 +7,7 @@ import os
 import tempfile
 
 import onnx
+import onnxruntime
 import torch
 from packaging import version
 import pytest
@@ -254,6 +255,17 @@ class TestUtils:
         assert model.opset_import[0].version == 13
         assert upgraded_model.opset_import[0].version == 21
         onnx.checker.check_model(upgraded_model)
+
+    def test_make_psnr_eval_fn_float16(self):
+        """
+        output_indices=None should pick up float16 outputs
+        and compute_psnr should accept fp16 arrays without raising.
+        """
+        model = models_for_tests.single_residual_model(dtype=torch.float16).model
+        fp_session = onnxruntime.InferenceSession(model.SerializeToString())
+        inputs = [utils.make_dummy_input(model)]
+        psnr_eval_fn = utils.make_psnr_eval_fn(fp_session, inputs, output_indices=None)
+        assert psnr_eval_fn(fp_session) > 0
 
     def test_contains_tensor_type(self):
         model = models_for_tests.diverse_ops()

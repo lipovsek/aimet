@@ -849,7 +849,9 @@ def make_psnr_eval_fn(
 
     if output_indices is None:
         output_indices = [
-            idx for idx, out in enumerate(fp_outputs[0]) if out.dtype == np.float32
+            idx
+            for idx, out in enumerate(fp_session.get_outputs())
+            if out.type in {"tensor(float)", "tensor(float16)"}
         ]
 
     def psnr_eval_fn(session: InferenceSession):

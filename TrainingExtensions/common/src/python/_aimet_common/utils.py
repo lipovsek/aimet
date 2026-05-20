@@ -566,8 +566,8 @@ def compute_psnr(
     """
     logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
 
-    expected = np.asarray(expected)
-    actual = np.asarray(actual)
+    expected = np.asarray(expected).astype(np.float32)
+    actual = np.asarray(actual).astype(np.float32)
 
     if expected.shape != actual.shape:
         raise ValueError("Input arrays must have the same shape.")
