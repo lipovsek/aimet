@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 import threading
 import os
-from typing import Optional, Callable, Tuple, List, TypeVar, Union
+from typing import Optional, Callable, Tuple, List, TypeVar, Union, Any
 
 # ==================== Optional Dependencies ====================
 # These are not required but enhance functionality when available
@@ -565,7 +565,7 @@ class GPUMeter:
 
 
 def measure_inference_metrics(
-    eval_once: Callable[[], None],
+    eval_once: Callable[[], Any],
     *,
     runs: int = 1,
     warmup: int = 0,

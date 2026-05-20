@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import torch
+from torch.export import ExportedProgram
 
 from AIMETRegression.evaluation.eval_torch import eval_pytorch_model, load_torch_dataset
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
@@ -23,7 +24,9 @@ from AIMETRegression.features.torch._common import (
     build_quantsim_torch,
     export_torch_bundle,
     create_dummy_input,
+    run_static_aten_calibration,
 )
+
 
 _ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -76,6 +79,9 @@ def run_quantsim(
     metrics_warmup = int(config.get("metrics_warmup", 0))
     apply_prepare_model = config.get("apply_prepare_model", False)
     apply_bn_fold = config.get("apply_bn_fold", True)
+    apply_experimental_static_aten_calibration = config.get(
+        "apply_experimental_static_aten_calibration", False
+    )
     use_cuda = torch.cuda.is_available()
 
     print(f"[AIMET Torch QuantSim] Configuration:")
@@ -124,23 +130,26 @@ def run_quantsim(
         f"[AIMET Torch QuantSim] Calibrating encodings with {calib_samples} samples..."
     )
 
-    def calibration_callback(model_to_calibrate: torch.nn.Module, args):
+    def calibration_callback(model_to_calibrate: torch.nn.Module):
         """Forward pass callback for encoding calibration."""
-        model_to_calibrate.eval()
+        try:
+            model_to_calibrate.eval()
+        except NotImplementedError:
+            # torch.fx.GraphModules generated from ExportedProgram
+            # doesn't support .eval() method yet
+            pass
+
         with torch.no_grad():
             eval_pytorch_model(
                 model_to_calibrate,
                 model,
                 dataset_name,
-                num_samples=args,
+                num_samples=calib_samples,
                 dataset=_dataset,
             )
 
     sim.model.eval()
-    sim.compute_encodings(
-        forward_pass_callback=calibration_callback,
-        forward_pass_callback_args=calib_samples,
-    )
+    sim.compute_encodings(calibration_callback)
 
     print(f"[AIMET Torch QuantSim] Calibration complete")
 
@@ -153,6 +162,27 @@ def run_quantsim(
     )
 
     print(f"[AIMET Torch QuantSim] Quantized accuracy: {feature_acc:.4f}")
+
+    if apply_experimental_static_aten_calibration:
+        ep: ExportedProgram = run_static_aten_calibration(
+            sim,
+            dummy_input,
+            default_param_bw,
+            default_output_bw,
+            calibration_callback,
+        )
+        fully_qtzd_acc = eval_pytorch_model(
+            ep.module(),
+            model,
+            dataset_name,
+            num_samples=eval_samples,
+            dataset=_dataset,
+        )
+
+        print(
+            "[AIMET Torch QuantSim] Fully quantized accuracy "
+            f"after static ATen graph calibration: {fully_qtzd_acc:.4f}"
+        )
 
     print(f"[AIMET Torch QuantSim] Measuring runtime and memory...")
 

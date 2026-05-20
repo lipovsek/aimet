@@ -24,6 +24,7 @@ Notes:
 - Applies device patch to handle CPU/GPU tensor transfers in preprocessing
 """
 
+import itertools
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -137,11 +138,16 @@ def eval_pytorch_model(
     evaluator = qai_hub_model.get_evaluator()
 
     # Ensure model is in eval mode
-    model.eval()
+    try:
+        model.eval()
+    except NotImplementedError:
+        # torch.fx.GraphModules generated from ExportedProgram
+        # doesn't support .eval() method yet
+        pass
 
     # --- Addition: Determine model device for GPU handling ---
     try:
-        device = next(model.parameters()).device
+        device = next(itertools.chain(model.parameters(), model.buffers())).device
     except StopIteration:
         device = torch.device("cpu")
 

@@ -26,6 +26,7 @@ tests:
     param_type: int8
     activation_type: int16
     config_file: htp_v81
+    apply_experimental_static_aten_calibration: true
 
   # --------------------------------------------------------------------------
   # Test 3: AdaRound Optimization (500 iterations)

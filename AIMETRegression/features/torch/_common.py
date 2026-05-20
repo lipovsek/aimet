@@ -26,14 +26,12 @@ Technical Notes:
 
 from __future__ import annotations
 
-import os
 import shutil
-from glob import glob
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union, Callable
 
 import torch
-import onnx
+from torch.export import ExportedProgram
 
 from AIMETRegression.features.torch.utils import ensure_device_patch
 
@@ -55,6 +53,7 @@ __all__ = [
     "bitwidth_from_token",
     "create_dummy_input",
     "create_calibration_dataloader",
+    "run_static_aten_calibration",
 ]
 
 
@@ -514,3 +513,44 @@ def create_calibration_dataloader(
 
     tensor_dataset = torch.utils.data.TensorDataset(all_inputs, all_labels)
     return DataLoader(tensor_dataset, batch_size=batch_size, shuffle=False)
+
+
+def run_static_aten_calibration(
+    sim: QuantizationSimModel,
+    dummy_input: torch.Tensor,
+    param_bw: int,
+    activation_bw: int,
+    calibration_callback: Callable[[torch.nn.Module], Any],
+) -> ExportedProgram:
+    from aimet_torch.experimental.export.exported_program import (
+        ExportedProgram as AimetExportedProgram,
+    )
+
+    batch_size = dummy_input.shape[0]
+
+    if batch_size <= 1:
+        # Ensure batch_size > 1.
+        # When batch_size <= 1, torch.export specializes the graph
+        # specifically for batch_size=1 or 0, which causes issues
+        # when we later run calibration with batch_size > 1.
+        new_shape = (2, *dummy_input.shape[1:])
+        dummy_input = torch.randn(
+            new_shape,
+            dtype=dummy_input.dtype,
+            device=dummy_input.device,
+        )
+
+    ep = aimet_torch.experimental.export.export(
+        sim.model.eval(),
+        args=(dummy_input,),
+        # CUDA batch normalization kernels only support batch size up to 65535
+        dynamic_shapes=[
+            {0: torch.export.Dim("batch_size", max=65535)},
+        ],
+    )
+    ep = AimetExportedProgram.from_torch_exported_program(ep)
+
+    with ep.compute_missing_encodings(param_bw=param_bw, activation_bw=activation_bw):
+        calibration_callback(ep.module())
+
+    return ep
