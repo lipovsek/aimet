@@ -190,16 +190,27 @@ def has_sliding_window_layers(
     return any(d.attention_type == AttentionType.SLIDING_WINDOW for d in descriptors)
 
 
+def has_full_attention_layers(
+    descriptors: list[LayerCacheDescriptor],
+) -> bool:
+    """Return True if any descriptor uses full attention."""
+    return any(d.attention_type == AttentionType.FULL for d in descriptors)
+
+
 def attention_mask_input_names(
     layer_cache_descriptors: list[LayerCacheDescriptor],
 ) -> list[str]:
     """Return the ONNX input names for attention mask tensor(s).
 
-    Models with sliding window layers need two separate 4D masks
-    (full and sliding window); all others use a single mask.
+    Models with a mix of full and sliding window layers need two separate
+    4D masks; models with only one attention type use a single mask.
     """
-    if has_sliding_window_layers(layer_cache_descriptors):
+    has_sw = has_sliding_window_layers(layer_cache_descriptors)
+    has_full = has_full_attention_layers(layer_cache_descriptors)
+    if has_sw and has_full:
         return ["attention_mask_full", "attention_mask_sliding_window"]
+    if has_sw:
+        return ["attention_mask_sliding_window"]
     return ["attention_mask"]
 
 

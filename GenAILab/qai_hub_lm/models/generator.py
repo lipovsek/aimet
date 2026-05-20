@@ -576,11 +576,18 @@ class Generator(GenerationMixin, torch.nn.Module):
                 position_ids = torch.cat((position_ids_padding, position_ids), dim=-1)
 
         # Build ordered dict with string keys aligned to ONNX input names
+        has_full_attention = any(
+            d.attention_type == AttentionType.FULL for d in layer_cache_descriptors
+        )
         input_key = "inputs_embeds" if input_ids is None else "input_ids"
         prepared = OrderedDict()
         prepared[input_key] = padded_input_tokens
-        if has_sliding_window:
+        if has_sliding_window and has_full_attention:
             prepared["attention_mask_full"] = cm_attention_mask.to(dtype=model.dtype)
+            prepared["attention_mask_sliding_window"] = cm_sliding_attention_mask.to(
+                dtype=model.dtype
+            )
+        elif has_sliding_window:
             prepared["attention_mask_sliding_window"] = cm_sliding_attention_mask.to(
                 dtype=model.dtype
             )
