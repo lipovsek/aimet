@@ -16,6 +16,18 @@ on:
           - torch
         default: 'all'
 
+      filter_model:
+        description: "Filter models by substring (e.g., 'resnet' matches resnet50)"
+        required: false
+        type: string
+        default: ''
+
+      filter_test:
+        description: "Filter tests by substring (e.g., 'quantsim' matches quantsim_int8)"
+        required: false
+        type: string
+        default: ''
+
       baseline_source:
         description: 'Branch to compare baseline against'
         required: false
@@ -214,7 +226,10 @@ jobs:
       - name: Run test suite
         run: |
           . .venv/bin/activate
-          python -m AIMETRegression.suite_runner --suite weekly-onnx
+          python -m AIMETRegression.suite_runner \
+            --suite weekly-onnx \
+            --filter-model "${{ github.event.inputs.filter_model }}" \
+            --filter-test "${{ github.event.inputs.filter_test }}"
 
       - name: Compare with baseline and generate report
         run: |
@@ -437,7 +452,10 @@ jobs:
       - name: Run test suite
         run: |
           . .venv/bin/activate
-          python -m AIMETRegression.suite_runner --suite weekly-torch
+          python -m AIMETRegression.suite_runner \
+            --suite weekly-torch \
+            --filter-model "${{ github.event.inputs.filter_model }}" \
+            --filter-test "${{ github.event.inputs.filter_test }}"
 
       - name: Compare with baseline and generate report
         run: |
