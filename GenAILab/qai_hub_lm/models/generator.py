@@ -29,7 +29,7 @@ from .utils.layer_cache import (
     AttentionType,
     build_layer_cache_descriptors,
 )
-from .utils.rope_embedding import RopeEmbedding
+from .utils.rope_embedding import RopeEmbedding, RopeEmbeddingProtocol
 
 
 def ordered_dict_replace(
@@ -895,7 +895,14 @@ class PrecomputedCosSinGeneratorMixin:
         model = kwargs["model"]
         context_length = kwargs["context_length"]
         position_ids = prepared["position_ids"]
-        embedding = RopeEmbedding(model=model, context_length=context_length)
+
+        if hasattr(model, "rope_embedding") and isinstance(
+            model.rope_embedding, RopeEmbeddingProtocol
+        ):
+            embedding = model.rope_embedding
+        else:
+            embedding = RopeEmbedding(model=model, context_length=context_length)
+
         cos, sin = embedding.get_embedding(position_ids)
 
         return ordered_dict_replace(
