@@ -1,5 +1,4 @@
 model_name: wideresnet50
-apply_prepare_model: true
 qnn_options: null
 
 tests:

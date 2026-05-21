@@ -8,7 +8,6 @@
 
 # ==================== Model Identification ====================
 model_name: resnet50
-apply_prepare_model: true
 
 # ==================== Test Definitions ====================
 # Each test is a different quantization configuration

@@ -1,5 +1,4 @@
 model_name: regnet
-apply_prepare_model: true
 qnn_options: null
 
 tests:
