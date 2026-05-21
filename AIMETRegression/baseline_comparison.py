@@ -27,7 +27,8 @@ import csv
 import argparse
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+import pandas as pd
 
 
 @dataclass
@@ -131,9 +132,19 @@ class Comparison:
     feature: str
     baseline: float
     current: float
-    diff: float
-    diff_pct: float
     techniques: str = ""
+
+    @property
+    def diff(self) -> float:
+        return self.current - self.baseline
+
+    @property
+    def diff_pct(self) -> float:
+        if self.baseline == 0:
+            sign = +1 if self.diff > 0 else -1
+            return sign * float("inf")
+
+        return (self.diff / self.baseline) * 100
 
     @property
     def is_regression(self) -> bool:
@@ -174,8 +185,11 @@ class MetricComparison:
     metric_name: str
     baseline: float
     current: float
-    diff_pct: float
     threshold_pct: float
+
+    @property
+    def diff_pct(self) -> float:
+        return ((self.current - self.baseline) / self.baseline) * 100
 
     @property
     def is_regression(self) -> bool:
@@ -370,38 +384,23 @@ class BaselineManager:
 
     def save_baseline(self, results: Dict[str, TestResult]) -> None:
         """Save current results as baseline."""
-        baseline_data = {}
-        for key, result in results.items():
-            baseline_data[key] = {
-                "model": result.model,
-                "feature": result.feature,
-                "fp32_accuracy": result.fp32_accuracy,
-                "aimet_accuracy": result.aimet_accuracy,
-                "qdq_accuracy": result.qdq_accuracy,
-                "qnn_latency_ms": result.qnn_latency_ms,
-                "qnn_accuracy": result.qnn_accuracy,
-                "techniques": result.techniques,
-                "aimet_runtime_ms": result.aimet_runtime_ms,
-                "aimet_memory_mb": result.aimet_memory_mb,
-            }
-
         with open(self.baseline_file, "w") as f:
-            json.dump(baseline_data, f, indent=2)
+            json.dump({key: asdict(data) for key, data in results.items()}, f, indent=2)
 
         print(f"✔ Baseline saved to: {self.baseline_file}")
 
-    def load_baseline(self) -> Dict[str, Dict]:
+    def load_baseline(self) -> Dict[str, TestResult]:
         """Load baseline results."""
         if not self.baseline_file.exists():
             return {}
 
         with open(self.baseline_file, "r") as f:
-            return json.load(f)
+            return {key: TestResult(**data) for key, data in json.load(f).items()}
 
     def compare(
         self,
         current: Dict[str, TestResult],
-        baseline: Dict[str, Dict],
+        baseline: Dict[str, TestResult],
     ) -> Tuple[List[Comparison], List[Comparison], List[Comparison]]:
         """
         Compare current results with baseline.
@@ -417,19 +416,14 @@ class BaselineManager:
             if key not in baseline:
                 continue
 
-            base_acc = baseline[key]["aimet_accuracy"]
+            base_acc = baseline[key].aimet_accuracy
             curr_acc = curr_result.aimet_accuracy
-
-            diff = curr_acc - base_acc
-            diff_pct = (diff / base_acc * 100) if base_acc > 0 else 0
 
             comp = Comparison(
                 model=curr_result.model,
                 feature=curr_result.feature,
                 baseline=base_acc,
                 current=curr_acc,
-                diff=diff,
-                diff_pct=diff_pct,
                 techniques=curr_result.techniques or "",
             )
 
@@ -445,7 +439,7 @@ class BaselineManager:
     def compare_metrics(
         self,
         current: Dict[str, TestResult],
-        baseline: Dict[str, Dict],
+        baseline: Dict[str, TestResult],
         runtime_threshold_pct: float = 20.0,
         memory_threshold_pct: float = 15.0,
     ) -> Tuple[List[MetricComparison], List[MetricComparison]]:
@@ -471,34 +465,30 @@ class BaselineManager:
             base_data = baseline[key]
 
             # Compare runtime
-            base_runtime = base_data.get("aimet_runtime_ms")
+            base_runtime = base_data.aimet_runtime_ms
             curr_runtime = curr_result.aimet_runtime_ms
             if base_runtime and curr_runtime and base_runtime > 0:
-                diff_pct = ((curr_runtime - base_runtime) / base_runtime) * 100
                 comp = MetricComparison(
                     model=curr_result.model,
                     feature=curr_result.feature,
                     metric_name="runtime",
                     baseline=base_runtime,
                     current=curr_runtime,
-                    diff_pct=diff_pct,
                     threshold_pct=runtime_threshold_pct,
                 )
                 if comp.is_regression:
                     runtime_regressions.append(comp)
 
             # Compare memory
-            base_memory = base_data.get("aimet_memory_mb")
+            base_memory = base_data.aimet_memory_mb
             curr_memory = curr_result.aimet_memory_mb
             if base_memory and curr_memory and base_memory > 0:
-                diff_pct = ((curr_memory - base_memory) / base_memory) * 100
                 comp = MetricComparison(
                     model=curr_result.model,
                     feature=curr_result.feature,
                     metric_name="memory",
                     baseline=base_memory,
                     current=curr_memory,
-                    diff_pct=diff_pct,
                     threshold_pct=memory_threshold_pct,
                 )
                 if comp.is_regression:
@@ -511,9 +501,80 @@ class ReportGenerator:
     """Generate markdown reports for baseline comparison."""
 
     @staticmethod
+    def _build_dataframe(
+        results: List[Tuple[TestResult | None, Comparison | None]],
+    ) -> pd.DataFrame:
+        """Build a DataFrame for comparison data (regressions, improvements, or unchanged)."""
+        data = []
+
+        for curr_result, comparison in results:
+            if curr_result:
+                model = curr_result.model
+                quality = validate_quantization_quality(curr_result)
+                export_val = validate_qdq_export(curr_result)
+                overall_status = compute_overall_status(quality, export_val, comparison)
+                technique = curr_result.techniques or ""
+                threshold = curr_result.max_accuracy_drop
+                fp32_acc = curr_result.fp32_accuracy
+                aimet_acc = curr_result.aimet_accuracy
+                drop = quality.drop_abs
+                qnn_acc = curr_result.qnn_accuracy
+                qnn_lat = curr_result.qnn_latency_ms
+            elif comparison:
+                model = comparison.model
+                overall_status = "⚠️"
+                technique = comparison.techniques or ""
+                threshold = 1.0
+                fp32_acc = 0.0
+                aimet_acc = comparison.current
+                drop = 0.0
+                qnn_acc = None
+                qnn_lat = None
+            else:
+                raise RuntimeError(
+                    "At least one of current result or comparison must be present"
+                )
+
+            fp32_vs_aimet = f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%)"
+            row_data = {
+                "Model": model,
+                "Technique": technique,
+                "Baseline": f"{comparison.baseline:.2f}%" if comparison else None,
+                "Current": f"{comparison.current:.2f}%" if comparison else None,
+                "vs Baseline": f"{comparison.diff:+.2f}%" if comparison else None,
+                "FP32 vs AIMET": fp32_vs_aimet,
+                "Max Allowed Drop": f"{threshold:.2f}%",
+                "Status": overall_status,
+                "QNN Acc": qnn_acc and f"{qnn_acc:.2f}%",
+                "Latency": qnn_lat and f"{qnn_lat:.1f} ms",
+            }
+
+            data.append(row_data)
+
+        df = pd.DataFrame(data)
+
+        if all(df["QNN Acc"].isnull()):
+            df = df.drop(columns=["QNN Acc"])
+
+        if all(df["Latency"].isnull()):
+            df = df.drop(columns=["Latency"])
+
+        return df
+
+    _legend = {
+        "Technique": "Quantization method and parameters",
+        "vs Baseline": "Accuracy change compared to baseline",
+        "FP32 vs AIMET": "Original / quantized accuracy (drop)",
+        "Max Allowed Drop": "Maximum allowed drop from FP32 to AIMET",
+        "Status": "✅ within threshold | ❌ exceeds threshold",
+        "QNN Acc": "On-device accuracy via AI Hub",
+        "Latency": "On-device inference latency",
+    }
+
+    @staticmethod
     def generate_markdown(
         current: Dict[str, TestResult],
-        baseline: Dict[str, Dict],
+        baseline: Dict[str, TestResult],
         regressions: List[Comparison],
         improvements: List[Comparison],
         unchanged: List[Comparison],
@@ -531,64 +592,31 @@ class ReportGenerator:
         if baseline_source:
             lines.append(f"**Baseline source:** `{baseline_source}`\n")
 
+        keys = [
+            "Technique",
+            *(["vs Baseline"] if baseline else []),
+            "FP32 vs AIMET",
+            "Max Allowed Drop",
+            "Status",
+            *(["QNN Acc", "Latency"] if has_qnn_data else []),
+        ]
+        legend = "\n".join(
+            [
+                "\n**Legend:**\n",
+                *(f"- **{key}**: {ReportGenerator._legend[key]}" for key in keys),
+            ]
+        )
+
         if not baseline:
             lines.append("### ℹ️  First Run - No Baseline\n")
             lines.append("Showing quantization accuracy checks:\n")
-
-            if has_qnn_data:
-                lines.append(
-                    "| Model | Technique | FP32 vs AIMET | Max Allowed Drop | Status | QNN Acc | Latency |"
-                )
-                lines.append(
-                    "|-------|-----------|---------------|------------------|--------|---------|---------|"
-                )
-            else:
-                lines.append(
-                    "| Model | Technique | FP32 vs AIMET | Max Allowed Drop | Status |"
-                )
-                lines.append(
-                    "|-------|-----------|---------------|------------------|--------|"
-                )
-
-            for result in current.values():
-                quality = validate_quantization_quality(result)
-                technique = result.techniques or ""
-
-                row = (
-                    f"| {result.model} | {technique} | "
-                    f"{result.fp32_accuracy:.2f}% / {result.aimet_accuracy:.2f}% ({quality.drop_abs:+.2f}%) | "
-                    f"{result.max_accuracy_drop:.2f}% | "
-                    f"{quality.status_emoji} |"
-                )
-
-                if has_qnn_data:
-                    qnn_acc = (
-                        f"{result.qnn_accuracy:.2f}%" if result.qnn_accuracy else "N/A"
-                    )
-                    qnn_lat = (
-                        f"{result.qnn_latency_ms:.1f} ms"
-                        if result.qnn_latency_ms
-                        else "N/A"
-                    )
-                    row = row[:-1] + f" | {qnn_acc} | {qnn_lat} |"
-
-                lines.append(row)
-
-            lines.append("")
-
-            legend = (
-                "\n**Legend:**\n"
-                "- **Technique**: Quantization method and parameters\n"
-                "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
-                "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
-                "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
+            lines.append(legend + "\n")
+            df = ReportGenerator._build_dataframe(
+                [(curr, None) for curr in current.values()],
             )
-            if has_qnn_data:
-                legend += (
-                    "- **QNN Acc**: On-device accuracy via AI Hub\n"
-                    "- **Latency**: On-device inference latency\n"
-                )
-            lines.append(legend)
+            df = df.drop(columns=["Baseline", "Current", "vs Baseline"])
+            lines.append(df.to_markdown(index=False))
+            lines.append("")
 
         else:
             # Calculate quality status counts
@@ -622,225 +650,55 @@ class ReportGenerator:
 
             if regressions:
                 lines.append("\n### ⚠️ Regressions\n")
-
-                legend = (
-                    "**Legend:**\n"
-                    "- **Technique**: Quantization method and parameters\n"
-                    "- **vs Baseline**: Accuracy change compared to baseline\n"
-                    "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
-                    "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
-                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
-                )
-                if has_qnn_data:
-                    legend += (
-                        "- **QNN Acc**: On-device accuracy via AI Hub\n"
-                        "- **Latency**: On-device inference latency\n"
-                    )
                 lines.append(legend + "\n")
 
-                if has_qnn_data:
-                    lines.append(
-                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status | QNN Acc | Latency |"
-                    )
-                    lines.append(
-                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|---------|---------|"
-                    )
-                else:
-                    lines.append(
-                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
-                    )
-                    lines.append(
-                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
-                    )
-
-                for r in sorted(regressions, key=lambda x: x.diff):
-                    key = f"{r.model}_{r.feature}_{r.techniques}"
-                    curr_result = current.get(key)
-                    if curr_result:
-                        quality = validate_quantization_quality(curr_result)
-                        export_val = validate_qdq_export(curr_result)
-                        overall_status = compute_overall_status(quality, export_val, r)
-                        technique = curr_result.techniques or ""
-                        threshold = curr_result.max_accuracy_drop
-                        fp32_acc = curr_result.fp32_accuracy
-                        aimet_acc = curr_result.aimet_accuracy
-                        drop = quality.drop_abs
-                        qnn_acc = curr_result.qnn_accuracy
-                        qnn_lat = curr_result.qnn_latency_ms
-                    else:
-                        quality = None
-                        overall_status = "⚠️"
-                        technique = r.techniques or ""
-                        threshold = 1.0
-                        fp32_acc = 0.0
-                        aimet_acc = r.current
-                        drop = 0.0
-                        qnn_acc = None
-                        qnn_lat = None
-
-                    row = (
-                        f"| {r.emoji} {r.model} | {technique} | "
-                        f"{r.baseline:.2f}% | {r.current:.2f}% | "
-                        f"{r.diff:+.2f}% | "
-                        f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
-                        f"{threshold:.2f}% | {overall_status} |"
-                    )
-
-                    if has_qnn_data:
-                        qnn_acc_str = f"{qnn_acc:.2f}%" if qnn_acc else "N/A"
-                        qnn_lat_str = f"{qnn_lat:.1f} ms" if qnn_lat else "N/A"
-                        row = row[:-1] + f" | {qnn_acc_str} | {qnn_lat_str} |"
-
-                    lines.append(row)
+                # Build DataFrame for regressions (sorted by diff)
+                regressions = sorted(regressions, key=lambda x: x.diff)
+                df = ReportGenerator._build_dataframe(
+                    [
+                        (current.get(f"{r.model}_{r.feature}_{r.techniques}"), r)
+                        for r in regressions
+                    ]
+                )
+                # Add emoji to Model column for regressions
+                df["Model"] = df.apply(
+                    lambda row: f"{regressions[row.name].emoji} {row['Model']}", axis=1
+                )
+                lines.append(df.to_markdown(index=False))
                 lines.append("")
 
             if improvements:
                 lines.append("### 📈 Improvements\n")
-
-                legend = (
-                    "**Legend:**\n"
-                    "- **Technique**: Quantization method and parameters\n"
-                    "- **vs Baseline**: Accuracy change compared to baseline\n"
-                    "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
-                    "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
-                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
-                )
-                if has_qnn_data:
-                    legend += (
-                        "- **QNN Acc**: On-device accuracy via AI Hub\n"
-                        "- **Latency**: On-device inference latency\n"
-                    )
                 lines.append(legend + "\n")
 
-                if has_qnn_data:
-                    lines.append(
-                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status | QNN Acc | Latency |"
-                    )
-                    lines.append(
-                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|---------|---------|"
-                    )
-                else:
-                    lines.append(
-                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
-                    )
-                    lines.append(
-                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
-                    )
-
-                for r in sorted(improvements, key=lambda x: x.diff, reverse=True):
-                    key = f"{r.model}_{r.feature}_{r.techniques}"
-                    curr_result = current.get(key)
-                    if curr_result:
-                        quality = validate_quantization_quality(curr_result)
-                        export_val = validate_qdq_export(curr_result)
-                        overall_status = compute_overall_status(quality, export_val, r)
-                        technique = curr_result.techniques or ""
-                        threshold = curr_result.max_accuracy_drop
-                        fp32_acc = curr_result.fp32_accuracy
-                        aimet_acc = curr_result.aimet_accuracy
-                        drop = quality.drop_abs
-                        qnn_acc = curr_result.qnn_accuracy
-                        qnn_lat = curr_result.qnn_latency_ms
-                    else:
-                        quality = None
-                        overall_status = "✅"
-                        technique = r.techniques or ""
-                        threshold = 1.0
-                        fp32_acc = 0.0
-                        aimet_acc = r.current
-                        drop = 0.0
-                        qnn_acc = None
-                        qnn_lat = None
-
-                    row = (
-                        f"| {r.emoji} {r.model} | {technique} | "
-                        f"{r.baseline:.2f}% | {r.current:.2f}% | "
-                        f"{r.diff:+.2f}% | "
-                        f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
-                        f"{threshold:.2f}% | {overall_status} |"
-                    )
-
-                    if has_qnn_data:
-                        qnn_acc_str = f"{qnn_acc:.2f}%" if qnn_acc else "N/A"
-                        qnn_lat_str = f"{qnn_lat:.1f} ms" if qnn_lat else "N/A"
-                        row = row[:-1] + f" | {qnn_acc_str} | {qnn_lat_str} |"
-
-                    lines.append(row)
+                # Build DataFrame for improvements (sorted by diff descending)
+                improvements = sorted(improvements, key=lambda x: x.diff, reverse=True)
+                df = ReportGenerator._build_dataframe(
+                    [
+                        (current.get(f"{r.model}_{r.feature}_{r.techniques}"), r)
+                        for r in improvements
+                    ]
+                )
+                # Add emoji to Model column for improvements
+                df["Model"] = df.apply(
+                    lambda row: f"{improvements[row.name].emoji} {row['Model']}", axis=1
+                )
+                lines.append(df.to_markdown(index=False))
                 lines.append("")
 
             if unchanged:
                 lines.append("<details>")
                 lines.append("<summary>✅ Stable Tests (click to expand)</summary>\n")
-
-                legend = (
-                    "**Legend:**\n"
-                    "- **Technique**: Quantization method and parameters\n"
-                    "- **vs Baseline**: Accuracy change compared to baseline\n"
-                    "- **FP32 vs AIMET**: Original / quantized accuracy (drop)\n"
-                    "- **Max Allowed Drop**: Maximum allowed drop from FP32 to AIMET\n"
-                    "- **Status**: ✅ within threshold | ❌ exceeds threshold\n"
-                )
-                if has_qnn_data:
-                    legend += (
-                        "- **QNN Acc**: On-device accuracy via AI Hub\n"
-                        "- **Latency**: On-device inference latency\n"
-                    )
                 lines.append(legend + "\n")
 
-                if has_qnn_data:
-                    lines.append(
-                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status | QNN Acc | Latency |"
-                    )
-                    lines.append(
-                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|---------|---------|"
-                    )
-                else:
-                    lines.append(
-                        "| Model | Technique | Baseline | Current | vs Baseline | FP32 vs AIMET | Max Allowed Drop | Status |"
-                    )
-                    lines.append(
-                        "|-------|-----------|----------|---------|-------------|---------------|------------------|--------|"
-                    )
-
-                for r in unchanged:
-                    key = f"{r.model}_{r.feature}_{r.techniques}"
-                    curr_result = current.get(key)
-                    if curr_result:
-                        quality = validate_quantization_quality(curr_result)
-                        export_val = validate_qdq_export(curr_result)
-                        overall_status = compute_overall_status(quality, export_val, r)
-                        technique = curr_result.techniques or ""
-                        threshold = curr_result.max_accuracy_drop
-                        fp32_acc = curr_result.fp32_accuracy
-                        aimet_acc = curr_result.aimet_accuracy
-                        drop = quality.drop_abs
-                        qnn_acc = curr_result.qnn_accuracy
-                        qnn_lat = curr_result.qnn_latency_ms
-                    else:
-                        quality = None
-                        overall_status = "✅"
-                        technique = r.techniques or ""
-                        threshold = 1.0
-                        fp32_acc = 0.0
-                        aimet_acc = r.current
-                        drop = 0.0
-                        qnn_acc = None
-                        qnn_lat = None
-
-                    row = (
-                        f"| {r.model} | {technique} | "
-                        f"{r.baseline:.2f}% | {r.current:.2f}% | "
-                        f"{r.diff:+.2f}% | "
-                        f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%) | "
-                        f"{threshold:.2f}% | {overall_status} |"
-                    )
-
-                    if has_qnn_data:
-                        qnn_acc_str = f"{qnn_acc:.2f}%" if qnn_acc else "N/A"
-                        qnn_lat_str = f"{qnn_lat:.1f} ms" if qnn_lat else "N/A"
-                        row = row[:-1] + f" | {qnn_acc_str} | {qnn_lat_str} |"
-
-                    lines.append(row)
+                # Build DataFrame for unchanged
+                df = ReportGenerator._build_dataframe(
+                    [
+                        (current.get(f"{r.model}_{r.feature}_{r.techniques}"), r)
+                        for r in unchanged
+                    ]
+                )
+                lines.append(df.to_markdown(index=False))
                 lines.append("</details>\n")
 
         # Performance metrics section - collapsible table showing all tests
@@ -854,7 +712,7 @@ class ReportGenerator:
     @staticmethod
     def _generate_performance_metrics_section(
         current: Dict[str, TestResult],
-        baseline: Dict[str, Dict],
+        baseline: Dict[str, TestResult],
     ) -> List[str]:
         """Generate performance metrics section with runtime and memory comparisons."""
         lines = []
@@ -866,13 +724,9 @@ class ReportGenerator:
             "- **Memory**: Peak GPU memory during quantization\n"
             "- **vs Baseline**: Change from previous run (⚠️ if >20% runtime or >15% memory increase)\n\n"
         )
-        lines.append(
-            "| Model | Technique | Runtime | vs Baseline | Memory | vs Baseline |"
-        )
-        lines.append(
-            "|-------|-----------|---------|-------------|--------|-------------|"
-        )
 
+        # Build DataFrame for performance metrics
+        data = []
         for key, result in current.items():
             if key not in baseline:
                 continue
@@ -882,7 +736,7 @@ class ReportGenerator:
 
             # Format runtime
             curr_runtime = result.aimet_runtime_ms
-            base_runtime = base_data.get("aimet_runtime_ms")
+            base_runtime = base_data.aimet_runtime_ms
             if curr_runtime is not None:
                 runtime_str = f"{curr_runtime:.1f} ms"
                 if base_runtime and base_runtime > 0:
@@ -897,7 +751,7 @@ class ReportGenerator:
 
             # Format memory
             curr_memory = result.aimet_memory_mb
-            base_memory = base_data.get("aimet_memory_mb")
+            base_memory = base_data.aimet_memory_mb
             if curr_memory is not None:
                 memory_str = f"{curr_memory:.1f} MB"
                 if base_memory and base_memory > 0:
@@ -910,11 +764,21 @@ class ReportGenerator:
                 memory_str = "—"
                 memory_vs = "—"
 
-            lines.append(
-                f"| {result.model} | {technique} | "
-                f"{runtime_str} | {runtime_vs} | "
-                f"{memory_str} | {memory_vs} |"
+            data.append(
+                {
+                    "Model": result.model,
+                    "Technique": technique,
+                    "Runtime": runtime_str,
+                    "vs Baseline": runtime_vs,
+                    "Memory": memory_str,
+                    "vs Baseline (memory)": memory_vs,  # appended "(memory)" to avoid duplicate column name
+                }
             )
+
+        df = pd.DataFrame(data)
+        # Rename the duplicate column back
+        df = df.rename(columns={"vs Baseline (memory)": "vs Baseline"})
+        lines.append(df.to_markdown(index=False))
 
         lines.append("</details>\n")
         return lines
