@@ -10,7 +10,7 @@ import math
 import platform
 import tempfile
 from pathlib import Path
-from typing import Dict, Iterable, List, Union, Tuple, Callable, Optional
+from typing import Dict, Iterable, List, Set, Union, Tuple, Callable, Optional
 from contextlib import contextmanager
 import os
 import pickle
@@ -984,6 +984,36 @@ def _add_value_info(model: onnx.ModelProto):
         model.graph.value_info.extend(initial_value_info)
 
 
+def _get_qdq_pair_initializers(graph: GraphProto) -> Set[str]:
+    """
+    Return the set of initializer names that serve as scale or zero_point for
+    at least one QuantizeLinear–DequantizeLinear pair.
+
+    A QDQ pair is identified by ``QuantizeLinear.output[0] == DequantizeLinear.input[0]``.
+    Scale (input[1]) and zero_point (input[2]) of such a pair must remain shared
+    between Q and DQ; duplicating them would decouple the encode/decode parameters
+    and break quantization correctness.
+
+    :param graph: ONNX GraphProto to inspect
+    :return: Set of initializer names that must not be duplicated
+    """
+    producers = {out: node for node in graph.node for out in node.output}
+    init_names = {init.name for init in graph.initializer}
+    protected: Set[str] = set()
+    for node in graph.node:
+        if node.op_type != "DequantizeLinear" or not node.input:
+            continue
+        q_node = producers.get(node.input[0])
+        if q_node is None or q_node.op_type != "QuantizeLinear":
+            continue
+        for i in range(1, max(len(q_node.input), len(node.input))):
+            if i < len(q_node.input) and q_node.input[i] in init_names:
+                protected.add(q_node.input[i])
+            if i < len(node.input) and node.input[i] in init_names:
+                protected.add(node.input[i])
+    return protected
+
+
 def duplicate_shared_initializers(graph: GraphProto) -> int:
     """
     Duplicate initializers that are shared across multiple nodes.
@@ -999,7 +1029,12 @@ def duplicate_shared_initializers(graph: GraphProto) -> int:
     if not graph.node:
         return 0
 
-    initializer_map = {init.name: init for init in graph.initializer}
+    # Exclude scale/zp initializers that belong to a QDQ pair — they must stay
+    # shared between QuantizeLinear and its paired DequantizeLinear.
+    qdq_protected = _get_qdq_pair_initializers(graph)
+    initializer_map = {
+        init.name: init for init in graph.initializer if init.name not in qdq_protected
+    }
     if not initializer_map:
         return 0
 
@@ -1029,7 +1064,7 @@ def duplicate_shared_initializers(graph: GraphProto) -> int:
     new_initializers: List[TensorProto] = []
     duplicate_count = 0
     existing_names = (
-        set(initializer_map)
+        {init.name for init in graph.initializer}
         | {out for node in graph.node for out in node.output}
         | {inp.name for inp in graph.input}
     )

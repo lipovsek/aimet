@@ -942,6 +942,256 @@ class TestDuplicateSharedInitializers:
             "Shape consumer must not trigger duplication of the shared initializer"
         )
 
+    @staticmethod
+    def _make_qdq_model(share_scale_across_pairs: bool = False) -> onnx.ModelProto:
+        """
+        Build a minimal QDQ model.
+
+        When ``share_scale_across_pairs=False`` (default):
+            A single QDQ pair wrapping a Conv weight:
+
+                weight → QuantizeLinear(scale, zp) → DequantizeLinear(scale, zp) → Conv
+
+        When ``share_scale_across_pairs=True``:
+            Two independent QDQ pairs that happen to share the same scale/zp:
+
+                weight  → QLinear1(scale, zp) → DQLinear1(scale, zp) → Conv1
+                weight2 → QLinear2(scale, zp) → DQLinear2(scale, zp) → Conv2
+        """
+        CHANNELS = 4
+        weight = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="weight",
+        )
+        scale = numpy_helper.from_array(np.array(0.1, dtype=np.float32), name="scale")
+        zp = numpy_helper.from_array(np.array(0, dtype=np.int8), name="zp")
+
+        nodes = [
+            helper.make_node(
+                "QuantizeLinear",
+                inputs=["weight", "scale", "zp"],
+                outputs=["weight_q"],
+                name="q1",
+            ),
+            helper.make_node(
+                "DequantizeLinear",
+                inputs=["weight_q", "scale", "zp"],
+                outputs=["weight_dq"],
+                name="dq1",
+            ),
+            helper.make_node(
+                "Conv",
+                inputs=["model_input", "weight_dq"],
+                outputs=["model_output"],
+                name="conv1",
+            ),
+        ]
+        initializers = [weight, scale, zp]
+
+        if share_scale_across_pairs:
+            weight2 = numpy_helper.from_array(
+                np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+                name="weight2",
+            )
+            nodes += [
+                helper.make_node(
+                    "QuantizeLinear",
+                    inputs=["weight2", "scale", "zp"],
+                    outputs=["weight2_q"],
+                    name="q2",
+                ),
+                helper.make_node(
+                    "DequantizeLinear",
+                    inputs=["weight2_q", "scale", "zp"],
+                    outputs=["weight2_dq"],
+                    name="dq2",
+                ),
+                helper.make_node(
+                    "Conv",
+                    inputs=["model_input", "weight2_dq"],
+                    outputs=["branch2_output"],
+                    name="conv2",
+                ),
+                helper.make_node(
+                    "Add",
+                    inputs=["model_output", "branch2_output"],
+                    outputs=["final_output"],
+                    name="add",
+                ),
+            ]
+            initializers.append(weight2)
+
+        final_out = "final_output" if share_scale_across_pairs else "model_output"
+        graph = helper.make_graph(
+            nodes,
+            "QDQModel",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "model_input", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    final_out, TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            initializer=initializers,
+        )
+        model = models_for_tests.make_model(graph)
+        onnx.checker.check_model(model)
+        return model
+
+    def test_duplicate_shared_initializers_qdq_scale_not_duplicated(self):
+        """
+        Given a QDQ pair where scale and zero_point are shared between
+        QuantizeLinear and DequantizeLinear:
+
+            weight → QuantizeLinear(scale, zp) → DequantizeLinear(scale, zp) → Conv
+
+        When: duplicate_shared_initializers is called
+        Then: scale and zp must NOT be duplicated — Q and DQ of the same pair
+              must always refer to the same quantization parameters.
+        """
+        model = self._make_qdq_model(share_scale_across_pairs=False)
+
+        n_duplicates = duplicate_shared_initializers(model.graph)
+
+        assert n_duplicates == 0, (
+            "scale/zp shared within a QDQ pair must not be duplicated"
+        )
+        init_names = {init.name for init in model.graph.initializer}
+        assert "scale" in init_names
+        assert "zp" in init_names
+        assert "scale_copy_1" not in init_names
+        assert "zp_copy_1" not in init_names
+
+    def test_duplicate_shared_initializers_qdq_weight_still_duplicated(self):
+        """
+        In a QDQ model, a plain weight initializer (not scale/zp) that is
+        shared between two Conv nodes must still be duplicated, while the
+        QDQ pair's scale and zero_point remain untouched.
+
+        Graph:
+            shared_weight → Conv1
+            shared_weight → Conv2      ← ordinary shared weight; must be duplicated
+
+            qdq_weight → QuantizeLinear(scale, zp)
+                       → DequantizeLinear(scale, zp) → Conv3
+                         ↑ scale/zp shared within QDQ pair; must NOT be duplicated
+        """
+        CHANNELS = 4
+        shared_weight = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="shared_weight",
+        )
+        qdq_weight = numpy_helper.from_array(
+            np.random.randn(CHANNELS, CHANNELS, 1, 1).astype(np.float32),
+            name="qdq_weight",
+        )
+        scale = numpy_helper.from_array(np.array(0.1, dtype=np.float32), name="scale")
+        zp = numpy_helper.from_array(np.array(0, dtype=np.int8), name="zp")
+
+        nodes = [
+            # Two Conv nodes directly sharing shared_weight
+            helper.make_node(
+                "Conv",
+                inputs=["model_input", "shared_weight"],
+                outputs=["conv1_out"],
+                name="conv1",
+            ),
+            helper.make_node(
+                "Conv",
+                inputs=["model_input", "shared_weight"],
+                outputs=["conv2_out"],
+                name="conv2",
+            ),
+            helper.make_node(
+                "Add",
+                inputs=["conv1_out", "conv2_out"],
+                outputs=["branch1_out"],
+                name="add1",
+            ),
+            # QDQ pair with scale/zp shared between Q and DQ
+            helper.make_node(
+                "QuantizeLinear",
+                inputs=["qdq_weight", "scale", "zp"],
+                outputs=["qdq_weight_q"],
+                name="q1",
+            ),
+            helper.make_node(
+                "DequantizeLinear",
+                inputs=["qdq_weight_q", "scale", "zp"],
+                outputs=["qdq_weight_dq"],
+                name="dq1",
+            ),
+            helper.make_node(
+                "Conv",
+                inputs=["model_input", "qdq_weight_dq"],
+                outputs=["conv3_out"],
+                name="conv3",
+            ),
+            helper.make_node(
+                "Add",
+                inputs=["branch1_out", "conv3_out"],
+                outputs=["model_output"],
+                name="add2",
+            ),
+        ]
+        graph = helper.make_graph(
+            nodes,
+            "QDQWithSharedWeight",
+            inputs=[
+                helper.make_tensor_value_info(
+                    "model_input", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    "model_output", TensorProto.FLOAT, [1, CHANNELS, 8, 8]
+                )
+            ],
+            initializer=[shared_weight, qdq_weight, scale, zp],
+        )
+        model = models_for_tests.make_model(graph)
+        onnx.checker.check_model(model)
+
+        n_duplicates = duplicate_shared_initializers(model.graph)
+
+        # shared_weight is used by two Conv nodes → must be duplicated once
+        assert n_duplicates == 1
+        init_names = {init.name for init in model.graph.initializer}
+        assert "shared_weight_copy_1" in init_names
+
+        # Conv1 and Conv2 must now reference distinct initializers
+        conv_inputs = [
+            node.input[1]
+            for node in model.graph.node
+            if node.op_type == "Conv" and node.name in ("conv1", "conv2")
+        ]
+        assert conv_inputs[0] != conv_inputs[1]
+
+        # scale and zp must NOT have been duplicated
+        assert "scale_copy_1" not in init_names
+        assert "zp_copy_1" not in init_names
+
+    def test_duplicate_shared_initializers_qdq_cross_pair_scale_excluded(self):
+        """
+        When the same scale/zp initializer is shared across two different QDQ
+        pairs, it is currently excluded from duplication.
+
+        Graph:
+            weight  → QLinear1(scale, zp) → DQLinear1(scale, zp) → Conv1
+            weight2 → QLinear2(scale, zp) → DQLinear2(scale, zp) → Conv2
+        """
+        model = self._make_qdq_model(share_scale_across_pairs=True)
+
+        n_duplicates = duplicate_shared_initializers(model.graph)
+
+        assert n_duplicates == 0, "Cross-pair shared scale/zp is excluded"
+        init_names = {init.name for init in model.graph.initializer}
+        assert "scale_copy_1" not in init_names
+        assert "zp_copy_1" not in init_names
+
 
 class TestORTInferenceSession:
     """
