@@ -1,7 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Gemma4 Torch model class"""
+"""Gemma3 Torch model class"""
 
 from __future__ import annotations
 
@@ -10,18 +10,17 @@ import torch
 from aimet_torch.common.defs import QuantScheme
 from aimet_torch import QuantizationSimModel
 from aimet_torch.v2.utils import remove_activation_quantizers
-from aimet_torch.nn.transformers.models.gemma4.modeling_gemma4 import (
-    QuantizedGemma4RMSNorm,
+from aimet_torch.nn.transformers.models.gemma3.modeling_gemma3 import (
+    QuantizedGemma3RMSNorm,
 )
 
 from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.qai_hub_lm.precision import PrecisionConfig, float16, float32
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.qai_hub_lm.models.base import SimCollection
-from GenAILab.qai_hub_lm.models.gemma4 import (
-    Gemma4_VLM,
-    Gemma4VisionWrapper,
-    SoftcappedLMHead,
+from GenAILab.qai_hub_lm.models.gemma3 import (
+    Gemma3_VLM,
+    Gemma3VisionWrapper,
 )
 from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
 from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
@@ -31,9 +30,9 @@ from GenAILab.qai_hub_lm.backends.torch.quantsim_utils import (
 )
 
 
-@YAMLConfigParser.register_model("gemma4")
-class Gemma4_Torch(Gemma4_VLM):
-    """Gemma4 quantization (text backbone + vision tower)."""
+@YAMLConfigParser.register_model("gemma3")
+class Gemma3_Torch(Gemma3_VLM):
+    """Gemma3 quantization (text backbone + vision tower)."""
 
     @classmethod
     def instantiate_quantsim(
@@ -62,13 +61,11 @@ class Gemma4_Torch(Gemma4_VLM):
             else precision.activations.bits
         )
 
-        # Backbone: wrap language model with softcapping and static cache
-        softcap = model.config.text_config.final_logit_softcapping
-        lm_head = SoftcappedLMHead(model.lm_head, softcap)
+        # Backbone: wrap language model with static cache
         layer_cache_descs = build_layer_cache_descriptors(model.config.text_config)
         traceable_backbone = ONNXExportableModuleWithCache(
             model.model.language_model,
-            lm_head=lm_head,
+            lm_head=model.lm_head,
             cache_type=cls.get_cache_type(),
             input_names=cls.get_backbone_input_names(layer_cache_descs),
         )
@@ -91,27 +88,25 @@ class Gemma4_Torch(Gemma4_VLM):
             remove_activation_quantizers(language_sim.model)
 
         for _, module in language_sim.model.named_modules():
-            if (
-                isinstance(module, QuantizedGemma4RMSNorm)
-                and "weight" in module.param_quantizers
-            ):
+            if isinstance(module, QuantizedGemma3RMSNorm):
                 module.param_quantizers["weight"].bitwidth = 16
 
-        inner_lm_head = language_sim.model.lm_head.linear
-        _set_lm_head_precision(language_sim, precision.lm_head, lm_head=inner_lm_head)
+        _set_lm_head_precision(
+            language_sim, precision.lm_head, lm_head=language_sim.model.lm_head
+        )
         _apply_block_granularity_to_decoder_stack(
-            language_sim, precision, lm_head=inner_lm_head
+            language_sim, precision, lm_head=language_sim.model.lm_head
         )
 
-        # Vision encoder: vision_tower + embed_vision projector
+        # Vision encoder: vision_tower + multi_modal_projector
         visual_param_bw = precision.visual_weight.qtype.bits
         visual_output_bw = (
             16
             if precision.visual_activations in (float16, float32)
             else precision.visual_activations.bits
         )
-        traceable_visual = Gemma4VisionWrapper(
-            model.model.vision_tower, model.model.embed_vision
+        traceable_visual = Gemma3VisionWrapper(
+            model.model.vision_tower, model.model.multi_modal_projector
         )
         visual_sim = QuantizationSimModel(
             model=traceable_visual,
@@ -133,7 +128,4 @@ class Gemma4_Torch(Gemma4_VLM):
             visual=visual_sim,
             embedding=model.model.language_model.embed_tokens,
             config=model.config,
-            extras={
-                "embed_tokens_per_layer": model.model.language_model.embed_tokens_per_layer,
-            },
         )

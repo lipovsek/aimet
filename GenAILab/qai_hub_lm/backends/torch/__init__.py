@@ -15,6 +15,11 @@ from GenAILab.qai_hub_lm import transforms as adaptations  # noqa: F401
 from GenAILab.qai_hub_lm.backends.torch.qwen2_vl import Qwen_25_VL_Torch
 
 try:
+    from GenAILab.qai_hub_lm.backends.torch.gemma3 import Gemma3_Torch
+except ImportError:
+    pass
+
+try:
     from GenAILab.qai_hub_lm.backends.torch.gemma4 import Gemma4_Torch
 except ImportError:
     pass
