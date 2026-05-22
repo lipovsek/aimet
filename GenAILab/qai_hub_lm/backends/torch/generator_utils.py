@@ -89,6 +89,8 @@ def generator_factory(
 
     if sim_collection.is_vlm():
         assert issubclass(generator_cls, VLM_Generator)
+        if sim_collection.extras:
+            model_kwargs.update(sim_collection.extras)
         return mixed_cls(
             backbone_model=sim_collection.backbone.model,
             vision_model=sim_collection.visual.model,

@@ -32,3 +32,8 @@ try:
     from .qwen3_5 import *
 except ImportError:
     pass
+
+try:
+    from .gemma4 import *
+except ImportError:
+    pass

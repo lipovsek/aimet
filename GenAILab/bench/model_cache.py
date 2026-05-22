@@ -24,6 +24,7 @@ class ModelCacheEntry:
     visual: Optional[onnx.ModelProto] = None
     embedding: Optional[torch.nn.Embedding] = None
     config: Optional[PretrainedConfig] = None
+    extras: Optional[dict[str, torch.nn.Module]] = None
 
 
 class DiskBackedModelCache:
@@ -110,7 +111,9 @@ class DiskBackedModelCache:
 
         embedding_path = entry_dir / "embedding.pth"
         if embedding_path.exists():
-            weights = torch.load(str(embedding_path), map_location="cpu")
+            weights = torch.load(
+                str(embedding_path), map_location="cpu", weights_only=True
+            )
             if not isinstance(weights, torch.Tensor) or weights.ndim != 2:
                 raise ValueError("Expected a 2D embedding tensor in embedding.pth")
             embedding = torch.nn.Embedding.from_pretrained(weights, freeze=False)
@@ -124,8 +127,26 @@ class DiskBackedModelCache:
             else None
         )
 
+        # Load extras: any .pth files not already handled (embedding.pth)
+        extras_dir = entry_dir / "extras"
+        extras = {}
+        if extras_dir.exists():
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            for pth_file in sorted(extras_dir.glob("*.pth")):
+                tensor = torch.load(
+                    str(pth_file), map_location="cpu", weights_only=True
+                )
+                name = pth_file.stem
+                module = torch.nn.Embedding(*tensor.shape)
+                module.weight = torch.nn.Parameter(tensor, requires_grad=False)
+                extras[name] = module.to(device)
+
         return ModelCacheEntry(
-            backbone=backbone, visual=visual, embedding=embedding, config=config
+            backbone=backbone,
+            visual=visual,
+            embedding=embedding,
+            config=config,
+            extras=extras or None,
         )
 
     def put(self, key: str, entry: ModelCacheEntry, metadata: Optional[dict] = None):
@@ -162,6 +183,17 @@ class DiskBackedModelCache:
         if entry.embedding is not None:
             embedding_path = entry_dir / "embedding.pth"
             torch.save(entry.embedding.state_dict()["weight"], str(embedding_path))
+
+        # Save extras (model-specific auxiliary modules)
+        if entry.extras:
+            extras_dir = entry_dir / "extras"
+            extras_dir.mkdir(parents=True, exist_ok=True)
+            for name, module in entry.extras.items():
+                if module is not None:
+                    torch.save(
+                        module.state_dict()["weight"],
+                        str(extras_dir / f"{name}.pth"),
+                    )
 
         # Save config if present
         if entry.config is not None:

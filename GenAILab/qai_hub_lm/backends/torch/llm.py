@@ -99,7 +99,10 @@ class LLM_Torch(LLM):
 
         # Configure RMS Norm weights to 16-bits
         for module in quantsim.model.modules():
-            if cls._is_quantized_rms_norm(module):
+            if (
+                cls._is_quantized_rms_norm(module)
+                and "weight" in module.param_quantizers
+            ):
                 module.param_quantizers["weight"].bitwidth = 16
 
         # Set LM Head precision if specified

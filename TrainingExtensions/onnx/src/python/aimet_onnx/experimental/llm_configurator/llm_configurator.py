@@ -110,10 +110,40 @@ def _get_all_upstream_concats(sim: QuantSimOnnx, tensor_name: str) -> set:
     producer = product.producer
     if producer and producer.type == "Concat":
         upstream.add(producer)
-    elif producer and _is_grid_preserving_op(producer.type, domain=producer.domain):
+    elif producer and (
+        _is_grid_preserving_op(producer.type, domain=producer.domain)
+        or producer.type == "Cast"
+    ):
         upstream.update(_get_all_upstream_concats(sim, producer.inputs[0].name))
 
     return upstream
+
+
+def _find_quantizer_through_casts(
+    quantsim_model: QuantSimOnnx, tensor_name: str
+) -> "QcQuantizeOp | None":
+    """Walk upstream through Cast ops to find the nearest enabled quantizer.
+
+    ``_get_enabled_quantizer`` traverses grid-preserving ops but not Cast.
+    KV outputs that pass through Cast nodes (e.g. from shared-KV layers in
+    Gemma 4) need this extra traversal to reach the Concat quantizer upstream.
+    """
+    product = quantsim_model.connected_graph.get_product(tensor_name)
+    if product is None:
+        return None
+    producer = product.producer
+    while producer and producer.type == "Cast":
+        if not producer.inputs:
+            return None
+        tensor_name = producer.inputs[0].name
+        quantizer = quantsim_model._get_enabled_quantizer(tensor_name)  # pylint: disable=protected-access
+        if quantizer:
+            return quantizer
+        product = quantsim_model.connected_graph.get_product(tensor_name)
+        if product is None:
+            return None
+        producer = product.producer
+    return None
 
 
 def _tie_quantizers_for_kv_cache(
@@ -123,6 +153,8 @@ def _tie_quantizers_for_kv_cache(
 
     for input_name, output_name in kv_io_map.items():
         quantizer = quantsim_model._get_enabled_quantizer(output_name)  # pylint: disable=protected-access
+        if not quantizer:
+            quantizer = _find_quantizer_through_casts(quantsim_model, output_name)
         if not quantizer:
             logger.warning(
                 "Warning: No valid quantizer found for output %s", output_name

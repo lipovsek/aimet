@@ -363,6 +363,7 @@ class Generator(GenerationMixin, torch.nn.Module):
             "pixel_values_videos",
             "image_grid_thw",
             "video_grid_thw",
+            "image_position_ids",
         }
         remaining_input = inputs.get("input_ids", inputs.get("inputs_embeds"))
         is_prefill = remaining_input.shape[1] > 1

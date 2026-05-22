@@ -152,6 +152,8 @@ def generator_factory(
             vision_interface = _VisualONNXAdapter(
                 vision_interface, num_list_outputs=len(ds_indexes)
             )
+        if sim_collection.extras:
+            model_kwargs.update(sim_collection.extras)
         return mixed_cls(
             backbone_model=TorchONNXInterface(
                 sim_collection.backbone, sim_collection.config.text_config

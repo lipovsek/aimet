@@ -155,7 +155,9 @@ def _iobinding_inference(
             buffer_ptr=tensor.data_ptr(),
         )
 
+    torch.cuda.synchronize()
     session.run_with_iobinding(binding)
+    torch.cuda.synchronize()
 
     if len(output_tensors) == 1:
         return output_tensors[0]
@@ -191,11 +193,15 @@ def mock_torch_onnx_inference(
 
 
 def _flatten_tensor_args(args):
-    """Flatten any tensor lists in positional args for ONNX session input."""
+    """Flatten any tensor lists/dicts in positional args for ONNX session input."""
     flat = []
     for a in args:
         if isinstance(a, list) and a and isinstance(a[0], torch.Tensor):
             flat.extend(a)
+        elif isinstance(a, dict) and all(
+            isinstance(v, torch.Tensor) for v in a.values()
+        ):
+            flat.extend(a.values())
         else:
             flat.append(a)
     return tuple(flat)

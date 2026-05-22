@@ -22,6 +22,7 @@ def _patch_sdpa_mask():
             return _orig(batch_size, q_length, *args, **kwargs)
 
         _mu.ALL_MASK_ATTENTION_FUNCTIONS["sdpa"] = _patched
+        _mu.sdpa_mask = _patched
     except (ImportError, AttributeError):
         pass
 

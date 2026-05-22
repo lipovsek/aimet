@@ -43,12 +43,14 @@ class SimCollection:
         embedding: torch.nn.Module = None,
         config: PretrainedConfig = None,
         position_id_processor: types.FunctionType = None,
+        extras: dict[str, torch.nn.Module] = None,
     ):
         self.backbone = backbone
         self.visual = visual
         self.embedding = embedding
         self.config = config
         self.position_id_processor = position_id_processor
+        self.extras = extras or {}
 
     def is_vlm(self) -> bool:
         return self.visual is not None
