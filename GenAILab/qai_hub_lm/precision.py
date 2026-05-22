@@ -65,10 +65,18 @@ class WeightPrecision:
                     f"Invalid granularity '{self.granularity}'. "
                     f"Must be one of: {', '.join(g.value for g in Granularity)}"
                 )
-        if self.granularity in (Granularity.BQ, Granularity.LPBQ):
+        # block_size only applies to integer weights; FP weights ignore granularity.
+        if self.qtype not in (float16, float32) and self.granularity in (
+            Granularity.BQ,
+            Granularity.LPBQ,
+        ):
             assert self.block_size is not None, (
                 f"block_size is required for {self.granularity.value} granularity."
             )
+
+    @property
+    def is_float(self) -> bool:
+        return self.qtype in (float16, float32)
 
     def to_dict(self) -> dict:
         d = {
@@ -90,8 +98,6 @@ class WeightPrecision:
         merged = {**defaults, **d}
         if "qtype" in merged:
             merged["qtype"] = resolve_qtype(merged["qtype"])
-            if merged["qtype"] in (float16, float32):
-                raise ValueError("Floating-point weight precision is not supported.")
 
         return cls(
             **{
@@ -218,6 +224,10 @@ class PrecisionConfig:
                 kwargs["visual_weight"] = WeightPrecision.from_dict(
                     visual["weight"], qtype=int8
                 )
+                if kwargs["visual_weight"].is_float:
+                    raise ValueError(
+                        "Floating-point weight precision is not supported for visual.weight."
+                    )
             else:
                 kwargs["visual_weight"] = WeightPrecision(qtype=int8)
             kwargs["visual_activations"] = resolve_qtype(visual.get("activations", 16))

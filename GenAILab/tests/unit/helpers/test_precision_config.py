@@ -73,9 +73,11 @@ class TestWeightPrecision:
         assert wp.granularity == Granularity.BQ
         assert wp.block_size == 128
 
-    def test_float_qtype_raises(self):
-        with pytest.raises(ValueError, match="Floating-point"):
-            WeightPrecision.from_dict({"qtype": "float16"})
+    def test_float_qtype_allowed(self):
+        # WeightPrecision itself is precision-agnostic; FP rejection is
+        # enforced by PrecisionConfig at the visual.weight parse site.
+        wp = WeightPrecision.from_dict({"qtype": "float16"})
+        assert wp.qtype == float16
 
     def test_to_dict(self):
         wp = WeightPrecision(qtype=int4, granularity=Granularity.LPBQ, block_size=32)
@@ -162,6 +164,10 @@ class TestPrecisionConfig:
     def test_from_dict_visual_no_weight(self):
         pc = PrecisionConfig.from_dict({"visual": {}})
         assert pc.visual_weight.qtype == int8  # default
+
+    def test_from_dict_visual_weight_float_raises(self):
+        with pytest.raises(ValueError, match="Floating-point"):
+            PrecisionConfig.from_dict({"visual": {"weight": {"qtype": "float16"}}})
 
     def test_from_dict_embedding(self):
         pc = PrecisionConfig.from_dict({"embedding": 8})

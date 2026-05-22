@@ -322,6 +322,20 @@ class YAMLConfigParser:
     # Config validation & parsing
     # ========================
 
+    @staticmethod
+    def _blocks_qtype_is_float(blocks_raw) -> bool:
+        """Return True if precision.blocks declares a floating-point qtype."""
+        # blocks_raw can be: int/str shorthand, flat WeightPrecision dict, or
+        # {"default": {...}} mapping. Pull the qtype out of whichever form we got.
+        if isinstance(blocks_raw, (int, str)):
+            qt = blocks_raw
+        elif isinstance(blocks_raw, dict):
+            inner = blocks_raw.get("default", blocks_raw)
+            qt = inner.get("qtype") if isinstance(inner, dict) else inner
+        else:
+            return False
+        return qt in ("float16", "float32")
+
     @classmethod
     def validate_config(cls, doc):
         if "model" not in doc:
@@ -409,6 +423,28 @@ class YAMLConfigParser:
                         f"{'=' * 70}",
                         stacklevel=2,
                     )
+
+            # When backbone weights are FP, weight-modifying recipes (SeqMSE,
+            # AdaScale, AdaRound, ...) are no-ops — only activation/full-pipeline
+            # recipes are meaningful. Reject anything else early so users don't
+            # silently get wrong results.
+            blocks_raw = doc.get("precision", {}).get("blocks")
+            if blocks_raw is not None and cls._blocks_qtype_is_float(blocks_raw):
+                _FP_WEIGHT_ALLOWED_RECIPES = {
+                    "Calibration",
+                    "SpinQuant",
+                    "RemoveQuantization",
+                    "Skip",
+                }
+                for comp_name, recipe_list in doc["recipe"].items():
+                    for step in recipe_list:
+                        if step["name"] not in _FP_WEIGHT_ALLOWED_RECIPES:
+                            raise RuntimeError(
+                                f"Recipe '{step['name']}' modifies weights and is "
+                                f"incompatible with floating-point block weights "
+                                f"(precision.blocks.qtype). Only "
+                                f"{sorted(_FP_WEIGHT_ALLOWED_RECIPES)} are allowed."
+                            )
 
         # Backward compatibility: migrate top-level dataset into backbone component
         if "dataset" in doc:

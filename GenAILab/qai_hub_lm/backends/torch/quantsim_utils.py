@@ -17,6 +17,27 @@ from GenAILab.qai_hub_lm.precision import (
 )
 
 
+def _remove_decoder_block_weight_quantizers(
+    quantsim: QuantizationSimModel, lm_head=None
+):
+    """Permanently disable weight quantizers on decoder-stack Linear/Conv layers.
+
+    Used when ``precision.blocks.qtype`` is a floating-point type — the
+    transformer-block weights stay in FP while activations (and lm_head)
+    keep their own precision settings.
+    """
+    if lm_head is None:
+        lm_head = quantsim.model.model.lm_head
+
+    for module in quantsim.model.modules():
+        if (
+            isinstance(module, (QuantizedConv2d, QuantizedLinear))
+            and module is not lm_head
+            and "weight" in module.param_quantizers
+        ):
+            module.param_quantizers["weight"] = None
+
+
 def _apply_block_granularity_to_decoder_stack(
     quantsim: QuantizationSimModel, precision: PrecisionConfig, lm_head=None
 ):
@@ -25,6 +46,9 @@ def _apply_block_granularity_to_decoder_stack(
         lm_head = quantsim.model.model.lm_head
 
     block_prec = precision.blocks["default"]
+    if block_prec.is_float:
+        # FP weights — nothing to configure here.
+        return
     arg = lambda module: (
         isinstance(module, (QuantizedConv2d, QuantizedLinear))
         and module.param_quantizers["weight"]
@@ -56,6 +80,11 @@ def _set_lm_head_precision(
 ):
     if lm_head is None:
         lm_head = quantsim.model.model.lm_head
+    if precision.is_float:
+        # FP lm_head — drop the weight quantizer entirely.
+        if "weight" in lm_head.param_quantizers:
+            lm_head.param_quantizers["weight"] = None
+        return
     arg = lambda module: (module is lm_head)
     if precision.granularity == Granularity.LPBQ:
         set_grouped_blockwise_quantization_for_weights(

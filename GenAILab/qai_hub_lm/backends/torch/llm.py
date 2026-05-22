@@ -9,7 +9,11 @@ import torch
 
 from aimet_torch.common.defs import QuantScheme
 from aimet_torch.onnx_utils import map_torch_types_to_onnx
-from aimet_torch.v2.nn.true_quant import QuantizationMixin
+from aimet_torch.v2.nn.true_quant import (
+    QuantizationMixin,
+    QuantizedConv2d,
+    QuantizedLinear,
+)
 from aimet_torch.v2.utils import remove_activation_quantizers
 from aimet_torch import QuantizationSimModel
 
@@ -28,6 +32,7 @@ from GenAILab.qai_hub_lm.models.base import LLM
 
 from GenAILab.qai_hub_lm.backends.torch.quantsim_utils import (
     _apply_block_granularity_to_decoder_stack,
+    _remove_decoder_block_weight_quantizers,
     _set_lm_head_precision,
 )
 
@@ -60,7 +65,10 @@ class LLM_Torch(LLM):
         model = cls.instantiate_model(model_id, small_model)
         model = model.to(dtype=dtype)
 
-        default_param_bw = precision.blocks["default"].qtype.bits
+        block_prec = precision.blocks["default"]
+        # default_param_bw must be an int; when block weights are FP we strip
+        # the weight quantizers below, so the value here is a placeholder.
+        default_param_bw = 8 if block_prec.is_float else block_prec.qtype.bits
         default_output_bw = (
             16
             if precision.activations in (float16, float32)
@@ -96,12 +104,21 @@ class LLM_Torch(LLM):
 
         # Set LM Head precision if specified
         _set_lm_head_precision(quantsim, precision.lm_head)
-        # Apply block-level granularity (LPBQ/BQ) if configured
-        _apply_block_granularity_to_decoder_stack(quantsim, precision)
+        # If block weights are FP, drop their weight quantizers entirely.
+        # Otherwise, apply block-level granularity (LPBQ/BQ) if configured.
+        if block_prec.is_float:
+            _remove_decoder_block_weight_quantizers(quantsim)
+        else:
+            _apply_block_granularity_to_decoder_stack(quantsim, precision)
 
+        # Plain (non-VLM) LLMs do not wire embed_tokens into SimCollection,
+        # so precision.embedding cannot actually be applied. Reject any
+        # override to avoid silently ignoring user intent. VLM subclasses
+        # honor it via their own instantiate_quantsim overrides.
         if precision.embedding != int16:
             raise NotImplementedError(
-                "Embedding quantization other than int16 is not currently supported for LLMs"
+                "Embedding quantization other than int16 is not currently "
+                "supported for plain LLMs."
             )
 
         return SimCollection(backbone=quantsim, config=model.config)

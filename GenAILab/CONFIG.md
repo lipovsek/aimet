@@ -254,7 +254,7 @@ precision:
 | -------------- | -------------------------- | ------------------ | ----- |
 | `activations`  | int / str (qtype alias)    | `int16`            | Accepts `int4`, `int8`, `int16`, `float16`, `float32`. Setting an FP value disables activation quantizers and forces KV cache + embedding to the same FP type at runtime. |
 | `kv_cache`     | int / str                  | `int8`             | Auto-overridden to FP if `activations` is FP. |
-| `embedding`    | int / str                  | `int16`            | Plain (non-VLM) LLMs do not currently apply this — embedding stays in FP regardless. VLM subclasses honor it. |
+| `embedding`    | int / str                  | `int16`            | Plain (non-VLM) LLMs only support `int16`; any other value raises `NotImplementedError` since the embedding isn't wired into the sim. VLM subclasses honor any value. |
 | `lm_head`      | int / str / dict           | `{qtype: int8, granularity: PCQ}` | See [WeightPrecision](#weightprecision). FP qtypes are accepted (drop the lm_head weight quantizer). |
 | `blocks`       | int / str / flat dict / `{default: dict}` | `{default: {qtype: int4, granularity: PCQ}}` | Per-component block precision. Only `default` is currently accepted as a key. FP qtypes accepted. |
 | `visual`       | dict                       | —                  | VLM-only. Sub-keys `weight` (a `WeightPrecision` dict, INT only) and `activations` (qtype, default `int16`). |

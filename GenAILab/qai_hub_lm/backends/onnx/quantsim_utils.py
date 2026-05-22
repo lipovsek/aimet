@@ -137,6 +137,14 @@ def _set_lm_head_precision(
 ):
     # todo: update placing LM head in LPBQ/BQ if specified
     # todo: update this to support weights in O, I format (like from torch.onnx.export)
+    if precision.is_float:
+        # FP lm_head — disable the lm_head weight quantizer.
+        for weight in _get_lm_head_weights(quantsim_model.model.model):
+            if weight.name in quantsim_model.qc_quantize_op_dict:
+                quantizer = quantsim_model.qc_quantize_op_dict[weight.name]
+                quantizer.reset_encoding_stats()
+                quantizer.enabled = False
+        return
     if precision.granularity == Granularity.LPBQ:
         set_lpbq_for_params(
             sim=quantsim_model,
@@ -166,11 +174,34 @@ def _get_lm_head_weights(quantsim_model: onnx.ModelProto):
                     yield weight
 
 
+def _remove_decoder_block_weight_quantizers(quantsim_model: QuantizationSimModel):
+    """Disable weight quantizers on decoder-stack Gemm/MatMul/Conv ops.
+
+    Used when ``precision.blocks.qtype`` is a floating-point type. lm_head
+    weights and activation/KV quantizers are left untouched.
+    """
+    lm_head_nodes = set(_get_lm_head_node_names(quantsim_model))
+    target_op_types = {"Gemm", "MatMul", "Conv"}
+    weight_param_names: set[str] = set()
+    for node in quantsim_model.model.model.graph.node:
+        if node.op_type in target_op_types and node.name not in lm_head_nodes:
+            if len(node.input) >= 2:
+                weight_param_names.add(node.input[1])
+
+    for op_name, qc_op in quantsim_model.qc_quantize_op_dict.items():
+        if op_name in weight_param_names:
+            qc_op.reset_encoding_stats()
+            qc_op.enabled = False
+
+
 def _apply_block_granularity_to_decoder_stack(
     quantsim_model: QuantizationSimModel, precision: PrecisionConfig
 ):
     """Apply block-level granularity (LPBQ/BQ) to weight quantizers if configured."""
     block_prec = precision.blocks["default"]
+    if block_prec.is_float:
+        # FP weights — nothing to configure here.
+        return
     if block_prec.granularity == Granularity.LPBQ:
         set_grouped_blockwise_quantization_for_weights(
             sim=quantsim_model,

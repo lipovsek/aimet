@@ -21,6 +21,7 @@ from GenAILab.qai_hub_lm.precision import (
     PrecisionConfig,
     float16,
     float32,
+    int8,
     int16,
 )
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
@@ -40,6 +41,7 @@ from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
     _set_lm_head_precision,
     _apply_block_granularity_to_decoder_stack,
     _remove_activation_quantizers,
+    _remove_decoder_block_weight_quantizers,
     get_ort_providers,
     AttributePatch,
 )
@@ -125,7 +127,11 @@ class LLM_ONNX(LLM):
             )
             config = AutoConfig.from_pretrained(model_id)
 
-        default_param_qtype = precision.blocks["default"].qtype
+        block_prec = precision.blocks["default"]
+        # default_param_qtype must be int for the quantsim wiring; when block
+        # weights are FP we strip those weight quantizers below, so int8 here
+        # is just a placeholder.
+        default_param_qtype = int8 if block_prec.is_float else block_prec.qtype
         default_activation_qtype = precision.activations
 
         with (
@@ -154,15 +160,25 @@ class LLM_ONNX(LLM):
         _set_lm_head_precision(quant_sim, precision.lm_head)
         # Tie KV cache, and set quantization type
         _resolve_kv_cache_quantization(quant_sim, precision.resolve_kv_cache_qtype())
-        # Apply block-level granularity (LPBQ/BQ) if configured
-        _apply_block_granularity_to_decoder_stack(quant_sim, precision)
+        # If block weights are FP, drop their weight quantizers entirely.
+        # Otherwise, apply block-level granularity (LPBQ/BQ) if configured.
+        if block_prec.is_float:
+            _remove_decoder_block_weight_quantizers(quant_sim)
+        else:
+            _apply_block_granularity_to_decoder_stack(quant_sim, precision)
 
         if default_activation_qtype in (float16, float32):
             _remove_activation_quantizers(quant_sim)
 
+        # Plain (non-VLM) LLMs do not wire embed_tokens into SimCollection,
+        # so the runner's quantize_embedding_weights() call is always
+        # skipped. Reject any override to avoid silently ignoring user
+        # intent. VLM subclasses honor it via their own instantiate_quantsim
+        # overrides.
         if precision.embedding != int16:
             raise NotImplementedError(
-                "Embedding quantization other than int16 is not currently supported for LLMs"
+                "Embedding quantization other than int16 is not currently "
+                "supported for plain LLMs."
             )
 
         return SimCollection(quant_sim, config=config)
