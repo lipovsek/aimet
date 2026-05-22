@@ -30,3 +30,8 @@ except ImportError:
     warnings.warn(
         "Qwen 3VL is not available. Please upgrade to a later version of transformers to use this model."
     )
+
+try:
+    from GenAILab.qai_hub_lm.backends.torch.internvl import InternVL_Torch
+except ImportError:
+    pass

@@ -33,3 +33,8 @@ try:
     from GenAILab.qai_hub_lm.backends.onnx.gemma4 import Gemma4_ONNX
 except ImportError:
     pass
+
+try:
+    from GenAILab.qai_hub_lm.backends.onnx.internvl import InternVL_ONNX
+except ImportError:
+    pass

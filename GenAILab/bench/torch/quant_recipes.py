@@ -255,7 +255,9 @@ class SpinQuant(QuantizationTechnique):
         visual_encoder = quantsim.model.visual
         # Determine language backbone hidden size from the generator's config. Could also be determined from weight shapes
         config = generator.config
-        text_config = config.text_config if hasattr(config, "text_config") else config
+        from GenAILab.qai_hub_lm.models.utils.layer_cache import _resolve_text_config
+
+        text_config = _resolve_text_config(config)
         language_backbone_hidden_size = text_config.hidden_size
 
         # Find mergers and interface from SpinQuant model config registry.

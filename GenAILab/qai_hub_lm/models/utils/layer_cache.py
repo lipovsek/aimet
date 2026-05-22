@@ -91,11 +91,15 @@ def _resolve_text_config(config: PretrainedConfig) -> PretrainedConfig:
     """Resolve a composite VLM config to its text decoder config.
 
     VLM configs (e.g. Gemma3Config) nest text decoder attributes under
-    ``text_config``.  Pure text LLM configs have them at the top level.
+    ``text_config``.  InternVL uses ``llm_config`` instead.
+    Pure text LLM configs have them at the top level.
     """
     text_config = getattr(config, "text_config", None)
     if text_config is not None and hasattr(text_config, "num_hidden_layers"):
         return text_config
+    llm_config = getattr(config, "llm_config", None)
+    if llm_config is not None and hasattr(llm_config, "num_hidden_layers"):
+        return llm_config
     return config
 
 

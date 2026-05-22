@@ -122,7 +122,7 @@ class DiskBackedModelCache:
             embedding = None
 
         config = (
-            AutoConfig.from_pretrained(str(config_path))
+            AutoConfig.from_pretrained(str(entry_dir), trust_remote_code=True)
             if config_path.exists()
             else None
         )

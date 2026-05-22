@@ -193,6 +193,7 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
         model_kwargs = {
             "attention_mask": attention_mask,
             "past_key_values": kv_cache,
+            "use_cache": True,
             "num_logits_to_return": 0,
             "return_dict": False,
             **extra_kwargs,
