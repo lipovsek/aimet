@@ -567,7 +567,7 @@ class LazyMMMUDataset(torch.utils.data.Dataset):
         text = self.processor.apply_chat_template(
             messages,
             tokenize=False,
-            add_generation_prompt=True,
+            continue_final_message=True,
             enable_thinking=False,
         )
         if self.image_size is not None:
