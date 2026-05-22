@@ -25,7 +25,7 @@ on:
         default: false
 
 env:
-  PUBLIC_REPO: "quic/aimet"
+  PUBLIC_REPO: "qualcomm/aimet"
   REPO_DIR: "aimet-repo"
   DOCS_REPO: "quic/aimet-pages"
   DOCS_REPO_DIR: "aimet-pages-repo"
@@ -109,7 +109,7 @@ jobs:
       - name: Public release branch to public
         run: |
           cd ${{ env.REPO_DIR }}
-          git remote add public-origin https://${{ secrets.AIMET_CI }}@github.com/quic/aimet.git
+          git remote add public-origin https://${{ secrets.AIMET_BOT_PUB_GITHUB_TOKEN }}@github.com/qualcomm/aimet.git
           git push public-origin ${{ github.ref_name }}:${{ github.ref_name }}
 
       - name: Download artifacts
@@ -134,7 +134,7 @@ jobs:
       - name: Release wheels on Github
         if: ${{ inputs.push_to_github }} == true
         env:
-          GITHUB_TOKEN: ${{ secrets.AIMET_CI }}
+          GITHUB_TOKEN: ${{ secrets.AIMET_BOT_PUB_GITHUB_TOKEN }}
           tag: ${{ inputs.version }}
         run: |
           mkdir assets_to_upload
