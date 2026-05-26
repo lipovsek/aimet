@@ -22,32 +22,49 @@ from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import ParamUtils
 
-from aimet_onnx.experimental.spinquant.fuse_norm import (
-    _OP_OUTPUTS_TO_IGNORE,
-    _find_norm_scale_and_consumers,
-    _get_weight_product,
-    fuse_norm_layers_into_linears,
-    find_active_norms,
-)
-from aimet_onnx.experimental.spinquant.block_identifier import (
+from aimet_onnx.experimental.spinquant.model_analysis import (
     ActiveNorm,
     DecoderBlockRoleMap,
     DecoderModelRoleMap,
+    find_active_norms,
+    find_merger_linear2,
     get_decoder_block_boundaries,
     get_decoder_role_map,
-    find_merger_linear2,
+    get_bias_product as _get_bias_product,
+    get_weight_product as _get_weight_product,
+    infer_hidden_size as _infer_hidden_size,
 )
-from aimet_onnx.experimental.spinquant.apply_rotation import (
-    apply_r1_rotation,
-    apply_r1_rotation_merger,
-    _apply_transform,
-    _right_multiply,
-    _left_multiply,
-    _get_bias_product,
+from aimet_onnx.experimental.spinquant.model_analysis.norm_detection import (
+    _find_norm_scale_and_consumers,
+)
+from aimet_onnx.experimental.spinquant.transforms import (
+    apply_transform as _apply_transform,
+    fuse_norm_layers_into_linears,
+    left_multiply as _left_multiply,
+    right_multiply as _right_multiply,
+)
+from aimet_onnx.experimental.spinquant.passes.r1 import (
+    _rotate_backbone,
+    _rotate_merger_linear2,
     _validate_merger_linear2,
 )
+from aimet_onnx.experimental.spinquant.transforms.rotation_primitives import (
+    hadamard_rotation_matrix,
+)
 from aimet_onnx.experimental.spinquant import apply_spinquant
-from aimet_onnx.experimental.spinquant.apply_rotation import _infer_hidden_size
+
+
+def apply_r1_rotation(model, role_map, backbone_hidden_size):
+    """Test shim for the legacy ``apply_r1_rotation`` API."""
+    _rotate_backbone(model, role_map, hadamard_rotation_matrix(backbone_hidden_size))
+
+
+def apply_r1_rotation_merger(model, merger_linear2, backbone_hidden_size):
+    """Test shim for the legacy ``apply_r1_rotation_merger`` API."""
+    _rotate_merger_linear2(
+        model, merger_linear2, hadamard_rotation_matrix(backbone_hidden_size)
+    )
+
 
 AimetLogger.set_level_for_all_areas(logging.INFO)
 

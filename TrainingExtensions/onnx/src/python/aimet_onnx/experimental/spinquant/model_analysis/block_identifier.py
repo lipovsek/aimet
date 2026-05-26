@@ -1,12 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Topology-driven decoder block boundary detection.
-
-An *active norm* is an affine RMSNorm whose gamma-scale Mul has at least one
-downstream weight MatMul/Gemm/Conv reachable through grid-preserving ops. Internal
-norms (e.g. Qwen3 q_norm/k_norm) whose outputs feed into attention ops before
-reaching any linear weight are excluded automatically.
+"""Topology-driven decoder block boundary detection and linear role mapping.
 
 Decoder block detection relies on the premise that transformer decoder stacks
 contain exactly ``k`` active norms per block plus one final active norm:
@@ -21,14 +16,17 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.experimental.spinquant.fuse_norm import (
-    ActiveNorm,
-    find_active_norms,
-    _get_weight_product,
-)
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto
+
+from aimet_onnx.experimental.spinquant.model_analysis.norm_detection import (
+    ActiveNorm,
+    find_active_norms,
+)
+from aimet_onnx.experimental.spinquant.model_analysis.weight_utils import (
+    get_weight_product,
+)
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 
@@ -79,10 +77,9 @@ def get_decoder_block_boundaries(
 ) -> Tuple[List[Tuple[Op, Op]], List[ActiveNorm]]:
     """Return block boundaries and active norms for each decoder block.
 
-    The structural assumption is ``total_active_norms == k * N + 1``, where ``k`` is the
-    number of active norms per block and ``N`` is the number of decoder blocks.
-
-    Block *i* spans from ``active[k*i].norm_op`` to ``active[k*(i+1)].norm_op``.
+    The structural assumption is ``total_active_norms == k * N + 1``, where ``k``
+    is the number of active norms per block and ``N`` is the number of decoder
+    blocks. Block *i* spans ``[active[k*i].norm_op, active[k*(i+1)].norm_op)``.
 
     :param model: ONNX ModelProto.
     :param connected_graph: ConnectedGraph built from model.
@@ -93,10 +90,9 @@ def get_decoder_block_boundaries(
       Defaults to 2 (Llama/Qwen2/Mistral/Phi family).
       NOTE: Do NOT count internal norms (e.g. Qwen3 q_norm/k_norm) — these
       are filtered out automatically and must not be included in this count.
-    :return: Tuple of (block_boundaries, active_norms), where block_boundaries is a list
-        of ``(start_op, end_op)`` tuples one per decoder block, and active_norms is the
-        full list of active norms in topological order. Returning active_norms avoids
-        rescanning the graph in downstream steps (role mapping, norm fusion).
+    :return: ``(block_boundaries, active_norms)``. ``block_boundaries`` is a
+        list of ``(start_op, end_op)`` tuples one per decoder block, and
+        ``active_norms`` is the full list of active norms in topological order.
     :raises ValueError: If active norm count is inconsistent with ``k``, or if
         ``expected_num_blocks`` is given and does not match the detected count.
     """
@@ -186,8 +182,8 @@ def get_decoder_role_map(
       before the first block boundary.
 
     :param connected_graph: ConnectedGraph built from the model.
-    :param block_boundaries: List of ``(start_op, end_op)`` tuples
-    :param active_norms: Active norms in topological order
+    :param block_boundaries: List of ``(start_op, end_op)`` tuples.
+    :param active_norms: Active norms in topological order.
     :param active_norms_per_block: Expected number of active norms per decoder
         block. Must match the value used in :func:`get_decoder_block_boundaries`.
         Defaults to 2 (Llama/Qwen2/Mistral/Phi family).
@@ -198,7 +194,7 @@ def get_decoder_role_map(
     weighted_linears_topo = [
         op
         for op in connected_graph.ordered_ops
-        if op.type in _LINEAR_TYPES and _get_weight_product(op)[0] is not None
+        if op.type in _LINEAR_TYPES and get_weight_product(op)[0] is not None
     ]
 
     result = DecoderModelRoleMap()
@@ -334,58 +330,4 @@ def get_decoder_role_map(
         [op.name for op in result.lm_head],
     )
 
-    return result
-
-
-def find_merger_linear2(connected_graph: ConnectedGraph) -> List[Op]:
-    """Find PatchMerger linear_fc2 ops in a visual encoder ONNX graph.
-
-    Identifies all weighted linear ops that are leaf nodes in the weighted-linear
-    subgraph — i.e. have no downstream weighted linear consumers. These are the
-    PatchMerger linear_fc2 layers that write into the language backbone residual
-    stream and must always be rotated with R_L when the backbone is SpinQuant-rotated.
-
-    NOTE:
-        Assumes the PatchMerger linear_fc2 is the topological leaf of the weighted-linear
-        subgraph — i.e. no downstream weighted linear follows it. This holds for Qwen2.5-VL
-        and Qwen3-VL. Unknown architectures will be misdetected; an
-        explicit override will be added as part of the general block-detection fallback.
-
-    :param connected_graph: ConnectedGraph built from visual.onnx.
-    :return: List of merger_linear2 ops in topological order.
-    :raises ValueError: If no merger_linear2 ops are found.
-    """
-    weighted_linears_topo = [
-        op
-        for op in connected_graph.ordered_ops
-        if op.type in _LINEAR_TYPES and _get_weight_product(op)[0] is not None
-    ]
-    weighted_linear_ids = {id(op) for op in weighted_linears_topo}
-
-    def _has_downstream_weighted_linear(op: Op) -> bool:
-        visited = set()
-        stack = list(op.output_ops)
-        while stack:
-            cur = stack.pop()
-            if id(cur) in visited:
-                continue
-            visited.add(id(cur))
-            if id(cur) in weighted_linear_ids:
-                return True
-            stack.extend(cur.output_ops)
-        return False
-
-    result = [
-        op for op in weighted_linears_topo if not _has_downstream_weighted_linear(op)
-    ]
-
-    if not result:
-        raise ValueError(
-            "merger_linear2 not detected: no leaf weighted linear op found in the ViT graph."
-        )
-
-    _logger.info(
-        "Visual: merger_linear2=%s will be rotated with R_L.",
-        [op.name for op in result],
-    )
     return result
