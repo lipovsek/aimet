@@ -2473,15 +2473,8 @@ class QuantizationSimModel:
                 onnx_opset_version,
             )
 
-        # Note: Must inline supergroups before version conversion, since version_converter does not handle functions
-        ir_model = onnx_ir.from_proto(self.model.model)
-        if any(
-            node.domain == AIMET_SUPERGROUP_DOMAIN
-            for node in ir_model.graph.all_nodes()
-        ):
-            inline_all_supergroups(ir_model)
-
-        model_copy = onnx_ir.to_proto(ir_model)
+        model_copy = onnx.ModelProto()
+        model_copy.CopyFrom(self.model.model)
 
         self._overwrite_parameters(model_copy, self._get_qdq_parameters())
 
@@ -2552,6 +2545,15 @@ class QuantizationSimModel:
                 qdq_node_info["float_types"].append(
                     self.activation_dtypes.get(name, onnx.TensorProto.FLOAT)
                 )
+
+        # Note: Must inline supergroups before version conversion, since version_converter does not handle functions
+        ir_model = onnx_ir.from_proto(model_copy)
+        if any(
+            node.domain == AIMET_SUPERGROUP_DOMAIN
+            for node in ir_model.graph.all_nodes()
+        ):
+            inline_all_supergroups(ir_model)
+            model_copy = onnx_ir.to_proto(ir_model)
 
         if onnx_opset_version < desired_onnx_opset_version:
             model_copy = _convert_version(model_copy, desired_onnx_opset_version)
