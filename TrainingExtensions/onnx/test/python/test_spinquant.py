@@ -1091,6 +1091,60 @@ class TestDecoderRoleMap:
         role_map = get_decoder_role_map(cg, blocks, active_norms)
         assert role_map.embed_tokens == []
 
+    def test_extra_prologue_gather_with_scalar_constant_excluded(self):
+        """Non-embedding Gather ops (e.g. position-id / shape-derived lookups) with
+        scalar or 1-D static constants must not be admitted into ``role_map.embed_tokens``.
+
+        Real ONNX exports (e.g. Qwen3-0.6B with rotary preprocessing) produce extra
+        ``Gather(constant_table, dynamic_index)`` ops in the prologue whose static
+        input is a small 1-D or scalar tensor — not a [vocab, hidden] embedding
+        table. Those must be filtered out so ``infer_hidden_size`` doesn't read
+        ``shape[-1]`` of a 0-/1-D tensor.
+        """
+        torch.manual_seed(0)
+
+        class _DecoderWithPrologueGather(nn.Module):
+            """LLaMA decoder + a non-embedding Gather over a 1-D constant in the prologue.
+
+            The auxiliary Gather output participates in the model output, so ONNX
+            constant-folding can't strip it. This mimics what real exports produce
+            in the rotary / position-id preprocessing — Gathers over scalar / 1-D
+            static constants that must not be confused with the embedding table.
+            """
+
+            def __init__(self):
+                super().__init__()
+                self.embed_tokens = nn.Embedding(_VOCAB, _H)
+                # 1-D table that gets indexed dynamically; exports as a Gather
+                # whose static data input is a 1-D constant — NOT an embedding.
+                self.register_buffer(
+                    "aux_table", torch.arange(_SEQ, dtype=torch.float32)
+                )
+                self.block0 = _LlamaBlock()
+                self.block1 = _LlamaBlock()
+                self.norm = RMSNorm(_H, **_NORM_KW)
+                self.lm_head = nn.Linear(_H, _VOCAB, bias=False)
+
+            def forward(self, token_ids):
+                x = self.embed_tokens(token_ids)
+                # Gather(aux_table, token_ids[:, 0]): static data is 1-D, dynamic index.
+                # ids[:, 0] also produces a Gather(input, scalar_const_index).
+                aux = self.aux_table[token_ids[:, 0]]  # [B]
+                x = self.block0(x)
+                x = self.block1(x)
+                # Use aux in the output so constant folding can't remove the Gathers.
+                return self.lm_head(self.norm(x)) + aux.unsqueeze(-1).unsqueeze(-1)
+
+        model = _export_decoder_with_ids(_DecoderWithPrologueGather())
+        cg = ConnectedGraph(model)
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks, active_norms)
+
+        # Exactly one embed_tokens — the [vocab, hidden] embedding, not the 1-D Gather.
+        assert len(role_map.embed_tokens) == 1
+        # And infer_hidden_size doesn't IndexError on a scalar/1-D shape.
+        assert _infer_hidden_size(model, role_map) == _H
+
     def test_wrong_active_norms_per_block_raises(self):
         """Passing active_norms_per_block inconsistent with detected norms raises ValueError."""
         torch.manual_seed(0)

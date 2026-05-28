@@ -34,6 +34,28 @@ _LINEAR_TYPES = frozenset(("MatMul", "Gemm", "Conv"))
 _EMBEDDING_TYPES = frozenset(("Gather",))
 
 
+def _is_embedding_table_gather(op: Op) -> bool:
+    """Return True if ``op`` is a token-embedding ``Gather`` (data is a 2-D table).
+
+    A real embedding ``Gather`` has the embedding *table* as its first (data)
+    input — a static rank-2 ``[vocab, hidden]`` initializer. Other Gathers in
+    the prologue (e.g. position-id lookups, ``shape``-derived indexers) hold
+    static scalar or 1-D constants on input 0 and must be excluded.
+
+    :param op: Candidate Gather op.
+    :return: True iff ``op`` looks like a token-embedding lookup.
+    """
+    if not op.inputs:
+        return False
+    data_inp = op.inputs[0]
+    if not (data_inp.is_parm or data_inp.is_const):
+        return False
+    shape = getattr(data_inp, "shape", None)
+    if shape is None:
+        return False
+    return len(shape) >= 2
+
+
 @dataclass
 class DecoderBlockRoleMap:
     """Role map for the weighted linear ops in one decoder block.
@@ -313,7 +335,7 @@ def get_decoder_role_map(
         for op in connected_graph.ordered_ops
         if op.type in _EMBEDDING_TYPES
         and op_topo_idx[id(op)] < first_start_topo
-        and any(inp.is_parm or inp.is_const for inp in op.inputs)
+        and _is_embedding_table_gather(op)
     ]
     if not result.embed_tokens:
         _logger.info(

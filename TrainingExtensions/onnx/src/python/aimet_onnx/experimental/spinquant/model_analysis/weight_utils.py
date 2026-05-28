@@ -88,11 +88,17 @@ def infer_hidden_size(model: ModelProto, role_map) -> int:
     :return: The hidden dimension size.
     """
     for op in role_map.embed_tokens:
+        # Only the data input (a [vocab, hidden] table) yields hidden_size;
+        # other static inputs (e.g. axis attributes, indices) are not embedding tables.
         for inp in op.inputs:
-            if inp.is_parm or inp.is_const:
-                tensor = ParamUtils.get_param_by_name(model, inp.name)
-                if tensor is not None:
-                    return numpy_helper.to_array(tensor).shape[-1]
+            if not (inp.is_parm or inp.is_const):
+                continue
+            tensor = ParamUtils.get_param_by_name(model, inp.name)
+            if tensor is None:
+                continue
+            shape = numpy_helper.to_array(tensor).shape
+            if len(shape) >= 2:
+                return shape[-1]
 
     # Fallback: lm_head reading layer.
     # Gemm transB=1 stores W [vocab, hidden] -> hidden = shape[-1].
