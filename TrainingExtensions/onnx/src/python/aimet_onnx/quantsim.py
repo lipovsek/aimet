@@ -2543,7 +2543,7 @@ class QuantizationSimModel:
                 qdq_node_info["node_name_prefixes"].append(name)
                 qdq_node_info["encodings"].append(encoding)
                 qdq_node_info["float_types"].append(
-                    self.activation_dtypes.get(name, onnx.TensorProto.FLOAT)
+                    self.activation_dtypes.get(name, np.float32)
                 )
 
         # Note: Must inline supergroups before version conversion, since version_converter does not handle functions

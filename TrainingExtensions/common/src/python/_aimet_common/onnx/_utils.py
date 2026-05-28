@@ -37,7 +37,7 @@ def _add_onnx_qdq_node(
     output_name: str,
     node_name_prefix: str,
     encodings: dict,
-    float_type: int,
+    float_type: np.dtype,
     onnx_opset: int,
     prequantize_constants: bool,
     base_dir: str = "",
