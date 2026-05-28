@@ -5,3 +5,4 @@ qwen_vl_utils
 onnxruntime-gpu
 einops
 timm
+click
