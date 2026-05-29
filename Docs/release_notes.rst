@@ -6,6 +6,34 @@
 Release notes
 #############
 
+2.32.0
+======
+
+* Bug fixes and Improvements
+    * ONNX
+        * Add C++ support for bfloat16 quantization (`ca7d3e01b`_)
+        * Fix large model support with protobuf 7.x (`9ef22519a`_)
+        * Skip QDQ pair scale/zp in duplicate_shared_initializers (`05e8332ce`_)
+        * Handle Identity passthrough in duplicate_shared_initializers (`1b27d9841`_)
+        * Fix SpinQuant embed_tokens filter to exclude non-embedding Gathers (`81b80411a`_)
+        * Inline fused supergroups after encoding propagation (`68fdcb673`_)
+
+    * Torch
+        * Disable output quantizers of reused modules before output encoding propagation (`b66b9a1e0`_)
+        * Inline Q/DQ nodes statically without re-invoking torch.export (`de79ae495`_)
+        * Stop incorrect encoding propagation through non-grid-preserving ops (`66b2834fc`_)
+
+.. _ca7d3e01b: https://github.com/qualcomm/aimet/commit/ca7d3e01b
+.. _9ef22519a: https://github.com/qualcomm/aimet/commit/9ef22519a
+.. _05e8332ce: https://github.com/qualcomm/aimet/commit/05e8332ce
+.. _1b27d9841: https://github.com/qualcomm/aimet/commit/1b27d9841
+.. _81b80411a: https://github.com/qualcomm/aimet/commit/81b80411a
+.. _b66b9a1e0: https://github.com/qualcomm/aimet/commit/b66b9a1e0
+.. _de79ae495: https://github.com/qualcomm/aimet/commit/de79ae495
+.. _68fdcb673: https://github.com/qualcomm/aimet/commit/68fdcb673
+.. _66b2834fc: https://github.com/qualcomm/aimet/commit/66b2834fc
+
+
 2.31.0
 ======
 
