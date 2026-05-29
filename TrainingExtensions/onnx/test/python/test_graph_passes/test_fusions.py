@@ -3,10 +3,13 @@
 
 """Tests for ONNX graph fusions."""
 
+import json
+import tempfile
 import os
 import pytest
 import numpy as np
 import torch
+import torch.nn.functional as F
 import onnx
 import onnx_ir
 import onnxruntime
@@ -862,3 +865,270 @@ class TestSuperGroupNodeRenaming:
 
         all_names = [node.name for node in model.graph.all_nodes()]
         assert len(all_names) == len(set(all_names))
+
+
+@pytest.fixture(scope="module")
+def htp_v81_config_with_masked_softmax_supergroup():
+    """
+    Temporary config file for testing masked softmax supergroup fusion.
+    """
+    # TODO: Include this into official HTP quantsim config files
+    #       once QAIRT/HTP toolchain starts supporting MaskedSoftmax seamlessly.
+    from aimet_onnx.common.quantsim_config.quantsim_config import _get_config_file
+
+    htp_v81_config = json.load(open(_get_config_file("htp_v81")))
+    htp_v81_config["supergroup_pass_list"].append("MaskedSoftmax")
+    htp_v81_config["op_type"] |= {
+        "MaskedSoftmax": {"encoding_constraints": {"min": 0.0, "max": 1.0}}
+    }
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_path = os.path.join(
+            temp_dir, "htp_v81_config_with_masked_softmax_supergroup.json"
+        )
+
+        with open(config_path, "w") as f:
+            json.dump(htp_v81_config, f)
+
+        yield config_path
+
+
+class _MaskedSoftmaxInterface(torch.nn.Module):
+    mask_dtype: torch.dtype
+
+    def __init__(
+        self,
+        mask_val: float,
+        reducemin_dim: int,
+        softmax_dim: int,
+    ):
+        super().__init__()
+        self.mask_val = mask_val
+        self.reducemin_dim = reducemin_dim
+        self.softmax_dim = softmax_dim
+
+    def forward(self, input: torch.Tensor, mask: torch.Tensor):
+        mask_val = input.amin([self.reducemin_dim], keepdim=True) + self.mask_val
+
+        return F.softmax(
+            torch.where(mask, input, mask_val),
+            dim=self.softmax_dim,
+        )
+
+    def to_onnx(self) -> onnx.ModelProto:
+        qk, mask = self.sample_input()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "masked_softmax.onnx")
+            torch.onnx.export(
+                self,
+                (qk, mask),
+                path,
+                input_names=["qk", "mask"],
+                output_names=["output"],
+                dynamo=False,
+            )
+            return onnx.load(path)
+
+    def sample_input(self):
+        qk = torch.randn(1, 3, 3, 3)
+        mask = torch.tensor(
+            [
+                [1, 0, 0],
+                [1, 1, 0],
+                [1, 1, 1],
+            ],
+            dtype=self.mask_dtype,
+        ).reshape(1, 1, 3, 3)
+        return qk, mask
+
+
+class MaskedSoftmaxPattern1(_MaskedSoftmaxInterface):
+    """
+    Softmax(
+        Where(mask == 0, x, ReduceMin(x, axis=-1) + B),
+        axis=-1,
+    )
+    """
+
+    mask_dtype = torch.float32
+
+    def forward(self, input: torch.Tensor, mask: torch.Tensor):
+        return super().forward(input, mask == 0)
+
+
+class MaskedSoftmaxPattern2(_MaskedSoftmaxInterface):
+    """
+    Softmax(
+        Where(mask != 0, x, ReduceMin(x, axis=-1) + B),
+        axis=-1,
+    )
+    """
+
+    mask_dtype = torch.float32
+
+    def forward(self, input: torch.Tensor, mask: torch.Tensor):
+        return super().forward(input, mask != 0)
+
+
+class MaskedSoftmaxPattern3(_MaskedSoftmaxInterface):
+    """
+    Softmax(
+        Where(mask, x, ReduceMin(x, axis=-1) + B),
+        axis=-1,
+    )
+    """
+
+    mask_dtype = torch.bool
+
+    def forward(self, input: torch.Tensor, mask: torch.Tensor):
+        return super().forward(input, mask)
+
+
+class TestMaskedSoftmaxFusion:
+    @pytest.mark.parametrize(
+        "masked_softmax_cls",
+        [MaskedSoftmaxPattern1, MaskedSoftmaxPattern2, MaskedSoftmaxPattern3],
+    )
+    @pytest.mark.parametrize("mask_val", [float("-inf"), -20.0])
+    @pytest.mark.parametrize("reducemin_dim", [-1, 3])
+    @pytest.mark.parametrize("softmax_dim", [-1, 3])
+    def test_masked_softmax_fusion_match(
+        self,
+        htp_v81_config_with_masked_softmax_supergroup: str,
+        masked_softmax_cls,
+        mask_val: float,
+        reducemin_dim: int,
+        softmax_dim: int,
+    ):
+        """
+        Given: Masked softmax pattern 1
+        When: Create and export quantsim
+        Then: Only qk, mask, and output should be quantized
+        """
+
+        masked_softmax = masked_softmax_cls(
+            mask_val=mask_val,
+            reducemin_dim=reducemin_dim,
+            softmax_dim=softmax_dim,
+        )
+        qk, mask = masked_softmax.sample_input()
+        model = masked_softmax.to_onnx()
+
+        sim = QuantizationSimModel(
+            model, config_file=htp_v81_config_with_masked_softmax_supergroup
+        )
+        sim.compute_encodings([{"qk": qk.numpy(), "mask": mask.numpy()}])
+        qdq_model = sim.to_onnx_qdq()
+
+        ir_model = onnx_ir.from_proto(qdq_model)
+        softmax = None
+        q_nodes = []
+
+        for node in ir_model.graph:
+            if node.op_type == "Softmax":
+                softmax = node
+            elif node.op_type == "QuantizeLinear":
+                q_nodes.append(node)
+
+        assert softmax
+
+        expected_to_be_quantized = {
+            ir_model.graph.inputs[0],  # qk
+            softmax.outputs[0],  # output
+        }
+        if masked_softmax.mask_dtype == torch.float32:
+            expected_to_be_quantized |= {
+                # float32 mask (1st arg of Equal)
+                ir_model.graph.inputs[1],
+                # Constant zero (2nd arg of Equal)
+                ir_model.graph.node("/Constant").outputs[0],
+            }
+
+        assert set(q.inputs[0] for q in q_nodes) == expected_to_be_quantized
+
+        # MaskedSoftmax output should be fixed at [0, 1]
+        (softmax_output_consumer,) = softmax.outputs[0].consumers()
+        assert softmax_output_consumer.op_type == "QuantizeLinear"
+        scale, zero_point = softmax_output_consumer.inputs[1:]
+        assert np.allclose(scale.const_value.numpy(), 1 / 255)
+        assert zero_point.const_value.numpy() == 0
+
+    @pytest.mark.parametrize(
+        "masked_softmax_cls",
+        [MaskedSoftmaxPattern1, MaskedSoftmaxPattern2, MaskedSoftmaxPattern3],
+    )
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"mask_val": -19.9},
+            {"reducemin_dim": 1},
+            {"reducemin_dim": 2},
+            {"softmax_dim": 1},
+            {"softmax_dim": 2},
+        ],
+    )
+    def test_masked_softmax_fusion_mismatch(
+        self,
+        htp_v81_config_with_masked_softmax_supergroup: str,
+        masked_softmax_cls,
+        kwargs,
+    ):
+        """
+        Given: Masked softmax pattern 1
+        When: Create and export quantsim with invalid pattern parameters
+        Then: All tensors in the model should be quantized
+        """
+        kwargs = {
+            "mask_val": float("-inf"),
+            "reducemin_dim": -1,
+            "softmax_dim": -1,
+            **kwargs,
+        }
+        masked_softmax = masked_softmax_cls(**kwargs)
+        qk, mask = masked_softmax.sample_input()
+        model = masked_softmax.to_onnx()
+
+        sim = QuantizationSimModel(
+            model, config_file=htp_v81_config_with_masked_softmax_supergroup
+        )
+        sim.compute_encodings([{"qk": qk.numpy(), "mask": mask.numpy()}])
+        qdq_model = sim.to_onnx_qdq()
+
+        ir_model = onnx_ir.from_proto(qdq_model)
+        reduce_min = add = where = softmax = None
+
+        for node in ir_model.graph:
+            if node.op_type == "ReduceMin":
+                reduce_min = node
+            elif node.op_type == "Add":
+                add = node
+            elif node.op_type == "Where":
+                where = node
+            elif node.op_type == "Softmax":
+                softmax = node
+
+        assert reduce_min and add and where and softmax
+        assert (
+            reduce_min.inputs[0].producer().op_type
+            == add.inputs[0].producer().op_type
+            == add.inputs[1].producer().op_type
+            == where.inputs[1].producer().op_type
+            == where.inputs[2].producer().op_type
+            == softmax.inputs[0].producer().op_type
+            == "DequantizeLinear"
+        )
+        assert (
+            len(reduce_min.outputs[0].consumers())
+            == len(add.outputs[0].consumers())
+            == len(where.outputs[0].consumers())
+            == len(softmax.outputs[0].consumers())
+            == len(softmax.outputs[0].consumers())
+            == 1
+        ) and (
+            reduce_min.outputs[0].consumers()[0].op_type
+            == add.outputs[0].consumers()[0].op_type
+            == where.outputs[0].consumers()[0].op_type
+            == softmax.outputs[0].consumers()[0].op_type
+            == "QuantizeLinear"
+        )

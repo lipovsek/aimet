@@ -9,3 +9,4 @@ from .ir_utils import inline_all_supergroups
 from .layernorm import LayerNormFusion
 from .matmul_add import MatmulAddFusion
 from .rmsnorm import RMSNormFusion
+from .masked_softmax import MaskedSoftmax

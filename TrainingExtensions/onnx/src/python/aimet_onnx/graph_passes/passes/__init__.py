@@ -7,3 +7,4 @@ from . import layernorm
 from . import rmsnorm
 from . import decoder_block
 from . import matmul_add
+from . import masked_softmax
