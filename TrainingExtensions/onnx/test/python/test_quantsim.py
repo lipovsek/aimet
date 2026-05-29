@@ -83,6 +83,7 @@ from .models.models_for_tests import (
     standalone_batchnorm,
     standalone_batchnorm_constants,
     standalone_gemm,
+    standalone_groupnorm,
     standalone_instancenorm,
     standalone_layernorm,
     transposed_conv_model,
@@ -2338,13 +2339,9 @@ class TestQuantSim:
     @pytest.mark.parametrize(
         "model_factory",
         [
-            (lambda: standalone_layernorm((1, 10, 32))),
-            (lambda: standalone_batchnorm((10, 10, 8, 8))),
+            (lambda: standalone_groupnorm((1, 10, 8, 8))),
             (lambda: standalone_instancenorm((1, 10, 32))),
-            (lambda: standalone_layernorm((1, 10, 32))),
-            (lambda: standalone_batchnorm((10, 10, 8, 8))),
-            (lambda: standalone_layernorm((1, 10, 32))),
-            (lambda: standalone_batchnorm((10, 10, 8, 8))),
+            (lambda: test_models.rmsnorm_model(dim=32)),
         ],
     )
     def test_norm_param_bitwidth_follows_output(
@@ -2356,19 +2353,59 @@ class TestQuantSim:
         """
         model = model_factory()
         sim = QuantizationSimModel(
-            model, param_type=param_type, activation_type=activation_type
+            model,
+            param_type=param_type,
+            activation_type=activation_type,
+            config_file="htp_v81",
         )
         for op in sim.connected_graph.ordered_ops:
             if op.type not in (
-                "BatchNormalization",
-                "LayerNormalization",
+                "GroupNormalization",
                 "InstanceNormalization",
+                "RMSNormalization",
             ):
                 continue
             assert (
                 sim.qc_quantize_op_dict[op.inputs[1].name].bitwidth
                 == activation_type.bits
             )
+
+    @pytest.mark.parametrize(
+        "param_type", [aimet_onnx.int4, aimet_onnx.int8, aimet_onnx.int16]
+    )
+    @pytest.mark.parametrize("activation_type", [aimet_onnx.int8, aimet_onnx.int16])
+    @pytest.mark.parametrize(
+        "model_factory",
+        [
+            (lambda: standalone_layernorm((1, 10, 32))),
+            (lambda: standalone_batchnorm((10, 10, 8, 8))),
+        ],
+    )
+    @pytest.mark.parametrize("config_file", ["htp_v68", "htp_v81"])
+    def test_layernorm_batchnorm_param_bitwidth(
+        self, model_factory, param_type, activation_type, config_file
+    ):
+        """
+        Given: LayerNorm/BatchNorm model with various param/activation bitwidth combinations
+        Then: Param quantizer bitwidth should NOT follow output bitwidth.
+              Pre-V73 hardware caps weights at 8-bit; otherwise it stays at param_type bw (>= 8).
+        """
+        model = model_factory()
+        sim = QuantizationSimModel(
+            model,
+            param_type=param_type,
+            activation_type=activation_type,
+            config_file=config_file,
+        )
+        expected_bw = (
+            8
+            if config_file in ("htp_v66", "htp_v68", "htp_v69")
+            else max(param_type.bits, 8)
+        )
+        for op in sim.connected_graph.ordered_ops:
+            if op.type not in ("LayerNormalization", "BatchNormalization"):
+                continue
+            assert sim.qc_quantize_op_dict[op.inputs[1].name].bitwidth == expected_bw
 
     @pytest.mark.parametrize(
         "model_factory, weight_name",

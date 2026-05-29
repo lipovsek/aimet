@@ -291,7 +291,7 @@ class TestLayerNormFusion:
         )
 
         assert "layernorm.weight" in sim.param_names
-        assert sim.qc_quantize_op_dict["layernorm.weight"].bitwidth == 16
+        assert sim.qc_quantize_op_dict["layernorm.weight"].bitwidth == 8
         sim.compute_encodings([make_dummy_input(model_proto)])
 
 

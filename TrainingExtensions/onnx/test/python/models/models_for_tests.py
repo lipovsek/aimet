@@ -4259,6 +4259,24 @@ def standalone_instancenorm(input_shape: tuple[int, int, int]):
     return model
 
 
+def standalone_groupnorm(input_shape: tuple[int, int, int, int], num_groups: int = 2):
+    _, num_channels, *_ = input_shape
+
+    model = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels).eval()
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        model,
+        torch.randn(input_shape),
+        buffer,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+        dynamo=True,
+    )
+    buffer.seek(0)
+    return load_model(buffer)
+
+
 def model_with_ignore_ops(tmpdir):
     class CustomModel(nn.Module):
         def __init__(self):

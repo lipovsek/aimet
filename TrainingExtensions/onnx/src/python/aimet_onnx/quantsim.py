@@ -1101,11 +1101,18 @@ class QuantizationSimModel:
                     if param_quantizer.data_type != QuantizationDataType.int:
                         continue
                     param_quantizer.set_bitwidth(max(param_quantizer.bitwidth, 8))
-                    if output_bw:
-                        param_quantizer.set_bitwidth(output_bw)
-                    if op.type == "GroupNormalization":
+                    if op.type in (
+                        "GroupNormalization",
+                        "InstanceNormalization",
+                        "RMSNormalization",
+                    ):
                         param_quantizer.use_symmetric_encodings = output_symmetry
+                        if output_bw:
+                            param_quantizer.set_bitwidth(output_bw)
                     elif op.type in ("LayerNormalization", "BatchNormalization"):
+                        # Only 8-bit weight kernels are supported before V73
+                        if self._hw_version in {"V66", "V68", "V69"}:
+                            param_quantizer.set_bitwidth(8)
                         param_quantizer.use_symmetric_encodings = (
                             param_quantizer.bitwidth >= 16
                         )
