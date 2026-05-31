@@ -15,6 +15,7 @@ from aimet_onnx.experimental.spinquant.transforms.norm_fusion import (
 )
 from aimet_onnx.experimental.spinquant.transforms.rotation_primitives import (
     apply_transform,
+    block_diag_repeat,
     hadamard_rotation_matrix,
     left_multiply,
     right_multiply,
@@ -24,6 +25,7 @@ from aimet_onnx.experimental.spinquant.transforms.rotation_primitives import (
 
 __all__ = [
     "apply_transform",
+    "block_diag_repeat",
     "fuse_norm_layers_into_linears",
     "hadamard_rotation_matrix",
     "left_multiply",

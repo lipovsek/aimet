@@ -19,9 +19,11 @@ from aimet_onnx.experimental.spinquant.passes.base import (
     SpinquantContext,
 )
 from aimet_onnx.experimental.spinquant.passes.r1 import R1RotationPass
+from aimet_onnx.experimental.spinquant.passes.r2 import R2RotationPass
 
 __all__ = [
     "R1RotationPass",
+    "R2RotationPass",
     "RotationPass",
     "SpinquantContext",
 ]

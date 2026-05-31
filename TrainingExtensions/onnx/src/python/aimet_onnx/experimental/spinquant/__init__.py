@@ -3,6 +3,7 @@
 
 from aimet_onnx.experimental.spinquant.passes import (
     R1RotationPass,
+    R2RotationPass,
     RotationPass,
     SpinquantContext,
 )
@@ -10,6 +11,7 @@ from aimet_onnx.experimental.spinquant.spinquant import apply_spinquant
 
 __all__ = [
     "R1RotationPass",
+    "R2RotationPass",
     "RotationPass",
     "SpinquantContext",
     "apply_spinquant",

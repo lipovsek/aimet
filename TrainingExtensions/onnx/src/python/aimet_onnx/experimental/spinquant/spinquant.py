@@ -4,11 +4,11 @@
 """Top-level SpinQuant API for ONNX QuantizationSimModel.
 
 This module is the entry-point orchestrator. It performs model analysis once,
-builds a :class:`SpinquantContext`, then runs a list of :class:`RotationPass`
-objects (currently just :class:`R1RotationPass`; R2/R3 will plug in here).
+builds a :class:`SpinquantContext`, then runs the rotation passes selected by
+the caller via boolean flags (``enable_r1`` / ``enable_r2``).
 """
 
-from typing import Optional, Sequence
+from typing import List, Optional
 
 import torch
 
@@ -19,10 +19,12 @@ from aimet_onnx.experimental.spinquant.model_analysis import (
     find_merger_linear2,
     get_decoder_block_boundaries,
     get_decoder_role_map,
+    infer_head_dim,
     infer_hidden_size,
 )
 from aimet_onnx.experimental.spinquant.passes import (
     R1RotationPass,
+    R2RotationPass,
     RotationPass,
     SpinquantContext,
 )
@@ -35,7 +37,8 @@ def apply_spinquant(
     visual_sim: Optional[QuantizationSimModel] = None,
     embedding: Optional[torch.Tensor] = None,
     *,
-    rotations: Optional[Sequence[RotationPass]] = None,
+    enable_r1: bool = True,
+    enable_r2: bool = False,
 ) -> None:
     """Apply SpinQuant rotation transforms to an ONNX transformer model.
 
@@ -44,8 +47,8 @@ def apply_spinquant(
 
     1. Analyzing the backbone (decoder block boundaries, role map, hidden size)
        and the optional visual encoder (PatchMerger output projection).
-    2. Validating every requested rotation pass against the analysis.
-    3. Applying every requested pass in order.
+    2. Validating every selected rotation pass against the analysis.
+    3. Applying every selected pass in order (R1 before R2).
     4. Rebuilding ORT sessions once per sim.
 
     Must be called BEFORE ``sim.compute_encodings()``. The rotation modifies float
@@ -60,10 +63,11 @@ def apply_spinquant(
     :param visual_sim: Optional QuantizationSimModel wrapping visual.onnx (VLM only).
     :param embedding: Optional ``torch.Tensor`` of shape ``[vocab, hidden]`` loaded
         from ``embedding.pth`` (VLM only). Rotated in-place with R_L.
-    :param rotations: Sequence of rotation passes to run. Defaults to
-        ``[R1RotationPass()]``. Future R2/R3 passes can be appended here.
-    :raises ValueError: If block detection or role classification fails, if any expected
-        weight is missing or has the wrong shape.
+    :param enable_r1: If ``True`` (default), apply the R1 (residual-stream) rotation.
+    :param enable_r2: If ``True``, apply the R2 (per-head) rotation. Defaults to ``False``.
+        Not supported on architectures with fused QKV projections (e.g. Phi3).
+    :raises ValueError: If no rotation is enabled, if block detection or role
+        classification fails, or if any expected weight is missing / has the wrong shape.
 
     Example (LLM)::
 
@@ -81,8 +85,16 @@ def apply_spinquant(
         backbone_sim.compute_encodings(backbone_calibration_data)
         visual_sim.compute_encodings(visual_calibration_data)
     """
-    if rotations is None:
-        rotations = (R1RotationPass(),)
+    rotations: List[RotationPass] = []
+    if enable_r1:
+        rotations.append(R1RotationPass())
+    if enable_r2:
+        rotations.append(R2RotationPass())
+    if not rotations:
+        raise ValueError(
+            "apply_spinquant requires at least one rotation enabled "
+            "(set enable_r1=True and/or enable_r2=True)."
+        )
 
     ctx = _build_context(backbone_sim, visual_sim, embedding)
 
@@ -112,6 +124,14 @@ def _build_context(
     role_map = get_decoder_role_map(bb_cg, boundaries, active_norms)
     hidden_size = infer_hidden_size(bb_model, role_map)
 
+    # head_dim is only needed by R2; derivation requires a past_value graph
+    # input. Tolerate missing KV-cache inputs here so non-R2 flows still work,
+    # and let R2.validate raise a targeted error when it actually needs the value.
+    try:
+        head_dim = infer_head_dim(bb_model)
+    except ValueError:
+        head_dim = None
+
     visual_merger_linear2 = None
     if visual_sim is not None:
         visual_merger_linear2 = find_merger_linear2(visual_sim.connected_graph)
@@ -123,6 +143,7 @@ def _build_context(
         backbone_role_map=role_map,
         backbone_active_norms=active_norms,
         backbone_hidden_size=hidden_size,
+        backbone_head_dim=head_dim,
         visual_sim=visual_sim,
         visual_merger_linear2=visual_merger_linear2,
         embedding=embedding,

@@ -15,9 +15,16 @@ technique that reduces activation outliers by inserting orthogonal Hadamard rota
 in the model. Because the rotations are absorbed into adjacent weight matrices, the final model
 architecture is unchanged.
 
-AIMET implements **R1 rotations** (fixed Hadamard, no optimization). R1 rotation fuses RMSNorm
-scale weights into downstream linear layers, then applies a Hadamard rotation across the residual
-stream to reduce outliers in Q/K/V/O and gate/up/down projections.
+AIMET implements **R1** and **R2 rotations** (fixed Hadamard, no optimization).
+
+* **R1** fuses RMSNorm scale weights into downstream linear layers, then applies a Hadamard
+  rotation across the residual stream to reduce outliers in Q/K/V/O and gate/up/down projections.
+  Enabled by default.
+* **R2** applies a per-head Hadamard rotation across the attention head dimension, absorbed into
+  V and O projections to reduce outliers in the attention output. Disabled by default; enable via
+  ``enable_r2=True``. Not supported on architectures with fused QKV projections (e.g. Phi3).
+
+The ONNX ``apply_spinquant`` API exposes these as boolean flags ``enable_r1`` and ``enable_r2``.
 
 .. list-table:: Supported architectures
    :widths: 30 20 20

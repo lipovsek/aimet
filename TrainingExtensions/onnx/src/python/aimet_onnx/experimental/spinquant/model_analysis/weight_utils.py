@@ -6,9 +6,12 @@
 from typing import Optional, Tuple
 from onnx import numpy_helper
 
+from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.connectedgraph import Product
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto, ParamUtils
+
+_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 
 
 def get_weight_product(op: Op) -> Tuple[Optional[Product], bool]:
@@ -116,4 +119,45 @@ def infer_hidden_size(model: ModelProto, role_map) -> int:
 
     raise ValueError(
         "Cannot infer hidden_size: no embed_tokens or lm_head initializer weight found in role_map."
+    )
+
+
+def infer_head_dim(model: ModelProto) -> int:
+    """Infer per-head dimension from a ``past_value`` graph input's last axis.
+
+    HF/optimum LLM exports include ``past_value_*`` (or ``past_key_values.*.value``)
+    inputs whose final dimension is ``head_dim`` regardless of the surrounding
+    layout (``[B, num_kv_heads, past_seq, head_dim]`` or
+    ``[B, past_seq, num_kv_heads, head_dim]``). This avoids having to derive
+    ``head_dim`` from ``hidden_size / num_heads``, which is wrong for models
+    that decouple the two (e.g. Gemma3 fixes ``head_dim=256`` independent of
+    hidden size).
+
+    :param model: ONNX ModelProto whose graph inputs are scanned.
+    :return: ``head_dim`` read from the last dim of the first matching input.
+    :raises ValueError: If no ``past_value`` input exists, or if its last dim
+        is not a static positive integer.
+    """
+    for inp in model.graph.input:
+        if "past_value" not in inp.name:
+            continue
+        dims = inp.type.tensor_type.shape.dim
+        if len(dims) == 0:
+            continue
+        last = dims[-1]
+        # Must be a statically-known positive int. Symbolic dims (dim_param set,
+        # or dim_value == 0) cannot be used to derive head_dim.
+        if last.HasField("dim_value") and last.dim_value > 0:
+            head_dim = last.dim_value
+            _logger.info(
+                "Derived head_dim=%d from graph input '%s' (last dim of shape %s).",
+                head_dim,
+                inp.name,
+                [d.dim_value if d.HasField("dim_value") else d.dim_param for d in dims],
+            )
+            return head_dim
+
+    raise ValueError(
+        "Cannot infer head_dim: no graph input matching 'past_value' with a "
+        "static positive last dimension was found."
     )

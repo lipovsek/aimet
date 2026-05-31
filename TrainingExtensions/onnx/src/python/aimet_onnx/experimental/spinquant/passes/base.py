@@ -30,6 +30,9 @@ class SpinquantContext:
     :param backbone_role_map: Decoder role map for the backbone.
     :param backbone_active_norms: Active norms in topological order.
     :param backbone_hidden_size: Hidden dimension of the language backbone residual stream.
+    :param backbone_head_dim: Per-head dimension derived from a ``past_value`` graph
+        input. ``None`` if the export has no KV-cache inputs; passes that need
+        ``head_dim`` (e.g. R2) must error in that case.
     :param visual_sim: Optional QuantizationSimModel wrapping visual.onnx (VLM only).
     :param visual_merger_linear2: PatchMerger linear_fc2 ops (VLM only).
     :param embedding: Optional raw embedding tensor (VLM with use_inputs_embeds=True).
@@ -39,6 +42,7 @@ class SpinquantContext:
     backbone_role_map: DecoderModelRoleMap
     backbone_active_norms: List[ActiveNorm]
     backbone_hidden_size: int
+    backbone_head_dim: Optional[int] = None
     visual_sim: Optional[QuantizationSimModel] = None
     visual_merger_linear2: Optional[List[Op]] = field(default=None)
     embedding: Optional[torch.Tensor] = None

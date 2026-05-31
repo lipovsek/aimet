@@ -11,6 +11,7 @@ import pytest
 import torch
 import torch.nn as nn
 import onnx
+import onnx_ir
 from onnx import load_model, numpy_helper
 from onnxruntime import GraphOptimizationLevel, InferenceSession, SessionOptions
 
@@ -18,6 +19,7 @@ from .models.test_models import RMSNorm
 from .utils import add_genai_tests_path
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.common.hadamard import get_hadamard_matrix
+from aimet_onnx.graph_passes.fusions import fuse_supergroups
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import ParamUtils
@@ -32,6 +34,7 @@ from aimet_onnx.experimental.spinquant.model_analysis import (
     get_decoder_role_map,
     get_bias_product as _get_bias_product,
     get_weight_product as _get_weight_product,
+    infer_head_dim as _infer_head_dim,
     infer_hidden_size as _infer_hidden_size,
 )
 from aimet_onnx.experimental.spinquant.model_analysis.norm_detection import (
@@ -52,6 +55,7 @@ from aimet_onnx.experimental.spinquant.transforms.rotation_primitives import (
     hadamard_rotation_matrix,
 )
 from aimet_onnx.experimental.spinquant import apply_spinquant
+from aimet_onnx.experimental.spinquant.model_analysis import find_attention_topology
 
 
 def apply_r1_rotation(model, role_map, backbone_hidden_size):
@@ -100,9 +104,31 @@ def _build_session(model: onnx.ModelProto):
     )
 
 
+def _pad_dummy_input(model: onnx.ModelProto, **named_inputs) -> dict:
+    """Build a feed dict that satisfies every graph input.
+
+    Caller-supplied entries in ``named_inputs`` win; dangling inputs (e.g. the
+    ``past_value_0`` tensor we attach for head_dim derivation) get zero-filled
+    placeholders. The graph never reads those, so the values are irrelevant.
+    """
+    feeds = dict(named_inputs)
+    for graph_input in model.graph.input:
+        if graph_input.name in feeds:
+            continue
+        shape = [
+            d.dim_value if d.HasField("dim_value") else 1
+            for d in graph_input.type.tensor_type.shape.dim
+        ]
+        np_dtype = onnx.helper.tensor_dtype_to_np_dtype(
+            graph_input.type.tensor_type.elem_type
+        )
+        feeds[graph_input.name] = np.zeros(shape, dtype=np_dtype)
+    return feeds
+
+
 def _run_model(model: onnx.ModelProto, inp: np.ndarray) -> np.ndarray:
     session = _build_session(model)
-    return session.run(None, {"input": inp})[0]
+    return session.run(None, _pad_dummy_input(model, input=inp))[0]
 
 
 def _collect_pre_fusion_state(
@@ -552,8 +578,28 @@ class TestFuseNormLayers:
 
 _NORM_KW = dict(mul_for_pow=False, mul_rsqrt_pattern="mul_rsqrt")
 _H, _I = 8, 16  # hidden dim, intermediate dim
+_NUM_HEADS, _HEAD_DIM = 2, 4  # _H == _NUM_HEADS * _HEAD_DIM
 _VOCAB = 16
 _B, _SEQ = 1, 4  # batch, sequence length
+
+
+def _mha(q, k, v, num_heads, head_dim):
+    """Standard multi-head attention: split into heads, softmax(QK^T/sqrt(d))V, merge.
+
+    :param q: [B, S, hidden]
+    :param k: [B, S, hidden]
+    :param v: [B, S, hidden]
+    :return: [B, S, hidden]
+    """
+    B, S, _ = q.shape
+    q = q.reshape(B, S, num_heads, head_dim).transpose(1, 2)  # [B, H, S, D]
+    k = k.reshape(B, S, num_heads, head_dim).transpose(1, 2)
+    v = v.reshape(B, S, num_heads, head_dim).transpose(1, 2)
+    scores = torch.matmul(q, k.transpose(-1, -2)) / (head_dim**0.5)
+    attn = torch.softmax(scores, dim=-1)
+    y = torch.matmul(attn, v)  # [B, H, S, D]
+    return y.transpose(1, 2).reshape(B, S, num_heads * head_dim)
+
 
 _VIT_D, _VIT_I = 8, 12  # ViT hidden size, intermediate dim
 _VIT_S_SQ = 4
@@ -566,14 +612,44 @@ def _export_vit(module: nn.Module) -> onnx.ModelProto:
     return _export_to_onnx(module, x)
 
 
+def _attach_past_value_input(model: onnx.ModelProto) -> onnx.ModelProto:
+    """Attach a dangling ``past_value_0`` graph input whose last dim is ``_HEAD_DIM``.
+
+    The input is unused by any node in the graph; it exists solely so that
+    ``infer_head_dim`` can derive ``head_dim`` from a real export-style input,
+    matching the HF/optimum convention where ``past_value_*`` tensors carry the
+    KV cache. Static shape ``[1, 1, 1, _HEAD_DIM]`` is the smallest valid
+    rank-4 KV-cache layout that gives the helper a static last dim to read.
+    """
+    past_value = onnx.helper.make_tensor_value_info(
+        name="past_value_0",
+        elem_type=onnx.TensorProto.FLOAT,
+        shape=[1, 1, 1, _HEAD_DIM],
+    )
+    model.graph.input.append(past_value)
+    return model
+
+
 def _export_decoder(module: nn.Module) -> onnx.ModelProto:
     x = torch.randn(_B, _SEQ, _H)
-    return _export_to_onnx(module, x)
+    return _attach_past_value_input(_export_to_onnx(module, x))
 
 
 def _export_decoder_with_ids(module: nn.Module) -> onnx.ModelProto:
     token_ids = torch.randint(0, _VOCAB, (_B, _SEQ))
-    return _export_to_onnx(module, token_ids)
+    return _attach_past_value_input(_export_to_onnx(module, token_ids))
+
+
+def _fuse_rms_norms(model: onnx.ModelProto) -> onnx.ModelProto:
+    """Coalesce decomposed RMSNorm patterns into ``RMSNormalization`` supergroup ops.
+
+    QuantizationSimModel applies this fusion before constructing its ConnectedGraph,
+    so the spinquant analyzers see fused ops in production. Tests that build a bare
+    ConnectedGraph need this shim to exercise the same branches.
+    """
+    ir_model = onnx_ir.from_proto(model)
+    fused = fuse_supergroups(ir_model, patterns=["RMSNormalization"])
+    return onnx_ir.to_proto(fused)
 
 
 class _LlamaBlock(nn.Module):
@@ -600,8 +676,8 @@ class _LlamaBlock(nn.Module):
 
     def forward(self, x):
         h = self.input_norm(x)
-        attn = self.o(self.q(h) + self.k(h) + self.v(h))
-        x = x + attn
+        y = _mha(self.q(h), self.k(h), self.v(h), _NUM_HEADS, _HEAD_DIM)
+        x = x + self.o(y)
         h2 = self.post_attn_norm(x)
         return x + self.down(self.gate(h2) * self.up(h2))
 
@@ -649,8 +725,8 @@ class _Qwen3Block(nn.Module):
         q = self.q_norm(self.q_proj(h))
         k = self.k_norm(self.k_proj(h))
         v = self.v(h)
-        attn = self.o(q + k + v)
-        x = x + attn
+        y = _mha(q, k, v, _NUM_HEADS, _HEAD_DIM)
+        x = x + self.o(y)
         h2 = self.post_attn_norm(x)
         return x + self.down(self.gate(h2) * self.up(h2))
 
@@ -1035,15 +1111,24 @@ class TestBlockIdentifier:
 
 
 class TestDecoderRoleMap:
-    """Tests for get_decoder_role_map."""
+    """Tests for get_decoder_role_map.
 
-    def test_llama_role_map_structure(self):
+    Each test parametrizes ``fuse_rmsnorm``: False keeps the decomposed RMSNorm pattern
+    (ReduceMean / Sqrt / Mul chain), True coalesces it into a single ``RMSNormalization``
+    supergroup op, mirroring what QuantizationSimModel does before constructing its
+    ConnectedGraph. Both paths must produce identical role maps.
+    """
+
+    @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
+    def test_llama_role_map_structure(self, fuse_rmsnorm):
         """LlamaStyleDecoder: verify per-block and model-level role counts.
 
         2 blocks × (3 qkv, 1 o_proj, 2 gate_up, 1 down_proj) + 1 lm_head + 1 embed_tokens.
         """
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
+        if fuse_rmsnorm:
+            model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
         blocks, active_norms = get_decoder_block_boundaries(model, cg)
         role_map = get_decoder_role_map(cg, blocks, active_norms)
@@ -1057,17 +1142,21 @@ class TestDecoderRoleMap:
             assert len(block.gate_up_linears) == 2
             assert len(block.down_proj) == 1
 
-    def test_qwen3_qkv_count(self):
+    @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
+    def test_qwen3_qkv_count(self, fuse_rmsnorm):
         """Qwen3 q_norm/k_norm are internal; qkv_linears still has 3 (q_proj, k_proj, v)."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(Qwen3StyleDecoder())
+        if fuse_rmsnorm:
+            model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
         blocks, active_norms = get_decoder_block_boundaries(model, cg)
         role_map = get_decoder_role_map(cg, blocks, active_norms)
         for block in role_map.blocks:
             assert len(block.qkv_linears) == 3
 
-    def test_missing_embed_tokens_warns(self):
+    @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
+    def test_missing_embed_tokens_warns(self, fuse_rmsnorm):
         """A model without a Gather embedding (e.g. VLM backbone) warns, not raises."""
         torch.manual_seed(0)
 
@@ -1085,13 +1174,16 @@ class TestDecoderRoleMap:
                 return self.lm_head(self.norm(x))
 
         model = _export_decoder(_NoEmbedDecoder())
+        if fuse_rmsnorm:
+            model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
         blocks, active_norms = get_decoder_block_boundaries(model, cg)
         # Must not raise — VLM backbones exported with use_inputs_embeds=True have no Gather.
         role_map = get_decoder_role_map(cg, blocks, active_norms)
         assert role_map.embed_tokens == []
 
-    def test_extra_prologue_gather_with_scalar_constant_excluded(self):
+    @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
+    def test_extra_prologue_gather_with_scalar_constant_excluded(self, fuse_rmsnorm):
         """Non-embedding Gather ops (e.g. position-id / shape-derived lookups) with
         scalar or 1-D static constants must not be admitted into ``role_map.embed_tokens``.
 
@@ -1136,6 +1228,8 @@ class TestDecoderRoleMap:
                 return self.lm_head(self.norm(x)) + aux.unsqueeze(-1).unsqueeze(-1)
 
         model = _export_decoder_with_ids(_DecoderWithPrologueGather())
+        if fuse_rmsnorm:
+            model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
         blocks, active_norms = get_decoder_block_boundaries(model, cg)
         role_map = get_decoder_role_map(cg, blocks, active_norms)
@@ -1145,10 +1239,13 @@ class TestDecoderRoleMap:
         # And infer_hidden_size doesn't IndexError on a scalar/1-D shape.
         assert _infer_hidden_size(model, role_map) == _H
 
-    def test_wrong_active_norms_per_block_raises(self):
+    @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
+    def test_wrong_active_norms_per_block_raises(self, fuse_rmsnorm):
         """Passing active_norms_per_block inconsistent with detected norms raises ValueError."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
+        if fuse_rmsnorm:
+            model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
         blocks, active_norms = get_decoder_block_boundaries(model, cg)
         with pytest.raises(ValueError):
@@ -1189,10 +1286,13 @@ class TestDecoderRoleMap:
         finally:
             shutil.rmtree(cache_dir, ignore_errors=True)
 
-    def test_find_merger_linear2_rmsorm_vit(self):
+    @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
+    def test_find_merger_linear2_rmsorm_vit(self, fuse_rmsnorm):
         """ViTEncoder (RMSNorm blocks + PatchMerger): find_merger_linear2 returns linear_fc2."""
         torch.manual_seed(0)
         model = _export_vit(ViTEncoder())
+        if fuse_rmsnorm:
+            model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
 
         """
@@ -1259,7 +1359,7 @@ class TestApplyR1Rotation:
         apply_r1_rotation(model, role_map, backbone_hidden_size=_H)
 
         y_after = _run_model(model, token_ids)
-        assert np.allclose(y_after, y_before)
+        assert np.allclose(y_after, y_before, atol=1e-5)
 
     @pytest.mark.parametrize(
         "decoder_cls",
@@ -1422,6 +1522,122 @@ class TestApplyR1Rotation:
             )
 
 
+_R2_DECODER_PARAMS = [
+    pytest.param(LlamaStyleDecoder, id="llama"),
+    pytest.param(lambda: LlamaStyleDecoder(bias=True), id="llama_bias"),
+    pytest.param(Qwen3StyleDecoder, id="qwen3"),
+]
+
+
+class TestApplyR2Rotation:
+    """Tests for R2RotationPass."""
+
+    def test_find_attention_topology_returns_v(self):
+        """Topology helper must identify the V projection (not Q or K)."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks, active_norms)
+
+        topology = find_attention_topology(role_map)
+
+        assert len(topology) == len(role_map.blocks)
+        for t in topology:
+            assert len(t.v_ops) == 1
+            assert "/v/" in t.v_ops[0].name
+
+    def test_infer_head_dim_from_past_value_input(self):
+        """``infer_head_dim`` must read head_dim from the attached past_value_0 input."""
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        assert _infer_head_dim(model) == _HEAD_DIM
+
+    def test_find_attention_topology_rejects_fused_qkv(self):
+        """Phi3-style fused QKV must be rejected with a clear error."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(Phi3StyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks, active_norms)
+
+        with pytest.raises(ValueError, match="R2 rotation"):
+            find_attention_topology(role_map)
+
+    @pytest.mark.parametrize("decoder_cls", _R2_DECODER_PARAMS)
+    def test_r2_alone_preserves_output(self, decoder_cls):
+        """R2 alone must preserve model output (it cancels through softmax(QK^T)V)."""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+        y_before = _run_model(model, token_ids)
+
+        sim = QuantizationSimModel(
+            model, dummy_input=_pad_dummy_input(model, input=token_ids)
+        )
+        apply_spinquant(sim, enable_r1=False, enable_r2=True)
+
+        rotated_float = QuantizationSimModel.remove_quantizers(
+            copy.deepcopy(sim.model.model)
+        )
+        y_after = _run_model(rotated_float, token_ids)
+        assert np.allclose(y_after, y_before, atol=1e-5)
+
+    @pytest.mark.parametrize("decoder_cls", _R2_DECODER_PARAMS)
+    def test_r2_twice_recovers_original_output(self, decoder_cls):
+        """Applying R2 twice must recover the original output (R2 @ R2^T = I per head)."""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+        y_before = _run_model(model, token_ids)
+
+        sim = QuantizationSimModel(
+            model, dummy_input=_pad_dummy_input(model, input=token_ids)
+        )
+        apply_spinquant(sim, enable_r1=False, enable_r2=True)
+        apply_spinquant(sim, enable_r1=False, enable_r2=True)
+
+        rotated_float = QuantizationSimModel.remove_quantizers(
+            copy.deepcopy(sim.model.model)
+        )
+        y_after = _run_model(rotated_float, token_ids)
+        assert np.allclose(y_after, y_before, atol=1e-5)
+
+    @pytest.mark.parametrize("decoder_cls", _R2_DECODER_PARAMS)
+    def test_r1_then_r2_preserves_output(self, decoder_cls):
+        """R1 + R2 stacked must preserve model output: R1 acts on hidden, R2 on head_dim."""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+        y_before = _run_model(model, token_ids)
+
+        sim = QuantizationSimModel(
+            model, dummy_input=_pad_dummy_input(model, input=token_ids)
+        )
+        apply_spinquant(sim, enable_r1=True, enable_r2=True)
+
+        rotated_float = QuantizationSimModel.remove_quantizers(
+            copy.deepcopy(sim.model.model)
+        )
+        y_after = _run_model(rotated_float, token_ids)
+        assert np.allclose(y_after, y_before, atol=1e-5)
+
+    def test_r2_rejects_fused_qkv_at_validate(self):
+        """apply_spinquant with R2 on a Phi3-style model must error before mutating."""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_ids(Phi3StyleDecoder())
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+
+        sim = QuantizationSimModel(
+            model, dummy_input=_pad_dummy_input(model, input=token_ids)
+        )
+        with pytest.raises(ValueError, match="R2 rotation"):
+            apply_spinquant(sim, enable_r1=False, enable_r2=True)
+
+
 class TestApplySpinquant:
     """End-to-end tests for apply_spinquant"""
 
@@ -1444,7 +1660,9 @@ class TestApplySpinquant:
         Then: The rotated model is mathematically equivalent to original FP32 model.
         """
 
-        sim = QuantizationSimModel(model, dummy_input={"input": token_ids})
+        sim = QuantizationSimModel(
+            model, dummy_input=_pad_dummy_input(model, input=token_ids)
+        )
         apply_spinquant(sim)
 
         # Strip QcQuantizeOp to get the rotated float model for comparison.
@@ -1452,7 +1670,7 @@ class TestApplySpinquant:
             copy.deepcopy(sim.model.model)
         )
         y_after = _run_model(rotated_float, token_ids)
-        assert np.allclose(y_before, y_after)
+        assert np.allclose(y_before, y_after, atol=1e-5)
 
     @pytest.mark.parametrize(
         "decoder_cls",
@@ -1475,7 +1693,9 @@ class TestApplySpinquant:
             ParamUtils.get_param_by_name(model, embed_name)
         ).copy()
 
-        sim = QuantizationSimModel(model, dummy_input={"input": token_ids})
+        sim = QuantizationSimModel(
+            model, dummy_input=_pad_dummy_input(model, input=token_ids)
+        )
         apply_spinquant(sim)
 
         w_after = numpy_helper.to_array(
@@ -1504,7 +1724,9 @@ class TestApplySpinquant:
         model = _export_decoder_with_ids(_OddNormDecoder())
         token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
 
-        sim = QuantizationSimModel(model, dummy_input={"input": token_ids})
+        sim = QuantizationSimModel(
+            model, dummy_input=_pad_dummy_input(model, input=token_ids)
+        )
 
         # Snapshot all initializers before the failed call.
         init_before = {
@@ -1620,7 +1842,9 @@ class TestApplySpinquant:
         torch.manual_seed(0)
         model = _export_decoder_with_ids(Gemma3StyleDecoder())
         token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
-        sim = QuantizationSimModel(model, dummy_input={"input": token_ids})
+        sim = QuantizationSimModel(
+            model, dummy_input=_pad_dummy_input(model, input=token_ids)
+        )
 
         init_before = {
             t.name: numpy_helper.to_array(t).copy()

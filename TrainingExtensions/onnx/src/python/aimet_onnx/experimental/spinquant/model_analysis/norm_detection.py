@@ -165,6 +165,15 @@ def _find_norm_scale_and_consumers(
     if not norm_ops:
         return None
 
+    # Fused RMSNormalization op: gamma is the second input by ONNX spec.
+    # AIMET's supergroup fuser produces a non-affine call (only 1 input — X);
+    # in that case gamma lives outside as a downstream Mul, so fall through.
+    if len(norm_ops) == 1 and norm_ops[0].type == "RMSNormalization":
+        rms_op = norm_ops[0]
+        if len(rms_op.inputs) >= 2 and rms_op.inputs[1].is_const:
+            downstream_linears = _iter_linear_consumers(rms_op)
+            return rms_op.inputs[1].name, downstream_linears
+
     # match_rms_norm_pattern stops at the last Mul op. Check for the trailing
     # scale Mul: RMSNorm(x) * gamma, with an optional Cast in between.
     last_op = norm_ops[-1]

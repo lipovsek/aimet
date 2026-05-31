@@ -41,6 +41,26 @@ def hadamard_rotation_matrix(hidden_size: int) -> np.ndarray:
     return (get_hadamard_matrix(hidden_size) / np.sqrt(hidden_size)).astype(np.float64)
 
 
+def block_diag_repeat(R: np.ndarray, k: int) -> np.ndarray:
+    """Return a ``[k*d, k*d]`` block-diagonal matrix with ``R`` repeated ``k`` times.
+
+    Lets the existing whole-axis rotation helpers express per-head rotations:
+    rotating an op's output channels per-head with ``R`` is identical to
+    rotating the full axis with ``block_diag(R, R, ..., R)``.
+
+    :param R: A ``[d, d]`` square matrix.
+    :param k: Number of diagonal copies (e.g. number of attention heads).
+    :return: A ``[k*d, k*d]`` block-diagonal matrix.
+    """
+    if R.ndim != 2 or R.shape[0] != R.shape[1]:
+        raise ValueError(f"block_diag_repeat: R must be square, got shape {R.shape}.")
+    d = R.shape[0]
+    out = np.zeros((k * d, k * d), dtype=R.dtype)
+    for i in range(k):
+        out[i * d : (i + 1) * d, i * d : (i + 1) * d] = R
+    return out
+
+
 def rotate_gather_weight(model: ModelProto, op: Op, R: np.ndarray):
     """Apply a right-side rotation ``W @ R`` to the weight of a Gather op (embed_tokens).
 
