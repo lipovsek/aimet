@@ -301,6 +301,7 @@ Auto-insertion: if a chain has no terminal recipe (`Calibration`, `RemoveQuantiz
 Validation rules:
 - For VLMs: if `SpinQuant` is in `backbone`, it must also be in `visual`, and it must be the first `visual` step.
 - For FP `blocks.qtype`: only `Calibration`, `SpinQuant`, `RemoveQuantization`, `Skip` are allowed.
+- For `SpinQuant` (onnx): at least one of `enable_r1` / `enable_r2` must be `true`. Setting both to `false` is rejected at parse time.
 
 ### `metrics`
 
@@ -349,7 +350,7 @@ Both backends (torch + onnx) register the same six names. Default values differ 
 | `Calibration`         | torch, onnx  | `num_iterations` (int, default `20`).           |
 | `SeqMSE`              | torch, onnx  | inherits `num_iterations` from Calibration.     |
 | `AdaScale`            | torch, onnx  | `num_batches` (int — torch default `20`, onnx default `32`); `num_iterations` (int — torch default `1500`, onnx default `64`). |
-| `SpinQuant`           | torch, onnx  | `component` (`"backbone"` or `"visual"`, default `"backbone"`). |
+| `SpinQuant`           | torch, onnx  | `component` (`"backbone"` or `"visual"`, default `"backbone"`). **onnx only:** `enable_r1` (bool, default `true`) — apply the R1 (residual-stream) Hadamard rotation; `enable_r2` (bool, default `false`) — apply the R2 (per-head) Hadamard rotation. At least one must be `true`. R2 is unsupported on architectures with fused QKV (e.g. Phi3). |
 | `Calibration` step end-of-chain auto-insertion uses Wikitext/train. |
 | `RemoveQuantization`  | torch, onnx  | none.                                            |
 | `Skip`                | torch, onnx  | none.                                            |

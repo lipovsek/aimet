@@ -418,6 +418,40 @@ class TestValidateConfig:
                 }
             )
 
+    def test_spinquant_no_rotations_enabled_raises(self):
+        with pytest.raises(RuntimeError, match="SpinQuant"):
+            YAMLConfigParser.validate_config(
+                {
+                    "model": {
+                        "model_id": "x",
+                        "sequence_length": 32,
+                        "context_length": 64,
+                    },
+                    "recipe": [
+                        {"name": "SpinQuant", "enable_r1": False, "enable_r2": False},
+                        {"name": "Calibration"},
+                    ],
+                    "metrics": [{"name": "PPL"}],
+                }
+            )
+
+    def test_spinquant_default_flags_pass(self):
+        # Default (enable_r1 unset → True, enable_r2 unset → False) is valid.
+        YAMLConfigParser.validate_config(
+            {
+                "model": {
+                    "model_id": "x",
+                    "sequence_length": 32,
+                    "context_length": 64,
+                },
+                "recipe": [
+                    {"name": "SpinQuant"},
+                    {"name": "Calibration"},
+                ],
+                "metrics": [{"name": "PPL"}],
+            }
+        )
+
 
 # ---------------------------------------------------------------------------
 # Full parse_document (requires mocking detect_model_type)

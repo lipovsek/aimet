@@ -446,6 +446,19 @@ class YAMLConfigParser:
                                 f"{sorted(_FP_WEIGHT_ALLOWED_RECIPES)} are allowed."
                             )
 
+            # SpinQuant requires at least one rotation enabled.
+            for comp_name, recipe_list in doc["recipe"].items():
+                for step in recipe_list:
+                    if step["name"] != "SpinQuant":
+                        continue
+                    if not step.get("enable_r1", True) and not step.get(
+                        "enable_r2", False
+                    ):
+                        raise RuntimeError(
+                            f"SpinQuant step in '{comp_name}' has both enable_r1 and "
+                            "enable_r2 set to false. Enable at least one rotation."
+                        )
+
         # Backward compatibility: migrate top-level dataset into backbone component
         if "dataset" in doc:
             first_backbone = doc["recipe"]["backbone"][0]

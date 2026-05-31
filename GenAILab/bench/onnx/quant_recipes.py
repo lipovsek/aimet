@@ -229,7 +229,7 @@ class AdaScale(QuantizationTechnique):
 
 @YAMLConfigParser.register_recipe
 class SpinQuant(QuantizationTechnique):
-    """Apply SpinQuant: R1 rotation to model"""
+    """Apply SpinQuant rotations (R1 and/or R2) to the model."""
 
     @classmethod
     def cacheable(cls):
@@ -241,6 +241,8 @@ class SpinQuant(QuantizationTechnique):
         generator: Generator,
         dataloader: DataLoader,
         component: str = "backbone",
+        enable_r1: bool = True,
+        enable_r2: bool = False,
         **kwargs,
     ):
         if component == "backbone":
@@ -249,9 +251,15 @@ class SpinQuant(QuantizationTechnique):
                     backbone_sim=quantsim,
                     visual_sim=generator.vision_model.quantsim,
                     embedding=generator.embedding.weight,
+                    enable_r1=enable_r1,
+                    enable_r2=enable_r2,
                 )
             else:
-                apply_spinquant(quantsim)
+                apply_spinquant(
+                    quantsim,
+                    enable_r1=enable_r1,
+                    enable_r2=enable_r2,
+                )
         elif component == "visual":
             print(
                 "WARNING: SpinQuant is a no-op on visual — rotation was already applied "

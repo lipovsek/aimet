@@ -80,6 +80,8 @@ model:
   context_length: 4096
 recipe:
   - name: SpinQuant
+    enable_r1: true
+    enable_r2: false
   - name: Calibration
     dataset:
       name: Wikitext
