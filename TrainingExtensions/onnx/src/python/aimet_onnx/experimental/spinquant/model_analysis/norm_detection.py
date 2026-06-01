@@ -170,7 +170,7 @@ def _find_norm_scale_and_consumers(
     # in that case gamma lives outside as a downstream Mul, so fall through.
     if len(norm_ops) == 1 and norm_ops[0].type == "RMSNormalization":
         rms_op = norm_ops[0]
-        if len(rms_op.inputs) >= 2 and rms_op.inputs[1].is_const:
+        if len(rms_op.inputs) >= 2 and rms_op.parameters:
             downstream_linears = _iter_linear_consumers(rms_op)
             return rms_op.inputs[1].name, downstream_linears
 

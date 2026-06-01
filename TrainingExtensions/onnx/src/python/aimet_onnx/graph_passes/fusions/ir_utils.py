@@ -111,3 +111,12 @@ def unique_name(base: str, existing: set[str]) -> str:
     while f"{base}_{i}" in existing:
         i += 1
     return f"{base}_{i}"
+
+
+def get_upstream_cast_type(value: onnx_ir.Value) -> int | None:
+    """Return the ``to`` attribute of an upstream Cast producer, if any"""
+    producer = value.producer()
+    if producer is None or producer.op_type != "Cast" or producer.domain != "":
+        return None
+    to_attr = producer.attributes.get("to")
+    return to_attr.as_int() if to_attr is not None else None

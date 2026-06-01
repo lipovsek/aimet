@@ -290,6 +290,14 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             if bias_tensor:
                 set_as_param(bias_tensor, my_op, "bias")
 
+        def create_weight_params(my_op: Op):
+            """Registers second input of my_op as weight"""
+            op = my_op.get_module()
+
+            weight_tensor = ParamUtils.get_param(self.model, op, WEIGHT_INDEX)
+            if weight_tensor:
+                set_as_param(weight_tensor, my_op, "weight")
+
         def create_matmul_params(my_op: Op):
             """
             Create products for MatMul layer
@@ -362,6 +370,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             "InstanceNormalization": create_weight_bias_params,
             "LayerNormalization": create_weight_bias_params,
             "GroupNormalization": create_weight_bias_params,
+            "RMSNormalization": create_weight_params,
             "MatMul": create_matmul_params,
         }
 

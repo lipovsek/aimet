@@ -76,14 +76,15 @@ def test_rmsnorm_with_cast(elementwise_affine, mul_for_pow, mul_rsqrt_pattern):
     graph = ConnectedGraph(model)
 
     input_data = {"x": np.random.rand(1, 3, dim, dim).astype(np.float16)}
-    sim = QuantizationSimModel(
-        model,
-        input_data,
-        quant_scheme=QuantScheme.post_training_tf,
-        default_param_bw=8,
-        default_activation_bw=8,
-        config_file="htp_v81",
-    )
+    with patch_fuse_supergroups(False):
+        sim = QuantizationSimModel(
+            model,
+            input_data,
+            quant_scheme=QuantScheme.post_training_tf,
+            default_param_bw=8,
+            default_activation_bw=8,
+            config_file="htp_v81",
+        )
 
     all_ops = graph.ordered_ops
     # Filter out Cast ops — they are pass-through and should not affect quantization

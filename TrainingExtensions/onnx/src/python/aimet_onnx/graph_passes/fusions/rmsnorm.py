@@ -9,13 +9,19 @@ import onnx_ir
 from onnxscript import rewriter
 from onnxscript.rewriter import pattern
 
-from .ir_utils import get_constant_singleton_value
+from .ir_utils import get_constant_singleton_value, get_upstream_cast_type
 from .fusion_registry import register_fusion, AIMET_SUPERGROUP_DOMAIN
 from . import _patterns
 
 
 AXIS_NAME = "axis"
 EPS_NAME = "epsilon"
+OUTPUT_TYPE_NAME = "output_type"
+SUPPORTED_FLOAT_TYPES = (
+    onnx_ir.DataType.FLOAT,
+    onnx_ir.DataType.FLOAT16,
+    onnx_ir.DataType.BFLOAT16,
+)
 
 
 @register_fusion("RMSNormalization", pattern_idx=0)
@@ -128,7 +134,16 @@ class RMSNormFusion(pattern.RewriteRuleClassBase):
                 |
         RMSNormalization(x)
                 |
+              Cast (Optional)
+                |
                Mul
+
+    Note:
+        Input cast is not matched here intentionally for the following reasons
+
+          - Optimization passes can result in input cast having multiple consumers, preventing fusion in some cases
+          - In ORT <= 1.26, function overloads are not dispatched correctly, causing incorrect execution if patterns
+            differ functionally
 
     """
 
@@ -146,7 +161,13 @@ class RMSNormFusion(pattern.RewriteRuleClassBase):
         scale: pattern.Var,
     ):
         return _patterns.rms_normalize(
-            op, input_x, scale, EPS_NAME, AXIS_NAME, self.pattern_idx
+            op,
+            input_x,
+            scale,
+            EPS_NAME,
+            AXIS_NAME,
+            output_type=OUTPUT_TYPE_NAME,
+            pattern_idx=self.pattern_idx,
         )
 
     # pylint: disable=unused-argument
@@ -159,6 +180,7 @@ class RMSNormFusion(pattern.RewriteRuleClassBase):
         match_result = pattern.MatchResult()
         axes: onnx_ir.Attr | None = kwargs.get(AXIS_NAME)
         epsilon: onnx_ir.Attr | None = kwargs.get(EPS_NAME)
+        output_type: onnx_ir.Attr | None = kwargs.get(OUTPUT_TYPE_NAME)
 
         axes_value = get_constant_singleton_value(axes)
         if axes is not None and axes_value is None:
@@ -170,6 +192,23 @@ class RMSNormFusion(pattern.RewriteRuleClassBase):
         if epsilon is None or eps < 0:
             return match_result.fail(
                 f"Epsilon must be a constant positive value, got {epsilon}"
+            )
+
+        stash_type = get_upstream_cast_type(input_x)
+        if stash_type is not None and stash_type not in SUPPORTED_FLOAT_TYPES:
+            return match_result.fail(
+                f"Only {SUPPORTED_FLOAT_TYPES} are supported for stash_type, got {stash_type}"
+            )
+        if (
+            output_type
+            and get_constant_singleton_value(output_type) not in SUPPORTED_FLOAT_TYPES
+        ):
+            return match_result.fail(
+                f"Only {SUPPORTED_FLOAT_TYPES} are supported for output_type, got {output_type}"
+            )
+        if output_type is not None and stash_type is None:
+            return match_result.fail(
+                "Internal cast operation only supported if pattern is preceded by cast op"
             )
 
         return match_result
@@ -185,7 +224,17 @@ class RMSNormFusion(pattern.RewriteRuleClassBase):
         epsilon = get_constant_singleton_value(kwargs.get(EPS_NAME))
         axis = get_constant_singleton_value(kwargs.get(AXIS_NAME))
         axis = axis if axis is not None else -1
+        attrs = {}
+        stash_type = get_upstream_cast_type(input_x)
+        output_type = kwargs.get(OUTPUT_TYPE_NAME)
+        if stash_type is not None and output_type is not None:
+            attrs["stash_type"] = stash_type
         output = op.RMSNormalization(
-            input_x, scale, axis=axis, epsilon=epsilon, _domain=AIMET_SUPERGROUP_DOMAIN
+            input_x,
+            scale,
+            axis=axis,
+            epsilon=epsilon,
+            _domain=AIMET_SUPERGROUP_DOMAIN,
+            **attrs,
         )
         return output

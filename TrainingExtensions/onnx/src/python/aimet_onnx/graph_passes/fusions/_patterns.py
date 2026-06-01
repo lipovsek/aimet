@@ -103,10 +103,11 @@ def rms_normalize(
     scale: pattern.Var,
     epsilon: str,
     axes: str,
+    output_type: str,
     pattern_idx: int | None = None,
 ):
     """
-    Matches affine RMSNormalization pattern
+    Matches affine RMSNormalization pattern with optional internal cast (does not include input cast)
 
     Args:
         op: OpsetPatternBuilder
@@ -114,11 +115,14 @@ def rms_normalize(
         scale: affine scaling weight
         epsilon: Handle for epsilon value. Can be matched to pattern.Var or pattern.AttrVar
         axes: Handle for axes value. Can be matched to pattern.Var or pattern.AttrVar
+        output_type: Handle for the optional trailing Cast's ``to`` attribute.
         pattern_idx: If specified returns a concrete pattern node rather than OrValue output. Valid values are {None, 0, 1}.
     """
 
     epsilon_attr = pattern.AttrVar(epsilon)
     axes_attr = pattern.AttrVar(axes, can_match_none=True)
+    output_type_attr = pattern.AttrVar(output_type)
+
     normalized = pattern.OrValue(
         [
             non_affine_rms_normalize(op, x, epsilon, axes),
@@ -127,6 +131,8 @@ def rms_normalize(
             ),
         ]
     )
+
+    normalized = pattern.OrValue([normalized, op.Cast(normalized, to=output_type_attr)])
     output_patterns = [
         normalized * scale,
         scale * normalized,

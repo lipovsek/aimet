@@ -14,6 +14,7 @@ from . import _patterns
 _EPS_NAME = "epsilon"
 _AXES_NAME = "axes"
 _AXIS_NAME = "axis"
+OUTPUT_TYPE_NAME = "output_type"
 
 
 @register_fusion(name="LayerNormalization", pattern_idx=0)
@@ -93,6 +94,7 @@ class LayerNormNoBiasFusion(pattern.RewriteRuleClassBase):
             scale,
             _EPS_NAME,
             _AXIS_NAME,
+            output_type=OUTPUT_TYPE_NAME,
             pattern_idx=self.pattern_idx,
         )
 

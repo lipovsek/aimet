@@ -393,7 +393,9 @@ class RMSNormWithCast(nn.Module):
         mul_rsqrt_pattern="mul_rsqrt",
     ):
         super().__init__()
-        self.weight = torch.randn(dim) if elementwise_affine else None
+        self.weight = (
+            torch.nn.Parameter(torch.randn(dim)) if elementwise_affine else None
+        )
         self.variance_epsilon = 0.003
         self.mul_for_pow = mul_for_pow
         self.mul_rsqrt_pattern = mul_rsqrt_pattern
@@ -437,6 +439,7 @@ def rmsnorm_with_cast_model(
         mul_for_pow=mul_for_pow,
         mul_rsqrt_pattern=mul_rsqrt_pattern,
     )
+    model.to(torch.float16)
     buffer = io.BytesIO()
     x = torch.randn((1, 3, dim, dim), dtype=torch.float16)
     torch.onnx.export(
@@ -467,6 +470,7 @@ def rmsnorm_model(
         mul_for_pow=mul_for_pow,
         mul_rsqrt_pattern=mul_rsqrt_pattern,
     )
+    model.to(torch.float16)
     buffer = io.BytesIO()
     x = torch.randn((1, 3, dim, dim))
     torch.onnx.export(

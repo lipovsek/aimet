@@ -18,7 +18,7 @@ from aimet_onnx import QuantizationSimModel
 
 from aimet_onnx.graph_passes.fusions import fuse_supergroups, inline_all_supergroups
 from aimet_onnx.graph_passes.fusions.fusion_registry import AIMET_SUPERGROUP_DOMAIN
-from ..models import models_for_tests
+from ..models import models_for_tests, test_models
 from ..models.test_models import rmsnorm_model
 
 
@@ -626,6 +626,7 @@ class TestRMSNormFusion:
             (lambda path: models_for_tests.llama_rmsnorm_model(path, opset=16), 1),
             (lambda path: models_for_tests.llama_rmsnorm_model(path, opset=22), 1),
             (create_layernorm_model, 1),  # Layernorm contains RMSNorm internally
+            (lambda _: test_models.rmsnorm_with_cast_model(), 1),
             # Invalid patterns - should not match
             (models_for_tests.rmsnorm_invalid_multiple_axes, 0),
             (models_for_tests.rmsnorm_invalid_negative_epsilon, 0),
@@ -655,6 +656,26 @@ class TestRMSNormFusion:
         session = onnxruntime.InferenceSession(model_proto.SerializeToString())
         fused_output = session.run(None, dummy_input)[0]
         assert np.allclose(original_output, fused_output)
+
+    def test_rmsnorm_with_cast_records_dtypes(self):
+        """The trailing Cast is absorbed; the leading Cast stays external (so it can be
+        shared with residual sub-graphs) but its target dtype is recorded as stash_type."""
+        model = test_models.rmsnorm_with_cast_model()
+        ir_model = onnx_ir.from_proto(model)
+        fused_model = fuse_supergroups(ir_model, patterns=["RMSNormalization"])
+
+        model_proto = onnx_ir.to_proto(fused_model)
+        rmsnorm_nodes = [
+            node
+            for node in model_proto.graph.node
+            if node.op_type == "RMSNormalization"
+        ]
+        assert len(rmsnorm_nodes) == 1
+        attrs = {a.name: a.i for a in rmsnorm_nodes[0].attribute if a.type == a.INT}
+        assert attrs.get("stash_type") == onnx.TensorProto.FLOAT
+        # Trailing Cast was absorbed into the supergroup; leading Cast remains external.
+        cast_nodes = [n for n in model_proto.graph.node if n.op_type == "Cast"]
+        assert len(cast_nodes) == 1
 
 
 class TestFusion:
