@@ -38,8 +38,12 @@ class Sequential(nn.Sequential):
         return x
 
 
-class TestEnpuV6Config:
+class TestEnpuConfig:
     @torch.no_grad()
+    @pytest.mark.parametrize(
+        "config_file",
+        ["enpu_v6", "enpu_v7", "enpu_quantsim_config_v7_per_channel.json"],
+    )
     @pytest.mark.parametrize(
         "model, input",
         [
@@ -54,7 +58,13 @@ class TestEnpuV6Config:
             (nn.Linear(10, 5, bias=False), torch.randn(1, 10, 10)),
         ],
     )
-    def test_conv(self, tmp_path: Path, model: nn.Module, input: torch.Tensor):
+    def test_conv(
+        self,
+        tmp_path: Path,
+        config_file: str,
+        model: nn.Module,
+        input: torch.Tensor,
+    ):
         torch.onnx.export(
             model,
             input,
@@ -73,7 +83,7 @@ class TestEnpuV6Config:
 
         sim = aimet_onnx.QuantizationSimModel(
             onnx_model,
-            config_file="enpu_v6",
+            config_file=config_file,
         )
         assert sim.qc_quantize_op_dict["input"].enabled
         assert sim.qc_quantize_op_dict["input"].use_symmetric_encodings
@@ -81,13 +91,21 @@ class TestEnpuV6Config:
         assert sim.qc_quantize_op_dict["output"].use_symmetric_encodings
         assert sim.qc_quantize_op_dict[weight_name].enabled
         assert sim.qc_quantize_op_dict[weight_name].use_symmetric_encodings
-        # Per-tensor quantization is the default in eNPU
-        assert not sim.qc_quantize_op_dict[weight_name].quant_info.usePerChannelMode
+
+        per_channel = sim.qc_quantize_op_dict[weight_name].quant_info.usePerChannelMode
+        if config_file in ("enpu_v6", "enpu_v7"):
+            assert not per_channel
+        else:
+            assert per_channel
 
         if model.bias is not None:
             assert not sim.qc_quantize_op_dict["bias"].enabled
 
     @torch.no_grad()
+    @pytest.mark.parametrize(
+        "config_file",
+        ["enpu_v6", "enpu_v7", "enpu_quantsim_config_v7_per_channel.json"],
+    )
     @pytest.mark.parametrize(
         "model, input",
         [
@@ -97,7 +115,7 @@ class TestEnpuV6Config:
         ],
     )
     def test_batchnorm_params(
-        self, tmp_path: Path, model: nn.Module, input: torch.Tensor
+        self, tmp_path: Path, config_file: str, model: nn.Module, input: torch.Tensor
     ):
         """
         Batchnorm parameters should not be quantized
@@ -116,7 +134,7 @@ class TestEnpuV6Config:
         )
         sim = aimet_onnx.QuantizationSimModel(
             onnx.load(tmp_path / "model.onnx"),
-            config_file="enpu_v6",
+            config_file=config_file,
         )
         assert sim.qc_quantize_op_dict["input"].enabled
         assert sim.qc_quantize_op_dict["input"].use_symmetric_encodings
@@ -127,127 +145,158 @@ class TestEnpuV6Config:
         assert not sim.qc_quantize_op_dict["running_mean"].enabled
         assert not sim.qc_quantize_op_dict["running_var"].enabled
 
+    _enpu_v6_supergroups = [
+        Sequential(nn.Conv2d(3, 3, 3), nn.ReLU()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.ReLU6()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.Sigmoid()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.Tanh()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.PReLU()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.LeakyReLU()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.Hardswish()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.GELU()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3)),
+        Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3), nn.ReLU()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3), nn.ReLU6()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3), nn.Sigmoid()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3), nn.Tanh()),
+        Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3), nn.GELU()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.ReLU()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.ReLU6()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.Sigmoid()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.Tanh()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.PReLU()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.LeakyReLU()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.Hardswish()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.GELU()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3)),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3), nn.ReLU()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3), nn.ReLU6()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3), nn.Sigmoid()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3), nn.Tanh()),
+        Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3), nn.GELU()),
+        Sequential(nn.Linear(10, 10, bias=True), nn.ReLU()),
+        Sequential(nn.Linear(10, 10, bias=True), nn.ReLU6()),
+        Sequential(nn.Linear(10, 10, bias=True), nn.Sigmoid()),
+        Sequential(nn.Linear(10, 10, bias=True), nn.Tanh()),
+        Sequential(nn.Linear(10, 10, bias=True), nn.LeakyReLU()),
+        Sequential(nn.Linear(10, 10, bias=True), nn.Hardswish()),
+        Sequential(nn.Linear(10, 10, bias=True), nn.GELU()),
+        Sequential(nn.Linear(10, 10, bias=False), nn.ReLU()),
+        Sequential(nn.Linear(10, 10, bias=False), nn.ReLU6()),
+        Sequential(nn.Linear(10, 10, bias=False), nn.Sigmoid()),
+        Sequential(nn.Linear(10, 10, bias=False), nn.Tanh()),
+        Sequential(nn.Linear(10, 10, bias=False), nn.LeakyReLU()),
+        Sequential(nn.Linear(10, 10, bias=False), nn.Hardswish()),
+        Sequential(nn.Linear(10, 10, bias=False), nn.GELU()),
+        Sequential(nn.AvgPool2d(3), nn.ReLU()),
+        Sequential(nn.AvgPool2d(3), nn.ReLU6()),
+        Sequential(nn.AvgPool2d(3), nn.Sigmoid()),
+        Sequential(nn.AvgPool2d(3), nn.Tanh()),
+        Sequential(nn.AvgPool2d(3), nn.PReLU()),
+        Sequential(nn.AvgPool2d(3), nn.LeakyReLU()),
+        Sequential(nn.AvgPool2d(3), nn.Hardswish()),
+        Sequential(nn.AvgPool2d(3), nn.GELU()),
+        Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3)),
+        Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3), nn.ReLU()),
+        Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3), nn.ReLU6()),
+        Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3), nn.Sigmoid()),
+        Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3), nn.Tanh()),
+        Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3), nn.GELU()),
+        Sequential(nn.MaxPool2d(3), nn.ReLU()),
+        Sequential(nn.MaxPool2d(3), nn.ReLU6()),
+        Sequential(nn.MaxPool2d(3), nn.Sigmoid()),
+        Sequential(nn.MaxPool2d(3), nn.Tanh()),
+        Sequential(nn.MaxPool2d(3), nn.PReLU()),
+        Sequential(nn.MaxPool2d(3), nn.LeakyReLU()),
+        Sequential(nn.MaxPool2d(3), nn.Hardswish()),
+        Sequential(nn.MaxPool2d(3), nn.GELU()),
+        Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3)),
+        Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3), nn.ReLU()),
+        Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3), nn.ReLU6()),
+        Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3), nn.Sigmoid()),
+        Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3), nn.Tanh()),
+        Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3), nn.GELU()),
+        Sequential(Add(), nn.ReLU()),
+        Sequential(Add(), nn.ReLU6()),
+        Sequential(Add(), nn.Sigmoid()),
+        Sequential(Add(), nn.Tanh()),
+        Sequential(Add(), nn.LeakyReLU()),
+        Sequential(Add(), nn.Hardswish()),
+        Sequential(Add(), nn.GELU()),
+        Sequential(Sub(), nn.ReLU()),
+        Sequential(Sub(), nn.ReLU6()),
+        Sequential(Sub(), nn.Sigmoid()),
+        Sequential(Sub(), nn.Tanh()),
+        Sequential(Sub(), nn.LeakyReLU()),
+        Sequential(Sub(), nn.Hardswish()),
+        Sequential(Sub(), nn.GELU()),
+        Sequential(Mul(), nn.ReLU()),
+        Sequential(Mul(), nn.ReLU6()),
+        Sequential(Mul(), nn.Sigmoid()),
+        Sequential(Mul(), nn.Tanh()),
+        Sequential(Mul(), nn.LeakyReLU()),
+        Sequential(Mul(), nn.Hardswish()),
+        Sequential(Mul(), nn.GELU()),
+        *(
+            nn.LayerNorm(
+                normalized_shape=10,
+                bias=bias,
+            )
+            for bias in (True, False)
+        ),
+        *(
+            RMSNorm(
+                dim=10,
+                elementwise_affine=elementwise_affine,
+                mul_for_pow=mul_for_pow,
+                mul_rsqrt_pattern=mul_rsqrt_pattern,
+            )
+            for elementwise_affine in (True, False)
+            for mul_for_pow in (True, False)
+            for mul_rsqrt_pattern in (
+                "mul_rsqrt",
+                "div_sqrt",
+                "mul_reciprocal_sqrt",
+            )
+        ),
+    ]
+
+    @pytest.mark.parametrize("model", _enpu_v6_supergroups)
+    def test_enpu_v6_supergroup(self, tmp_path: Path, model: nn.Module):
+        self._test_supergroup(tmp_path, model, config_file="enpu_v6")
+
+    _enpu_v7_supergroups = _enpu_v6_supergroups + [
+        Sequential(nn.BatchNorm2d(3), nn.ReLU()),
+        Sequential(nn.BatchNorm2d(3), nn.ReLU6()),
+        Sequential(nn.BatchNorm2d(3), nn.Sigmoid()),
+        Sequential(nn.BatchNorm2d(3), nn.Tanh()),
+        Sequential(nn.BatchNorm2d(3), nn.Hardswish()),
+        Sequential(nn.BatchNorm2d(3), nn.GELU()),
+    ]
+
+    @pytest.mark.parametrize("model", _enpu_v7_supergroups)
+    def test_enpu_v7_supergroup(self, tmp_path: Path, model: nn.Module):
+        self._test_supergroup(tmp_path, model, config_file="enpu_v7")
+
+    # eNPU v7 per-channel doesn't support Conv-(BatchNormalization|PReLU) supergroup
+    _enpu_v7_per_channel_supergroups = [
+        sequence
+        for sequence in _enpu_v7_supergroups
+        if not (
+            isinstance(sequence, nn.Sequential)
+            and isinstance(sequence[0], (nn.Conv2d, nn.ConvTranspose2d))
+            and isinstance(sequence[1], (nn.BatchNorm2d, nn.PReLU))
+        )
+    ]
+
+    @pytest.mark.parametrize("model", _enpu_v7_per_channel_supergroups)
+    def test_enpu_v7_per_channel_supergroup(self, tmp_path: Path, model: nn.Module):
+        self._test_supergroup(
+            tmp_path, model, config_file="enpu_quantsim_config_v7_per_channel.json"
+        )
+
     @torch.no_grad()
-    @pytest.mark.parametrize("tie_quantizers", [True, False])
-    @pytest.mark.parametrize(
-        "model",
-        [
-            Sequential(nn.Conv2d(3, 3, 3), nn.ReLU()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.ReLU6()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.Sigmoid()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.Tanh()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.PReLU()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.LeakyReLU()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.Hardswish()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.GELU()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3)),
-            Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3), nn.ReLU()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3), nn.ReLU6()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3), nn.Sigmoid()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3), nn.Tanh()),
-            Sequential(nn.Conv2d(3, 3, 3), nn.BatchNorm2d(3), nn.GELU()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.ReLU()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.ReLU6()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.Sigmoid()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.Tanh()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.PReLU()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.LeakyReLU()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.Hardswish()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.GELU()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3)),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3), nn.ReLU()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3), nn.ReLU6()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3), nn.Sigmoid()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3), nn.Tanh()),
-            Sequential(nn.ConvTranspose2d(3, 3, 3), nn.BatchNorm2d(3), nn.GELU()),
-            Sequential(nn.Linear(10, 10, bias=True), nn.ReLU()),
-            Sequential(nn.Linear(10, 10, bias=True), nn.ReLU6()),
-            Sequential(nn.Linear(10, 10, bias=True), nn.Sigmoid()),
-            Sequential(nn.Linear(10, 10, bias=True), nn.Tanh()),
-            Sequential(nn.Linear(10, 10, bias=True), nn.LeakyReLU()),
-            Sequential(nn.Linear(10, 10, bias=True), nn.Hardswish()),
-            Sequential(nn.Linear(10, 10, bias=True), nn.GELU()),
-            Sequential(nn.Linear(10, 10, bias=False), nn.ReLU()),
-            Sequential(nn.Linear(10, 10, bias=False), nn.ReLU6()),
-            Sequential(nn.Linear(10, 10, bias=False), nn.Sigmoid()),
-            Sequential(nn.Linear(10, 10, bias=False), nn.Tanh()),
-            Sequential(nn.Linear(10, 10, bias=False), nn.LeakyReLU()),
-            Sequential(nn.Linear(10, 10, bias=False), nn.Hardswish()),
-            Sequential(nn.Linear(10, 10, bias=False), nn.GELU()),
-            Sequential(nn.AvgPool2d(3), nn.ReLU()),
-            Sequential(nn.AvgPool2d(3), nn.ReLU6()),
-            Sequential(nn.AvgPool2d(3), nn.Sigmoid()),
-            Sequential(nn.AvgPool2d(3), nn.Tanh()),
-            Sequential(nn.AvgPool2d(3), nn.PReLU()),
-            Sequential(nn.AvgPool2d(3), nn.LeakyReLU()),
-            Sequential(nn.AvgPool2d(3), nn.Hardswish()),
-            Sequential(nn.AvgPool2d(3), nn.GELU()),
-            Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3)),
-            Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3), nn.ReLU()),
-            Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3), nn.ReLU6()),
-            Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3), nn.Sigmoid()),
-            Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3), nn.Tanh()),
-            Sequential(nn.AvgPool2d(3), nn.BatchNorm2d(3), nn.GELU()),
-            Sequential(nn.MaxPool2d(3), nn.ReLU()),
-            Sequential(nn.MaxPool2d(3), nn.ReLU6()),
-            Sequential(nn.MaxPool2d(3), nn.Sigmoid()),
-            Sequential(nn.MaxPool2d(3), nn.Tanh()),
-            Sequential(nn.MaxPool2d(3), nn.PReLU()),
-            Sequential(nn.MaxPool2d(3), nn.LeakyReLU()),
-            Sequential(nn.MaxPool2d(3), nn.Hardswish()),
-            Sequential(nn.MaxPool2d(3), nn.GELU()),
-            Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3)),
-            Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3), nn.ReLU()),
-            Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3), nn.ReLU6()),
-            Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3), nn.Sigmoid()),
-            Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3), nn.Tanh()),
-            Sequential(nn.MaxPool2d(3), nn.BatchNorm2d(3), nn.GELU()),
-            Sequential(Add(), nn.ReLU()),
-            Sequential(Add(), nn.ReLU6()),
-            Sequential(Add(), nn.Sigmoid()),
-            Sequential(Add(), nn.Tanh()),
-            Sequential(Add(), nn.LeakyReLU()),
-            Sequential(Add(), nn.Hardswish()),
-            Sequential(Add(), nn.GELU()),
-            Sequential(Sub(), nn.ReLU()),
-            Sequential(Sub(), nn.ReLU6()),
-            Sequential(Sub(), nn.Sigmoid()),
-            Sequential(Sub(), nn.Tanh()),
-            Sequential(Sub(), nn.LeakyReLU()),
-            Sequential(Sub(), nn.Hardswish()),
-            Sequential(Sub(), nn.GELU()),
-            Sequential(Mul(), nn.ReLU()),
-            Sequential(Mul(), nn.ReLU6()),
-            Sequential(Mul(), nn.Sigmoid()),
-            Sequential(Mul(), nn.Tanh()),
-            Sequential(Mul(), nn.LeakyReLU()),
-            Sequential(Mul(), nn.Hardswish()),
-            Sequential(Mul(), nn.GELU()),
-            *(
-                nn.LayerNorm(
-                    normalized_shape=10,
-                    bias=bias,
-                )
-                for bias in (True, False)
-            ),
-            *(
-                RMSNorm(
-                    dim=10,
-                    elementwise_affine=elementwise_affine,
-                    mul_for_pow=mul_for_pow,
-                    mul_rsqrt_pattern=mul_rsqrt_pattern,
-                )
-                for elementwise_affine in (True, False)
-                for mul_for_pow in (True, False)
-                for mul_rsqrt_pattern in (
-                    "mul_rsqrt",
-                    "div_sqrt",
-                    "mul_reciprocal_sqrt",
-                )
-            ),
-        ],
-    )
-    def test_supergroup(self, tmp_path: Path, model: nn.Module, tie_quantizers: bool):
+    def _test_supergroup(self, tmp_path: Path, model: nn.Module, config_file: str):
         input = (torch.randn(1, 3, 10, 10),)
 
         if isinstance(model, Sequential):
@@ -288,11 +337,11 @@ class TestEnpuV6Config:
             if node.op_type == "Constant"
         )
 
-        with _apply_constraints(tie_quantizers):
-            sim = aimet_onnx.QuantizationSimModel(
-                onnx_model,
-                config_file="enpu_v6",
-            )
+        sim = aimet_onnx.QuantizationSimModel(
+            onnx_model,
+            config_file=config_file,
+        )
+
         for name in itertools.chain(input_names, output_names):
             assert sim.qc_quantize_op_dict[name].enabled
 

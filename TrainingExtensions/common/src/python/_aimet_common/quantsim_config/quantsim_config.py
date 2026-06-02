@@ -127,6 +127,13 @@ _config_file_aliases = {
     "htp_v79": "htp_quantsim_config_v79.json",
     "htp_v81": "htp_quantsim_config_v81.json",
     "enpu_v6": "enpu_quantsim_config_v6.json",
+    # NOTE: enpu v7 has two flavors of config files:
+    #   - enpu_quantsim_config_v7.json (per-tensor)
+    #   - enpu_quantsim_config_v7_per_channel.json (per-channel)
+    #
+    # "enpu_v7" points to the per-tensor config file
+    # as it's more performant and supports more supergroups
+    "enpu_v7": "enpu_quantsim_config_v7.json",
 }
 
 

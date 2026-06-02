@@ -9,7 +9,7 @@ import os
 
 def get_path_for_target_config(target_config: str) -> str:
     """
-    Returns path for target config such as htp_quantsim_config_v73, aic100_config, eai_quantsim_config
+    Returns path for target config such as htp_quantsim_config_v73, aic100_config
 
     :return: path for target config file
     """
