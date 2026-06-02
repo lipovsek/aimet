@@ -1153,3 +1153,82 @@ class TestMaskedSoftmaxFusion:
             == softmax.outputs[0].consumers()[0].op_type
             == "QuantizeLinear"
         )
+
+    def test_masked_softmax_fusion_heterogeneous_mask_val(self):
+        """
+        Given: Model with multiple masked softmax patterns with different mask_val
+        When: Fuse supergroups
+        Then: Fused model should produce the same output as the original model
+        """
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.masked_softmax_1 = MaskedSoftmaxPattern1(
+                    mask_val=-20.0,
+                    reducemin_dim=-1,
+                    softmax_dim=-1,
+                )
+                self.masked_softmax_2 = MaskedSoftmaxPattern1(
+                    mask_val=-40.0,
+                    reducemin_dim=-1,
+                    softmax_dim=-1,
+                )
+
+            def forward(self, input: torch.Tensor, mask: torch.Tensor):
+                # Both patterns have the same mask_val, so they can be fused together.
+                output1 = self.masked_softmax_1(input, mask)
+                output2 = self.masked_softmax_2(input.clone(), mask)
+                return torch.cat((output1, output2), dim=-1)
+
+            def sample_input(self):
+                qk = torch.arange(-13, 14, dtype=torch.float32).reshape(1, 3, 3, 3)
+                mask = torch.tensor(
+                    [
+                        [1, 0, 0],
+                        [1, 1, 0],
+                        [1, 1, 1],
+                    ],
+                    dtype=torch.float32,
+                ).reshape(1, 1, 3, 3)
+                return qk, mask
+
+            def to_onnx(self) -> onnx.ModelProto:
+                qk, mask = self.sample_input()
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    path = os.path.join(temp_dir, "masked_softmax.onnx")
+                    torch.onnx.export(
+                        self,
+                        (qk, mask),
+                        path,
+                        input_names=["qk", "mask"],
+                        output_names=["output"],
+                        dynamo=False,
+                        optimize=False,
+                    )
+                    return onnx.load(path)
+
+        model = Model()
+        orig_model = model.to_onnx()
+        fused_model = onnx_ir.to_proto(
+            fuse_supergroups(
+                onnx_ir.from_proto(orig_model), patterns=["MaskedSoftmax"], verbose=True
+            )
+        )
+
+        # Sanity check
+        masked_softmax = [
+            node for node in fused_model.graph.node if node.op_type == "MaskedSoftmax"
+        ]
+        assert len(masked_softmax) == 2
+
+        orig_sess = onnxruntime.InferenceSession(orig_model.SerializeToString())
+        fused_sess = onnxruntime.InferenceSession(fused_model.SerializeToString())
+
+        for _ in range(5):
+            qk, mask = model.sample_input()
+            dummy_input = {"qk": qk.numpy(), "mask": mask.numpy()}
+            (orig_output,) = orig_sess.run(None, dummy_input)
+            (fused_output,) = fused_sess.run(None, dummy_input)
+            assert np.array_equal(orig_output, fused_output)

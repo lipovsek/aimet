@@ -785,6 +785,16 @@ class QuantizationSimModel:
                 ):  # except first input rest are params (only valid for unary ops)
                     return False
 
+            if all(
+                (consumer.domain, consumer.op_type)
+                == (AIMET_SUPERGROUP_DOMAIN, "MaskedSoftmax")
+                and name == consumer.input[2]
+                for consumer in consumer_nodes
+            ):
+                # MaskedSoftmax's third input (mask_val) is a very large negative value
+                # that we don't want to simulate quantization for.
+                return False
+
         # Check if the tensor is output of certain ops
         producer_node = self.output_name_to_node.get(name)
         if producer_node and producer_node.op_type in op_outputs_to_ignore:

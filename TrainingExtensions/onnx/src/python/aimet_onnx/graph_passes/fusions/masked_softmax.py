@@ -100,6 +100,7 @@ class MaskedSoftmax(pattern.RewriteRuleClassBase):
         return op.MaskedSoftmax(
             x,
             mask,
+            mask_val,
             axis=-1,
             _domain=AIMET_SUPERGROUP_DOMAIN,
         )
