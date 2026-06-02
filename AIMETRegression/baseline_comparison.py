@@ -40,6 +40,7 @@ class TestResult:
     fp32_accuracy: float
     aimet_accuracy: float
     qdq_accuracy: float
+    static_aten_acc: Optional[float] = None
     qnn_latency_ms: Optional[float] = None
     qnn_accuracy: Optional[float] = None
     techniques: Optional[str] = None
@@ -132,6 +133,8 @@ class Comparison:
     feature: str
     baseline: float
     current: float
+    static_aten_baseline: Optional[float] = None
+    static_aten_current: Optional[float] = None
     techniques: str = ""
 
     @property
@@ -328,7 +331,7 @@ class BaselineManager:
 
                 def safe_float(value, default=0.0):
                     try:
-                        return float(value or default)
+                        return float(value) if value else default
                     except (ValueError, TypeError):
                         return default
 
@@ -370,6 +373,9 @@ class BaselineManager:
                     feature=row["Feature"],
                     fp32_accuracy=safe_float(row.get("FP32_accuracy")),
                     aimet_accuracy=safe_float(row.get("AIMET Accuracy")),
+                    static_aten_acc=safe_float(
+                        row.get("Static ATen Accuracy"), default=None
+                    ),
                     qdq_accuracy=qdq_acc,
                     qnn_latency_ms=qnn_latency,
                     qnn_accuracy=qnn_accuracy,
@@ -417,13 +423,17 @@ class BaselineManager:
                 continue
 
             base_acc = baseline[key].aimet_accuracy
+            base_static_aten_acc = baseline[key].static_aten_acc
             curr_acc = curr_result.aimet_accuracy
+            curr_static_aten_acc = curr_result.static_aten_acc
 
             comp = Comparison(
                 model=curr_result.model,
                 feature=curr_result.feature,
                 baseline=base_acc,
                 current=curr_acc,
+                static_aten_baseline=base_static_aten_acc,
+                static_aten_current=curr_static_aten_acc,
                 techniques=curr_result.techniques or "",
             )
 
@@ -517,7 +527,7 @@ class ReportGenerator:
                 threshold = curr_result.max_accuracy_drop
                 fp32_acc = curr_result.fp32_accuracy
                 aimet_acc = curr_result.aimet_accuracy
-                drop = quality.drop_abs
+                static_aten_acc = curr_result.static_aten_acc
                 qnn_acc = curr_result.qnn_accuracy
                 qnn_lat = curr_result.qnn_latency_ms
             elif comparison:
@@ -527,7 +537,7 @@ class ReportGenerator:
                 threshold = 1.0
                 fp32_acc = 0.0
                 aimet_acc = comparison.current
-                drop = 0.0
+                static_aten_acc = None
                 qnn_acc = None
                 qnn_lat = None
             else:
@@ -535,14 +545,16 @@ class ReportGenerator:
                     "At least one of current result or comparison must be present"
                 )
 
-            fp32_vs_aimet = f"{fp32_acc:.2f}% / {aimet_acc:.2f}% ({drop:+.2f}%)"
             row_data = {
                 "Model": model,
                 "Technique": technique,
-                "Baseline": f"{comparison.baseline:.2f}%" if comparison else None,
-                "Current": f"{comparison.current:.2f}%" if comparison else None,
-                "vs Baseline": f"{comparison.diff:+.2f}%" if comparison else None,
-                "FP32 vs AIMET": fp32_vs_aimet,
+                "Accuracy": aimet_acc,
+                "Accuracy (Static ATen)": static_aten_acc,
+                "Baseline Accuracy": comparison.baseline if comparison else None,
+                "Baseline Accuracy (Static ATen)": comparison.static_aten_baseline
+                if comparison
+                else None,
+                "FP32 Accuracy": fp32_acc,
                 "Max Allowed Drop": f"{threshold:.2f}%",
                 "Status": overall_status,
                 "QNN Acc": qnn_acc and f"{qnn_acc:.2f}%",
@@ -553,13 +565,69 @@ class ReportGenerator:
 
         df = pd.DataFrame(data)
 
-        if all(df["QNN Acc"].isnull()):
-            df = df.drop(columns=["QNN Acc"])
+        column_keys = [
+            "Model",
+            "Technique",
+            "Accuracy",
+        ]
 
-        if all(df["Latency"].isnull()):
-            df = df.drop(columns=["Latency"])
+        def format_percentage(x):
+            return f"{x:.2f}%" if pd.notnull(x) else "—"
 
-        return df
+        def format_percentage_diff(x):
+            return f"{x:+.2f}%p" if pd.notnull(x) else "—"
+
+        if not all(df["Baseline Accuracy"].isnull()):
+            df["vs Baseline"] = df["Accuracy"].fillna(0) - df[
+                "Baseline Accuracy"
+            ].fillna(0)
+            column_keys.append("vs Baseline")
+
+        df["vs FP32"] = df["Accuracy"] - df["FP32 Accuracy"]
+        column_keys.append("vs FP32")
+
+        column_keys.append("Max Allowed Drop")
+        column_keys.append("Status")
+
+        if not all(df["Accuracy (Static ATen)"].isnull()):
+            column_keys.append("Accuracy (Static ATen)")
+
+            if not all(df["Baseline Accuracy (Static ATen)"].isnull()):
+                column_keys.append("vs Baseline (Static ATen)")
+                df["vs Baseline (Static ATen)"] = df.apply(
+                    lambda row: (
+                        None
+                        if pd.isnull(row["Accuracy (Static ATen)"])
+                        or pd.isnull(row["Baseline Accuracy (Static ATen)"])
+                        else row["Accuracy (Static ATen)"]
+                        - row["Baseline Accuracy (Static ATen)"]
+                    ),
+                    axis=1,
+                )
+
+        if not all(df["QNN Acc"].isnull()):
+            column_keys.append("QNN Acc")
+
+        if not all(df["Latency"].isnull()):
+            column_keys.append("Latency")
+
+        df["Accuracy"] = df["Accuracy"].apply(format_percentage)
+        df["vs FP32"] = df["vs FP32"].apply(format_percentage_diff)
+
+        for optional_key in [
+            "vs Baseline",
+            "Accuracy (Static ATen)",
+            "vs Baseline (Static ATen)",
+        ]:
+            if optional_key not in df.columns:
+                continue
+
+            if optional_key.startswith("vs "):
+                df[optional_key] = df[optional_key].apply(format_percentage_diff)
+            else:
+                df[optional_key] = df[optional_key].apply(format_percentage)
+
+        return df[column_keys]
 
     _legend = {
         "Technique": "Quantization method and parameters",
@@ -614,7 +682,6 @@ class ReportGenerator:
             df = ReportGenerator._build_dataframe(
                 [(curr, None) for curr in current.values()],
             )
-            df = df.drop(columns=["Baseline", "Current", "vs Baseline"])
             lines.append(df.to_markdown(index=False))
             lines.append("")
 

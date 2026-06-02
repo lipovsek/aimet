@@ -41,6 +41,7 @@ from typing import Dict, Any
 
 from qai_hub import Device
 from qai_hub_models.utils.input_spec import make_torch_inputs
+from tabulate import tabulate
 
 from AIMETRegression.models.ai_hub_loader import load_model_data
 from AIMETRegression.evaluation.eval_onnx import resolve_dataset_name, eval_onnx_model
@@ -430,6 +431,8 @@ def run_single_config(
 
     config["_export_dir"] = str(model_artifacts_dir)
 
+    static_aten_acc = None
+
     if framework == "onnx":
         print(f"\n[Step 2] Creating FP32 baseline via ONNX export...")
         fp32_path = _export_torch_to_onnx_local(
@@ -469,6 +472,7 @@ def run_single_config(
             dataset_name=dataset_name,
             config=config,
         )
+        static_aten_acc = stats.pop("static_aten_acc", None)
 
     if not aimet_bundle_dir:
         raise RuntimeError(f"{feature_name} did not return a bundle directory")
@@ -498,17 +502,28 @@ def run_single_config(
             feature=feature_name,
             fp32_accuracy=fp32_acc,
             aimet_accuracy=feature_acc,
+            static_aten_acc=static_aten_acc,
             qdq_accuracy=0.0,
             max_accuracy_drop=max_drop,
         )
 
         quality = validate_quantization_quality(test_result)
+        table = {
+            "FP32 Accuracy": f"{fp32_acc:.4f}%",
+            "AIMET Accuracy": f"{feature_acc:.4f}%",
+        }
+        if static_aten_acc is not None:
+            table |= {
+                "└─ (+static ATen calibration)": f"{static_aten_acc:.4f}%",
+            }
 
-        print(f"  FP32 Accuracy:   {fp32_acc:.4f}%")
-        print(f"  AIMET Accuracy:  {feature_acc:.4f}%")
-        print(f"  Drop:            {quality.drop_abs:+.4f} percentage points")
-        print(f"  Threshold:       {max_drop:.2f} percentage points")
-        print(f"  Status:          {quality.status_emoji}")
+        table |= {
+            "Drop": f"{quality.drop_abs:+.4f} percentage points",
+            "Threshold": f"{max_drop:.2f} percentage points",
+            "Status": f"{quality.status_emoji}",
+        }
+        for line in tabulate(table.items(), tablefmt="plain").split("\n"):
+            print(f"  {line}")
 
         if not quality.is_acceptable:
             print(
@@ -569,15 +584,26 @@ def run_single_config(
             fp32_accuracy=fp32_acc,
             aimet_accuracy=feature_acc,
             qdq_accuracy=qdq_acc,
+            static_aten_acc=static_aten_acc,
             max_accuracy_drop=max_drop,
         )
 
         export_val = validate_qdq_export(test_result)
 
-        print(f"  AIMET Accuracy:  {feature_acc:.4f}%")
-        print(f"  QDQ Accuracy:    {qdq_acc:.4f}%")
-        print(f"  Difference:      {export_val.diff_abs:+.4f} percentage points")
-        print(f"  Status:          {export_val.status_emoji}")
+        table = {
+            "AIMET Accuracy": f"{feature_acc:.4f}%",
+        }
+        if static_aten_acc is not None:
+            table |= {
+                "└─ (+static ATen calibration)": f"{static_aten_acc:.4f}%",
+            }
+        table |= {
+            "QDQ Accuracy": f"{qdq_acc:.4f}%",
+            "Difference": f"{export_val.diff_abs:+.4f}%p",
+            "Status": f"{export_val.status_emoji}",
+        }
+        for line in tabulate(table.items(), tablefmt="plain").split("\n"):
+            print(f"  {line}")
 
         if not export_val.is_valid:
             print(f"\n  ⚠️  WARNING: Large difference between AIMET and QDQ (>0.5pp)")
@@ -662,6 +688,7 @@ def run_single_config(
             fp32_accuracy=fp32_acc,
             aimet_accuracy=feature_acc,
             qdq_accuracy=qdq_acc if qdq_acc is not None else 0.0,
+            static_aten_acc=static_aten_acc,
             max_accuracy_drop=max_drop,
         )
         quality = validate_quantization_quality(test_result)
@@ -674,6 +701,9 @@ def run_single_config(
         "Techniques": (stats or {}).get("techniques", feature_name),
         "FP32_accuracy": float(fp32_acc) if fp32_acc is not None else None,
         "AIMET Accuracy": float(feature_acc) if feature_acc is not None else None,
+        "Static ATen Accuracy": float(static_aten_acc)
+        if static_aten_acc is not None
+        else None,
         "FP32_vs_AIMET": fp32_vs_aimet_formatted,
         "Max_Accuracy_Drop": max_drop,
         "QDQ Accuracy": float(qdq_acc) if qdq_acc is not None else None,

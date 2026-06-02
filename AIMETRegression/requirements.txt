@@ -1,6 +1,7 @@
-qai-hub
-qai-hub-models
-onnxruntime-gpu==1.19.2
 aimet-onnx
+onnxruntime-gpu==1.19.2
 pynvml
 pytest
+qai-hub
+qai-hub-models
+tabulate

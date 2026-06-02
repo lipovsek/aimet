@@ -171,18 +171,21 @@ def run_quantsim(
             default_output_bw,
             calibration_callback,
         )
-        fully_qtzd_acc = eval_pytorch_model(
+        static_aten_acc = eval_pytorch_model(
             ep.module(),
             model,
             dataset_name,
             num_samples=eval_samples,
             dataset=_dataset,
         )
+        static_aten_acc = float(static_aten_acc)
 
         print(
             "[AIMET Torch QuantSim] Fully quantized accuracy "
-            f"after static ATen graph calibration: {fully_qtzd_acc:.4f}"
+            f"after static ATen graph calibration: {static_aten_acc:.4f}"
         )
+    else:
+        static_aten_acc = None
 
     print(f"[AIMET Torch QuantSim] Measuring runtime and memory...")
 
@@ -226,6 +229,7 @@ def run_quantsim(
         "techniques": technique_str,
         "runtime": runtime_str,
         "memory": memory_str,
+        "static_aten_acc": static_aten_acc,
     }
 
     return qdq_path, float(feature_acc), stats, str(bundle_dir)
