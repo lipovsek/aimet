@@ -8,3 +8,5 @@ tests:
     param_type: int8
     activation_type: int16
     config_file: htp_v79
+    # TODO: Uncomment this with qai-hub-models v0.55
+    # apply_experimental_static_aten_calibration: true

@@ -18,6 +18,7 @@ tests:
     config_file: htp_v79
     max_accuracy_drop_onnx: 8.5
     max_accuracy_drop_torch: 8.7
+    apply_experimental_static_aten_calibration: true
 
   # --------------------------------------------------------------------------
   # Test 2: Lite Mixed-Precision (10% FP16)
@@ -46,6 +47,7 @@ tests:
     config_file: htp_v81
     max_accuracy_drop_onnx: 6.0
     max_accuracy_drop_torch: 7.0
+    apply_experimental_static_aten_calibration: true
 
   # --------------------------------------------------------------------------
   # Test 4: AdaRound Optimization (500 iterations)

@@ -25,6 +25,7 @@ tests:
     config_file: htp_v79
     max_accuracy_drop_torch: 8.5
     max_accuracy_drop_onnx: 10.9
+    apply_experimental_static_aten_calibration: true
 
   # --------------------------------------------------------------------------
   # Test 3: Automatic Mixed-Precision (INT8 + FP16, Fast)

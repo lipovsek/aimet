@@ -9,6 +9,7 @@ tests:
     activation_type: int8
     config_file: htp_v79
     max_accuracy_drop_onnx: 1.5
+    apply_experimental_static_aten_calibration: true
 
   - name: quantsim_int8_int16
     feature: quantsim
@@ -17,6 +18,7 @@ tests:
     activation_type: int16
     config_file: htp_v81
     max_accuracy_drop_torch: 1.5
+    apply_experimental_static_aten_calibration: true
 
   - name: adaround_500
     feature: adaround
