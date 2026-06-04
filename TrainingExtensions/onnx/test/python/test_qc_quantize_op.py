@@ -27,7 +27,7 @@ from aimet_onnx.qc_quantize_op import (
     GroupedBlockQuantizeDequantize,
 )
 from aimet_onnx.common import libquant_info
-from aimet_onnx.common.quantsim import calculate_delta_offset
+from aimet_onnx.common.quantsim import calculate_delta_offset, _get_minimum_scale
 from aimet_onnx import lpbq_utils
 from aimet_onnx._encoding import AffineEncoding
 
@@ -1311,6 +1311,59 @@ class TestQcQuantizeOp:
         assert encoding.min < 0 and encoding.min > -100
         assert encoding.max > 0 and encoding.max < 100
         assert encoding.delta > 0 and encoding.delta < 1
+
+    @pytest.mark.parametrize("quant_scheme", [QuantScheme.min_max])
+    @pytest.mark.parametrize("symmetric", [False, True])
+    @pytest.mark.parametrize("zero_point_shift", [0.0, 0.5])
+    @pytest.mark.parametrize("bitwidth", [4, 8, 16, 32])
+    def test_minimum_scale(
+        self,
+        bitwidth: int,
+        symmetric: bool,
+        zero_point_shift,
+        quant_scheme: QuantScheme,
+    ):
+        if not symmetric and zero_point_shift:
+            pytest.skip("zero_point_shift is not applicable for symmetric quantization")
+
+        input = np.zeros((1, 10)).astype(np.float32)
+        quant_info = libquant_info.QcQuantizeInfo()
+        quant_info.isIntDataType = True
+        quant_node = helper.make_node(
+            op_name,
+            inputs=["input"],
+            outputs=["output"],
+            domain=op_domain,
+            quant_info=libpymo.PtrToInt64(quant_info),
+        )
+        model = create_model_from_node(quant_node, input.shape)
+        session = build_session(model, available_providers)
+        qc_op = QcQuantizeOp(
+            quant_info=quant_info,
+            quant_scheme=quant_scheme,
+            op_mode=OpMode.updateStats,
+            bitwidth=bitwidth,
+            use_symmetric_encodings=symmetric,
+        )
+        qc_op.set_zero_point_shift(zero_point_shift)
+
+        session.run(None, {"input": input})
+        qc_op.compute_encodings()
+        (enc,) = qc_op.get_encodings()
+
+        assert enc.delta == _get_minimum_scale(2**bitwidth - 1)
+        assert enc.offset % 1 == zero_point_shift
+        _assert_encoding_coherence(enc)
+
+
+def _assert_encoding_coherence(encoding: libpymo.TfEncoding):
+    num_steps = 2**encoding.bw - 1
+    assert np.isfinite(encoding.delta) and encoding.delta > 0
+    assert np.isfinite(encoding.offset)
+    assert np.isfinite(encoding.min) and encoding.min <= 0
+    assert np.isfinite(encoding.max) and encoding.max >= 0
+    assert np.allclose(encoding.max, encoding.delta * (encoding.offset + num_steps))
+    assert np.allclose(encoding.min, encoding.delta * (encoding.offset))
 
 
 blockwise_qdq_test_1 = {

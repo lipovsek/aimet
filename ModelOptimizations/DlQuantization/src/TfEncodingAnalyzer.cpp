@@ -58,18 +58,9 @@ TfEncoding TfEncodingAnalyzer<DTYPE>::computeEncoding(uint8_t bw, bool useSymmet
     if (useSymmetricEncodings)
         assert(!(useStrictSymmetric && useUnsignedSymmetric));
 
-    TfEncoding encoding;
-
     // Make sure zero value is within the range
     double newMin = std::min(0.0, _accumulatedStats.min);
     double newMax = std::max(0.0, _accumulatedStats.max);
-
-    // When the min and max are too close together, nudge the maximum to meet the
-    // minimum range requirement
-    // This also handles the case where min==max==0 to avoid division by zero
-    newMax      = std::max(newMax, newMin + MIN_RANGE);
-    encoding.bw = bw;
-
     return getComputedEncodings(bw, newMin, newMax, useSymmetricEncodings, useStrictSymmetric, useUnsignedSymmetric,
                                 0.0);
 }

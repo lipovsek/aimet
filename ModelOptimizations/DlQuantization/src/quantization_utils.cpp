@@ -58,6 +58,9 @@ TfEncoding getComputedEncodings(uint8_t bw, double min, double max, bool useSymm
         }
     }
 
+    double fp32_eps = std::numeric_limits<float>::epsilon();
+    double min_scale = std::min(0.01 / numSteps, fp32_eps);
+
     if (useSymmetricEncodings && !useUnsignedSymmetric)
     {
         double numPositiveSteps = std::floor(numSteps / 2) + zeroPointShift;
@@ -70,12 +73,12 @@ TfEncoding getComputedEncodings(uint8_t bw, double min, double max, bool useSymm
         {
             numPositiveSteps = numNegativeSteps;
         }
-        encoding.delta  = std::max(max / numPositiveSteps, -min / numNegativeSteps);
+        encoding.delta  = std::max({max / numPositiveSteps, -min / numNegativeSteps, min_scale});
         encoding.offset = -numNegativeSteps;
     }
     else
     {
-        encoding.delta = (max - min) / numSteps;
+        encoding.delta = std::max((max - min) / numSteps, min_scale);
         encoding.offset = std::clamp(round(min / encoding.delta), -numSteps, 0.0);
     }
 

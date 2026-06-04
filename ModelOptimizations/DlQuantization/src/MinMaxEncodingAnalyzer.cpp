@@ -110,11 +110,6 @@ Encodings MinMaxEncodingAnalyzer<DTYPE>::computeEncoding(uint8_t bw, bool useSym
         // Make sure zero value is within the range
         double newMin = std::min(DTYPE(0.0), _minStats[idx]);
         double newMax = std::max(DTYPE(0.0), _maxStats[idx]);
-
-        // When the min and max are too close together, nudge the maximum to meet the
-        // minimum range requirement
-        // This also handles the case where min==max==0 to avoid division by zero
-        newMax         = std::max(newMax, newMin + MIN_RANGE);
         encodings[idx] = getComputedEncodings(bw, newMin, newMax, useSymmetricEncodings, useStrictSymmetric,
                                               useUnsignedSymmetric, zeroPointShift);
     }
