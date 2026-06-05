@@ -47,6 +47,7 @@ class TestResult:
     max_accuracy_drop: float = 1.0
     aimet_runtime_ms: Optional[float] = None
     aimet_memory_mb: Optional[float] = None
+    status: str = ""
 
 
 @dataclass
@@ -383,6 +384,7 @@ class BaselineManager:
                     max_accuracy_drop=safe_float(row.get("Max_Accuracy_Drop"), 1.0),
                     aimet_runtime_ms=aimet_runtime,
                     aimet_memory_mb=aimet_memory,
+                    status=(row.get("Status") or "").strip(),
                 )
 
         print(f"✔ Loaded {len(results)} test results from CSV")
@@ -876,7 +878,12 @@ def _write_summary_json(
     import json
 
     passed, warnings, failed, failed_tests = 0, 0, 0, []
+    crashed, crashed_tests = 0, []
     for key, result in current.items():
+        if result.status == "crashed":
+            crashed += 1
+            crashed_tests.append(f"{result.model}/{result.feature}")
+            continue
         quality = validate_quantization_quality(result)
         if quality.is_acceptable:
             passed += 1
@@ -896,6 +903,9 @@ def _write_summary_json(
         "failed": failed,
         "failed_tests": failed_tests,
         "regression_tests": regression_tests,
+        "crashed": crashed,
+        "crashed_tests": crashed_tests,
+        "has_failures": bool(crashed_tests or failed_tests or regression_tests),
     }
 
     out = Path(output_path)

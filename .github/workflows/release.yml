@@ -66,6 +66,8 @@ jobs:
       push_to_pypi: true
       push_to_github: true
       push_docs: true
+      run_weekly: false
+      run_genai: false
     secrets: inherit
 
   release_via_manual_workflow:
@@ -77,4 +79,6 @@ jobs:
       push_to_pypi: ${{ inputs.push_to_pypi }}
       push_to_github: ${{ inputs.push_to_github }}
       push_docs: ${{ inputs.push_docs }}
+      run_weekly: true
+      run_genai: true
     secrets: inherit

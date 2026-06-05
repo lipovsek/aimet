@@ -43,6 +43,11 @@ on:
           - regression
           - ad_hoc
         default: 'regression'
+      cadence:
+        description: 'Override cadence (nightly|weekly|acceptance). Blank = auto from schedule/event.'
+        required: false
+        type: string
+        default: ''
       ad_hoc_config_b64:
         description: 'Base64-encoded config (ad-hoc only). Generate via: cat config.yaml | base64 -w 0'
         required: false
@@ -62,6 +67,7 @@ concurrency:
 
 ################################################################################
 # Cadence resolution
+# - cadence input (if set)    → that value (overrides everything below)
 # - schedule cron '0 9 * * *' → nightly
 # - schedule cron '0 1 * * 6' → weekly
 # - push / workflow_dispatch  → acceptance
@@ -69,6 +75,7 @@ concurrency:
 env:
   CADENCE: >-
     ${{
+      github.event.inputs.cadence != '' && github.event.inputs.cadence ||
       github.event.schedule == '0 9 * * *' && 'nightly' ||
       github.event.schedule == '0 1 * * 6' && 'weekly' ||
       'acceptance'

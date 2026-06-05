@@ -361,6 +361,15 @@ Suite files location: AIMETRegression/suites/
             import traceback
 
             traceback.print_exc()
+            all_results.append(
+                {
+                    "Model": config["model_name"],
+                    "Feature": test_name,
+                    "Framework": config.get("framework", "onnx"),
+                    "Status": "crashed",
+                    "Error": str(e)[:200],
+                }
+            )
             continue
 
     if not all_results:

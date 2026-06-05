@@ -37,6 +37,15 @@ def status_emoji(status):
     return {"success": "✅ Passed", "skipped": "⏭️ Skipped"}.get(status, "❌ Failed")
 
 
+def branch_prefix(branch):
+    """Title-prefix that distinguishes develop runs from release-branch runs."""
+    if not branch:
+        return ""
+    if branch.startswith("release-"):
+        return f"[{branch}] 🚨 "
+    return f"[{branch}] "
+
+
 def baseline_cell(data):
     """Format baseline comparison column."""
     parts = []
@@ -58,6 +67,8 @@ def quality_cell(data):
         parts.append(f"⚠️ Warnings: {data['warnings']}")
     if data["failed"]:
         parts.append(f"❌ Failed: {data['failed']}")
+    if data.get("crashed"):
+        parts.append(f"💥 Crashed: {data['crashed']}")
     return "<br>".join(parts) if parts else "N/A"
 
 
@@ -117,6 +128,22 @@ def generate_summary(
                 print()
 
 
+def generate_slack_summary(
+    onnx_status,
+    torch_status,
+    onnx_summary_path,
+    torch_summary_path,
+    suite,
+    trigger,
+    run_url=None,
+    branch="",
+):
+    """Generate a Slack-friendly plain text summary to stdout."""
+    print(f"*{branch_prefix(branch)}{suite.title()} Regression failed*")
+    if run_url:
+        print(f"Workflow: {run_url}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate workflow results summary")
     parser.add_argument("--onnx-status", default="skipped")
@@ -125,16 +152,35 @@ def main():
     parser.add_argument("--torch-summary", default=None)
     parser.add_argument("--suite", default="nightly")
     parser.add_argument("--trigger", default="unknown")
+    parser.add_argument("--format", default="github", choices=["github", "slack"])
+    parser.add_argument("--run-url", default=None)
+    parser.add_argument(
+        "--branch",
+        default="",
+        help="git ref name, used to distinguish develop vs release-branch runs",
+    )
     args = parser.parse_args()
 
-    generate_summary(
-        onnx_status=args.onnx_status,
-        torch_status=args.torch_status,
-        onnx_summary_path=args.onnx_summary,
-        torch_summary_path=args.torch_summary,
-        suite=args.suite,
-        trigger=args.trigger,
-    )
+    if args.format == "slack":
+        generate_slack_summary(
+            onnx_status=args.onnx_status,
+            torch_status=args.torch_status,
+            onnx_summary_path=args.onnx_summary,
+            torch_summary_path=args.torch_summary,
+            suite=args.suite,
+            trigger=args.trigger,
+            run_url=args.run_url,
+            branch=args.branch,
+        )
+    else:
+        generate_summary(
+            onnx_status=args.onnx_status,
+            torch_status=args.torch_status,
+            onnx_summary_path=args.onnx_summary,
+            torch_summary_path=args.torch_summary,
+            suite=args.suite,
+            trigger=args.trigger,
+        )
 
 
 if __name__ == "__main__":

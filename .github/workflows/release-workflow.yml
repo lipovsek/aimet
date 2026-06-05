@@ -23,6 +23,16 @@ on:
         required: false
         type: boolean
         default: false
+      run_weekly:
+        description: "Dispatch weekly-regression"
+        required: false
+        type: boolean
+        default: false
+      run_genai:
+        description: "Dispatch genai-scorecard"
+        required: false
+        type: boolean
+        default: false
 
 env:
   PUBLIC_REPO: "qualcomm/aimet"
@@ -67,6 +77,37 @@ jobs:
     uses: ./.github/workflows/nightly-pipeline.yml
     with:
       ref_name: ${{ github.ref_name }}
+
+  trigger_weekly_regression:
+    if: ${{ inputs.run_weekly }}
+    name: Trigger weekly regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'weekly-regression.yaml',
+              ref: context.ref,
+            });
+
+  trigger_genai_scorecard:
+    if: ${{ inputs.run_genai }}
+    name: Trigger GenAI scorecard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'genai-scorecard.yaml',
+              ref: context.ref,
+              inputs: { cadence: 'weekly' },
+            });
 
   release_aimet_onnx_to_pypi:
     if: ${{ inputs.push_to_pypi }} == true
