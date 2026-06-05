@@ -3,6 +3,7 @@
 
 
 import tempfile
+import os
 import torch
 from peft import PeftMixedModel
 from peft import LoraConfig
@@ -78,12 +79,9 @@ class TestLoraAdapterPeft:
 
         # Export lora model
         with tempfile.TemporaryDirectory() as tmpdir:
-            sim.export(
-                tmpdir,
-                "model",
-                dummy_input=dummy_inputs,
-                export_model=True,
-                filename_prefix_encodings="encodings",
+            sim.onnx.export(
+                dummy_inputs,
+                os.path.join(tmpdir, "model"),
             )
 
 

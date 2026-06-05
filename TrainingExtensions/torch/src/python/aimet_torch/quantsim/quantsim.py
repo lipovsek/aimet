@@ -505,6 +505,27 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
                 "quantsim.html#aimet_torch.QuantizationSimModel.onnx"
             )
 
+        qlora_layers = [
+            name
+            for name, qmodule in self.named_qmodules()
+            if isinstance(qmodule, aimet_torch.nn.lora.QuantizedLora)
+        ]
+
+        if len(qlora_layers) > 3:
+            # Only show up to 3 layer names for readability
+            qlora_layers = [*qlora_layers[:3], "..."]
+
+        if qlora_layers:
+            raise RuntimeError(
+                "QuantizationSimModel.export does not support exporting QuantizedLora layers. "
+                f"Found the following QuantizedLora layers in the model: [{', '.join(qlora_layers)}]. "
+                "Please use aimet_torch.onnx.export() or sim.onnx.export() instead, "
+                "which supports exporting QuantizedLora layers. "
+                "For more information, see "
+                "https://quic.github.io/aimet-pages/releases/latest/apiref/torch/"
+                "quantsim.html#aimet_torch.QuantizationSimModel.onnx"
+            )
+
         if isinstance(dummy_input, torch.Tensor):
             dummy_input = (dummy_input,)
 
