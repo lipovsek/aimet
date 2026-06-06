@@ -368,7 +368,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
                 handle.remove()
 
         # Add quantization layers
-        self._add_quantization_wrappers(
+        self.model = self._add_quantization_wrappers(
             self.model, num_inout_tensors, default_data_type
         )
 
@@ -396,7 +396,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         self._disable_quantizers_for_constant_rescale_ops()
 
         # Initialize real wrappers using collected information
-        self._realize_quant_wrappers_in_model(self.model)
+        self.model = self._realize_quant_wrappers_in_model(self.model)
 
     def get_supported_kernels(self) -> Dict:
         """
@@ -406,7 +406,9 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         return self._supported_kernels
 
     @abstractmethod
-    def _realize_quant_wrappers_in_model(self, model: torch.nn.Module):
+    def _realize_quant_wrappers_in_model(
+        self, model: torch.nn.Module
+    ) -> torch.nn.Module:
         """
         Prepare QuantSim for compute encodings. Resets encodings for each quantizable layer and sets mode to Analysis.
         Realize quant wrappers using collected information in LazyQuantWrapper.
@@ -1189,7 +1191,9 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
             cls._apply_qdq_to_model_parameters(original_model)
         # pylint: disable=unnecessary-comprehension
         all_modules_in_original_model = [module for module in original_model.modules()]
-        cls._remove_quantization_wrappers(original_model, all_modules_in_original_model)
+        original_model = cls._remove_quantization_wrappers(
+            original_model, all_modules_in_original_model
+        )
 
         # Convert DequantizedTensors to plain torch.Tensor (if any)
         def convert_params_to_plain_tensor(module: torch.nn.Module):
@@ -1233,7 +1237,9 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
                     excluded_module_name = module_to_name_dict.get(module)
                     self._excluded_layer_names.append(excluded_module_name)
 
-        self._remove_quantization_wrappers(self.model, quant_layers_to_exclude)
+        self.model = self._remove_quantization_wrappers(
+            self.model, quant_layers_to_exclude
+        )
 
     @staticmethod
     def _get_torch_encodings_for_missing_layers(

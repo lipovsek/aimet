@@ -3276,3 +3276,24 @@ def test_encoding_metadata(tmp_path: pathlib.Path, encoding_version: str):
         "package": "aimet-torch",
         "version": aimet_torch.__version__,
     }
+
+
+def test_root_qmodule():
+    """
+    Given: Root module is registered as quantized module
+    When: Create QuantizationSimModel
+    Then: Root module should be converted to quantized module
+    """
+    model = torch.nn.Conv2d(3, 3, 3)
+    x = torch.randn(1, 3, 10, 10)
+    sim = aimet_torch.QuantizationSimModel(model, x)
+    sim.compute_encodings(lambda model: model(x))
+    assert type(sim.model) == aimet_torch.nn.QuantizedConv2d
+    assert isinstance(sim.model.input_quantizers[0], QuantizeDequantize)
+    assert isinstance(sim.model.output_quantizers[0], QuantizeDequantize)
+    assert isinstance(sim.model.param_quantizers["weight"], QuantizeDequantize)
+    model = sim.get_original_model(sim.model)
+    assert type(model) == torch.nn.Conv2d
+    assert not hasattr(model, "input_quantizers")
+    assert not hasattr(model, "output_quantizers")
+    assert not hasattr(model, "param_quantizers")

@@ -870,12 +870,26 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
 
         module.apply(wrap_children)
 
-    def _realize_quant_wrappers_in_model(self, model: torch.nn.Module):
+        if isinstance(module, BaseQuantizationMixin):
+            module = self._create_quantizer_module(
+                module, num_inout_tensors, default_data_type
+            )
+
+        return module
+
+    def _realize_quant_wrappers_in_model(
+        self, model: torch.nn.Module
+    ) -> torch.nn.Module:
         for name, child in model.named_children():
             if isinstance(child, _V2LazyQuantizeWrapper):
                 child = child.realize()
                 setattr(model, name, child)
             self._realize_quant_wrappers_in_model(child)
+
+        if isinstance(model, _V2LazyQuantizeWrapper):
+            model = model.realize()
+
+        return model
 
     def _create_quantizer_module(
         self,
@@ -918,6 +932,13 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
             # Recursively call children modules if present
             if not utils.is_leaf_module(module):
                 cls._remove_quantization_wrappers(module, list_of_modules_to_exclude)
+
+        if starting_module in list_of_modules_to_exclude and isinstance(
+            starting_module, BaseQuantizationMixin
+        ):
+            starting_module = starting_module.get_original_module()
+
+        return starting_module
 
     def fold_param_quantizers(self):
         """

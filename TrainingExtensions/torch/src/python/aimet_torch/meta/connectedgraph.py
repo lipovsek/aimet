@@ -388,8 +388,23 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 model, model_input
             )
         )
+
+        class Wrapper(torch.nn.Module):
+            def __init__(self, model):
+                super().__init__()
+                self._model = model
+
+            def forward(self, *args, **kwargs):
+                return self._model(*args, **kwargs)
+
+        # torch.jit.trace doesn't capture root module's forward call as a CallMethod node.
+        # Wrap root module with a dummy wrapper so that torch.jit.trace captures
+        # root module's forward call as CallMethod node
+        model = Wrapper(model)
+
         with _add_passthrough_input_quantizers(model):
             trace = torch.jit.trace(model, model_input, **jit_trace_args)
+
         self._parse_top_level_trace(trace, model)
         self._recover_input_output_structure()
         self._optimize_connected_graph()
@@ -951,14 +966,36 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 collapsed_outputs.append(consumers if len(consumers) > 0 else None)
             return collapsed_outputs
 
+        def flatten_unpack_producer(unpack: Op) -> List[SimpleNamespace]:
+            (inp,) = unpack.inputs
+            producer = inp.producer
+
+            if producer and producer.type in ["TupleConstruct", "ListConstruct"]:
+                return flatten_pack_producers(producer)
+            if producer and producer.type in ["TupleUnpack", "ListUnpack"]:
+                idx = producer.output_products.index(inp)
+                return flatten_unpack_producer(producer)[idx]
+            else:
+                return [
+                    SimpleNamespace(op=unpack, index=i)
+                    for i in range(len(unpack.output_products))
+                ]
+
         def flatten_pack_producers(deconstruct_op: Op):
-            return [
-                flatten_pack_producers(product.producer)
-                if product.producer
-                and product.producer.type in ["TupleConstruct", "ListConstruct"]
-                else get_index_in_op_outputs(product.producer, product)
-                for product in deconstruct_op.inputs
-            ]
+            ret = []
+
+            for product in deconstruct_op.inputs:
+                producer = product.producer
+
+                if producer and producer.type in ["TupleConstruct", "ListConstruct"]:
+                    ret.append(flatten_pack_producers(producer))
+                elif producer and producer.type in ["TupleUnpack", "ListUnpack"]:
+                    idx = producer.output_products.index(product)
+                    ret.append(flatten_unpack_producer(producer)[idx])
+                else:
+                    ret.append(get_index_in_op_outputs(producer, product))
+
+            return ret
 
         input_structure = {}
         output_structure = {}
