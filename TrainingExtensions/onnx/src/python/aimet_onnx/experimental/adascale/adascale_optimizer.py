@@ -47,6 +47,29 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
 _QT_SAMPLING_PROB = 1.0
 _LOSS_FN = torch.nn.MSELoss()
+
+# Temporary flag to control how the per-element error is reduced into a scalar loss.
+# When set, the error is summed over the sequence dim and averaged over the rest
+# so it is not divided by sequence length S; otherwise plain
+# mse_loss averages over every dim.
+# TODO: switch default to True once validated.
+_SUM_OVER_SEQ_DIM = False
+
+
+def _mse_loss_fn(
+    qt_out: torch.Tensor, fp_out: torch.Tensor, p: float = 2.0
+) -> torch.Tensor:
+    """Returns the block loss between qt_out and fp_out.
+
+    Uses plain MSE by default, or FlexRound's lp_loss (summed over the sequence
+    dim) when ``_SUM_OVER_SEQ_DIM`` is set.
+    """
+    if _SUM_OVER_SEQ_DIM:
+        return (qt_out - fp_out).abs().pow(p).sum(1).mean()
+
+    return _LOSS_FN(qt_out, fp_out)
+
+
 _DEBUG_NUM_PARTIAL_ITERATIONS = None
 _DEBUG_NUM_PARTIAL_ITERATIONS_START = None
 _DEBUG_NUM_PARTIAL_ITERATIONS_END = None
@@ -402,7 +425,7 @@ class AdaScale:
                 ]  # Create a new tensor
                 quant_out = pytorch_block(*input_tensor)
                 batch_fp_out = fp_out[iteration % len(torch_fp_input)].to(device)
-                loss = _LOSS_FN(
+                loss = _mse_loss_fn(
                     quant_out,
                     batch_fp_out,
                 )

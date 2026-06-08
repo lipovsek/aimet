@@ -134,13 +134,29 @@ _QT_SAMPLING_PROB = 0.5
 
 _BlockOutput = torch.Tensor | Tuple[torch.Tensor, ...]
 
+# Temporary flag to control how the per-element error is reduced into a scalar loss.
+# When set, the error is summed over the sequence dim and averaged over the rest
+# so it is not divided by sequence length S; otherwise plain
+# mse_loss averages over every dim.
+# TODO: switch default to True once validated.
+_SUM_OVER_SEQ_DIM = False
 
-def _mse_loss_fn(fp_out: _BlockOutput, qt_out: _BlockOutput) -> torch.Tensor:
-    """Returns MSE loss between fp_out and qt_out"""
+
+def _mse_loss_fn(
+    fp_out: _BlockOutput, qt_out: _BlockOutput, p: float = 2.0
+) -> torch.Tensor:
+    """Returns the block loss between fp_out and qt_out.
+
+    Uses plain MSE by default, or FlexRound's lp_loss (summed over the sequence
+    dim) when ``_SUM_OVER_SEQ_DIM`` is set.
+    """
     if isinstance(fp_out, (tuple, list)):
         fp_out = torch.cat(fp_out)
     if isinstance(qt_out, (tuple, list)):
         qt_out = torch.cat(qt_out)
+
+    if _SUM_OVER_SEQ_DIM:
+        return (fp_out - qt_out).abs().pow(p).sum(1).mean()
 
     return torch.nn.functional.mse_loss(fp_out, qt_out)
 
