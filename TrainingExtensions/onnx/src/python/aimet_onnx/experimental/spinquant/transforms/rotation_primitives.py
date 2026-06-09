@@ -20,7 +20,10 @@ Storage / role conventions:
     Gather        | [vocab, hidden] | W @ R   (axis -1)
 """
 
+from typing import Tuple
+
 import numpy as np
+import onnx
 from onnx import numpy_helper
 
 from aimet_onnx.common.hadamard import get_hadamard_matrix
@@ -191,3 +194,123 @@ def left_multiply(W: np.ndarray, R: np.ndarray, axis: int = 0) -> np.ndarray:
     moved_shape = W_moved.shape
     W_new = R.T @ W_moved.reshape(W_moved.shape[0], -1)  # [hidden, N]
     return np.moveaxis(W_new.reshape(moved_shape), 0, axis)
+
+
+def insert_online_hadamard_node(
+    model: ModelProto,
+    target_tensor_name: str,
+    consumer_node: onnx.NodeProto,
+    consumer_input_idx: int,
+    head_dim: int,
+    name_prefix: str,
+) -> Tuple[str, onnx.NodeProto]:
+    """Insert ``MatMul(target_tensor, H)`` between a producer and one consumer input.
+
+    Used by R3 to add an online Hadamard rotation immediately upstream of a
+    chosen consumer (the QK^T MatMul, or the past-key Concat). The new MatMul
+    reads ``target_tensor_name`` and writes a rotated tensor; only the
+    requested consumer input is rewired, so other consumers of the original
+    tensor (if any) keep seeing the unrotated value.
+
+    :param model: ONNX ModelProto to mutate.
+    :param target_tensor_name: Name of the tensor to rotate.
+    :param consumer_node: The NodeProto whose input index we will rewire.
+    :param consumer_input_idx: Index in ``consumer_node.input`` currently
+        holding ``target_tensor_name``.
+    :param head_dim: Size of the (square) Hadamard matrix; rotates the last
+        axis of ``target_tensor_name``.
+    :param name_prefix: Prefix used to name the inserted initializer / node /
+        output tensor (e.g. ``"block0_q"``).
+    :return: ``(output_name, new_node)`` — the name of the new (rotated) output
+        tensor and the inserted ``MatMul`` NodeProto (so callers can wire a
+        quantizer relative to it).
+    """
+    if consumer_node.input[consumer_input_idx] != target_tensor_name:
+        raise ValueError(
+            f"insert_online_hadamard_node: consumer_node '{consumer_node.name}' "
+            f"input[{consumer_input_idx}] is "
+            f"'{consumer_node.input[consumer_input_idx]}', expected "
+            f"'{target_tensor_name}'."
+        )
+
+    elem_type = _infer_tensor_elem_type(model, target_tensor_name)
+    np_dtype = onnx.helper.tensor_dtype_to_np_dtype(elem_type)
+
+    H = hadamard_rotation_matrix(head_dim).astype(np_dtype)
+    initializer_name = f"{name_prefix}_R3_hadamard"
+    output_name = f"{name_prefix}_R3_out"
+    node_name = f"{name_prefix}_R3"
+
+    initializer = numpy_helper.from_array(H, name=initializer_name)
+    model.graph.initializer.append(initializer)
+
+    new_node = onnx.helper.make_node(
+        op_type="MatMul",
+        inputs=[target_tensor_name, initializer_name],
+        outputs=[output_name],
+        name=node_name,
+    )
+    # protobuf ``insert`` copies the message, so use the in-graph reference for
+    # the return value — callers wire quantizers onto this node's edges.
+    new_node = _insert_node_after_producer(model, target_tensor_name, new_node)
+
+    consumer_node.input[consumer_input_idx] = output_name
+
+    _logger.debug(
+        "Inserted online Hadamard MatMul '%s' on tensor '%s' (head_dim=%d, dtype=%s); "
+        "rewired '%s'.input[%d].",
+        node_name,
+        target_tensor_name,
+        head_dim,
+        np_dtype,
+        consumer_node.name,
+        consumer_input_idx,
+    )
+    return output_name, new_node
+
+
+def _infer_tensor_elem_type(model: ModelProto, tensor_name: str) -> int:
+    """Return the ONNX TensorProto.DataType for ``tensor_name``.
+
+    Looks first at graph value_info / inputs / outputs, then at initializers.
+    Defaults to ``FLOAT`` if nothing matches — ORT will raise a clear dtype
+    error at session-build time if that's wrong, which is preferable to
+    silently casting weights.
+    """
+    for vi in (
+        list(model.graph.value_info)
+        + list(model.graph.input)
+        + list(model.graph.output)
+    ):
+        if vi.name == tensor_name:
+            elem_type = vi.type.tensor_type.elem_type
+            if elem_type != onnx.TensorProto.UNDEFINED:
+                return elem_type
+    for init in model.graph.initializer:
+        if init.name == tensor_name:
+            return init.data_type
+    return onnx.TensorProto.FLOAT
+
+
+def _insert_node_after_producer(
+    model: ModelProto, producer_output_name: str, new_node: onnx.NodeProto
+) -> onnx.NodeProto:
+    """Insert ``new_node`` immediately after the node producing ``producer_output_name``.
+
+    ONNX requires nodes appear in a topologically valid order. ORT is
+    tolerant of out-of-order nodes for many graphs, but other tools (and
+    serializers that re-validate) are not. Always insert just after the
+    producer. If no producer is found (the tensor is a graph input or
+    initializer), append at the front of the node list.
+
+    :return: The in-graph ``NodeProto`` (a protobuf ``insert`` copies its
+        argument, so callers must use this reference to further mutate the node).
+    """
+    nodes = model.graph.node
+    insert_at = 0
+    for idx, node in enumerate(nodes):
+        if producer_output_name in node.output:
+            insert_at = idx + 1
+            break
+    nodes.insert(insert_at, new_node)
+    return nodes[insert_at]

@@ -61,9 +61,9 @@ class R2RotationPass(RotationPass):
         topologies = _get_or_build_topology_cache(ctx)
         for topology, block in zip(topologies, ctx.backbone_role_map.blocks):
             for v_op in topology.v_ops:
-                _validate_v_op(ctx.backbone_sim.model.model, v_op, head_dim)
+                _validate_v_op(ctx.backbone_model, v_op, head_dim)
             for o_op in block.o_proj:
-                _validate_o_op(ctx.backbone_sim.model.model, o_op, head_dim)
+                _validate_o_op(ctx.backbone_model, o_op, head_dim)
 
     def apply(self, ctx: SpinquantContext) -> None:
         """Rotate each block's V output channels and O input channels per head."""
@@ -79,12 +79,10 @@ class R2RotationPass(RotationPass):
         ):
             for v_op in topology.v_ops:
                 v_axis_size = _get_rotated_axis_size(
-                    ctx.backbone_sim.model.model, v_op, is_writing=True
+                    ctx.backbone_model, v_op, is_writing=True
                 )
                 R2_v = block_diag_repeat(R2, v_axis_size // head_dim)
-                rotate_linear_weight(
-                    ctx.backbone_sim.model.model, v_op, R2_v, is_writing=True
-                )
+                rotate_linear_weight(ctx.backbone_model, v_op, R2_v, is_writing=True)
                 _logger.debug(
                     "R2 block %d: rotated v='%s' (axis=%d).",
                     block_idx,
@@ -94,12 +92,10 @@ class R2RotationPass(RotationPass):
 
             for o_op in block.o_proj:
                 o_axis_size = _get_rotated_axis_size(
-                    ctx.backbone_sim.model.model, o_op, is_writing=False
+                    ctx.backbone_model, o_op, is_writing=False
                 )
                 R2_o = block_diag_repeat(R2, o_axis_size // head_dim)
-                rotate_linear_weight(
-                    ctx.backbone_sim.model.model, o_op, R2_o, is_writing=False
-                )
+                rotate_linear_weight(ctx.backbone_model, o_op, R2_o, is_writing=False)
                 _logger.debug(
                     "R2 block %d: rotated o='%s' (axis=%d).",
                     block_idx,

@@ -52,37 +52,40 @@ class LLM_ONNX(LLM):
     """Generic LLM for AIMET-ONNX quantization."""
 
     @classmethod
-    def instantiate_quantsim(
+    def export_onnx_models(
         cls,
         model_id: str,
         context_length: int,
         sequence_length: int | list[int],
         small_model: bool = False,
-        precision: PrecisionConfig | None = None,
         model_cache: DiskBackedModelCache | None = None,
+        image_size: tuple[int, int] | None = None,
         *args,
         **kwargs,
-    ) -> SimCollection:
-        if precision is None:
-            precision = PrecisionConfig()
+    ) -> ModelCacheEntry:
+        """Export (or load) the raw float ONNX model(s) for this model.
 
-        max_sequence_length = (
-            max(sequence_length)
-            if isinstance(sequence_length, list)
-            else sequence_length
-        )
-        cache_sl = (
-            "dynamic"
-            if isinstance(sequence_length, list) and len(sequence_length) > 1
-            else max_sequence_length
-        )
-
+        Separated from :meth:`instantiate_quantsim` so the caller can transform
+        the float graph (e.g. apply SpinQuant) before the sim is built. Returns
+        a :class:`ModelCacheEntry` whose ``backbone`` (and, for VLMs, ``visual``
+        / ``embedding``) hold the raw ONNX model(s) ready to be quantized.
+        """
         if issubclass(cls, AIHMAdaptation):
             # If we are working with AIHM adapted models, we need to change the block detection strategy for Qwen3
             # todo: remove this when we have more robust block matching
             from aimet_onnx.graph_passes.passes.decoder_block import DecoderBlockQwen3
 
             DecoderBlockQwen3.NUM_RMSNORM_PER_BLK = 41
+
+        cache_sl = (
+            "dynamic"
+            if isinstance(sequence_length, list) and len(sequence_length) > 1
+            else (
+                max(sequence_length)
+                if isinstance(sequence_length, list)
+                else sequence_length
+            )
+        )
 
         is_hf = is_huggingface_ckpt(model_id)
 
@@ -117,15 +120,29 @@ class LLM_ONNX(LLM):
                     small_model,
                     get_model_checkpoint_path(model_id),
                 )
-            onnx_model = entry.backbone
-            config = entry.config
-        else:
-            onnx_model, *_ = load_model_components_from_disk(
-                model_id,
-                context_length=context_length,
-                sequence_length=cache_sl,
-            )
-            config = AutoConfig.from_pretrained(model_id)
+            return entry
+
+        onnx_model, *_ = load_model_components_from_disk(
+            model_id,
+            context_length=context_length,
+            sequence_length=cache_sl,
+        )
+        config = AutoConfig.from_pretrained(model_id)
+        return ModelCacheEntry(backbone=onnx_model, config=config)
+
+    @classmethod
+    def instantiate_quantsim(
+        cls,
+        entry: ModelCacheEntry,
+        precision: PrecisionConfig | None = None,
+        *args,
+        **kwargs,
+    ) -> SimCollection:
+        if precision is None:
+            precision = PrecisionConfig()
+
+        onnx_model = entry.backbone
+        config = entry.config
 
         block_prec = precision.blocks["default"]
         # default_param_qtype must be int for the quantsim wiring; when block

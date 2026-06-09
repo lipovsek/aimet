@@ -33,7 +33,10 @@ from GenAILab.bench import datasets, metrics
 from GenAILab.qai_hub_lm.backends import onnx as models  # noqa: F401 — triggers registration
 from GenAILab.bench.onnx import quant_recipes
 from GenAILab.qai_hub_lm.backends.onnx.generator_utils import generator_factory
-from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import quantize_embedding_weights
+from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
+    quantize_embedding_weights,
+    apply_spinquant_pre_sim,
+)
 
 
 @contextlib.contextmanager
@@ -109,15 +112,34 @@ def test_llm_quantization(
 
     metrics = test_parameters.pop("metrics")
 
+    # SpinQuant rotates the float ONNX graph before the sim is built. Export the
+    # raw model(s) first, rotate them, then build the sim on the rotated graph.
+    # The parser pulls the SpinQuant flags out of the recipe chain so the chain
+    # never contains a SpinQuant step.
+    spinquant_config = test_parameters.pop("spinquant", None)
+
     gc.collect()
     torch.cuda.empty_cache()
 
-    sim_collection = model_cls.instantiate_quantsim(
+    entry = model_cls.export_onnx_models(
         model_id,
         context_length,
         sequence_length,
-        precision=precision,
         model_cache=model_cache,
+        image_size=image_size,
+        **model_kwargs,
+    )
+
+    apply_spinquant_pre_sim(
+        entry.backbone,
+        spinquant_config,
+        visual_onnx_model=entry.visual,
+        embedding=entry.embedding,
+    )
+
+    sim_collection = model_cls.instantiate_quantsim(
+        entry,
+        precision=precision,
         image_size=image_size,
         **model_kwargs,
     )
@@ -196,6 +218,7 @@ def test_llm_quantization(
             model_kwargs=model_kwargs,
             component="backbone",
             recipe_cache=recipe_cache,
+            spinquant_config=spinquant_config,
         )
 
     visual_steps = []
@@ -219,6 +242,7 @@ def test_llm_quantization(
                 model_kwargs=model_kwargs,
                 component="visual",
                 recipe_cache=recipe_cache,
+                spinquant_config=spinquant_config,
             )
 
     # Finalize embedding quantization after recipes have had a chance to

@@ -39,12 +39,17 @@ def apply_recipe_chain(
     model_kwargs,
     component="backbone",
     recipe_cache=None,
+    spinquant_config=None,
 ):
     """Apply a chain of recipe steps, with automatic cache lookup and save.
 
     If recipe_cache is provided, performs a cache lookup first and skips
     already-cached steps. After each cacheable step, saves to the cache.
     Returns the full list of RecipeStepStats (cached + newly computed).
+
+    ``spinquant_config`` carries the pre-sim SpinQuant rotation flags (aimet-onnx
+    only) so the cache base hash distinguishes rotated from non-rotated graphs;
+    SpinQuant is not a chain step.
     """
     skip_to = 0
     cached_step_stats = []
@@ -59,6 +64,7 @@ def apply_recipe_chain(
             model_kwargs,
             framework,
             component,
+            spinquant_config,
         )
 
     step_stats = list(cached_step_stats)

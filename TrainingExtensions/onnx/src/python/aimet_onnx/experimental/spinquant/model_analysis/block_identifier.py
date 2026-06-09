@@ -34,6 +34,19 @@ _LINEAR_TYPES = frozenset(("MatMul", "Gemm", "Conv"))
 _EMBEDDING_TYPES = frozenset(("Gather",))
 
 
+def _collect_past_key_input_names_in_order(model: ModelProto) -> List[str]:
+    """Return ``past_key_*`` graph input names in declaration order.
+
+    HF/optimum LLM exports with a KV-cache expose one such input per decoder
+    block. Prefill-only exports have none.
+    """
+    return [
+        inp.name
+        for inp in model.graph.input
+        if "past_key" in inp.name or "past_k_" in inp.name
+    ]
+
+
 def _is_embedding_table_gather(op: Op) -> bool:
     """Return True if ``op`` is a token-embedding ``Gather`` (data is a 2-D table).
 
@@ -84,11 +97,17 @@ class DecoderModelRoleMap:
         residual-stream activations.
     :param lm_head: Vocabulary-projection linear(s) downstream of the final norm.
     :param blocks: Per-decoder-block role maps in topological order.
+    :param past_key_input_names: Raw ``past_key_*`` graph inputs in declaration
+        order, collected tolerantly (empty for prefill-only exports without a
+        KV-cache). Pairing these to ``blocks`` and validating that their count
+        matches the block count are R3's responsibility, not this builder's —
+        R1-only and prefill-only flows do not require KV-cache inputs.
     """
 
     embed_tokens: List[Op] = field(default_factory=list)
     lm_head: List[Op] = field(default_factory=list)
     blocks: List[DecoderBlockRoleMap] = field(default_factory=list)
+    past_key_input_names: List[str] = field(default_factory=list)
 
 
 def get_decoder_block_boundaries(
@@ -344,6 +363,13 @@ def get_decoder_role_map(
             "use_inputs_embeds=True. Rotate embedding.pth separately."
         )
     _logger.debug("embed_tokens: %s", [op.name for op in result.embed_tokens])
+
+    # Collected tolerantly: prefill-only / R1-only flows leave this empty and
+    # never require KV-cache inputs. R3 validates the count against blocks.
+    result.past_key_input_names = _collect_past_key_input_names_in_order(
+        connected_graph.model
+    )
+    _logger.debug("past_key inputs: %s", result.past_key_input_names)
 
     _logger.info(
         "Backbone: %d block(s), embed_tokens=%s, lm_head=%s.",

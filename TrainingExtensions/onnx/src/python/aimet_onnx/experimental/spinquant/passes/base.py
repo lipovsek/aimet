@@ -10,7 +10,7 @@ from typing import List, Optional
 import torch
 
 from aimet_onnx.meta.operations import Op
-from aimet_onnx.quantsim import QuantizationSimModel
+from aimet_onnx.utils import ModelProto
 
 from aimet_onnx.experimental.spinquant.model_analysis import (
     ActiveNorm,
@@ -24,26 +24,26 @@ class SpinquantContext:
 
     Built once by :func:`apply_spinquant`, then handed to every pass. Passes
     must not mutate the analysis fields; they may freely mutate the underlying
-    ONNX model via ``backbone_sim`` / ``visual_sim``.
+    ONNX model via ``backbone_model`` / ``visual_model``.
 
-    :param backbone_sim: QuantizationSimModel wrapping backbone.onnx.
+    :param backbone_model: backbone.onnx ModelProto.
     :param backbone_role_map: Decoder role map for the backbone.
     :param backbone_active_norms: Active norms in topological order.
     :param backbone_hidden_size: Hidden dimension of the language backbone residual stream.
     :param backbone_head_dim: Per-head dimension derived from a ``past_value`` graph
         input. ``None`` if the export has no KV-cache inputs; passes that need
         ``head_dim`` (e.g. R2) must error in that case.
-    :param visual_sim: Optional QuantizationSimModel wrapping visual.onnx (VLM only).
+    :param visual_model: Optional visual.onnx ModelProto (VLM only).
     :param visual_merger_linear2: PatchMerger linear_fc2 ops (VLM only).
     :param embedding: Optional raw embedding tensor (VLM with use_inputs_embeds=True).
     """
 
-    backbone_sim: QuantizationSimModel
+    backbone_model: ModelProto
     backbone_role_map: DecoderModelRoleMap
     backbone_active_norms: List[ActiveNorm]
     backbone_hidden_size: int
     backbone_head_dim: Optional[int] = None
-    visual_sim: Optional[QuantizationSimModel] = None
+    visual_model: Optional[ModelProto] = None
     visual_merger_linear2: Optional[List[Op]] = field(default=None)
     embedding: Optional[torch.Tensor] = None
 

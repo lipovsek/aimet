@@ -61,14 +61,14 @@ class R1RotationPass(RotationPass):
     def validate(self, ctx: SpinquantContext) -> None:
         """Verify R1 architectural pre-conditions and that all weights exist with the right shape."""
         _validate_backbone_weights(
-            ctx.backbone_sim.model.model,
+            ctx.backbone_model,
             ctx.backbone_role_map,
             ctx.backbone_hidden_size,
         )
-        if ctx.visual_sim is not None:
+        if ctx.visual_model is not None:
             assert ctx.visual_merger_linear2 is not None
             _validate_merger_linear2(
-                ctx.visual_sim.model.model,
+                ctx.visual_model,
                 ctx.visual_merger_linear2,
                 ctx.backbone_hidden_size,
             )
@@ -79,28 +79,24 @@ class R1RotationPass(RotationPass):
 
         # R1 absorbs RMSNorm scale into the downstream linears it reads from,
         # so norm fusion is part of R1 (not of every rotation).
-        fuse_norm_layers_into_linears(
-            ctx.backbone_sim.model.model, ctx.backbone_active_norms
-        )
+        fuse_norm_layers_into_linears(ctx.backbone_model, ctx.backbone_active_norms)
 
         _logger.info(
             "Backbone: Applying R1 Hadamard rotation with backbone_hidden_size=%d.",
             ctx.backbone_hidden_size,
         )
-        _rotate_backbone(ctx.backbone_sim.model.model, ctx.backbone_role_map, R1)
+        _rotate_backbone(ctx.backbone_model, ctx.backbone_role_map, R1)
 
         if ctx.embedding is not None:
             _rotate_external_embedding(ctx.embedding, R1)
 
-        if ctx.visual_sim is not None:
+        if ctx.visual_model is not None:
             assert ctx.visual_merger_linear2 is not None
             _logger.info(
                 "Visual: Applying R1 Hadamard rotation to merger_linear2 with backbone_hidden_size=%d.",
                 ctx.backbone_hidden_size,
             )
-            _rotate_merger_linear2(
-                ctx.visual_sim.model.model, ctx.visual_merger_linear2, R1
-            )
+            _rotate_merger_linear2(ctx.visual_model, ctx.visual_merger_linear2, R1)
 
 
 def _rotate_backbone(

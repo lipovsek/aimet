@@ -166,11 +166,18 @@ class RecipeCache:
         model_kwargs: dict,
         framework: str,
         component: str = "backbone",
+        spinquant_config: dict | None = None,
     ) -> str:
         """Hash for a freshly-instantiated component (before any recipes).
 
         Uses precision_config.weight_identity() so experiments differing only
         in activations/kv_cache share cache entries for weight-modifying recipes.
+
+        ``spinquant_config`` folds the pre-sim SpinQuant rotation flags into the
+        base identity. For aimet-onnx, SpinQuant rotates the float graph before
+        the sim is built and is no longer a recipe-chain step, so without this
+        the rotated and non-rotated graphs (or differing R1/R2/R3 flags) would
+        collide on the same cache key.
         """
         identity = {
             "model_id": model_id,
@@ -180,6 +187,8 @@ class RecipeCache:
             "framework": framework,
             "component": component,
         }
+        if spinquant_config is not None:
+            identity["spinquant"] = spinquant_config
         return _stable_json_hash(identity)
 
     @staticmethod
@@ -206,6 +215,7 @@ class RecipeCache:
         model_kwargs: dict,
         framework: str,
         component: str = "backbone",
+        spinquant_config: dict | None = None,
     ) -> tuple[int, list, list[str]]:
         """Compute hashes, find the longest cached prefix, load state, and log.
 
@@ -216,7 +226,12 @@ class RecipeCache:
         )  # circular
 
         base = self.compute_base_hash(
-            model_id, precision_config, model_kwargs, framework, component
+            model_id,
+            precision_config,
+            model_kwargs,
+            framework,
+            component,
+            spinquant_config,
         )
         hashes = compute_chain_hashes(self, base, recipe_list)
         skip, chain = find_cache_hit(self, hashes)

@@ -8,6 +8,10 @@ structures describing decoder block boundaries, RMSNorm scale layers, and the
 linear-op role map. None of it knows about specific rotation matrices (R1/R2/R3).
 """
 
+from aimet_onnx.experimental.spinquant.model_analysis.attention_anchors import (
+    BlockR3Anchors,
+    find_r3_anchors,
+)
 from aimet_onnx.experimental.spinquant.model_analysis.attention_topology import (
     BlockAttentionTopology,
     find_attention_topology,
@@ -36,10 +40,12 @@ from aimet_onnx.experimental.spinquant.model_analysis.weight_utils import (
 __all__ = [
     "ActiveNorm",
     "BlockAttentionTopology",
+    "BlockR3Anchors",
     "DecoderBlockRoleMap",
     "DecoderModelRoleMap",
     "find_active_norms",
     "find_attention_topology",
+    "find_r3_anchors",
     "find_merger_linear2",
     "find_post_writing_norms",
     "get_bias_product",

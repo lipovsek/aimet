@@ -43,35 +43,34 @@ from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
 @YAMLConfigParser.register_model("qwen3_vl")
 class Qwen_3_VL_ONNX(Qwen_3_VL):
     @classmethod
-    def instantiate_quantsim(
+    def export_onnx_models(
         cls,
         model_id: str,
         context_length: int,
         sequence_length: int | list[int],
         small_model: bool = False,
-        precision: PrecisionConfig | None = None,
         model_cache: DiskBackedModelCache | None = None,
         image_size: tuple[int, int] | None = None,
         *args,
         **kwargs,
-    ):
-        if precision is None:
-            precision = PrecisionConfig()
-        precision.ensure_visual_defaults()
+    ) -> ModelCacheEntry:
+        """Export (or load) the raw float backbone/visual ONNX models + embedding.
 
-        max_sequence_length = (
-            max(sequence_length)
-            if isinstance(sequence_length, list)
-            else sequence_length
-        )
+        Separated from :meth:`instantiate_quantsim` so the caller can transform
+        the float graph(s) (e.g. apply SpinQuant) before the sims are built.
+        """
+        if model_id is None:
+            model_id = cls.DEFAULT_MODEL_ID
+
         cache_sl = (
             "dynamic"
             if isinstance(sequence_length, list) and len(sequence_length) > 1
-            else max_sequence_length
+            else (
+                max(sequence_length)
+                if isinstance(sequence_length, list)
+                else sequence_length
+            )
         )
-
-        if model_id is None:
-            model_id = cls.DEFAULT_MODEL_ID
 
         is_hf = is_huggingface_ckpt(model_id)
 
@@ -108,23 +107,41 @@ class Qwen_3_VL_ONNX(Qwen_3_VL):
                     get_model_checkpoint_path(model_id),
                     image_size=image_size,
                 )
-            backbone_onnx_model = entry.backbone
-            visual_onnx_model = entry.visual
-            embedding = entry.embedding
-            config = entry.config
-        else:
-            config = AutoConfig.from_pretrained(model_id)
-            backbone_onnx_model, visual_onnx_model, embedding = (
-                load_model_components_from_disk(
-                    model_id,
-                    context_length=context_length,
-                    sequence_length=cache_sl,
-                )
+            return entry
+
+        config = AutoConfig.from_pretrained(model_id)
+        backbone_onnx_model, visual_onnx_model, embedding = (
+            load_model_components_from_disk(
+                model_id,
+                context_length=context_length,
+                sequence_length=cache_sl,
             )
-            if visual_onnx_model is None or embedding is None:
-                raise ValueError(
-                    "Required model components could not be loaded from disk."
-                )
+        )
+        if visual_onnx_model is None or embedding is None:
+            raise ValueError("Required model components could not be loaded from disk.")
+        return ModelCacheEntry(
+            backbone=backbone_onnx_model,
+            visual=visual_onnx_model,
+            embedding=embedding,
+            config=config,
+        )
+
+    @classmethod
+    def instantiate_quantsim(
+        cls,
+        entry: ModelCacheEntry,
+        precision: PrecisionConfig | None = None,
+        *args,
+        **kwargs,
+    ):
+        if precision is None:
+            precision = PrecisionConfig()
+        precision.ensure_visual_defaults()
+
+        backbone_onnx_model = entry.backbone
+        visual_onnx_model = entry.visual
+        embedding = entry.embedding
+        config = entry.config
 
         default_param_qtype = precision.blocks["default"].qtype
         default_activation_qtype = precision.activations

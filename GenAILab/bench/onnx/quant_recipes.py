@@ -17,10 +17,9 @@ from aimet_onnx.experimental.adascale.adascale_optimizer import (
     apply_adascale,
     adascale_model_config_dict,
 )
-from aimet_onnx.experimental.spinquant import apply_spinquant
 
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
-from GenAILab.qai_hub_lm.models.generator import Generator, VLM_Generator
+from GenAILab.qai_hub_lm.models.generator import Generator
 from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import kwargs_to_dict
 
 
@@ -225,44 +224,3 @@ class AdaScale(QuantizationTechnique):
             adascale_model_config_dict[generator.config.model_type],
             num_iterations,
         )
-
-
-@YAMLConfigParser.register_recipe
-class SpinQuant(QuantizationTechnique):
-    """Apply SpinQuant rotations (R1 and/or R2) to the model."""
-
-    @classmethod
-    def cacheable(cls):
-        return True
-
-    @staticmethod
-    def apply(
-        quantsim: QuantizationSimModel,
-        generator: Generator,
-        dataloader: DataLoader,
-        component: str = "backbone",
-        enable_r1: bool = True,
-        enable_r2: bool = False,
-        **kwargs,
-    ):
-        if component == "backbone":
-            if isinstance(generator, VLM_Generator):
-                apply_spinquant(
-                    backbone_sim=quantsim,
-                    visual_sim=generator.vision_model.quantsim,
-                    embedding=generator.embedding.weight,
-                    enable_r1=enable_r1,
-                    enable_r2=enable_r2,
-                )
-            else:
-                apply_spinquant(
-                    quantsim,
-                    enable_r1=enable_r1,
-                    enable_r2=enable_r2,
-                )
-        elif component == "visual":
-            print(
-                "WARNING: SpinQuant is a no-op on visual — rotation was already applied "
-                "to merger_linear2 when SpinQuant ran on the backbone."
-            )
-            return

@@ -451,13 +451,54 @@ class YAMLConfigParser:
                 for step in recipe_list:
                     if step["name"] != "SpinQuant":
                         continue
-                    if not step.get("enable_r1", True) and not step.get(
-                        "enable_r2", False
+                    if (
+                        not step.get("enable_r1", True)
+                        and not step.get("enable_r2", False)
+                        and not step.get("enable_r3", False)
                     ):
                         raise RuntimeError(
-                            f"SpinQuant step in '{comp_name}' has both enable_r1 and "
-                            "enable_r2 set to false. Enable at least one rotation."
+                            f"SpinQuant step in '{comp_name}' has all of enable_r1, enable_r2, "
+                            f"and enable_r3 set to false. Enable at least one rotation."
                         )
+
+            # If SpinQuant is in the backbone recipes and a visual component
+            # exists, SpinQuant must also be in the visual recipes. The R1
+            # rotation on the decoder stack changes the expected input
+            # distribution, so the merger's post-MLP Hadamard rotation must also
+            # be applied. Validated here on raw step names (before SpinQuant is
+            # extracted out of the chain for aimet-onnx).
+            backbone_step_names = {
+                step["name"] for step in doc["recipe"].get("backbone", [])
+            }
+            if "SpinQuant" in backbone_step_names and "visual" in doc["recipe"]:
+                visual_steps = doc["recipe"]["visual"]
+                visual_step_names = {step["name"] for step in visual_steps}
+                if "SpinQuant" not in visual_step_names:
+                    raise RuntimeError(
+                        "SpinQuant is specified for the backbone but not the visual component. "
+                        "When using SpinQuant on a VLM, it must be applied to both the backbone "
+                        "and visual components to maintain consistency between the decoder stack "
+                        "and the vision encoder merger layers."
+                    )
+
+                # For aimet-onnx, the backbone SpinQuant step applies the visual
+                # rotation as a side effect, and the entire backbone runs before
+                # any visual steps execute.
+                # TODO: Remove this check once individual APIs are invoked for
+                # each recipe in aimet-onnx.
+                first_spinquant_idx = next(
+                    i
+                    for i, step in enumerate(visual_steps)
+                    if step["name"] == "SpinQuant"
+                )
+                if first_spinquant_idx > 0:
+                    steps_before = [
+                        step["name"] for step in visual_steps[:first_spinquant_idx]
+                    ]
+                    raise RuntimeError(
+                        f"SpinQuant must be the first step in the visual recipe, but found "
+                        f"{steps_before} before it."
+                    )
 
         # Backward compatibility: migrate top-level dataset into backbone component
         if "dataset" in doc:
@@ -556,6 +597,15 @@ class YAMLConfigParser:
         precision = PrecisionConfig.from_dict(doc.pop("precision", None))
         task_params["precision"] = precision
 
+        # For aimet-onnx, SpinQuant rotates the float ONNX graph *before* the
+        # sim is built (applied in the test runner via apply_spinquant_pre_sim),
+        # so it is not a recipe-chain step. Pull its flags out here and strip the
+        # step from the parsed recipe lists; the chain never sees it. The torch
+        # SpinQuant recipe genuinely runs inside the chain, so this only applies
+        # to the ONNX framework.
+        is_onnx = "ONNX" in cls.get_default_llm().__name__
+        spinquant_config = None
+
         # Recipe parsing — each component is a list of recipe steps
         task_params["recipe"] = {}
         if "recipe" in doc:
@@ -563,6 +613,19 @@ class YAMLConfigParser:
                 parsed_steps = []
                 for step_config in recipe_list:
                     recipe_name = step_config["name"]
+
+                    if is_onnx and recipe_name == "SpinQuant":
+                        flags = {
+                            k: v
+                            for k, v in step_config.items()
+                            if k not in ("name", "dataset")
+                        }
+                        # Prefer the backbone step's flags; fall back to the
+                        # first SpinQuant seen if it is only in the visual chain.
+                        if component_name == "backbone" or spinquant_config is None:
+                            spinquant_config = flags
+                        continue
+
                     try:
                         recipe_cls = cls.get_recipe(recipe_name)
                     except LookupError as exc:
@@ -598,41 +661,9 @@ class YAMLConfigParser:
                 "visual": [{"class": cls.get_recipe(default_recipe)}],
             }
 
-        # Validate: if SpinQuant is in backbone recipes and a visual component
-        # exists, SpinQuant must also be in the visual recipes. The R1 rotation
-        # on the decoder stack changes the expected input distribution, so the
-        # merger's post-MLP Hadamard rotation must also be applied.
-        backbone_recipe_names = {
-            step["class"].__name__ for step in task_params["recipe"].get("backbone", [])
-        }
-        if "SpinQuant" in backbone_recipe_names and "visual" in task_params["recipe"]:
-            visual_steps = task_params["recipe"]["visual"]
-            visual_recipe_names = {step["class"].__name__ for step in visual_steps}
-            if "SpinQuant" not in visual_recipe_names:
-                raise RuntimeError(
-                    "SpinQuant is specified for the backbone but not the visual component. "
-                    "When using SpinQuant on a VLM, it must be applied to both the backbone "
-                    "and visual components to maintain consistency between the decoder stack "
-                    "and the vision encoder merger layers."
-                )
-
-            # For aimet-onnx, the backbone SpinQuant step applies the visual rotation as a side effect,
-            # and the entire backbone runs before any visual steps execute.
-            # TODO: Remove this check once individual APIs are invoked for each recipe in aimet-onnx.
-            first_spinquant_idx = next(
-                i
-                for i, step in enumerate(visual_steps)
-                if step["class"].__name__ == "SpinQuant"
-            )
-            if first_spinquant_idx > 0:
-                steps_before = [
-                    step["class"].__name__
-                    for step in visual_steps[:first_spinquant_idx]
-                ]
-                raise RuntimeError(
-                    f"SpinQuant must be the first step in the visual recipe, but found "
-                    f"{steps_before} before it."
-                )
+        # SpinQuant flags extracted from the recipe lists above (aimet-onnx only;
+        # None when SpinQuant was not requested or the framework is torch).
+        task_params["spinquant"] = spinquant_config
 
         # Metrics parsing
         metrics = (

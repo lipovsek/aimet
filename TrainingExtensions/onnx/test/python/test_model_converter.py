@@ -81,9 +81,10 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
     context_length = 32
     sequence_length = 16
     model_id = "Qwen/Qwen2.5-0.5B"
-    collection = LLM_ONNX.instantiate_quantsim(
-        "Qwen/Qwen2.5-0.5B", 32, 16, small_model=small_model
+    entry = LLM_ONNX.export_onnx_models(
+        model_id, context_length, sequence_length, small_model=small_model
     )
+    collection = LLM_ONNX.instantiate_quantsim(entry)
     sim = collection.backbone
     llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     if small_model:
@@ -218,10 +219,11 @@ def test_model_round_trip_with_qwen_dynamo(
             side_effect=_patched_export,
         ),
     ):
-        collection = LLM_ONNX.instantiate_quantsim(
+        entry = LLM_ONNX.export_onnx_models(
             model_id, context_length, sequence_length, small_model=small_model
         )
 
+    collection = LLM_ONNX.instantiate_quantsim(entry)
     sim = collection.backbone
     llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     if small_model:

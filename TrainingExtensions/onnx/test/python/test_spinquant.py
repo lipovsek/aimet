@@ -1,10 +1,11 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-import copy
 import io
 import logging
 import shutil
+from typing import Optional
+
 import numpy as np
 import scipy.linalg
 import pytest
@@ -20,7 +21,6 @@ from .utils import add_genai_tests_path
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.common.hadamard import get_hadamard_matrix
 from aimet_onnx.graph_passes.fusions import fuse_supergroups
-from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import ParamUtils
 
@@ -30,6 +30,7 @@ from aimet_onnx.experimental.spinquant.model_analysis import (
     DecoderModelRoleMap,
     find_active_norms,
     find_merger_linear2,
+    find_r3_anchors,
     get_decoder_block_boundaries,
     get_decoder_role_map,
     get_bias_product as _get_bias_product,
@@ -1093,9 +1094,8 @@ class TestBlockIdentifier:
             else:
                 model_cls = LLM_ONNX
 
-            collection = model_cls.instantiate_quantsim(
-                model_id, 32, 16, small_model=True
-            )
+            entry = model_cls.export_onnx_models(model_id, 32, 16, small_model=True)
+            collection = model_cls.instantiate_quantsim(entry)
             blocks, _ = get_decoder_block_boundaries(
                 collection.backbone.model.model,
                 collection.backbone.connected_graph,
@@ -1266,9 +1266,8 @@ class TestDecoderRoleMap:
         cache_dir = get_model_checkpoint_path(model_id)
         try:
             model_cls = YAMLConfigParser.get_model_class("qwen3")
-            collection = model_cls.instantiate_quantsim(
-                model_id, 32, 16, small_model=True
-            )
+            entry = model_cls.export_onnx_models(model_id, 32, 16, small_model=True)
+            collection = model_cls.instantiate_quantsim(entry)
             onnx_model = collection.backbone.model.model
             cg = collection.backbone.connected_graph
 
@@ -1572,15 +1571,9 @@ class TestApplyR2Rotation:
         token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
         y_before = _run_model(model, token_ids)
 
-        sim = QuantizationSimModel(
-            model, dummy_input=_pad_dummy_input(model, input=token_ids)
-        )
-        apply_spinquant(sim, enable_r1=False, enable_r2=True)
+        apply_spinquant(model, enable_r1=False, enable_r2=True)
 
-        rotated_float = QuantizationSimModel.remove_quantizers(
-            copy.deepcopy(sim.model.model)
-        )
-        y_after = _run_model(rotated_float, token_ids)
+        y_after = _run_model(model, token_ids)
         assert np.allclose(y_after, y_before, atol=1e-5)
 
     @pytest.mark.parametrize("decoder_cls", _R2_DECODER_PARAMS)
@@ -1592,16 +1585,10 @@ class TestApplyR2Rotation:
         token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
         y_before = _run_model(model, token_ids)
 
-        sim = QuantizationSimModel(
-            model, dummy_input=_pad_dummy_input(model, input=token_ids)
-        )
-        apply_spinquant(sim, enable_r1=False, enable_r2=True)
-        apply_spinquant(sim, enable_r1=False, enable_r2=True)
+        apply_spinquant(model, enable_r1=False, enable_r2=True)
+        apply_spinquant(model, enable_r1=False, enable_r2=True)
 
-        rotated_float = QuantizationSimModel.remove_quantizers(
-            copy.deepcopy(sim.model.model)
-        )
-        y_after = _run_model(rotated_float, token_ids)
+        y_after = _run_model(model, token_ids)
         assert np.allclose(y_after, y_before, atol=1e-5)
 
     @pytest.mark.parametrize("decoder_cls", _R2_DECODER_PARAMS)
@@ -1613,15 +1600,9 @@ class TestApplyR2Rotation:
         token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
         y_before = _run_model(model, token_ids)
 
-        sim = QuantizationSimModel(
-            model, dummy_input=_pad_dummy_input(model, input=token_ids)
-        )
-        apply_spinquant(sim, enable_r1=True, enable_r2=True)
+        apply_spinquant(model, enable_r1=True, enable_r2=True)
 
-        rotated_float = QuantizationSimModel.remove_quantizers(
-            copy.deepcopy(sim.model.model)
-        )
-        y_after = _run_model(rotated_float, token_ids)
+        y_after = _run_model(model, token_ids)
         assert np.allclose(y_after, y_before, atol=1e-5)
 
     def test_r2_rejects_fused_qkv_at_validate(self):
@@ -1629,13 +1610,635 @@ class TestApplyR2Rotation:
         torch.manual_seed(0)
         np.random.seed(0)
         model = _export_decoder_with_ids(Phi3StyleDecoder())
+
+        with pytest.raises(ValueError, match="R2 rotation"):
+            apply_spinquant(model, enable_r1=False, enable_r2=True)
+
+
+_R3_DECODER_PARAMS = [
+    pytest.param(LlamaStyleDecoder, id="llama"),
+    pytest.param(lambda: LlamaStyleDecoder(bias=True), id="llama_bias"),
+]
+
+
+def _attach_past_key_concats(model: onnx.ModelProto) -> onnx.ModelProto:
+    """Inject ``past_key_<i>`` graph inputs and matching Concats on each block's K path.
+
+    Real HF exports place the past-key Concat where ``head_dim`` is the last
+    axis, so R3's MatMul-on-last-axis rotates the right thing. Torch's ONNX
+    exporter fuses our test model's two K transposes (``transpose(1,2) ->
+    transpose(-1,-2)``) into one Transpose with ``perm=[0,2,3,1]``, leaving no
+    place on the K path where head_dim is last and head_idx isn't.
+
+    Workaround: splice the Concat BEFORE the fused Transpose (right after the
+    Reshape). At that point the layout is ``[B, S, H, D]`` so head_dim is the
+    last axis. We concat on the seq axis (``axis=1``) with past_seq=0.
+    """
+
+    def _find_consumer(tensor_name: str, op_type: str) -> Optional[onnx.NodeProto]:
+        for n in model.graph.node:
+            if n.op_type == op_type and tensor_name in n.input:
+                return n
+        return None
+
+    block_idx = 0
+    while True:
+        k_matmul = next(
+            (
+                n
+                for n in model.graph.node
+                if n.op_type == "MatMul"
+                and n.name.endswith(f"/block{block_idx}/k/MatMul")
+            ),
+            None,
+        )
+        if k_matmul is None:
+            break
+
+        reshape = _find_consumer(k_matmul.output[0], "Reshape")
+        assert reshape is not None, f"block{block_idx} K Reshape not found"
+
+        reshape_out = reshape.output[0]
+        new_reshape_out = f"{reshape_out}_pre_pkconcat"
+        reshape.output[0] = new_reshape_out
+
+        past_key_name = f"past_key_{block_idx}"
+        # Layout at insertion point is [B, S, H, D] (post-Reshape, pre-Transpose).
+        past_key = onnx.helper.make_tensor_value_info(
+            name=past_key_name,
+            elem_type=onnx.TensorProto.FLOAT,
+            shape=[_B, 0, _NUM_HEADS, _HEAD_DIM],
+        )
+        model.graph.input.append(past_key)
+
+        concat_node = onnx.helper.make_node(
+            op_type="Concat",
+            inputs=[past_key_name, new_reshape_out],
+            outputs=[reshape_out],
+            name=f"block{block_idx}_past_key_concat",
+            axis=1,
+        )
+        nodes = model.graph.node
+        for idx, node in enumerate(nodes):
+            if node is reshape:
+                nodes.insert(idx + 1, concat_node)
+                break
+        block_idx += 1
+    assert block_idx > 0, "no decoder blocks found in model"
+    return model
+
+
+def _export_decoder_with_pkv(module: nn.Module) -> onnx.ModelProto:
+    """Export a decoder and attach ``past_key_<i>`` Concats so R3 has anchors."""
+    return _attach_past_key_concats(_export_decoder_with_ids(module))
+
+
+class TestApplyR3Rotation:
+    """Tests for R3RotationPass (online Hadamard on Q/K paths into QK^T)."""
+
+    @pytest.mark.parametrize("decoder_cls", _R3_DECODER_PARAMS)
+    def test_r3_alone_preserves_output(self, decoder_cls):
+        """R3 alone must preserve model output ((Q@H)(K@H)^T = QK^T cancels in float).
+
+        Purpose: R3 inserts an online Hadamard H on both the Q and K paths feeding
+            QK^T. Because (Q@H)(K@H)^T == Q@(H@H^T)@K^T == QK^T, the rotation is a
+            mathematical no-op in float — this guards that the graph splice is
+            value-preserving and didn't rotate only one side.
+        Pass criteria: float output of the R3-rotated model (quantizers removed)
+            matches the pre-rotation output within atol=1e-5.
+        """
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_pkv(decoder_cls())
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+        y_before = _run_model(model, token_ids)
+
+        apply_spinquant(model, enable_r1=False, enable_r3=True)
+
+        y_after = _run_model(model, token_ids)
+        # Pass: R3 cancels through QK^T, so output is numerically unchanged.
+        assert np.allclose(y_after, y_before, atol=1e-5)
+
+    @pytest.mark.parametrize("decoder_cls", _R3_DECODER_PARAMS)
+    def test_r3_inserts_two_matmuls_per_block(self, decoder_cls):
+        """R3 must add 4 new MatMul nodes (2 blocks × {Q-side, K-side}).
+
+        Purpose: structural check that R3 actually splices the online Hadamard
+            into the graph on both Q and K paths, in every decoder block — not a
+            numerical check. Each rotation is a MatMul node tagged with ``_R3``.
+        Pass criteria: exactly 4 MatMul nodes whose name contains ``_R3`` exist
+            (2 blocks × {Q-side, K-side}).
+        """
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_pkv(decoder_cls())
+
+        apply_spinquant(model, enable_r1=False, enable_r3=True)
+
+        n_r3_matmuls = sum(
+            1 for n in model.graph.node if "_R3" in n.name and n.op_type == "MatMul"
+        )
+        # Pass: one Q-side + one K-side Hadamard MatMul per block, 2 blocks → 4.
+        assert n_r3_matmuls == 4
+
+    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+    @pytest.mark.parametrize("layout", ["mha", "gqa"])
+    def test_r3_inserts_two_matmuls_per_block_qwen3(self, layout):
+        """R3 via apply_spinquant must add 2*num_layers MatMuls on a real Qwen3 graph.
+
+        Purpose: structural check that R3 actually splices the online Hadamard
+            into the graph on both Q and K paths, in every decoder block — not a
+            numerical check. Each rotation is a MatMul node tagged with ``_R3``.
+            Unlike ``test_r3_inserts_two_matmuls_per_block`` (synthetic spliced
+            Concats on a toy decoder), this drives the genuine ``Qwen3DecoderLayer``
+            attention graph through the top-level ``apply_spinquant`` API, so the
+            full analyze -> validate -> find_r3_anchors -> insert path is exercised
+            end-to-end against a real ``past_key_* -> Concat -> QK^T`` topology.
+            Parametrized over MHA (kv_heads == attn_heads, clean K-path) and GQA
+            (kv_heads < attn_heads, whose ``repeat_kv`` inserts Unsqueeze/Expand
+            ops the forward walk must traverse).
+        Pass criteria: exactly 2*_QWEN3_NUM_LAYERS MatMul nodes whose name
+            contains ``_R3`` exist (per layer × {Q-side, K-side}).
+        """
+        torch.manual_seed(0)
+        np.random.seed(0)
+        num_kv_heads = _QWEN3_HEADS if layout == "mha" else _QWEN3_HEADS // 2
+        model = _export_qwen3_causal_lm_with_kv_cache(num_kv_heads=num_kv_heads)
+
+        apply_spinquant(model, enable_r1=False, enable_r3=True)
+
+        n_r3_matmuls = sum(
+            1 for n in model.graph.node if "_R3" in n.name and n.op_type == "MatMul"
+        )
+        # Pass: one Q-side + one K-side Hadamard MatMul per layer.
+        assert n_r3_matmuls == 2 * _QWEN3_NUM_LAYERS
+
+    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+    @pytest.mark.parametrize("layout", ["mha", "gqa"])
+    def test_r3_preserves_output_qwen3(self, layout):
+        """R3 must preserve the float logits of a real Qwen3 LM, MHA and GQA alike.
+
+        Purpose: numerical counterpart to ``test_r3_inserts_two_matmuls_per_block_qwen3``.
+            R3 inserts an online Hadamard H on both the Q and K paths into QK^T;
+            because ``(Q@H)(K@H)^T == Q@(H@H^T)@K^T == QK^T`` the rotation cancels
+            in float, so the model's logits must be unchanged. This guards that
+            the splice is value-preserving on a genuine ``Qwen3DecoderLayer``
+            graph — and, for GQA, that inserting R3 *upstream* of ``repeat_kv``
+            (so each broadcast K head carries the same rotation as its Q group)
+            still cancels.
+
+            The comparison mirrors R3's cache convention. R3 rotates the
+            *current* K before the past-key Concat, so in production the cache
+            stores rotated K and ``present_key`` (rotated) is fed back as
+            ``past_key`` next step. The two models therefore use *different* cache
+            conventions: the original consumes un-rotated past K, the R3 model
+            consumes ``past_key @ H``. Fed each in its own convention they compute
+            identical attention scores. The fed values are random (not zero) so
+            QK^T is non-trivial and a one-sided rotation would be caught;
+            ``past_value`` carries no R3 and is identical for both.
+        Pass criteria: float logits of the R3-rotated model (quantizers removed),
+            fed rotated past K, match the original model's logits, fed un-rotated
+            past K, within atol=1e-4.
+        """
+        torch.manual_seed(0)
+        np.random.seed(0)
+        num_kv_heads = _QWEN3_HEADS if layout == "mha" else _QWEN3_HEADS // 2
+        model = _export_qwen3_causal_lm_with_kv_cache(num_kv_heads=num_kv_heads)
         token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
 
-        sim = QuantizationSimModel(
-            model, dummy_input=_pad_dummy_input(model, input=token_ids)
+        # H rotates the per-head head_dim axis. The original model gets un-rotated
+        # past K; the R3 model gets past K @ H (the rotated-cache convention R3
+        # produces). past_value is shared and unrotated.
+        H = hadamard_rotation_matrix(_QWEN3_HEAD_DIM)
+        feeds_orig = {"input_ids": token_ids}
+        feeds_r3 = {"input_ids": token_ids}
+        for i in range(_QWEN3_NUM_LAYERS):
+            past_key = np.random.randn(
+                _B, num_kv_heads, _QWEN3_PAST_SEQ, _QWEN3_HEAD_DIM
+            ).astype(np.float32)
+            past_value = np.random.randn(
+                _B, num_kv_heads, _QWEN3_PAST_SEQ, _QWEN3_HEAD_DIM
+            ).astype(np.float32)
+            feeds_orig[f"past_key_{i}"] = past_key
+            feeds_r3[f"past_key_{i}"] = (past_key @ H).astype(np.float32)
+            feeds_orig[f"past_value_{i}"] = past_value
+            feeds_r3[f"past_value_{i}"] = past_value
+        feeds_orig = _pad_dummy_input(model, **feeds_orig)
+        feeds_r3 = _pad_dummy_input(model, **feeds_r3)
+
+        y_before = _build_session(model).run(None, feeds_orig)[0]
+
+        apply_spinquant(model, enable_r1=False, enable_r3=True)
+
+        y_after = _build_session(model).run(None, feeds_r3)[0]
+        # Pass: R3 cancels through QK^T, so logits are numerically unchanged.
+        assert np.allclose(y_after, y_before, atol=1e-4)
+
+    def test_r3_rejects_missing_past_key_inputs(self):
+        """A model without past_key_* inputs must error in R3 validate.
+
+        Purpose: R3 pins its K-side anchor to the ``past_key_* -> Concat`` site in
+            the attention graph. A model exported without a KV cache has no such
+            inputs, so there is nothing to anchor on — R3 must reject it up front
+            (during validation) rather than silently producing a wrong rotation.
+        Pass criteria: ``apply_spinquant`` raises ``ValueError`` whose message
+            matches ``"R3 rotation"``.
+        """
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())  # no past_key inputs
+
+        # Pass: validation rejects the anchor-less model with an R3-specific error.
+        with pytest.raises(ValueError, match="R3 rotation"):
+            apply_spinquant(model, enable_r1=False, enable_r3=True)
+
+    @pytest.mark.parametrize("decoder_cls", _R3_DECODER_PARAMS)
+    def test_r1_r2_r3_stacked_preserves_output(self, decoder_cls):
+        """R1 + R2 + R3 stacked must preserve model output.
+
+        Purpose: the three rotations act on independent axes (R1 on the residual
+            hidden dim, R2 on the per-head V/o_proj dim, R3 on the Q/K head_dim
+            into QK^T). Applying all three at once must still be a float no-op —
+            this guards that the passes compose without interfering.
+        Pass criteria: float output of the fully-rotated model (quantizers
+            removed) matches the pre-rotation output within atol=1e-5.
+        """
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_pkv(decoder_cls())
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+        y_before = _run_model(model, token_ids)
+
+        apply_spinquant(model, enable_r1=True, enable_r2=True, enable_r3=True)
+
+        y_after = _run_model(model, token_ids)
+        # Pass: stacked rotations on independent axes leave the output unchanged.
+        assert np.allclose(y_after, y_before, atol=1e-5)
+
+    def test_r3_anchors_pinned_to_past_key_concats(self):
+        """K-side anchor must be the past-key Concat for every block.
+
+        Purpose: directly exercise ``find_r3_anchors`` (rather than the full
+            ``apply_spinquant`` path) to confirm it locates, per block, the
+            ``past_key_<i>`` graph input, the Concat that splices the KV cache
+            onto the K path, and the downstream QK^T MatMul. Uses the synthetic
+            spliced Concats from ``_export_decoder_with_pkv``.
+        Pass criteria: one anchor per block, and for block ``i`` the anchor's
+            ``past_key_input_name == "past_key_{i}"``, its ``k_concat_node`` is a
+            Concat, and its ``qk_matmul_node`` is a MatMul.
+        """
+        from aimet_onnx.experimental.spinquant.model_analysis import (
+            find_r3_anchors,
+            get_decoder_block_boundaries,
+            get_decoder_role_map,
         )
-        with pytest.raises(ValueError, match="R2 rotation"):
-            apply_spinquant(sim, enable_r1=False, enable_r2=True)
+
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = _export_decoder_with_pkv(LlamaStyleDecoder())
+
+        cg = ConnectedGraph(model)
+        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        anchors = find_r3_anchors(role_map, model)
+
+        # Pass: exactly one anchor per block, each pinned to that block's
+        # past_key input / Concat / QK^T MatMul.
+        assert len(anchors) == len(role_map.blocks)
+        for i, anchor in enumerate(anchors):
+            assert anchor.past_key_input_name == f"past_key_{i}"
+            assert anchor.k_concat_node.op_type == "Concat"
+            assert anchor.qk_matmul_node.op_type == "MatMul"
+
+
+# Tiny Qwen3 shape used by the find_r3_anchors tests below. These are NOT the
+# real Qwen3-0.6B dims — they're the smallest config that still exports the
+# genuine ``past_key_* -> Concat -> QK^T`` attention topology cheaply.
+_QWEN3_HIDDEN = 32
+_QWEN3_HEADS = 4
+_QWEN3_HEAD_DIM = 8
+_QWEN3_INTERMEDIATE = 64
+_QWEN3_NUM_LAYERS = 2
+_QWEN3_PAST_SEQ = 3
+
+
+def _export_qwen3_layers_with_kv_cache(num_kv_heads: int) -> onnx.ModelProto:
+    """Export real ``Qwen3DecoderLayer`` stack with a KV cache to ONNX.
+
+    Instantiates ``_QWEN3_NUM_LAYERS`` genuine ``Qwen3DecoderLayer`` modules
+    (random weights — no checkpoint download) and traces them with a
+    ``DynamicCache`` primed by ``past_key_*`` / ``past_value_*`` inputs. Tracing
+    through ``Cache.update`` is what makes torch emit the real
+    ``past_key_<i> -> Concat -> QK^T MatMul`` topology that ``find_r3_anchors``
+    pins on, instead of the synthetic Concats other R3 tests splice in.
+
+    ``num_kv_heads`` toggles attention layout: equal to ``_QWEN3_HEADS`` gives
+    MHA (``repeat_kv`` is a no-op, clean K-path); smaller gives GQA, whose
+    ``repeat_kv`` expansion inserts Unsqueeze/Expand/Reshape ops on the K-path.
+
+    transformers is imported lazily so this module still collects where it is
+    unavailable (e.g. Windows ARM64).
+    """
+    from transformers.models.qwen3.modeling_qwen3 import (
+        Qwen3Config,
+        Qwen3DecoderLayer,
+        Qwen3RotaryEmbedding,
+    )
+    from transformers.cache_utils import DynamicCache
+
+    cfg = Qwen3Config(
+        hidden_size=_QWEN3_HIDDEN,
+        num_attention_heads=_QWEN3_HEADS,
+        num_key_value_heads=num_kv_heads,
+        head_dim=_QWEN3_HEAD_DIM,
+        intermediate_size=_QWEN3_INTERMEDIATE,
+        num_hidden_layers=_QWEN3_NUM_LAYERS,
+        vocab_size=64,
+        max_position_embeddings=64,
+        _attn_implementation="eager",
+    )
+    layers = nn.ModuleList(
+        [Qwen3DecoderLayer(cfg, layer_idx=i).eval() for i in range(_QWEN3_NUM_LAYERS)]
+    )
+    rotary = Qwen3RotaryEmbedding(cfg)
+
+    seq, past = _SEQ, _QWEN3_PAST_SEQ
+    hidden = torch.randn(_B, seq, _QWEN3_HIDDEN)
+    position_ids = torch.arange(past, past + seq).unsqueeze(0)
+    cos, sin = rotary(hidden, position_ids)
+    cache_position = torch.arange(past, past + seq)
+    past_kv = [
+        torch.randn(_B, num_kv_heads, past, _QWEN3_HEAD_DIM)
+        for _ in range(2 * _QWEN3_NUM_LAYERS)
+    ]
+
+    class _Wrapper(nn.Module):
+        def __init__(self, layers):
+            super().__init__()
+            self.layers = layers
+
+        def forward(self, hidden, cos, sin, *past_kv):
+            cache = DynamicCache()
+            for i in range(_QWEN3_NUM_LAYERS):
+                cache.update(past_kv[2 * i], past_kv[2 * i + 1], i)
+            x = hidden
+            for layer in self.layers:
+                x = layer(
+                    x,
+                    position_embeddings=(cos, sin),
+                    past_key_values=cache,
+                    use_cache=True,
+                    cache_position=cache_position,
+                )
+            return x
+
+    input_names = ["hidden", "cos", "sin"]
+    for i in range(_QWEN3_NUM_LAYERS):
+        input_names += [f"past_key_{i}", f"past_value_{i}"]
+
+    buf = io.BytesIO()
+    torch.onnx.export(
+        _Wrapper(layers).eval(),
+        (hidden, cos, sin, *past_kv),
+        buf,
+        input_names=input_names,
+        output_names=["out"],
+        opset_version=17,
+        do_constant_folding=True,
+        dynamo=False,
+    )
+    buf.seek(0)
+    return load_model(buf)
+
+
+def _cache_keys(cache, layer_idx):
+    """Read layer ``layer_idx``'s updated keys from a DynamicCache, version-robustly.
+
+    transformers >= 5 stores per-layer tensors under ``cache.layers[i].keys``;
+    older versions use the ``cache.key_cache[i]`` list.
+    """
+    if hasattr(cache, "layers"):
+        return cache.layers[layer_idx].keys
+    return cache.key_cache[layer_idx]
+
+
+def _cache_values(cache, layer_idx):
+    """Read layer ``layer_idx``'s updated values from a DynamicCache (see ``_cache_keys``)."""
+    if hasattr(cache, "layers"):
+        return cache.layers[layer_idx].values
+    return cache.value_cache[layer_idx]
+
+
+def _export_qwen3_causal_lm_with_kv_cache(
+    num_kv_heads: int = _QWEN3_HEADS,
+) -> onnx.ModelProto:
+    """Export a full real-Qwen3 causal LM (embed -> layers -> norm -> lm_head) with a KV cache.
+
+    ``num_kv_heads`` toggles attention layout: equal to ``_QWEN3_HEADS`` (the
+    default) gives MHA, where ``repeat_kv`` is a no-op and the K-path is clean;
+    a smaller value gives GQA, whose ``repeat_kv`` expansion inserts
+    Unsqueeze/Expand/Reshape ops on the K-path between the past-key Concat and
+    QK^T.
+
+    Wraps a genuine ``Qwen3DecoderLayer`` stack with the prologue/epilogue that
+    ``apply_spinquant`` needs to run end-to-end: a ``Gather`` embed_tokens, a
+    final ``RMSNorm``, and an ``lm_head`` MatMul. With those present,
+    ``get_decoder_block_boundaries`` / ``get_decoder_role_map`` detect 2 blocks,
+    and the export still emits the genuine ``past_key_<i> -> Concat -> QK^T``
+    topology ``find_r3_anchors`` pins on — so the top-level ``apply_spinquant``
+    R3 path can be exercised against a real attention graph rather than the
+    synthetic Concats spliced in by ``_export_decoder_with_pkv``.
+
+    Two details make block detection work on this tiny export:
+
+    * cos/sin are computed *inside* the graph from the embedded tokens (as a
+      real causal-LM forward does). Feeding ``position_ids`` and letting the
+      first layer build the K cache from a graph-input rotary instead degenerates
+      layer 0's past-key Concat into a single-input Concat that R3 can't anchor.
+    * Every RMSNorm gamma is randomized. Qwen3 initializes all gammas to ones,
+      so the export/folding dedupes the identical initializers and only the first
+      norm keeps a distinct (detectable) scale — randomizing keeps all of them
+      distinct so ``find_active_norms`` sees every block's norms.
+
+    transformers is imported lazily so this module still collects where it is
+    unavailable (e.g. Windows ARM64).
+    """
+    from transformers.models.qwen3.modeling_qwen3 import (
+        Qwen3Config,
+        Qwen3DecoderLayer,
+        Qwen3RMSNorm,
+        Qwen3RotaryEmbedding,
+    )
+    from transformers.cache_utils import DynamicCache
+
+    cfg = Qwen3Config(
+        hidden_size=_QWEN3_HIDDEN,
+        num_attention_heads=_QWEN3_HEADS,
+        num_key_value_heads=num_kv_heads,
+        head_dim=_QWEN3_HEAD_DIM,
+        intermediate_size=_QWEN3_INTERMEDIATE,
+        num_hidden_layers=_QWEN3_NUM_LAYERS,
+        vocab_size=_VOCAB,
+        max_position_embeddings=64,
+        _attn_implementation="eager",
+    )
+
+    class _CausalLM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed_tokens = nn.Embedding(_VOCAB, _QWEN3_HIDDEN)
+            self.layers = nn.ModuleList(
+                [
+                    Qwen3DecoderLayer(cfg, layer_idx=i).eval()
+                    for i in range(_QWEN3_NUM_LAYERS)
+                ]
+            )
+            self.norm = Qwen3RMSNorm(_QWEN3_HIDDEN)
+            self.lm_head = nn.Linear(_QWEN3_HIDDEN, _VOCAB, bias=False)
+            self.rotary = Qwen3RotaryEmbedding(cfg)
+            # Randomize every RMSNorm gamma so the (otherwise all-ones, hence
+            # deduped) scale initializers stay distinct and detectable.
+            for module in (*self.layers, self.norm):
+                for name, param in module.named_parameters():
+                    if "norm" in name.lower():
+                        with torch.no_grad():
+                            param.copy_(torch.randn_like(param))
+
+        def forward(self, token_ids, *past_kv):
+            seq, past = _SEQ, _QWEN3_PAST_SEQ
+            position_ids = torch.arange(past, past + seq).unsqueeze(0)
+            cache_position = torch.arange(past, past + seq)
+            x = self.embed_tokens(token_ids)
+            cos, sin = self.rotary(x, position_ids)
+            cache = DynamicCache()
+            for i in range(_QWEN3_NUM_LAYERS):
+                cache.update(past_kv[2 * i], past_kv[2 * i + 1], i)
+            for layer in self.layers:
+                x = layer(
+                    x,
+                    position_embeddings=(cos, sin),
+                    past_key_values=cache,
+                    use_cache=True,
+                    cache_position=cache_position,
+                )
+            logits = self.lm_head(self.norm(x))
+            # Surface the updated ("present") KV so the exporter emits past-KV
+            # *outputs* to match the past-KV inputs. The cache is mutated in
+            # place inside each attention block; unless its tensors are part of
+            # the returned values, torch.onnx.export traces only logits and the
+            # present_key_*/present_value_* Concats stay buried as intermediates.
+            present = []
+            for i in range(_QWEN3_NUM_LAYERS):
+                present += [_cache_keys(cache, i), _cache_values(cache, i)]
+            return (logits, *present)
+
+    token_ids = torch.randint(0, _VOCAB, (_B, _SEQ))
+    past_kv = [
+        torch.randn(_B, num_kv_heads, _QWEN3_PAST_SEQ, _QWEN3_HEAD_DIM)
+        for _ in range(2 * _QWEN3_NUM_LAYERS)
+    ]
+
+    input_names = ["input_ids"]
+    output_names = ["logits"]
+    for i in range(_QWEN3_NUM_LAYERS):
+        input_names += [f"past_key_{i}", f"past_value_{i}"]
+        output_names += [f"present_key_{i}", f"present_value_{i}"]
+
+    buf = io.BytesIO()
+    torch.onnx.export(
+        _CausalLM().eval(),
+        (token_ids, *past_kv),
+        buf,
+        input_names=input_names,
+        output_names=output_names,
+        opset_version=17,
+        do_constant_folding=True,
+        dynamo=False,
+    )
+    buf.seek(0)
+    return load_model(buf)
+
+
+class TestFindR3Anchors:
+    """Unit tests for find_r3_anchors against a real Qwen3 attention graph.
+
+    find_r3_anchors only reads ``role_map.blocks`` (for the count) and
+    ``role_map.past_key_input_names`` (collected at role-map build time), so
+    these tests pass a lightweight stub with the right block count and past_key
+    names and exercise the anchor-finding logic purely against the exported
+    ONNX graph.
+    """
+
+    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+    def test_find_r3_anchors_mha(self):
+        """MHA Qwen3 (kv_heads == attn_heads): one anchor per block on past_key_*.
+
+        Purpose: validate ``find_r3_anchors`` against a genuine ``Qwen3DecoderLayer``
+            attention graph (traced through a DynamicCache) in MHA layout, where
+            ``repeat_kv`` is a no-op and the K-path from past_key to QK^T is clean.
+            This is the realistic topology the synthetic-Concat tests approximate.
+        Pass criteria: one anchor per layer; for layer ``i`` the anchor pins
+            ``past_key_{i}`` with a Concat ``k_concat_node`` and a MatMul
+            ``qk_matmul_node``, and the Q-side and K-side feed *different* inputs
+            of that MatMul (``q_consumer_input_idx != k_consumer_input_idx``).
+        """
+        import types
+
+        torch.manual_seed(0)
+        model = _export_qwen3_layers_with_kv_cache(num_kv_heads=_QWEN3_HEADS)
+
+        role_map = types.SimpleNamespace(
+            blocks=[None] * _QWEN3_NUM_LAYERS,
+            past_key_input_names=[
+                inp.name for inp in model.graph.input if "past_key" in inp.name
+            ],
+        )
+        anchors = find_r3_anchors(role_map, model)
+
+        # Pass: anchors found for every layer, correctly identifying past_key
+        # input, Concat, QK^T MatMul, and distinct Q/K operand positions.
+        assert len(anchors) == _QWEN3_NUM_LAYERS
+        for i, anchor in enumerate(anchors):
+            assert anchor.past_key_input_name == f"past_key_{i}"
+            assert anchor.k_concat_node.op_type == "Concat"
+            assert anchor.qk_matmul_node.op_type == "MatMul"
+            # Q-side and K-side must be distinct inputs of the QK^T MatMul.
+            assert anchor.q_consumer_input_idx != anchor.k_consumer_input_idx
+
+    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+    def test_find_r3_anchors_gqa(self):
+        """GQA Qwen3 (kv_heads < attn_heads): one anchor per block through repeat_kv.
+
+        Purpose: validate ``find_r3_anchors`` against a GQA ``Qwen3DecoderLayer``
+            attention graph. When kv_heads < attn_heads, ``repeat_kv`` inserts a
+            clean ``Unsqueeze -> Expand -> Reshape`` chain between the past_key
+            Concat and QK^T to broadcast each KV head across its query-head group.
+            The forward walk now traverses those ops, so anchor finding resolves
+            the same per-block ``past_key_* -> Concat -> QK^T`` topology as MHA.
+        Pass criteria: one anchor per layer; for layer ``i`` the anchor pins
+            ``past_key_{i}`` with a Concat ``k_concat_node`` and a MatMul
+            ``qk_matmul_node``, and the Q-side and K-side feed *different* inputs
+            of that MatMul (``q_consumer_input_idx != k_consumer_input_idx``).
+        """
+        import types
+
+        torch.manual_seed(0)
+        model = _export_qwen3_layers_with_kv_cache(num_kv_heads=_QWEN3_HEADS // 2)
+
+        role_map = types.SimpleNamespace(
+            blocks=[None] * _QWEN3_NUM_LAYERS,
+            past_key_input_names=[
+                inp.name for inp in model.graph.input if "past_key" in inp.name
+            ],
+        )
+        anchors = find_r3_anchors(role_map, model)
+
+        assert len(anchors) == _QWEN3_NUM_LAYERS
+        for i, anchor in enumerate(anchors):
+            assert anchor.past_key_input_name == f"past_key_{i}"
+            assert anchor.k_concat_node.op_type == "Concat"
+            assert anchor.qk_matmul_node.op_type == "MatMul"
+            assert anchor.q_consumer_input_idx != anchor.k_consumer_input_idx
 
 
 class TestApplySpinquant:
@@ -1652,7 +2255,6 @@ class TestApplySpinquant:
         model = _export_decoder_with_ids(decoder_cls())
         token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
 
-        # Capture float output BEFORE sim creation
         y_before = _run_model(model, token_ids)
 
         """
@@ -1660,16 +2262,9 @@ class TestApplySpinquant:
         Then: The rotated model is mathematically equivalent to original FP32 model.
         """
 
-        sim = QuantizationSimModel(
-            model, dummy_input=_pad_dummy_input(model, input=token_ids)
-        )
-        apply_spinquant(sim)
+        apply_spinquant(model)
 
-        # Strip QcQuantizeOp to get the rotated float model for comparison.
-        rotated_float = QuantizationSimModel.remove_quantizers(
-            copy.deepcopy(sim.model.model)
-        )
-        y_after = _run_model(rotated_float, token_ids)
+        y_after = _run_model(model, token_ids)
         assert np.allclose(y_before, y_after, atol=1e-5)
 
     @pytest.mark.parametrize(
@@ -1677,11 +2272,10 @@ class TestApplySpinquant:
         [LlamaStyleDecoder, Qwen3StyleDecoder, Phi3StyleDecoder],
     )
     def test_weights_changed(self, decoder_cls):
-        """apply_spinquant must modify weight initializers in sim.model.model."""
+        """apply_spinquant must modify weight initializers in the model."""
         torch.manual_seed(0)
         np.random.seed(0)
         model = _export_decoder_with_ids(decoder_cls())
-        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
 
         # Find the embed_tokens initializer (Gather weight: shape [_VOCAB, _H]).
         embed_name = next(
@@ -1693,14 +2287,9 @@ class TestApplySpinquant:
             ParamUtils.get_param_by_name(model, embed_name)
         ).copy()
 
-        sim = QuantizationSimModel(
-            model, dummy_input=_pad_dummy_input(model, input=token_ids)
-        )
-        apply_spinquant(sim)
+        apply_spinquant(model)
 
-        w_after = numpy_helper.to_array(
-            ParamUtils.get_param_by_name(sim.model.model, embed_name)
-        )
+        w_after = numpy_helper.to_array(ParamUtils.get_param_by_name(model, embed_name))
         assert not np.array_equal(w_before, w_after)
 
     def test_validation_failure_leaves_model_untouched(self):
@@ -1722,16 +2311,10 @@ class TestApplySpinquant:
                 return self.lm_head(self.block0(self.embed_tokens(token_ids)))
 
         model = _export_decoder_with_ids(_OddNormDecoder())
-        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
-
-        sim = QuantizationSimModel(
-            model, dummy_input=_pad_dummy_input(model, input=token_ids)
-        )
 
         # Snapshot all initializers before the failed call.
         init_before = {
-            t.name: numpy_helper.to_array(t).copy()
-            for t in sim.model.model.graph.initializer
+            t.name: numpy_helper.to_array(t).copy() for t in model.graph.initializer
         }
 
         """
@@ -1740,13 +2323,11 @@ class TestApplySpinquant:
         """
 
         with pytest.raises(ValueError):
-            apply_spinquant(sim)
+            apply_spinquant(model)
 
         # Every initializer must be bit-exact same.
         for name, arr_before in init_before.items():
-            arr_after = numpy_helper.to_array(
-                ParamUtils.get_param_by_name(sim.model.model, name)
-            )
+            arr_after = numpy_helper.to_array(ParamUtils.get_param_by_name(model, name))
             assert np.array_equal(arr_before, arr_after)
 
     def test_embedding_weight_rotated(self):
@@ -1754,21 +2335,16 @@ class TestApplySpinquant:
         torch.manual_seed(0)
 
         backbone_model = _export_vlm_backbone(VLMBackbone())
-        inputs_embeds = np.random.randn(_B, _SEQ, _H).astype(np.float32)
 
         # Simulate torch.load("embedding.pth") → raw tensor [vocab, hidden]
         embedding = torch.randn(_VOCAB, _H)
         W_before = embedding.clone()
 
-        backbone_sim = QuantizationSimModel(
-            backbone_model, dummy_input={"input": inputs_embeds}
-        )
-
         """
         When: apply_spinquant is called with an external embedding tensor.
         Then: tensor is modified in-place (rotated by R_L).
         """
-        apply_spinquant(backbone_sim, embedding=embedding)
+        apply_spinquant(backbone_model, embedding=embedding)
 
         assert not torch.equal(embedding, W_before)
 
@@ -1778,7 +2354,6 @@ class TestApplySpinquant:
         np.random.seed(0)
 
         backbone_model = _export_vlm_backbone(VLMBackbone())
-        inputs_embeds = np.random.randn(_B, _SEQ, _H).astype(np.float32)
 
         embedding = torch.randn(_VOCAB, _H)
         W_orig = embedding.clone().numpy()  # [vocab, H]
@@ -1786,21 +2361,15 @@ class TestApplySpinquant:
         # Baseline: original backbone on original embedding rows
         y_before = _run_model(backbone_model, W_orig[:_SEQ].reshape(1, _SEQ, _H))
 
-        backbone_sim = QuantizationSimModel(
-            backbone_model, dummy_input={"input": inputs_embeds}
-        )
-        apply_spinquant(backbone_sim, embedding=embedding)
+        apply_spinquant(backbone_model, embedding=embedding)
 
-        rotated_float = QuantizationSimModel.remove_quantizers(
-            copy.deepcopy(backbone_sim.model.model)
-        )
         W_rot = embedding.numpy()  # rotated in-place by R_L
 
         """
         When: backbone_rotated receives embedding_rotated rows as inputs_embeds.
         Then: output matches baseline (original backbone on original embedding).
         """
-        y_after = _run_model(rotated_float, W_rot[:_SEQ].reshape(1, _SEQ, _H))
+        y_after = _run_model(backbone_model, W_rot[:_SEQ].reshape(1, _SEQ, _H))
         assert np.allclose(y_before, y_after, atol=1e-5)
 
     def test_visual_output_rotated_by_r_l(self):
@@ -1811,29 +2380,20 @@ class TestApplySpinquant:
         backbone_model = _export_vlm_backbone(VLMBackbone())
         visual_model = _export_vit(ViTEncoder())
 
-        inputs_embeds = np.random.randn(_B, _SEQ, _H).astype(np.float32)
         x_vit = np.random.randn(_VIT_N, _VIT_D).astype(np.float32)
 
         y_vit_before = _run_model(visual_model, x_vit)
 
-        backbone_sim = QuantizationSimModel(
-            backbone_model, dummy_input={"input": inputs_embeds}
-        )
-        visual_sim = QuantizationSimModel(visual_model, dummy_input={"input": x_vit})
-
         """
-        When: apply_spinquant is called with backbone_sim and visual_sim.
+        When: apply_spinquant is called with backbone and visual models.
         Then: visual encoder output equals y_before @ R_L.
         """
         embedding = torch.randn(_VOCAB, _H)
-        apply_spinquant(backbone_sim, visual_sim=visual_sim, embedding=embedding)
+        apply_spinquant(backbone_model, visual_model=visual_model, embedding=embedding)
 
         R_L = (get_hadamard_matrix(_VIT_D_L) / np.sqrt(_VIT_D_L)).astype(np.float32)
 
-        rotated_visual_float = QuantizationSimModel.remove_quantizers(
-            copy.deepcopy(visual_sim.model.model)
-        )
-        y_vit_after = _run_model(rotated_visual_float, x_vit)
+        y_vit_after = _run_model(visual_model, x_vit)
         assert np.allclose(y_vit_after, y_vit_before @ R_L)
 
     def test_post_writing_norm_raises_and_leaves_model_untouched(self):
@@ -1841,14 +2401,9 @@ class TestApplySpinquant:
         and must not modify any initializers before raising."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(Gemma3StyleDecoder())
-        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
-        sim = QuantizationSimModel(
-            model, dummy_input=_pad_dummy_input(model, input=token_ids)
-        )
 
         init_before = {
-            t.name: numpy_helper.to_array(t).copy()
-            for t in sim.model.model.graph.initializer
+            t.name: numpy_helper.to_array(t).copy() for t in model.graph.initializer
         }
 
         """
@@ -1857,10 +2412,8 @@ class TestApplySpinquant:
         """
 
         with pytest.raises(ValueError):
-            apply_spinquant(sim)
+            apply_spinquant(model)
 
         for name, arr_before in init_before.items():
-            arr_after = numpy_helper.to_array(
-                ParamUtils.get_param_by_name(sim.model.model, name)
-            )
+            arr_after = numpy_helper.to_array(ParamUtils.get_param_by_name(model, name))
             assert np.array_equal(arr_before, arr_after)

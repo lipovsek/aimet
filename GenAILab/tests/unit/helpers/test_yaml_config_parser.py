@@ -452,6 +452,42 @@ class TestValidateConfig:
             }
         )
 
+    def test_spinquant_backbone_only_on_vlm_raises(self):
+        # SpinQuant on backbone but missing from visual is rejected.
+        with pytest.raises(RuntimeError, match="backbone but not the visual"):
+            YAMLConfigParser.validate_config(
+                {
+                    "model": {
+                        "model_id": "x",
+                        "sequence_length": 32,
+                        "context_length": 64,
+                    },
+                    "recipe": {
+                        "backbone": [{"name": "SpinQuant"}, {"name": "Calibration"}],
+                        "visual": [{"name": "Calibration"}],
+                    },
+                    "metrics": [{"name": "PPL"}],
+                }
+            )
+
+    def test_spinquant_not_first_visual_step_raises(self):
+        # SpinQuant must be the first visual step on a VLM.
+        with pytest.raises(RuntimeError, match="must be the first step in the visual"):
+            YAMLConfigParser.validate_config(
+                {
+                    "model": {
+                        "model_id": "x",
+                        "sequence_length": 32,
+                        "context_length": 64,
+                    },
+                    "recipe": {
+                        "backbone": [{"name": "SpinQuant"}, {"name": "Calibration"}],
+                        "visual": [{"name": "Calibration"}, {"name": "SpinQuant"}],
+                    },
+                    "metrics": [{"name": "PPL"}],
+                }
+            )
+
 
 # ---------------------------------------------------------------------------
 # Full parse_document (requires mocking detect_model_type)
@@ -687,3 +723,55 @@ class TestParseDocument:
         }
         # Should NOT raise — exclusive adaptation bypasses the check
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
+    def test_spinquant_extracted_from_chain_onnx(self, mock_detect, tmp_path):
+        """On aimet-onnx, SpinQuant is pulled out of the chain into 'spinquant'."""
+
+        class FakeLLM_ONNX:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM_ONNX
+
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "recipe": [
+                {"name": "SpinQuant", "enable_r1": True, "enable_r3": True},
+                {"name": "Calibration"},
+            ],
+            "metrics": [{"name": "PPL"}],
+        }
+        result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+
+        # SpinQuant flags are extracted, step is stripped from the chain.
+        assert result["spinquant"] == {"enable_r1": True, "enable_r3": True}
+        backbone_names = [
+            step["class"].__name__ for step in result["recipe"]["backbone"]
+        ]
+        assert "SpinQuant" not in backbone_names
+        assert backbone_names == ["Calibration"]
+
+    @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
+    def test_no_spinquant_yields_none(self, mock_detect, tmp_path):
+        """Without a SpinQuant step, 'spinquant' is None."""
+
+        class FakeLLM_ONNX:
+            pass
+
+        YAMLConfigParser._default_llm_cls = FakeLLM_ONNX
+
+        doc = {
+            "model": {
+                "model_id": "org/model",
+                "sequence_length": 32,
+                "context_length": 64,
+            },
+            "recipe": [{"name": "Calibration"}],
+            "metrics": [{"name": "PPL"}],
+        }
+        result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
+        assert result["spinquant"] is None

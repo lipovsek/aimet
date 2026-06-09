@@ -46,35 +46,34 @@ class Gemma4_ONNX(Gemma4_VLM):
     """Gemma4 ONNX quantization (text backbone + vision tower)."""
 
     @classmethod
-    def instantiate_quantsim(
+    def export_onnx_models(
         cls,
         model_id: str,
         context_length: int,
         sequence_length: int | list[int],
         small_model: bool = False,
-        precision: PrecisionConfig | None = None,
         model_cache: DiskBackedModelCache | None = None,
         image_size: tuple[int, int] | None = None,
         *args,
         **kwargs,
-    ):
-        if precision is None:
-            precision = PrecisionConfig()
-        precision.ensure_visual_defaults()
+    ) -> ModelCacheEntry:
+        """Export (or load) the raw float backbone/visual ONNX models + embedding.
 
-        max_sequence_length = (
-            max(sequence_length)
-            if isinstance(sequence_length, list)
-            else sequence_length
-        )
+        Separated from :meth:`instantiate_quantsim` so the caller can transform
+        the float graph(s) (e.g. apply SpinQuant) before the sims are built.
+        """
+        if model_id is None:
+            model_id = cls.DEFAULT_MODEL_ID
+
         cache_sl = (
             "dynamic"
             if isinstance(sequence_length, list) and len(sequence_length) > 1
-            else max_sequence_length
+            else (
+                max(sequence_length)
+                if isinstance(sequence_length, list)
+                else sequence_length
+            )
         )
-
-        if model_id is None:
-            model_id = cls.DEFAULT_MODEL_ID
 
         is_hf = is_huggingface_ckpt(model_id)
 
@@ -111,15 +110,29 @@ class Gemma4_ONNX(Gemma4_VLM):
                     get_model_checkpoint_path(model_id),
                     image_size=image_size,
                 )
-            backbone_onnx_model = entry.backbone
-            visual_onnx_model = entry.visual
-            embedding = entry.embedding
-            config = entry.config
-            extras = entry.extras or {}
-        else:
-            raise NotImplementedError(
-                "Loading Gemma4 ONNX from non-HuggingFace checkpoint not yet supported."
-            )
+            return entry
+
+        raise NotImplementedError(
+            "Loading Gemma4 ONNX from non-HuggingFace checkpoint not yet supported."
+        )
+
+    @classmethod
+    def instantiate_quantsim(
+        cls,
+        entry: ModelCacheEntry,
+        precision: PrecisionConfig | None = None,
+        *args,
+        **kwargs,
+    ):
+        if precision is None:
+            precision = PrecisionConfig()
+        precision.ensure_visual_defaults()
+
+        backbone_onnx_model = entry.backbone
+        visual_onnx_model = entry.visual
+        embedding = entry.embedding
+        config = entry.config
+        extras = entry.extras or {}
 
         default_param_qtype = precision.blocks["default"].qtype
         default_activation_qtype = precision.activations

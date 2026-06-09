@@ -10,10 +10,11 @@ the caller via boolean flags (``enable_r1`` / ``enable_r2``).
 
 from typing import List, Optional
 
+import onnx
 import torch
 
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.quantsim import QuantizationSimModel
+from aimet_onnx.meta.connectedgraph import ConnectedGraph
 
 from aimet_onnx.experimental.spinquant.model_analysis import (
     find_merger_linear2,
@@ -25,6 +26,7 @@ from aimet_onnx.experimental.spinquant.model_analysis import (
 from aimet_onnx.experimental.spinquant.passes import (
     R1RotationPass,
     R2RotationPass,
+    R3RotationPass,
     RotationPass,
     SpinquantContext,
 )
@@ -33,55 +35,64 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 
 
 def apply_spinquant(
-    backbone_sim: QuantizationSimModel,
-    visual_sim: Optional[QuantizationSimModel] = None,
+    model: onnx.ModelProto,
+    visual_model: Optional[onnx.ModelProto] = None,
     embedding: Optional[torch.Tensor] = None,
     *,
     enable_r1: bool = True,
     enable_r2: bool = False,
+    enable_r3: bool = False,
 ) -> None:
     """Apply SpinQuant rotation transforms to an ONNX transformer model.
 
     SpinQuant applies orthogonal Hadamard rotations to model weights to reduce
-    quantization error. This function modifies the QuantizationSimModel(s) in-place by:
+    quantization error. This function modifies the ONNX model(s) in-place by:
 
     1. Analyzing the backbone (decoder block boundaries, role map, hidden size)
        and the optional visual encoder (PatchMerger output projection).
     2. Validating every selected rotation pass against the analysis.
-    3. Applying every selected pass in order (R1 before R2).
-    4. Rebuilding ORT sessions once per sim.
+    3. Applying every selected pass in order (R1 before R2 before R3).
 
-    Must be called BEFORE ``sim.compute_encodings()``. The rotation modifies float
-    weight initializers; ``compute_encodings`` must run afterward to calibrate
-    quantizer scales on the rotated weights.
+    Must be called on the float ONNX model BEFORE creating a
+    ``QuantizationSimModel``. The rotation modifies float weight initializers
+    (R1 / R2) and may insert new nodes (R3); build the sim on the rotated graph
+    and run ``compute_encodings`` afterward so quantizer scales are calibrated on
+    the rotated weights.
 
     Supported architectures:
         - LLaMA, Qwen2, Qwen3, Phi3 (backbone only)
         - Qwen2.5-VL, Qwen3-VL (backbone + visual)
 
-    :param backbone_sim: QuantizationSimModel wrapping backbone.onnx.
-    :param visual_sim: Optional QuantizationSimModel wrapping visual.onnx (VLM only).
+    :param model: backbone.onnx ModelProto. Mutated in-place.
+    :param visual_model: Optional visual.onnx ModelProto (VLM only). Mutated in-place.
     :param embedding: Optional ``torch.Tensor`` of shape ``[vocab, hidden]`` loaded
         from ``embedding.pth`` (VLM only). Rotated in-place with R_L.
     :param enable_r1: If ``True`` (default), apply the R1 (residual-stream) rotation.
     :param enable_r2: If ``True``, apply the R2 (per-head) rotation. Defaults to ``False``.
         Not supported on architectures with fused QKV projections (e.g. Phi3).
+    :param enable_r3: If ``True``, apply the R3 online Hadamard rotation on Q and K
+        paths into each block's QK^T MatMul. Defaults to ``False``. Inserts new
+        ``MatMul`` nodes into the ONNX graph (does not mutate existing weights).
+        MHA only — not supported on fused QKV or per-head split exports. The K-side
+        rotation is placed upstream of the past-key ``Concat`` so K values entering
+        the KV cache are already rotated; the model's ``present_key`` output then
+        carries rotated K (cache convention is self-consistent across steps).
     :raises ValueError: If no rotation is enabled, if block detection or role
         classification fails, or if any expected weight is missing / has the wrong shape.
 
     Example (LLM)::
 
+        apply_spinquant(model)
         sim = QuantizationSimModel(model)
-        apply_spinquant(sim)
         sim.compute_encodings(calibration_data)
 
     Example (VLM)::
 
+        embedding = torch.load("embedding.pth")   # torch.Tensor [vocab, hidden]
+        apply_spinquant(backbone_model, visual_model=visual_model, embedding=embedding)
+        torch.save(embedding, "embedding.pth")    # overwrite with rotated weights
         backbone_sim = QuantizationSimModel(backbone_model)
         visual_sim = QuantizationSimModel(visual_model)
-        embedding = torch.load("embedding.pth")   # torch.Tensor [vocab, hidden]
-        apply_spinquant(backbone_sim, visual_sim=visual_sim, embedding=embedding)
-        torch.save(embedding, "embedding.pth")    # overwrite with rotated weights
         backbone_sim.compute_encodings(backbone_calibration_data)
         visual_sim.compute_encodings(visual_calibration_data)
     """
@@ -90,13 +101,15 @@ def apply_spinquant(
         rotations.append(R1RotationPass())
     if enable_r2:
         rotations.append(R2RotationPass())
+    if enable_r3:
+        rotations.append(R3RotationPass())
     if not rotations:
         raise ValueError(
             "apply_spinquant requires at least one rotation enabled "
-            "(set enable_r1=True and/or enable_r2=True)."
+            "(set enable_r1=True and/or enable_r2=True and/or enable_r3=True)."
         )
 
-    ctx = _build_context(backbone_sim, visual_sim, embedding)
+    ctx = _build_context(model, visual_model, embedding)
 
     # Validate every pass before mutating anything: a bad config must not
     # leave the model half-rotated.
@@ -107,44 +120,39 @@ def apply_spinquant(
         _logger.info("Applying %s rotation pass.", rotation.name)
         rotation.apply(ctx)
 
-    backbone_sim._rebuild_session()  # pylint: disable=protected-access
-    if visual_sim is not None:
-        visual_sim._rebuild_session()  # pylint: disable=protected-access
-
 
 def _build_context(
-    backbone_sim: QuantizationSimModel,
-    visual_sim: Optional[QuantizationSimModel],
+    model: onnx.ModelProto,
+    visual_model: Optional[onnx.ModelProto],
     embedding: Optional[torch.Tensor],
 ) -> SpinquantContext:
     """Run model analysis once and build the context shared across passes."""
-    bb_model = backbone_sim.model.model
-    bb_cg = backbone_sim.connected_graph
-    boundaries, active_norms = get_decoder_block_boundaries(bb_model, bb_cg)
+    bb_cg = ConnectedGraph(model)
+    boundaries, active_norms = get_decoder_block_boundaries(model, bb_cg)
     role_map = get_decoder_role_map(bb_cg, boundaries, active_norms)
-    hidden_size = infer_hidden_size(bb_model, role_map)
+    hidden_size = infer_hidden_size(model, role_map)
 
     # head_dim is only needed by R2; derivation requires a past_value graph
     # input. Tolerate missing KV-cache inputs here so non-R2 flows still work,
     # and let R2.validate raise a targeted error when it actually needs the value.
     try:
-        head_dim = infer_head_dim(bb_model)
+        head_dim = infer_head_dim(model)
     except ValueError:
         head_dim = None
 
     visual_merger_linear2 = None
-    if visual_sim is not None:
-        visual_merger_linear2 = find_merger_linear2(visual_sim.connected_graph)
+    if visual_model is not None:
+        visual_merger_linear2 = find_merger_linear2(ConnectedGraph(visual_model))
 
     _check_embedding_consistency(role_map, embedding)
 
     return SpinquantContext(
-        backbone_sim=backbone_sim,
+        backbone_model=model,
         backbone_role_map=role_map,
         backbone_active_norms=active_norms,
         backbone_hidden_size=hidden_size,
         backbone_head_dim=head_dim,
-        visual_sim=visual_sim,
+        visual_model=visual_model,
         visual_merger_linear2=visual_merger_linear2,
         embedding=embedding,
     )
