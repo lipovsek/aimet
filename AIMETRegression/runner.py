@@ -47,7 +47,7 @@ from AIMETRegression.models.ai_hub_loader import load_model_data
 from AIMETRegression.evaluation.eval_onnx import resolve_dataset_name, eval_onnx_model
 from AIMETRegression.evaluation.eval_torch import eval_pytorch_model
 from AIMETRegression.evaluation.eval_qnn import (
-    compile_and_profile_aimet_bundle,
+    compile_and_profile_qdq_model,
     eval_qnn_accuracy,
 )
 from AIMETRegression.features.torch.utils import ensure_device_patch
@@ -125,9 +125,9 @@ def _disable_torch_mha_fastpath():
 def _export_torch_to_onnx_local(
     model: Any, input_spec: Dict, out_dir: Path, model_name: str
 ) -> Path:
-    """Export PyTorch model to ONNX locally using torch.jit.trace."""
+    """Export PyTorch model to ONNX locally using torch.onnx.export."""
     print(f"\n[INFO] Exporting {model_name} to FP32 ONNX locally...")
-    print(f"[INFO] Using torch.jit.trace (no AI Hub compilation)")
+    print(f"[INFO] Using torch.onnx.export (no AI Hub compilation)")
 
     if hasattr(model, "to_torch_model"):
         torch_model = model.to_torch_model().to("cpu").eval()
@@ -449,7 +449,7 @@ def run_single_config(
         print(f"\n[Step 3] Applying {feature_name} quantization (ONNX)...")
         runner = FEATURE_RUNNERS[feature_name]
 
-        aimet_onnx_path, feature_acc, stats, aimet_bundle_dir = runner(
+        aimet_onnx_path, feature_acc, stats = runner(
             fp32_onnx_path=str(fp32_path),
             model=model,
             dataset_name=dataset_name,
@@ -466,7 +466,7 @@ def run_single_config(
         print(f"\n[Step 3] Applying {feature_name} quantization (Torch)...")
         runner = TORCH_FEATURE_RUNNERS[feature_name]
 
-        aimet_onnx_path, feature_acc, stats, aimet_bundle_dir = runner(
+        aimet_onnx_path, feature_acc, stats = runner(
             model=model,
             input_spec=input_spec,
             dataset_name=dataset_name,
@@ -474,17 +474,10 @@ def run_single_config(
         )
         static_aten_acc = stats.pop("static_aten_acc", None)
 
-    if not aimet_bundle_dir:
-        raise RuntimeError(f"{feature_name} did not return a bundle directory")
-
-    aimet_bundle_path = Path(aimet_bundle_dir)
     aimet_onnx_path = Path(aimet_onnx_path)
 
     if not aimet_onnx_path.exists():
-        raise FileNotFoundError(
-            f"AIMET-exported ONNX not found: {aimet_onnx_path}\n"
-            f"Bundle contents: {list(aimet_bundle_path.glob('*'))}"
-        )
+        raise FileNotFoundError(f"AIMET-exported QDQ ONNX not found: {aimet_onnx_path}")
 
     print(
         f"[Step 3] AIMET Accuracy: {feature_acc:.4f}"
@@ -620,14 +613,12 @@ def run_single_config(
         print(f"\n[Step 5] Running QNN on-device evaluation...")
         print(f"[Step 5] QNN options: {qnn_options}")
 
-        if not aimet_bundle_dir or not os.path.isdir(str(aimet_bundle_dir)):
-            print(
-                f"[Step 5] WARNING: AIMET bundle directory missing: {aimet_bundle_dir}"
-            )
+        if not aimet_onnx_path or not os.path.isfile(str(aimet_onnx_path)):
+            print(f"[Step 5] WARNING: QDQ ONNX model missing: {aimet_onnx_path}")
         else:
             try:
-                ret = compile_and_profile_aimet_bundle(
-                    aimet_bundle_dir=str(aimet_bundle_dir),
+                ret = compile_and_profile_qdq_model(
+                    qdq_model_path=str(aimet_onnx_path),
                     device_name=device_name,
                     model_name=model_name,
                     export_dir=str(ARTIFACTS_DIR),
@@ -659,11 +650,13 @@ def run_single_config(
                         model, dataset_name, input_spec, qnn_eval_samples
                     )
 
+                    channel_last = "--force_channel_last_input" in (qnn_options or "")
                     ret_acc = eval_qnn_accuracy(
                         target_model=uploaded_model,
                         device_name=device_name,
                         input_spec=input_spec,
                         dataset_loader=qnn_loader,
+                        channel_last=channel_last,
                         debug_print_feeds=False,
                     )
 

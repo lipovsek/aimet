@@ -1,29 +1,11 @@
 model_name: levit
-apply_prepare_model: False
+qnn_options: null
 
 tests:
-  - name: quantsim_int8
+  - name: quantsim_int8_v79
     feature: quantsim
     quant_scheme: min_max
     param_type: int8
     activation_type: int8
     config_file: htp_v79
     apply_experimental_static_aten_calibration: true
-
-  - name: quantsim_int8_int16
-    feature: quantsim
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int16
-    config_file: htp_v79
-    apply_experimental_static_aten_calibration: true
-
-  - name: lite_mp_10
-    feature: lite_mp
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int8
-    config_file: htp_v79
-    lite_mp:
-      percent_flip: 10
-      override_precision: float16

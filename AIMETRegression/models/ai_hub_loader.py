@@ -275,23 +275,26 @@ def load_model_data(model_name: str) -> Tuple[BaseModel, Any, dict, Any]:
         # ============ Step 4: Resolve Dataset ============
         dataset_name = _resolve_dataset_name(model)
 
+        # ============ Step 5: Get Input Specification ============
+        # Input spec defines the expected input format (shape, dtype, etc.).
+        # Resolved before dataset construction so the dataset sizes images
+        # to the model instance's actual shape rather than a class-level default.
+        input_spec = model.get_input_spec()
+
         # Load the validation split of the dataset
         # We use validation split for all evaluation to avoid training data leakage
         dataset = get_dataset_from_name(
             dataset_name,
             DatasetSplit.VAL,  # Always use validation split for evaluation
+            input_spec,
         )
 
-        # ============ Step 5: Create Dataloader ============
+        # ============ Step 6: Create Dataloader ============
         # Deterministic sampling ensures reproducible results
         dataloader = get_deterministic_sample(
             dataset,
             num_samples=100,  # Default sample size for initial testing
             samples_per_job=100,  # Process all samples in one batch
         )
-
-        # ============ Step 6: Get Input Specification ============
-        # Input spec defines the expected input format (shape, dtype, etc.)
-        input_spec = model.get_input_spec()
 
     return model, dataset, input_spec, dataloader

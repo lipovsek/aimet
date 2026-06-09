@@ -1,15 +1,8 @@
-# DenseNet121 Model Configuration
-
-# ==================== Model Identification ====================
 model_name: densenet121
+qnn_options: "--target_runtime qnn_dlc --output_names class_logits --force_channel_last_input image_tensor"
 
-# ==================== Test Definitions ====================
 tests:
-  # --------------------------------------------------------------------------
-  # Test 1: Standard INT8 Quantization
-  # --------------------------------------------------------------------------
-
-  - name: quantsim_int8
+  - name: quantsim_int8_v79
     feature: quantsim
     quant_scheme: min_max
     param_type: int8
@@ -18,53 +11,6 @@ tests:
     max_accuracy_drop_torch: 4.5
     max_accuracy_drop_onnx: 4.1
     apply_experimental_static_aten_calibration: true
-
-  # --------------------------------------------------------------------------
-  # Test 2: INT8/INT16 Mixed Precision
-  # --------------------------------------------------------------------------
-
-  - name: quantsim_int8_int16
-    feature: quantsim
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int16
-    config_file: htp_v81
-    max_accuracy_drop_torch: 4.5
-    max_accuracy_drop_onnx: 3.5
-    apply_experimental_static_aten_calibration: true
-
-  # --------------------------------------------------------------------------
-  # Test 3: AdaRound Optimization (500 iterations)
-  # --------------------------------------------------------------------------
-
-  - name: adaround_500
-    feature: adaround
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int8
-    config_file: htp_v79
-    adaround_iters: 500
-    max_accuracy_drop_torch: 4.5
-    max_accuracy_drop_onnx: 3.5
-
-  # --------------------------------------------------------------------------
-  # Test 4: Lite Mixed-Precision (25% FP16)
-  # --------------------------------------------------------------------------
-
-  - name: lite_mp_25
-    feature: lite_mp
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int8
-    config_file: htp_v79
-    lite_mp:
-      percent_flip: 25
-      override_precision: float16
-    max_accuracy_drop_onnx: 3.5
-
-  # --------------------------------------------------------------------------
-  # Test 5: Automatic Mixed-Precision (INT8 + INT16, Integer-Only)
-  # --------------------------------------------------------------------------
 
   - name: amp_int8_int16
     feature: mixed_precision

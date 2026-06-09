@@ -1,0 +1,18 @@
+model_name: sinet
+qnn_options: "--target_runtime qnn_dlc --qairt_version 2.43 --output_names mask --force_channel_last_input image --force_channel_last_output mask"
+
+tests:
+  - name: quantsim_int8_v79
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+
+  - name: adaround_500
+    feature: adaround
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+    adaround_iters: 500

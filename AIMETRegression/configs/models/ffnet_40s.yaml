@@ -1,0 +1,13 @@
+model_name: ffnet_40s
+qnn_options: null
+apply_prepare_model: True
+
+tests:
+  - name: quantsim_int8_v79
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+    max_accuracy_drop_torch: 1.9
+    max_accuracy_drop_onnx: 2.0

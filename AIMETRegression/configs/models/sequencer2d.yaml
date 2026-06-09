@@ -1,0 +1,18 @@
+model_name: sequencer2d
+apply_prepare_model: true
+qnn_options: null
+
+tests:
+  - name: quantsim_int8_int16
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int16
+    config_file: htp_v79
+
+  - name: lite_mp_10
+    feature: lite_mp
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79

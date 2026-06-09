@@ -350,6 +350,15 @@ Suite files location: AIMETRegression/suites/
             # Install model extras before running (comment out to disable)
             install_model_extras(config["model_name"])
 
+            # Clean stale modules left by previous tests' SourceAsRoot contexts.
+            # SourceAsRoot (keep_sys_modules=True) leaves 'models', 'model', etc.
+            # in sys.modules, causing import collisions for the next model.
+            for mod_name in list(sys.modules):
+                if mod_name in ("models", "model", "configs") or mod_name.startswith(
+                    ("models.", "model.", "configs.")
+                ):
+                    sys.modules.pop(mod_name, None)
+
             # Run the test using the merged config
             # Skip individual reports
             result = run_single_config(config, skip_reports=True)

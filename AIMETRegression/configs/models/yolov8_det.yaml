@@ -1,7 +1,6 @@
 model_name: yolov8_det
-apply_prepare_model: False
+qnn_options: "--target_runtime qnn_dlc --output_names boxes,scores,class_idx --force_channel_last_input image"
 apply_bn_fold: False
-qnn_options: null
 
 tests:
   - name: quantsim_int8_int16
@@ -12,3 +11,22 @@ tests:
     config_file: htp_v79
     # TODO: Uncomment this with qai-hub-models v0.55
     # apply_experimental_static_aten_calibration: true
+
+  - name: quantsim_int8_v81
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v81
+    max_accuracy_drop_torch: 2.1
+
+  - name: amp_int8_int16
+    feature: mixed_precision
+    candidates: int8_int16
+    enable_sqnr_pruning: true
+    phase1_samples: 64
+    phase2_samples: 256
+    allowed_accuracy_drop: 0.01
+    config_file: htp_v81
+    calib_samples: 256
+    eval_samples: 256

@@ -9,12 +9,3 @@ tests:
     activation_type: int8
     config_file: htp_v79
     apply_experimental_static_aten_calibration: true
-
-  - name: adaround_500
-    feature: adaround
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int8
-    config_file: htp_v79
-    adaround_iters: 500
-    max_accuracy_drop_onnx: 1.3

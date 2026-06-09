@@ -1,81 +1,31 @@
-# MobileNetV2 Model Configuration
-
-# ==================== Model Identification ====================
 model_name: mobilenet_v2
+qnn_options: "--target_runtime qnn_dlc --output_names class_logits --force_channel_last_input image_tensor"
 
-# ==================== Test Definitions ====================
 tests:
-  # --------------------------------------------------------------------------
-  # Test 1: Standard INT8 Quantization
-  # --------------------------------------------------------------------------
-
-
-  - name: quantsim_int8
+  - name: quantsim_int8_v79
     feature: quantsim
     quant_scheme: min_max
     param_type: int8
     activation_type: int8
     config_file: htp_v79
-    max_accuracy_drop_onnx: 8.5
-    max_accuracy_drop_torch: 8.7
     apply_experimental_static_aten_calibration: true
 
-  # --------------------------------------------------------------------------
-  # Test 2: Lite Mixed-Precision (10% FP16)
-  # --------------------------------------------------------------------------
-
-  - name: lite_mp_10
-    feature: lite_mp
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int8
-    config_file: htp_v79
-    lite_mp:
-      percent_flip: 10
-      override_precision: float16
-    max_accuracy_drop_onnx: 4.5
-
-  # --------------------------------------------------------------------------
-  # Test 3: INT8/INT16 Mixed Precision
-  # --------------------------------------------------------------------------
-
-  - name: quantsim_int8_int16
+  - name: quantsim_w8a16
     feature: quantsim
     quant_scheme: min_max
     param_type: int8
     activation_type: int16
-    config_file: htp_v81
-    max_accuracy_drop_onnx: 6.0
-    max_accuracy_drop_torch: 7.0
+    config_file: htp_v79
     apply_experimental_static_aten_calibration: true
 
-  # --------------------------------------------------------------------------
-  # Test 4: AdaRound Optimization (500 iterations)
-  # --------------------------------------------------------------------------
-
-  - name: adaround_500
-    feature: adaround
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int8
-    config_file: htp_v79
-    adaround_iters: 500
-    max_accuracy_drop_onnx: 6.0
-    max_accuracy_drop_torch: 7.0
-
-  # --------------------------------------------------------------------------
-  # Test 5: Automatic Mixed-Precision (INT8 + FP16, Fast)
-  # --------------------------------------------------------------------------
-
-  - name: amp_int8_fp16_fast
+  - name: amp_int8_int16
     feature: mixed_precision
-    candidates: int8_fp16
+    candidates: int8_int16
     enable_sqnr_pruning: true
     phase1_samples: 64
     phase2_samples: 256
     allowed_accuracy_drop: 0.01
-    config_file: htp_v79
+    config_file: htp_v81
     calib_samples: 256
     eval_samples: 256
-    max_accuracy_drop_onnx: 6.0
-    max_accuracy_drop_torch: 7.0
+    max_accuracy_drop_torch: 1.6

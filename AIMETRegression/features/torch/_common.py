@@ -26,9 +26,8 @@ Technical Notes:
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union, Callable
+from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 
 import torch
 from torch.export import ExportedProgram
@@ -48,7 +47,7 @@ from aimet_torch.nn import QuantizationMixin
 __all__ = [
     "get_torch_model",
     "build_quantsim_torch",
-    "export_torch_bundle",
+    "export_torch_qdq",
     "map_quant_scheme",
     "bitwidth_from_token",
     "create_dummy_input",
@@ -199,6 +198,102 @@ def _register_ignored_modules() -> None:
     except ImportError:
         pass
 
+    # BEiT: non-computational modules (no learnable conv/linear weights)
+    try:
+        from transformers.models.beit.modeling_beit import (
+            BeitRelativePositionBias,
+            BeitDropPath,
+        )
+        from transformers.activations import GELUActivation
+
+        QuantizationMixin.ignore(BeitRelativePositionBias)
+        QuantizationMixin.ignore(BeitDropPath)
+        QuantizationMixin.ignore(GELUActivation)
+        print(f"[QuantSim Torch] Ignoring BEiT non-quantizable modules")
+    except ImportError:
+        pass
+
+    # NASNet: same-padding pooling variants (no learnable weights)
+    try:
+        from timm.layers.pool2d_same import MaxPool2dSame, AvgPool2dSame
+
+        QuantizationMixin.ignore(MaxPool2dSame)
+        QuantizationMixin.ignore(AvgPool2dSame)
+        print(f"[QuantSim Torch] Ignoring timm same-padding pooling modules")
+    except ImportError:
+        pass
+
+    # NASNet: Conv2dSame is Conv2d with same-padding — has real conv weights that must be quantized
+    try:
+        from timm.layers.conv2d_same import Conv2dSame
+
+        if Conv2dSame not in QuantizationMixin.cls_to_qcls:
+
+            @QuantizationMixin.implements(Conv2dSame)
+            class QuantizedConv2dSame(QuantizationMixin, Conv2dSame):
+                def forward(self, x):  # pylint: disable=arguments-differ
+                    if self.input_quantizers[0]:
+                        x = self.input_quantizers[0](x)
+                    with self._patch_quantized_parameters():
+                        out = super().forward(x)
+                    if self.output_quantizers[0]:
+                        out = self.output_quantizers[0](out)
+                    return out
+
+            print(f"[QuantSim Torch] Registered quantized Conv2dSame")
+    except ImportError:
+        pass
+
+    # Sequencer2D: FastAdaptiveAvgPool (no learnable weights)
+    try:
+        from timm.layers.adaptive_avgmax_pool import FastAdaptiveAvgPool
+
+        QuantizationMixin.ignore(FastAdaptiveAvgPool)
+        print(f"[QuantSim Torch] Ignoring timm FastAdaptiveAvgPool")
+    except ImportError:
+        pass
+
+    # FFNet: UpsampleCat (upsample + concat, no learnable weights)
+    # 'models.ffnet_blocks' is a vendored namespace loaded by qai_hub_models
+    try:
+        from models.ffnet_blocks import UpsampleCat
+
+        QuantizationMixin.ignore(UpsampleCat)
+        print(f"[QuantSim Torch] Ignoring FFNet UpsampleCat")
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    # FFNet (qai-hub-models 0.54+): UpsampleCat under qai_hub_models namespace
+    try:
+        from qai_hub_models.models._shared.ffnet.external_repos.ffnet.models.ffnet_blocks import (
+            UpsampleCat,
+        )
+
+        QuantizationMixin.ignore(UpsampleCat)
+        print(f"[QuantSim Torch] Ignoring qai_hub_models FFNet UpsampleCat")
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    # MiDaS: Interpolate (upsample-only, no learnable weights)
+    try:
+        from qai_hub_models.models.midas.external_repos.midas.midas.blocks import (
+            Interpolate,
+        )
+
+        QuantizationMixin.ignore(Interpolate)
+        print(f"[QuantSim Torch] Ignoring MiDaS Interpolate")
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    # YOLOv7: Concat from vendored yolov7 source (no learnable weights)
+    try:
+        from models.common import Concat as YoloV7Concat
+
+        QuantizationMixin.ignore(YoloV7Concat)
+        print(f"[QuantSim Torch] Ignoring YOLOv7 Concat")
+    except (ImportError, ModuleNotFoundError):
+        pass
+
 
 # ==================== AIMET QuantSim Construction ====================
 
@@ -275,28 +370,30 @@ def build_quantsim_torch(
 # ==================== AIMET Bundle Export ====================
 
 
-def export_torch_bundle(
+def parse_output_names_from_qnn_options(qnn_options: str) -> Optional[List[str]]:
+    """Extract --output_names values from a qnn_options string."""
+    if not qnn_options:
+        return None
+    parts = qnn_options.split()
+    for i, part in enumerate(parts):
+        if part == "--output_names" and i + 1 < len(parts):
+            return parts[i + 1].split(",")
+    return None
+
+
+def export_torch_qdq(
     sim: QuantizationSimModel,
     dummy_input: torch.Tensor,
     export_dir: Path,
     model_name: str,
     input_spec: Dict[str, Any],
-) -> Tuple[Path, Path]:
+    output_names: Optional[List[str]] = None,
+) -> Path:
     """
-    Export AIMET Torch QuantSim with dual output format.
+    Export AIMET Torch QuantSim as QDQ ONNX.
 
-    Creates two artifacts:
-    1. QDQ ONNX model (for local validation)
-    2. AIMET bundle (ONNX + encodings for QNN)
-
-    After export, renames ONNX inputs to match input_spec for QNN compatibility.
-
-    Export structure:
-        <export_dir>/
-        ├── <model_name>_qdq.onnx          (QDQ for validation)
-        └── <model_name>.aimet/            (Bundle for QNN)
-            ├── <model_name>.onnx
-            └── <model_name>.encodings
+    Creates a single QDQ ONNX model with QuantizeLinear/DequantizeLinear ops
+    for both local validation and QNN compilation.
 
     Args:
         sim: QuantizationSimModel after compute_encodings()
@@ -304,12 +401,13 @@ def export_torch_bundle(
         export_dir: Parent directory for exports
         model_name: Model name for file naming
         input_spec: Input specification dict to get expected input name
+        output_names: Output tensor names for QNN compatibility
 
     Returns:
-        Tuple of (qdq_path, bundle_dir)
+        Path to exported QDQ ONNX model
 
     Important:
-        dummy_input MUST be on CPU for both exports, regardless of where
+        dummy_input MUST be on CPU for export, regardless of where
         the model is located. AIMET documentation explicitly requires this.
     """
     export_dir = Path(export_dir)
@@ -317,9 +415,15 @@ def export_torch_bundle(
 
     dummy_input_cpu = dummy_input.cpu() if dummy_input.is_cuda else dummy_input
 
-    print(f"[AIMET Torch] Exporting QDQ model and bundle")
-
     qdq_path = export_dir / f"{model_name}_qdq.onnx"
+
+    # Get expected input name from input_spec for QNN compatibility
+    # (e.g., "image_tensor" for --force_channel_last_input to match)
+    input_names = list(input_spec.keys()) if input_spec else None
+    if input_names:
+        print(f"[AIMET Torch] Exporting QDQ with input_names={input_names}")
+    if output_names:
+        print(f"[AIMET Torch] Exporting QDQ with output_names={output_names}")
 
     aimet_torch.onnx.export(
         sim.model,
@@ -327,99 +431,16 @@ def export_torch_bundle(
         str(qdq_path),
         dynamo=False,
         opset_version=21,  # For INT4/INT16 support
-    )
-
-    print(f"[AIMET Torch] QDQ model: {qdq_path}")
-
-    bundle_dir = export_dir / f"{model_name}.aimet"
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-    bundle_onnx_path = bundle_dir / f"{model_name}.onnx"
-
-    # Get expected input name from input_spec for QNN compatibility
-    expected_input_name = next(iter(input_spec.keys())) if input_spec else None
-    input_names = [expected_input_name] if expected_input_name else None
-    if input_names:
-        print(f"[AIMET Torch] Using input name: {input_names[0]}")
-
-    sim.onnx.export(
-        (dummy_input_cpu,),
-        str(bundle_onnx_path),
-        dynamo=False,
-        opset_version=20,
         input_names=input_names,
+        output_names=output_names,
     )
-
-    print(f"[AIMET Torch] AIMET bundle: {bundle_dir}")
-
-    clean_extra_bundle_files(bundle_dir, model_name)
-
-    print(f"[AIMET Torch] Validating exports...")
 
     if not qdq_path.exists():
         raise RuntimeError(f"QDQ export failed: {qdq_path}")
 
-    bundle_onnx = bundle_dir / f"{model_name}.onnx"
-    if not bundle_onnx.exists():
-        actual_files = list(bundle_dir.glob("*"))
-        raise RuntimeError(
-            f"Bundle ONNX not found: {bundle_onnx}\nBundle contents: {actual_files}"
-        )
+    print(f"[AIMET Torch] QDQ model saved: {qdq_path}")
 
-    enc_candidates = [
-        bundle_dir / f"{model_name}.encodings",
-        bundle_dir / f"{model_name}.encodings.json",
-    ]
-    enc_path = next((p for p in enc_candidates if p.exists()), None)
-
-    if not enc_path:
-        actual_files = list(bundle_dir.glob("*"))
-        raise RuntimeError(f"Encodings file not found\nBundle contents: {actual_files}")
-
-    print(f"[AIMET Torch] ✅ Export validation passed")
-    print(f"  QDQ: {qdq_path.name}")
-    print(f"  Bundle ONNX: {bundle_onnx.name}")
-    print(f"  Encodings: {enc_path.name}")
-
-    return qdq_path, bundle_dir
-
-
-def clean_extra_bundle_files(bundle_dir: Path, model_name: str) -> None:
-    """
-    Remove extraneous files from AIMET bundle, keeping only .onnx and .encodings.
-
-    AIMET export may create additional files that QNN doesn't need. This function
-    ensures the bundle contains only the required files.
-
-    Args:
-        bundle_dir: Bundle directory path
-        model_name: Model name (for identifying files to keep)
-
-    Keeps:
-        - <model_name>.onnx
-        - <model_name>.encodings (or .encodings.json)
-
-    Removes:
-        - Everything else
-    """
-    bundle_dir = Path(bundle_dir)
-
-    keep_patterns = [
-        f"{model_name}.onnx",
-        f"{model_name}.encodings",
-        f"{model_name}.encodings.json",
-    ]
-
-    all_files = list(bundle_dir.glob("*"))
-
-    for file_path in all_files:
-        if file_path.name not in keep_patterns:
-            try:
-                if file_path.is_file():
-                    file_path.unlink()
-                elif file_path.is_dir():
-                    shutil.rmtree(file_path, ignore_errors=True)
-            except Exception:
-                pass
+    return qdq_path
 
 
 # ==================== Dummy Input Creation ====================

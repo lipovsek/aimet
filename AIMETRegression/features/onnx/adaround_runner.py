@@ -52,7 +52,7 @@ import aimet_onnx  # For top-level AdaRound API (AIMET 2.15+)
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.onnx._common import (
     build_quantsim,
-    export_aimet_bundle,
+    export_onnx_qdq,
 )
 
 # Output directory for AIMET artifacts
@@ -179,7 +179,6 @@ def run_adaround(
             - exported_onnx_path: Path to optimized ONNX model
             - feature_accuracy: Accuracy after AdaRound optimization
             - stats: Dict with "techniques", "runtime", and "memory"
-            - aimet_bundle_dir: Directory with ONNX + encodings for QNN
 
     Raises:
         Exception: If AdaRound optimization fails
@@ -311,10 +310,8 @@ def run_adaround(
     # ============ Step 8: Export and Bundle ============
     print(f"[AdaRound] Exporting optimized model...")
 
-    # Export directly to .aimet bundle (Qualcomm AI Hub format)
-    qdq_path, bundle_dir = export_aimet_bundle(sim, export_dir, model_name)
-
-    print(f"[AdaRound] Bundle created at: {bundle_dir}")
+    # Export QDQ ONNX (encodings embedded) for QNN
+    qdq_path = export_onnx_qdq(sim, export_dir, model_name)
 
     # ============ Step 9: Prepare Results ============
     param_bw = _extract_bitwidth(param_type)
@@ -325,4 +322,4 @@ def run_adaround(
         "memory": memory_str,
     }
 
-    return qdq_path, feature_acc, stats, str(bundle_dir)
+    return qdq_path, feature_acc, stats

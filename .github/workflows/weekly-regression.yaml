@@ -158,8 +158,56 @@ jobs:
           sudo apt-get install -y \
             libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 \
             libxrender-dev libgomp1 git openssh-client unzip curl
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install
+          rm -rf /tmp/awscliv2.zip /tmp/aws
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Authenticate AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Pre-cache torch.hub repos (avoid GitHub API rate limit)
+        run: |
+          HUB_CACHE="${GITHUB_WORKSPACE}/torch_cache/hub"
+          mkdir -p "$HUB_CACHE"
+          for repo_spec in "milesial/Pytorch-UNet:master" "rwightman/gen-efficientnet-pytorch:master"; do
+            repo="${repo_spec%:*}"
+            ref="${repo_spec##*:}"
+            dir_name="$(echo "$repo" | tr '/' '_')_${ref}"
+            target="$HUB_CACHE/$dir_name"
+            if [ ! -d "$target" ]; then
+              git clone --depth 1 --branch "$ref" "https://github.com/${repo}.git" "$target"
+            fi
+          done
+
+      - name: Download datasets from S3
+        run: |
+          BUCKET="${{ secrets.AWS_REGRESSION_BUCKET_NAME }}"
+          DATASET_ROOT="$HOME/.qaihm/qai-hub-models/datasets"
+
+          CITYSCAPES_DIR="${DATASET_ROOT}/cityscapes/v2/data"
+          mkdir -p "$CITYSCAPES_DIR"
+          aws s3 cp "s3://${BUCKET}/cityscapes.zip" "${CITYSCAPES_DIR}/cityscapes.zip"
+          unzip -q "${CITYSCAPES_DIR}/cityscapes.zip" -d "$CITYSCAPES_DIR"
+          rm "${CITYSCAPES_DIR}/cityscapes.zip"
+
+          CARVANA_DIR="${DATASET_ROOT}/carvana/v2/data"
+          mkdir -p "$CARVANA_DIR"
+          aws s3 cp "s3://${BUCKET}/carvana.zip" "${CARVANA_DIR}/carvana.zip"
+          unzip -q "${CARVANA_DIR}/carvana.zip" -d "$CARVANA_DIR"
+          rm "${CARVANA_DIR}/carvana.zip"
+
+          NYUV2_DIR="${DATASET_ROOT}/nyuv2/v2"
+          mkdir -p "$NYUV2_DIR"
+          aws s3 cp "s3://${BUCKET}/nyuv2.zip" "${NYUV2_DIR}/nyuv2.zip"
+          unzip -q "${NYUV2_DIR}/nyuv2.zip" -d "$NYUV2_DIR"
+          rm "${NYUV2_DIR}/nyuv2.zip"
 
       - name: Setup Python environment with UV
         run: |
@@ -230,6 +278,8 @@ jobs:
             --suite "weekly-onnx"
 
       - name: Run test suite
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           . .venv/bin/activate
           python -m AIMETRegression.suite_runner \
@@ -300,7 +350,7 @@ jobs:
         with:
           name: onnx-weekly-comparison-summary
           path: AIMETRegression/reports/comparison_summary.json
-          retention-days: 10
+          retention-days: 30
           if-no-files-found: warn
 
       - name: Upload test reports
@@ -403,8 +453,56 @@ jobs:
           sudo apt-get install -y \
             libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 \
             libxrender-dev libgomp1 git openssh-client unzip curl
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install
+          rm -rf /tmp/awscliv2.zip /tmp/aws
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Authenticate AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Pre-cache torch.hub repos (avoid GitHub API rate limit)
+        run: |
+          HUB_CACHE="${GITHUB_WORKSPACE}/torch_cache/hub"
+          mkdir -p "$HUB_CACHE"
+          for repo_spec in "milesial/Pytorch-UNet:master" "rwightman/gen-efficientnet-pytorch:master"; do
+            repo="${repo_spec%:*}"
+            ref="${repo_spec##*:}"
+            dir_name="$(echo "$repo" | tr '/' '_')_${ref}"
+            target="$HUB_CACHE/$dir_name"
+            if [ ! -d "$target" ]; then
+              git clone --depth 1 --branch "$ref" "https://github.com/${repo}.git" "$target"
+            fi
+          done
+
+      - name: Download datasets from S3
+        run: |
+          BUCKET="${{ secrets.AWS_REGRESSION_BUCKET_NAME }}"
+          DATASET_ROOT="$HOME/.qaihm/qai-hub-models/datasets"
+
+          CITYSCAPES_DIR="${DATASET_ROOT}/cityscapes/v2/data"
+          mkdir -p "$CITYSCAPES_DIR"
+          aws s3 cp "s3://${BUCKET}/cityscapes.zip" "${CITYSCAPES_DIR}/cityscapes.zip"
+          unzip -q "${CITYSCAPES_DIR}/cityscapes.zip" -d "$CITYSCAPES_DIR"
+          rm "${CITYSCAPES_DIR}/cityscapes.zip"
+
+          CARVANA_DIR="${DATASET_ROOT}/carvana/v2/data"
+          mkdir -p "$CARVANA_DIR"
+          aws s3 cp "s3://${BUCKET}/carvana.zip" "${CARVANA_DIR}/carvana.zip"
+          unzip -q "${CARVANA_DIR}/carvana.zip" -d "$CARVANA_DIR"
+          rm "${CARVANA_DIR}/carvana.zip"
+
+          NYUV2_DIR="${DATASET_ROOT}/nyuv2/v2"
+          mkdir -p "$NYUV2_DIR"
+          aws s3 cp "s3://${BUCKET}/nyuv2.zip" "${NYUV2_DIR}/nyuv2.zip"
+          unzip -q "${NYUV2_DIR}/nyuv2.zip" -d "$NYUV2_DIR"
+          rm "${NYUV2_DIR}/nyuv2.zip"
 
       - name: Setup Python environment with UV
         run: |
@@ -475,6 +573,8 @@ jobs:
             --suite "weekly-torch"
 
       - name: Run test suite
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           . .venv/bin/activate
           python -m AIMETRegression.suite_runner \
@@ -545,7 +645,7 @@ jobs:
         with:
           name: torch-weekly-comparison-summary
           path: AIMETRegression/reports/comparison_summary.json
-          retention-days: 10
+          retention-days: 30
           if-no-files-found: warn
 
       - name: Upload test reports

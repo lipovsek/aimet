@@ -8,8 +8,8 @@ Lightweight QNN (AI Hub) integration utilities used by AIMETRegression.
 
 This module does two things:
 
-1) `compile_and_profile_aimet_bundle(...)`
-   - Uploads the AIMET-exported bundle directory (<model>.onnx + <model>.encodings)
+1) `compile_and_profile_qdq_model(...)`
+   - Uploads a QDQ ONNX model (with QuantizeLinear/DequantizeLinear ops)
    - Compiles it for the target device/runtime via AI Hub (QNN)
    - Profiles the compiled model and returns the latency (if available)
    - Returns the compiled model handle/zip path and job URLs (compile, profile)
@@ -91,13 +91,16 @@ def _as_numpy(x) -> np.ndarray:
 
 
 def _make_inputs_dict(
-    input_spec: Dict, batch_x: np.ndarray
+    input_spec: Dict, batch_x: np.ndarray, channel_last: bool = False
 ) -> Dict[str, List[np.ndarray]]:
     """
     Build `{input_name: [sample0, sample1, ...]}` for AI Hub inference.
 
     CRITICAL: Use the actual input name from input_spec, not a generic name.
     This ensures QNN can match the input correctly (e.g., "image_tensor" not "input").
+
+    If channel_last=True, transpose (1,C,H,W) → (1,H,W,C) to match models
+    compiled with --force_channel_last_input.
     """
     if not input_spec:
         raise ValueError("Empty input_spec")
@@ -110,18 +113,22 @@ def _make_inputs_dict(
     x = _as_numpy(batch_x)
     samples: List[np.ndarray] = []
 
-    # (N,C,H,W) → split into N arrays of shape (1,C,H,W)
+    # (N,C,H,W) → split into N arrays of shape (1,C,H,W) or (1,H,W,C)
     if x.ndim == 4:
         for i in range(x.shape[0]):
             xi = x[i]
             if xi.ndim == 3:
                 xi = np.expand_dims(xi, 0)
+            if channel_last and xi.ndim == 4:
+                xi = np.transpose(xi, (0, 2, 3, 1))
             xi = xi.astype(want_dtype, copy=False)
             samples.append(np.ascontiguousarray(xi))
 
-    # (C,H,W) → single sample (1,C,H,W)
+    # (C,H,W) → single sample (1,C,H,W) or (1,H,W,C)
     elif x.ndim == 3:
         xi = np.expand_dims(x, 0)
+        if channel_last:
+            xi = np.transpose(xi, (0, 2, 3, 1))
         xi = xi.astype(want_dtype, copy=False)
         samples.append(np.ascontiguousarray(xi))
 
@@ -160,50 +167,36 @@ def _stack_outputs(outputs: Dict) -> np.ndarray:
         return arr.squeeze(0) if arr.ndim >= 2 and arr.shape[0] == 1 else arr
 
 
-def _validate_aimet_bundle_dir(bundle_dir: str, model_name: str):
-    """
-    Ensure AIMET export directory contains the two required files:
-      • <model_name>.onnx
-      • <model_name>.encodings
-    """
-    if not os.path.isdir(bundle_dir):
-        raise FileNotFoundError(f"Bundle directory not found: {bundle_dir}")
-    onnx_p = os.path.join(bundle_dir, f"{model_name}.onnx")
-    enc_p = os.path.join(bundle_dir, f"{model_name}.encodings")
-    missing = [p for p in (onnx_p, enc_p) if not os.path.isfile(p)]
-    if missing:
-        raise FileNotFoundError(f"AIMET bundle missing files: {missing}")
-
-
 # --------------------------- public API ---------------------------------------
-def compile_and_profile_aimet_bundle(
-    aimet_bundle_dir: str,
+def compile_and_profile_qdq_model(
+    qdq_model_path: str,
     device_name: str,
     model_name: str,
     export_dir: str,
     options: Optional[str] = None,
 ) -> Tuple[Optional[float], object, str, Dict[str, str]]:
     """
-    Upload an AIMET-exported bundle (ONNX + encodings), compile to QNN, and profile.
+    Upload a QDQ ONNX model, compile to QNN, and profile.
 
     Returns
     -------
     (latency_ms, compiled_model_handle, compiled_zip_path, job_urls)
     """
-    _validate_aimet_bundle_dir(aimet_bundle_dir, model_name)
+    if not os.path.isfile(qdq_model_path):
+        raise FileNotFoundError(f"QDQ ONNX model not found: {qdq_model_path}")
     dev = Device(device_name)
     os.makedirs(export_dir, exist_ok=True)
 
-    print(f"[QNN] AIMET bundle dir: {aimet_bundle_dir}")
+    print(f"[QNN] QDQ model: {qdq_model_path}")
     print(f"[QNN] Using options: {options or '(Hub defaults)'}")
 
     job_urls: Dict[str, str] = {}
 
     # 1) Compile – options apply at compile time.
     compile_job = submit_compile_job(
-        model=aimet_bundle_dir,
+        model=qdq_model_path,
         device=dev,
-        name=f"{model_name}.aimet",
+        name=f"{model_name}.qdq",
         options=options,
     )
     job_urls["compile"] = getattr(compile_job, "url", "") or ""
@@ -256,6 +249,7 @@ def eval_qnn_accuracy(
     device_name: str,
     input_spec: Dict[str, object],
     dataset_loader: Iterable,  # yields (batch_x, batch_y)
+    channel_last: bool = False,
     debug_print_feeds: bool = False,
 ) -> Tuple[Optional[float], Dict[str, str]]:
     """
@@ -273,7 +267,7 @@ def eval_qnn_accuracy(
     for batch_x, batch_y in dataset_loader:
         # Build per-sample input list ({name: [arr(N=1), ...]}).
         # CRITICAL: Uses actual input name from input_spec
-        inputs_dict = _make_inputs_dict(input_spec, batch_x)
+        inputs_dict = _make_inputs_dict(input_spec, batch_x, channel_last=channel_last)
 
         if debug_print_feeds:
             for k, lst in inputs_dict.items():

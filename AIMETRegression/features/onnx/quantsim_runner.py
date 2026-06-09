@@ -29,7 +29,7 @@ from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.onnx._common import (
     build_quantsim,
-    export_aimet_bundle,
+    export_onnx_qdq,
 )
 
 # Output directory for artifacts
@@ -89,7 +89,6 @@ def run_quantsim(
             - exported_onnx_path: Path to the exported QDQ ONNX model
             - feature_accuracy: Accuracy after quantization simulation
             - stats: Dictionary with runtime and memory statistics
-            - aimet_bundle_dir: Directory containing ONNX + encodings for QNN
 
     Raises:
         Exception: If QuantSim creation or evaluation fails
@@ -186,10 +185,8 @@ def run_quantsim(
     # ============ Export AIMET Artifacts ============
     print(f"[QuantSim] Exporting QDQ ONNX and encodings...")
 
-    # Export directly to .aimet bundle (Qualcomm AI Hub format)
-    qdq_path, bundle_dir = export_aimet_bundle(sim, export_dir, model_name)
-
-    print(f"[QuantSim] Exported to: {bundle_dir}")
+    # Export QDQ ONNX (encodings embedded) for QNN
+    qdq_path = export_onnx_qdq(sim, export_dir, model_name)
 
     # ============ Prepare Results ============
     param_bw = _extract_bitwidth(param_type)
@@ -201,4 +198,4 @@ def run_quantsim(
         "memory": memory_str,
     }
 
-    return qdq_path, feature_acc, stats, str(bundle_dir)
+    return qdq_path, feature_acc, stats

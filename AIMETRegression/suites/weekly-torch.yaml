@@ -11,29 +11,64 @@ profile: weekly
 framework: torch
 
 models:
-  # Tier-1 (nightly models)
+  # Classification - standard architectures
   - models/resnet50.yaml
   - models/mobilenetv2.yaml
   - models/efficientnet_b0.yaml
   - models/densenet121.yaml
   - models/mobilenet_v3_large.yaml
-  - models/vit.yaml
-  - models/swin_tiny.yaml
   - models/squeezenet1_1.yaml
-  - models/levit.yaml
-  # Detection & segmentation
-  - models/yolov5.yaml
-  - models/yolov8_seg.yaml
-  - models/yolov8_det.yaml
-  - models/deeplabv3_plus_mobilenet.yaml
-  - models/fcn_resnet50.yaml
-  - models/segformer_base.yaml
-  # Additional architectures
   - models/inception_v3.yaml
   - models/convnext_tiny.yaml
   - models/regnetx_004.yaml
   - models/wideresnet50.yaml
+  - models/shufflenet_v2.yaml
+  - models/googlenet.yaml
+  - models/resnet18.yaml
+  - models/resnext50.yaml
+  - models/resnext101.yaml
+  - models/regnet_y_800mf.yaml
+  - models/gpunet.yaml
+  - models/mnasnet05.yaml
+  - models/mobilenet_v3_small.yaml
+  - models/nasnet.yaml
+  - models/efficientnet_b4.yaml
+  - models/efficientnet_v2_s.yaml
+  # Classification - transformers
+  - models/vit.yaml
+  - models/swin_tiny.yaml
+  - models/levit.yaml
+  - models/beit.yaml
+  - models/efficientformer.yaml
+  - models/sequencer2d.yaml
+  - models/mobile_vit.yaml
+  # Detection
+  - models/yolov5.yaml
+  - models/yolov8_det.yaml
+  - models/yolov8_seg.yaml
+  - models/yolox.yaml
+  - models/yolov11_det.yaml
+  - models/yolov3.yaml
+
+  - models/centernet_pose.yaml
+  # Segmentation
+  - models/deeplabv3_plus_mobilenet.yaml
+  - models/fcn_resnet50.yaml
+  - models/mediapipe_selfie.yaml
+  - models/sinet.yaml
+  - models/segformer_base.yaml
+  - models/bisenet.yaml
+  - models/ddrnet23_slim.yaml
+  - models/pidnet.yaml
+  - models/ffnet_40s.yaml
+  - models/dla102x.yaml
+
+  - models/unet_segmentation.yaml
+  # Depth estimation
+  - models/midas.yaml
+  # Pose estimation
   - models/hrnet_pose.yaml
+  - models/posenet_mobilenet.yaml
 
 compare_to_baseline: true
 baseline_file: "baselines/weekly-torch_latest.json"

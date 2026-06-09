@@ -39,7 +39,7 @@ from aimet_onnx.utils import make_psnr_eval_fn
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.onnx._common import (
     build_quantsim,
-    export_aimet_bundle,
+    export_onnx_qdq,
 )
 
 _ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
@@ -173,7 +173,6 @@ def run_lite_mp(
             - exported_onnx_path: Path to the exported mixed-precision ONNX model
             - feature_accuracy: Model accuracy after Lite-MP quantization
             - stats: Dict with "techniques", "runtime", and "memory" keys
-            - aimet_bundle_dir: Directory with ONNX + encodings for QNN compilation
 
     Raises:
         TypeError: If override_precision cannot be resolved to a valid symbol
@@ -327,10 +326,7 @@ def run_lite_mp(
     # ============ Step 8: Export and Bundle ============
     print(f"[Lite-MP] Exporting mixed-precision model...")
 
-    # Export directly to .aimet bundle (Qualcomm AI Hub format)
-    qdq_path, bundle_dir = export_aimet_bundle(sim, export_dir, model_name)
-
-    print(f"[Lite-MP] Bundle created at: {bundle_dir}")
+    qdq_path = export_onnx_qdq(sim, export_dir, model_name)
 
     # ============ Step 9: Prepare Results ============
     param_bw = _extract_bitwidth(param_type)
@@ -348,4 +344,4 @@ def run_lite_mp(
         "memory": memory_str,
     }
 
-    return qdq_path, feature_acc, stats, str(bundle_dir)
+    return qdq_path, feature_acc, stats

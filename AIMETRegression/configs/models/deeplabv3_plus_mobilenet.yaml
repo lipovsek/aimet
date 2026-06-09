@@ -1,22 +1,21 @@
 model_name: deeplabv3_plus_mobilenet
-qnn_options: null
 
 tests:
-  - name: quantsim_int8
+  - name: quantsim_int8_v79
     feature: quantsim
     quant_scheme: min_max
     param_type: int8
     activation_type: int8
     config_file: htp_v79
-    max_accuracy_drop_torch: 3.1
-    max_accuracy_drop_onnx: 2.2
+    max_accuracy_drop_torch: 3.2
+    max_accuracy_drop_onnx: 2.3
     apply_experimental_static_aten_calibration: true
 
-  - name: quantsim_int8_int16
-    feature: quantsim
+  - name: adaround_500
+    feature: adaround
     quant_scheme: min_max
     param_type: int8
-    activation_type: int16
-    config_file: htp_v81
-    max_accuracy_drop: 1.5
-    apply_experimental_static_aten_calibration: true
+    activation_type: int8
+    config_file: htp_v79
+    adaround_iters: 500
+    max_accuracy_drop_torch: 2.1

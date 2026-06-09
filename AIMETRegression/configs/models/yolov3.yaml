@@ -1,0 +1,11 @@
+model_name: yolov3
+apply_bn_fold: False
+qnn_options: null
+
+tests:
+  - name: quantsim_int8_int16
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int16
+    config_file: htp_v79

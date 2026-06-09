@@ -52,7 +52,7 @@ from aimet_onnx.common.amp.utils import AMPSearchAlgo
 from aimet_onnx.common.defs import CallbackFunc, QuantizationDataType
 
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
-from AIMETRegression.features.onnx._common import build_quantsim, export_aimet_bundle
+from AIMETRegression.features.onnx._common import build_quantsim, export_onnx_qdq
 
 _ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -187,7 +187,6 @@ def run_mixed_precision(
             - exported_onnx_path: Path to optimized ONNX model
             - feature_accuracy: Accuracy after AMP optimization
             - stats: Dict with "techniques", "runtime", "memory"
-            - aimet_bundle_dir: Directory with ONNX + encodings for QNN
 
     Raises:
         Exception: If AIMET mixed_precision optimization fails
@@ -337,9 +336,7 @@ def run_mixed_precision(
     print(f"[AMP] Runtime: {runtime_str}, Memory: {memory_str}")
 
     print(f"[AMP] Step 7: Exporting mixed-precision model...")
-    qdq_path, bundle_dir = export_aimet_bundle(sim, export_dir, model_name)
-
-    print(f"[AMP] Bundle created at: {bundle_dir}")
+    qdq_path = export_onnx_qdq(sim, export_dir, model_name)
 
     fp32_acc = config.get("_fp32_acc", None)
     if fp32_acc is not None:
@@ -376,4 +373,4 @@ def run_mixed_precision(
         "memory": memory_str,
     }
 
-    return qdq_path, feature_acc, stats, str(bundle_dir)
+    return qdq_path, feature_acc, stats

@@ -1,0 +1,10 @@
+model_name: gpunet
+qnn_options: null
+
+tests:
+  - name: quantsim_int8_v79
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79

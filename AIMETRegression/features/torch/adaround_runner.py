@@ -45,10 +45,11 @@ from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.torch._common import (
     bitwidth_from_token,
     build_quantsim_torch,
-    export_torch_bundle,
+    export_torch_qdq,
     create_dummy_input,
     map_quant_scheme,
     create_calibration_dataloader,
+    parse_output_names_from_qnn_options,
 )
 
 _ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
@@ -98,7 +99,6 @@ def run_adaround(
             - exported_onnx_path: Path to optimized ONNX model
             - feature_accuracy: Accuracy after AdaRound optimization
             - stats: Dict with "techniques", "runtime", and "memory"
-            - aimet_bundle_dir: Directory with ONNX + encodings for QNN
 
     Raises:
         Exception: If AdaRound optimization fails
@@ -350,15 +350,15 @@ def run_adaround(
     sim.model.cpu()
     dummy_input_cpu = dummy_input.cpu()
 
-    qdq_path, bundle_dir = export_torch_bundle(
+    output_names = parse_output_names_from_qnn_options(config.get("qnn_options", ""))
+    qdq_path = export_torch_qdq(
         sim=sim,
         dummy_input=dummy_input_cpu,
         export_dir=export_dir,
         model_name=model_name,
         input_spec=input_spec,
+        output_names=output_names,
     )
-
-    print(f"[AdaRound Torch] Bundle created at: {bundle_dir}")
 
     # ============ Step 10: Prepare Results ============
     stats = {
@@ -367,4 +367,4 @@ def run_adaround(
         "memory": memory_str,
     }
 
-    return qdq_path, float(feature_acc), stats, str(bundle_dir)
+    return qdq_path, float(feature_acc), stats

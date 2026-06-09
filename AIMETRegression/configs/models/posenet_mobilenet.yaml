@@ -1,0 +1,20 @@
+model_name: posenet_mobilenet
+qnn_options: "--target_runtime qnn_dlc --output_names heatmaps_result,offsets_result,displacement_fwd_result,displacement_bwd_result,max_vals --force_channel_last_input image"
+
+tests:
+  - name: quantsim_int8_v79
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+    max_accuracy_drop_onnx: 3.4
+
+  - name: adaround_500
+    feature: adaround
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79
+    adaround_iters: 500
+    max_accuracy_drop_onnx: 2.6

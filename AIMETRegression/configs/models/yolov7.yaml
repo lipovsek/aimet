@@ -1,0 +1,11 @@
+model_name: yolov7
+qnn_options: "--target_runtime qnn_dlc --qairt_version 2.43 --output_names boxes,scores,class_idx --force_channel_last_input image"
+apply_bn_fold: False
+
+tests:
+  - name: quantsim_int8_v79
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int8
+    config_file: htp_v79

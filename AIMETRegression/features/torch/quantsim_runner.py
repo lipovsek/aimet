@@ -22,8 +22,9 @@ from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.torch._common import (
     bitwidth_from_token,
     build_quantsim_torch,
-    export_torch_bundle,
+    export_torch_qdq,
     create_dummy_input,
+    parse_output_names_from_qnn_options,
     run_static_aten_calibration,
 )
 
@@ -51,7 +52,7 @@ def run_quantsim(
         export_dir: Optional export directory
 
     Returns:
-        Tuple of (qdq_path, accuracy, stats, bundle_dir)
+        Tuple of (qdq_path, accuracy, stats)
     """
     model_name = config["model_name"]
 
@@ -208,21 +209,21 @@ def run_quantsim(
 
     print(f"[AIMET Torch QuantSim] Runtime: {runtime_str}, Memory: {memory_str}")
 
-    print(f"[AIMET Torch QuantSim] Exporting QDQ ONNX and encodings...")
+    print(f"[AIMET Torch QuantSim] Exporting QDQ ONNX...")
     print(f"[AIMET Torch QuantSim] Moving model and dummy_input to CPU for export...")
 
     sim.model.cpu()
     dummy_input_cpu = dummy_input.cpu()
 
-    qdq_path, bundle_dir = export_torch_bundle(
+    output_names = parse_output_names_from_qnn_options(config.get("qnn_options", ""))
+    qdq_path = export_torch_qdq(
         sim=sim,
         dummy_input=dummy_input_cpu,
         export_dir=export_dir,
         model_name=model_name,
         input_spec=input_spec,
+        output_names=output_names,
     )
-
-    print(f"[AIMET Torch QuantSim] Exported to: {bundle_dir}")
 
     technique_str = f"quantsim(W{default_param_bw}A{default_output_bw}, {quant_scheme})"
     stats = {
@@ -232,4 +233,4 @@ def run_quantsim(
         "static_aten_acc": static_aten_acc,
     }
 
-    return qdq_path, float(feature_acc), stats, str(bundle_dir)
+    return qdq_path, float(feature_acc), stats

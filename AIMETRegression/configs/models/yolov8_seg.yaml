@@ -1,5 +1,5 @@
 model_name: yolov8_seg
-apply_prepare_model: False
+qnn_options: null
 
 tests:
   - name: quantsim_int8_int16

@@ -1,14 +1,14 @@
-# swin-tiny Model Configuration
-
-# Each test inherits settings from:
-#   1. _defaults.yaml (base settings)
-#   2. Profile (e.g., nightly.yaml) if specified
-#   3. This file (model-level settings)
-#   4. Test-specific settings below
-
-# ==================== Model Identification ====================
 model_name: swin_tiny
+
 tests:
+  - name: quantsim_int8_int16
+    feature: quantsim
+    quant_scheme: min_max
+    param_type: int8
+    activation_type: int16
+    config_file: htp_v81
+    apply_experimental_static_aten_calibration: true
+
   - name: lite_mp_10
     feature: lite_mp
     quant_scheme: min_max
@@ -18,12 +18,3 @@ tests:
     lite_mp:
       percent_flip: 10
       override_precision: float16
-
-  - name: quantsim_int8_v79
-    feature: quantsim
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int8
-    config_file: htp_v79
-    max_accuracy_drop: 3.5
-    apply_experimental_static_aten_calibration: true
