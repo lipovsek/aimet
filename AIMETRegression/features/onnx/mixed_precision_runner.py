@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
 import onnxruntime as ort
+from qai_hub_models.datasets import BaseDataset
 from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 
 from aimet_onnx.mixed_precision import choose_mixed_precision
@@ -139,7 +140,7 @@ def run_mixed_precision(
     *,
     fp32_onnx_path: str,
     model: Any,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     config: Dict[str, Any],
     export_dir: Optional[Path] = None,
 ) -> Tuple[str, float, Dict[str, str], str]:
@@ -154,7 +155,7 @@ def run_mixed_precision(
     Args:
         fp32_onnx_path: Path to FP32 ONNX model
         model: QAI Hub model object (provides preprocessing/postprocessing)
-        dataset_name: Dataset name for evaluation
+        dataset_cls: Dataset class for evaluation (e.g., ImagenetDataset)
         config: Configuration dictionary containing:
             Required:
                 - model_name: Name for output files
@@ -251,9 +252,7 @@ def run_mixed_precision(
 
     def calibration_callback(sess: ort.InferenceSession, _unused=None):
         """Forward pass callback for AIMET calibration."""
-        evaluate_session_on_dataset(
-            sess, model, dataset_name, num_samples=calib_samples
-        )
+        evaluate_session_on_dataset(sess, model, dataset_cls, num_samples=calib_samples)
 
     sim.compute_encodings(forward_pass_callback=calibration_callback)
 
@@ -271,14 +270,14 @@ def run_mixed_precision(
     def eval_callback_phase1(sess: ort.InferenceSession) -> float:
         """Phase 1 evaluation with fewer samples for faster candidate pruning."""
         acc, _ = evaluate_session_on_dataset(
-            sess, model, dataset_name, num_samples=phase1_eval_samples
+            sess, model, dataset_cls, num_samples=phase1_eval_samples
         )
         return float(acc)
 
     def eval_callback_phase2(sess: ort.InferenceSession) -> float:
         """Phase 2 evaluation with more samples for accurate selection."""
         acc, _ = evaluate_session_on_dataset(
-            sess, model, dataset_name, num_samples=phase2_eval_samples
+            sess, model, dataset_cls, num_samples=phase2_eval_samples
         )
         return float(acc)
 
@@ -293,9 +292,7 @@ def run_mixed_precision(
 
     def forward_pass_callback(sess: ort.InferenceSession, _unused=None):
         """Forward pass callback for AIMET mixed precision calibration."""
-        evaluate_session_on_dataset(
-            sess, model, dataset_name, num_samples=calib_samples
-        )
+        evaluate_session_on_dataset(sess, model, dataset_cls, num_samples=calib_samples)
 
     forward_pass_cb = CallbackFunc(forward_pass_callback, func_callback_args=None)
 
@@ -318,7 +315,7 @@ def run_mixed_precision(
 
     print(f"[AMP] Step 5: Evaluating final mixed-precision model...")
     feature_acc, _ = evaluate_session_on_dataset(
-        sim.session, model, dataset_name, num_samples=eval_samples
+        sim.session, model, dataset_cls, num_samples=eval_samples
     )
     feature_acc = float(feature_acc)
 
@@ -327,7 +324,7 @@ def run_mixed_precision(
     print(f"[AMP] Step 6: Measuring inference performance...")
     runtime_str, memory_str = measure_inference_metrics(
         lambda: evaluate_session_on_dataset(
-            sim.session, model, dataset_name, num_samples=metrics_samples
+            sim.session, model, dataset_cls, num_samples=metrics_samples
         ),
         runs=metrics_runs,
         warmup=metrics_warmup,

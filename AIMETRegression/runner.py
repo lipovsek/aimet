@@ -43,8 +43,8 @@ from qai_hub import Device
 from qai_hub_models.utils.input_spec import make_torch_inputs
 from tabulate import tabulate
 
-from AIMETRegression.models.ai_hub_loader import load_model_data
-from AIMETRegression.evaluation.eval_onnx import resolve_dataset_name, eval_onnx_model
+from AIMETRegression.models.ai_hub_loader import load_model_data, resolve_dataset_cls
+from AIMETRegression.evaluation.eval_onnx import eval_onnx_model
 from AIMETRegression.evaluation.eval_torch import eval_pytorch_model
 from AIMETRegression.evaluation.eval_qnn import (
     compile_and_profile_qdq_model,
@@ -226,12 +226,12 @@ def _export_torch_to_onnx_local(
 
 
 def _build_single_batch_loader(
-    model: Any, dataset_name: str, input_spec: Dict, num_samples: int
+    model: Any, dataset_cls: type, input_spec: Dict, num_samples: int
 ):
     """Create a dataloader for QNN evaluation."""
     import numpy as np
     import torch
-    from qai_hub_models.datasets import DatasetSplit, get_dataset_from_name
+    from qai_hub_models.datasets import DatasetSplit, instantiate_dataset
     from qai_hub_models.utils.evaluate import get_deterministic_sample
 
     def to_numpy(x):
@@ -241,7 +241,7 @@ def _build_single_batch_loader(
             return x.detach().cpu().numpy()
         return np.asarray(x)
 
-    dataset = get_dataset_from_name(dataset_name, DatasetSplit.VAL)
+    dataset = instantiate_dataset(dataset_cls, DatasetSplit.VAL)
     sampler = get_deterministic_sample(
         dataset, num_samples=num_samples, samples_per_job=num_samples
     )
@@ -284,7 +284,7 @@ def _build_single_batch_loader(
     return [(batch_inputs, batch_labels)]
 
 
-def _eval_pytorch_fp32(model: Any, dataset_name: str, num_samples: int) -> float:
+def _eval_pytorch_fp32(model: Any, dataset_cls: type, num_samples: int) -> float:
     """
     Evaluate FP32 PyTorch model accuracy.
 
@@ -307,7 +307,7 @@ def _eval_pytorch_fp32(model: Any, dataset_name: str, num_samples: int) -> float
             torch_model = torch_model.to(device).eval()
 
             return eval_pytorch_model(
-                torch_model, model, dataset_name, num_samples=num_samples
+                torch_model, model, dataset_cls, num_samples=num_samples
             )
         except RuntimeError as e:
             if "device" in str(e).lower():
@@ -326,7 +326,7 @@ def _eval_pytorch_fp32(model: Any, dataset_name: str, num_samples: int) -> float
 
     torch_model = torch_model.cpu().eval()
 
-    return eval_pytorch_model(torch_model, model, dataset_name, num_samples=num_samples)
+    return eval_pytorch_model(torch_model, model, dataset_cls, num_samples=num_samples)
 
 
 def run_single_config(
@@ -408,8 +408,8 @@ def run_single_config(
 
     print(f"\n[Step 1] Loading model and dataset from QAI Hub Models...")
     model, _dataset, input_spec, _ = load_model_data(model_name)
-    dataset_name = resolve_dataset_name(model)
-    print(f"Dataset: {dataset_name}")
+    dataset_cls = resolve_dataset_cls(model)
+    print(f"Dataset: {dataset_cls.dataset_name()}")
 
     # Clamp sample counts to dataset size so profiles with large values
     # (e.g., weekly eval_samples=3925) don't crash on smaller datasets
@@ -442,7 +442,7 @@ def run_single_config(
         fp32_eval_samples = int(config.get("fp32_eval_samples", 200))
         print(f"[Step 2] Evaluating FP32 accuracy with {fp32_eval_samples} samples...")
         fp32_acc = eval_onnx_model(
-            fp32_path, model, dataset_name, num_samples=fp32_eval_samples
+            fp32_path, model, dataset_cls, num_samples=fp32_eval_samples
         )
         print(f"[Step 2] FP32 Accuracy: {fp32_acc:.4f}")
 
@@ -452,7 +452,7 @@ def run_single_config(
         aimet_onnx_path, feature_acc, stats = runner(
             fp32_onnx_path=str(fp32_path),
             model=model,
-            dataset_name=dataset_name,
+            dataset_cls=dataset_cls,
             config=config,
         )
 
@@ -460,7 +460,7 @@ def run_single_config(
         ensure_device_patch()
         print(f"\n[Step 2] Evaluating FP32 PyTorch model accuracy...")
         fp32_eval_samples = int(config.get("fp32_eval_samples", 200))
-        fp32_acc = _eval_pytorch_fp32(model, dataset_name, fp32_eval_samples)
+        fp32_acc = _eval_pytorch_fp32(model, dataset_cls, fp32_eval_samples)
         print(f"[Step 2] FP32 Accuracy: {fp32_acc:.4f}")
 
         print(f"\n[Step 3] Applying {feature_name} quantization (Torch)...")
@@ -469,7 +469,7 @@ def run_single_config(
         aimet_onnx_path, feature_acc, stats = runner(
             model=model,
             input_spec=input_spec,
-            dataset_name=dataset_name,
+            dataset_cls=dataset_cls,
             config=config,
         )
         static_aten_acc = stats.pop("static_aten_acc", None)
@@ -564,7 +564,7 @@ def run_single_config(
         config.get("quant_onnx_eval_samples", config.get("quant_eval_samples", 200))
     )
     qdq_acc = eval_onnx_model(
-        str(aimet_onnx_path), model, dataset_name, num_samples=quant_eval_samples
+        str(aimet_onnx_path), model, dataset_cls, num_samples=quant_eval_samples
     )
     print(f"[Step 4] QDQ Accuracy: {qdq_acc:.4f}")
 
@@ -647,7 +647,7 @@ def run_single_config(
 
                 try:
                     qnn_loader = _build_single_batch_loader(
-                        model, dataset_name, input_spec, qnn_eval_samples
+                        model, dataset_cls, input_spec, qnn_eval_samples
                     )
 
                     channel_last = "--force_channel_last_input" in (qnn_options or "")

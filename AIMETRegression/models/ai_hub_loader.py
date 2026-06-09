@@ -26,76 +26,13 @@ import os
 import importlib
 from typing import Tuple, Any, Optional, Union, List
 
-from qai_hub_models.datasets import DatasetSplit, get_dataset_from_name
+from qai_hub_models.datasets import BaseDataset, DatasetSplit, instantiate_dataset
 from qai_hub_models.utils.evaluate import get_deterministic_sample
 from qai_hub_models.utils.base_model import BaseModel
-from qai_hub_models.utils.testing import always_answer_prompts
+from qai_hub_models.utils.asset_loaders import always_answer_prompts
 
 
 # ==================== Utility Functions ====================
-
-
-def _call_if_callable(x: Any) -> Any:
-    """
-    Call object if it's callable, otherwise return as-is.
-
-    Many QAI Hub model attributes are properties or methods that need
-    to be invoked to get their actual values. This utility handles both
-    cases uniformly.
-
-    Args:
-        x: Object that might be callable (property, method, or value)
-
-    Returns:
-        Result of calling x() if callable, otherwise x itself
-
-    Example:
-        >>> class Model:
-        ...     @property
-        ...     def dataset(self): return "imagenet"
-        >>> m = Model()
-        >>> _call_if_callable(m.dataset)  # Returns "imagenet"
-        >>> _call_if_callable("coco")     # Returns "coco"
-    """
-    return x() if callable(x) else x
-
-
-def _to_name_str(x: Any) -> str:
-    """
-    Convert various value types to a string name.
-
-    QAI Hub Models use different representations for names:
-    - Plain strings: returned as-is
-    - Enums with .value attribute: extract the value
-    - Enums with .name attribute: extract the name (then .value if nested)
-    - Other objects: convert to string
-
-    Args:
-        x: Value to convert (string, enum, or other object)
-
-    Returns:
-        String representation of the name
-
-    Technical Note:
-        This handles the variety of enum types used in qai_hub_models,
-        including both Python enums and custom enum-like classes.
-    """
-    # Already a string
-    if isinstance(x, str):
-        return x
-
-    # Has .value attribute (common for enums)
-    if hasattr(x, "value"):
-        return x.value
-
-    # Has .name attribute (alternative enum format)
-    if hasattr(x, "name"):
-        name = x.name
-        # Handle nested enum (name itself might have .value)
-        return name.value if hasattr(name, "value") else str(name)
-
-    # Fallback: convert to string
-    return str(x)
 
 
 def _pick_model_cls(module) -> type:
@@ -155,57 +92,45 @@ def _pick_model_cls(module) -> type:
     )
 
 
-def _resolve_dataset_name(model: BaseModel) -> str:
+def resolve_dataset_cls(model: BaseModel) -> type[BaseDataset]:
     """
-    Intelligently resolve dataset name from model metadata.
+    Resolve the dataset class a model should be quantized and evaluated on.
 
-    QAI Hub Models store dataset information in various locations and formats:
-    - calibration_dataset_name: Primary dataset for quantization calibration
-    - eval_datasets: List of datasets for evaluation (we use the first)
-
-    This function tries multiple approaches to find a valid dataset name,
-    handling properties, methods, enums, and nested structures.
+    QAI Hub Models expose their datasets as classes (QAIHM v0.55+):
+    - get_calibration_dataset_cls(): dataset class for quantization calibration
+    - get_eval_dataset_classes(): dataset classes the model can be evaluated on
 
     Args:
         model: QAI Hub model instance
 
     Returns:
-        Dataset name as string (e.g., "imagenet", "coco", "cifar10")
+        Dataset class (subclass of BaseDataset)
 
     Raises:
-        RuntimeError: If dataset name cannot be resolved
+        RuntimeError: If the model declares neither a calibration nor an
+            evaluation dataset class.
 
     Resolution Order:
-        1. Try calibration_dataset_name (most specific)
-        2. Try first entry in eval_datasets list
-        3. Raise error if neither found
+        1. Calibration dataset class (most specific to quantization)
+        2. First entry in the eval dataset classes
+        3. Raise error if neither is declared
     """
-    # First attempt: calibration_dataset_name
-    # This is the preferred source as it's most specific to our use case
-    calibration_name = _call_if_callable(
-        getattr(model, "calibration_dataset_name", None)
-    )
-    if calibration_name:
-        return _to_name_str(calibration_name)
+    # First choice: the calibration dataset class, the dataset the model
+    # author designated for quantization. May be None.
+    calibration_cls = model.get_calibration_dataset_cls()
+    if calibration_cls is not None:
+        return calibration_cls
 
-    # Second attempt: eval_datasets
-    # Some models only provide evaluation datasets, not calibration-specific ones
-    eval_datasets = _call_if_callable(getattr(model, "eval_datasets", None))
+    # Fallback: the first evaluation dataset class, for models that declare
+    # only evaluation datasets and no calibration-specific one.
+    eval_classes = model.get_eval_dataset_classes()
+    if eval_classes:
+        return eval_classes[0]
 
-    if isinstance(eval_datasets, (list, tuple)) and eval_datasets:
-        # Take the first dataset from the list
-        first_dataset = eval_datasets[0]
-
-        # Handle nested structure (dataset object with name attribute)
-        if hasattr(first_dataset, "name"):
-            return _to_name_str(first_dataset.name)
-        else:
-            return _to_name_str(first_dataset)
-
-    # Unable to resolve dataset name
     raise RuntimeError(
-        f"Unable to resolve dataset name from model {type(model).__name__}. "
-        f"Model must provide either 'calibration_dataset_name' or 'eval_datasets' attribute."
+        f"Unable to resolve a dataset class from model {type(model).__name__}. "
+        f"Model must declare either 'get_calibration_dataset_cls' or "
+        f"'get_eval_dataset_classes'."
     )
 
 
@@ -273,7 +198,7 @@ def load_model_data(model_name: str) -> Tuple[BaseModel, Any, dict, Any]:
         model: BaseModel = model_cls.from_pretrained()
 
         # ============ Step 4: Resolve Dataset ============
-        dataset_name = _resolve_dataset_name(model)
+        dataset_cls = resolve_dataset_cls(model)
 
         # ============ Step 5: Get Input Specification ============
         # Input spec defines the expected input format (shape, dtype, etc.).
@@ -283,8 +208,8 @@ def load_model_data(model_name: str) -> Tuple[BaseModel, Any, dict, Any]:
 
         # Load the validation split of the dataset
         # We use validation split for all evaluation to avoid training data leakage
-        dataset = get_dataset_from_name(
-            dataset_name,
+        dataset = instantiate_dataset(
+            dataset_cls,
             DatasetSplit.VAL,  # Always use validation split for evaluation
             input_spec,
         )

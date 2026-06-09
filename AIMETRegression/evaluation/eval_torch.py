@@ -29,7 +29,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from qai_hub_models.datasets import DatasetSplit, get_dataset_from_name
+from qai_hub_models.datasets import BaseDataset, DatasetSplit, instantiate_dataset
 from qai_hub_models.utils.base_model import BaseModel
 from qai_hub_models.utils.evaluate import (
     get_deterministic_sample,
@@ -39,13 +39,13 @@ from qai_hub_models.utils.evaluate import (
 from AIMETRegression.features.torch.utils import ensure_device_patch
 
 
-def load_torch_dataset(qai_hub_model: BaseModel, dataset_name: str):
+def load_torch_dataset(qai_hub_model: BaseModel, dataset_cls: type[BaseDataset]):
     """
     Load a dataset for torch evaluation. Call once and pass the result to
     eval_pytorch_model(dataset=...) to avoid reloading on every call.
     """
     input_spec = qai_hub_model.get_input_spec()
-    return get_dataset_from_name(dataset_name, DatasetSplit.VAL, input_spec)
+    return instantiate_dataset(dataset_cls, DatasetSplit.VAL, input_spec)
 
 
 def _torch_io_to_tuple(val) -> tuple[torch.Tensor, ...]:
@@ -64,7 +64,7 @@ def _torch_io_to_tuple(val) -> tuple[torch.Tensor, ...]:
 def eval_pytorch_model(
     model: torch.nn.Module,
     qai_hub_model: BaseModel,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     num_samples: int = 200,
     batch_size: int = 32,
     dataset=None,
@@ -79,7 +79,7 @@ def eval_pytorch_model(
     Args:
         model: PyTorch model to evaluate (torch.nn.Module, can be on GPU)
         qai_hub_model: QAI Hub model instance (BaseModel, provides evaluator and input_spec)
-        dataset_name: Name of the dataset (e.g., "imagenet", "coco")
+        dataset_cls: Dataset class to evaluate on (e.g., ImagenetDataset)
         num_samples: Number of samples to evaluate (default: 200)
         batch_size: Batch size for inference (default: 32). Higher values
             amortize CPU↔GPU transfer overhead but use more GPU memory.
@@ -94,7 +94,7 @@ def eval_pytorch_model(
         >>> accuracy = eval_pytorch_model(
         ...     torch_model,
         ...     resnet50_qai_model,
-        ...     "imagenet",
+        ...     ImagenetDataset,
         ...     num_samples=1000
         ... )
         >>> print(f"Accuracy: {accuracy:.2%}")
@@ -117,8 +117,8 @@ def eval_pytorch_model(
         source_torch_dataset = dataset
     else:
         input_spec = qai_hub_model.get_input_spec()
-        source_torch_dataset = get_dataset_from_name(
-            dataset_name, DatasetSplit.VAL, input_spec
+        source_torch_dataset = instantiate_dataset(
+            dataset_cls, DatasetSplit.VAL, input_spec
         )
 
     # Validate inputs

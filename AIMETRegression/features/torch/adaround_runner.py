@@ -33,8 +33,7 @@ from typing import Any, Dict, Tuple, Optional
 import torch
 from torch.utils.data import DataLoader
 
-from qai_hub_models.datasets import DatasetSplit, get_dataset_from_name
-from qai_hub_models.utils.evaluate import get_deterministic_sample
+from qai_hub_models.datasets import BaseDataset
 
 from aimet_torch.adaround.adaround_weight import Adaround, AdaroundParameters
 from aimet_torch.batch_norm_fold import fold_all_batch_norms
@@ -60,7 +59,7 @@ def run_adaround(
     *,
     model: Any,
     input_spec: Dict,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     config: Dict[str, Any],
     export_dir: Optional[Path] = None,
 ) -> Tuple[Path, float, Dict[str, str], str]:
@@ -74,7 +73,7 @@ def run_adaround(
     Args:
         model: QAI Hub model object
         input_spec: Input specification for dummy input creation
-        dataset_name: Dataset name for evaluation
+        dataset_cls: Dataset class for evaluation (e.g., ImagenetDataset)
         config: Configuration dictionary containing:
             Required:
                 - model_name: Name for output files
@@ -184,7 +183,7 @@ def run_adaround(
 
     adaround_dataloader = create_calibration_dataloader(
         model,
-        dataset_name,
+        dataset_cls,
         num_samples=adaround_samples,
         batch_size=1,
     )
@@ -285,7 +284,7 @@ def run_adaround(
     print(f"[AdaRound Torch] Loaded parameter encodings from: {encodings_file}")
 
     # Load dataset once — reused by calibration, eval, and metrics calls
-    _dataset = load_torch_dataset(model, dataset_name)
+    _dataset = load_torch_dataset(model, dataset_cls)
 
     # Compute activation encodings (and param encodings if not loaded)
     def calibration_callback(model_to_calibrate: torch.nn.Module, args):
@@ -295,7 +294,7 @@ def run_adaround(
             eval_pytorch_model(
                 model_to_calibrate,
                 model,
-                dataset_name,
+                dataset_cls,
                 num_samples=args,
                 dataset=_dataset,
             )
@@ -314,7 +313,7 @@ def run_adaround(
     feature_acc = eval_pytorch_model(
         sim.model,
         model,
-        dataset_name,
+        dataset_cls,
         num_samples=eval_samples,
         dataset=_dataset,
     )
@@ -330,7 +329,7 @@ def run_adaround(
             return eval_pytorch_model(
                 sim.model,
                 model,
-                dataset_name,
+                dataset_cls,
                 num_samples=metrics_samples,
                 dataset=_dataset,
             )

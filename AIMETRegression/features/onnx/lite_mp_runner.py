@@ -29,6 +29,7 @@ from typing import Any, Dict, Tuple, List
 
 import onnx
 import onnxruntime as ort
+from qai_hub_models.datasets import BaseDataset
 from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 
 # AIMET imports - these symbols are required objects, not strings
@@ -63,7 +64,7 @@ def _extract_bitwidth(value) -> int:
 
 
 def _collect_inputs(
-    sess: ort.InferenceSession, model, dataset_name, num_samples: int
+    sess: ort.InferenceSession, model, dataset_cls: type[BaseDataset], num_samples: int
 ) -> List[Dict]:
     inputs = []
     run = sess.run
@@ -73,7 +74,7 @@ def _collect_inputs(
         return run(output_names, input_feed, *args, **kwargs)
 
     sess.run = wrapper
-    evaluate_session_on_dataset(sess, model, dataset_name, num_samples=num_samples)
+    evaluate_session_on_dataset(sess, model, dataset_cls, num_samples=num_samples)
     sess.run = run
     return inputs
 
@@ -133,7 +134,7 @@ def run_lite_mp(
     *,
     fp32_onnx_path: str,
     model: Any,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     config: Dict[str, Any],
     export_dir: Optional[Path] = None,
 ) -> Tuple[str, float, Dict[str, str], str]:
@@ -148,7 +149,7 @@ def run_lite_mp(
     Args:
         fp32_onnx_path: Path to the FP32 ONNX model from AI Hub
         model: QAI Hub model object (provides pre/post-processing)
-        dataset_name: Name of the dataset for evaluation
+        dataset_cls: Dataset class for evaluation (e.g., ImagenetDataset)
         config: Configuration dictionary containing:
             Required:
                 - model_name: Name for output files
@@ -260,9 +261,7 @@ def run_lite_mp(
 
     def calibration_callback(sess: ort.InferenceSession, _unused=None):
         """Forward pass callback for AIMET calibration."""
-        evaluate_session_on_dataset(
-            sess, model, dataset_name, num_samples=calib_samples
-        )
+        evaluate_session_on_dataset(sess, model, dataset_cls, num_samples=calib_samples)
 
     # Compute initial encodings for INT8 quantization
     sim.compute_encodings(forward_pass_callback=calibration_callback)
@@ -270,7 +269,7 @@ def run_lite_mp(
     # ============ Step 3: Sensitivity Analysis ============
     print(f"[Lite-MP] Analyzing per-layer sensitivity...")
     inputs = _collect_inputs(
-        sim.session, model, dataset_name, num_samples=lite_mp_samples
+        sim.session, model, dataset_cls, num_samples=lite_mp_samples
     )
     accuracy_evaluator = make_psnr_eval_fn(fp32_sess, inputs, output_indices=None)
 
@@ -304,7 +303,7 @@ def run_lite_mp(
     print(f"[Lite-MP] Evaluating mixed-precision model with {eval_samples} samples...")
 
     feature_acc, *_ = evaluate_session_on_dataset(
-        sim.session, model, dataset_name, num_samples=eval_samples
+        sim.session, model, dataset_cls, num_samples=eval_samples
     )
     feature_acc = float(feature_acc)
 
@@ -315,7 +314,7 @@ def run_lite_mp(
 
     runtime_str, memory_str = measure_inference_metrics(
         lambda: evaluate_session_on_dataset(
-            sim.session, model, dataset_name, num_samples=metrics_samples
+            sim.session, model, dataset_cls, num_samples=metrics_samples
         ),
         runs=metrics_runs,
         warmup=metrics_warmup,

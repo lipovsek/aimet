@@ -40,7 +40,7 @@ from aimet_torch.model_preparer import prepare_model
 from aimet_torch.batch_norm_fold import fold_all_batch_norms
 import aimet_torch
 from torch.utils.data import DataLoader
-from qai_hub_models.datasets import DatasetSplit, get_dataset_from_name
+from qai_hub_models.datasets import BaseDataset, DatasetSplit, instantiate_dataset
 from qai_hub_models.utils.evaluate import get_deterministic_sample
 from aimet_torch.nn import QuantizationMixin
 
@@ -478,7 +478,7 @@ def create_dummy_input(
 
 def create_calibration_dataloader(
     qai_hub_model: Any,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     num_samples: int,
     batch_size: int = 1,
 ) -> DataLoader:
@@ -487,14 +487,14 @@ def create_calibration_dataloader(
 
     Args:
             qai_hub_model: QAI Hub model object
-            dataset_name: Dataset to sample from
+            dataset_cls: Dataset class to sample from (e.g., ImagenetDataset)
             num_samples: Number of samples to use
             batch_size: Batch size for the dataloader
 
     Returns:
             DataLoader yielding (input_tensor, label) tuples
     """
-    dataset = get_dataset_from_name(dataset_name, DatasetSplit.VAL)
+    dataset = instantiate_dataset(dataset_cls, DatasetSplit.VAL)
 
     sampler = get_deterministic_sample(
         dataset, num_samples=num_samples, samples_per_job=1
@@ -527,7 +527,9 @@ def create_calibration_dataloader(
             labels_list.append(int(label) if label is not None else 0)
 
     if not inputs_list:
-        raise ValueError(f"No samples collected from dataset {dataset_name}")
+        raise ValueError(
+            f"No samples collected from dataset {dataset_cls.dataset_name()}"
+        )
 
     all_inputs = torch.cat(inputs_list, dim=0)
     all_labels = torch.tensor(labels_list, dtype=torch.long)

@@ -226,7 +226,6 @@ jobs:
             "numpy<2" \
             pynvml \
             pytest \
-            qai-hub \
             qai-hub-models \
             requests \
             torch==${{ env.VER_TORCH }} \
@@ -502,7 +501,6 @@ jobs:
             object-detection-metrics \
             pynvml \
             pytest \
-            qai-hub \
             qai-hub-models \
             requests \
             torch==${{ env.VER_TORCH }} \

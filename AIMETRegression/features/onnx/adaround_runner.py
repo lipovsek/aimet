@@ -46,6 +46,7 @@ from typing import Any, Dict, List, Tuple
 
 import onnx
 import onnxruntime as ort
+from qai_hub_models.datasets import BaseDataset
 from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 import aimet_onnx  # For top-level AdaRound API (AIMET 2.15+)
 
@@ -79,7 +80,7 @@ def _extract_bitwidth(value) -> int:
 def _capture_unlabeled_feeds(
     sess: ort.InferenceSession,
     model: Any,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     num_samples: int,
 ) -> List[Dict[str, Any]]:
     """
@@ -93,7 +94,7 @@ def _capture_unlabeled_feeds(
     Args:
         sess: ORT InferenceSession to intercept
         model: QAI Hub model object (for preprocessing)
-        dataset_name: Dataset to sample from
+        dataset_cls: Dataset class to sample from (e.g., ImagenetDataset)
         num_samples: Number of samples to capture
 
     Returns:
@@ -129,7 +130,7 @@ def _capture_unlabeled_feeds(
 
     try:
         # Run evaluation to trigger data capture
-        evaluate_session_on_dataset(sess, model, dataset_name, num_samples=num_samples)
+        evaluate_session_on_dataset(sess, model, dataset_cls, num_samples=num_samples)
     finally:
         # Always restore original method
         sess.run = original_run
@@ -141,7 +142,7 @@ def run_adaround(
     *,
     fp32_onnx_path: str,
     model: Any,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     config: Dict[str, Any],
     export_dir: Optional[Path] = None,
 ) -> Tuple[str, float, Dict[str, str], str]:
@@ -155,7 +156,7 @@ def run_adaround(
     Args:
         fp32_onnx_path: Path to FP32 ONNX model from AI Hub
         model: QAI Hub model object (provides preprocessing/postprocessing)
-        dataset_name: Dataset name for evaluation
+        dataset_cls: Dataset class for evaluation (e.g., ImagenetDataset)
         config: Configuration dictionary containing:
             Required:
                 - model_name: Name for output files
@@ -249,9 +250,7 @@ def run_adaround(
 
     def calibration_callback(sess: ort.InferenceSession, _unused=None):
         """Forward pass for encodings calibration."""
-        evaluate_session_on_dataset(
-            sess, model, dataset_name, num_samples=calib_samples
-        )
+        evaluate_session_on_dataset(sess, model, dataset_cls, num_samples=calib_samples)
 
     # Compute initial encodings (before AdaRound)
     sim.compute_encodings(forward_pass_callback=calibration_callback)
@@ -262,7 +261,7 @@ def run_adaround(
     # Capture real input feeds for AdaRound optimization
     # These are unlabeled - AdaRound only needs inputs, not labels
     unlabeled_feeds = _capture_unlabeled_feeds(
-        sim.session, model, dataset_name, num_samples=adaround_samples
+        sim.session, model, dataset_cls, num_samples=adaround_samples
     )
 
     print(f"[AdaRound] Captured {len(unlabeled_feeds)} input feeds")
@@ -288,7 +287,7 @@ def run_adaround(
     print(f"[AdaRound] Evaluating accuracy with {eval_samples} samples...")
 
     feature_acc, *_ = evaluate_session_on_dataset(
-        sim.session, model, dataset_name, num_samples=eval_samples
+        sim.session, model, dataset_cls, num_samples=eval_samples
     )
     feature_acc = float(feature_acc)
 
@@ -299,7 +298,7 @@ def run_adaround(
 
     runtime_str, memory_str = measure_inference_metrics(
         lambda: evaluate_session_on_dataset(
-            sim.session, model, dataset_name, num_samples=metrics_samples
+            sim.session, model, dataset_cls, num_samples=metrics_samples
         ),
         runs=metrics_runs,
         warmup=metrics_warmup,

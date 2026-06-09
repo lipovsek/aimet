@@ -38,6 +38,7 @@ from typing import Any, Dict, Tuple
 
 import torch
 import torch.nn as nn
+from qai_hub_models.datasets import BaseDataset
 
 from AIMETRegression.evaluation.eval_torch import eval_pytorch_model, load_torch_dataset
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
@@ -175,7 +176,7 @@ def _run_manual_mode(
 def _run_auto_mode(
     sim,
     qai_model: Any,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     config: Dict[str, Any],
     device: torch.device,
     calib_loader,
@@ -324,7 +325,7 @@ def run_mixed_precision(
     *,
     model: Any,
     input_spec: Dict,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     config: Dict[str, Any],
     export_dir: Path = None,
 ) -> Tuple[Path, float, Dict[str, str], str]:
@@ -338,7 +339,7 @@ def run_mixed_precision(
     Args:
         model: QAI Hub model object
         input_spec: Input specification for dummy input creation
-        dataset_name: Dataset name for evaluation
+        dataset_cls: Dataset class for evaluation (e.g., ImagenetDataset)
         config: Configuration dictionary
         export_dir: Optional export directory
 
@@ -424,11 +425,11 @@ def run_mixed_precision(
         f"[AIMET Torch MP] Building calibration dataloader ({calib_samples} samples)..."
     )
     calib_loader = create_calibration_dataloader(
-        model, dataset_name, calib_samples, batch_size
+        model, dataset_cls, calib_samples, batch_size
     )
 
     # Load dataset once — reused by calibration, eval, and metrics calls
-    _dataset = load_torch_dataset(model, dataset_name)
+    _dataset = load_torch_dataset(model, dataset_cls)
 
     # ============ Initial Calibration ============
     print(f"[AIMET Torch MP] Calibrating encodings with {calib_samples} samples...")
@@ -440,7 +441,7 @@ def run_mixed_precision(
             eval_pytorch_model(
                 model_to_calibrate,
                 model,
-                dataset_name,
+                dataset_cls,
                 num_samples=args,
                 dataset=_dataset,
             )
@@ -465,7 +466,7 @@ def run_mixed_precision(
     else:
         # Auto mode
         _run_auto_mode(
-            sim, model, dataset_name, config, device, calib_loader, dummy_input
+            sim, model, dataset_cls, config, device, calib_loader, dummy_input
         )
 
     # ============ Evaluate Final Accuracy ============
@@ -474,7 +475,7 @@ def run_mixed_precision(
     feature_acc = eval_pytorch_model(
         sim.model,
         model,
-        dataset_name,
+        dataset_cls,
         num_samples=eval_samples,
         dataset=_dataset,
     )
@@ -490,7 +491,7 @@ def run_mixed_precision(
             return eval_pytorch_model(
                 sim.model,
                 model,
-                dataset_name,
+                dataset_cls,
                 num_samples=metrics_samples,
                 dataset=_dataset,
             )

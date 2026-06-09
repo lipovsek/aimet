@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import onnxruntime as ort
+from qai_hub_models.datasets import BaseDataset
 from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
 
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
@@ -57,7 +58,7 @@ def run_quantsim(
     *,
     fp32_onnx_path: str,
     model: Any,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     config: Dict[str, Any],
     export_dir: Optional[Path] = None,
 ) -> Tuple[str, float, Dict[str, str], str]:
@@ -71,7 +72,7 @@ def run_quantsim(
     Args:
         fp32_onnx_path: Path to the FP32 ONNX model from AI Hub compilation
         model: QAI Hub model object (provides preprocessing/postprocessing)
-        dataset_name: Name of the dataset for evaluation (e.g., "imagenet")
+        dataset_cls: Dataset class for evaluation (e.g., ImagenetDataset)
         config: Configuration dictionary containing:
             - model_name: Name of the model
             - quant_scheme: Quantization scheme (default: "tf_enhanced")
@@ -150,9 +151,7 @@ def run_quantsim(
         Runs representative data through the model to determine optimal
         quantization parameters (scale/zero-point) for each layer.
         """
-        evaluate_session_on_dataset(
-            sess, model, dataset_name, num_samples=calib_samples
-        )
+        evaluate_session_on_dataset(sess, model, dataset_cls, num_samples=calib_samples)
 
     # Compute optimal quantization encodings
     sim.compute_encodings(forward_pass_callback=calibration_callback)
@@ -163,7 +162,7 @@ def run_quantsim(
     print(f"[QuantSim] Evaluating accuracy with {eval_samples} samples...")
 
     feature_acc, *_ = evaluate_session_on_dataset(
-        sim.session, model, dataset_name, num_samples=eval_samples
+        sim.session, model, dataset_cls, num_samples=eval_samples
     )
     feature_acc = float(feature_acc)
 
@@ -174,7 +173,7 @@ def run_quantsim(
 
     runtime_str, memory_str = measure_inference_metrics(
         lambda: evaluate_session_on_dataset(
-            sim.session, model, dataset_name, num_samples=metrics_samples
+            sim.session, model, dataset_cls, num_samples=metrics_samples
         ),
         runs=metrics_runs,
         warmup=metrics_warmup,

@@ -16,6 +16,7 @@ from typing import Any, Dict, Tuple
 
 import torch
 from torch.export import ExportedProgram
+from qai_hub_models.datasets import BaseDataset
 
 from AIMETRegression.evaluation.eval_torch import eval_pytorch_model, load_torch_dataset
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
@@ -37,7 +38,7 @@ def run_quantsim(
     *,
     model: Any,
     input_spec: Dict,
-    dataset_name: str,
+    dataset_cls: type[BaseDataset],
     config: Dict[str, Any],
     export_dir: Path = None,
 ) -> Tuple[Path, float, Dict[str, str], str]:
@@ -47,7 +48,7 @@ def run_quantsim(
     Args:
         model: QAI Hub model object
         input_spec: Input specification for dummy input creation
-        dataset_name: Dataset name for evaluation
+        dataset_cls: Dataset class for evaluation (e.g., ImagenetDataset)
         config: Configuration dictionary
         export_dir: Optional export directory
 
@@ -125,7 +126,7 @@ def run_quantsim(
     )
 
     # Load dataset once — reused by calibration, eval, and metrics calls
-    _dataset = load_torch_dataset(model, dataset_name)
+    _dataset = load_torch_dataset(model, dataset_cls)
 
     print(
         f"[AIMET Torch QuantSim] Calibrating encodings with {calib_samples} samples..."
@@ -144,7 +145,7 @@ def run_quantsim(
             eval_pytorch_model(
                 model_to_calibrate,
                 model,
-                dataset_name,
+                dataset_cls,
                 num_samples=calib_samples,
                 dataset=_dataset,
             )
@@ -157,7 +158,7 @@ def run_quantsim(
     feature_acc = eval_pytorch_model(
         sim.model,
         model,
-        dataset_name,
+        dataset_cls,
         num_samples=eval_samples,
         dataset=_dataset,
     )
@@ -175,7 +176,7 @@ def run_quantsim(
         static_aten_acc = eval_pytorch_model(
             ep.module(),
             model,
-            dataset_name,
+            dataset_cls,
             num_samples=eval_samples,
             dataset=_dataset,
         )
@@ -196,7 +197,7 @@ def run_quantsim(
             return eval_pytorch_model(
                 sim.model,
                 model,
-                dataset_name,
+                dataset_cls,
                 num_samples=metrics_samples,
                 dataset=_dataset,
             )
