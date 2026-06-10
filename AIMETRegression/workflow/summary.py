@@ -37,13 +37,21 @@ def status_emoji(status):
     return {"success": "✅ Passed", "skipped": "⏭️ Skipped"}.get(status, "❌ Failed")
 
 
-def branch_prefix(branch):
-    """Title-prefix that distinguishes develop runs from release-branch runs."""
-    if not branch:
-        return ""
-    if branch.startswith("release-"):
-        return f"[{branch}] 🚨 "
-    return f"[{branch}] "
+def outcome_emoji(branch, failed):
+    """Leading status emoji, by outcome and branch tier.
+
+    Release branches escalate: 🚨 on failure, 🎊 on a pass. Other branches use
+    ⚠️ on failure and ✅ on a pass. The emoji always matches the outcome.
+    """
+    is_release = branch.startswith("release-")
+    if failed:
+        return "🚨" if is_release else "⚠️"
+    return "🎊" if is_release else "✅"
+
+
+def branch_label(branch):
+    """Bracketed branch label, or empty string when no branch is given."""
+    return f"[{branch}] " if branch else ""
 
 
 def baseline_cell(data):
@@ -79,7 +87,7 @@ def generate_summary(
     onnx = load_summary(onnx_summary_path) if onnx_summary_path else None
     torch_data = load_summary(torch_summary_path) if torch_summary_path else None
 
-    print(f"## Nightly Regression Results\n")
+    print(f"## {suite.title()} Regression Results\n")
     print(f"**Suite:** {suite} | **Trigger:** {trigger}\n")
 
     # Results table
@@ -128,18 +136,45 @@ def generate_summary(
                 print()
 
 
+def has_test_failures(onnx, torch_data):
+    """True if either framework summary reports per-test failures."""
+    return any(data and data.get("has_failures") for data in (onnx, torch_data))
+
+
+def slack_outcome(onnx, torch_data, failed_stage):
+    """Return (failed, outcome_phrase) for the Slack title.
+
+    A failed stage (build, runner startup, etc.) takes precedence and names
+    where the pipeline broke. Otherwise per-test failures mark a regression
+    failure, and a clean run is reported as passed.
+    """
+    if failed_stage:
+        return True, f"failed at {failed_stage}"
+    if has_test_failures(onnx, torch_data):
+        return True, "failed"
+    return False, "passed"
+
+
 def generate_slack_summary(
-    onnx_status,
-    torch_status,
     onnx_summary_path,
     torch_summary_path,
     suite,
-    trigger,
     run_url=None,
     branch="",
+    failed_stage="",
 ):
-    """Generate a Slack-friendly plain text summary to stdout."""
-    print(f"*{branch_prefix(branch)}{suite.title()} Regression failed*")
+    """Generate a Slack-friendly plain text summary to stdout.
+
+    Failure is derived from the comparison summaries and ``failed_stage``, not
+    from job statuses, so this intentionally does not take ``onnx_status`` /
+    ``torch_status``.
+    """
+    onnx = load_summary(onnx_summary_path) if onnx_summary_path else None
+    torch_data = load_summary(torch_summary_path) if torch_summary_path else None
+
+    failed, outcome = slack_outcome(onnx, torch_data, failed_stage)
+    emoji = outcome_emoji(branch, failed)
+    print(f"*{emoji} {branch_label(branch)}{suite.title()} Regression {outcome}*")
     if run_url:
         print(f"Workflow: {run_url}")
 
@@ -159,18 +194,21 @@ def main():
         default="",
         help="git ref name, used to distinguish develop vs release-branch runs",
     )
+    parser.add_argument(
+        "--failed-stage",
+        default="",
+        help="name of the pipeline stage that failed (e.g. 'AIMET build (ONNX)'), if any",
+    )
     args = parser.parse_args()
 
     if args.format == "slack":
         generate_slack_summary(
-            onnx_status=args.onnx_status,
-            torch_status=args.torch_status,
             onnx_summary_path=args.onnx_summary,
             torch_summary_path=args.torch_summary,
             suite=args.suite,
-            trigger=args.trigger,
             run_url=args.run_url,
             branch=args.branch,
+            failed_stage=args.failed_stage,
         )
     else:
         generate_summary(

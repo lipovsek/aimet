@@ -689,7 +689,13 @@ jobs:
   #=============================================================================
   results:
     name: Results
-    needs: [onnx-weekly, torch-weekly]
+    needs:
+      - build-aimet-onnx-gpu
+      - build-aimet-torch-gpu
+      - start-runner-onnx
+      - start-runner-torch
+      - onnx-weekly
+      - torch-weekly
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -731,24 +737,64 @@ jobs:
       - name: Check failure signal
         id: check_signal
         env:
+          BUILD_ONNX_RESULT: ${{ needs.build-aimet-onnx-gpu.result }}
+          BUILD_TORCH_RESULT: ${{ needs.build-aimet-torch-gpu.result }}
+          RUNNER_ONNX_RESULT: ${{ needs.start-runner-onnx.result }}
+          RUNNER_TORCH_RESULT: ${{ needs.start-runner-torch.result }}
           ONNX_RESULT: ${{ needs.onnx-weekly.result }}
           TORCH_RESULT: ${{ needs.torch-weekly.result }}
         run: |
+          # Toggle: notify Slack on a clean pass too. Set to false to silence
+          # green runs while STILL alerting on every failure below.
+          NOTIFY_ON_PASS=true
+
+          # Earliest failed pipeline stage, in execution order. "skipped" never
+          # counts as failure, so framework-filtered manual runs don't misreport.
+          FAILED_STAGE=""
+          if [ "$BUILD_ONNX_RESULT" = "failure" ]; then
+            FAILED_STAGE="AIMET build (ONNX)"
+          elif [ "$BUILD_TORCH_RESULT" = "failure" ]; then
+            FAILED_STAGE="AIMET build (Torch)"
+          elif [ "$RUNNER_ONNX_RESULT" = "failure" ]; then
+            FAILED_STAGE="runner startup (ONNX)"
+          elif [ "$RUNNER_TORCH_RESULT" = "failure" ]; then
+            FAILED_STAGE="runner startup (Torch)"
+          fi
+          echo "failed_stage=$FAILED_STAGE" >> "$GITHUB_OUTPUT"
+
           HAS_FAILURES=false
           for f in summaries/onnx/comparison_summary.json summaries/torch/comparison_summary.json; do
             [ -f "$f" ] || continue
             [ "$(jq -r '.has_failures // false' "$f")" = "true" ] && HAS_FAILURES=true
           done
           echo "has_failures=$HAS_FAILURES" >> "$GITHUB_OUTPUT"
+
+          # Any failure anywhere in the pipeline: build, runner startup, or the
+          # regression jobs (job failure or per-test failures).
+          ANY_FAILURE=false
+          if [ -n "$FAILED_STAGE" ] || [ "$HAS_FAILURES" = "true" ] || [ "$ONNX_RESULT" = "failure" ] || [ "$TORCH_RESULT" = "failure" ]; then
+            ANY_FAILURE=true
+          fi
+
+          # notify -> gates the P0 GitHub issue: regression failures only
+          # (infra failures alert via Slack but don't open an issue).
           NOTIFY=false
           if [ "$HAS_FAILURES" = "true" ] || [ "$ONNX_RESULT" = "failure" ] || [ "$TORCH_RESULT" = "failure" ]; then
             NOTIFY=true
           fi
-          # Only notify on scheduled runs to avoid spamming on manual dispatches.
           if [ "${{ github.event_name }}" != "schedule" ]; then
             NOTIFY=false
           fi
           echo "notify=$NOTIFY" >> "$GITHUB_OUTPUT"
+
+          # notify_slack -> gates the Slack post. Always on failure; on a clean
+          # pass only when NOTIFY_ON_PASS is true. Scheduled runs only, to avoid
+          # spamming manual dispatches.
+          NOTIFY_SLACK=false
+          if [ "${{ github.event_name }}" = "schedule" ] && { [ "$ANY_FAILURE" = "true" ] || [ "$NOTIFY_ON_PASS" = "true" ]; }; then
+            NOTIFY_SLACK=true
+          fi
+          echo "notify_slack=$NOTIFY_SLACK" >> "$GITHUB_OUTPUT"
 
       - name: Generate issue body
         if: steps.check_signal.outputs.notify == 'true'
@@ -781,7 +827,7 @@ jobs:
             core.setOutput('issue_url', data.html_url);
 
       - name: Generate Slack message
-        if: steps.check_signal.outputs.notify == 'true'
+        if: steps.check_signal.outputs.notify_slack == 'true'
         id: slack_msg
         run: |
           MSG=$(python3 AIMETRegression/workflow/summary.py \
@@ -793,6 +839,7 @@ jobs:
             --trigger "${{ github.event_name }}" \
             --format slack \
             --branch "${{ github.ref_name }}" \
+            --failed-stage "${{ steps.check_signal.outputs.failed_stage }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
           if [ -n "${{ steps.create_issue.outputs.issue_url }}" ]; then
             MSG="$MSG"$'\n'"Issue: ${{ steps.create_issue.outputs.issue_url }}"
@@ -802,7 +849,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Notify Slack
-        if: steps.check_signal.outputs.notify == 'true'
+        if: steps.check_signal.outputs.notify_slack == 'true'
         uses: slackapi/slack-github-action@v1.25.0
         with:
           channel-id: C0898PQVA31  # #aimet
