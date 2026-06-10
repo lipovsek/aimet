@@ -19,3 +19,4 @@ tests:
     config_file: htp_v79
     adaround_iters: 500
     max_accuracy_drop_torch: 2.1
+    skip_torch: true

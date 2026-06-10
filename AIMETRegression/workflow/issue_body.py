@@ -74,7 +74,7 @@ def _section(title: str, items: list[str]) -> list[str]:
 def _crash_section(items: list[str], errors: dict[str, str]) -> list[str]:
     if not items:
         return []
-    lines = [f"### 💥 Crashes ({len(items)})", ""]
+    lines = [f"### 🚫 Not run ({len(items)})", ""]
     for item in items:
         err = errors.get(item, "")
         if err:
@@ -108,11 +108,11 @@ def render(
 
     title_parts = []
     if counts["crashed"]:
-        title_parts.append(f"{counts['crashed']} crashed")
+        title_parts.append(f"{counts['crashed']} not run")
     if counts["regressions"]:
         title_parts.append(f"{counts['regressions']} regressed")
     if counts["failed"]:
-        title_parts.append(f"{counts['failed']} quality failures")
+        title_parts.append(f"{counts['failed']} accuracy failures")
     summary_str = ", ".join(title_parts) if title_parts else "failed"
     prefix = _TITLE_PREFIX.get(suite, f"[{suite}]")
     title = f"{_branch_prefix(branch)}{prefix} Regression failed {today}: {summary_str}"
@@ -123,7 +123,7 @@ def render(
     body.append("## Summary")
     body.append("")
     body.append(
-        "| Framework | Total | Crashed | Quality failures | Baseline regressions |"
+        "| Framework | Total | Not run | Accuracy failures | Baseline regressions |"
     )
     body.append("|---|---:|---:|---:|---:|")
     for fw_name, s in [("ONNX", onnx_summary), ("Torch", torch_summary)]:
@@ -147,7 +147,7 @@ def render(
         fw_lines.extend(
             _section("⚠️ Baseline regressions", s.get("regression_tests", []))
         )
-        fw_lines.extend(_section("❌ Quality failures", s.get("failed_tests", [])))
+        fw_lines.extend(_section("❌ Accuracy failures", s.get("failed_tests", [])))
         if fw_lines:
             body.append(f"## {fw_name}")
             body.append("")

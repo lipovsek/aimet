@@ -353,7 +353,6 @@ def build_quantsim_torch(
         f"[QuantSim Torch] Building with scheme={quant_scheme}, W{default_param_bw}A{default_output_bw}"
     )
     print(f"[QuantSim Torch] Device: {device}")
-    print(f"[QuantSim Torch] Config: {str(config_file)}")
 
     sim = QuantizationSimModel(
         model=model,
@@ -361,7 +360,7 @@ def build_quantsim_torch(
         quant_scheme=scheme_enum,
         default_param_bw=default_param_bw,
         default_output_bw=default_output_bw,
-        config_file=str(config_file),
+        config_file=str(config_file) if config_file is not None else "default",
     )
 
     return sim

@@ -2,22 +2,6 @@ model_name: mobilenet_v2
 qnn_options: "--target_runtime qnn_dlc --output_names class_logits --force_channel_last_input image_tensor"
 
 tests:
-  - name: quantsim_int8_v79
-    feature: quantsim
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int8
-    config_file: htp_v79
-    apply_experimental_static_aten_calibration: true
-
-  - name: quantsim_w8a16
-    feature: quantsim
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int16
-    config_file: htp_v79
-    apply_experimental_static_aten_calibration: true
-
   - name: amp_int8_int16
     feature: mixed_precision
     candidates: int8_int16

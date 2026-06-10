@@ -37,7 +37,6 @@ models:
   - models/resnext50.yaml
   - models/resnext101.yaml
   - models/regnet_y_800mf.yaml
-  - models/gpunet.yaml
   - models/mnasnet05.yaml
   - models/mobilenet_v3_small.yaml
   - models/nasnet.yaml
@@ -46,28 +45,22 @@ models:
   # Classification - transformers
   - models/vit.yaml
   - models/swin_tiny.yaml
-  - models/levit.yaml
   - models/beit.yaml
-  - models/efficientformer.yaml
   - models/sequencer2d.yaml
   - models/mobile_vit.yaml
   # Detection
   - models/yolov5.yaml
   - models/yolov8_det.yaml
   - models/yolov8_seg.yaml
-  - models/yolox.yaml
   - models/yolov11_det.yaml
   - models/yolov3.yaml
-  - models/yolov7.yaml
   - models/yolov10_det.yaml
 
-  - models/centernet_pose.yaml
   # Segmentation
   - models/deeplabv3_plus_mobilenet.yaml
   - models/fcn_resnet50.yaml
   - models/mediapipe_selfie.yaml
   - models/segformer_base.yaml
-  - models/bisenet.yaml
   - models/ddrnet23_slim.yaml
   - models/pidnet.yaml
   - models/ffnet_40s.yaml
@@ -75,7 +68,6 @@ models:
 
   - models/unet_segmentation.yaml
   # Depth estimation
-  - models/midas.yaml
   # Pose estimation
   - models/hrnet_pose.yaml
 

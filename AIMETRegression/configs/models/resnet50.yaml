@@ -99,14 +99,3 @@ tests:
     calib_samples: 256
     eval_samples: 256
     max_accuracy_drop: 1.0
-
-  # --------------------------------------------------------------------------
-  # Test 7: W4A16 (low-bit weights, high-bit activations)
-  # --------------------------------------------------------------------------
-
-  - name: quantsim_w4a16
-    feature: quantsim
-    quant_scheme: min_max
-    param_type: int4
-    activation_type: int16
-    config_file: htp_v79

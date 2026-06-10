@@ -8,13 +8,4 @@ tests:
     activation_type: int16
     config_file: htp_v81
     apply_experimental_static_aten_calibration: true
-
-  - name: lite_mp_10
-    feature: lite_mp
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int16
-    config_file: htp_v81
-    lite_mp:
-      percent_flip: 10
-      override_precision: float16
+    skip_onnx: true

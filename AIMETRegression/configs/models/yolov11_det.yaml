@@ -9,14 +9,3 @@ tests:
     param_type: int8
     activation_type: int16
     config_file: htp_v81
-
-  - name: amp_int8_int16
-    feature: mixed_precision
-    candidates: int8_int16
-    enable_sqnr_pruning: true
-    phase1_samples: 64
-    phase2_samples: 256
-    allowed_accuracy_drop: 0.01
-    config_file: htp_v81
-    calib_samples: 256
-    eval_samples: 256

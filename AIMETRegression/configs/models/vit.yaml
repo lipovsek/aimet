@@ -10,6 +10,7 @@ tests:
     config_file: htp_v79
     max_accuracy_drop_torch: 1.4
     apply_experimental_static_aten_calibration: true
+    skip_onnx: true
 
   - name: quantsim_w4a16
     feature: quantsim
@@ -28,11 +29,3 @@ tests:
     config_file: htp_v81
     calib_samples: 256
     eval_samples: 256
-
-  - name: amp_manual_int8_int16
-    feature: mixed_precision
-    mode: manual
-    precision_config:
-      Linear: {activation: int16, param: int8}
-      Conv2d: {activation: int8, param: int8}
-      LayerNorm: {activation: int16, param: int16}

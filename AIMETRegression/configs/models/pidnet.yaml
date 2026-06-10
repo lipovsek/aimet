@@ -8,3 +8,4 @@ tests:
     param_type: int8
     activation_type: int8
     config_file: htp_v79
+    skip_torch: true

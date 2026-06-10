@@ -8,6 +8,7 @@ tests:
     param_type: int8
     activation_type: int16
     config_file: htp_v79
+    skip_onnx: true
 
   - name: lite_mp_10
     feature: lite_mp

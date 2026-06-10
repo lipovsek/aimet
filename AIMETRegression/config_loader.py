@@ -274,3 +274,10 @@ def validate_config(config: Dict[str, Any]) -> None:
             f"Unsupported framework: {config['framework']}\n"
             f"This tool only supports ONNX and Torch frameworks."
         )
+
+    # Validate per-framework skip flags (used to disable a test on one framework only)
+    for skip_key in ("skip_onnx", "skip_torch"):
+        if skip_key in config and not isinstance(config[skip_key], bool):
+            raise ValueError(
+                f"Field '{skip_key}' must be a boolean, got '{config[skip_key]}'"
+            )

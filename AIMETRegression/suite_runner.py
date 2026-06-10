@@ -252,6 +252,12 @@ Suite files location: AIMETRegression/suites/
                         )
                         continue
 
+                    if merged_config.get(f"skip_{framework}", False):
+                        print(
+                            f"   ⏭️  Skipping {test_name}: disabled for {framework} via skip_{framework}"
+                        )
+                        continue
+
                     test_configs.append(
                         {
                             "model_yaml": model_yaml,

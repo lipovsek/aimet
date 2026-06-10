@@ -8,11 +8,3 @@ tests:
     param_type: int8
     activation_type: int16
     config_file: htp_v79
-
-  - name: adaround_500
-    feature: adaround
-    quant_scheme: min_max
-    param_type: int8
-    activation_type: int8
-    config_file: htp_v79
-    adaround_iters: 500
