@@ -221,7 +221,7 @@ jobs:
           # Commit doc changes
           git add releases/
           git remote add public-origin https://${{ secrets.AIMET_BOT_PUB_GITHUB_TOKEN }}@github.com/${{ env.DOCS_REPO }}.git
-          git config user.email "aimet_bot@qualcomm.com"
+          git config user.email "aimet_bot@qti.qualcomm.com"
           git config user.name "aimet_bot"
           git commit -m "Release docs ${tag}" -s
 
