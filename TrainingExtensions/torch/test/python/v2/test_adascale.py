@@ -809,6 +809,55 @@ class TestAdascale:
 
         assert call_count == num_iterations
 
+    def test_block_level_adascale_early_stopping(self):
+        """Integration test for the _EARLY_STOPPING flag using the real factory and
+        _EarlyStopping."""
+        from aimet_torch.experimental.adascale import adascale_optimizer as opt
+        from aimet_torch.common.early_stopping import _EarlyStoppingConfig
+
+        num_iterations = 20
+
+        def make_block():
+            torch.manual_seed(0)
+            dummy_input = torch.rand(1, 3, 32, 64)
+            model = test_models.ModelWithConsecutiveLinearBlocks()
+            sim = QuantizationSimModel(model, dummy_input)
+            return sim.model.blocks[0]
+
+        fp_inputs = [((torch.rand(1, 3, 32, 64),), {}) for _ in range(3)]
+
+        def make_counting_loss_fn(counter):
+            def loss_fn(fp_out, qt_out):
+                counter[0] += 1
+                return torch.nn.functional.mse_loss(fp_out, qt_out)
+
+            return loss_fn
+
+        # Early stopping ON
+        cfg = _EarlyStoppingConfig(check_interval=1, rel_threshold=1e9, window=1)
+        on_count = [0]
+        with patch.object(opt, "_EARLY_STOPPING", cfg):
+            AdaScale.adascale_block(
+                make_block(),
+                fp_inputs,
+                qt_inputs=fp_inputs,
+                num_iterations=num_iterations,
+                loss_fn=make_counting_loss_fn(on_count),
+            )
+        assert 0 < on_count[0] < num_iterations
+
+        # Early stopping OFF (default): the loop runs the full schedule.
+        assert opt._EARLY_STOPPING is None
+        off_count = [0]
+        AdaScale.adascale_block(
+            make_block(),
+            fp_inputs,
+            qt_inputs=fp_inputs,
+            num_iterations=num_iterations,
+            loss_fn=make_counting_loss_fn(off_count),
+        )
+        assert off_count[0] == num_iterations
+
 
 class TestAdaScaleBasicFunctionality:
     """Test basic AdaScale functionality across all supported models"""

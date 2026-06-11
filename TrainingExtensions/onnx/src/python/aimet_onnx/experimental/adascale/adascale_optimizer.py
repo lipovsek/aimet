@@ -15,6 +15,9 @@ import onnx_ir
 import os
 
 from aimet_onnx.common.utils import AimetLogger  # pylint: disable=import-error
+from aimet_onnx.common.early_stopping import (  # pylint: disable=import-error
+    _create_early_stopping,
+)
 from aimet_onnx.experimental.adascale.utils import (
     convert_to_torch,
     change_tensor_device_placement,
@@ -54,6 +57,13 @@ _LOSS_FN = torch.nn.MSELoss()
 # mse_loss averages over every dim.
 # TODO: switch default to True once validated.
 _SUM_OVER_SEQ_DIM = False
+
+# Temporary flag to enable early stopping of the per-block optimization loop.
+# None/False disables it; True enables it with default parameters. To configure
+# the parameters, set it to an
+# aimet_onnx.common.early_stopping._EarlyStoppingConfig instead.
+# TODO: promote to a real config / public arg once validated.
+_EARLY_STOPPING = None
 
 
 def _mse_loss_fn(
@@ -399,6 +409,8 @@ class AdaScale:
         gc.collect()
         torch.cuda.empty_cache()
 
+        early_stopping = _create_early_stopping(_EARLY_STOPPING)
+
         pytorch_block.to(device)
         with torch.set_grad_enabled(True):
             for iteration in tqdm.tqdm(range(num_iterations)):
@@ -434,7 +446,12 @@ class AdaScale:
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
+
+                # Early stopping check
+                should_stop = early_stopping is not None and early_stopping(loss.item())
                 del quant_out, batch_fp_out, loss, input_tensor, fp_input, quant_input
+                if should_stop:
+                    break
 
         copy_pt_weights_to_onnx(
             pytorch_block, sim_model, pt_weights_to_onnx_initializers, quantizer_dict

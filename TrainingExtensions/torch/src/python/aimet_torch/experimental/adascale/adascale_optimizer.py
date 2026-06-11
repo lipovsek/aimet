@@ -48,6 +48,9 @@ except ImportError:
 
 
 from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.early_stopping import (
+    _create_early_stopping,
+)
 from aimet_torch import QuantizationSimModel
 from aimet_torch.nn import QuantizedLinear, compute_param_encodings, QuantizedConv2d
 from aimet_torch.utils import (
@@ -140,6 +143,13 @@ _BlockOutput = torch.Tensor | Tuple[torch.Tensor, ...]
 # mse_loss averages over every dim.
 # TODO: switch default to True once validated.
 _SUM_OVER_SEQ_DIM = False
+
+# Temporary flag to enable early stopping of the per-block optimization loop.
+# None/False disables it; True enables it with default parameters. To configure
+# the parameters, set it to an
+# aimet_torch.common.early_stopping._EarlyStoppingConfig instead.
+# TODO: promote to a real config / public arg once validated.
+_EARLY_STOPPING = None
 
 
 def _mse_loss_fn(
@@ -516,6 +526,8 @@ class AdaScale:
                 fp_out.append(fp_block_results)
                 del args, kwargs, fp_block_results
 
+        early_stopping = _create_early_stopping(_EARLY_STOPPING)
+
         pbar = tqdm(
             total=num_iterations,
             leave=False,
@@ -525,6 +537,8 @@ class AdaScale:
         curr_iteration = 0
         with remove_activation_quantizers(block):
             while curr_iteration < num_iterations:
+                if early_stopping is not None and early_stopping.early_stop:
+                    break
                 for batch_idx, (args, kwargs) in enumerate(qt_inputs):
                     pbar.update(1)
                     curr_iteration += 1
@@ -546,7 +560,14 @@ class AdaScale:
                         scheduler.step()
                         optimizer.zero_grad()
 
+                        # Early stopping check
+                        should_stop = early_stopping is not None and early_stopping(
+                            loss.item()
+                        )
                         del quant_out, batch_fp_out, loss
+                        if should_stop:
+                            pbar.close()
+                            break
 
     @staticmethod
     def extract_adascale_params(block: torch.nn.Module) -> dict:

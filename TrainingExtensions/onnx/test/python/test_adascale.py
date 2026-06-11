@@ -683,6 +683,75 @@ class TestAdascaleQuantizer:
             ]
             assert changed
 
+    def test_block_level_adascale_early_stopping(self):
+        """Integration test for the _EARLY_STOPPING flag using the real factory and
+        _EarlyStopping."""
+        from aimet_onnx.experimental.adascale import adascale_optimizer as opt
+        from aimet_onnx.common.early_stopping import _EarlyStoppingConfig
+
+        model = ModelWithConsecutiveLinearBlocks().eval()
+        input_shape = (1, 3, 32, 64)
+        torch.random.manual_seed(1)
+        dummy_input = [torch.rand(input_shape), torch.rand(input_shape)]
+        qt_input = [t * 0.3 for t in dummy_input]
+
+        num_iterations = 20
+        block_input_output_names = (["input"], ["/blocks.0/layer2/Add_output_0"])
+
+        real_loss_fn = opt._mse_loss_fn
+
+        def make_counting_loss_fn(counter):
+            def loss_fn(qt_out, fp_out):
+                counter[0] += 1
+                return real_loss_fn(qt_out, fp_out)
+
+            return loss_fn
+
+        def run_block(counter):
+            with tempfile.TemporaryDirectory() as tempdir:
+                torch.onnx.export(
+                    model,
+                    dummy_input[0],
+                    tempdir + "/model.onnx",
+                    input_names=["input"],
+                    output_names=["output"],
+                    dynamo=False,
+                )
+                model_onnx = load_model(tempdir + "/model.onnx")
+                sim = QuantizationSimModel(
+                    model_onnx,
+                    [dummy_input],
+                    config_file="htp_v73",
+                )
+                sim._compute_param_encodings(overwrite=False)
+
+                sim_model = onnx_ir.from_proto(sim.model.model)
+                onnx_ir.passes.common.TopologicalSortPass().call(sim_model)
+                with patch.object(opt, "_mse_loss_fn", make_counting_loss_fn(counter)):
+                    AdaScale.optimize_adascale_block(
+                        sim_model,
+                        sim.qc_quantize_op_dict,
+                        dummy_input,
+                        qt_input,
+                        block_input_output_names=block_input_output_names,
+                        beta_gamma_lr=1e-3,
+                        scales_lr=5e-4,
+                        num_iterations=num_iterations,
+                    )
+
+        # Early stopping ON.
+        cfg = _EarlyStoppingConfig(check_interval=1, rel_threshold=1e9, window=1)
+        on_count = [0]
+        with patch.object(opt, "_EARLY_STOPPING", cfg):
+            run_block(on_count)
+        assert 0 < on_count[0] < num_iterations
+
+        # Early stopping OFF: the loop should run the full num_iterations = 20 iterations.
+        assert opt._EARLY_STOPPING is None
+        off_count = [0]
+        run_block(off_count)
+        assert off_count[0] == num_iterations
+
     @pytest.mark.cuda
     def test_adascale_gpu_memory_leak(self):
         """
