@@ -23,7 +23,6 @@ from typing import (
     List,
 )
 import math
-import warnings
 import itertools
 import io
 import json
@@ -42,7 +41,7 @@ from aimet_torch.common.onnx._utils import (
     _derive_const_rescale_op_output_encodings,
 )
 from aimet_torch.common.quantsim_config.quantsim_config import _config_file_aliases
-from aimet_torch.common.utils import deprecated, _red, docstring
+from aimet_torch.common.utils import deprecated, docstring
 from aimet_torch.nn.modules import custom
 from aimet_torch._base.quantsim import (
     _QuantizationSimModelBase,
@@ -213,11 +212,6 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
           ...
         )
 
-    .. warning::
-       The default value of `quant_scheme` has changed
-       from `QuantScheme.post_training_tf_enhanced` to `QuantScheme.training_range_learning_with_tf_init`
-       since 2.0.0, and will be deprecated in the longer term.
-
     Args:
         model (torch.nn.Module): Model to simulate the quantized execution of
         dummy_input (Tensor | Sequence[Tensor]): Dummy input to be used to capture
@@ -253,16 +247,7 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
         default_data_type: QuantizationDataType = QuantizationDataType.int,
     ):
         if not quant_scheme:
-            old_default = QuantScheme.post_training_tf_enhanced
-            new_default = QuantScheme.min_max
-            msg = _red(
-                f"The default value of 'quant_scheme' has changed from '{old_default}' "
-                f"to '{new_default}' since aimet-torch==2.0.0. "
-                "If you wish to maintain the legacy default behavior, "
-                f"please explicitly pass 'quant_scheme={old_default}'"
-            )
-            warnings.warn(msg, DeprecationWarning, stacklevel=2)
-            quant_scheme = new_default
+            quant_scheme = QuantScheme.min_max
 
         qmodules = {
             name: module
