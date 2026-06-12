@@ -13,10 +13,12 @@ try:
     import torch.ao.quantization.fx._decomposed
 except ImportError:
     pass
+
 from aimet_torch.utils import (
     _is_expandable,
     _ContextManager,
     _torch_compiler_is_exporting,
+    _torch_compiler_is_compiling,
 )
 from ....experimental.onnx import _export as _onnx
 from aimet_torch.experimental import pgs
@@ -39,8 +41,37 @@ def _is_value_representable(dtype: torch.dtype, value: int):
     """
     Return whether an integer value can be represented with the given dtype
     """
-    dtype_repr = torch.tensor(value, dtype=dtype)
-    return dtype_repr.isfinite() and dtype_repr.long() == value
+    if dtype == torch.float32:
+        mantissa_bits = 23
+    elif dtype == torch.float16:
+        mantissa_bits = 10
+    elif dtype == torch.bfloat16:
+        mantissa_bits = 7
+    elif dtype == torch.float64:
+        mantissa_bits = 52
+    else:
+        raise ValueError(
+            f"Expected dtype to be one of float32, float16, bfloat16, or float64; got {dtype}"
+        )
+
+    finfo = torch.finfo(dtype)
+    within_range = finfo.min <= value <= finfo.max
+    if not within_range:
+        return False
+
+    # Given floating point representation sign * 2^e * 1.m,
+    # an integer i can be exactly represented with the target dtype
+    # if the first non-zero bit (msb) and the last non-zero bit (lsb)
+    # is at most mantissa_bits apart from each other.
+    #
+    #                msb       lsb
+    #                 ↓         ↓
+    #   i = ... 0 0 0 1 x ... x 1 0 0 ...
+    #     =  2^msb * (1.x ... x 1)
+    #     =  2^msb * 1.mantissa
+    msb = max(0, value.bit_length() - 1)
+    lsb = max(0, (value & -value).bit_length() - 1)
+    return msb - lsb <= mantissa_bits
 
 
 @functools.lru_cache(None)
@@ -141,7 +172,8 @@ def quantize(
     :param qmax: Maximum value of the quantization range
     :param block_size: Block sizes per dimension
     """
-    _validate_arguments(tensor, scale, qmin, qmax, block_size)
+    if not _torch_compiler_is_compiling():
+        _validate_arguments(tensor, scale, qmin, qmax, block_size)
 
     output_dtype = internal_dtype = tensor.dtype
 
@@ -196,7 +228,8 @@ def quantize_dequantize(
     if torch.onnx.is_in_onnx_export():
         return tensor
 
-    _validate_arguments(tensor, scale, qmin, qmax, block_size)
+    if not _torch_compiler_is_compiling():
+        _validate_arguments(tensor, scale, qmin, qmax, block_size)
 
     _fast_forward = (
         # torch.fake_quantize doesn't support blockwise quantization
@@ -222,9 +255,6 @@ def quantize_dequantize(
 
         if ret is not None:
             return ret
-
-    if _torch_compiler_is_exporting():
-        raise RuntimeError
 
     output_dtype = internal_dtype = tensor.dtype
 
@@ -328,7 +358,9 @@ def _torch_fake_quantize(
             qmin,
             qmax,
         )
-        return output.to(output_dtype if output.dtype != output_dtype else None)
+        if output is not None:
+            output = output.to(output_dtype if output.dtype != output_dtype else None)
+        return output
 
     scale_shape = tuple((*(1 for _ in range(tensor.dim() - scale.dim())), *scale.shape))
     if scale_shape != scale.shape:
@@ -366,7 +398,11 @@ def _torch_fake_quantize(
                     qmin,
                     qmax,
                 )
-                return output.to(output_dtype if output.dtype != output_dtype else None)
+                if output is not None:
+                    output = output.to(
+                        output_dtype if output.dtype != output_dtype else None
+                    )
+                return output
             except RuntimeError:
                 # NOTE: torch.fake_quantize_per_channel_affine throws runtime error
                 # if zero_point is not in [qmin, qmax]. In practice, this error will
@@ -404,7 +440,7 @@ def _call_torch_fake_quantize_per_tensor(
     zero_point: torch.Tensor,
     qmin: int,
     qmax: int,
-) -> torch.Tensor:
+) -> Optional[torch.Tensor]:
     if _torch_compiler_is_exporting():
         dtype = _get_dtype(qmin, qmax)
         input_q = torch.ops.quantized_decomposed.quantize_per_tensor(
@@ -424,6 +460,9 @@ def _call_torch_fake_quantize_per_tensor(
             dtype,
         )
 
+    if _torch_compiler_is_compiling():
+        return None
+
     return torch.fake_quantize_per_tensor_affine(
         input,
         scale.view(()) if scale.dim() > 0 else scale,
@@ -440,7 +479,7 @@ def _call_torch_fake_quantize_per_channel(
     axis: int,
     qmin: int,
     qmax: int,
-) -> torch.Tensor:
+) -> Optional[torch.Tensor]:
     if _torch_compiler_is_exporting():
         dtype = _get_dtype(qmin, qmax)
         input_q = torch.ops.quantized_decomposed.quantize_per_channel(
@@ -461,6 +500,9 @@ def _call_torch_fake_quantize_per_channel(
             qmax,
             dtype,
         )
+
+    if _torch_compiler_is_compiling():
+        return None
 
     return torch.fake_quantize_per_channel_affine(
         input,
@@ -488,7 +530,8 @@ def dequantize(
     :param block_size: Block sizes per dimension
     :return: Resulting tensor
     """
-    _validate_arguments(tensor, scale, block_size=block_size)
+    if not _torch_compiler_is_compiling():
+        _validate_arguments(tensor, scale, block_size=block_size)
 
     output_dtype = internal_dtype = tensor.dtype
 

@@ -13,11 +13,11 @@ from typing import Optional, List, Dict, TYPE_CHECKING, overload
 
 import torch
 from torch import nn
-
 from packaging import version
 from aimet_torch.common.utils import deprecated
 from aimet_torch.quantization.base import EncodingBase
 from aimet_torch.quantization.encoding_analyzer import EncodingAnalyzer
+from aimet_torch.utils import _torch_compiler_is_compiling
 
 if TYPE_CHECKING:
     # pylint: disable=cyclic-import
@@ -125,7 +125,7 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
         initial_param_weakref, initial_param_version = self._initial_parameters.get(
             param_name, (None, None)
         )
-        if not initial_param_weakref:
+        if initial_param_weakref is None:
             # parameters created using register_parameter need not be initialized
             return True
 
@@ -135,15 +135,16 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
             # The initial parameter object doesn't exist in memory space anymore.
             return True
 
-        if (
-            current_param is initial_param
-            and current_param._version == initial_param_version
-        ):
-            # 1. Current parameter is the identical object as the initial parameter
-            # 2. The version nubmer of the current parameter never changed
-            return False
+        # 1. Initial parameter has been replaced with a different object, or
+        # 2. The version number has changed
+        if current_param is not initial_param:
+            return True
 
-        return True
+        # Tensor version is not available during compile
+        if _torch_compiler_is_compiling():
+            return True
+
+        return current_param._version != initial_param_version
 
     def state_dict(self, *args, **kwargs):  # pylint: disable=arguments-differ
         state_dict = super().state_dict(*args, **kwargs)  # pylint: disable=missing-kwoa

@@ -28,6 +28,7 @@ from aimet_torch.utils import (
     _is_expandable,
     StatisticsNotFoundError,
     _torch_compiler_is_exporting,
+    _torch_compiler_is_compiling,
     _is_qtensor_casting_enabled,
 )
 from aimet_torch.quantization.encoding_analyzer import (
@@ -986,7 +987,11 @@ class Quantize(AffineQuantizerBase):
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
-        if not _torch_compiler_is_exporting() and type(input) != torch.Tensor:
+        if (
+            not _torch_compiler_is_exporting()
+            and not _torch_compiler_is_compiling()
+            and type(input) != torch.Tensor
+        ):
             input = input.as_subclass(torch.Tensor)
 
         output = quantize(
@@ -1000,6 +1005,7 @@ class Quantize(AffineQuantizerBase):
 
         if (
             not _torch_compiler_is_exporting()
+            and not _torch_compiler_is_compiling()
             and not torch.onnx.is_in_onnx_export()
             and _is_qtensor_casting_enabled()
         ):
@@ -1131,7 +1137,11 @@ class QuantizeDequantize(AffineQuantizerBase):
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
-        if not _torch_compiler_is_exporting() and type(input) != torch.Tensor:
+        if (
+            not _torch_compiler_is_exporting()
+            and not _torch_compiler_is_compiling()
+            and type(input) != torch.Tensor
+        ):
             input = input.as_subclass(torch.Tensor)
 
         output = quantize_dequantize(
@@ -1146,6 +1156,7 @@ class QuantizeDequantize(AffineQuantizerBase):
 
         if (
             not _torch_compiler_is_exporting()
+            and not _torch_compiler_is_compiling()
             and not torch.onnx.is_in_onnx_export()
             and _is_qtensor_casting_enabled()
         ):
@@ -1171,7 +1182,11 @@ class Dequantize(AffineQuantizerBase):  # pylint: disable=missing-class-docstrin
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
-        if not _torch_compiler_is_exporting() and type(input) != torch.Tensor:
+        if (
+            not _torch_compiler_is_exporting()
+            and not _torch_compiler_is_compiling()
+            and type(input) != torch.Tensor
+        ):
             input = input.as_subclass(torch.Tensor)
 
         output = dequantize(
@@ -1180,6 +1195,7 @@ class Dequantize(AffineQuantizerBase):  # pylint: disable=missing-class-docstrin
 
         if (
             not _torch_compiler_is_exporting()
+            and not _torch_compiler_is_compiling()
             and not torch.onnx.is_in_onnx_export()
             and _is_qtensor_casting_enabled()
         ):

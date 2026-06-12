@@ -89,6 +89,18 @@ def test_export(model_factory, compile: bool, tmp_path: Path):
             reason="Exporting torch.compile-d model is only supported in torch >= 2.11.0"
         )
 
+    if (
+        model_factory == llama_rms_norm
+        and compile
+        and version.parse("2.12.0")
+        <= version.parse(torch.__version__)
+        < version.parse("2.13.0")
+    ):
+        pytest.skip(
+            reason="PyTorch 2.12.0 has a compile bug when pow is involved (will be fixed in 2.13). "
+            "See https://github.com/pytorch/pytorch/issues/185715"
+        )
+
     model = model_factory(pretrained=False).requires_grad_(False).eval()
     model = prepare_model(model)
     x = torch.randn(1, 3, 224, 224)

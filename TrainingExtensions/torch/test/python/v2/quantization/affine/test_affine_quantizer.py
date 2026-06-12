@@ -20,6 +20,7 @@ import torch
 import warnings
 from torch import nn
 from torch.optim import SGD, RMSprop, Adagrad, Adam, AdamW
+import torch.nn.functional as F
 
 from aimet_torch.common.quantsim import _get_minimum_scale
 from aimet_torch.v2.quantization.encoding_analyzer import MinMaxEncodingAnalyzer
@@ -34,6 +35,10 @@ from aimet_torch.v2.quantization.affine import (
 )
 from aimet_torch.v2.quantization import affine
 import aimet_torch.v2.quantization as Q
+from aimet_torch.quantization.affine.backends.utils import (
+    _SUPPORTED_BACKENDS,
+    set_backend,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -2820,3 +2825,76 @@ def test_zero_representable():
         with torch.no_grad():
             offset = qdq.get_offset()
             assert torch.all((-255 <= offset) & (offset <= 0))
+
+
+@pytest.fixture
+def clear_torch_compile_cache():
+    yield
+    torch.compiler.reset()
+
+
+@pytest.fixture(autouse=True)
+def disable_triton_fallback_to_torch_builtins():
+    from aimet_torch.quantization.affine.backends import triton as _triton
+
+    orig = _triton._PER_TENSOR_USE_TRITON_THRESHOLD
+    _triton._PER_TENSOR_USE_TRITON_THRESHOLD = 1
+    yield
+    _triton._PER_TENSOR_USE_TRITON_THRESHOLD = orig
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize(
+    "shape, block_size",
+    [
+        ((), None),  # per-tensor
+        ((10, 1), None),  # per-channel with axis=0
+        ((10, 2), (-1, -1)),  # per-block with channel_axis=0, block_axis=1
+    ],
+)
+@pytest.mark.parametrize("backend", _SUPPORTED_BACKENDS.keys())
+def test_fullgraph_compile(
+    backend, shape, block_size, device, clear_torch_compile_cache
+):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip(reason="CUDA is not available")
+
+    qdq = QuantizeDequantize(shape, 0, 255, False, block_size=block_size).to(device)
+    qdq.set_range(-1, 1)
+    qdq = torch.compile(qdq, fullgraph=True)
+
+    with set_backend(backend):
+        x = torch.randn(10, 10, device=device)
+        _ = qdq(x)
+
+        # Re-run with different shape to trigger recompilation
+        x = torch.randn(2, 10, 10, device=device)
+        _ = qdq(x)
+
+    # TODO: Replace this test with actual aimet_torch.nn.QuantizedLinear
+    class QuantizedLinear(torch.nn.Linear):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.weight_qdq = QuantizeDequantize(
+                shape, -128, 127, True, block_size=block_size
+            )
+            self.output_qdq = QuantizeDequantize((), 0, 255, False)
+
+            self.weight_qdq.set_range(-1, 1)
+            self.output_qdq.set_range(-1, 1)
+
+        def forward(self, input):
+            weight = self.weight_qdq(self.weight)
+            output = F.linear(input, weight, self.bias)
+            return self.output_qdq(output)
+
+    qlinear = QuantizedLinear(10, 10).to(device)
+    qlinear = torch.compile(qlinear, fullgraph=True)
+
+    with set_backend(backend):
+        x = torch.randn(1, 10, device=device)
+        _ = qlinear(x)
+
+        # Re-run with different shape to trigger recompilation
+        x = torch.randn(1, 3, 10, device=device)
+        _ = qlinear(x)

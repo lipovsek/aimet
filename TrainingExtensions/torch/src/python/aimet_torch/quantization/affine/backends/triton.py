@@ -7,7 +7,6 @@ from packaging.version import parse
 from typing import Optional, Sequence
 import math
 import functools
-import numpy as np
 import torch
 from aimet_torch.experimental import pgs
 from . import torch_builtins
@@ -16,6 +15,7 @@ from .torch_builtins import (
     _is_grid_representable,
     _is_numerically_stable,
 )
+from aimet_torch.utils import _torch_compiler_is_compiling
 from aimet_torch.common.utils import AimetLogger
 
 
@@ -673,6 +673,204 @@ try:
         scale = tl.load(scale_ptr + scale_idx)
         offset = tl.load(offset_ptr + scale_idx)
         tl.store(output_ptr + idx, (input + offset) * scale, mask=mask)
+
+    torch.library.define(
+        "aimet::triton_quantize_dequantize_per_tensor",
+        "("
+        "  Tensor input,"
+        "  Tensor scale,"
+        "  Tensor offset,"
+        "  int qmin,"
+        "  int qmax,"
+        "  float zero_point_shift,"
+        "  Tensor? mask=None"
+        ") -> Tensor",
+    )
+
+    @torch.library.impl("aimet::triton_quantize_dequantize_per_tensor", "meta")
+    def _(  # pylint: disable=unused-argument
+        input: torch.Tensor,
+        scale: torch.Tensor,
+        offset: torch.Tensor,
+        qmin: int,
+        qmax: int,
+        zero_point_shift: float,
+        mask: Optional[torch.Tensor] = None,
+    ):
+        return torch.empty_like(input)
+
+    @torch.library.impl("aimet::triton_quantize_dequantize_per_tensor", "default")
+    def triton_quantize_dequantize_per_tensor(
+        input: torch.Tensor,
+        scale: torch.Tensor,
+        offset: torch.Tensor,
+        qmin: int,
+        qmax: int,
+        zero_point_shift: float,
+        mask: Optional[torch.Tensor] = None,
+    ):
+        COMPUTE_BLOCK_SIZE = 1024
+        NUM_COMPUTE_BLOCKS = max(math.ceil(input.numel() / COMPUTE_BLOCK_SIZE), 1)
+
+        output = torch.empty_like(
+            input, memory_format=torch.contiguous_format, layout=torch.strided
+        )
+
+        quantize_dequantize_per_tensor[(NUM_COMPUTE_BLOCKS,)](
+            input.contiguous(),
+            scale.contiguous(),
+            offset.contiguous(),
+            qmin,
+            qmax,
+            zero_point_shift,
+            output,
+            mask,
+            input.numel(),
+            COMPUTE_BLOCK_SIZE,
+        )
+        return output
+
+    torch.library.define(
+        "aimet::triton_quantize_dequantize_per_channel",
+        "("
+        "  Tensor input,"
+        "  Tensor scale,"
+        "  Tensor offset,"
+        "  int qmin,"
+        "  int qmax,"
+        "  float zero_point_shift,"
+        "  int axis,"
+        "  Tensor? mask=None"
+        ") -> Tensor",
+    )
+
+    @torch.library.impl("aimet::triton_quantize_dequantize_per_channel", "meta")
+    def _(  # pylint: disable=unused-argument
+        input: torch.Tensor,
+        scale: torch.Tensor,
+        offset: torch.Tensor,
+        qmin: int,
+        qmax: int,
+        zero_point_shift: float,
+        axis: int,
+        mask: Optional[torch.Tensor] = None,
+    ):
+        return torch.empty_like(input)
+
+    @torch.library.impl("aimet::triton_quantize_dequantize_per_channel", "default")
+    def triton_quantize_dequantize_per_channel(
+        input: torch.Tensor,
+        scale: torch.Tensor,
+        offset: torch.Tensor,
+        qmin: int,
+        qmax: int,
+        zero_point_shift: float,
+        axis: int,
+        mask: Optional[torch.Tensor] = None,
+    ):
+        COMPUTE_BLOCK_SIZE = 1024
+        NUM_COMPUTE_BLOCKS = max(math.ceil(input.numel() / COMPUTE_BLOCK_SIZE), 1)
+
+        I = math.prod(input.shape[:axis])
+        J = input.shape[axis]
+        K = math.prod(input.shape[axis + 1 :])
+
+        output = torch.empty_like(
+            input, memory_format=torch.contiguous_format, layout=torch.strided
+        )
+
+        quantize_dequantize_per_channel[(NUM_COMPUTE_BLOCKS,)](
+            input.contiguous(),
+            scale.contiguous(),
+            offset.contiguous(),
+            qmin,
+            qmax,
+            zero_point_shift,
+            output,
+            mask,
+            I,
+            J,
+            K,
+            COMPUTE_BLOCK_SIZE,
+        )
+        return output
+
+    torch.library.define(
+        "aimet::triton_quantize_dequantize_per_block",
+        "("
+        "  Tensor input,"
+        "  Tensor scale,"
+        "  Tensor offset,"
+        "  int qmin,"
+        "  int qmax,"
+        "  float zero_point_shift,"
+        "  int[] block_size,"
+        "  Tensor? mask=None"
+        ") -> Tensor",
+    )
+
+    @torch.library.impl("aimet::triton_quantize_dequantize_per_block", "meta")
+    def _(  # pylint: disable=unused-argument
+        input: torch.Tensor,
+        scale: torch.Tensor,
+        offset: torch.Tensor,
+        qmin: int,
+        qmax: int,
+        zero_point_shift: float,
+        block_size: Sequence[int],
+        mask: Optional[torch.Tensor] = None,
+    ):
+        return torch.empty_like(input)
+
+    @torch.library.impl("aimet::triton_quantize_dequantize_per_block", "default")
+    def triton_quantize_dequantize_per_block(
+        input: torch.Tensor,
+        scale: torch.Tensor,
+        offset: torch.Tensor,
+        qmin: int,
+        qmax: int,
+        zero_point_shift: float,
+        block_size: Sequence[int],
+        mask: Optional[torch.Tensor] = None,
+    ):
+        COMPUTE_BLOCK_SIZE = 1024
+        NUM_COMPUTE_BLOCKS = max(math.ceil(input.numel() / COMPUTE_BLOCK_SIZE), 1)
+
+        blk_axes = iter(
+            axis
+            for axis, (input_dim, blk_size) in enumerate(zip(input.shape, block_size))
+            if input_dim != blk_size
+        )
+        blk_axis_0 = next(blk_axes)
+        blk_axis_1 = next(blk_axes)
+
+        I = math.prod(input.shape[:blk_axis_0])
+        J = math.prod(input.shape[blk_axis_0:blk_axis_1])
+        K = math.prod(input.shape[blk_axis_1:])
+        BLK_SIZE_J = math.prod(block_size[blk_axis_0:blk_axis_1])
+        BLK_SIZE_K = math.prod(block_size[blk_axis_1:])
+
+        output = torch.empty_like(
+            input, memory_format=torch.contiguous_format, layout=torch.strided
+        )
+
+        quantize_dequantize_per_block[(NUM_COMPUTE_BLOCKS,)](
+            input.contiguous(),
+            scale.contiguous(),
+            offset.contiguous(),
+            qmin,
+            qmax,
+            zero_point_shift,
+            output,
+            mask,
+            I,
+            J,
+            K,
+            BLK_SIZE_J,
+            BLK_SIZE_K,
+            COMPUTE_BLOCK_SIZE,
+        )
+        return output
 except ImportError:
     _is_triton_available = False
 
@@ -732,18 +930,18 @@ def _get_axes(
 
     if len(block_axes) == 1:
         (channel_axis,) = block_axes
-        I = int(np.prod(input_shape[:channel_axis]))
+        I = math.prod(input_shape[:channel_axis])
         J = input_shape[channel_axis]
-        K = int(np.prod(input_shape[channel_axis + 1 :]))
+        K = math.prod(input_shape[channel_axis + 1 :])
         return channel_axis, None, block_size, I, J, K, BLK_SIZE_J, BLK_SIZE_K
 
     if len(block_axes) == 2:
         blk_axis_0, blk_axis_1 = block_axes
-        I = int(np.prod(input_shape[:blk_axis_0]))
-        J = int(np.prod(input_shape[blk_axis_0:blk_axis_1]))
-        K = int(np.prod(input_shape[blk_axis_1:]))
-        BLK_SIZE_J = int(np.prod(block_size[blk_axis_0:blk_axis_1]))
-        BLK_SIZE_K = int(np.prod(block_size[blk_axis_1:]))
+        I = math.prod(input_shape[:blk_axis_0])
+        J = math.prod(input_shape[blk_axis_0:blk_axis_1])
+        K = math.prod(input_shape[blk_axis_1:])
+        BLK_SIZE_J = math.prod(block_size[blk_axis_0:blk_axis_1])
+        BLK_SIZE_K = math.prod(block_size[blk_axis_1:])
         return blk_axis_0, blk_axis_1, block_size, I, J, K, BLK_SIZE_J, BLK_SIZE_K
 
     raise _NotSupportedError(
@@ -921,54 +1119,39 @@ class TritonQuantizeDequantize(torch.autograd.Function):
             tensor, memory_format=torch.contiguous_format, layout=torch.strided
         )
 
-        COMPUTE_BLOCK_SIZE = 1024
-        NUM_COMPUTE_BLOCKS = max(math.ceil(tensor.numel() / COMPUTE_BLOCK_SIZE), 1)
-
         if axis_0 is None:
-            quantize_dequantize_per_tensor[(NUM_COMPUTE_BLOCKS,)](
-                tensor.contiguous(),
-                scale.contiguous(),
-                offset.contiguous(),
+            output = torch.ops.aimet.triton_quantize_dequantize_per_tensor(
+                tensor,
+                scale,
+                offset,
                 qmin,
                 qmax,
                 zero_point_shift,
-                output,
                 mask,
-                tensor.numel(),
-                COMPUTE_BLOCK_SIZE,
             )
+
         elif block_size[axis_0] == 1 and axis_1 is None:
-            quantize_dequantize_per_channel[(NUM_COMPUTE_BLOCKS,)](
-                tensor.contiguous(),
-                scale.contiguous(),
-                offset.contiguous(),
+            output = torch.ops.aimet.triton_quantize_dequantize_per_channel(
+                tensor,
+                scale,
+                offset,
                 qmin,
                 qmax,
                 zero_point_shift,
-                output,
+                axis_0,
                 mask,
-                I,
-                J,
-                K,
-                COMPUTE_BLOCK_SIZE,
             )
 
         elif axis_0 is not None and axis_1 is not None:
-            quantize_dequantize_per_block[(NUM_COMPUTE_BLOCKS,)](
-                tensor.contiguous(),
-                scale.contiguous(),
-                offset.contiguous(),
+            output = torch.ops.aimet.triton_quantize_dequantize_per_block(
+                tensor,
+                scale,
+                offset,
                 qmin,
                 qmax,
                 zero_point_shift,
-                output,
+                block_size,
                 mask,
-                I,
-                J,
-                K,
-                BLK_SIZE_J,
-                BLK_SIZE_K,
-                COMPUTE_BLOCK_SIZE,
             )
 
         else:
@@ -1009,8 +1192,6 @@ class TritonQuantizeDequantize(torch.autograd.Function):
             ctx.offset_requires_grad = offset.requires_grad
 
         return output
-
-    forward_fast_no_grad = functools.partial(forward, None, requires_grad=False)
 
     @staticmethod
     def backward(ctx, grad):
@@ -1167,6 +1348,11 @@ class TritonQuantizeDequantize(torch.autograd.Function):
         return input_grad, scale_grad, offset_grad, None, None, None, None
 
 
+TritonQuantizeDequantize_forward_fast_no_grad = functools.partial(
+    TritonQuantizeDequantize.forward, None, requires_grad=False
+)
+
+
 def quantize(
     tensor: torch.Tensor,
     scale: torch.Tensor,
@@ -1199,7 +1385,8 @@ def quantize(
         # Fall back to aten impl if triton is not available or inputs are not on cuda
         return torch_builtins.quantize(tensor, scale, offset, qmin, qmax, block_size)
 
-    _validate_arguments(tensor, scale, qmin, qmax, block_size)
+    if not _torch_compiler_is_compiling():
+        _validate_arguments(tensor, scale, qmin, qmax, block_size)
 
     output_dtype = internal_dtype = tensor.dtype
 
@@ -1294,7 +1481,8 @@ def quantize_dequantize(
             zero_point_shift,
         )
 
-    _validate_arguments(tensor, scale, qmin, qmax, block_size)
+    if not _torch_compiler_is_compiling():
+        _validate_arguments(tensor, scale, qmin, qmax, block_size)
 
     output_dtype = internal_dtype = tensor.dtype
 
@@ -1310,7 +1498,7 @@ def quantize_dequantize(
     # Micro optimization to avoid CPU overhead of torch.autograd.Function.apply.
     # This leads to significant overhead with small inputs where computation payload is near-zero
     forward = (
-        TritonQuantizeDequantize.forward_fast_no_grad
+        TritonQuantizeDequantize_forward_fast_no_grad
         if no_grad
         else TritonQuantizeDequantize.apply
     )
@@ -1383,7 +1571,8 @@ def dequantize(
         # Fall back to aten impl if triton is not available or inputs are not on cuda
         return torch_builtins.dequantize(tensor, scale, offset, block_size)
 
-    _validate_arguments(tensor, scale, block_size=block_size)
+    if not _torch_compiler_is_compiling():
+        _validate_arguments(tensor, scale, block_size=block_size)
 
     try:
         return TritonDequantize.apply(tensor, scale, offset, block_size)

@@ -3,11 +3,12 @@
 
 
 import random
+from packaging.version import parse
 import torch
 import pytest
 from collections import namedtuple
-from aimet_torch.v2.quantization import affine
-from aimet_torch.v2.quantization.affine.backends import (
+from aimet_torch.quantization import affine
+from aimet_torch.quantization.affine.backends import (
     torch_builtins,
     triton as _triton,
 )
@@ -16,10 +17,10 @@ from aimet_torch.quantization.affine.backends.torch_builtins import (
     _use_compiled_impl,
     _torch_fake_quantize,
 )
-from aimet_torch.v2.quantization.affine.backends.utils import _SUPPORTED_BACKENDS
-from aimet_torch.v2.utils import ste_round
+from aimet_torch.quantization.affine.backends.utils import _SUPPORTED_BACKENDS
+from aimet_torch.utils import ste_round
 from aimet_torch.experimental import pgs
-from aimet_torch.v2.quantization._utils import interleave, concretize_block_size
+from aimet_torch.quantization._utils import interleave, concretize_block_size
 
 VectorSetForTest = namedtuple(
     "VectorSetForTest",
@@ -966,6 +967,59 @@ class TestQuantizationBackends:
                             ),
                         )
 
+    @pytest.mark.skipif(
+        parse(torch.__version__) < parse("2.12.0"),
+        reason=(
+            "Full graph compilation with dynamic shapes not supported due to "
+            "https://github.com/pytorch/pytorch/issues/176347"
+        ),
+    )
+    @pytest.mark.parametrize("device", ["cpu", "cuda"])
+    @pytest.mark.parametrize(
+        "shape, block_size",
+        [
+            ((), None),  # per-tensor
+            ((10, 1), None),  # per-channel with axis=0
+            ((1, 10), None),  # per-channel with axis=1
+            ((10, 2), (-1, -1)),  # per-block with channel_axis=0, block_axis=1
+            ((2, 10), (-1, -1)),  # per-block with channel_axis=0, block_axis=1
+        ],
+    )
+    def test_fullgraph_compile(
+        self, backend_module, shape, block_size, device, clear_torch_compile_cache
+    ):
+        """
+        When: Compile quantize_dequantize with fullgraph=True
+        Then: Should compile successfully
+        """
+        if device == "cuda" and not torch.cuda.is_available():
+            pytest.skip(reason="CUDA is not available")
+
+        qdq = torch.compile(backend_module.quantize_dequantize, fullgraph=True)
+        scale = torch.full(shape, 0.1, device=device)
+        offset = torch.zeros(shape, device=device)
+
+        x = torch.randn(10, 10, device=device)
+        _ = qdq(x, scale, offset, -128, 127, block_size=block_size)
+
+        # Re-run with different shape to trigger recompilation
+        x = torch.randn(2, 10, 10, device=device)
+        _ = qdq(x, scale, offset, -128, 127, block_size=block_size)
+
+
+@pytest.fixture
+def clear_torch_compile_cache():
+    yield
+    torch.compiler.reset()
+
+
+@pytest.fixture(autouse=True)
+def disable_triton_fallback_to_torch_builtins():
+    orig = _triton._PER_TENSOR_USE_TRITON_THRESHOLD
+    _triton._PER_TENSOR_USE_TRITON_THRESHOLD = 1
+    yield
+    _triton._PER_TENSOR_USE_TRITON_THRESHOLD = orig
+
 
 def test_invalid_block_size():
     # Block size length must match scale
@@ -1186,7 +1240,7 @@ def test_pgs(
     )
 
 
-def test_compile():
+def test_compile_bug_workaround():
     """
     Given: Compiled QuantizeDequantize module
     When: Run forward
