@@ -6,6 +6,47 @@
 Release notes
 #############
 
+2.33.0
+======
+
+* New Features
+    * ONNX
+        * Added SpinQuant R2 merged rotation support (`e941326bd`_)
+        * Added SpinQuant R3 online rotation support (`e941326bd`_)
+        * SpinQuant API now operates on an ONNX model instead of a QuantSim model (`e941326bd`_)
+
+* Bug fixes and Improvements
+    * ONNX
+        * Fused RMSNorms with an internal Cast (`66db262be`_)
+        * Added ``mask_val`` as an input of the MaskedSoftmax function (`555c0df4d`_)
+        * Aligned MinMaxEncodingAnalyzer's minimum scale with aimet-torch (`edfe1e071`_)
+        * AdaScale: Added mechanism to speed up algo by stopping early if the loss has converged (`9d2ec9e0b`_)
+        * AdaScale: Added a new experimental loss function (`3761adde4`_)
+
+    * Torch
+        * Enabled full-graph compilation of affine QDQ for improved performance (`1239f0070`_)
+        * Supported root module registered as a quantized module (`ff69bb809`_)
+        * Change to raise error when exporting QLoRA models via :func:`QuantizationSimModel.export` (`0dc003a07`_)
+        * Removed outdated warning about switching the default quant scheme to min-max (`ad1ecd1f2`_)
+        * AdaScale: Added mechanism to speed up algo by stopping early if the loss has converged (`9d2ec9e0b`_)
+        * AdaScale: Added a new experimental loss function (`3761adde4`_)
+
+    * Common
+        * Add eNPU v7 quantsim config files (`17018b6f8`_)
+
+.. _e941326bd: https://github.com/qualcomm/aimet/commit/e941326bd
+.. _66db262be: https://github.com/qualcomm/aimet/commit/66db262be
+.. _555c0df4d: https://github.com/qualcomm/aimet/commit/555c0df4d
+.. _edfe1e071: https://github.com/qualcomm/aimet/commit/edfe1e071
+.. _1239f0070: https://github.com/qualcomm/aimet/commit/1239f0070
+.. _ff69bb809: https://github.com/qualcomm/aimet/commit/ff69bb809
+.. _0dc003a07: https://github.com/qualcomm/aimet/commit/0dc003a07
+.. _ad1ecd1f2: https://github.com/qualcomm/aimet/commit/ad1ecd1f2
+.. _17018b6f8: https://github.com/qualcomm/aimet/commit/17018b6f8
+.. _9d2ec9e0b: https://github.com/qualcomm/aimet/commit/9d2ec9e0b
+.. _3761adde4: https://github.com/qualcomm/aimet/commit/3761adde4
+
+
 2.32.1
 ======
 
