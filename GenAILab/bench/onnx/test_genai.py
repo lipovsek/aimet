@@ -19,6 +19,7 @@ from GenAILab.bench.profiler import (
     GPUMeter,
     MetricResult,
     ComponentRecipeStats,
+    RecipeStepStats,
     write_stats_to_disk,
 )
 from GenAILab.bench.determinism import set_seed
@@ -130,12 +131,29 @@ def test_llm_quantization(
         **model_kwargs,
     )
 
-    apply_spinquant_pre_sim(
-        entry.backbone,
-        spinquant_config,
-        visual_onnx_model=entry.visual,
-        embedding=entry.embedding,
-    )
+    # SpinQuant rotates the float graph before the sim is built, so it is not a
+    # recipe-chain step (the parser strips it out for aimet-onnx). Profile it here
+    # and re-attach it as a synthetic leading step below so the recorded recipe
+    # still reflects that SpinQuant was applied (and with which rotations).
+    spinquant_profiler = None
+    if spinquant_config is not None:
+        with GPUMeter(
+            **profiler_kwargs,
+            capture_intermediate_data=profiler_capture_intermediate_data,
+        ) as spinquant_profiler:
+            apply_spinquant_pre_sim(
+                entry.backbone,
+                spinquant_config,
+                visual_onnx_model=entry.visual,
+                embedding=entry.embedding,
+            )
+    else:
+        apply_spinquant_pre_sim(
+            entry.backbone,
+            spinquant_config,
+            visual_onnx_model=entry.visual,
+            embedding=entry.embedding,
+        )
 
     sim_collection = model_cls.instantiate_quantsim(
         entry,
@@ -328,6 +346,34 @@ def test_llm_quantization(
         model_kwargs["image_size"] = list(image_size)
     if precomputed_encodings is not None:
         model_kwargs["encodings"] = precomputed_encodings
+
+    # Re-attach SpinQuant as a synthetic leading step so the recorded recipe
+    # reflects the pre-sim rotation. The single apply_spinquant_pre_sim call
+    # rotates both backbone and visual graphs, so the profiler is attached to the
+    # backbone step only; the visual marker carries no profiler to avoid
+    # double-counting the rotation time in aggregated utilization.
+    if spinquant_config is not None:
+        backbone_steps = [
+            RecipeStepStats(
+                recipe_name="SpinQuant",
+                recipe_kwargs=spinquant_config,
+                dataset_name="",
+                dataset_kwargs={},
+                profiler=spinquant_profiler,
+            ),
+            *backbone_steps,
+        ]
+        if visual_steps:
+            visual_steps = [
+                RecipeStepStats(
+                    recipe_name="SpinQuant",
+                    recipe_kwargs=spinquant_config,
+                    dataset_name="",
+                    dataset_kwargs={},
+                    profiler=None,
+                ),
+                *visual_steps,
+            ]
 
     components = {
         "backbone": ComponentRecipeStats(steps=backbone_steps),
