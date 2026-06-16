@@ -133,6 +133,7 @@ class FloatEncoding(EncodingBase):
             self.finite,
             self.unsigned_zero,
             scale,
+            block_size=self._block_size,
         )
 
     def quantize(self, input: torch.Tensor) -> torch.Tensor:

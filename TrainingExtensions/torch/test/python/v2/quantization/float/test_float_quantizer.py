@@ -440,6 +440,7 @@ def test_float_encoding_to():
             finite=False,
             unsigned_zero=False,
             scale=None,
+            block_size=(5, 10),
         )
 
     """
@@ -451,6 +452,7 @@ def test_float_encoding_to():
         finite=False,
         unsigned_zero=False,
         scale=torch.tensor(0.1),
+        block_size=(5, 10),
     )
     """
     When: Call .to() with same dtype and device
@@ -467,6 +469,7 @@ def test_float_encoding_to():
     new_encoding = encoding.to(device="cpu", dtype=torch.float16)
     assert new_encoding.maxval.device == torch.device("cpu")
     assert new_encoding.maxval.dtype == torch.float16
+    assert new_encoding.block_size == encoding.block_size
 
     assert encoding.maxval.device == torch.device("cpu")
     assert encoding.maxval.dtype == torch.float32
