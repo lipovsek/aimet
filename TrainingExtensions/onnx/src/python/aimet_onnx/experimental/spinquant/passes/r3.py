@@ -40,9 +40,11 @@ R3 is the last pass in the pipeline. Do not run another role-map-dependent pass
 after R3 in the same context.
 """
 
+import re
 from typing import List
 
 from aimet_onnx.common.utils import AimetLogger
+from aimet_onnx.meta.operations import Op
 
 from aimet_onnx.experimental.spinquant.model_analysis import (
     BlockR3Anchors,
@@ -57,6 +59,23 @@ from aimet_onnx.experimental.spinquant.transforms import (
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
+
+# R3 inserts its online Hadamard rotations as ``MatMul`` nodes whose names are
+# the ``spinquant_block{idx}_{q|k}`` prefix from ``_rotate_q_side`` /
+# ``_rotate_k_side`` below plus the ``_R3`` suffix appended by
+# ``insert_online_hadamard_node``. This regex is the single source of truth for
+# recognizing those ops downstream; keep it in sync with the names produced here.
+_ONLINE_ROTATION_OP_RE = re.compile(r"spinquant_block\d+_[qk]_R3$")
+
+
+def is_online_rotation_op(cg_op: Op) -> bool:
+    """Return True if ``cg_op`` is a SpinQuant R3 online Hadamard rotation MatMul.
+
+    R3 online rotations carry a fixed orthonormal Hadamard as their "weight"
+    rather than a learnable parameter, so downstream optimizers (e.g.
+    sequential MSE) should skip them.
+    """
+    return cg_op.type == "MatMul" and bool(_ONLINE_ROTATION_OP_RE.match(cg_op.name))
 
 
 class R3RotationPass(RotationPass):

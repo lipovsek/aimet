@@ -820,6 +820,77 @@ def test_nodes_to_exclude():
                 assert quantizer.is_encoding_frozen()
 
 
+def _two_matmul_chain_with_r3_model():
+    """input -> MatMul('mm') -> MatMul('spinquant_block0_k_R3') -> output."""
+    input_tensor = onnx.helper.make_tensor_value_info(
+        "input", onnx.TensorProto.FLOAT, [4, 8]
+    )
+    output_tensor = onnx.helper.make_tensor_value_info(
+        "output", onnx.TensorProto.FLOAT, [4, 8]
+    )
+    w0 = onnx.numpy_helper.from_array(
+        np.random.randn(8, 8).astype(np.float32), name="w0"
+    )
+    # An R3 online Hadamard is a square matrix on the last axis.
+    w1 = onnx.numpy_helper.from_array(
+        np.random.randn(8, 8).astype(np.float32), name="spinquant_block0_k_R3_hadamard"
+    )
+    mm = onnx.helper.make_node("MatMul", ["input", "w0"], ["mm_out"], name="mm")
+    r3 = onnx.helper.make_node(
+        "MatMul",
+        ["mm_out", "spinquant_block0_k_R3_hadamard"],
+        ["output"],
+        name="spinquant_block0_k_R3",
+    )
+    graph = onnx.helper.make_graph(
+        [mm, r3],
+        "two_matmul_chain_with_r3",
+        inputs=[input_tensor],
+        outputs=[output_tensor],
+        initializer=[w0, w1],
+    )
+    model = models_for_tests.make_model(graph)
+    onnx.checker.check_model(model)
+    return model
+
+
+def test_seq_mse_excludes_r3_online_rotations(tmp_dir):
+    """
+    When: A model contains SpinQuant R3 online rotation MatMuls
+          (named ``spinquant_block{idx}_{q|k}_R3``).
+    Then: The dependency graph auto-excludes them from sequential MSE - their
+          "weight" is a fixed Hadamard, and they would otherwise crash BQ
+          sequence chunking under GQA (the Q-side and K-side rotations at the
+          same level carry different folded-token sequence lengths, which ORT
+          rejects as an io-binding shape mismatch) - while still optimizing
+          ordinary MatMuls.
+    """
+    model = _two_matmul_chain_with_r3_model()
+    sim = QuantizationSimModel(
+        model=copy.deepcopy(model),
+        quant_scheme=QuantScheme.post_training_tf,
+        default_activation_bw=8,
+        default_param_bw=4,
+        providers=["CPUExecutionProvider"],
+    )
+    inputs = [{"input": np.random.randn(4, 8).astype(np.float32)}]
+    apply_seq_mse(sim, inputs)
+
+    r3_node = "spinquant_block0_k_R3"
+    regular_node = "mm"
+
+    for cg_op in sim.connected_graph.ordered_ops:
+        if cg_op.type not in SUPPORTED_MODULES:
+            continue
+        param_name = _get_weight_param_name(cg_op)
+        quantizer = sim.qc_quantize_op_dict[param_name]
+        if cg_op.name == r3_node:
+            # R3 must be skipped: its encodings are left unfrozen.
+            assert not quantizer.is_encoding_frozen()
+        elif cg_op.name == regular_node:
+            assert quantizer.is_encoding_frozen()
+
+
 def test_temporarily_disable_grouped_block_quantizers():
     model = single_residual_model()
     sim = QuantizationSimModel(

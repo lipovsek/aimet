@@ -15,6 +15,7 @@ from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.connectedgraph import ConnectedGraph, WEIGHT_INDEX
 from aimet_onnx.utils import create_input_dict, ParamUtils
 from aimet_onnx.meta.operations import Op
+from aimet_onnx.experimental.spinquant.passes.r3 import is_online_rotation_op
 
 # The following modules with weights are supported
 SUPPORTED_MODULES = ("Conv", "Gemm", "MatMul")
@@ -70,7 +71,26 @@ class DependencyGraph:
         nodes_to_exclude: List of supported node name(s) to exclude from sequential MSE optimization
         """
         self.conn_graph = connected_graph
-        self._nodes_to_exclude = nodes_to_exclude or []
+        self._nodes_to_exclude = list(nodes_to_exclude or [])
+
+        # Always skip SpinQuant R3 online rotation MatMuls (fixed Hadamards, not
+        # learnable weights, and unsafe to parallelize under GQA). The naming
+        # convention is owned by the R3 pass; see is_online_rotation_op.
+        online_rotation_ops = [
+            op.name
+            for op in self.conn_graph.ordered_ops
+            if is_online_rotation_op(op) and op.name not in self._nodes_to_exclude
+        ]
+        if online_rotation_ops:
+            _logger.info(
+                "Excluding %d SpinQuant R3 online rotation op(s) from sequential MSE: %s",
+                len(online_rotation_ops),
+                ", ".join(online_rotation_ops),
+            )
+            self._nodes_to_exclude.extend(online_rotation_ops)
+
+        #: Resolved exclusion set (user-supplied plus auto-excluded ops).
+        self.nodes_to_exclude = self._nodes_to_exclude
 
         self.starting_ops = []  # Tracks nodes with zero in-degree (starting ops)
         self._name_to_node = {}  # Tracks a node name to the dependency node itself

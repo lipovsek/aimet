@@ -20,7 +20,10 @@ from aimet_onnx.experimental.spinquant.passes.base import (
 )
 from aimet_onnx.experimental.spinquant.passes.r1 import R1RotationPass
 from aimet_onnx.experimental.spinquant.passes.r2 import R2RotationPass
-from aimet_onnx.experimental.spinquant.passes.r3 import R3RotationPass
+from aimet_onnx.experimental.spinquant.passes.r3 import (
+    R3RotationPass,
+    is_online_rotation_op,
+)
 
 __all__ = [
     "R1RotationPass",
@@ -28,4 +31,5 @@ __all__ = [
     "R3RotationPass",
     "RotationPass",
     "SpinquantContext",
+    "is_online_rotation_op",
 ]

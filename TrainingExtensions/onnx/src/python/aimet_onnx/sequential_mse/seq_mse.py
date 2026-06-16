@@ -116,7 +116,6 @@ class SequentialMse:
 
         self.sim = sim
         self.params = params
-        self._nodes_to_exclude = nodes_to_exclude or []
 
         data_loader = itertools.islice(data_loader, params.num_batches)
         # As of onnx 1.18, value info must be populated prior to instantiating Extractor
@@ -128,6 +127,10 @@ class SequentialMse:
         self.dependency_graph = DependencyGraph(
             sim.connected_graph, data_loader, nodes_to_exclude
         )
+        # Use the dependency graph's resolved exclusion set as the single source
+        # of truth: it augments the user-supplied list with auto-excluded ops
+        # (e.g. SpinQuant R3 online rotations) so quantizer handling stays in sync.
+        self._nodes_to_exclude = self.dependency_graph.nodes_to_exclude
         self.data_loader = data_loader
 
     @deprecated("Use aimet_onnx.apply_seq_mse instead")
