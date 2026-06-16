@@ -13,18 +13,36 @@
 # CI (non-interactive):
 #   stop_pod.sh --delete wf-1 wf-2   # Delete (not just terminate) named workflows
 #
+# Run as another account (e.g. the bot) without editing ~/.kube/config:
+#   stop_pod.sh --user qaihm_bot --namespace aihub-ci --specify-token -a
+# --specify-token prompts for a bearer token (hidden input) that overrides the
+# kubeconfig credential for this invocation only.
+#
 set -e
 
-NAMESPACE="${NAMESPACE:-aihub}"
-USERNAME="${USER:-$(whoami)}"
+NAMESPACE="aihub"
+USERNAME="$(whoami)"
+ARGO_TOKEN=""
+
+# Wrapper so every argo call honors an optional per-invocation bearer token.
+argo() {
+  if [ -n "$ARGO_TOKEN" ]; then
+    command argo "$@" --token "$ARGO_TOKEN"
+  else
+    command argo "$@"
+  fi
+}
 
 usage() {
   echo "Usage: $0 [options] [workflow-name ...]" >&2
   echo "" >&2
   echo "Options:" >&2
-  echo "  -a         Stop all your running workflows" >&2
-  echo "  -l         List your running workflows (don't stop)" >&2
-  echo "  --delete   Use 'argo delete' instead of 'argo terminate'" >&2
+  echo "  -a                Stop all your running workflows" >&2
+  echo "  -l                List your running workflows (don't stop)" >&2
+  echo "  --delete          Use 'argo delete' instead of 'argo terminate'" >&2
+  echo "  --user <name>     Creator username to filter on (default: \$(whoami))" >&2
+  echo "  --namespace <ns>  Argo namespace (default: aihub)" >&2
+  echo "  --specify-token   Prompt for a bearer token (hidden) to use for this run" >&2
   echo "" >&2
   echo "If no workflow name or -a is given, lists workflows and prompts." >&2
   exit 1
@@ -50,16 +68,35 @@ stop_workflow() {
 }
 
 MODE=""
+SPECIFY_TOKEN=false
 WF_NAMES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -a)        MODE="all"; shift ;;
-    -l)        MODE="list"; shift ;;
-    --delete)  DELETE_MODE=true; shift ;;
-    -h|--help) usage ;;
-    *)         WF_NAMES+=("$1"); shift ;;
+    -a)              MODE="all"; shift ;;
+    -l)              MODE="list"; shift ;;
+    --delete)        DELETE_MODE=true; shift ;;
+    --user)          USERNAME="$2"; shift 2 ;;
+    --namespace)     NAMESPACE="$2"; shift 2 ;;
+    --specify-token) SPECIFY_TOKEN=true; shift ;;
+    -h|--help)       usage ;;
+    *)               WF_NAMES+=("$1"); shift ;;
   esac
 done
+
+# Prompt for a bearer token (hidden) to run as another account this invocation.
+if $SPECIFY_TOKEN; then
+  read -r -s -p "Paste bearer token: " ARGO_TOKEN
+  echo >&2
+  if [ -z "$ARGO_TOKEN" ]; then
+    echo "ERROR: no token entered." >&2
+    exit 1
+  fi
+  if ! argo list -n "$NAMESPACE" --status Running -o name >/dev/null 2>&1; then
+    echo "ERROR: argo auth failed with the supplied token (namespace: $NAMESPACE)." >&2
+    echo "Check the token value / that it is valid for this cluster." >&2
+    exit 1
+  fi
+fi
 
 # Stop specific workflow(s) by name
 if [ ${#WF_NAMES[@]} -gt 0 ]; then
