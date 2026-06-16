@@ -765,7 +765,7 @@ class BaseQuantizationMixin(abc.ABC):
             shape=quantizer_shape,
             block_size=block_shape,
             reduce_op=torch.amax,
-        )
+        ).to(torch.float32)
 
         # This is not intuitive but OCP microscaling spec suggests the following derivation
         # floor(log2(weight_max / 4))
@@ -801,7 +801,7 @@ class BaseQuantizationMixin(abc.ABC):
 
         # 5. Replace the weight tensor with the dequantized tensor from step 3, which holds the e2m1 encodings
         self.weight = torch.nn.Parameter(
-            dequantized_weight, requires_grad=weight.requires_grad
+            dequantized_weight.to(weight.dtype), requires_grad=weight.requires_grad
         )
 
     def _remove_input_quantizers(self, indices: Union[int, Iterable[int]] = None):

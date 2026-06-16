@@ -3185,14 +3185,11 @@ class TestQuantSimWithMxfp4Weights:
         e2m1_qdq.maxval = block_scales * 6
         weight_data = e2m1_qdq(weight)
 
-        # scales_expanded = block_scales.unsqueeze(-1)  # [out_features, n_blocks, 1]
-        # weight_reshaped = weight.reshape(out_features, n_blocks, block_size)
-        # weight_data = ((weight_reshaped / scales_expanded) * scales_expanded).reshape(out_features, in_features)
-
         return weight_data, block_scales
 
-    @pytest.mark.parametrize("block_size", [2, 4, 8, 16, 32])
-    def test_model_with_mxfp4_weights(self, block_size):
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+    @pytest.mark.parametrize("block_size", [2, 32])
+    def test_model_with_mxfp4_weights(self, block_size, dtype):
         """
         Given: Model with weights quantized to mxfp4
         When: Create quantsim and export encodings
@@ -3200,7 +3197,7 @@ class TestQuantSimWithMxfp4Weights:
         """
         torch.manual_seed(42)
 
-        model = self.ToyLinearModel()
+        model = self.ToyLinearModel().to(dtype)
 
         in_features = 32
         out_features = 64
@@ -3214,7 +3211,7 @@ class TestQuantSimWithMxfp4Weights:
         with torch.no_grad():
             model.linear.weight.copy_(weight_data)
 
-        dummy_input = torch.randn(1, in_features)
+        dummy_input = torch.randn(1, in_features, dtype=dtype)
         sim = QuantizationSimModel(
             model,
             dummy_input,
@@ -3224,7 +3221,24 @@ class TestQuantSimWithMxfp4Weights:
         )
 
         sim.model.linear.set_weight_quantizer_to_mxfp4_int8(block_size=block_size)
+        # Weight encoding scale should be represented with float32 even if weight data is in lower precision
+        # Especially, float16 can't represent e8m0 scale due to limited exponent bits
+        assert sim.model.linear.weight.dtype == dtype
+        assert sim.model.linear.weight.encoding.scale.dtype == torch.float32
+
         sim.compute_encodings(lambda model: model(dummy_input))
+
+        # Weight encoding scale should remain float32 after calibration
+        assert sim.model.linear.weight.dtype == dtype
+        assert sim.model.linear.weight.encoding.scale.dtype == torch.float32
+
+        # Weight encoding scale should remain float32 after model.to(...).
+        sim.model.to(torch.float32)
+        assert sim.model.linear.weight.dtype == torch.float32
+        assert sim.model.linear.weight.encoding.scale.dtype == torch.float32
+        sim.model.to(dtype)
+        assert sim.model.linear.weight.dtype == dtype
+        assert sim.model.linear.weight.encoding.scale.dtype == torch.float32
 
         assert sim.model.linear.param_quantizers["weight"].bitwidth == 8
         assert isinstance(sim.model.linear.weight, DequantizedTensor)
@@ -3242,7 +3256,9 @@ class TestQuantSimWithMxfp4Weights:
 
         # Since weights are already e2m1-representable at their block scales,
         # the dequantized weight should exactly match the original weight data
-        assert torch.allclose(sim.model.linear.weight, weight_data, rtol=1e-5)
+        assert torch.allclose(
+            sim.model.linear.weight.to(torch.float32), weight_data, rtol=1e-5
+        )
 
         # Run a forward pass to ensure encodings are functional
         output = sim.model(dummy_input)
