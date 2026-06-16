@@ -887,7 +887,7 @@ def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     if small_model:
         llm_config.num_hidden_layers = 2
 
-    entry = model_cls.export_onnx_models(
+    entry = model_cls.instantiate_float_model(
         model_id, context_length, sequence_length, small_model=small_model
     )
     collection = model_cls.instantiate_quantsim(entry)
@@ -978,7 +978,7 @@ def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
         if small_model:
             llm_config.num_hidden_layers = 2
 
-        entry = model_cls.export_onnx_models(
+        entry = model_cls.instantiate_float_model(
             model_id, context_length, sequence_length, small_model=small_model
         )
         collection = model_cls.instantiate_quantsim(entry)

@@ -466,7 +466,7 @@ class YAMLConfigParser:
             # rotation on the decoder stack changes the expected input
             # distribution, so the merger's post-MLP Hadamard rotation must also
             # be applied. Validated here on raw step names (before SpinQuant is
-            # extracted out of the chain for aimet-onnx).
+            # extracted out of the chain).
             backbone_step_names = {
                 step["name"] for step in doc["recipe"].get("backbone", [])
             }
@@ -481,11 +481,13 @@ class YAMLConfigParser:
                         "and the vision encoder merger layers."
                     )
 
-                # For aimet-onnx, the backbone SpinQuant step applies the visual
-                # rotation as a side effect, and the entire backbone runs before
-                # any visual steps execute.
+                # The single backbone SpinQuant pass applies the visual rotation
+                # as a side effect (one apply_spinquant call rotates both the
+                # decoder stack and the visual encoder), so the visual SpinQuant
+                # entry is only a marker and must come before any other visual
+                # step.
                 # TODO: Remove this check once individual APIs are invoked for
-                # each recipe in aimet-onnx.
+                # each recipe.
                 first_spinquant_idx = next(
                     i
                     for i, step in enumerate(visual_steps)
@@ -597,13 +599,11 @@ class YAMLConfigParser:
         precision = PrecisionConfig.from_dict(doc.pop("precision", None))
         task_params["precision"] = precision
 
-        # For aimet-onnx, SpinQuant rotates the float ONNX graph *before* the
-        # sim is built (applied in the test runner via apply_spinquant_pre_sim),
-        # so it is not a recipe-chain step. Pull its flags out here and strip the
-        # step from the parsed recipe lists; the chain never sees it. The torch
-        # SpinQuant recipe genuinely runs inside the chain, so this only applies
-        # to the ONNX framework.
-        is_onnx = "ONNX" in cls.get_default_llm().__name__
+        # SpinQuant rotates the float graph *before* the sim is built (applied
+        # in the test runner via apply_spinquant_pre_sim), so it is not a
+        # recipe-chain step. Pull its flags out here and strip the step from the
+        # parsed recipe lists; the chain never sees it. This applies to both the
+        # ONNX and torch frameworks.
         spinquant_config = None
 
         # Recipe parsing — each component is a list of recipe steps
@@ -614,7 +614,7 @@ class YAMLConfigParser:
                 for step_config in recipe_list:
                     recipe_name = step_config["name"]
 
-                    if is_onnx and recipe_name == "SpinQuant":
+                    if recipe_name == "SpinQuant":
                         flags = {
                             k: v
                             for k, v in step_config.items()
@@ -661,8 +661,8 @@ class YAMLConfigParser:
                 "visual": [{"class": cls.get_recipe(default_recipe)}],
             }
 
-        # SpinQuant flags extracted from the recipe lists above (aimet-onnx only;
-        # None when SpinQuant was not requested or the framework is torch).
+        # SpinQuant flags extracted from the recipe lists above; None when
+        # SpinQuant was not requested.
         task_params["spinquant"] = spinquant_config
 
         # Metrics parsing

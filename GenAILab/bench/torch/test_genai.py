@@ -23,6 +23,7 @@ from GenAILab.bench.profiler import (
     GPUMeter,
     MetricResult,
     ComponentRecipeStats,
+    RecipeStepStats,
     write_stats_to_disk,
 )
 from GenAILab.bench.determinism import set_seed
@@ -34,6 +35,7 @@ from GenAILab.bench import datasets, metrics
 from GenAILab.qai_hub_lm.backends import torch as models  # noqa: F401 — triggers registration
 from GenAILab.bench.torch import quant_recipes
 from GenAILab.qai_hub_lm.backends.torch.generator_utils import generator_factory
+from GenAILab.qai_hub_lm.backends.torch.quantsim_utils import apply_spinquant_pre_sim
 
 
 def test_llm_quantization(
@@ -72,11 +74,36 @@ def test_llm_quantization(
     )
     metrics = test_parameters.pop("metrics")
 
+    # SpinQuant rotates the float model before the sim is built. Load the raw
+    # model first, rotate it, then build the sim on the rotated graph. The
+    # parser pulls the SpinQuant flags out of the recipe chain so the chain
+    # never contains a SpinQuant step.
+    spinquant_config = test_parameters.pop("spinquant", None)
+
     gc.collect()
     torch.cuda.empty_cache()
 
-    sim_collection = model_cls.instantiate_quantsim(
+    model = model_cls.instantiate_float_model(
         model_id,
+        **model_kwargs,
+    )
+
+    # SpinQuant rotates the float model before the sim is built, so it is not a
+    # recipe-chain step (the parser strips it out). Profile it here and re-attach
+    # it as a synthetic leading step below so the recorded recipe still reflects
+    # that SpinQuant was applied (and with which rotations).
+    spinquant_profiler = None
+    if spinquant_config is not None:
+        with GPUMeter(
+            **profiler_kwargs,
+            capture_intermediate_data=profiler_capture_intermediate_data,
+        ) as spinquant_profiler:
+            apply_spinquant_pre_sim(model, spinquant_config)
+    else:
+        apply_spinquant_pre_sim(model, spinquant_config)
+
+    sim_collection = model_cls.instantiate_quantsim(
+        model,
         context_length,
         sequence_length,
         precision=precision,
@@ -141,6 +168,7 @@ def test_llm_quantization(
                 model_kwargs=model_kwargs,
                 component="backbone",
                 recipe_cache=recipe_cache,
+                spinquant_config=spinquant_config,
             )
 
         visual_steps = []
@@ -164,10 +192,12 @@ def test_llm_quantization(
                     model_kwargs=model_kwargs,
                     component="visual",
                     recipe_cache=recipe_cache,
+                    spinquant_config=spinquant_config,
                 )
 
         # Finalize embedding quantization after recipes have had a chance to
-        # transform the weights (e.g. SpinQuant rotation).
+        # transform the weights. The embedding is already rotated when SpinQuant
+        # ran on the float model before sim creation.
         # Skip if RemoveQuantization was applied to the backbone — the
         # embedding should stay in FP to match.
         backbone_removed_quant = any(
@@ -336,6 +366,34 @@ def test_llm_quantization(
         model_kwargs["image_size"] = list(image_size)
     if precomputed_encodings is not None:
         model_kwargs["encodings"] = precomputed_encodings
+
+    # Re-attach SpinQuant as a synthetic leading step so the recorded recipe
+    # reflects the pre-sim rotation. The single apply_spinquant_pre_sim call
+    # rotates both backbone and visual graphs, so the profiler is attached to the
+    # backbone step only; the visual marker carries no profiler to avoid
+    # double-counting the rotation time in aggregated utilization.
+    if spinquant_config is not None:
+        backbone_steps = [
+            RecipeStepStats(
+                recipe_name="SpinQuant",
+                recipe_kwargs=spinquant_config,
+                dataset_name="",
+                dataset_kwargs={},
+                profiler=spinquant_profiler,
+            ),
+            *backbone_steps,
+        ]
+        if visual_steps:
+            visual_steps = [
+                RecipeStepStats(
+                    recipe_name="SpinQuant",
+                    recipe_kwargs=spinquant_config,
+                    dataset_name="",
+                    dataset_kwargs={},
+                    profiler=None,
+                ),
+                *visual_steps,
+            ]
 
     components = {
         "backbone": ComponentRecipeStats(steps=backbone_steps),

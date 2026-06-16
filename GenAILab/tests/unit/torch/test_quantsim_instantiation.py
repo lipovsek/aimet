@@ -5,6 +5,8 @@
 
 These tests verify the orchestration in LLM_Torch.instantiate_quantsim
 without loading real models — all heavy dependencies are mocked.
+instantiate_quantsim now takes a pre-loaded float model (the runner loads
+it via instantiate_float_model and may rotate it with SpinQuant first).
 """
 
 from unittest.mock import MagicMock, patch, call
@@ -50,9 +52,6 @@ class TestInstantiateQuantsimOrchestration:
         """When precision=None, a default PrecisionConfig should be created."""
         with (
             patch(
-                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.instantiate_model"
-            ) as mock_inst,
-            patch(
                 "GenAILab.qai_hub_lm.backends.torch.llm.QuantizationSimModel"
             ) as mock_qsim,
             patch(
@@ -73,8 +72,6 @@ class TestInstantiateQuantsimOrchestration:
             ),
         ):
             mock_model = MagicMock()
-            mock_model.to.return_value = mock_model
-            mock_inst.return_value = mock_model
             mock_wrap.return_value = mock_model
 
             mock_sim = MagicMock()
@@ -84,7 +81,7 @@ class TestInstantiateQuantsimOrchestration:
             from GenAILab.qai_hub_lm.backends.torch.llm import LLM_Torch
 
             result = LLM_Torch.instantiate_quantsim(
-                model_id="test",
+                mock_model,
                 context_length=32,
                 sequence_length=8,
                 precision=None,
@@ -103,9 +100,6 @@ class TestInstantiateQuantsimOrchestration:
         assert precision.activations == float16
 
         with (
-            patch(
-                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.instantiate_model"
-            ) as mock_inst,
             patch(
                 "GenAILab.qai_hub_lm.backends.torch.llm.QuantizationSimModel"
             ) as mock_qsim,
@@ -128,8 +122,6 @@ class TestInstantiateQuantsimOrchestration:
             ),
         ):
             mock_model = MagicMock()
-            mock_model.to.return_value = mock_model
-            mock_inst.return_value = mock_model
             mock_wrap.return_value = mock_model
 
             mock_sim = MagicMock()
@@ -139,7 +131,7 @@ class TestInstantiateQuantsimOrchestration:
             from GenAILab.qai_hub_lm.backends.torch.llm import LLM_Torch
 
             LLM_Torch.instantiate_quantsim(
-                model_id="test",
+                mock_model,
                 context_length=32,
                 sequence_length=8,
                 precision=precision,
@@ -149,9 +141,6 @@ class TestInstantiateQuantsimOrchestration:
     def test_rms_norm_set_to_16_bits(self):
         """Quantized RMSNorm modules should have weight bitwidth set to 16."""
         with (
-            patch(
-                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.instantiate_model"
-            ) as mock_inst,
             patch(
                 "GenAILab.qai_hub_lm.backends.torch.llm.QuantizationSimModel"
             ) as mock_qsim,
@@ -174,8 +163,6 @@ class TestInstantiateQuantsimOrchestration:
             ) as mock_is_rms,
         ):
             mock_model = MagicMock()
-            mock_model.to.return_value = mock_model
-            mock_inst.return_value = mock_model
             mock_wrap.return_value = mock_model
 
             rms_module = MagicMock()
@@ -192,7 +179,7 @@ class TestInstantiateQuantsimOrchestration:
             from GenAILab.qai_hub_lm.backends.torch.llm import LLM_Torch
 
             LLM_Torch.instantiate_quantsim(
-                model_id="test",
+                mock_model,
                 context_length=32,
                 sequence_length=8,
             )
@@ -203,9 +190,6 @@ class TestInstantiateQuantsimOrchestration:
     def test_returns_sim_collection(self):
         """Should return a SimCollection with the quantsim as backbone."""
         with (
-            patch(
-                "GenAILab.qai_hub_lm.backends.torch.llm.LLM_Torch.instantiate_model"
-            ) as mock_inst,
             patch(
                 "GenAILab.qai_hub_lm.backends.torch.llm.QuantizationSimModel"
             ) as mock_qsim,
@@ -225,8 +209,6 @@ class TestInstantiateQuantsimOrchestration:
             ),
         ):
             mock_model = MagicMock()
-            mock_model.to.return_value = mock_model
-            mock_inst.return_value = mock_model
             mock_wrap.return_value = mock_model
 
             mock_sim = MagicMock()
@@ -237,7 +219,7 @@ class TestInstantiateQuantsimOrchestration:
             from GenAILab.qai_hub_lm.models.base import SimCollection
 
             result = LLM_Torch.instantiate_quantsim(
-                model_id="test",
+                mock_model,
                 context_length=32,
                 sequence_length=8,
             )

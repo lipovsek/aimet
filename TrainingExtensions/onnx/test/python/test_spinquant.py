@@ -1094,7 +1094,9 @@ class TestBlockIdentifier:
             else:
                 model_cls = LLM_ONNX
 
-            entry = model_cls.export_onnx_models(model_id, 32, 16, small_model=True)
+            entry = model_cls.instantiate_float_model(
+                model_id, 32, 16, small_model=True
+            )
             collection = model_cls.instantiate_quantsim(entry)
             blocks, _ = get_decoder_block_boundaries(
                 collection.backbone.model.model,
@@ -1266,7 +1268,9 @@ class TestDecoderRoleMap:
         cache_dir = get_model_checkpoint_path(model_id)
         try:
             model_cls = YAMLConfigParser.get_model_class("qwen3")
-            entry = model_cls.export_onnx_models(model_id, 32, 16, small_model=True)
+            entry = model_cls.instantiate_float_model(
+                model_id, 32, 16, small_model=True
+            )
             collection = model_cls.instantiate_quantsim(entry)
             onnx_model = collection.backbone.model.model
             cg = collection.backbone.connected_graph

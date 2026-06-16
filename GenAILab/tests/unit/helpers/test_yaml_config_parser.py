@@ -724,14 +724,12 @@ class TestParseDocument:
         # Should NOT raise — exclusive adaptation bypasses the check
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
 
+    @pytest.mark.parametrize("fake_llm_name", ["FakeLLM_ONNX", "FakeLLM_Torch"])
     @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
-    def test_spinquant_extracted_from_chain_onnx(self, mock_detect, tmp_path):
-        """On aimet-onnx, SpinQuant is pulled out of the chain into 'spinquant'."""
+    def test_spinquant_extracted_from_chain(self, mock_detect, fake_llm_name, tmp_path):
+        """SpinQuant is pulled out of the chain into 'spinquant' for both frameworks."""
 
-        class FakeLLM_ONNX:
-            pass
-
-        YAMLConfigParser._default_llm_cls = FakeLLM_ONNX
+        YAMLConfigParser._default_llm_cls = type(fake_llm_name, (), {})
 
         doc = {
             "model": {
@@ -740,7 +738,7 @@ class TestParseDocument:
                 "context_length": 64,
             },
             "recipe": [
-                {"name": "SpinQuant", "enable_r1": True, "enable_r3": True},
+                {"name": "SpinQuant", "enable_r1": True, "enable_r2": False},
                 {"name": "Calibration"},
             ],
             "metrics": [{"name": "PPL"}],
@@ -748,7 +746,7 @@ class TestParseDocument:
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
 
         # SpinQuant flags are extracted, step is stripped from the chain.
-        assert result["spinquant"] == {"enable_r1": True, "enable_r3": True}
+        assert result["spinquant"] == {"enable_r1": True, "enable_r2": False}
         backbone_names = [
             step["class"].__name__ for step in result["recipe"]["backbone"]
         ]

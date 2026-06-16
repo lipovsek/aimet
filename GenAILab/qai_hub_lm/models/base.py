@@ -82,9 +82,25 @@ class LLM(ABC):
         )
 
     @classmethod
+    def instantiate_float_model(
+        cls,
+        model_id: str,
+        small_model: bool = False,
+        dtype: torch.dtype = torch.float32,
+        *args,
+        **kwargs,
+    ) -> PreTrainedModel:
+        """Load the raw float model.
+
+        Separated from :meth:`instantiate_quantsim` so the caller can transform
+        the float model (e.g. apply SpinQuant) before the sim is built.
+        """
+        return cls.instantiate_model(model_id, small_model).to(dtype=dtype)
+
+    @classmethod
     @abstractmethod
-    def instantiate_quantsim(cls, *args, **kwargs) -> SimCollection:
-        """Instantiate QuantSim models for components"""
+    def instantiate_quantsim(cls, model, *args, **kwargs) -> SimCollection:
+        """Instantiate QuantSim models for components from a raw float model"""
         pass
 
     @classmethod

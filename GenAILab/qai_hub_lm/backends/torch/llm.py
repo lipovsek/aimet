@@ -44,11 +44,9 @@ class LLM_Torch(LLM):
     @classmethod
     def instantiate_quantsim(
         cls,
-        model_id: str,
+        model,
         context_length: int,
         sequence_length: int | list[int],
-        small_model: bool = False,
-        dtype: torch.dtype = torch.float32,
         precision: PrecisionConfig | None = None,
         *args,
         **kwargs,
@@ -61,9 +59,6 @@ class LLM_Torch(LLM):
             if isinstance(sequence_length, list)
             else sequence_length
         )
-
-        model = cls.instantiate_model(model_id, small_model)
-        model = model.to(dtype=dtype)
 
         block_prec = precision.blocks["default"]
         # default_param_bw must be an int; when block weights are FP we strip

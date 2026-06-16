@@ -47,7 +47,7 @@ class TestOnnxInstantiateQuantsimOrchestration:
         try:
             from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
 
-            entry = LLM_ONNX.export_onnx_models(
+            entry = LLM_ONNX.instantiate_float_model(
                 model_id="/fake/path",
                 context_length=32,
                 sequence_length=8,

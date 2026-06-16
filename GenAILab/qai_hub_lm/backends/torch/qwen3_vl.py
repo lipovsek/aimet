@@ -36,11 +36,9 @@ class Qwen_3_VL_Torch(Qwen_3_VL):
     @classmethod
     def instantiate_quantsim(
         cls,
-        model_id: str,
+        model,
         context_length: int,
         sequence_length: int | list[int],
-        small_model: bool = False,
-        dtype: torch.dtype = torch.float32,
         precision: PrecisionConfig | None = None,
         image_size: tuple[int, int] | None = None,
         *args,
@@ -55,9 +53,6 @@ class Qwen_3_VL_Torch(Qwen_3_VL):
             if isinstance(sequence_length, list)
             else sequence_length
         )
-
-        model = cls.instantiate_model(model_id, small_model)
-        model = model.to(dtype=dtype)
 
         default_param_bw = precision.blocks["default"].qtype.bits
         default_output_bw = (
@@ -132,8 +127,9 @@ class Qwen_3_VL_Torch(Qwen_3_VL):
             remove_activation_quantizers(visual_sim.model)
 
         # 3) Convert embedding table to quantized equivalent
-        # Note: encodings are computed after recipe application (in the test runner)
-        # to allow recipes like SpinQuant to rotate the weights first.
+        # Note: encodings are computed after recipe application (in the test
+        # runner). The weights themselves are already rotated when SpinQuant ran
+        # on the float model before this sim was built.
         quantized_embedding = precision.embedding not in (float16, float32)
         if quantized_embedding and not isinstance(
             model.model.language_model.embed_tokens, QuantizationMixin

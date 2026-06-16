@@ -52,7 +52,7 @@ class LLM_ONNX(LLM):
     """Generic LLM for AIMET-ONNX quantization."""
 
     @classmethod
-    def export_onnx_models(
+    def instantiate_float_model(
         cls,
         model_id: str,
         context_length: int,

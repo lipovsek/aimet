@@ -38,11 +38,9 @@ class Gemma4_Torch(Gemma4_VLM):
     @classmethod
     def instantiate_quantsim(
         cls,
-        model_id: str,
+        model,
         context_length: int,
         sequence_length: int,
-        small_model: bool = False,
-        dtype: torch.dtype = torch.float32,
         precision: PrecisionConfig | None = None,
         image_size: tuple[int, int] | None = None,
         *args,
@@ -51,9 +49,6 @@ class Gemma4_Torch(Gemma4_VLM):
         if precision is None:
             precision = PrecisionConfig()
         precision.ensure_visual_defaults()
-
-        model = cls.instantiate_model(model_id, small_model)
-        model = model.to(dtype=dtype)
 
         default_param_bw = precision.blocks["default"].qtype.bits
         default_output_bw = (

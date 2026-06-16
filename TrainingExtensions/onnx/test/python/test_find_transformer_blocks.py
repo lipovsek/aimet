@@ -76,7 +76,9 @@ def verify_find_blocks(sim, model_type):
 def test_get_decoder_blocks(add_genai_tests_path):
     from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
 
-    entry = LLM_ONNX.export_onnx_models("Qwen/Qwen2-0.5B", 32, 16, small_model=True)
+    entry = LLM_ONNX.instantiate_float_model(
+        "Qwen/Qwen2-0.5B", 32, 16, small_model=True
+    )
     collection = LLM_ONNX.instantiate_quantsim(entry)
     verify_find_blocks(collection.backbone, "qwen2")
 
@@ -84,7 +86,9 @@ def test_get_decoder_blocks(add_genai_tests_path):
 def test_get_decoder_blocks_qwen3(add_genai_tests_path):
     from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
 
-    entry = LLM_ONNX.export_onnx_models("Qwen/Qwen3-0.6B", 32, 16, small_model=True)
+    entry = LLM_ONNX.instantiate_float_model(
+        "Qwen/Qwen3-0.6B", 32, 16, small_model=True
+    )
     collection = LLM_ONNX.instantiate_quantsim(entry)
     verify_find_blocks(collection.backbone, "qwen3")
 
@@ -93,7 +97,7 @@ def test_get_decoder_blocks_qwen3(add_genai_tests_path):
 def test_get_decoder_blocks_phi(add_genai_tests_path):
     from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
 
-    entry = LLM_ONNX.export_onnx_models(
+    entry = LLM_ONNX.instantiate_float_model(
         "microsoft/Phi-3-mini-4k-instruct", 32, 16, small_model=True
     )
     collection = LLM_ONNX.instantiate_quantsim(entry)

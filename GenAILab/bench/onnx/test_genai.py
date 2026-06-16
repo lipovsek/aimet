@@ -122,7 +122,7 @@ def test_llm_quantization(
     gc.collect()
     torch.cuda.empty_cache()
 
-    entry = model_cls.export_onnx_models(
+    entry = model_cls.instantiate_float_model(
         model_id,
         context_length,
         sequence_length,

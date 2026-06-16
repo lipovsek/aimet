@@ -43,7 +43,7 @@ from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
 @YAMLConfigParser.register_model("qwen2_5_vl")
 class Qwen_25_VL_ONNX(Qwen_25_VL):
     @classmethod
-    def export_onnx_models(
+    def instantiate_float_model(
         cls,
         model_id: str,
         context_length: int,

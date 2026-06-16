@@ -3,6 +3,8 @@
 
 """Torch quantsim utils"""
 
+import torch
+
 from aimet_torch.v2.nn.true_quant import QuantizedConv2d, QuantizedLinear
 from aimet_torch.v2.quantsim.config_utils import (
     set_blockwise_quantization_for_weights,
@@ -15,6 +17,68 @@ from GenAILab.qai_hub_lm.precision import (
     PrecisionConfig,
     WeightPrecision,
 )
+
+
+def _resolve_decoder_backbone(model):
+    """Resolve the decoder language backbone from a raw HF model.
+
+    Mirrors the resolution used by ``SpinQuant.apply_spinquant``: VLMs expose
+    the decoder stack at ``model.model.language_model`` while plain LLMs expose
+    it at ``model.model``.
+    """
+    return (
+        model.model.language_model
+        if hasattr(model.model, "language_model")
+        else model.model
+    )
+
+
+def apply_spinquant_pre_sim(model, spinquant_config: dict | None) -> None:
+    """Apply SpinQuant rotations to the raw float model before quantsim creation.
+
+    SpinQuant fuses RMS norms and rotates float weights (R1/R2). It must run on
+    the float ``nn.Module`` *before* the ``QuantizationSimModel`` is built so the
+    sim wraps the rotated graph and calibrates against the rotated weights. The
+    single :meth:`SpinQuant.apply_spinquant` call rotates both the decoder stack
+    and (for supported VLMs) the visual encoder + merger layers, so backbone and
+    visual stay consistent.
+
+    No-op when ``spinquant_config`` is ``None`` (SpinQuant not requested).
+
+    :param model: raw HuggingFace model, mutated in-place. For VLMs the
+        ``embed_tokens`` module referenced by ``SimCollection.embedding`` is
+        rotated as part of the decoder-stack pass.
+    :param spinquant_config: dict of flags from the YAML SpinQuant recipe step
+        (``enable_r1`` / ``enable_r2``); ``None`` to skip.
+    """
+    if spinquant_config is None:
+        return
+
+    # Imported lazily so the (experimental) SpinQuant dependency is only
+    # required when a config actually requests it.
+    from aimet_torch.experimental.spinquant.spinquant_optimizer import (
+        SpinQuant as SpinQuantOptimizer,
+    )
+
+    if spinquant_config.get("enable_r3", False):
+        raise NotImplementedError(
+            "SpinQuant R3 online rotation is not supported for the torch framework."
+        )
+
+    # Untie embed_tokens / lm_head if they share storage — apply_spinquant
+    # requires them untied.
+    decoder_model = _resolve_decoder_backbone(model)
+    lm_head = model.lm_head
+    if decoder_model.embed_tokens.weight is lm_head.weight:
+        old_weight = lm_head.weight
+        lm_head.weight = torch.nn.Parameter(
+            old_weight.data.clone().detach().to(old_weight.device),
+            requires_grad=old_weight.requires_grad,
+        )
+
+    SpinQuantOptimizer._enable_r1 = spinquant_config.get("enable_r1", True)
+    SpinQuantOptimizer._enable_r2 = spinquant_config.get("enable_r2", False)
+    SpinQuantOptimizer.apply_spinquant(model)
 
 
 def _remove_decoder_block_weight_quantizers(

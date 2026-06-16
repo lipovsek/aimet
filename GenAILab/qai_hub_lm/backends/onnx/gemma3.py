@@ -43,7 +43,7 @@ class Gemma3_ONNX(Gemma3_VLM):
     """Gemma3 ONNX quantization (text backbone + vision tower)."""
 
     @classmethod
-    def export_onnx_models(
+    def instantiate_float_model(
         cls,
         model_id: str,
         context_length: int,
