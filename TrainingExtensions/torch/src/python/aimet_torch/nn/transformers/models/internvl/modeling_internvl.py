@@ -10,8 +10,8 @@ try:
     from transformers.models.internvl import modeling_internvl
 except ImportError as exc:
     raise ImportError(
-        "aimet_torch.nn.transformers.models.qwen3.modeling_qwen3 cannot be imported. Please make sure "
-        "that you have transformers >= 4.51.0 installed in your environment."
+        "aimet_torch.nn.transformers.models.internvl.modeling_internvl cannot be imported. Please make sure "
+        "that you have transformers >= 4.52.0 installed in your environment."
     ) from exc
 
 from aimet_torch.onnx_utils import map_torch_types_to_onnx
