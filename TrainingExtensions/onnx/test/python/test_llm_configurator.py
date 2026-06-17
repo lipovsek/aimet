@@ -399,8 +399,15 @@ class TestLLMConfigurator:
         assert quantizer.enabled == True
         assert quantizer.bitwidth == 8
 
-    def test_sha_kv_cache_tying(self):
-        model = transformer_blocks.sha_2_head_block()
+    @pytest.mark.parametrize(
+        "block_builder",
+        [
+            transformer_blocks.sha_2_head_block,
+            transformer_blocks.sha_2_head_block_native_kvcache,
+        ],
+    )
+    def test_sha_kv_cache_tying(self, block_builder):
+        model = block_builder()
         sim = QuantizationSimModel(model, activation_type="int16", param_type="int4")
         kv_io_map = {"past_key_in": "past_key_out", "past_value_in": "past_value_out"}
         _tie_quantizers_for_kv_cache(sim, kv_io_map)

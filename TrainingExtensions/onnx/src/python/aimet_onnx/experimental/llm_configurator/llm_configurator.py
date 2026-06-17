@@ -8,6 +8,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_KV_CACHE_COMBINE_OPS = ("Concat", "ScatterElements")
+
 
 def _get_quantizer_no_split_slice(
     quantsim_model: QuantSimOnnx, tensor_name: str
@@ -87,34 +89,34 @@ def _set_matmul_second_input_to_8b(quantsim_model: QuantSimOnnx):
                 quantizer.use_symmetric_encodings = True
 
 
-def _get_all_downstream_concats(sim: QuantSimOnnx, tensor_name: str) -> set:
+def _get_all_downstream_kv_cache_ops(sim: QuantSimOnnx, tensor_name: str) -> set:
     product = sim.connected_graph.get_product(tensor_name)
     downstream = set()
     for consumer in product.consumers:
-        if consumer.type == "Concat":
+        if consumer.type in _KV_CACHE_COMBINE_OPS:
             downstream.add(consumer)
             downstream.update(
-                _get_all_downstream_concats(sim, consumer.outputs[0].name)
+                _get_all_downstream_kv_cache_ops(sim, consumer.outputs[0].name)
             )
         elif _is_grid_preserving_op(consumer.type, domain=consumer.domain):
             downstream.update(
-                _get_all_downstream_concats(sim, consumer.outputs[0].name)
+                _get_all_downstream_kv_cache_ops(sim, consumer.outputs[0].name)
             )
 
     return downstream
 
 
-def _get_all_upstream_concats(sim: QuantSimOnnx, tensor_name: str) -> set:
+def _get_all_upstream_kv_cache_ops(sim: QuantSimOnnx, tensor_name: str) -> set:
     product = sim.connected_graph.get_product(tensor_name)
     upstream = set()
     producer = product.producer
-    if producer and producer.type == "Concat":
+    if producer and producer.type in _KV_CACHE_COMBINE_OPS:
         upstream.add(producer)
     elif producer and (
         _is_grid_preserving_op(producer.type, domain=producer.domain)
         or producer.type == "Cast"
     ):
-        upstream.update(_get_all_upstream_concats(sim, producer.inputs[0].name))
+        upstream.update(_get_all_upstream_kv_cache_ops(sim, producer.inputs[0].name))
 
     return upstream
 
@@ -163,11 +165,11 @@ def _tie_quantizers_for_kv_cache(
 
         quantizer_mapping[input_name] = quantizer
 
-        concats_to_tie = _get_all_upstream_concats(
+        ops_to_tie = _get_all_upstream_kv_cache_ops(
             quantsim_model, output_name
-        ) | _get_all_downstream_concats(quantsim_model, input_name)
-        for concat in concats_to_tie:
-            for tensor in concat.inputs + concat.outputs:
+        ) | _get_all_downstream_kv_cache_ops(quantsim_model, input_name)
+        for kv_cache_op in ops_to_tie:
+            for tensor in kv_cache_op.inputs + kv_cache_op.outputs:
                 qtzr_name = quantsim_model._get_enabled_quantizer_name(tensor.name)  # pylint: disable=protected-access
                 if qtzr_name:
                     quantizer_mapping[qtzr_name] = quantizer

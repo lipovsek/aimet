@@ -1,7 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from onnxscript import script, opset17 as op, FLOAT
+from onnxscript import script, opset17 as op, FLOAT, INT64
 from onnxscript.values import Opset
 import onnx_ir as ir
 import onnx
@@ -54,6 +54,37 @@ def rot_embed(
 
 
 @script(local, default_opset=op)
+def sha_qkv(
+    hidden: FLOAT[1, 2048, 256],
+    position_ids_cos: FLOAT[1, 1, 2048, 64],
+    position_ids_sin: FLOAT[1, 1, 2048, 64],
+    k_proj_sha_weight: FLOAT[128, 256, 1, 1],
+    q_proj_sha_weight: FLOAT[128, 256, 1, 1],
+    v_proj_sha_weight: FLOAT[128, 256, 1, 1],
+    q_norm_sha_weight: FLOAT[128],
+):
+    q_proj = op.Conv(hidden, q_proj_sha_weight)
+    k_proj = op.Conv(hidden, k_proj_sha_weight)
+    v_proj = op.Conv(hidden, v_proj_sha_weight)
+
+    q_proj_t = op.Transpose(q_proj, perm=[0, 2, 3, 1])
+    k_proj_t = op.Transpose(k_proj, perm=[0, 2, 3, 1])
+    v_proj_t = op.Transpose(v_proj, perm=[0, 2, 3, 1])
+
+    q_proj_norm = normalize(q_proj_t, q_norm_sha_weight)
+    k_proj_norm = normalize(k_proj_t, q_norm_sha_weight)
+
+    q_proj_emb = rot_embed(q_proj_norm, position_ids_cos, position_ids_sin)
+    k_proj_emb = rot_embed(k_proj_norm, position_ids_cos, position_ids_sin)
+
+    q_proj_emb = op.Reshape(q_proj_emb, [1, 1, 2048, 128])
+    k_proj_emb = op.Reshape(k_proj_emb, [1, 1, 2048, 128])
+
+    k_proj_emb_t = op.Transpose(k_proj_emb, perm=[0, 1, 3, 2])
+    return q_proj_emb, k_proj_emb_t, v_proj_t
+
+
+@script(local, default_opset=op)
 def sha_head(
     hidden: FLOAT[1, 2048, 256],
     attention_mask: FLOAT[1, 1, 2048, 4096],
@@ -75,24 +106,15 @@ def sha_head(
         value=onnx.helper.make_tensor("const_one", onnx.TensorProto.FLOAT, (), [1.0])
     )
 
-    q_proj = op.Conv(hidden, q_proj_sha_weight)
-    k_proj = op.Conv(hidden, k_proj_sha_weight)
-    v_proj = op.Conv(hidden, v_proj_sha_weight)
-
-    q_proj_t = op.Transpose(q_proj, perm=[0, 2, 3, 1])
-    k_proj_t = op.Transpose(k_proj, perm=[0, 2, 3, 1])
-    v_proj_t = op.Transpose(v_proj, perm=[0, 2, 3, 1])
-
-    q_proj_norm = normalize(q_proj_t, q_norm_sha_weight)
-    k_proj_norm = normalize(k_proj_t, q_norm_sha_weight)
-
-    q_proj_emb = rot_embed(q_proj_norm, position_ids_cos, position_ids_sin)
-    k_proj_emb = rot_embed(k_proj_norm, position_ids_cos, position_ids_sin)
-
-    q_proj_emb = op.Reshape(q_proj_emb, [1, 1, 2048, 128])
-    k_proj_emb = op.Reshape(k_proj_emb, [1, 1, 2048, 128])
-
-    k_proj_emb_t = op.Transpose(k_proj_emb, perm=[0, 1, 3, 2])
+    q_proj_emb, k_proj_emb_t, v_proj_t = sha_qkv(
+        hidden,
+        position_ids_cos,
+        position_ids_sin,
+        k_proj_sha_weight,
+        q_proj_sha_weight,
+        v_proj_sha_weight,
+        q_norm_sha_weight,
+    )
 
     total_key = op.Concat(past_key_in, k_proj_emb_t, axis=3)
     key_scaled = total_key / div_factor
@@ -106,6 +128,75 @@ def sha_head(
     attn_score = op.Softmax(qk_matmul_out_masked, axis=-1)
 
     total_value = op.Concat(past_value_in, v_proj_t, axis=2)
+
+    self_attn_out = op.MatMul(attn_score, total_value)
+    return self_attn_out, k_proj_emb_t, v_proj_t
+
+
+@script(local, default_opset=op)
+def sha_head_native_kvcache(
+    hidden: FLOAT[1, 2048, 256],
+    attention_mask: FLOAT[1, 1, 2048, 4096],
+    position_ids_cos: FLOAT[1, 1, 2048, 64],
+    position_ids_sin: FLOAT[1, 1, 2048, 64],
+    past_key_in: FLOAT[1, 1, 128, 4096],
+    past_value_in: FLOAT[1, 1, 4096, 128],
+    cache_index: INT64[1],
+    k_proj_sha_weight: FLOAT[128, 256, 1, 1],
+    q_proj_sha_weight: FLOAT[128, 256, 1, 1],
+    v_proj_sha_weight: FLOAT[128, 256, 1, 1],
+    q_norm_sha_weight: FLOAT[128],
+):
+    div_factor = op.Constant(
+        value=onnx.helper.make_tensor(
+            "div_factor_0", onnx.TensorProto.FLOAT, (), [11.31]
+        )
+    )
+    const_one = op.Constant(
+        value=onnx.helper.make_tensor("const_one", onnx.TensorProto.FLOAT, (), [1.0])
+    )
+    arange = op.Constant(
+        value=onnx.helper.make_tensor(
+            "arange", onnx.TensorProto.INT64, (2048,), np.arange(2048)
+        )
+    )
+    index_ones = op.Constant(
+        value=onnx.helper.make_tensor(
+            "index_ones",
+            onnx.TensorProto.INT64,
+            (1, 1, 128, 2048),
+            np.ones(1 * 1 * 128 * 2048, dtype=np.int64),
+        )
+    )
+
+    q_proj_emb, k_proj_emb_t, v_proj_t = sha_qkv(
+        hidden,
+        position_ids_cos,
+        position_ids_sin,
+        k_proj_sha_weight,
+        q_proj_sha_weight,
+        v_proj_sha_weight,
+        q_norm_sha_weight,
+    )
+
+    # Native kv-cache: scatter the current key/value into the pre-allocated cache
+    # at positions cache_index + arange, instead of concatenating with the past.
+    scatter_index = cache_index + arange
+    key_index = scatter_index * index_ones
+    value_index = op.Transpose(key_index, perm=[0, 1, 3, 2])
+
+    total_key = op.ScatterElements(past_key_in, key_index, k_proj_emb_t, axis=3)
+    key_scaled = total_key / div_factor
+
+    qk_matmul_out = op.MatMul(q_proj_emb, key_scaled)
+
+    # Unnecessary mul, kept for structure
+    attn_mask_mul = op.Mul(attention_mask, const_one)
+    qk_matmul_out_masked = qk_matmul_out + attn_mask_mul
+
+    attn_score = op.Softmax(qk_matmul_out_masked, axis=-1)
+
+    total_value = op.ScatterElements(past_value_in, value_index, v_proj_t, axis=2)
 
     self_attn_out = op.MatMul(attn_score, total_value)
     return self_attn_out, k_proj_emb_t, v_proj_t
@@ -172,18 +263,96 @@ def sha_block(
     return out_proj, past_key_out, past_value_out
 
 
-def sha_2_head_block():
-    proto = sha_block.to_model_proto()
-    for inp in proto.graph.input[6:]:
+@script()
+def sha_block_native_kvcache(
+    x: FLOAT[1, 2048, 256],
+    attention_mask: FLOAT[1, 1, 2048, 4096],
+    position_ids_cos: FLOAT[1, 1, 2048, 64],
+    position_ids_sin: FLOAT[1, 1, 2048, 64],
+    past_key_in: FLOAT[2, 1, 128, 4096],
+    past_value_in: FLOAT[2, 1, 4096, 128],
+    cache_index: INT64[1],
+    # initializers
+    k_proj_sha_0_weight: FLOAT[128, 256, 1, 1],
+    k_proj_sha_1_weight: FLOAT[128, 256, 1, 1],
+    q_proj_sha_0_weight: FLOAT[128, 256, 1, 1],
+    q_proj_sha_1_weight: FLOAT[128, 256, 1, 1],
+    v_proj_sha_0_weight: FLOAT[128, 256, 1, 1],
+    v_proj_sha_1_weight: FLOAT[128, 256, 1, 1],
+    self_attn_o_proj_conv_weight: FLOAT[256, 256, 1, 1],
+    q_norm_sha_0_weight: FLOAT[128],
+) -> tuple[FLOAT[1, 256, 1, 2048], FLOAT[2, 1, 128, 2048], FLOAT[2, 1, 2048, 128]]:
+    past_key_0_in_0 = op.Slice(past_key_in, 0, 1, 0, 1)
+    past_key_0_in_1 = op.Slice(past_key_in, 1, 2, 0, 1)
+
+    past_value_0_in_0 = op.Slice(past_value_in, 0, 1, 0, 1)
+    past_value_0_in_1 = op.Slice(past_value_in, 1, 2, 0, 1)
+
+    hidden = op.Reshape(x, [1, -1, 1, 256])
+    hidden_t = op.Transpose(hidden, perm=[0, 3, 2, 1])
+
+    self_attn_out_0, k_proj_emb_t_0, v_proj_t_0 = sha_head_native_kvcache(
+        hidden_t,
+        attention_mask,
+        position_ids_cos,
+        position_ids_sin,
+        past_key_0_in_0,
+        past_value_0_in_0,
+        cache_index,
+        k_proj_sha_0_weight,
+        q_proj_sha_0_weight,
+        v_proj_sha_0_weight,
+        q_norm_sha_0_weight,
+    )
+    self_attn_out_1, k_proj_emb_t_1, v_proj_t_1 = sha_head_native_kvcache(
+        hidden_t,
+        attention_mask,
+        position_ids_cos,
+        position_ids_sin,
+        past_key_0_in_1,
+        past_value_0_in_1,
+        cache_index,
+        k_proj_sha_1_weight,
+        q_proj_sha_1_weight,
+        v_proj_sha_1_weight,
+        q_norm_sha_0_weight,
+    )
+
+    self_attn_out = op.Concat(self_attn_out_0, self_attn_out_1, axis=3)
+    self_attn_out_t = op.Transpose(self_attn_out, perm=[0, 3, 1, 2])
+    out_proj = op.Conv(self_attn_out_t, self_attn_o_proj_conv_weight)
+
+    past_value_out = op.Concat(v_proj_t_0, v_proj_t_1, axis=0)
+    past_key_out = op.Concat(k_proj_emb_t_0, k_proj_emb_t_1, axis=0)
+    return out_proj, past_key_out, past_value_out
+
+
+def _build_block_model(block_script, num_model_inputs):
+    """Turn a block onnxscript into a checked, inlined model proto.
+
+    The first ``num_model_inputs`` parameters are kept as graph inputs; the
+    remaining parameters are weight matrices and are moved into initializers
+    filled with random values.
+    """
+    proto = block_script.to_model_proto()
+    for inp in proto.graph.input[num_model_inputs:]:
         shape = [dim.dim_value for dim in inp.type.tensor_type.shape.dim]
         init = onnx.numpy_helper.from_array(
             np.random.randn(*shape).astype(np.float32), name=inp.name
         )
         proto.graph.initializer.append(init)
 
-    inps = proto.graph.input[:6]
+    inps = proto.graph.input[:num_model_inputs]
     proto.graph.ClearField("input")
     proto.graph.input.extend(inps)
     proto = onnx.inliner.inline_local_functions(proto)
     onnx.checker.check_model(proto)
     return proto
+
+
+def sha_2_head_block():
+    return _build_block_model(sha_block, num_model_inputs=6)
+
+
+def sha_2_head_block_native_kvcache():
+    return _build_block_model(sha_block_native_kvcache, num_model_inputs=7)
