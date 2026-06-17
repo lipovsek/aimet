@@ -46,6 +46,14 @@ try:
 except ImportError:
     Qwen3VLTextModel = Qwen3VLTextDecoderLayer = None
 
+try:
+    from transformers.models.gemma4.modeling_gemma4 import (
+        Gemma4TextModel,
+        Gemma4TextDecoderLayer,
+    )
+except ImportError:
+    Gemma4TextModel = Gemma4TextDecoderLayer = None
+
 
 from aimet_torch.common.utils import AimetLogger
 from aimet_torch.common.early_stopping import (
@@ -125,6 +133,18 @@ if Qwen3VLTextModel is not None and Qwen3VLTextDecoderLayer is not None:
                 beta_gamma_lr=1e-3,
                 scales_lr=5e-4,
                 enable_caching_after_block=3,
+            )
+        }
+    )
+
+if Gemma4TextModel is not None and Gemma4TextDecoderLayer is not None:
+    adascale_model_config_dict.update(
+        {
+            Gemma4TextModel: AdaScaleModelConfig(
+                block_type=Gemma4TextDecoderLayer,
+                beta_gamma_lr=1e-3,
+                scales_lr=5e-4,
+                enable_caching_after_block=35,
             )
         }
     )
