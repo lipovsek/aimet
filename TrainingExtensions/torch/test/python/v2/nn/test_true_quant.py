@@ -57,7 +57,11 @@ from aimet_torch.v2.quantization.tensor import QuantizedTensor, DequantizedTenso
 from aimet_torch.v2.utils import enable_recompute
 from aimet_torch.v2.nn import custom
 
-torch._dynamo.config.cache_size_limit = 1000
+
+@pytest.fixture(autouse=True)
+def clear_torch_compile_cache():
+    yield
+    torch.compiler.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -1473,6 +1477,54 @@ def test_default_kernels(module_type):
 
         for out_, ep_out_ in zip(tree_flatten(out)[0], tree_flatten(ep_out)[0]):
             assert torch.allclose(out_, ep_out_), type(qmodule)
+
+    if version.parse(torch.__version__) >= version.parse("2.12.0"):
+        """
+        When: Compile a quantized module with torch.compile(fullgraph=True)
+        Then: The compiled module should produce the same output as the original module
+        """
+        if isinstance(
+            qmodule, (nn.FractionalMaxPool2d, nn.FractionalMaxPool3d, custom.BatchNorm)
+        ):
+            pytest.skip(
+                reason="These FP modules can't be compiled without graph breaks"
+            )
+
+        if isinstance(
+            qmodule,
+            (
+                custom.FloorDivide,
+                custom.Tile,
+                custom.Pad,
+            ),
+        ):
+            pytest.skip(
+                reason="TODO: Full-graph compile for these modules are not implemented yet"
+            )
+
+        compiled_qmodule = torch.compile(qmodule, fullgraph=True)
+        compiled_out = compiled_qmodule(*inputs)
+
+        if isinstance(
+            qmodule,
+            (
+                nn.AlphaDropout,
+                nn.Dropout,
+                nn.Dropout1d,
+                nn.Dropout2d,
+                nn.Dropout3d,
+                nn.FeatureAlphaDropout,
+                nn.RReLU,
+            ),
+        ):
+            # These modules involve randomness and doesn't guarantee same
+            # output when compiled even under same random seed.
+            return
+
+        for out_, compiled_out_ in zip(
+            tree_flatten(out)[0], tree_flatten(compiled_out)[0]
+        ):
+            assert torch.equal(out_, compiled_out_), type(module)
 
 
 @pytest.mark.parametrize(

@@ -40,6 +40,7 @@ from aimet_torch.utils import (
     _ContextManager,
     allow_recompute,
     _torch_compiler_is_exporting,
+    _torch_compiler_is_compiling,
 )
 from .base import BaseQuantizationMixin
 
@@ -469,9 +470,9 @@ class _Dispatcher(BaseTorchFunctionMode):
 
 
 def _dispatch(torch_func: Callable, custom_impl: Callable) -> _Dispatcher:
-    if not _torch_compiler_is_exporting():
+    # Skip raising early exception during torch.compile or torch.export
+    if not _torch_compiler_is_compiling() and not _torch_compiler_is_exporting():
         if torch_func not in _dispatchable_torch_functions:
-            # Skip raising early exception during torch.export.export
             raise RuntimeError(f"PyTorch doesn't support overriding {torch_func}")
 
     dispatch_table = {torch_func: custom_impl}
@@ -1357,13 +1358,16 @@ class QuantizedGRUCell(_DispatchMixin, QuantizationMixin, nn.GRUCell):
         assert fn == _gru_cell
         apply = _quantize_dequantize_if_applicable
 
-        def gru_cell(input, hx, *args, **kwargs):
-            (input, hx, *args), kwargs = self._quantize_if_param(
-                (input, hx, *args), kwargs
-            )
+        def gru_cell(input, hx, w_ih, w_hh, b_ih=None, b_hh=None):
+            w_ih = apply(w_ih, self.param_quantizers["weight_ih"])
+            w_hh = apply(w_hh, self.param_quantizers["weight_hh"])
+            if b_ih is not None:
+                b_ih = apply(b_ih, self.param_quantizers["bias_ih"])
+            if b_hh is not None:
+                b_hh = apply(b_hh, self.param_quantizers["bias_hh"])
             input = apply(input, self.input_quantizers[0])
             hx = apply(hx, self.input_quantizers[1])
-            output = fn(input, hx, *args, **kwargs)
+            output = fn(input, hx, w_ih, w_hh, b_ih, b_hh)
             return apply(output, self.output_quantizers[0])
 
         return gru_cell
@@ -1614,16 +1618,19 @@ class QuantizedLSTMCell(_DispatchMixin, QuantizationMixin, nn.LSTMCell):
         assert fn == _lstm_cell
         apply = _quantize_dequantize_if_applicable
 
-        def lstm_cell(input, hx, *args, **kwargs):
-            (input, hx, *args), kwargs = self._quantize_if_param(
-                (input, hx, *args), kwargs
-            )
+        def lstm_cell(input, hx, w_ih, w_hh, b_ih=None, b_hh=None):
+            w_ih = apply(w_ih, self.param_quantizers["weight_ih"])
+            w_hh = apply(w_hh, self.param_quantizers["weight_hh"])
+            if b_ih is not None:
+                b_ih = apply(b_ih, self.param_quantizers["bias_ih"])
+            if b_hh is not None:
+                b_hh = apply(b_hh, self.param_quantizers["bias_hh"])
             input = apply(input, self.input_quantizers[0])
             h, c = hx
             h_qtzr, c_qtzr = self.input_quantizers[1:]
             hx = (apply(h, h_qtzr), apply(c, c_qtzr))
 
-            hx, cx = fn(input, hx, *args, **kwargs)
+            hx, cx = fn(input, hx, w_ih, w_hh, b_ih, b_hh)
             return (
                 apply(hx, self.output_quantizers[0]),
                 apply(cx, self.output_quantizers[1]),
@@ -1743,13 +1750,18 @@ class QuantizedLinear(_DispatchMixin, QuantizationMixin, nn.Linear):
         if _torch_compiler_is_exporting():
             return super().forward(*args, **kwargs)
 
-        # Workaround for deepspeed.
-        # Deepspeed zero3 sometimes forcefully mokey-patches F.linear to torch.addmm,
-        # which collides with the core assumption of our dispatch mechanism
-        # that nn.Linear invokes F.linear.
-        # To circumvent this issue, we temporarily restore the original F.linear
-        # before running forward.
-        with patch_attr(F, "linear", type(self)._builtin_torch_fn):
+        if not _torch_compiler_is_compiling() and not _torch_compiler_is_exporting():
+            # Workaround for deepspeed.
+            # Deepspeed zero3 sometimes forcefully mokey-patches F.linear to torch.addmm,
+            # which collides with the core assumption of our dispatch mechanism
+            # that nn.Linear invokes F.linear.
+            # To circumvent this issue, we temporarily restore the original F.linear
+            # before running forward.
+            ctx = patch_attr(F, "linear", type(self)._builtin_torch_fn)
+        else:
+            ctx = contextlib.nullcontext()
+
+        with ctx:
             return super().forward(*args, **kwargs)
 
     def _derive_bias_scale(
@@ -2343,13 +2355,16 @@ class QuantizedRNNCell(_DispatchMixin, QuantizationMixin, nn.RNNCell):
         assert fn in (_rnn_tanh_cell, _rnn_relu_cell)
         apply = _quantize_dequantize_if_applicable
 
-        def rnn_cell(input, hx, *args, **kwargs):
-            (input, hx, *args), kwargs = self._quantize_if_param(
-                (input, hx, *args), kwargs
-            )
+        def rnn_cell(input, hx, w_ih, w_hh, b_ih=None, b_hh=None):
+            w_ih = apply(w_ih, self.param_quantizers["weight_ih"])
+            w_hh = apply(w_hh, self.param_quantizers["weight_hh"])
+            if b_ih is not None:
+                b_ih = apply(b_ih, self.param_quantizers["bias_ih"])
+            if b_hh is not None:
+                b_hh = apply(b_hh, self.param_quantizers["bias_hh"])
             input = apply(input, self.input_quantizers[0])
             hx = apply(hx, self.input_quantizers[1])
-            output = fn(input, hx, *args, **kwargs)
+            output = fn(input, hx, w_ih, w_hh, b_ih, b_hh)
             return apply(output, self.output_quantizers[0])
 
         return rnn_cell

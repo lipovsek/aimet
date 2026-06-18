@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from torch.utils._pytree import tree_map
 
 from aimet_torch.quantization.base import EncodingBase
+from aimet_torch.utils import _torch_compiler_is_compiling
 
 
 __all__ = [
@@ -493,6 +494,9 @@ class QuantizedTensorBase(torch.Tensor):
 
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):  # pylint: disable=too-many-return-statements
+        if _torch_compiler_is_compiling():
+            return func(*args, **kwargs)
+
         if func in HANDLED_FUNCTIONS:
             kwargs = kwargs if kwargs is not None else {}
             return HANDLED_FUNCTIONS[func](*args, **kwargs)

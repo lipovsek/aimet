@@ -2870,31 +2870,3 @@ def test_fullgraph_compile(
         # Re-run with different shape to trigger recompilation
         x = torch.randn(2, 10, 10, device=device)
         _ = qdq(x)
-
-    # TODO: Replace this test with actual aimet_torch.nn.QuantizedLinear
-    class QuantizedLinear(torch.nn.Linear):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.weight_qdq = QuantizeDequantize(
-                shape, -128, 127, True, block_size=block_size
-            )
-            self.output_qdq = QuantizeDequantize((), 0, 255, False)
-
-            self.weight_qdq.set_range(-1, 1)
-            self.output_qdq.set_range(-1, 1)
-
-        def forward(self, input):
-            weight = self.weight_qdq(self.weight)
-            output = F.linear(input, weight, self.bias)
-            return self.output_qdq(output)
-
-    qlinear = QuantizedLinear(10, 10).to(device)
-    qlinear = torch.compile(qlinear, fullgraph=True)
-
-    with set_backend(backend):
-        x = torch.randn(1, 10, device=device)
-        _ = qlinear(x)
-
-        # Re-run with different shape to trigger recompilation
-        x = torch.randn(1, 3, 10, device=device)
-        _ = qlinear(x)

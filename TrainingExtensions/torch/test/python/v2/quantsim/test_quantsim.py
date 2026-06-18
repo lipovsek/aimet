@@ -1418,11 +1418,15 @@ class TestQuantsim:
         """
         When: Call fold_param_quantizers()
         Then: 1. All param quantizers should be folded to the parameter
-              2. Export artifact of sim.export() should not be affected
+              2. Should be compilable without graph breaks
+              3. Export artifact of sim.export() should not be affected
         """
         sim.fold_param_quantizers()
         assert sim.model[0].param_quantizers["weight"] is None
         assert isinstance(sim.model[0].weight, DequantizedTensor)
+
+        compiled_model = torch.compile(sim.model, fullgraph=True)
+        _ = compiled_model(x)
 
         sim.export(tmpdir, "after_fold", x)
 

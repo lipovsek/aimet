@@ -13,7 +13,7 @@ import weakref
 from typing import Type, List, Dict, Union, Iterable, Mapping, Optional, Tuple
 
 import torch
-from torch import nn
+from torch import nn, _check
 
 from aimet_torch.utils import is_vector_encoding
 from aimet_torch.quantization.affine.encoding import (
@@ -35,6 +35,7 @@ from aimet_torch.utils import (
     _ContextManager,
     flatten_nn_module_list,
     reduce,
+    _torch_compiler_is_compiling,
 )
 from aimet_torch.deepspeed_utils import SafeGatheredParameters, _shallow_copy
 
@@ -229,7 +230,12 @@ class BaseQuantizationMixin(abc.ABC):
         self.output_quantizers = nn.ModuleList([None])
 
     def __call__(self, *args, **kwargs):
-        self._compute_param_encodings(overwrite=False)
+        if _torch_compiler_is_compiling():
+            for qtzr in self.param_quantizers.children():
+                _check(qtzr.is_initialized())
+        else:
+            self._compute_param_encodings(overwrite=False)
+
         return super().__call__(*args, **kwargs)
 
     @abc.abstractmethod
