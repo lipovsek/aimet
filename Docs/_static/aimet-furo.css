@@ -110,4 +110,92 @@ h5 {
     margin-top:1.25rem;
     margin-bottom:1.25rem;
     font-weight: normal;
-} 
+}
+
+/*
+ * Performance summary table
+ */
+table.perf-table {
+    border-collapse: collapse;
+    width: 100%;
+    border: 1px solid var(--aimet-border-grey);
+    font-size: 0.78em;
+}
+
+table.perf-table thead th {
+    background-color: var(--aimet-blue);
+    color: var(--aimet-white);
+    font-weight: 600;
+    text-align: left;
+    border: none;
+    border-bottom: 2px solid var(--aimet-dark-blue);
+}
+
+/* Zebra striping by 3-row model group (each model spans FP32 + 2 recipes) */
+table.perf-table tbody tr:nth-child(6n+1),
+table.perf-table tbody tr:nth-child(6n+2),
+table.perf-table tbody tr:nth-child(6n+3) {
+    background-color: var(--aimet-white);
+}
+
+table.perf-table tbody tr:nth-child(6n+4),
+table.perf-table tbody tr:nth-child(6n+5),
+table.perf-table tbody tr:nth-child(6n+6) {
+    background-color: var(--aimet-light-blue);
+}
+
+/* Separator line between model groups */
+table.perf-table tbody tr:nth-child(3n+1):not(:first-child) td {
+    border-top: 2px solid var(--aimet-blue);
+}
+
+/* Highlight the row being hovered for readability */
+table.perf-table tbody tr:hover {
+    background-color: var(--aimet-menu-hover);
+}
+
+table.perf-table th,
+table.perf-table td {
+    padding: 4px 8px;
+    border: 1px solid var(--aimet-border-grey);
+    vertical-align: middle;
+}
+
+/* Emphasize the model name (first column) at the start of each group */
+table.perf-table tbody td:first-child {
+    font-weight: 600;
+}
+
+/* Center the Time (min) and CUDA (GB) columns */
+table.perf-table th:nth-child(7),
+table.perf-table th:nth-child(8),
+table.perf-table td:nth-child(7),
+table.perf-table td:nth-child(8) {
+    text-align: center;
+}
+
+/* Dark mode */
+body[data-theme="dark"] table.perf-table {
+    border-color: var(--aimet-code-grey-dark);
+}
+
+body[data-theme="dark"] table.perf-table th,
+body[data-theme="dark"] table.perf-table td {
+    border-color: var(--aimet-code-grey-dark);
+}
+
+body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+1),
+body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+2),
+body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+3) {
+    background-color: transparent;
+}
+
+body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+4),
+body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+5),
+body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+6) {
+    background-color: rgba(50, 83, 220, 0.15);
+}
+
+body[data-theme="dark"] table.perf-table tbody tr:hover {
+    background-color: rgba(50, 83, 220, 0.30);
+}

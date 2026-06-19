@@ -18,6 +18,7 @@ how you take this further ahead with advanced techniques depending on your use c
   Quantization Workflow <quantization_workflow>
   Quantization Simulation <quantsim>
   Quantization Recipes for LLMs <quantization_recipe>
+  Quantization Recipes for LLMs (AIMET Torch) <quantization_recipe_torch>
   Example Notebooks <notebooks>
   Running Quantized Models on-device <on_target_inference>
   Debugging Guide <debugging_guidelines>
