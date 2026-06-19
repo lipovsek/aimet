@@ -637,7 +637,7 @@ class QcQuantizeOp:
         if output_tensor.shape != input_tensor.shape:
             raise ValueError("Output tensor shape mismatch after quantize-dequantize.")
 
-        return output_tensor
+        return output_tensor.astype(input_tensor.dtype)
 
     def clip_and_recompute_encodings(self, clamp_val: float) -> bool:
         """

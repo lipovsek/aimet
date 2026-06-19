@@ -2701,12 +2701,7 @@ class QuantizationSimModel:
                     param_value.dtype
                 )
             else:
-                # quantize_dequantize runs the libpymo kernel in float32; cast back to the
-                # parameter's storage dtype so _overwrite_parameters writes a buffer of the
-                # right size (e.g. float16 weights would otherwise get float32 bytes).
-                qdq_parameters[param_name] = quantizer.quantize_dequantize(
-                    param_value
-                ).astype(param_value.dtype)
+                qdq_parameters[param_name] = quantizer.quantize_dequantize(param_value)
 
         return qdq_parameters
 

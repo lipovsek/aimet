@@ -97,13 +97,15 @@ def create_quant_info(
     return quant_info
 
 
-def create_model_from_node(quant_node, shape):
+def create_model_from_node(
+    quant_node, shape, float_dtype: onnx.TensorProto.DataType = TensorProto.FLOAT
+):
     input_info = helper.make_tensor_value_info(
-        name=quant_node.input[0], elem_type=helper.TensorProto.FLOAT, shape=shape
+        name=quant_node.input[0], elem_type=float_dtype, shape=shape
     )
 
     output_info = helper.make_tensor_value_info(
-        name=quant_node.output[0], elem_type=helper.TensorProto.FLOAT, shape=shape
+        name=quant_node.output[0], elem_type=float_dtype, shape=shape
     )
     onnx_graph = helper.make_graph(
         [quant_node], "dummy_graph", [input_info], [output_info], []
@@ -167,7 +169,9 @@ def build_session(model, providers):
     return session
 
 
-def create_qc_quantize_model_session(quant_info, input_shape):
+def create_qc_quantize_model_session(
+    quant_info, input_shape, float_dtype: onnx.TensorProto.DataType = TensorProto.FLOAT
+):
     quant_node = helper.make_node(
         op_name,
         inputs=["input"],
@@ -175,7 +179,7 @@ def create_qc_quantize_model_session(quant_info, input_shape):
         domain=op_domain,
         quant_info=libpymo.PtrToInt64(quant_info),
     )
-    model = create_model_from_node(quant_node, input_shape)
+    model = create_model_from_node(quant_node, input_shape, float_dtype)
     return build_session(model, available_providers)
 
 
@@ -964,20 +968,23 @@ class TestQcQuantizeOp:
         with pytest.raises(RuntimeError):
             q1._merge_constraints(q2)
 
+    @pytest.mark.parametrize("dtype", (np.float32, np.float16))
     @pytest.mark.parametrize("contiguous", (True, False))
-    def test_quantize_dequantize(self, contiguous):
+    def test_quantize_dequantize(self, contiguous: bool, dtype: np.dtype):
         tensor_quantizer_params = TensorQuantizerParams((10, 15), 0, 1)
-        calibration_tensor = np.random.randn(10, 15).astype(np.float32)
-        input_tensor = (
-            np.random.randn(*calibration_tensor.shape).astype(np.float32) * 10
-        )
+        calibration_tensor = np.random.randn(10, 15).astype(dtype)
+        input_tensor = np.random.randn(*calibration_tensor.shape).astype(dtype) * 10
         if not contiguous:
             input_tensor = input_tensor.T.copy()
             input_tensor = input_tensor.T
             assert not input_tensor.flags["C_CONTIGUOUS"]
 
         quant_info = libquant_info.QcQuantizeInfo()
-        session = create_qc_quantize_model_session(quant_info, input_tensor.shape)
+        session = create_qc_quantize_model_session(
+            quant_info,
+            input_tensor.shape,
+            float_dtype=onnx.helper.np_dtype_to_tensor_dtype(input_tensor.dtype),
+        )
 
         quantizer = QcQuantizeOp(
             quant_info,
@@ -992,6 +999,7 @@ class TestQcQuantizeOp:
         output = session.run(None, {"input": input_tensor})[0]
         qdq_output = quantizer.quantize_dequantize(input_tensor)
         assert np.array_equal(output, qdq_output)
+        assert output.dtype == input_tensor.dtype
 
         # per-channel
         quantizer.reset_encoding_stats()
@@ -1002,6 +1010,7 @@ class TestQcQuantizeOp:
         output = session.run(None, {"input": input_tensor})[0]
         qdq_output = quantizer.quantize_dequantize(input_tensor)
         assert np.array_equal(output, qdq_output)
+        assert output.dtype == input_tensor.dtype
 
         # per-block
         quantizer.reset_encoding_stats()
@@ -1012,6 +1021,7 @@ class TestQcQuantizeOp:
         output = session.run(None, {"input": input_tensor})[0]
         qdq_output = quantizer.quantize_dequantize(input_tensor)
         assert np.array_equal(output, qdq_output)
+        assert output.dtype == input_tensor.dtype
 
     def test_merge_constraints(self):
         """
