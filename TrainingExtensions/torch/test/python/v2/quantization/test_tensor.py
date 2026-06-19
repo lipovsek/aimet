@@ -7,6 +7,7 @@ import operator
 import copy
 import numpy as np
 import pickle
+from unittest.mock import MagicMock
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -437,7 +438,7 @@ class TestQuantizedTensor:
         shape = (2, 128, 1)
         data = torch.empty(shape)
         qtensor = data.clone().as_subclass(qtensor_cls)
-        qtensor.encoding = AffineEncoding(scale, offset, bitwidth)
+        qtensor.encoding = AffineEncoding(scale, offset, bitwidth, producer=MagicMock())
         """
         Given: Per-tensor quantized tensor object
         When: Call a 'math invariant' tensor operation on the quantized tensor
@@ -455,6 +456,7 @@ class TestQuantizedTensor:
             assert output.encoding.bitwidth == qtensor.encoding.bitwidth
             assert output.encoding.signed == qtensor.encoding.signed
             assert output.encoding is not qtensor.encoding
+            assert output.encoding.producer is qtensor.encoding.producer
 
     @pytest.mark.parametrize("qtensor_cls", [QuantizedTensor, DequantizedTensor])
     @pytest.mark.parametrize(

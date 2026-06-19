@@ -430,6 +430,7 @@ def test_quantize_forward(quantize: Quantize, x: torch.Tensor):
     assert torch.allclose(
         output.quantized_repr(), expected_output.to(output.encoding.dtype)
     )
+    assert output.encoding.producer is quantize
 
 
 @pytest.mark.parametrize(
@@ -461,6 +462,7 @@ def test_qdq_forward(quantize_dequantize: QuantizeDequantize, x: torch.Tensor):
         quantize_dequantize.qmax,
     )
     assert torch.allclose(output, expected_output)
+    assert output.encoding.producer is quantize_dequantize
 
 
 @pytest.mark.parametrize(
@@ -1411,7 +1413,9 @@ def test_gbbq_sanity(params):
         torch.amax(gbbq.get_scale(), dim=1, keepdim=True), pc.get_scale()
     )
 
-    assert not torch.equal(gbbq(tensor), pc(tensor))
+    output = gbbq(tensor)
+    assert not torch.equal(output, pc(tensor))
+    assert output.encoding.producer is gbbq
 
 
 @pytest.mark.parametrize(

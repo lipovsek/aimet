@@ -450,6 +450,7 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
                 self._symmetric,
                 self.block_size,
                 self.zero_point_shift,
+                producer=self,
             )
 
         return None
@@ -1353,6 +1354,7 @@ class GroupedBlockQuantizeDequantize(QuantizeDequantize):  # pylint: disable=too
                 decompressed_bw=self.decompressed_bw,
                 per_channel_scale=per_channel_scale,
                 zero_point_shift=self.zero_point_shift,
+                producer=self,
             )
         return None
 

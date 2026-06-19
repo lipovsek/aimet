@@ -5,7 +5,7 @@
 # pylint: disable=redefined-builtin
 """Float encoding definition"""
 
-from typing import Union, List, Dict
+from typing import Union, List, Dict, TYPE_CHECKING, Optional
 import torch
 from torch._C._nn import _parse_to as parse_to_args
 import onnx
@@ -13,6 +13,9 @@ import onnx
 from aimet_torch.common.defs import EncodingType
 from aimet_torch.quantization.base import EncodingBase
 from ._finfo import _finfo, _float16, _bfloat16
+
+if TYPE_CHECKING:
+    from aimet_torch.quantization.float import FloatQuantizeDequantize
 
 
 __all__ = ["FloatEncoding"]
@@ -31,6 +34,8 @@ class FloatEncoding(EncodingBase):
         unsigned_zero: bool,
         scale: torch.Tensor,
         block_size: tuple[int, ...] | None = None,
+        *,
+        producer: Optional["FloatQuantizeDequantize"] = None,
     ):
         if scale is None:
             raise ValueError("scale cannot be None for FloatEncoding")
@@ -42,6 +47,7 @@ class FloatEncoding(EncodingBase):
 
         self.scale = scale
         self._block_size = block_size or None
+        self.producer = producer
 
     @property
     def mapping(self) -> str:

@@ -124,6 +124,9 @@ def test_qdq_output_standard_dtypes(
         assert torch.equal(float_qdq_out_1, float_qdq_out_1_post_calib)
         assert torch.equal(float_qdq_out_2, float_qdq_out_2_post_calib)
 
+    assert float_qdq_out_1_post_calib.encoding.producer is float_qdq_1
+    assert float_qdq_out_2_post_calib.encoding.producer is float_qdq_2
+
 
 @pytest.mark.parametrize(
     "finite, unsigned_zero",

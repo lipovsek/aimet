@@ -7,8 +7,12 @@
 
 import abc
 import copy
+from typing import Optional, TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from aimet_torch.quantization.base import QuantizerBase
 
 
 __all__ = ["EncodingBase"]
@@ -20,6 +24,7 @@ class EncodingBase(abc.ABC):
     """
 
     scale: torch.Tensor
+    producer: Optional["QuantizerBase"]
 
     @property
     @abc.abstractmethod

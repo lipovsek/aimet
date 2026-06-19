@@ -5,7 +5,7 @@
 # pylint: disable=redefined-builtin
 """Affine encoding definition"""
 
-from typing import Tuple, Optional, Dict, Any, overload, Union, List
+from typing import Tuple, Optional, Dict, Any, overload, Union, List, TYPE_CHECKING
 from itertools import chain, repeat
 import math
 import torch
@@ -22,6 +22,9 @@ from aimet_torch.quantization.affine.backends import (
     _derive_qmin_qmax,
 )
 from ._utils import _GridMixin, _register_signature
+
+if TYPE_CHECKING:
+    from aimet_torch.quantization.affine import AffineQuantizerBase
 
 
 __all__ = ["AffineEncoding", "VectorEncoding", "GroupedBlockEncoding"]
@@ -45,6 +48,8 @@ class AffineEncoding(EncodingBase, _GridMixin):
         symmetry=False,
         block_size: Optional[Tuple[int, ...]] = None,
         zero_point_shift: Optional[float] = None,
+        *,
+        producer: Optional["AffineQuantizerBase"] = None,
     ): ...
 
     @overload
@@ -58,6 +63,8 @@ class AffineEncoding(EncodingBase, _GridMixin):
         symmetry=False,
         block_size: Optional[Tuple[int, ...]] = None,
         zero_point_shift: Optional[float] = None,
+        *,
+        producer: Optional["AffineQuantizerBase"] = None,
     ): ...
 
     def __init__(self, scale: torch.Tensor, offset: torch.Tensor, *args, **kwargs):  # pylint: disable=too-many-locals
@@ -74,6 +81,7 @@ class AffineEncoding(EncodingBase, _GridMixin):
             symmetry = False
         block_size = kwargs.pop("block_size", args[3])
         zero_point_shift = kwargs.pop("zero_point_shift", args[4])
+        self.producer = kwargs.pop("producer", None)
 
         if arg1 is None or isinstance(arg1, bool):
             # (arg0, arg1) == (bitwidth, signed)
@@ -107,6 +115,7 @@ class AffineEncoding(EncodingBase, _GridMixin):
         self._symmetry = symmetry
         self._block_size = block_size
         self._zero_point_shift = zero_point_shift or 0.0
+
         if self._zero_point_shift not in [0.0, 0.5]:
             raise ValueError(
                 f"zero_point_shift should be 0.0 or 0.5. Got {self._zero_point_shift}"

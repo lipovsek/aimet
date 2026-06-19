@@ -311,6 +311,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
                 self._finfo.unsigned_zero,
                 self.get_scale(),
                 block_size=self.block_size,
+                producer=self,
             )
         return None
 
