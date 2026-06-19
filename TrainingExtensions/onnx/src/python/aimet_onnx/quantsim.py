@@ -59,6 +59,7 @@ from aimet_onnx.common.onnx._utils import (
     _is_grid_preserving_op,
     _derive_data_movement_op_encodings,
     _is_htp_interpolation_op,
+    _get_all_constants,
 )
 from aimet_onnx.graph_passes.cleanup import remove_duplicate_qdq_pairs
 from aimet_onnx.common.quantsim import (
@@ -458,6 +459,11 @@ class QuantizationSimModel:
         self._activation_type = activation_type
         self._ort_session_options = create_ort_session_options_with_aimet_custom_ops()
         self.param_names = []
+        # Param quantizers that have been folded into their parameters via
+        # fold_param_quantizers(). Their QcQuantizeOp nodes are removed from the
+        # graph, but the quantizer objects are retained here so that their
+        # encodings can still be exported.
+        self._folded_param_quantizers = {}
         self.input_quantizers_name = []
         self.activation_names = []
         self.activation_dtypes = {}
@@ -2492,6 +2498,12 @@ class QuantizationSimModel:
         model_copy = onnx.ModelProto()
         model_copy.CopyFrom(self.model.model)
 
+        # _get_qdq_parameters applies each param quantizer via quantize_dequantize, which
+        # needs a valid encoding. Compute encodings for any param quantizers that aren't
+        # initialized yet so we don't fold with garbage scales/offsets (or raise on export
+        # before compute_encodings was called).
+        self._compute_param_encodings(overwrite=False)
+
         self._overwrite_parameters(model_copy, self._get_qdq_parameters())
 
         aimet_qc_quantize_nodes = [
@@ -2634,6 +2646,27 @@ class QuantizationSimModel:
         return model_copy
 
     def _get_qdq_parameters(self):
+        """
+        Compute the quantize-dequantize'd value of every foldable parameter.
+
+        Each param quantizer is applied directly to its parameter's static value via the
+        quantizer's own ``quantize_dequantize`` (the same libpymo kernel the in-graph
+        ``QcQuantizeOp`` runs), one parameter at a time. This avoids materializing every
+        parameter into a single throwaway ONNX graph, which would overflow protobuf's 2GB
+        message limit for large models.
+
+        Only enabled, sub-int32 quantizers that still have a ``QcQuantizeOp`` node in the
+        graph are folded:
+
+        * int32 (and wider) quantizers are skipped, since QcQuantizeOp simulates
+          quantization in float32, which is insufficient for int32.
+        * params whose QcQuantizeOp node was already removed (e.g. a prior fold) are
+          skipped, which keeps re-folding a no-op.
+
+        :return: Mapping of parameter name to its quantize-dequantize'd value.
+        """
+        # Names of parameters (weights/biases) tracked by the connected graph whose
+        # quantizers are sub-int32.
         param_names = {
             product.name
             for op in self.connected_graph.get_all_ops().values()
@@ -2641,86 +2674,41 @@ class QuantizationSimModel:
             if self.qc_quantize_op_dict[product.name].bitwidth <= 32
         }
 
-        # Find all the nodes that contribute to the computation of the parameters
-        # These will be added to the partial model used to compute the QDQed parameters
-        nodes_to_collect = [
-            node
-            for node in self.model.model.graph.node
-            if (node.op_type == "QcQuantizeOp" and node.input[0] in param_names)
-            or (node.op_type == "Constant" and node.output[0] in param_names)
-        ]
+        # Map every static value (initializer / Constant node) to its TensorProto once, so
+        # the per-parameter lookups below are O(1). Scanning the whole graph per parameter
+        # would be quadratic and dominate export time on large models.
+        constants = _get_all_constants(self.model.model)
 
-        qdq_tensor_name_map: Dict[str, str] = {
-            node.input[0]: node.output[0]
-            for node in self.model.model.graph.node
-            if node.op_type == "QcQuantizeOp"
-            and self.qc_quantize_op_dict[node.input[0]]
-            and self.qc_quantize_op_dict[node.input[0]].enabled
-        }
+        qdq_parameters = {}
+        for node in self.model.model.graph.node:
+            if node.op_type != "QcQuantizeOp" or node.input[0] not in param_names:
+                continue
 
-        # Find all the tensors that are outputs to the partial model
-        # Essentially, these are the outputs of the nodes collected above
-        output_tensors = list[Tuple[str, int, List[int]]]()
-        for node in nodes_to_collect:
-            if node.op_type == "Constant":
-                continue  # Skip to prevent duplication with QcQuantizeOp
             param_name = node.input[0]
+            quantizer = self.qc_quantize_op_dict[param_name]
 
-            # If the quantizer did not need to be collected, skip
-            if param_name not in qdq_tensor_name_map:
+            # Skip disabled quantizers, and int32+ params (simulated in fp32, unreliable).
+            if not quantizer.enabled or quantizer.bitwidth >= 32:
                 continue
 
-            # Skip pre-quantization of int32 parameters due to numerical instability.
-            # QcQuantizeOp uses float32 to simulate quantization,
-            # which is insufficient for simulating int32 quantization.
-            if self.qc_quantize_op_dict[param_name].bitwidth >= 32:
-                continue
+            param_value = to_array(constants[param_name])
 
-            qdq_param_name = qdq_tensor_name_map.get(param_name)
-            cg_product = self.connected_graph.get_product(param_name)
-            output_tensors.append(
-                (
-                    qdq_param_name,
-                    param_name,
-                    cg_product.tensor.data_type,
-                    cg_product.shape,
+            if quantizer.data_type == QuantizationDataType.float:
+                # Float (fp16) quantizers don't carry int encodings; QcQuantizeOp simulates
+                # them by round-tripping through float16 (modeSpecificActionFloat). Mirror
+                # that here, preserving the parameter's storage dtype.
+                qdq_parameters[param_name] = param_value.astype(np.float16).astype(
+                    param_value.dtype
                 )
-            )
+            else:
+                # quantize_dequantize runs the libpymo kernel in float32; cast back to the
+                # parameter's storage dtype so _overwrite_parameters writes a buffer of the
+                # right size (e.g. float16 weights would otherwise get float32 bytes).
+                qdq_parameters[param_name] = quantizer.quantize_dequantize(
+                    param_value
+                ).astype(param_value.dtype)
 
-        partial_model = onnx.helper.make_model(
-            ir_version=self.model.model.ir_version,
-            opset_imports=self.model.model.opset_import,
-            graph=onnx.helper.make_graph(
-                name="partial",
-                inputs=[],
-                outputs=[
-                    onnx.helper.make_tensor_value_info(tensor_name, data_type, shape)
-                    for tensor_name, _, data_type, shape in output_tensors
-                ],
-                initializer=[
-                    init
-                    for init in self.model.model.graph.initializer
-                    if init.name in param_names
-                ],
-                nodes=nodes_to_collect,
-            ),
-        )
-
-        if not partial_model.graph.output:
-            return {}
-
-        sess = OrtInferenceSession(
-            partial_model,
-            ["CPUExecutionProvider"],
-            save_as_external_data=self._use_external_data,
-        )
-        output_tensor_names = [tensor_name for tensor_name, _, _, _ in output_tensors]
-        output_param_names = [param_name for _, param_name, _, _ in output_tensors]
-        out = sess.run(output_tensor_names, {})
-        return {
-            tensor_name: tensor_value
-            for tensor_name, tensor_value in zip(output_param_names, out)
-        }
+        return qdq_parameters
 
     @staticmethod
     def _overwrite_parameters(
@@ -2775,6 +2763,70 @@ class QuantizationSimModel:
                     attr.ClearField("ints")
                     attr.floats.extend(qdq_param.astype(np.int64).tolist())
                     break
+
+    def fold_param_quantizers(self):
+        """
+        Fold parameter quantizers into their associated parameters to accelerate inference.
+
+        This bakes the quantize-dequantize operation of each (enabled, sub-int32) param
+        quantizer directly into the parameter's initializer/constant, then removes the
+        corresponding ``QcQuantizeOp`` nodes from the graph. As a result, the simulated
+        quantized weights are computed once instead of on every inference.
+
+        This is a terminal, inference-only optimization: the original floating point weights
+        are overwritten in place and cannot be recovered. The folded quantizers' encodings
+        are still emitted on :meth:`export`, but the exported ONNX model carries the
+        pre-quantized weights and no longer contains QDQ nodes for those parameters.
+
+        int32 (and any disabled or >16-bit) parameter quantizers are left untouched, since
+        QcQuantizeOp simulates quantization in float32 which is insufficient for int32.
+
+        Example:
+
+            >>> sim = QuantizationSimModel(...)
+            >>> sim.compute_encodings(...)
+            >>> sum(node.op_type == "QcQuantizeOp" for node in sim.model.model.graph.node)
+            42
+            >>> sim.fold_param_quantizers()
+            >>> sum(node.op_type == "QcQuantizeOp" for node in sim.model.model.graph.node)
+            21
+        """
+        # Compute encodings for any param quantizers that aren't initialized yet so we don't
+        # fold with garbage scales/offsets.
+        self._compute_param_encodings(overwrite=False)
+
+        # _get_qdq_parameters already skips int32/>32-bit and disabled param quantizers, and
+        # only collects params that still have a QcQuantizeOp node, so re-folding is a no-op.
+        qdq_parameters = self._get_qdq_parameters()
+
+        folded_param_names = {
+            name for name in qdq_parameters if name in self.qc_quantize_op_dict
+        }
+
+        if not folded_param_names:
+            return
+
+        # Bake the quantize-dequantize'd values into the live model's initializers/constants.
+        self._overwrite_parameters(self.model.model, dict(qdq_parameters))
+
+        # Physically remove the folded params' QcQuantizeOp nodes from the graph. This rewires
+        # consumers from the "<param>_qdq" tensor back to the raw parameter tensor, so the
+        # session no longer runs quantize-dequantize for these params during inference.
+        nodes_to_remove = {
+            node.name
+            for node in self.model.model.graph.node
+            if node.op_type == "QcQuantizeOp" and node.input[0] in folded_param_names
+        }
+        self._remove_quantizers(self.model.model, nodes_to_remove)
+
+        # The quantizer objects are intentionally kept in qc_quantize_op_dict and param_names
+        # (still enabled) so that their encodings are still emitted on export and so that
+        # param-indexed code paths (e.g. int32 bias concretization) keep working. They simply
+        # no longer have a node in the graph. Track them for introspection.
+        for name in folded_param_names:
+            self._folded_param_quantizers[name] = self.qc_quantize_op_dict[name]
+
+        self._rebuild_session()
 
     def _insert_data_movement_op_output_quantizers(self):
         """
