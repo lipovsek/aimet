@@ -6290,22 +6290,30 @@ class TestDynamicWeightSymmetryMapping:
         model = onnx.shape_inference.infer_shapes(model)
 
         dtypes = {
-            val.name: val.type.tensor_type.elem_type for val in model.graph.value_info
+            val.name: val.type.tensor_type.elem_type
+            for val in itertools.chain(
+                model.graph.value_info,
+                model.graph.input,
+                model.graph.output,
+            )
         }
         param_names = set(init.name for init in model.graph.initializer)
-        q_nodes = [
-            node for node in model.graph.node if node.op_type == "QuantizeLinear"
+        activation_q_nodes = [
+            node
+            for node in model.graph.node
+            if node.op_type == "QuantizeLinear"
+            if node.input[0] not in param_names
         ]
+        assert activation_q_nodes
 
-        for q in q_nodes:
+        for q in activation_q_nodes:
             output_dtype = dtypes[q.output[0]]
-            if q.input[0] not in param_names:
-                assert output_dtype in (
-                    onnx.TensorProto.UINT4,
-                    onnx.TensorProto.UINT8,
-                    onnx.TensorProto.UINT16,
-                    onnx.TensorProto.UINT32,
-                )
+            assert output_dtype in (
+                onnx.TensorProto.UINT4,
+                onnx.TensorProto.UINT8,
+                onnx.TensorProto.UINT16,
+                onnx.TensorProto.UINT32,
+            )
 
     @pytest.mark.parametrize("default_symmetry", [True, False, None])
     @pytest.mark.parametrize("matmul_op_symmetry", [True, False, None])
@@ -6364,6 +6372,7 @@ class TestDynamicWeightSymmetryMapping:
             When: Export to onnx QDQ
             Then: All activation quantizers must be uint
             """
+            sim.compute_encodings([make_dummy_input(sim.model.model)])
             onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=False)
             self._assert_uint_activation(onnx_qdq_model)
 
@@ -6405,6 +6414,7 @@ class TestDynamicWeightSymmetryMapping:
             When: Export to onnx QDQ
             Then: All activation quantizers must be uint
             """
+            sim.compute_encodings([make_dummy_input(sim.model.model)])
             onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=False)
             self._assert_uint_activation(onnx_qdq_model)
 
@@ -6443,6 +6453,7 @@ class TestDynamicWeightSymmetryMapping:
             When: Export to onnx QDQ
             Then: All activation quantizers must be uint
             """
+            sim.compute_encodings([make_dummy_input(sim.model.model)])
             onnx_qdq_model = sim.to_onnx_qdq(prequantize_constants=False)
             self._assert_uint_activation(onnx_qdq_model)
 
