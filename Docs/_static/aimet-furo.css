@@ -131,46 +131,43 @@ table.perf-table thead th {
     border-bottom: 2px solid var(--aimet-dark-blue);
 }
 
-/* Zebra striping by 3-row model group (each model spans FP32 + 2 recipes) */
-table.perf-table tbody tr:nth-child(6n+1),
-table.perf-table tbody tr:nth-child(6n+2),
-table.perf-table tbody tr:nth-child(6n+3) {
+/* Zebra striping by model group: each model is its own <tbody>, so banding
+ * is independent of how many recipe rows a model has. */
+table.perf-table tbody:nth-of-type(odd) {
     background-color: var(--aimet-white);
 }
 
-table.perf-table tbody tr:nth-child(6n+4),
-table.perf-table tbody tr:nth-child(6n+5),
-table.perf-table tbody tr:nth-child(6n+6) {
+table.perf-table tbody:nth-of-type(even) {
     background-color: var(--aimet-light-blue);
 }
 
-/* Separator line between model groups */
-table.perf-table tbody tr:nth-child(3n+1):not(:first-child) td {
-    border-top: 2px solid var(--aimet-blue);
-}
-
-/* Highlight the row being hovered for readability */
-table.perf-table tbody tr:hover {
+/* Highlight the model group being hovered for readability */
+table.perf-table tbody:hover {
     background-color: var(--aimet-menu-hover);
 }
 
 table.perf-table th,
 table.perf-table td {
-    padding: 4px 8px;
-    border: 1px solid var(--aimet-border-grey);
+    padding: 6px 10px;
+    border: none;
     vertical-align: middle;
 }
 
-/* Emphasize the model name (first column) at the start of each group */
-table.perf-table tbody td:first-child {
+/* Emphasize the model name (the rowspan cell at the start of each group) */
+table.perf-table tbody tr:first-child td:first-child {
     font-weight: 600;
 }
 
-/* Center the Time (min) and CUDA (GB) columns */
-table.perf-table th:nth-child(7),
-table.perf-table th:nth-child(8),
-table.perf-table td:nth-child(7),
-table.perf-table td:nth-child(8) {
+/* Center the four numeric columns (PPL, MMLU, Time, CUDA). Use nth-last-child
+ * so the rule holds in rowspan rows that omit the leading model-name cell. */
+table.perf-table th:nth-last-child(1),
+table.perf-table th:nth-last-child(2),
+table.perf-table th:nth-last-child(3),
+table.perf-table th:nth-last-child(4),
+table.perf-table td:nth-last-child(1),
+table.perf-table td:nth-last-child(2),
+table.perf-table td:nth-last-child(3),
+table.perf-table td:nth-last-child(4) {
     text-align: center;
 }
 
@@ -179,23 +176,14 @@ body[data-theme="dark"] table.perf-table {
     border-color: var(--aimet-code-grey-dark);
 }
 
-body[data-theme="dark"] table.perf-table th,
-body[data-theme="dark"] table.perf-table td {
-    border-color: var(--aimet-code-grey-dark);
-}
-
-body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+1),
-body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+2),
-body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+3) {
+body[data-theme="dark"] table.perf-table tbody:nth-of-type(odd) {
     background-color: transparent;
 }
 
-body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+4),
-body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+5),
-body[data-theme="dark"] table.perf-table tbody tr:nth-child(6n+6) {
+body[data-theme="dark"] table.perf-table tbody:nth-of-type(even) {
     background-color: rgba(50, 83, 220, 0.15);
 }
 
-body[data-theme="dark"] table.perf-table tbody tr:hover {
+body[data-theme="dark"] table.perf-table tbody:hover {
     background-color: rgba(50, 83, 220, 0.30);
 }

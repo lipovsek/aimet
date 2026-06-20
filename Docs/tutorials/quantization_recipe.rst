@@ -40,181 +40,124 @@ The KV Cache precision varies per model and is shown on the second line of the A
 AdaScale ``num_batches`` and ``num_iterations`` vary per model and are noted inline in the Recipe column as
 ``AdaScale (b=<num_batches>, i=<num_iterations>)``.
 
-.. list-table::
-    :class: perf-table
-    :widths: 18 7 10 36 5 5 6 4
-    :header-rows: 1
+.. raw:: html
 
-    * - Model
-      - Weights
-      - Acts
-      - Recipe
-      - PPL
-      - MMLU
-      - Time (min)
-      - CUDA (GB)
-    * - `LLaMA 3.2 1B Instruct <https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct>`_
-      - FP32
-      - FP32
-      - —
-      - 12.14
-      - 46.06
-      - <1
-      - 7
-    * -
-      - INT4 PCQ
-      - | INT16
-        | KV=INT8
-      - | SpinQuant
-        | AdaScale (b=128, i=2048)
-      - 13.68
-      - 41.82
-      - 113
-      - 22
-    * -
-      - INT4 LPBQ
-      - | INT16
-        | KV=INT8
-      - SeqMSE
-      - 13.84
-      - 43.53
-      - 21
-      - 29
-    * - `LLaMA 3.2 3B Instruct <https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct>`_
-      - FP32
-      - FP32
-      - —
-      - 10.13
-      - 60.74
-      - <1
-      - 14
-    * -
-      - INT4 PCQ
-      - | INT16
-        | KV=INT8
-      - | SpinQuant
-        | AdaScale (b=128, i=1024)
-      - 11.14
-      - 57.28
-      - 290
-      - 40
-    * -
-      - INT4 LPBQ
-      - | INT16
-        | KV=INT8
-      - SeqMSE
-      - 10.55
-      - 59.29
-      - 73
-      - 47
-    * - `Qwen 2.5 0.5B Instruct <https://huggingface.co/Qwen/Qwen2.5-0.5B>`_
-      - FP32
-      - FP32
-      - —
-      - 13.14
-      - 46.30
-      - <1
-      - 4
-    * -
-      - INT4 PCQ
-      - | INT16
-        | KV=INT16
-      - | SpinQuant
-        | AdaScale (b=128, i=2048)
-      - 13.82
-      - 42.65
-      - 77
-      - 15
-    * -
-      - INT4 LPBQ
-      - | INT16
-        | KV=INT16
-      - SeqMSE
-      - 15.30
-      - 43.26
-      - 12
-      - 18
-    * - `Qwen 2.5 1.5B Instruct <https://huggingface.co/Qwen/Qwen2.5-1.5B>`_
-      - FP32
-      - FP32
-      - —
-      - 12.41
-      - 54.65
-      - <1
-      - 8
-    * -
-      - INT4 PCQ
-      - | INT16
-        | KV=INT16
-      - | SpinQuant
-        | AdaScale (b=128, i=1024)
-      - 13.35
-      - 50.27
-      - 134
-      - 23
-    * -
-      - INT4 LPBQ
-      - | INT16
-        | KV=INT16
-      - SeqMSE
-      - 14.33
-      - 49.97
-      - 38
-      - 30
-    * - `Qwen 3 4B <https://huggingface.co/Qwen/Qwen3-4B>`_
-      - FP32
-      - FP32
-      - —
-      - 12.41
-      - 70.06
-      - <1
-      - 17
-    * -
-      - INT4 PCQ
-      - | INT16
-        | KV=INT8
-      - | SpinQuant
-        | AdaScale (b=128, i=512)
-      - 13.79
-      - 65.07
-      - 274
-      - 48
-    * -
-      - INT4 LPBQ
-      - | INT16
-        | KV=INT8
-      - SeqMSE
-      - 12.77
-      - 65.36
-      - 95
-      - 54
-    * - `Phi 3.5 mini instruct <https://huggingface.co/microsoft/Phi-3.5-mini-instruct>`_
-      - FP32
-      - FP32
-      - —
-      - 5.77
-      - 68.89
-      - <1
-      - 17
-    * -
-      - INT4 PCQ
-      - | INT16
-        | KV=INT8
-      - | SpinQuant
-        | AdaScale (b=32, i=256)
-      - 6.50
-      - 62.51
-      - 112
-      - 49
-    * -
-      - INT4 LPBQ
-      - | INT16
-        | KV=INT8
-      - SeqMSE
-      - 6.41
-      - 63.90
-      - 93
-      - 64
+    <table class="perf-table">
+      <colgroup>
+        <col style="width:20%"><col style="width:8%"><col style="width:11%"><col style="width:40%">
+        <col style="width:5%"><col style="width:5%"><col style="width:7%"><col style="width:4%">
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Model</th><th>Weights</th><th>Acts</th><th>Recipe</th>
+          <th>PPL</th><th>MMLU</th><th>Time (min)</th><th>CUDA (GB)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td rowspan="3"><a href="https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct">LLaMA 3.2 1B Instruct</a></td>
+          <td>FP32</td><td>FP32</td><td>—</td><td>12.14</td><td>46.06</td><td>&lt;1</td><td>7</td>
+        </tr>
+        <tr>
+          <td>INT4 PCQ</td><td>INT16<br>KV=INT8</td><td>SpinQuant<br>AdaScale (b=128, i=2048)</td>
+          <td>13.68</td><td>41.82</td><td>113</td><td>22</td>
+        </tr>
+        <tr>
+          <td>INT4 LPBQ</td><td>INT16<br>KV=INT8</td><td>SeqMSE</td>
+          <td>13.84</td><td>43.53</td><td>21</td><td>29</td>
+        </tr>
+      </tbody>
+      <tbody>
+        <tr>
+          <td rowspan="3"><a href="https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct">LLaMA 3.2 3B Instruct</a></td>
+          <td>FP32</td><td>FP32</td><td>—</td><td>10.13</td><td>60.74</td><td>&lt;1</td><td>14</td>
+        </tr>
+        <tr>
+          <td>INT4 PCQ</td><td>INT16<br>KV=INT8</td><td>SpinQuant<br>AdaScale (b=128, i=1024)</td>
+          <td>11.14</td><td>57.28</td><td>290</td><td>40</td>
+        </tr>
+        <tr>
+          <td>INT4 LPBQ</td><td>INT16<br>KV=INT8</td><td>SeqMSE</td>
+          <td>10.55</td><td>59.29</td><td>73</td><td>47</td>
+        </tr>
+      </tbody>
+      <tbody>
+        <tr>
+          <td rowspan="3"><a href="https://huggingface.co/Qwen/Qwen2.5-0.5B">Qwen 2.5 0.5B Instruct</a></td>
+          <td>FP32</td><td>FP32</td><td>—</td><td>13.14</td><td>46.30</td><td>&lt;1</td><td>4</td>
+        </tr>
+        <tr>
+          <td>INT4 PCQ</td><td>INT16<br>KV=INT16</td><td>SpinQuant<br>AdaScale (b=128, i=2048)</td>
+          <td>13.82</td><td>42.65</td><td>77</td><td>15</td>
+        </tr>
+        <tr>
+          <td>INT4 LPBQ</td><td>INT16<br>KV=INT16</td><td>SeqMSE</td>
+          <td>15.30</td><td>43.26</td><td>12</td><td>18</td>
+        </tr>
+      </tbody>
+      <tbody>
+        <tr>
+          <td rowspan="3"><a href="https://huggingface.co/Qwen/Qwen2.5-1.5B">Qwen 2.5 1.5B Instruct</a></td>
+          <td>FP32</td><td>FP32</td><td>—</td><td>12.41</td><td>54.65</td><td>&lt;1</td><td>8</td>
+        </tr>
+        <tr>
+          <td>INT4 PCQ</td><td>INT16<br>KV=INT16</td><td>SpinQuant<br>AdaScale (b=128, i=1024)</td>
+          <td>13.35</td><td>50.27</td><td>134</td><td>23</td>
+        </tr>
+        <tr>
+          <td>INT4 LPBQ</td><td>INT16<br>KV=INT16</td><td>SeqMSE</td>
+          <td>14.33</td><td>49.97</td><td>38</td><td>30</td>
+        </tr>
+      </tbody>
+      <tbody>
+        <tr>
+          <td rowspan="2"><a href="https://huggingface.co/Qwen/Qwen3-0.6B">Qwen 3 0.6B</a></td>
+          <td>FP32</td><td>FP32</td><td>—</td><td>19.15</td><td>47.11</td><td>&lt;1</td><td>8</td>
+        </tr>
+        <tr>
+          <td>INT4 PCQ</td><td>INT16<br>KV=INT8</td><td>SpinQuant (r2 + r3)<br>AdaScale (b=128, i=2048)</td>
+          <td>20.67</td><td>43.41</td><td>65</td><td>18</td>
+        </tr>
+      </tbody>
+      <tbody>
+        <tr>
+          <td rowspan="2"><a href="https://huggingface.co/Qwen/Qwen3-1.7B">Qwen 3 1.7B</a></td>
+          <td>FP32</td><td>FP32</td><td>—</td><td>15.63</td><td>59.96</td><td>1</td><td>18</td>
+        </tr>
+        <tr>
+          <td>INT4 PCQ</td><td>INT16<br>KV=INT8</td><td>AdaScale (b=128, i=2048)</td>
+          <td>16.59</td><td>56.65</td><td>105</td><td>25</td>
+        </tr>
+      </tbody>
+      <tbody>
+        <tr>
+          <td rowspan="3"><a href="https://huggingface.co/Qwen/Qwen3-4B">Qwen 3 4B</a></td>
+          <td>FP32</td><td>FP32</td><td>—</td><td>12.41</td><td>70.06</td><td>&lt;1</td><td>17</td>
+        </tr>
+        <tr>
+          <td>INT4 PCQ</td><td>INT16<br>KV=INT8</td><td>SpinQuant<br>AdaScale (b=128, i=512)</td>
+          <td>13.79</td><td>65.07</td><td>274</td><td>48</td>
+        </tr>
+        <tr>
+          <td>INT4 LPBQ</td><td>INT16<br>KV=INT8</td><td>SeqMSE</td>
+          <td>12.77</td><td>65.36</td><td>95</td><td>54</td>
+        </tr>
+      </tbody>
+      <tbody>
+        <tr>
+          <td rowspan="3"><a href="https://huggingface.co/microsoft/Phi-3.5-mini-instruct">Phi 3.5 mini instruct</a></td>
+          <td>FP32</td><td>FP32</td><td>—</td><td>5.77</td><td>68.89</td><td>&lt;1</td><td>17</td>
+        </tr>
+        <tr>
+          <td>INT4 PCQ</td><td>INT16<br>KV=INT8</td><td>SpinQuant<br>AdaScale (b=32, i=256)</td>
+          <td>6.50</td><td>62.51</td><td>112</td><td>49</td>
+        </tr>
+        <tr>
+          <td>INT4 LPBQ</td><td>INT16<br>KV=INT8</td><td>SeqMSE</td>
+          <td>6.41</td><td>63.90</td><td>93</td><td>64</td>
+        </tr>
+      </tbody>
+    </table>
 
 
 System Requirements
