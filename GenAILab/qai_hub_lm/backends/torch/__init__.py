@@ -35,3 +35,11 @@ try:
     from GenAILab.qai_hub_lm.backends.torch.internvl import InternVL_Torch
 except ImportError:
     pass
+
+# LLM models that require special handling
+try:
+    from GenAILab.qai_hub_lm.backends.torch.qwen3_5 import Qwen3_5
+except ImportError:
+    warnings.warn(
+        "Qwen 3.5 is not available. Please upgrade to a later version of transformers to use this model."
+    )

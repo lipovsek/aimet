@@ -10,6 +10,7 @@ from .compat import _patch_sdpa_mask  # noqa: F401 — triggers the patch on imp
 from .layer_cache import (
     AttentionType,
     build_layer_cache_descriptors,
+    _resolve_text_config,
 )
 
 
@@ -92,21 +93,29 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
 
     def _build_cache(self, past_key_values: tuple[tuple[torch.Tensor, ...], ...]):
         """Build a cache object from flattened state pairs using ``self.cache_type``."""
-        # Avoid passing config to DynamicCache — it creates DynamicSlidingWindowLayer
-        # for sliding-window layers, which clips KV entries internally. Our 4D attention
-        # mask already handles the windowing semantics, so we need uniform-sized caches.
-        if self.cache_type is DynamicCache:
+        resolved = _resolve_text_config(self.config)
+        layer_types = getattr(resolved, "layer_types", None)
+        has_linear = bool(layer_types) and "linear_attention" in layer_types
+
+        # Hybrid (linear + full) models need a config-constructed cache so the
+        # per-layer cache objects are created with the right type — the linear
+        # layers expose conv/recurrent state slots that ``update_conv_state`` /
+        # ``update_recurrent_state`` write into. Pure attention models keep the
+        # config-less ``DynamicCache``: passing config there would create
+        # DynamicSlidingWindowLayers that clip KV internally, whereas our 4D
+        # attention mask already handles windowing and we need uniform caches.
+        if self.cache_type is DynamicCache and not has_linear:
             kv_cache = DynamicCache()
         else:
-            kv_cache = self.cache_type(config=self.config)
-        layer_types = getattr(self.config, "layer_types", None)
+            kv_cache = self.cache_type(config=resolved)
+
         for layer_idx, (state_a, state_b) in enumerate(
             zip(past_key_values[::2], past_key_values[1::2])
         ):
             if layer_types and layer_types[layer_idx] == "linear_attention":
-                # Linear attention layers use conv_states / recurrent_states
-                kv_cache.conv_states[layer_idx] = state_a
-                kv_cache.recurrent_states[layer_idx] = state_b
+                # Linear attention layers carry conv / recurrent states.
+                kv_cache.update_conv_state(state_a, layer_idx)
+                kv_cache.update_recurrent_state(state_b, layer_idx)
             else:
                 kv_cache.update(state_a, state_b, layer_idx, {})
         return kv_cache
@@ -225,27 +234,16 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
 
         # Flatten output KV cache
         flat_output_past_key_values = []
-        layer_types = getattr(self.config, "layer_types", None)
-        for layer in range(len(new_past_key_values)):
-            if layer_types and layer_types[layer] == "linear_attention":
-                # Linear attention: extract conv_state and recurrent_state
-                flat_output_past_key_values.append(
-                    new_past_key_values.conv_states[layer]
-                )
-                flat_output_past_key_values.append(
-                    new_past_key_values.recurrent_states[layer]
-                )
-            elif hasattr(new_past_key_values, "value_cache"):
-                keys = new_past_key_values.key_cache[layer]
-                values = new_past_key_values.value_cache[layer]
-                flat_output_past_key_values += [keys, values]
-            elif hasattr(new_past_key_values.layers[layer], "keys"):
-                keys = new_past_key_values.layers[layer].keys
-                values = new_past_key_values.layers[layer].values
-                flat_output_past_key_values += [keys, values]
+        resolved = _resolve_text_config(self.config)
+        layer_types = getattr(resolved, "layer_types", None)
+        for layer_idx in range(len(new_past_key_values)):
+            cache_layer = new_past_key_values.layers[layer_idx]
+            if layer_types and layer_types[layer_idx] == "linear_attention":
+                # Linear attention: extract conv_state and recurrent_state.
+                flat_output_past_key_values.append(cache_layer.conv_states)
+                flat_output_past_key_values.append(cache_layer.recurrent_states)
             else:
-                keys = new_past_key_values.layers[layer][0]
-                values = new_past_key_values.layers[layer][1]
-                flat_output_past_key_values += [keys, values]
+                flat_output_past_key_values.append(cache_layer.keys)
+                flat_output_past_key_values.append(cache_layer.values)
 
         return lm_logits, *flat_output_past_key_values

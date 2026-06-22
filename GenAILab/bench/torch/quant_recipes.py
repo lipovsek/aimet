@@ -84,6 +84,56 @@ class RemoveQuantization(QuantizationTechnique):
 
 
 @YAMLConfigParser.register_recipe
+class Clip(QuantizationTechnique):
+    """Clamp activation quantizer encodings to a fixed symmetric range.
+
+    Some models (e.g. Qwen 3.5 linear attention) produce a few activation
+    tensors with very wide dynamic range (outliers up to ~3e4). Under int16 the
+    resulting step size destroys the small in-range values that carry the
+    signal. Clamping the activation quantizers to ``[-value, value]`` saturates
+    the (information-free) outliers and gives the in-range values a finer grid.
+
+    Must run AFTER ``Calibration`` (it overrides the calibrated min/max).
+    Quantizers already within ``[-value, value]`` are unaffected (the clamp is
+    a no-op for them), so only the wide-range outlier tensors are clipped.
+
+    Config (per recipe step)::
+
+        - name: Clip
+          value: 1000           # symmetric clip magnitude
+    """
+
+    @staticmethod
+    @torch.no_grad()
+    def apply(
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        value: float = 1000.0,
+        **kwargs,
+    ):
+        from aimet_torch.v2.quantization.affine import QuantizeDequantize
+
+        n_clipped = 0
+        for module in quantsim.model.modules():
+            if not isinstance(module, QuantizeDequantize):
+                continue
+            if (
+                getattr(module, "min", None) is None
+                or getattr(module, "max", None) is None
+            ):
+                continue
+            new_min = torch.clamp(module.min, min=-value)
+            new_max = torch.clamp(module.max, max=value)
+            if torch.equal(new_min, module.min) and torch.equal(new_max, module.max):
+                continue  # already in-range; nothing clipped
+            module.min.copy_(new_min)
+            module.max.copy_(new_max)
+            n_clipped += 1
+        print(f"Clip: clamped {n_clipped} activation quantizers to [-{value}, {value}]")
+
+
+@YAMLConfigParser.register_recipe
 class Skip(QuantizationTechnique):
     """Do nothing. Useful for testing fully precomputed encodings."""
 

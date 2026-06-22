@@ -14,6 +14,7 @@ from aimet_onnx import quantsim
 from aimet_onnx.quantsim import (
     QuantizationSimModel,
 )
+from aimet_onnx.utils import duplicate_shared_initializers
 
 from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.bench.model_cache import DiskBackedModelCache, ModelCacheEntry
@@ -143,6 +144,13 @@ class LLM_ONNX(LLM):
 
         onnx_model = entry.backbone
         config = entry.config
+
+        # Models with tied input/output embeddings (e.g. Qwen 3.5) export — via
+        # dynamo — a single ``lm_head.weight`` initializer feeding both the
+        # embedding Gather and the lm_head MatMul. AIMET's ConnectedGraph rejects
+        # a shared initializer with conflicting consumer op types, so give each
+        # consumer its own copy. No-op when no initializers are shared.
+        duplicate_shared_initializers(onnx_model.graph)
 
         block_prec = precision.blocks["default"]
         # default_param_qtype must be int for the quantsim wiring; when block

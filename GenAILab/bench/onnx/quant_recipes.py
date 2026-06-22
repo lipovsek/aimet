@@ -111,6 +111,61 @@ class RemoveQuantization(QuantizationTechnique):
 
 
 @YAMLConfigParser.register_recipe
+class Clip(QuantizationTechnique):
+    """Clamp activation quantizer encodings to a fixed symmetric range.
+
+    Some models (e.g. Qwen 3.5 linear attention) produce a handful of
+    activation tensors with very wide dynamic range (outliers up to ~3e4).
+    Under int16 the resulting step size destroys the small values that carry
+    the signal, tanking accuracy. Clamping the activation encodings to
+    ``[-value, value]`` saturates the (information-free) outliers and gives the
+    in-range values a much finer grid, recovering accuracy.
+
+    Must run AFTER ``Calibration`` (it overrides the calibrated encodings).
+    Activations already within ``[-value, value]`` are unaffected (the clamp is
+    a no-op for them), so only the wide-range outlier tensors are clipped.
+
+    Config (per recipe step)::
+
+        - name: Clip
+          value: 1000           # symmetric clip magnitude
+    """
+
+    @staticmethod
+    def apply(
+        quantsim: QuantizationSimModel,
+        generator: Generator,
+        dataloader: DataLoader,
+        value: float = 1000.0,
+        **kwargs,
+    ):
+        activation_names = set(quantsim.activation_names)
+        n_clipped = 0
+        for name, op in quantsim.qc_quantize_op_dict.items():
+            if name not in activation_names or not op.enabled:
+                continue
+            encs = op.get_encodings()
+            if not encs:
+                continue
+            e = encs[0]
+            lo, hi = float(e.min), float(e.max)
+            nlo, nhi = max(lo, -value), min(hi, value)
+            if (nlo, nhi) == (lo, hi):
+                continue  # already in-range; nothing clipped
+            # Mutate the existing encoding in place (preserves bw / symmetry /
+            # other fields), recomputing only the affine params from the new
+            # min/max, then reload it onto the op.
+            e.min = nlo
+            e.max = nhi
+            e.delta = (nhi - nlo) / (2 ** int(e.bw) - 1) if nhi > nlo else 0.0
+            e.offset = round(nlo / e.delta) if e.delta else 0
+            op.load_encodings([e])
+            n_clipped += 1
+        quantsim._rebuild_session()
+        print(f"Clip: clamped {n_clipped} activation encodings to [-{value}, {value}]")
+
+
+@YAMLConfigParser.register_recipe
 class Skip(QuantizationTechnique):
     """Do nothing. Useful for testing fully precomputed encodings."""
 

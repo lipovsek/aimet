@@ -21,3 +21,18 @@ from GenAILab.qai_hub_lm.transforms.moe import (
 from GenAILab.qai_hub_lm.transforms.attention_mask_scale import (
     AttentionMaskScaleAdaptation,
 )
+
+# Qwen 3.5 linear-attention export support requires a transformers version
+# that ships the qwen3_5 model. Guard the import so older environments still
+# load the rest of the transforms package.
+try:
+    from GenAILab.qai_hub_lm.transforms.exportable_linear_attention import (
+        Qwen3_5ExportableLinearAttentionAdaptation,
+    )
+except ImportError:
+    import warnings
+
+    warnings.warn(
+        "Qwen 3.5 ExportableLinearAttention adaptation is not available. "
+        "Please upgrade to a later version of transformers to use this model."
+    )
