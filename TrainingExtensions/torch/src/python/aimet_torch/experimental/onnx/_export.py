@@ -210,6 +210,21 @@ def _quantize_dequantize_placeholder(
     )
 
 
+@onnxscript.script(aimet_opset, default_opset=onnxscript.opset1)
+def _float_quantize_dequantize_placeholder(
+    tensor: onnxscript.FLOAT,
+    dtype: int,
+    scale: onnxscript.FLOAT,
+    block_size: Sequence[int] = (),
+) -> onnxscript.FLOAT:
+    return aimet_opset.FloatQuantizeDequantize(
+        tensor,
+        scale,
+        dtype=dtype,
+        block_size=block_size,
+    )
+
+
 def _quantize_template(opset: onnxscript.values.Opset) -> onnxscript.OnnxFunction:
     @onnxscript.script(aimet_opset, default_opset=opset)
     def quantize(
@@ -625,14 +640,30 @@ def export(
     """
     Export a torch model to ONNX with precomputed scale and offset.
     """
+    from aimet_torch.quantization.float._finfo import _finfo
+
     if not isinstance(model, torch.nn.Module):
         raise NotImplementedError
+
+    def _float_quantize_dequantize(
+        tensor: torch.Tensor,
+        finfo: tuple[int, int, bool, bool],
+        scale: torch.Tensor,
+        block_size: Optional[tuple[int, ...]] = None,
+    ):
+        return _float_quantize_dequantize_placeholder(
+            tensor,
+            _finfo(*finfo).to_onnx_dtype(),
+            scale,
+            block_size or (),
+        )
 
     if version.parse(torch.__version__) >= version.parse("2.6.0"):
         custom_translation_table = kwargs.get("custom_translation_table", {})
         kwargs["custom_translation_table"] = {
             **custom_translation_table,
             torch.ops.aimet.quantize_dequantize.default: _quantize_dequantize_placeholder,
+            torch.ops.aimet.float_quantize_dequantize.default: _float_quantize_dequantize,
         }
 
     with _precompute_encodings(model):

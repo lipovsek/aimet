@@ -2831,7 +2831,7 @@ def test_zero_representable():
             assert torch.all((-255 <= offset) & (offset <= 0))
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def clear_torch_compile_cache():
     yield
     torch.compiler.reset()
@@ -2857,9 +2857,7 @@ def disable_triton_fallback_to_torch_builtins():
     ],
 )
 @pytest.mark.parametrize("backend", _SUPPORTED_BACKENDS.keys())
-def test_fullgraph_compile(
-    backend, shape, block_size, device, clear_torch_compile_cache
-):
+def test_fullgraph_compile(backend, shape, block_size, device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip(reason="CUDA is not available")
 

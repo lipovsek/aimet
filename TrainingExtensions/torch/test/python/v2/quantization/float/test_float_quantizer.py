@@ -357,6 +357,7 @@ def test_extreme_values_warning():
 
 
 @torch.no_grad()
+@pytest.mark.parametrize("dynamo", [True, False])
 @pytest.mark.parametrize(
     "shape, block_size",
     [
@@ -378,6 +379,7 @@ def test_onnx_export(
     maxval: float | None,
     shape: tuple[int, ...],
     block_size: tuple[int, ...] | None,
+    dynamo: bool,
     tmp_path: Path,
 ):
     """
@@ -406,7 +408,7 @@ def test_onnx_export(
         model,
         (x,),
         tmp_path / "float_qdq.onnx",
-        dynamo=False,
+        dynamo=dynamo,
         input_names=["input"],
         output_names=["output"],
         opset_version=21,
@@ -497,3 +499,39 @@ def test_qdq_ignore_boolean_and_integers(dtype):
     out = float_qdq(x)
     assert torch.equal(out, x)
     assert out.dtype == x.dtype
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize(
+    "shape, block_size",
+    [
+        ((), None),  # per-tensor
+        ((10, 1), None),  # per-channel with axis=0
+        ((10, 2), (-1, -1)),  # per-block with channel_axis=0, block_axis=1
+    ],
+)
+def test_fullgraph_compile(shape, block_size, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip(reason="CUDA is not available")
+
+    qdq = FloatQuantizeDequantize(
+        dtype=torch.float8_e5m2, shape=shape, block_size=block_size
+    ).to(device)
+
+    with qdq.compute_encodings():
+        qdq(torch.randn(10, 10, device=device))
+
+    qdq = torch.compile(qdq, fullgraph=True)
+
+    x = torch.randn(10, 10, device=device)
+    _ = qdq(x)
+
+    # Re-run with different shape to trigger recompilation
+    x = torch.randn(2, 10, 10, device=device)
+    _ = qdq(x)
+
+
+@pytest.fixture(autouse=True)
+def clear_torch_compile_cache():
+    yield
+    torch.compiler.reset()

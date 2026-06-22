@@ -9,6 +9,7 @@ from contextlib import contextmanager, nullcontext
 import functools
 from typing import Dict, List, Optional
 import math
+from packaging.version import parse
 
 import torch
 from aimet_torch.quantization.encoding_analyzer import (
@@ -28,11 +29,7 @@ from aimet_torch.utils import (
 )
 from aimet_torch.fp_quantization import fake_cast_to_ieee_float
 from ._finfo import _finfo, _torch_dtype_to_finfo, _float4_e2m1fn
-from aimet_torch.quantization._utils import (
-    interleave,
-    concretize_block_size,
-    blockwise,
-)
+from aimet_torch.quantization._utils import blockwise
 from ...experimental.onnx import _export as _onnx
 
 
@@ -427,12 +424,20 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
         # is known to introduce substantial CPU overhead.
         # Cast types of the inputs to plain torch.Tensor for faster execution.
-        output = _float_quantize_dequantize(
-            input,
-            self._finfo,
-            encoding.scale,
-            self.block_size,
-        )
+        if _torch_compiler_is_exporting():
+            output = torch.ops.aimet.float_quantize_dequantize(
+                input,
+                self._finfo,
+                encoding.scale,
+                encoding.block_size,
+            )
+        else:
+            output = _float_quantize_dequantize(
+                input,
+                self._finfo,
+                encoding.scale,
+                encoding.block_size,
+            )
 
         if (
             not _torch_compiler_is_exporting()
@@ -498,12 +503,6 @@ class QuantizeDequantize(FloatQuantizeDequantize):
     """
 
 
-def blockwise_mul(input, other, block_size):
-    block_size = concretize_block_size(input.shape, other.shape, block_size)
-    input = input.reshape(-1, *interleave(other.shape, block_size))
-    other = other.view(interleave(other.shape, 1))
-
-
 @_onnx.register_symbolic(_onnx.float_quantize_dequantize_symbolic)
 def _float_quantize_dequantize(
     input: torch.Tensor,
@@ -526,6 +525,31 @@ def _float_quantize_dequantize(
         scale,
         block_size=block_size,
     )
+
+
+if parse(torch.__version__) >= parse("2.4.0"):
+    torch.library.define(
+        "aimet::float_quantize_dequantize",
+        "(Tensor input, int[] finfo, Tensor scale, int[]? block_size) -> Tensor",
+    )
+
+    @torch.library.register_fake("aimet::float_quantize_dequantize")
+    def _float_quantize_dequantize_meta(  # pylint: disable=unused-argument
+        tensor: torch.Tensor,
+        finfo: tuple[int, int, bool, bool],
+        scale: torch.Tensor,
+        block_size: Optional[tuple[int, ...]] = None,
+    ) -> torch.Tensor:
+        return torch.empty_like(tensor)
+
+    @torch.library.impl("aimet::float_quantize_dequantize", "default")
+    def _float_quantize_dequantize_impl(
+        tensor: torch.Tensor,
+        finfo: tuple[int, int, bool, bool],
+        scale: torch.Tensor,
+        block_size: Optional[tuple[int, ...]] = None,
+    ):
+        return _float_quantize_dequantize(tensor, _finfo(*finfo), scale, block_size)
 
 
 def _float_quantize(
