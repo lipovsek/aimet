@@ -63,6 +63,8 @@ from aimet_torch.nn import (
     QuantizedConvTranspose1d,
     QuantizedConvTranspose2d,
     QuantizedConvTranspose3d,
+    QuantizedEmbedding,
+    QuantizedLinear,
 )
 
 
@@ -2182,7 +2184,6 @@ def test_export_fp4_int8(tmp_path: pathlib.Path, dynamo: bool):
           and int8 encoding for the second weight QDQ, and both encodings should
           match the sim quantizers' encodings
     """
-    tmp_path = pathlib.Path(".")
     fp4_qdq = Q.float.FloatQuantizeDequantize(
         *_float4_e2m1fn,
         shape=(10, 2),
@@ -3008,7 +3009,8 @@ def test_encoding_metadata(tmp_path: pathlib.Path):
     assert prop.value == f"aimet-torch {aimet_torch.__version__}"
 
 
-def test_shared_weight_export(tmp_path: pathlib.Path):
+@pytest.mark.parametrize("dynamo", [True, False])
+def test_shared_weight_export(tmp_path: pathlib.Path, dynamo: bool):
     """
     Given: Model with shared weight and identical encodings
     When: Export to onnx QDQ
@@ -3029,7 +3031,7 @@ def test_shared_weight_export(tmp_path: pathlib.Path):
         tmp_path / "model.onnx",
         input_names=["input"],
         output_names=["output"],
-        dynamo=False,
+        dynamo=dynamo,
     )
     onnx_model = onnx.load(tmp_path / "model.onnx")
     onnx.checker.check_model(onnx_model)
@@ -3037,11 +3039,13 @@ def test_shared_weight_export(tmp_path: pathlib.Path):
     q_nodes = [
         node for node in onnx_model.graph.node if node.op_type == "QuantizeLinear"
     ]
-    assert set(q.input[0] for q in q_nodes) == {
-        "0.weight",
-        "input",
-        "/0/MatMul_output_0",
-        "output__",
+    assert len([q.input[0] for q in q_nodes]) == 4
+    # Shouldn't contain Transpose
+    op_types = set(node.op_type for node in onnx_model.graph.node)
+    assert op_types == {"QuantizeLinear", "DequantizeLinear", "MatMul"} or op_types == {
+        "QuantizeLinear",
+        "DequantizeLinear",
+        "Gemm",
     }
 
     sess_options = ort.SessionOptions()
@@ -3055,6 +3059,53 @@ def test_shared_weight_export(tmp_path: pathlib.Path):
     expected_out = sim.model(x)
     atol = sim.model[1].output_quantizers[0].get_scale().item()
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
+
+
+@pytest.mark.parametrize("dynamo", [True, False])
+def test_lmhead_weight_sharing_export(tmp_path: pathlib.Path, dynamo: bool):
+    qembedding = QuantizedEmbedding(num_embeddings=10, embedding_dim=12)
+    qlinear = QuantizedLinear(in_features=12, out_features=10)
+    qlinear.weight = qembedding.weight
+    qembedding.param_quantizers["weight"] = Q.affine.QuantizeDequantize(
+        shape=(),
+        qmin=-128,
+        qmax=127,
+        symmetric=True,
+    )
+    qlinear.param_quantizers["weight"] = Q.affine.QuantizeDequantize(
+        shape=(),
+        qmin=-128,
+        qmax=127,
+        symmetric=True,
+    )
+    qembedding.compute_param_encodings()
+    qlinear.compute_param_encodings()
+    model = torch.nn.Sequential(qembedding, qlinear)
+
+    x = torch.randint(0, 10, (2, 10))
+    aimet_torch.onnx.export(
+        model,
+        (x,),
+        tmp_path / "model.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+        dynamo=dynamo,
+    )
+    onnx_model = onnx.load(tmp_path / "model.onnx")
+    op_types = set(node.op_type for node in onnx_model.graph.node)
+    assert op_types == {"QuantizeLinear", "DequantizeLinear", "MatMul", "Add", "Gather"}
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+        sess_options=sess_options,
+    )
+    (out,) = sess.run(None, {"input": x.detach().numpy()})
+    expected_out = model(x)
+    assert torch.allclose(torch.from_numpy(out), expected_out)
 
 
 def test_unhashable_input():
@@ -3289,3 +3340,82 @@ def test_qmha_export(tmp_path: pathlib.Path):
     assert torch.allclose(
         torch.from_numpy(attn_weights), expected_attn_weights, atol=atol
     )
+
+
+@pytest.mark.parametrize("dynamo", [True, False])
+@pytest.mark.parametrize(
+    "qtzr_cls", [Q.affine.QuantizeDequantize, Q.float.FloatQuantizeDequantize]
+)
+@pytest.mark.parametrize(
+    "shape, block_size",
+    [
+        [(), None],  # per-tensor
+        [(12, 1), None],  # per-channel with axis=0
+        [(10,), None],  # per-channel with axis=1
+        [(1, 10), None],  # per-channel with axis=1
+        [(12, 2), (1, 5)],  # per-channel with channel_axis=0, block_axis=1
+        [(2, 10), (6, 1)],  # per-channel with channel_axis=1, block_axis=0
+    ],
+)
+def test_qlinear_onnx_export(
+    tmp_path: pathlib.Path, qtzr_cls, shape, block_size, dynamo: bool
+):
+    if dynamo and qtzr_cls is Q.float.FloatQuantizeDequantize:
+        pytest.skip("Exporting float quantizer with dynamo is not implemented yet")
+
+    qlinear = QuantizedLinear(in_features=10, out_features=12)
+
+    if qtzr_cls is Q.affine.QuantizeDequantize:
+        qlinear.param_quantizers["weight"] = Q.affine.QuantizeDequantize(
+            shape=shape,
+            qmin=-128,
+            qmax=127,
+            symmetric=True,
+            block_size=block_size,
+        )
+    else:
+        qlinear.param_quantizers["weight"] = Q.float.FloatQuantizeDequantize(
+            dtype=torch.float8_e5m2,
+            shape=shape,
+            block_size=block_size,
+        )
+
+    qlinear.compute_param_encodings()
+
+    # Test with 1-3D input
+    for ndim in range(1, 4):
+        x = torch.randn(10)
+
+        while x.ndim < ndim:
+            x = x.unsqueeze(0)
+
+        aimet_torch.onnx.export(
+            qlinear,
+            (x,),
+            tmp_path / "qlinear.onnx",
+            input_names=["input"],
+            output_names=["output"],
+            opset_version=21,
+            dynamo=dynamo,
+        )
+        onnx_model = onnx.load(tmp_path / "qlinear.onnx")
+        op_types = set(node.op_type for node in onnx_model.graph.node)
+
+        # Shouldn't contain Transpose
+        if ndim == 2:
+            assert op_types == {"QuantizeLinear", "DequantizeLinear", "Gemm"}
+        else:
+            assert op_types == {"QuantizeLinear", "DequantizeLinear", "MatMul", "Add"}
+
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = (
+            ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        )
+        sess = ort.InferenceSession(
+            onnx_model.SerializeToString(),
+            providers=["CPUExecutionProvider"],
+            sess_options=sess_options,
+        )
+        (out,) = sess.run(None, {"input": x.detach().numpy()})
+        expected_out = qlinear(x)
+        assert torch.allclose(torch.from_numpy(out), expected_out)

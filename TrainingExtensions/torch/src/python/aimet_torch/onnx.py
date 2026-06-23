@@ -4,6 +4,7 @@
 
 """Defines onnx export API"""
 
+import copy
 import contextlib
 import io
 import itertools
@@ -11,6 +12,7 @@ from packaging import version
 import traceback
 from typing import Any, Mapping, Tuple, Union, Literal
 from pathlib import Path
+import math
 
 import numpy as np
 import onnx
@@ -716,6 +718,186 @@ def _remove_redundant_qdqs(onnx_model: onnx.ModelProto, base_dir):
                     consumer.input[i] = qdq_node.input[0]
 
 
+def _fold_linear_weight_transpose(onnx_model: onnx.ModelProto, base_dir):
+    """
+    Fold weight transpose of F.linear
+
+    Before:
+            W -------> QDQ -> Transpose -> ...
+      (Cout x Cin)   (axis=0)
+    After:
+           W_t ------> QDQ -> ...
+      (Cin x Cout)   (axis=1)
+    """
+    producers: dict[str, onnx.NodeProto] = {
+        node.output[0]: node for node in onnx_model.graph.node
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = {}
+    all_tensor_names = set()
+
+    def _follow_identity_chain(name: str) -> str:
+        producer = producers.get(name, None)
+        while producer and producer.op_type == "Identity":
+            name = producer.input[0]
+            producer = producers.get(name, None)
+        return name
+
+    for node in onnx_model.graph.node:
+        if node.op_type == "Identity":
+            continue
+        for inp in node.input:
+            inp = _follow_identity_chain(inp)
+            consumers.setdefault(inp, []).append(node)
+
+        all_tensor_names.update(node.input)
+        all_tensor_names.update(node.output)
+
+    constants: dict[str, onnx.TensorProto] = _get_all_constants(onnx_model, consumers)
+    for node in onnx_model.graph.node:
+        if node.op_type == "Identity" and node.input[0] in constants:
+            constants[node.output[0]] = constants[node.input[0]]
+    all_tensor_names.update(constants.keys())
+
+    qdq_nodes = {
+        node.name: node
+        for node in onnx_model.graph.node
+        if (node.domain, node.op_type)
+        in (
+            ("aimet", "quantize_dequantize"),
+            ("aimet", "QuantizeDequantize"),
+            ("aimet", "FloatQuantizeDequantize"),
+        )
+    }
+
+    def get_constant(name: str) -> onnx.TensorProto | None:
+        name = _follow_identity_chain(name)
+        return constants.get(name, None)
+
+    def get_new_name(base_name: str) -> str:
+        i = 0
+        new_name = f"{base_name}_{i}"
+        while new_name in all_tensor_names:
+            i += 1
+            new_name = f"{base_name}_{i}"
+        all_tensor_names.add(new_name)
+        return new_name
+
+    def transpose_2d(tensor: onnx.TensorProto) -> onnx.TensorProto:
+        assert len(tensor.dims) <= 2
+        transposed = onnx.numpy_helper.from_array(
+            onnx.numpy_helper.to_array(tensor, base_dir=base_dir).T,
+            name=get_new_name(tensor.name),
+        )
+        transposed.dims[:] = [
+            *reversed(tensor.dims),
+            *(itertools.repeat(1, 2 - len(tensor.dims))),
+        ]
+        return transposed
+
+    visited = set()
+
+    for weight in list(constants.values()):
+        if weight.name in visited:
+            continue
+        visited.add(weight.name)
+        weight_consumers = consumers.get(weight.name)
+
+        if not weight_consumers:
+            continue
+
+        qdq_transpose_pairs: list[tuple[onnx.NodeProto, onnx.NodeProto]] = []
+
+        for qdq in weight_consumers:
+            if not (
+                # Weight should be consumed by QDQ
+                qdq.name in qdq_nodes
+                # Weight should be 1st input of QDQ
+                and weight is get_constant(qdq.input[0])
+                # Scale should be constant
+                and get_constant(qdq.input[1])
+                # Offset (if exists) should be constant
+                and (
+                    qdq.op_type == "FloatQuantizeDequantize"
+                    or get_constant(qdq.input[2])
+                )
+            ):
+                continue
+
+            for transpose in consumers.get(qdq.output[0], []):
+                if transpose.op_type != "Transpose":
+                    continue
+
+                perm = None
+                for attr in transpose.attribute:
+                    if attr.name == "perm":
+                        perm = tuple(attr.ints)
+
+                if perm and perm != (1, 0):
+                    continue
+
+                if any(
+                    consumer.op_type
+                    in (
+                        "quantize_dequantize",
+                        "QuantizeDequantize",
+                        "FloatQuantizeDequantize",
+                    )
+                    for consumer in consumers.get(transpose.output[0], [])
+                ):
+                    continue
+
+                qdq_transpose_pairs.append((qdq, transpose))
+
+        if not qdq_transpose_pairs:
+            continue
+
+        weight_t = transpose_2d(weight)
+        onnx_model.graph.initializer.append(weight_t)
+        constants[weight_t.name] = weight_t
+
+        replaced_nodes: dict[str, onnx.NodeProto] = {}
+        for qdq, transpose in qdq_transpose_pairs:
+            qdq_copy = copy.deepcopy(qdq)
+            qdq_copy.input[0] = weight_t.name
+            qdq_copy.output[0] = transpose.output[0]
+            qdq_copy.name = f"{qdq.name}_copy"
+            replaced_nodes[transpose.name] = qdq_copy
+
+            scale = get_constant(qdq.input[1])
+            offset = (
+                get_constant(qdq.input[2])
+                if qdq.op_type in ("quantize_dequantize", "QuantizeDequantize")
+                else None
+            )
+
+            if math.prod(scale.dims) > 1:
+                scale_t = transpose_2d(scale)
+                onnx_model.graph.initializer.append(scale_t)
+                qdq_copy.input[1] = scale_t.name
+                constants[scale_t.name] = scale_t
+
+            if offset is not None and math.prod(offset.dims) > 1:
+                offset_t = transpose_2d(offset)
+                onnx_model.graph.initializer.append(offset_t)
+                qdq_copy.input[2] = offset_t.name
+                constants[offset_t.name] = offset_t
+
+            block_size = next(
+                (attr for attr in qdq_copy.attribute if attr.name == "block_size"), None
+            )
+            if block_size and block_size.ints:
+                # Transpose block_size in-place
+                block_size.ints[:] = block_size.ints[::-1]
+
+        all_nodes = {}
+        for node in onnx_model.graph.node:
+            node = replaced_nodes.get(node.name, node)
+            all_nodes[node.name] = node
+
+        onnx_model.graph.ClearField("node")
+        onnx_model.graph.node.extend(all_nodes.values())
+
+
 def _to_onnx(
     model: torch.nn.Module,
     args: Union[Tuple[Any, ...], torch.Tensor],
@@ -725,6 +907,7 @@ def _to_onnx(
     base_dir = str(Path(str(f)).absolute().parent)
     _onnx.export(model, args, f, **kwargs)
     onnx_model = onnx.load(f, load_external_data=False)
+    _fold_linear_weight_transpose(onnx_model, base_dir)
     aliases = _duplicate_shared_qdq_inputs(onnx_model, base_dir)
     _remove_redundant_qdqs(onnx_model, base_dir)
     _decouple_back_to_back_qdqs(onnx_model)
