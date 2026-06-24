@@ -4,7 +4,7 @@
 """AdaScale implementation"""
 
 import contextlib
-from typing import Collection, Dict, List, Tuple
+from typing import Callable, Collection, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import numpy as np
 import torch
@@ -51,6 +51,10 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 _QT_SAMPLING_PROB = 1.0
 _LOSS_FN = torch.nn.MSELoss()
 
+# Loss function contract: takes the FP and quantized block outputs and the index of the current
+# calibration input (in inputs order), and returns a scalar loss tensor.
+_LossFn = Callable[[torch.Tensor, torch.Tensor, int], torch.Tensor]
+
 # Temporary flag to control how the per-element error is reduced into a scalar loss.
 # When set, the error is summed over the sequence dim and averaged over the rest
 # so it is not divided by sequence length S; otherwise plain
@@ -67,17 +71,21 @@ _EARLY_STOPPING = None
 
 
 def _mse_loss_fn(
-    qt_out: torch.Tensor, fp_out: torch.Tensor, p: float = 2.0
+    fp_out: torch.Tensor,
+    qt_out: torch.Tensor,
+    data_idx: Optional[int] = None,  # pylint: disable=unused-argument
+    p: float = 2.0,
 ) -> torch.Tensor:
-    """Returns the block loss between qt_out and fp_out.
+    """Returns the block loss between fp_out and qt_out.
 
     Uses plain MSE by default, or FlexRound's lp_loss (summed over the sequence
-    dim) when ``_SUM_OVER_SEQ_DIM`` is set.
+    dim) when ``_SUM_OVER_SEQ_DIM`` is set. ``data_idx`` is accepted to honor the
+    loss function contract and is unused by the default loss.
     """
     if _SUM_OVER_SEQ_DIM:
-        return (qt_out - fp_out).abs().pow(p).sum(1).mean()
+        return (fp_out - qt_out).abs().pow(p).sum(1).mean()
 
-    return _LOSS_FN(qt_out, fp_out)
+    return _LOSS_FN(fp_out, qt_out)
 
 
 _DEBUG_NUM_PARTIAL_ITERATIONS = None
@@ -149,6 +157,8 @@ class AdaScale:
         inputs: Collection[Dict[str, np.ndarray]],
         adascale_model_config: AdaScaleModelConfig,
         num_iterations: int = 1500,
+        *,
+        loss_fn: Optional[_LossFn] = None,
     ):
         """
         :param sim: Quantization Sim model
@@ -156,6 +166,8 @@ class AdaScale:
         :param adascale_model_config: Adascale model config. There are pre-defined configs for
                                       Llama, Qwen2, Mistral, Qwen3, Phi3. For other models use AdaScaleModelConfig
         :param num_iterations: Number of iterations to optimize for during AdaScale
+        :param loss_fn: Loss function with signature ``loss_fn(fp_out, quant_out, data_idx)`` returning a scalar
+            loss tensor. ``data_idx`` is the index of the current input in ``inputs`` order. Defaults to MSE loss if None.
 
         Example usage:
             >>> model = DummyModel()
@@ -303,6 +315,7 @@ class AdaScale:
                         adascale_model_config.scales_lr,
                         num_iterations,
                         device,
+                        loss_fn=loss_fn,
                     )
                     del fp_input_list, qsim_input_list, fp_inputs, qsim_inputs
                     gc.collect()
@@ -333,6 +346,8 @@ class AdaScale:
         scales_lr: float = 5e-4,
         num_iterations: int = 1500,
         device: torch.device = torch.device("cpu"),
+        *,
+        loss_fn: Optional[_LossFn] = None,
     ):
         """
         :param sim: QuantizationSimModel object created using the fp32 model
@@ -343,6 +358,9 @@ class AdaScale:
         :param scales_lr: learning rate to use for scales params
         :param num_iterations: Number of iterations to optimize for during AdaScale
         :param device: torch device to use for optimization
+        :param loss_fn: Loss function with signature ``loss_fn(fp_out, quant_out, data_idx)`` returning a scalar
+            loss tensor, where ``data_idx`` is the index of the current input in ``fp_inputs``/``quantized_inputs``.
+            Defaults to MSE loss if None.
 
         This API performs adascale on the block through the following steps:
             - Using the block input and output tensor names, get the onnx block
@@ -356,6 +374,9 @@ class AdaScale:
         - sim would be updated in place with adascaled weights
 
         """
+        if loss_fn is None:
+            loss_fn = _mse_loss_fn
+
         pytorch_block, pt_weights_to_onnx_initializers = get_pt_block(
             sim_model, block_input_output_names
         )
@@ -414,7 +435,8 @@ class AdaScale:
         pytorch_block.to(device)
         with torch.set_grad_enabled(True):
             for iteration in tqdm.tqdm(range(num_iterations)):
-                fp_input = torch_fp_input[iteration % len(torch_fp_input)]
+                data_idx = iteration % len(torch_fp_input)
+                fp_input = torch_fp_input[data_idx]
                 quant_input = torch_quant_input[iteration % len(torch_quant_input)]
                 if _QT_SAMPLING_PROB == 1.0:
                     input_tensor = quant_input
@@ -436,10 +458,11 @@ class AdaScale:
                     inp_t.to(device=device) for inp_t in input_tensor
                 ]  # Create a new tensor
                 quant_out = pytorch_block(*input_tensor)
-                batch_fp_out = fp_out[iteration % len(torch_fp_input)].to(device)
-                loss = _mse_loss_fn(
-                    quant_out,
+                batch_fp_out = fp_out[data_idx].to(device)
+                loss = loss_fn(
                     batch_fp_out,
+                    quant_out,
+                    data_idx,
                 )
 
                 loss.backward()

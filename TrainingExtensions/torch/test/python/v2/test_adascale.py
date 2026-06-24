@@ -782,19 +782,23 @@ class TestAdascale:
         )
 
     def test_block_level_adascale_custom_loss_fn(self):
-        """Test that adascale_block accepts and uses a custom loss function"""
+        """Test that adascale_block accepts and uses a custom loss function and
+        passes the calibration input index (data_idx) cycling over the inputs."""
         dummy_input = torch.rand(1, 3, 32, 64)
         model = test_models.ModelWithConsecutiveLinearBlocks()
         sim = QuantizationSimModel(model, dummy_input)
 
         call_count = 0
+        seen_indices = []
 
-        def custom_loss_fn(fp_out, qt_out):
+        def custom_loss_fn(fp_out, qt_out, data_idx):
             nonlocal call_count
             call_count += 1
+            seen_indices.append(data_idx)
             return torch.nn.functional.l1_loss(fp_out, qt_out)
 
-        fp_inputs = [((torch.rand(1, 3, 32, 64),), {}) for _ in range(3)]
+        num_inputs = 3
+        fp_inputs = [((torch.rand(1, 3, 32, 64),), {}) for _ in range(num_inputs)]
         qt_inputs = fp_inputs
         num_iterations = 10
 
@@ -808,6 +812,8 @@ class TestAdascale:
         )
 
         assert call_count == num_iterations
+        # data_idx cycles 0..num_inputs-1 across epochs
+        assert seen_indices == [i % num_inputs for i in range(num_iterations)]
 
     def test_block_level_adascale_early_stopping(self):
         """Integration test for the _EARLY_STOPPING flag using the real factory and
@@ -827,7 +833,7 @@ class TestAdascale:
         fp_inputs = [((torch.rand(1, 3, 32, 64),), {}) for _ in range(3)]
 
         def make_counting_loss_fn(counter):
-            def loss_fn(fp_out, qt_out):
+            def loss_fn(fp_out, qt_out, data_idx):
                 counter[0] += 1
                 return torch.nn.functional.mse_loss(fp_out, qt_out)
 

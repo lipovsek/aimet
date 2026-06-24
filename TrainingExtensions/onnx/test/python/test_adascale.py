@@ -605,15 +605,15 @@ class TestAdascaleQuantizer:
         from aimet_onnx.experimental.adascale import adascale_optimizer as opt
 
         torch.manual_seed(0)
-        qt_out = torch.rand(4, seq_len, 16)  # [B, S, H]
-        fp_out = torch.rand(4, seq_len, 16)
+        fp_out = torch.rand(4, seq_len, 16)  # [B, S, H]
+        qt_out = torch.rand(4, seq_len, 16)
 
         with patch.object(opt, "_SUM_OVER_SEQ_DIM", False):
-            mse = opt._mse_loss_fn(qt_out, fp_out)
+            mse = opt._mse_loss_fn(fp_out, qt_out)
         with patch.object(opt, "_SUM_OVER_SEQ_DIM", True):
-            lp = opt._mse_loss_fn(qt_out, fp_out)
+            lp = opt._mse_loss_fn(fp_out, qt_out)
 
-        assert torch.allclose(mse, torch.nn.functional.mse_loss(qt_out, fp_out))
+        assert torch.allclose(mse, torch.nn.functional.mse_loss(fp_out, qt_out))
         assert torch.allclose(lp, mse * seq_len)
 
     def test_block_level_adascale_sum_over_seq_dim(self):
@@ -701,9 +701,9 @@ class TestAdascaleQuantizer:
         real_loss_fn = opt._mse_loss_fn
 
         def make_counting_loss_fn(counter):
-            def loss_fn(qt_out, fp_out):
+            def loss_fn(fp_out, qt_out, data_idx):
                 counter[0] += 1
-                return real_loss_fn(qt_out, fp_out)
+                return real_loss_fn(fp_out, qt_out)
 
             return loss_fn
 
@@ -727,17 +727,17 @@ class TestAdascaleQuantizer:
 
                 sim_model = onnx_ir.from_proto(sim.model.model)
                 onnx_ir.passes.common.TopologicalSortPass().call(sim_model)
-                with patch.object(opt, "_mse_loss_fn", make_counting_loss_fn(counter)):
-                    AdaScale.optimize_adascale_block(
-                        sim_model,
-                        sim.qc_quantize_op_dict,
-                        dummy_input,
-                        qt_input,
-                        block_input_output_names=block_input_output_names,
-                        beta_gamma_lr=1e-3,
-                        scales_lr=5e-4,
-                        num_iterations=num_iterations,
-                    )
+                AdaScale.optimize_adascale_block(
+                    sim_model,
+                    sim.qc_quantize_op_dict,
+                    dummy_input,
+                    qt_input,
+                    block_input_output_names=block_input_output_names,
+                    beta_gamma_lr=1e-3,
+                    scales_lr=5e-4,
+                    num_iterations=num_iterations,
+                    loss_fn=make_counting_loss_fn(counter),
+                )
 
         # Early stopping ON.
         cfg = _EarlyStoppingConfig(check_interval=1, rel_threshold=1e9, window=1)

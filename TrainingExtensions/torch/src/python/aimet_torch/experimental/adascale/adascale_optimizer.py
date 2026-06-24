@@ -157,6 +157,10 @@ _QT_SAMPLING_PROB = 0.5
 
 _BlockOutput = torch.Tensor | Tuple[torch.Tensor, ...]
 
+# Loss function contract: takes the FP and quantized block outputs and the index of the current
+# calibration input (in data_loader order), and returns a scalar loss tensor.
+_LossFn = Callable[[_BlockOutput, _BlockOutput, int], torch.Tensor]
+
 # Temporary flag to control how the per-element error is reduced into a scalar loss.
 # When set, the error is summed over the sequence dim and averaged over the rest
 # so it is not divided by sequence length S; otherwise plain
@@ -173,12 +177,16 @@ _EARLY_STOPPING = None
 
 
 def _mse_loss_fn(
-    fp_out: _BlockOutput, qt_out: _BlockOutput, p: float = 2.0
+    fp_out: _BlockOutput,
+    qt_out: _BlockOutput,
+    data_idx: Optional[int] = None,  # pylint: disable=unused-argument
+    p: float = 2.0,
 ) -> torch.Tensor:
     """Returns the block loss between fp_out and qt_out.
 
     Uses plain MSE by default, or FlexRound's lp_loss (summed over the sequence
-    dim) when ``_SUM_OVER_SEQ_DIM`` is set.
+    dim) when ``_SUM_OVER_SEQ_DIM`` is set. ``data_idx`` is accepted to honor the
+    loss function contract and is unused by the default loss.
     """
     if isinstance(fp_out, (tuple, list)):
         fp_out = torch.cat(fp_out)
@@ -329,12 +337,18 @@ class AdaScale:
         forward_fn: Callable[[torch.nn.Module, Any], Any] = None,
         num_iterations: int = 1500,
         checkpoint_dir: str = None,  # For checkpointing
+        *,
+        loss_fn: Optional[_LossFn] = None,
     ):
         """
         :param qsim: Quantization Sim model
         :param data_loader: DataLoader object to load the input data
         :param forward_fn: forward function to run the forward pass of the model
         :param num_iterations: Number of iterations to optimize for during AdaScale BKD
+        :param checkpoint_dir: Directory to save/resume per-block checkpoints from
+        :param loss_fn: Loss function with signature ``loss_fn(fp_out, quant_out, data_idx)`` returning a scalar
+            loss tensor. ``data_idx`` is the index of the current calibration input in ``data_loader`` order. Defaults
+            to MSE loss if None.
 
         Note that the forward_fn should take exactly two arguments -
         1) the model
@@ -459,6 +473,7 @@ class AdaScale:
                     num_iterations=num_iterations,
                     beta_gamma_lr=beta_gamma_lr,
                     scales_lr=scales_lr,
+                    loss_fn=loss_fn,
                 )
 
                 # Save completed block checkpoint
@@ -486,7 +501,7 @@ class AdaScale:
         num_iterations: int = 1500,
         beta_gamma_lr: float = 1e-3,
         scales_lr: float = 5e-4,
-        loss_fn: Optional[Callable[[_BlockOutput, _BlockOutput], torch.Tensor]] = None,
+        loss_fn: Optional[_LossFn] = None,
     ):
         """
         Performs AdaScale algorithm to optimize weight quantization of input block to minimize the output MSE
@@ -500,8 +515,9 @@ class AdaScale:
             num_iterations: Number of iterations to optimize for during AdaScale BKD
             beta_gamma_lr: Learning rate for beta and gamma parameters
             scales_lr: Learning rate for scale parameters
-            loss_fn: Loss function taking in FP and quantized block outputs
-                and returning a scalar loss tensor. Defaults to MSE loss if None.
+            loss_fn: Loss function with signature ``loss_fn(fp_out, quant_out, data_idx)`` returning a scalar loss
+                tensor, where ``data_idx`` is the index of the current input in ``fp_inputs``/``qt_inputs``.
+                Defaults to MSE loss if None.
 
         """
         if loss_fn is None:
@@ -574,7 +590,7 @@ class AdaScale:
                             deepcopy(fp_out[batch_idx]), device
                         )
 
-                        loss = loss_fn(batch_fp_out, quant_out)
+                        loss = loss_fn(batch_fp_out, quant_out, batch_idx)
                         loss.backward()
                         optimizer.step()
                         scheduler.step()
