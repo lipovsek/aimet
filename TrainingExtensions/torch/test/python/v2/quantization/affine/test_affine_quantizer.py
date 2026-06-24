@@ -200,6 +200,7 @@ def test_quantize_compute_encodings(quantize: Quantize, x: torch.Tensor):
     )
     assert torch.allclose(x_int.encoding.scale, dynamic_scale)
     assert torch.allclose(x_int.encoding.offset, dynamic_offset)
+    assert x_int.encoding.producer is quantize
 
     if isinstance(quantize, MinMaxQuantizer):
         assert torch.allclose(quantize.min, dynamic_min)
@@ -257,6 +258,7 @@ def test_qdq_compute_encodings(
         output = quantize_dequantize(x)
 
     assert torch.allclose(output, expected_output)
+    assert output.encoding.producer is quantize_dequantize
 
     if isinstance(quantize, MinMaxQuantizer):
         assert torch.allclose(quantize_dequantize.min, dynamic_min)
@@ -1401,10 +1403,12 @@ def test_gbbq_sanity(params):
         pc._reparametrize_to_scale_offset()
 
     with gbbq.compute_encodings():
-        _ = gbbq(tensor)
+        out = gbbq(tensor)
+        assert out.encoding.producer is gbbq
 
     with pc.compute_encodings():
-        _ = pc(tensor)
+        out = pc(tensor)
+        assert out.encoding.producer is pc
 
     assert gbbq.get_scale().shape == (8, 4)
 

@@ -35,6 +35,12 @@ from torch.utils._pytree import tree_map
 
 from aimet_torch.quantization.base import QuantizerBase
 from aimet_torch.quantization.tensor import QuantizedTensorBase
+from aimet_torch.quantization.affine import (
+    AffineQuantizerBase,
+    AffineEncoding,
+    GroupedBlockEncoding,
+)
+from aimet_torch.common.quantsim import _get_adjusted_weight_scale
 from aimet_torch.utils import (
     patch_attr,
     _ContextManager,
@@ -43,6 +49,7 @@ from aimet_torch.utils import (
     _torch_compiler_is_compiling,
 )
 from .base import BaseQuantizationMixin
+from aimet_torch.deepspeed_utils import SafeGatheredParameters
 
 
 def _quantize_if_applicable(data: Any, quantizer: Optional[QuantizerBase]):
@@ -948,12 +955,124 @@ class QuantizedConstantPad3d(QuantizationMixin, nn.ConstantPad3d):
 #     _builtin_torch_fn = ...
 
 
+@contextlib.contextmanager
+def _compute_encodings_with_int32_bias_overflow_protection(self):
+    """
+    Compute encodings with additional protection against bias overflow.
+    HTP expects bias_scale = input_scale * weight_scale,
+    which can cause bias overflow if bias_scale is too small.
+    If bias overflow is expected, this function increases weight_scale until
+    |bias / (input_scale * weight_scale)| <= 2**31
+    """
+    input_encoding_producer = None
+
+    def capture_input_encoding_producer_hook(self, inputs):
+        nonlocal input_encoding_producer
+
+        (input,) = inputs
+
+        if hasattr(input, "encoding") and isinstance(input.encoding, AffineEncoding):
+            input_encoding_producer = input.encoding.producer
+        elif self.input_quantizers[0]:
+            input_encoding_producer = self.input_quantizers[0]
+        else:
+            input_encoding_producer = None
+
+    handle = None
+
+    try:
+        handle = self.register_forward_pre_hook(capture_input_encoding_producer_hook)
+
+        with QuantizationMixin.compute_encodings(self):
+            yield
+    finally:
+        if handle:
+            handle.remove()
+
+    weight_qtzr = self.param_quantizers["weight"]
+
+    if not (
+        isinstance(input_encoding_producer, AffineQuantizerBase)
+        and isinstance(weight_qtzr, AffineQuantizerBase)
+    ):
+        return
+
+    with SafeGatheredParameters(
+        itertools.chain(
+            weight_qtzr.parameters(),
+            input_encoding_producer.parameters(),
+            [self.bias] if self.bias is not None else [],
+        )
+    ):
+        if not (
+            (input_encoding := input_encoding_producer.get_encodings())
+            and (weight_encoding := weight_qtzr.get_encodings())
+            and self.bias is not None
+        ):
+            return
+
+        bias = self.bias.clone().detach()
+
+    if isinstance(weight_encoding, GroupedBlockEncoding):
+        weight_scale = weight_encoding.per_channel_scale
+    else:
+        weight_scale = weight_encoding.scale
+
+    if weight_scale.ndim == 0:
+        bias = bias.abs().amax()
+
+    non_singleton_axes = tuple(
+        axis for axis, dim in enumerate(weight_scale.shape) if dim > 1
+    )
+
+    if len(non_singleton_axes) > 1:
+        # Edge case: weight is quantized with more than 1 non-singleton dimension.
+        # In this case, we can't analytically derive bias encoding
+        return
+
+    adjusted_weight_scale = _get_adjusted_weight_scale(
+        bias,
+        input_encoding.scale,
+        weight_scale.flatten().squeeze(),
+        num_steps=2**31,
+    )
+    adjusted_weight_scale = adjusted_weight_scale.reshape(weight_scale.shape)
+
+    if isinstance(weight_encoding, GroupedBlockEncoding):
+        new_weight_encoding = GroupedBlockEncoding(
+            scale=weight_encoding.per_block_int_scale * adjusted_weight_scale,
+            offset=weight_encoding.offset,
+            bitwidth=weight_encoding.bitwidth,
+            block_size=weight_encoding.block_size,
+            block_grouping=weight_encoding.block_grouping,
+            decompressed_bw=weight_encoding.decompressed_bw,
+            per_channel_scale=adjusted_weight_scale,
+        )
+    else:
+        new_weight_encoding = AffineEncoding(
+            adjusted_weight_scale,
+            weight_encoding.offset,
+            weight_encoding.qmin,
+            weight_encoding.qmax,
+            weight_encoding.symmetry,
+            weight_encoding.block_size,
+            weight_encoding.zero_point_shift,
+        )
+
+    weight_qtzr.set_range(
+        min=new_weight_encoding.min,
+        max=new_weight_encoding.max,
+    )
+
+
 @QuantizationMixin.implements(nn.Conv1d)
 class QuantizedConv1d(_DispatchMixin, QuantizationMixin, nn.Conv1d):  # pylint: disable=too-many-ancestors
     # pylint: disable=missing-class-docstring
     __doc__ = _generate_docstring(parent_cls=nn.Conv1d)
     _builtin_torch_fn = F.conv1d
     __quant_init__ = QuantizationMixin.__unary__
+
+    compute_encodings = _compute_encodings_with_int32_bias_overflow_protection
 
     def _derive_bias_scale(
         self, input_scale: Optional[torch.Tensor], weight_scale: Optional[torch.Tensor]
@@ -970,6 +1089,8 @@ class QuantizedConv2d(_DispatchMixin, QuantizationMixin, nn.Conv2d):  # pylint: 
     _builtin_torch_fn = F.conv2d
     __quant_init__ = QuantizationMixin.__unary__
 
+    compute_encodings = _compute_encodings_with_int32_bias_overflow_protection
+
     def _derive_bias_scale(
         self, input_scale: Optional[torch.Tensor], weight_scale: Optional[torch.Tensor]
     ):
@@ -984,6 +1105,8 @@ class QuantizedConv3d(_DispatchMixin, QuantizationMixin, nn.Conv3d):  # pylint: 
     __doc__ = _generate_docstring(parent_cls=nn.Conv3d)
     _builtin_torch_fn = F.conv3d
     __quant_init__ = QuantizationMixin.__unary__
+
+    compute_encodings = _compute_encodings_with_int32_bias_overflow_protection
 
     def _derive_bias_scale(
         self, input_scale: Optional[torch.Tensor], weight_scale: Optional[torch.Tensor]
@@ -1000,6 +1123,8 @@ class QuantizedConvTranspose1d(_DispatchMixin, QuantizationMixin, nn.ConvTranspo
     _builtin_torch_fn = F.conv_transpose1d
     __quant_init__ = QuantizationMixin.__unary__
 
+    compute_encodings = _compute_encodings_with_int32_bias_overflow_protection
+
     def _derive_bias_scale(
         self, input_scale: Optional[torch.Tensor], weight_scale: Optional[torch.Tensor]
     ):
@@ -1015,6 +1140,8 @@ class QuantizedConvTranspose2d(_DispatchMixin, QuantizationMixin, nn.ConvTranspo
     _builtin_torch_fn = F.conv_transpose2d
     __quant_init__ = QuantizationMixin.__unary__
 
+    compute_encodings = _compute_encodings_with_int32_bias_overflow_protection
+
     def _derive_bias_scale(
         self, input_scale: Optional[torch.Tensor], weight_scale: Optional[torch.Tensor]
     ):
@@ -1029,6 +1156,8 @@ class QuantizedConvTranspose3d(_DispatchMixin, QuantizationMixin, nn.ConvTranspo
     __doc__ = _generate_docstring(parent_cls=nn.ConvTranspose3d)
     _builtin_torch_fn = F.conv_transpose3d
     __quant_init__ = QuantizationMixin.__unary__
+
+    compute_encodings = _compute_encodings_with_int32_bias_overflow_protection
 
     def _derive_bias_scale(
         self, input_scale: Optional[torch.Tensor], weight_scale: Optional[torch.Tensor]
@@ -1763,6 +1892,8 @@ class QuantizedLinear(_DispatchMixin, QuantizationMixin, nn.Linear):
 
         with ctx:
             return super().forward(*args, **kwargs)
+
+    compute_encodings = _compute_encodings_with_int32_bias_overflow_protection
 
     def _derive_bias_scale(
         self, input_scale: Optional[torch.Tensor], weight_scale: Optional[torch.Tensor]

@@ -187,6 +187,7 @@ class TestCommonQuantSim:
         input_scale = np.array([0.1], dtype=np.float32)
         weight_scale = np.array([0.1])
         result = _get_adjusted_weight_scale(bias, input_scale, weight_scale)
+        assert type(result) == type(weight_scale)
         assert result == np.asarray(weight_scale, dtype=np.float32)
 
         # Weight adjustment needed
@@ -199,6 +200,7 @@ class TestCommonQuantSim:
         result = _get_adjusted_weight_scale(
             bias, input_scale, weight_scale, num_steps=2**31
         )
+        assert type(result) == type(weight_scale)
         assert np.allclose(result, expected)
 
         # Mix case (per-channel)
@@ -212,6 +214,7 @@ class TestCommonQuantSim:
         result = _get_adjusted_weight_scale(
             bias, input_scale, weight_scale, num_steps=2**31
         )
+        assert type(result) == type(weight_scale)
         assert np.allclose(result, expected)  # mix
 
         # vector bias, 1D weight_scale (per-tensor)
@@ -224,6 +227,7 @@ class TestCommonQuantSim:
         result = _get_adjusted_weight_scale(
             bias, input_scale, weight_scale, num_steps=2**31
         )
+        assert type(result) == type(weight_scale)
         assert np.allclose(result, expected)
 
         # vector bias, float weight_scale (per-tensor)
@@ -234,4 +238,5 @@ class TestCommonQuantSim:
         result = _get_adjusted_weight_scale(
             bias, input_scale, weight_scale, num_steps=2**31
         )
+        assert type(result) == type(weight_scale)
         assert np.allclose(result, expected)

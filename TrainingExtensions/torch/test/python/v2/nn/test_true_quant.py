@@ -14,6 +14,7 @@ import torch
 from torch import randn, randint, zeros, full, arange, ones, tensor
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.modules.linear import NonDynamicallyQuantizableLinear
 from torch.utils._pytree import tree_flatten
 from torch.overrides import get_ignored_functions
 import transformers
@@ -56,6 +57,9 @@ from aimet_torch.nn.true_quant import _dispatch, _dispatchable_torch_functions
 from aimet_torch.v2.quantization.tensor import QuantizedTensor, DequantizedTensor
 from aimet_torch.v2.utils import enable_recompute
 from aimet_torch.v2.nn import custom
+from aimet_torch.v2.quantsim.config_utils import (
+    set_grouped_blockwise_quantization_for_weights,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -944,7 +948,7 @@ _MODULE_FACTORIES = {
     nn.LayerNorm: lambda: nn.LayerNorm((2, 3, 4)),
     nn.LeakyReLU: lambda: nn.LeakyReLU(),
     nn.Linear: lambda: nn.Linear(10, 10),
-    nn.modules: lambda: nn.modules.linear.NonDynamicallyQuantizableLinear(10, 10),
+    NonDynamicallyQuantizableLinear: lambda: NonDynamicallyQuantizableLinear(10, 10),
     nn.LocalResponseNorm: lambda: nn.LocalResponseNorm(2),
     nn.LogSigmoid: lambda: nn.LogSigmoid(),
     nn.LogSoftmax: lambda: nn.LogSoftmax(),
@@ -1190,7 +1194,7 @@ _INPUT_FACTORIES = {
     nn.LayerNorm: lambda: randn(10, 2, 3, 4),
     nn.LeakyReLU: lambda: randn(100),
     nn.Linear: lambda: randn(10, 10),
-    nn.modules: lambda: randn(10, 10),
+    NonDynamicallyQuantizableLinear: lambda: randn(10, 10),
     nn.LocalResponseNorm: lambda: randn(1, 4, 5, 5),
     nn.LogSigmoid: lambda: randn(100),
     nn.LogSoftmax: lambda: randn(100),
@@ -2379,3 +2383,79 @@ def test_qmha_error(
         RuntimeError, match=r"The shape of the 3D attn_mask is .+, but should be .+"
     ):
         _ = qmha(query, key, value, attn_mask=attn_mask.unsqueeze(0))
+
+
+@torch.no_grad()
+@pytest.mark.parametrize(
+    "lpbq, zero_point_shift",
+    [
+        (False, False),
+        (False, True),
+        (True, False),
+    ],
+)
+@pytest.mark.parametrize(
+    "module_factory",
+    [
+        functools.partial(nn.Linear, 4, 4),
+        functools.partial(nn.Conv1d, 4, 4, 3),
+        functools.partial(nn.Conv2d, 4, 4, 3),
+        functools.partial(nn.Conv3d, 4, 4, 3),
+        functools.partial(nn.ConvTranspose1d, 4, 4, 3),
+        functools.partial(nn.ConvTranspose2d, 4, 4, 3),
+        functools.partial(nn.ConvTranspose3d, 4, 4, 3),
+    ],
+)
+def test_int32_bias_overflow(module_factory, lpbq: bool, zero_point_shift: bool):
+    """
+    Given: Linear/Conv with very large bias
+    When: Concretize int32 bias quantizer
+    Then: Int32 bias shouldn't overflow
+    """
+    torch.manual_seed(0)
+
+    module = module_factory()
+    # Tiny weight & huge bias to trigger overflow
+    module.weight.copy_(1e-7 * torch.rand_like(module.weight))
+    module.bias.copy_(torch.tensor([-1024, -1, 1, 1024]))
+    input_shape = tuple(
+        1 if axis == 0 else 4 for axis, _ in enumerate(module.weight.shape)
+    )
+    dummy_input = torch.randn(input_shape)
+    sim = aimet_torch.QuantizationSimModel(
+        module,
+        dummy_input,
+        default_param_bw=4,
+        default_output_bw=16,
+    )
+
+    if lpbq:
+        set_grouped_blockwise_quantization_for_weights(
+            sim,
+            [type(module)],
+            bitwidth=4,
+            symmetric=True,
+            decompressed_bw=8,
+            block_size=2,
+        )
+
+    sim.model.param_quantizers["weight"].zero_point_shift = 0.5 * zero_point_shift
+    sim.compute_encodings(lambda model: model(dummy_input))
+    _ = sim.model(dummy_input)
+    input_scale = sim.model.input_quantizers[0].get_scale()
+    weight_qtzr = sim.model.param_quantizers["weight"]
+    weight_encoding = weight_qtzr.get_encoding()
+    assert weight_encoding.scale.shape == weight_qtzr.shape
+
+    sim.model._create_int32_bias_quantizer((dummy_input,), None)
+    bias = sim.model.bias
+    bias_encoding = sim.model.param_quantizers["bias"].get_encoding()
+    assert torch.all(bias.abs() / bias_encoding.scale <= 2**31)
+
+    per_channel_weight_scale = (
+        weight_encoding.per_channel_scale if lpbq else weight_encoding.scale
+    )
+    assert torch.allclose(
+        bias_encoding.scale,
+        input_scale * per_channel_weight_scale.flatten(),
+    )

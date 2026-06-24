@@ -37,7 +37,10 @@ from aimet_torch.quantization.encoding_analyzer import (
     _flag_extreme_min_max,
 )
 from aimet_torch.quantization.affine import AffineEncoding, GroupedBlockEncoding
-from aimet_torch.quantization.tensor import QuantizedTensor, DequantizedTensor
+from aimet_torch.quantization.tensor import (
+    QuantizedTensor,
+    DequantizedTensor,
+)
 from aimet_torch.quantization.base import QuantizerBase
 from aimet_torch.quantization.affine.backends import (
     quantize,
@@ -618,29 +621,32 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
             if self.block_size is not None:
                 dynamic_min = dynamic_min.view(shape)
                 dynamic_max = dynamic_max.view(shape)
+
             dynamic_min = dynamic_min.to(dtype=dtype, device=device).expand(shape)
             dynamic_max = dynamic_max.to(dtype=dtype, device=device).expand(shape)
+            dynamic_scale, dynamic_offset = _get_scale_offset(
+                dynamic_min.to(torch.float32),
+                dynamic_max.to(torch.float32),
+                qmin=self.qmin,
+                qmax=self.qmax,
+                symmetric=self.symmetric,
+            )
+            encoding = AffineEncoding(
+                dynamic_scale,
+                dynamic_offset,
+                self.qmin,
+                self.qmax,
+                self.symmetric,
+                self.block_size,
+                self.zero_point_shift,
+                producer=self,
+            )
 
-            if self._is_min_max_quantizer():
-                with (
-                    patch_attr(self, "min", dynamic_min),
-                    patch_attr(self, "max", dynamic_max),
-                ):
-                    ret = original_forward(input)
-            else:
-                # Compute scale/offset with float32 for numerical stability
-                dynamic_scale, dynamic_offset = _get_scale_offset(
-                    dynamic_min.to(torch.float32),
-                    dynamic_max.to(torch.float32),
-                    qmin=self.qmin,
-                    qmax=self.qmax,
-                    symmetric=self.symmetric,
-                )
-                with (
-                    patch_attr(self, "scale", dynamic_scale),
-                    patch_attr(self, "offset", dynamic_offset),
-                ):
-                    ret = original_forward(input)
+            with self._set_encodings(encoding):
+                ret = original_forward(input)
+
+            if not hasattr(ret, "encoding"):
+                ret.encoding = encoding
 
             return ret
 
@@ -775,6 +781,11 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
             enc.offset = torch.nn.Parameter(enc.offset, requires_grad=False)
             setattr(enc.offset, "_precomputed_zero_point", -enc.offset.to(torch.int32))
 
+        with self._set_encodings(enc):
+            yield
+
+    @contextmanager
+    def _set_encodings(self, enc: AffineEncoding | None):
         def get_cache_encodings(*args, **kwargs):  # pylint: disable=unused-argument
             return enc
 

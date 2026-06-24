@@ -6,8 +6,9 @@
 
 import os
 import functools
-from typing import Union, Tuple, Dict
+from typing import TypeVar, Union, Tuple, Dict
 import numpy as np
+import torch
 
 from .defs import QuantScheme, QuantizationDataType
 from .quantsim_config.quantsim_config import QuantSimConfigurator
@@ -465,12 +466,15 @@ def _is_bias_out_of_int32_range(
     return (bias_float > max_value) | (bias_float < min_value)
 
 
+T_w = TypeVar("T_w", bound=Union[np.ndarray, float, torch.Tensor])
+
+
 def _get_adjusted_weight_scale(
-    bias_float: Union[np.ndarray, float],
-    input_scale: Union[np.ndarray, float],
-    weight_scale: Union[np.ndarray, float],
+    bias_float: Union[np.ndarray, float, torch.Tensor],
+    input_scale: Union[np.ndarray, float, torch.Tensor],
+    weight_scale: T_w,
     num_steps: int = 2**31,
-) -> np.ndarray:
+) -> T_w:
     """
     Adjusts weight scales to prevent bias overflow during INT16 quantization.
 
@@ -484,32 +488,53 @@ def _get_adjusted_weight_scale(
     :param num_steps: Maximum allowed quantized bias value (default threshold is 2**31)
     :return: adjusted weight scales
     """
-    # Check float or 1D array with 1 value.
-    is_scalar = np.isscalar(weight_scale) or np.size(weight_scale) == 1
+    if isinstance(bias_float, float):
+        bias_float = torch.tensor(bias_float)
+    elif isinstance(bias_float, np.ndarray):
+        bias_float = torch.from_numpy(bias_float)
 
-    if np.any(input_scale == 0):
+    if isinstance(input_scale, float):
+        input_scale = torch.tensor(input_scale)
+    elif isinstance(input_scale, np.ndarray):
+        input_scale = torch.from_numpy(input_scale)
+
+    ret_type = type(weight_scale)
+    ret_dtype = weight_scale.dtype if isinstance(weight_scale, torch.Tensor) else None
+
+    if isinstance(weight_scale, float):
+        weight_scale = torch.tensor(weight_scale)
+    elif isinstance(weight_scale, np.ndarray):
+        weight_scale = torch.from_numpy(weight_scale)
+
+    ret_shape = weight_scale.shape
+
+    if torch.any(input_scale == 0):
         raise ValueError("input_scale must be non-zero.")
 
-    weight_scale = np.asarray(weight_scale, dtype=np.float64)
-    input_scale = np.asarray(input_scale, dtype=np.float64)
-    bias_float = np.asarray(bias_float, dtype=np.float64)
+    weight_scale = weight_scale.squeeze().to(torch.float64)
+    input_scale = input_scale.squeeze().to(torch.float64)
+    bias_float = bias_float.squeeze().to(torch.float64)
 
-    bias_scale = weight_scale * input_scale
+    if bias_float.shape != weight_scale.shape:
+        if weight_scale.shape != ():
+            raise RuntimeError(
+                f"weight_scale must be either a scalar or have the same shape as bias_float. "
+                f"Got weight_scale.shape={weight_scale.shape} and bias_float.shape={bias_float.shape}"
+            )
+        bias_float = bias_float.abs().amax()
 
-    adjusted_weight_scale = weight_scale.copy()
+    adjusted_weight_scale = torch.maximum(
+        weight_scale,
+        (bias_float / (num_steps * input_scale)).abs(),
+    )
+    adjusted_weight_scale = adjusted_weight_scale.to(ret_dtype).reshape(ret_shape)
 
-    if is_scalar:  # Handle scalar weight_scale case
-        max_abs_bias = np.max(np.abs(bias_float))
-        bias_quantized = max_abs_bias / bias_scale
-        if bias_quantized > num_steps:
-            adjusted_weight_scale = np.array([max_abs_bias / (num_steps * input_scale)])
-    else:  # Handle vector case
-        overflow_mask = _is_bias_out_of_int32_range(bias_float, bias_scale, num_steps)
-        adjusted_weight_scale[overflow_mask] = np.abs(bias_float[overflow_mask]) / (
-            num_steps * input_scale
-        )
-
-    return adjusted_weight_scale.astype(np.float32)
+    if issubclass(ret_type, float):
+        return adjusted_weight_scale.item()
+    elif issubclass(ret_type, np.ndarray):
+        return adjusted_weight_scale.cpu().numpy().astype(np.float32)
+    else:
+        return adjusted_weight_scale
 
 
 _INT4_MINIMUM_SCALE = _get_minimum_scale(2**4 - 1)
