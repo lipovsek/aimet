@@ -108,7 +108,6 @@ SKIP_LIST_FOR_SUBGRAPH_TRACE = [
     aimet_modules.DepthToSpaceCRDMode,
     aimet_modules.Addmm,
     aimet_modules.Baddbmm,
-    aimet_modules.Gather,
     aimet_modules.GridSample,
 ]
 

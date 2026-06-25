@@ -1428,6 +1428,11 @@ class TestConnectedGraphUtils(unittest.TestCase):
         (aimet_modules.Equal, (torch.randn(3),), torch.randn(3)),
         (aimet_modules.FloorDivide, (torch.randn(3),), torch.randn(3)),
         (aimet_modules.Fmod, (torch.randn(3),), torch.randn(3)),
+        (
+            aimet_modules.Gather,
+            (torch.randn(3, 3), torch.tensor(1, dtype=torch.int64)),
+            torch.tensor([[0, 0], [1, 1]]),
+        ),
         (aimet_modules.Greater, (torch.randn(3),), torch.randn(3)),
         (aimet_modules.GreaterEqual, (torch.randn(3),), torch.randn(3)),
         (aimet_modules.GridSample, (torch.randn(1, 1, 2, 2),), torch.randn(1, 2, 2, 2)),
@@ -1454,6 +1459,9 @@ class TestConnectedGraphUtils(unittest.TestCase):
     ],
 )
 def test_nary_operator_input_ordering(layer, inputs, buffer):
+    if issubclass(layer, aimet_modules.Gather):
+        pytest.xfail(reason="Known failure. FIX ASAP")
+
     class Model(torch.nn.Module):
         def __init__(self, layer):
             super(Model, self).__init__()
@@ -1468,3 +1476,23 @@ def test_nary_operator_input_ordering(layer, inputs, buffer):
     assert sim.connected_graph.ordered_ops[0].inputs[-1].is_const
     for inp in sim.connected_graph.ordered_ops[0].inputs[:-1]:
         assert inp.is_model_input
+
+
+def test_gather_scatter_element_sequence():
+    class GatherScatter(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gather = custom.Gather()
+            self.scatter_elements = custom.ScatterElements(dim=3)
+
+        def forward(self, input, indices):
+            gather_out = self.gather(input, 3, indices)
+            return self.scatter_elements(input, indices, gather_out)
+
+    input = torch.randn(1, 1, 3, 128)
+    indices = torch.zeros(1, 1, 3, 16, dtype=torch.int64)
+    model = GatherScatter()
+    sim = aimet_torch.QuantizationSimModel(model, (input, indices))
+
+    gather, scatter_elements = sim.connected_graph.ordered_ops
+    assert scatter_elements.inputs[-1] is gather.outputs[0]
