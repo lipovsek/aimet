@@ -4922,6 +4922,53 @@ class TestEncodingPropagation:
         # Making sure that the qdq graph is runnable
         qdq_output = quantized_model_session.run(None, dummy_input)
 
+    @pytest.mark.parametrize("tqp_channel_axis", [None, 0])
+    def test_per_channel_export_emits_axis_without_tqp_axis(self, tqp_channel_axis):
+        """
+        A per-channel quantizer (vector scale) must export an `axis`, sourced from
+        quant_info.channelAxis, regardless of tensor_quantizer_params.channel_axis --
+        which is unset for the fused/derived int32 bias quantizers that triggered this.
+        Otherwise the DequantizeLinear is invalid for the 1-D bias tensor.
+        """
+        from aimet_onnx.common import libquant_info
+        from aimet_onnx.qc_quantize_op import QcQuantizeOp, TensorQuantizerParams
+
+        num_channels = 8
+        tqp = TensorQuantizerParams([num_channels])
+        tqp.channel_axis = tqp_channel_axis
+        tqp.block_axis = None
+
+        qtzr = QcQuantizeOp(
+            quant_info=libquant_info.QcQuantizeInfo(),
+            tensor_quantizer_params=tqp,
+            op_mode=libpymo.TensorQuantizerOpMode.oneShotQuantizeDequantize,
+        )
+        qtzr.enabled = True
+        qtzr.bitwidth = 32
+        qtzr.use_symmetric_encodings = True
+
+        # Put the quantizer in per-channel mode (vector scale shaped by channelAxis).
+        qtzr.quant_info.usePerChannelMode = True
+        qtzr.quant_info.channelAxis = 0
+        qtzr.quant_info.blockAxis = 0
+        qtzr.quant_info.blockSize = 0
+        qtzr._tensor_quantizer = qtzr._build_tensor_quantizer()
+
+        encodings = []
+        for scale in np.linspace(1e-4, 1e-3, num_channels):
+            enc = libpymo.TfEncoding()
+            enc.bw = 32
+            enc.delta = float(scale)
+            enc.offset = -(2**31)
+            enc.min = float(scale) * -(2**31)
+            enc.max = float(scale) * (2**31 - 1)
+            encodings.append(enc)
+        qtzr.load_encodings(encodings)
+
+        exported = qtzr.export_encodings("2.0.0")
+        assert len(exported["y_scale"]) == num_channels
+        assert exported.get("axis") == 0
+
     @pytest.mark.parametrize(
         "per_channel, weight_encoding",
         [

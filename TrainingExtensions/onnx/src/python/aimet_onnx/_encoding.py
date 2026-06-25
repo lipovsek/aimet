@@ -697,12 +697,14 @@ class AffineEncoding(EncodingBase):
         if not qtzr.enabled:
             return None
 
-        if qtzr.quant_info.usePerChannelMode and qtzr.tensor_quantizer_params:
-            channel_axis = qtzr.tensor_quantizer_params.channel_axis
+        if qtzr.quant_info.usePerChannelMode:
+            # Per-channel scale is a vector, so an axis must be emitted alongside it.
+            # Source the axis from quant_info -- the same fields _encoding_shape() uses
+            # to shape the scale vector -- rather than tensor_quantizer_params, whose
+            # channel_axis is unset for fused/derived int32 bias quantizers.
+            channel_axis = qtzr.quant_info.channelAxis
             block_size = qtzr.quant_info.blockSize or None
-            block_axis = (
-                None if block_size is None else qtzr.tensor_quantizer_params.block_axis
-            )
+            block_axis = None if block_size is None else qtzr.quant_info.blockAxis
         else:
             channel_axis = None
             block_size = None
