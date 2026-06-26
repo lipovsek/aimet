@@ -68,8 +68,16 @@ def convert_2d_attention_mask_to_4d_sliding_window(
     Starts from the standard causal mask and additionally masks out key/value
     positions that fall outside the sliding window for each query position.
 
+    The sliding window is measured in **real token positions**, not cache
+    indices. Since this framework left-pads the KV cache with zeros, cache
+    index does not equal rope position; using cache indices would incorrectly
+    exclude valid past tokens whose rope positions are within the window of
+    the current query.
+
     Args:
-        padded_attention_mask: 2D mask ``(batch, context_length)``
+        padded_attention_mask: 2D mask ``(batch, context_length)`` where 1
+            marks valid tokens and 0 marks padding (KV padding or input
+            padding).
         sequence_length: number of query tokens
         context_length: total KV + query length
         sliding_window_size: maximum look-back distance (in tokens)
@@ -81,20 +89,19 @@ def convert_2d_attention_mask_to_4d_sliding_window(
         padded_attention_mask, sequence_length, context_length
     )
 
-    device = padded_attention_mask.device
-    # Query positions within the full context
-    query_positions = torch.arange(
-        context_length - sequence_length,
-        context_length,
-        device=device,
-    ).unsqueeze(1)  # (seq_len, 1)
-    kv_positions = torch.arange(context_length, device=device).unsqueeze(
-        0
-    )  # (1, context_len)
+    # Derive real rope positions from the cumulative attention mask. For
+    # padding cells the value is meaningless (those cells are already masked
+    # out by the underlying causal mask), but for valid cells this gives the
+    # actual sequence position used by RoPE.
+    cumulative = torch.cumsum(padded_attention_mask.to(torch.int32), dim=1) - 1
+    cumulative = cumulative.clamp(min=0)  # (B, context_length)
 
-    # Mask positions whose distance exceeds the window
+    query_positions = cumulative[:, -sequence_length:].unsqueeze(-1)  # (B, S, 1)
+    kv_positions = cumulative.unsqueeze(1)  # (B, 1, K)
+
+    # Mask positions whose semantic distance exceeds the window
     outside_window = (query_positions - kv_positions) >= sliding_window_size
-    outside_window = outside_window.unsqueeze(0).unsqueeze(0)  # (1, 1, S, C)
+    outside_window = outside_window.unsqueeze(1)  # (B, 1, S, K)
 
     min_val = torch.finfo(causal_mask.dtype).min
     causal_mask = causal_mask.masked_fill(outside_window, min_val)
