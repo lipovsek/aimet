@@ -63,6 +63,21 @@ class NonAffineRMSNormFusion(rewriter.RewriteRuleClassBase):
             |       |
             +---+---+
                 Div
+
+    Version 3: With x * rsqrt ( denominator )
+                x
+            +---+---+
+            |       |
+            |   Mul or Pow(x, 2)
+            |       |
+            |   ReduceMean
+            |       |
+            |       Add
+            |       |
+            |   Pow(·, -0.5)
+            |       |
+            +---+---+
+                Mul
     """
 
     def __init__(self, *args, pattern_idx: int = 0, **kwargs):

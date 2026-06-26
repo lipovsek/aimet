@@ -15,7 +15,8 @@ from .utils import assert_on_const_quantizers, assert_on_output_quantizers
 @pytest.mark.parametrize("elementwise_affine", [True, False])
 @pytest.mark.parametrize("mul_for_pow", [True, False])
 @pytest.mark.parametrize(
-    "mul_rsqrt_pattern", ["mul_rsqrt", "div_sqrt", "mul_reciprocal_sqrt"]
+    "mul_rsqrt_pattern",
+    ["mul_rsqrt", "div_sqrt", "mul_reciprocal_sqrt", "mul_pow_neg_half"],
 )
 def test_rmsnorm(elementwise_affine, mul_for_pow, mul_rsqrt_pattern):
     dim = 32
@@ -58,7 +59,8 @@ def test_rmsnorm(elementwise_affine, mul_for_pow, mul_rsqrt_pattern):
 @pytest.mark.parametrize("elementwise_affine", [True, False])
 @pytest.mark.parametrize("mul_for_pow", [True, False])
 @pytest.mark.parametrize(
-    "mul_rsqrt_pattern", ["mul_rsqrt", "div_sqrt", "mul_reciprocal_sqrt"]
+    "mul_rsqrt_pattern",
+    ["mul_rsqrt", "div_sqrt", "mul_reciprocal_sqrt", "mul_pow_neg_half"],
 )
 def test_rmsnorm_with_cast(elementwise_affine, mul_for_pow, mul_rsqrt_pattern):
     """Test RMSNorm pattern matching when Cast ops are present.

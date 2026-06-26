@@ -374,6 +374,8 @@ class RMSNorm(nn.Module):
         elif self.mul_rsqrt_pattern == "mul_reciprocal_sqrt":
             sqrt = 1 / torch.sqrt(variance + self.variance_epsilon)
             x = x * sqrt
+        elif self.mul_rsqrt_pattern == "mul_pow_neg_half":
+            x = x * (variance + self.variance_epsilon).pow(-0.5)
         else:
             raise RuntimeError("Mul RSqrt pattern not specified.")
 
@@ -416,6 +418,8 @@ class RMSNormWithCast(nn.Module):
         elif self.mul_rsqrt_pattern == "mul_reciprocal_sqrt":
             sqrt = 1 / torch.sqrt(variance + self.variance_epsilon)
             x = x * sqrt
+        elif self.mul_rsqrt_pattern == "mul_pow_neg_half":
+            x = x * (variance + self.variance_epsilon).pow(-0.5)
         else:
             raise RuntimeError("Mul RSqrt pattern not specified.")
 

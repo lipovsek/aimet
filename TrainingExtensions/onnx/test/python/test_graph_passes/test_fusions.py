@@ -554,7 +554,8 @@ class TestRMSNormFusion:
     @pytest.mark.parametrize("elementwise_affine", [True, False])
     @pytest.mark.parametrize("mul_for_pow", [True, False])
     @pytest.mark.parametrize(
-        "mul_rsqrt_pattern", ["mul_rsqrt", "div_sqrt", "mul_reciprocal_sqrt"]
+        "mul_rsqrt_pattern",
+        ["mul_rsqrt", "div_sqrt", "mul_reciprocal_sqrt", "mul_pow_neg_half"],
     )
     def test_rmsnorm_fusion_variants(
         self, elementwise_affine, mul_for_pow, mul_rsqrt_pattern, opset

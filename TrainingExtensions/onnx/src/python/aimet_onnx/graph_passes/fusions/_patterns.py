@@ -18,6 +18,12 @@ def reciprocal(op: pattern.OpsetPatternBuilder, x: pattern.Var):
     return pattern.OrValue([op.Reciprocal(x), pattern.Constant(1.0) / x])
 
 
+def inv_sqrt(op: pattern.OpsetPatternBuilder, x: pattern.Var):
+    """Matches `1 / Sqrt(x)` as `Reciprocal(Sqrt(x))`, `1 / Sqrt(x)` or `Pow(x, -0.5)`"""
+    neg_half = pattern.OrValue([pattern.Constant(-0.5), pattern.Constant([-0.5])])
+    return pattern.OrValue([reciprocal(op, op.Sqrt(x)), op.Pow(x, neg_half)])
+
+
 def add(op: pattern.OpsetPatternBuilder, x: pattern.Var, y: pattern.Var):
     """Commutative add pattern"""
     return pattern.OrValue([op.Add(x, y), op.Add(y, x)])
@@ -84,7 +90,7 @@ def non_affine_rms_normalize(
     mean = reduce_mean(op, squared, axes)
     mean_eps = add(op, mean, pattern.Var(epsilon))
     sqrt_mean = op.Sqrt(mean_eps)
-    inv_sqrt_mean = reciprocal(op, sqrt_mean)
+    inv_sqrt_mean = inv_sqrt(op, mean_eps)
     normalize_patterns = [
         x / sqrt_mean,
         x * inv_sqrt_mean,
