@@ -600,88 +600,18 @@ class TestAdascaleQuantizer:
                 assert consolidated_delta_updated_enc != consolidated_delta_orig_enc
 
     @pytest.mark.parametrize("seq_len", [8, 32, 2048])
-    def test_mse_loss_fn_sum_over_seq_dim(self, seq_len):
-        """lp_loss path equals MSE scaled by the sequence length S (dim 1)."""
+    def test_mse_loss_fn(self, seq_len):
+        """lp_loss equals MSE scaled by the sequence length S (dim 1)."""
         from aimet_onnx.experimental.adascale import adascale_optimizer as opt
 
         torch.manual_seed(0)
         fp_out = torch.rand(4, seq_len, 16)  # [B, S, H]
         qt_out = torch.rand(4, seq_len, 16)
 
-        with patch.object(opt, "_SUM_OVER_SEQ_DIM", False):
-            mse = opt._mse_loss_fn(fp_out, qt_out)
-        with patch.object(opt, "_SUM_OVER_SEQ_DIM", True):
-            lp = opt._mse_loss_fn(fp_out, qt_out)
+        lp = opt._mse_loss_fn(fp_out, qt_out)
 
-        assert torch.allclose(mse, torch.nn.functional.mse_loss(fp_out, qt_out))
+        mse = torch.nn.functional.mse_loss(fp_out, qt_out)
         assert torch.allclose(lp, mse * seq_len)
-
-    def test_block_level_adascale_sum_over_seq_dim(self):
-        """Smoke test: the _SUM_OVER_SEQ_DIM=True loss path runs and updates weights."""
-        from unittest.mock import patch
-
-        model = ModelWithConsecutiveLinearBlocks().eval()
-        input_shape = (1, 3, 32, 64)
-        torch.random.manual_seed(1)
-        dummy_input = [torch.rand(input_shape), torch.rand(input_shape)]
-        qt_input = [t * 0.3 for t in dummy_input]
-
-        with tempfile.TemporaryDirectory() as tempdir:
-            torch.onnx.export(
-                model,
-                dummy_input[0],
-                tempdir + "/model.onnx",
-                input_names=["input"],
-                output_names=["output"],
-                dynamo=False,
-            )
-            model_onnx = load_model(tempdir + "/model.onnx")
-            sim = QuantizationSimModel(
-                model_onnx,
-                [dummy_input],
-                config_file="htp_v73",
-            )
-            sim._compute_param_encodings(overwrite=False)
-
-            # Snapshot all initializers
-            original_weights = {
-                init.name: numpy_helper.to_array(init).copy()
-                for init in sim.model.model.graph.initializer
-            }
-
-            block_input_output_names = [
-                (["input"], ["/blocks.0/layer2/Add_output_0"]),
-                (["/blocks.0/layer2/Add_output_0"], ["output"]),
-            ]
-            with patch(
-                "aimet_onnx.experimental.adascale.adascale_optimizer._SUM_OVER_SEQ_DIM",
-                True,
-            ):
-                for block_idx in range(len(model.blocks)):
-                    sim_model = onnx_ir.from_proto(sim.model.model)
-                    onnx_ir.passes.common.TopologicalSortPass().call(sim_model)
-                    AdaScale.optimize_adascale_block(
-                        sim_model,
-                        sim.qc_quantize_op_dict,
-                        dummy_input,
-                        qt_input,
-                        block_input_output_names=block_input_output_names[block_idx],
-                        beta_gamma_lr=1e-3,
-                        scales_lr=5e-4,
-                        num_iterations=10,
-                    )
-                    sim.model.model.CopyFrom(onnx_ir.to_proto(sim_model))
-
-            # At least one weight should have been updated by the optimization
-            changed = [
-                init.name
-                for init in sim.model.model.graph.initializer
-                if init.name in original_weights
-                and not np.array_equal(
-                    original_weights[init.name], numpy_helper.to_array(init)
-                )
-            ]
-            assert changed
 
     def test_block_level_adascale_early_stopping(self):
         """Integration test for the _EARLY_STOPPING flag using the real factory and

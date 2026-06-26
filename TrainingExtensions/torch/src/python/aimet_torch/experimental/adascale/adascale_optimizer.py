@@ -161,13 +161,6 @@ _BlockOutput = torch.Tensor | Tuple[torch.Tensor, ...]
 # calibration input (in data_loader order), and returns a scalar loss tensor.
 _LossFn = Callable[[_BlockOutput, _BlockOutput, int], torch.Tensor]
 
-# Temporary flag to control how the per-element error is reduced into a scalar loss.
-# When set, the error is summed over the sequence dim and averaged over the rest
-# so it is not divided by sequence length S; otherwise plain
-# mse_loss averages over every dim.
-# TODO: switch default to True once validated.
-_SUM_OVER_SEQ_DIM = False
-
 # Temporary flag to enable early stopping of the per-block optimization loop.
 # None/False disables it; True enables it with default parameters. To configure
 # the parameters, set it to an
@@ -184,19 +177,17 @@ def _mse_loss_fn(
 ) -> torch.Tensor:
     """Returns the block loss between fp_out and qt_out.
 
-    Uses plain MSE by default, or FlexRound's lp_loss (summed over the sequence
-    dim) when ``_SUM_OVER_SEQ_DIM`` is set. ``data_idx`` is accepted to honor the
-    loss function contract and is unused by the default loss.
+    Uses FlexRound's lp_loss: the per-element error is summed over dim 1 (the
+    sequence dim for the transformer decoder blocks this targets) and averaged
+    over the rest, so it is not divided by sequence length S. ``data_idx`` is
+    accepted to honor the loss function contract and is unused by the default loss.
     """
     if isinstance(fp_out, (tuple, list)):
         fp_out = torch.cat(fp_out)
     if isinstance(qt_out, (tuple, list)):
         qt_out = torch.cat(qt_out)
 
-    if _SUM_OVER_SEQ_DIM:
-        return (fp_out - qt_out).abs().pow(p).sum(1).mean()
-
-    return torch.nn.functional.mse_loss(fp_out, qt_out)
+    return (fp_out - qt_out).abs().pow(p).sum(1).mean()
 
 
 supported_modules: List = [QuantizedLinear, QuantizedConv2d]

@@ -738,48 +738,18 @@ class TestAdascale:
         assert len(adascale_quantizers) == 0
 
     @pytest.mark.parametrize("seq_len", [8, 32, 2048])
-    def test_mse_loss_fn_sum_over_seq_dim(self, seq_len):
-        """For p=2, the sum-over-seq-dim path equals plain MSE times dim 1's size."""
+    def test_mse_loss_fn(self, seq_len):
+        """For p=2, the default loss equals plain MSE times dim 1's size."""
         from aimet_torch.experimental.adascale import adascale_optimizer as opt
 
         torch.manual_seed(0)
         fp_out = torch.rand(4, seq_len, 16)  # [B, S, H]
         qt_out = torch.rand(4, seq_len, 16)
 
-        with patch.object(opt, "_SUM_OVER_SEQ_DIM", False):
-            mse = opt._mse_loss_fn(fp_out, qt_out)
-        with patch.object(opt, "_SUM_OVER_SEQ_DIM", True):
-            lp = opt._mse_loss_fn(fp_out, qt_out)
+        lp = opt._mse_loss_fn(fp_out, qt_out)
 
-        assert torch.allclose(mse, torch.nn.functional.mse_loss(fp_out, qt_out))
+        mse = torch.nn.functional.mse_loss(fp_out, qt_out)
         assert torch.allclose(lp, mse * seq_len)
-
-    def test_block_level_adascale_sum_over_seq_dim(self):
-        """Smoke test: the _SUM_OVER_SEQ_DIM=True loss path trains and folds cleanly."""
-        dummy_input = torch.rand(1, 3, 32, 64)
-        model = test_models.ModelWithConsecutiveLinearBlocks()
-        sim = QuantizationSimModel(model, dummy_input)
-
-        fp_inputs = [((torch.rand(1, 3, 32, 64),), {}) for _ in range(3)]
-        qt_inputs = fp_inputs
-
-        block = sim.model.blocks[0]
-        with patch(
-            "aimet_torch.experimental.adascale.adascale_optimizer._SUM_OVER_SEQ_DIM",
-            True,
-        ):
-            AdaScale.adascale_block(
-                block, fp_inputs, qt_inputs=qt_inputs, num_iterations=10
-            )
-
-        assert any(
-            isinstance(mod, AdaScaleQuantizeDequantize) for mod in block.modules()
-        )
-
-        AdaScale.fold_adascale_quantizers(block)
-        assert not any(
-            isinstance(mod, AdaScaleQuantizeDequantize) for mod in block.modules()
-        )
 
     def test_block_level_adascale_custom_loss_fn(self):
         """Test that adascale_block accepts and uses a custom loss function and
