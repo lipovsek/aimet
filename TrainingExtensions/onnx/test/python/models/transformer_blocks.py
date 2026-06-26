@@ -1,12 +1,16 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
+import io
+
 from onnxscript import script, opset17 as op, FLOAT, INT64
 from onnxscript.values import Opset
 import onnx_ir as ir
 import onnx
 import onnx.inliner
 import numpy as np
+import torch
+import torch.nn as nn
 
 
 local = Opset("local", 1)
@@ -356,3 +360,176 @@ def sha_2_head_block():
 
 def sha_2_head_block_native_kvcache():
     return _build_block_model(sha_block_native_kvcache, num_model_inputs=7)
+
+
+# -----------------------------------
+# Scaled SHA + GQA decoder (torch)
+# -----------------------------------
+
+
+def _sha_rms(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps) * weight
+
+
+def _sha_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """RoPE on a [1, 1, S, head_dim] tensor with split-half cos/sin."""
+    rot = x.shape[-1] // 2
+    x_1, x_2 = x[..., :rot], x[..., rot:]
+    return torch.cat([x_1 * cos - x_2 * sin, x_1 * sin + x_2 * cos], dim=-1)
+
+
+class _ShaGqaLayer(nn.Module):
+    """SHA + GQA decoder layer using Conv1d projections"""
+
+    def __init__(self, head_dim, num_kv, group, intermediate):
+        super().__init__()
+        self.head_dim = head_dim
+        self.num_kv = num_kv
+        self.group = group
+        hidden = num_kv * group * head_dim
+        num_q = num_kv * group
+        self.input_norm = nn.Parameter(torch.randn(hidden))
+        self.post_attn_norm = nn.Parameter(torch.randn(hidden))
+        self.q_proj = nn.ModuleList(
+            nn.Conv1d(hidden, head_dim, 1, bias=False) for _ in range(num_q)
+        )
+        self.k_proj = nn.ModuleList(
+            nn.Conv1d(hidden, head_dim, 1, bias=False) for _ in range(num_kv)
+        )
+        self.v_proj = nn.ModuleList(
+            nn.Conv1d(hidden, head_dim, 1, bias=False) for _ in range(num_kv)
+        )
+        self.q_norm = nn.ParameterList(
+            nn.Parameter(torch.randn(head_dim)) for _ in range(num_q)
+        )
+        self.k_norm = nn.ParameterList(
+            nn.Parameter(torch.randn(head_dim)) for _ in range(num_kv)
+        )
+        self.o_proj = nn.Conv1d(hidden, hidden, 1, bias=False)
+        self.gate = nn.Linear(hidden, intermediate, bias=False)
+        self.up = nn.Linear(hidden, intermediate, bias=False)
+        self.down = nn.Conv1d(intermediate, hidden, 1, bias=False)
+
+    def forward(self, x, attention_mask, cos, sin, past_key, past_value):
+        # x: [1, S, H]; attention_mask: [1, 1, S, total]
+        # past_key: [num_kv, 1, head_dim, past]; past_value: [num_kv, 1, past, head_dim]
+        h = _sha_rms(x, self.input_norm).transpose(1, 2)  # [1, H, S] for Conv1d
+        attn_heads, key_outs, value_outs = [], [], []
+        for kv in range(self.num_kv):
+            k = self.k_proj[kv](h).transpose(1, 2)  # [1, S, head_dim]
+            k = _sha_rope(_sha_rms(k, self.k_norm[kv]).unsqueeze(1), cos, sin)
+            k_t = k.transpose(-1, -2)  # [1, 1, head_dim, S] — head_dim on axis -2
+            v = self.v_proj[kv](h).transpose(1, 2).unsqueeze(1)  # [1, 1, S, head_dim]
+            total_key = torch.cat([past_key[kv : kv + 1], k_t], dim=-1)
+            total_value = torch.cat([past_value[kv : kv + 1], v], dim=-2)
+            key_outs.append(k_t)
+            value_outs.append(v)
+            for g in range(self.group):
+                qi = kv * self.group + g
+                q = self.q_proj[qi](h).transpose(1, 2)  # [1, S, head_dim]
+                q = _sha_rope(_sha_rms(q, self.q_norm[qi]).unsqueeze(1), cos, sin)
+                score = q @ total_key / (self.head_dim**0.5) + attention_mask
+                score = torch.softmax(score, dim=-1)  # [1, 1, S, total]
+                attn_heads.append((score @ total_value).squeeze(1))  # [1, S, head_dim]
+        attn = torch.cat(attn_heads, dim=-1).transpose(1, 2)  # [1, H, S]
+        x = x + self.o_proj(attn).transpose(1, 2)
+        h2 = _sha_rms(x, self.post_attn_norm)
+        mlp = (self.gate(h2) * torch.sigmoid(self.gate(h2))) * self.up(h2)
+        x = x + self.down(mlp.transpose(1, 2)).transpose(1, 2)
+        return x, torch.cat(key_outs, dim=0), torch.cat(value_outs, dim=0)
+
+
+class ShaGqaDecoder(nn.Module):
+    """Scaled SHA + GQA decoder LM with a concat-style KV cache.
+
+    Structure:
+     - tied embed/lm_head,
+     - per-head Conv q/k/v projections
+     - GQA
+     - RoPE
+
+    :param head_dim: per-head size (production: 128).
+    :param num_kv: key/value heads (production: 8).
+    :param group: query heads per kv head (production: 2).
+    :param intermediate: SwiGLU MLP intermediate size (production: 6144).
+    :param vocab: vocabulary size.
+    :param num_layers: decoder layers.
+    """
+
+    def __init__(
+        self, head_dim=8, num_kv=2, group=2, intermediate=16, vocab=16, num_layers=2
+    ):
+        super().__init__()
+        hidden = num_kv * group * head_dim
+        self.embed_tokens = nn.Embedding(vocab, hidden)
+        self.layers = nn.ModuleList(
+            _ShaGqaLayer(head_dim, num_kv, group, intermediate)
+            for _ in range(num_layers)
+        )
+        self.final_norm = nn.Parameter(torch.randn(hidden))
+        self.lm_head = nn.Linear(hidden, vocab, bias=False)
+        self.lm_head.weight = self.embed_tokens.weight  # tied embed/lm_head
+
+    def forward(self, input_ids, attention_mask, cos, sin, *past_kv):
+        x = self.embed_tokens(input_ids)
+        present = []
+        for i, layer in enumerate(self.layers):
+            x, present_key, present_value = layer(
+                x, attention_mask, cos, sin, past_kv[2 * i], past_kv[2 * i + 1]
+            )
+            present += [present_key, present_value]
+        logits = self.lm_head(_sha_rms(x, self.final_norm))
+        return (logits, *present)
+
+
+def sha_gqa_decoder(
+    head_dim=8,
+    num_kv=2,
+    group=2,
+    intermediate=16,
+    vocab=16,
+    num_layers=2,
+    seq=4,
+    past=3,
+    dynamo=False,
+) -> onnx.ModelProto:
+    """Build and export a :class:`ShaGqaDecoder` to ONNX with named KV-cache I/O.
+
+    ``seq`` and ``past`` set the example sequence / past-cache lengths used for the export trace.
+    """
+    module = ShaGqaDecoder(head_dim, num_kv, group, intermediate, vocab, num_layers)
+    rot = head_dim // 2
+    attention_mask = torch.randn(1, 1, seq, seq + past)
+    cos = torch.randn(1, 1, seq, rot)
+    sin = torch.randn(1, 1, seq, rot)
+    past_kv = []
+    for _ in range(num_layers):
+        past_kv += [
+            torch.randn(num_kv, 1, head_dim, past),
+            torch.randn(num_kv, 1, past, head_dim),
+        ]
+    input_names = [
+        "input_ids",
+        "attention_mask",
+        "position_ids_cos",
+        "position_ids_sin",
+    ]
+    output_names = ["logits"]
+    for i in range(num_layers):
+        input_names += [f"past_key_{i}_in", f"past_value_{i}_in"]
+        output_names += [f"past_key_{i}_out", f"past_value_{i}_out"]
+
+    token_ids = torch.randint(0, vocab, (1, seq))
+    buf = io.BytesIO()
+    torch.onnx.export(
+        module.eval(),
+        (token_ids, attention_mask, cos, sin, *past_kv),
+        buf,
+        input_names=input_names,
+        output_names=output_names,
+        opset_version=17,
+        do_constant_folding=True,
+        dynamo=dynamo,
+    )
+    buf.seek(0)
+    return onnx.load_model(buf)

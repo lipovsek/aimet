@@ -4,6 +4,7 @@
 import io
 import logging
 import shutil
+from types import SimpleNamespace
 from typing import Optional
 
 import numpy as np
@@ -17,12 +18,13 @@ from onnx import load_model, numpy_helper
 from onnxruntime import GraphOptimizationLevel, InferenceSession, SessionOptions
 
 from .models.test_models import RMSNorm
+from .models import transformer_blocks
 from .utils import add_genai_tests_path
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.common.hadamard import get_hadamard_matrix
 from aimet_onnx.graph_passes.fusions import fuse_supergroups
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
-from aimet_onnx.utils import ParamUtils
+from aimet_onnx.utils import ParamUtils, make_dummy_input
 
 from aimet_onnx.experimental.spinquant.model_analysis import (
     ActiveNorm,
@@ -56,6 +58,7 @@ from aimet_onnx.experimental.spinquant.transforms.rotation_primitives import (
     hadamard_rotation_matrix,
 )
 from aimet_onnx.experimental.spinquant import apply_spinquant
+from aimet_onnx.experimental.spinquant.passes.r3 import is_online_rotation_op
 from aimet_onnx.experimental.spinquant.model_analysis import find_attention_topology
 
 
@@ -1911,8 +1914,10 @@ class TestApplyR3Rotation:
         assert len(anchors) == len(role_map.blocks)
         for i, anchor in enumerate(anchors):
             assert anchor.past_key_input_name == f"past_key_{i}"
-            assert anchor.k_concat_node.op_type == "Concat"
-            assert anchor.qk_matmul_node.op_type == "MatMul"
+            assert len(anchor.k_consumers) == 1
+            assert anchor.k_consumers[0].op_type == "Concat"
+            assert len(anchor.qk_matmul_nodes) == 1
+            assert anchor.qk_matmul_nodes[0].op_type == "MatMul"
 
 
 # Tiny Qwen3 shape used by the find_r3_anchors tests below. These are NOT the
@@ -2204,10 +2209,12 @@ class TestFindR3Anchors:
         assert len(anchors) == _QWEN3_NUM_LAYERS
         for i, anchor in enumerate(anchors):
             assert anchor.past_key_input_name == f"past_key_{i}"
-            assert anchor.k_concat_node.op_type == "Concat"
-            assert anchor.qk_matmul_node.op_type == "MatMul"
+            assert len(anchor.k_consumers) == 1
+            assert anchor.k_consumers[0].op_type == "Concat"
+            assert len(anchor.qk_matmul_nodes) == 1
+            assert anchor.qk_matmul_nodes[0].op_type == "MatMul"
             # Q-side and K-side must be distinct inputs of the QK^T MatMul.
-            assert anchor.q_consumer_input_idx != anchor.k_consumer_input_idx
+            assert anchor.q_input_tensors[0] != anchor.k_consumers[0].output[0]
 
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     def test_find_r3_anchors_gqa(self):
@@ -2240,9 +2247,12 @@ class TestFindR3Anchors:
         assert len(anchors) == _QWEN3_NUM_LAYERS
         for i, anchor in enumerate(anchors):
             assert anchor.past_key_input_name == f"past_key_{i}"
-            assert anchor.k_concat_node.op_type == "Concat"
-            assert anchor.qk_matmul_node.op_type == "MatMul"
-            assert anchor.q_consumer_input_idx != anchor.k_consumer_input_idx
+            assert len(anchor.k_consumers) == 1
+            assert anchor.k_consumers[0].op_type == "Concat"
+            assert len(anchor.qk_matmul_nodes) == 1
+            assert anchor.qk_matmul_nodes[0].op_type == "MatMul"
+            # Q-side and K-side must be distinct inputs of the QK^T MatMul.
+            assert anchor.q_input_tensors[0] != anchor.k_consumers[0].output[0]
 
 
 class TestApplySpinquant:
@@ -2399,6 +2409,69 @@ class TestApplySpinquant:
 
         y_vit_after = _run_model(visual_model, x_vit)
         assert np.allclose(y_vit_after, y_vit_before @ R_L)
+
+    def test_spinquant_r3_sha_gqa(self):
+        """R3 on a SHA + GQA decoder must preserve output (rotated-cache)"""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        head_dim, num_kv, group, num_layers = 8, 2, 2, 2
+        seq, past = 4, 3
+        model = transformer_blocks.sha_gqa_decoder(
+            head_dim=head_dim,
+            num_kv=num_kv,
+            group=group,
+            vocab=_VOCAB,
+            num_layers=num_layers,
+            seq=seq,
+            past=past,
+            dynamo=True,
+        )
+
+        # Make dummy input
+        input_dict = make_dummy_input(model)
+        input_dict["input_ids"] = np.random.randint(0, _VOCAB, (1, seq)).astype(
+            np.int64
+        )
+        input_dict["attention_mask"] = np.zeros_like(input_dict["attention_mask"])
+
+        y_before = _build_session(model).run(None, input_dict)
+
+        apply_spinquant(model, enable_r3=True)
+
+        r3_matmuls = [
+            n for n in model.graph.node if "_R3" in n.name and n.op_type == "MatMul"
+        ]
+        for n in r3_matmuls:
+            assert is_online_rotation_op(SimpleNamespace(type=n.op_type, name=n.name))
+        assert len(r3_matmuls) == num_layers * (num_kv + group * num_kv)
+        # no name collisions
+        assert len({n.name for n in r3_matmuls}) == len(r3_matmuls)
+
+        # After R3, expects K-Cache inputs to be rotated
+        # Rotate key cache from dummy input
+        H = hadamard_rotation_matrix(head_dim).astype(np.float32)
+
+        def _rotate_cache(tensor):
+            return np.swapaxes(np.swapaxes(tensor, -1, -2) @ H, -1, -2).astype(
+                np.float32
+            )
+
+        input_dict_r3 = dict(input_dict)
+        for name, tensor in input_dict.items():
+            if name.startswith("past_key_"):
+                input_dict_r3[name] = _rotate_cache(tensor)
+
+        y_after = _build_session(model).run(None, input_dict_r3)
+        # Logits match
+        assert np.allclose(y_before[0], y_after[0], atol=1e-4, rtol=1e-4)
+        # Key cache is rotated
+        for key_before, key_after in zip(y_before[1::2], y_after[1::2]):
+            assert np.allclose(
+                _rotate_cache(key_before), key_after, atol=1e-4, rtol=1e-4
+            )
+        # Value cache matches
+        for value_before, value_after in zip(y_before[2::2], y_after[2::2]):
+            assert np.allclose(value_before, value_after, atol=1e-4, rtol=1e-4)
 
     def test_post_writing_norm_raises_and_leaves_model_untouched(self):
         """apply_spinquant must raise ValueError for Gemma-style architectures (post-writing norms)

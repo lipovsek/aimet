@@ -13,11 +13,11 @@ Per decoder block, R3 needs two insertion anchors:
 We pin the search on the ``past_key_*`` graph inputs (HF/optimum LLM exports
 expose one per decoder block, in declaration order). For each one:
 
-1. Find the unique ``Concat`` consuming it. The OTHER input of that Concat
+1. Find the ``Concat`` nodes consuming it. The OTHER input of that Concat
    is the current-K tensor (R3 K-side anchor).
 2. Walk forward from the Concat output through pass-through ops
    (quantsim's grid-preserving data-movement ops plus ``Cast``; see
-   :func:`_is_passthrough`) until reaching a unique ``MatMul`` — that's QK^T.
+   :func:`_is_passthrough`) until reaching ``MatMul`` nodes — that's QK^T.
    Whichever MatMul input traces back to the Concat is K; the OTHER input is Q
    (R3 Q-side anchor).
 
@@ -72,30 +72,26 @@ class BlockR3Anchors:
     rewire ``node.input[idx]`` directly without going through the
     ConnectedGraph (which becomes stale once we insert new nodes anyway).
 
-    :param past_key_input_name: The ``past_key_*`` graph input pinned this
+    :param past_key_input_name: The ``past_key_*`` graph input that pinned this
         block's anchor search.
-    :param k_concat_node: ``Concat`` node fusing past_key with current-K.
-        R3 rewires its ``input[k_consumer_input_idx]``.
-    :param k_consumer_input_idx: Index in ``k_concat_node.input`` currently
-        holding the post-RoPE current-K tensor.
-    :param k_input_tensor: Tensor name at
-        ``k_concat_node.input[k_consumer_input_idx]``.
-    :param qk_matmul_node: The QK^T attention MatMul reached forward from
-        ``k_concat_node``. R3 rewires its ``input[q_consumer_input_idx]``.
-    :param q_consumer_input_idx: Index in ``qk_matmul_node.input`` currently
-        holding the post-RoPE Q tensor (the input that does NOT trace back
-        to the Concat).
-    :param q_input_tensor: Tensor name at
-        ``qk_matmul_node.input[q_consumer_input_idx]``.
+    :param k_input_tensor: Tensor name of the post-RoPE current-K tensor that
+        R3 rotates. R3 splices the Hadamard on this edge.
+    :param k_consumers: Nodes consuming ``k_input_tensor``
+    :param qk_matmul_nodes: The QK^T attention MatMuls reached forward from the
+        past-key Concat. R3 rewires the Q-side input of each.
+    :param q_input_indices: For each MatMul in ``qk_matmul_nodes``, the index of
+        its post-RoPE Q input (the input that does NOT trace back to the
+        Concat).
+    :param q_input_tensors: For each MatMul in ``qk_matmul_nodes``, the tensor
+        name at ``qk_matmul_node.input[q_input_indices[i]]``.
     """
 
     past_key_input_name: str
-    k_concat_node: onnx.NodeProto
-    k_consumer_input_idx: int
     k_input_tensor: str
-    qk_matmul_node: onnx.NodeProto
-    q_consumer_input_idx: int
-    q_input_tensor: str
+    k_consumers: list[onnx.NodeProto]
+    qk_matmul_nodes: list[onnx.NodeProto]
+    q_input_indices: list[int]
+    q_input_tensors: list[str]
 
 
 def find_r3_anchors(
@@ -132,37 +128,56 @@ def find_r3_anchors(
             block_idx,
             past_key_name,
         )
-        concat_node = _find_unique_concat_consumer(consumers_by_tensor, past_key_name)
-        k_consumer_input_idx, k_input_tensor = _find_current_k_input_of_concat(
-            concat_node, past_key_name, producer_by_tensor
-        )
-
-        qk_matmul_node = _walk_forward_to_unique_matmul(
-            concat_node, consumers_by_tensor
-        )
-        if id(qk_matmul_node) in seen_matmul_ids:
-            raise ValueError(
-                f"R3 rotation: past_key input '{past_key_name}': QK^T MatMul "
-                f"'{qk_matmul_node.name}' was already matched by an earlier "
-                f"block. past_key_* graph inputs may be misordered."
+        # Find the Concats that combine past_key_in into the present key
+        # (one per KV head in SHA).
+        key_concats = _find_concat_consumers(consumers_by_tensor, past_key_name)
+        for concat_node in key_concats:
+            current_key_tensor = _find_current_k_input_of_concat(
+                concat_node, past_key_name, producer_by_tensor
             )
-        seen_matmul_ids.add(id(qk_matmul_node))
 
-        q_consumer_input_idx, q_input_tensor = _find_q_input_of_qk_matmul(
-            qk_matmul_node, concat_node, producer_by_tensor
-        )
+            # K transpose can occur before or after concat, R3 logic assumes rotation before Transpose
+            producer = producer_by_tensor.get(current_key_tensor)
+            if producer and producer.op_type == "Transpose":
+                current_key_tensor = producer.input[0]
 
-        result.append(
-            BlockR3Anchors(
-                past_key_input_name=past_key_name,
-                k_concat_node=concat_node,
-                k_consumer_input_idx=k_consumer_input_idx,
-                k_input_tensor=k_input_tensor,
-                qk_matmul_node=qk_matmul_node,
-                q_consumer_input_idx=q_consumer_input_idx,
-                q_input_tensor=q_input_tensor,
+            # Note: Must map all consumers now to avoid reconstructing consumer dict later
+            current_key_consumers = consumers_by_tensor.get(current_key_tensor)
+            if not current_key_consumers:
+                raise ValueError(
+                    f"R3 rotation: current-K tensor '{current_key_tensor}' has "
+                    f"no consumers."
+                )
+
+            qk_matmul_nodes = _walk_forward_to_matmuls(concat_node, consumers_by_tensor)
+            q_input_indices = []
+            q_input_tensors = []
+            for node in qk_matmul_nodes:
+                if id(node) in seen_matmul_ids:
+                    raise ValueError(
+                        f"R3 rotation: past_key input '{past_key_name}': QK^T MatMul "
+                        f"'{node.name}' was already matched by an earlier "
+                        f"block. past_key_* graph inputs may be misordered."
+                    )
+                seen_matmul_ids.add(id(node))
+
+                q_input_idx, q_input_tensor = _find_q_input_of_qk_matmul(
+                    node, concat_node, producer_by_tensor
+                )
+                q_input_indices.append(q_input_idx)
+                q_input_tensors.append(q_input_tensor)
+
+            result.append(
+                BlockR3Anchors(
+                    past_key_input_name=past_key_name,
+                    k_input_tensor=current_key_tensor,
+                    k_consumers=current_key_consumers,
+                    qk_matmul_nodes=qk_matmul_nodes,
+                    q_input_indices=q_input_indices,
+                    q_input_tensors=q_input_tensors,
+                )
             )
-        )
+
     _logger.debug("R3 anchors resolved for %d block(s).", len(result))
     return result
 
@@ -189,15 +204,16 @@ def _index_producer_by_tensor_name(
     return out
 
 
-def _find_unique_concat_consumer(
+def _find_concat_consumers(
     consumers_by_tensor: Dict[str, List[onnx.NodeProto]],
     past_key_name: str,
-) -> onnx.NodeProto:
-    """Return the unique Concat downstream of ``past_key_name``.
+) -> List[onnx.NodeProto]:
+    """Return the Concats downstream of ``past_key_name`` (one per KV head).
 
     Walk through pass-through ops (see :func:`_is_passthrough`) that may sit
-    between the graph input and the underlying Concat.
+    between the graph input and the downstream Concats.
     """
+    concat_ops: List[onnx.NodeProto] = []
     visited: Set[str] = set()
     queue: deque = deque([past_key_name])
     while queue:
@@ -208,24 +224,26 @@ def _find_unique_concat_consumer(
         consumers = consumers_by_tensor.get(name, [])
         for n in consumers:
             if n.op_type == "Concat":
-                return n
-            if _is_passthrough(n.op_type, n.domain):
+                concat_ops.append(n)
+            elif _is_passthrough(n.op_type, n.domain):
                 queue.extend(n.output)
-    consumers = consumers_by_tensor.get(past_key_name, [])
-    consumer_summary = [(n.name, n.op_type) for n in consumers]
-    raise ValueError(
-        f"R3 rotation: no downstream Concat reachable from past_key input "
-        f"'{past_key_name}' through pass-through ops "
-        f"(direct consumers: {consumer_summary})."
-    )
+    if not concat_ops:
+        consumers = consumers_by_tensor.get(past_key_name, [])
+        consumer_summary = [(n.name, n.op_type) for n in consumers]
+        raise ValueError(
+            f"R3 rotation: no downstream Concat reachable from past_key input "
+            f"'{past_key_name}' through pass-through ops "
+            f"(direct consumers: {consumer_summary})."
+        )
+    return concat_ops
 
 
 def _find_current_k_input_of_concat(
     concat_node: onnx.NodeProto,
     past_key_name: str,
     producer_by_tensor: Dict[str, onnx.NodeProto],
-) -> Tuple[int, str]:
-    """Return ``(input_idx, tensor_name)`` of the current-K input of ``concat_node``.
+) -> str:
+    """Return the tensor name of the current-K input of ``concat_node``.
 
     The past-key input may not be ``past_key_name`` directly: data-movement
     ops (Cast / Identity) can sit between the graph input and the Concat. We
@@ -248,18 +266,21 @@ def _find_current_k_input_of_concat(
             f"past_indices={past_indices})."
         )
     idx = cur_indices[0]
-    return idx, concat_node.input[idx]
+    k_tensor = concat_node.input[idx]
+    return k_tensor
 
 
-def _walk_forward_to_unique_matmul(
+def _walk_forward_to_matmuls(
     start_node: onnx.NodeProto,
     consumers_by_tensor: Dict[str, List[onnx.NodeProto]],
-) -> onnx.NodeProto:
-    """Walk forward from ``start_node`` through pass-through ops until a unique MatMul.
+) -> List[onnx.NodeProto]:
+    """Walk forward from ``start_node`` through pass-through ops until MatMuls.
 
-    Steps only through ops accepted by :func:`_is_passthrough`. If at any
-    step the consumers fan out ambiguously (multiple pass-through consumers,
-    or zero consumers, or multiple MatMul consumers), raises.
+    Steps only through ops accepted by :func:`_is_passthrough`, returning all
+    MatMul consumers reached at the first level where any appear (one per query
+    head in SHA, one per group member in GQA). If at any step before reaching a
+    MatMul the consumers fan out ambiguously (multiple pass-through consumers,
+    or zero consumers), raises.
     """
     visited: Set[str] = set()
     cur_outputs = list(start_node.output)
@@ -280,12 +301,7 @@ def _walk_forward_to_unique_matmul(
 
         matmuls = [n for n in consumers if n.op_type == "MatMul"]
         if matmuls:
-            if len(matmuls) > 1:
-                raise ValueError(
-                    f"R3 rotation: multiple MatMul consumers reached forward "
-                    f"from '{start_node.name}': {[n.name for n in matmuls]}."
-                )
-            return matmuls[0]
+            return matmuls
 
         passthrough = [n for n in consumers if _is_passthrough(n.op_type, n.domain)]
         if len(passthrough) != 1:

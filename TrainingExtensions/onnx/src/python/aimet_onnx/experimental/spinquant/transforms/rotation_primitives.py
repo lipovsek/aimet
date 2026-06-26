@@ -199,8 +199,7 @@ def left_multiply(W: np.ndarray, R: np.ndarray, axis: int = 0) -> np.ndarray:
 def insert_online_hadamard_node(
     model: ModelProto,
     target_tensor_name: str,
-    consumer_node: onnx.NodeProto,
-    consumer_input_idx: int,
+    consumer_nodes: list[onnx.NodeProto],
     head_dim: int,
     name_prefix: str,
 ) -> Tuple[str, onnx.NodeProto]:
@@ -214,9 +213,7 @@ def insert_online_hadamard_node(
 
     :param model: ONNX ModelProto to mutate.
     :param target_tensor_name: Name of the tensor to rotate.
-    :param consumer_node: The NodeProto whose input index we will rewire.
-    :param consumer_input_idx: Index in ``consumer_node.input`` currently
-        holding ``target_tensor_name``.
+    :param consumer_nodes: The NodeProtos whose input index we will rewire.
     :param head_dim: Size of the (square) Hadamard matrix; rotates the last
         axis of ``target_tensor_name``.
     :param name_prefix: Prefix used to name the inserted initializer / node /
@@ -225,13 +222,13 @@ def insert_online_hadamard_node(
         tensor and the inserted ``MatMul`` NodeProto (so callers can wire a
         quantizer relative to it).
     """
-    if consumer_node.input[consumer_input_idx] != target_tensor_name:
-        raise ValueError(
-            f"insert_online_hadamard_node: consumer_node '{consumer_node.name}' "
-            f"input[{consumer_input_idx}] is "
-            f"'{consumer_node.input[consumer_input_idx]}', expected "
-            f"'{target_tensor_name}'."
-        )
+    for consumer_node in consumer_nodes:
+        if target_tensor_name not in consumer_node.input:
+            raise ValueError(
+                f"insert_online_hadamard_node: consumer_node '{consumer_node.name}' "
+                f"target tensor `{target_tensor_name}` does not appear in consumer node inputs: "
+                f"{consumer_node.input}"
+            )
 
     elem_type = _infer_tensor_elem_type(model, target_tensor_name)
     np_dtype = onnx.helper.tensor_dtype_to_np_dtype(elem_type)
@@ -254,7 +251,9 @@ def insert_online_hadamard_node(
     # the return value — callers wire quantizers onto this node's edges.
     new_node = _insert_node_after_producer(model, target_tensor_name, new_node)
 
-    consumer_node.input[consumer_input_idx] = output_name
+    for consumer_node in consumer_nodes:
+        consumer_input_idx = list(consumer_node.input).index(target_tensor_name)
+        consumer_node.input[consumer_input_idx] = output_name
 
     _logger.debug(
         "Inserted online Hadamard MatMul '%s' on tensor '%s' (head_dim=%d, dtype=%s); "

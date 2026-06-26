@@ -30,9 +30,9 @@ Limitations (this iteration):
 
 * Requires a KV-cache-style export: the model must expose one ``past_key_*``
   graph input per decoder block. Each is consumed by exactly one ``Concat``
-  whose other input is the post-RoPE current K. The Concat output reaches
-  the QK^T MatMul through pass-through ops only (Transpose / Reshape /
-  Cast / Identity).
+  (MHA) or num_heads concats (SHA) whose other input is the post-RoPE current K.
+  The Concat output reaches the QK^T MatMul through pass-through ops only
+  (Transpose / Reshape / Cast / Identity).
 * Prefill-only exports without KV-cache inputs are not supported.
 
 Note on graph staleness: inserting nodes invalidates ``ctx.backbone_role_map``.
@@ -65,7 +65,7 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 # ``_rotate_k_side`` below plus the ``_R3`` suffix appended by
 # ``insert_online_hadamard_node``. This regex is the single source of truth for
 # recognizing those ops downstream; keep it in sync with the names produced here.
-_ONLINE_ROTATION_OP_RE = re.compile(r"spinquant_block\d+_[qk]_R3$")
+_ONLINE_ROTATION_OP_RE = re.compile(r"spinquant_block\d+_[qk](_\d+)?_R3$")
 
 
 def is_online_rotation_op(cg_op: Op) -> bool:
@@ -122,26 +122,28 @@ class R3RotationPass(RotationPass):
             self._rotate_q_side(model, anchor, head_dim, block_idx)
             self._rotate_k_side(model, anchor, head_dim, block_idx)
             _logger.debug(
-                "R3 block %d: inserted Q-side rotation before '%s'[%d] "
-                "and K-side rotation before '%s'[%d].",
-                block_idx,
-                anchor.qk_matmul_node.name,
-                anchor.q_consumer_input_idx,
-                anchor.k_concat_node.name,
-                anchor.k_consumer_input_idx,
+                "R3 cache %s: inserted Q-side rotation before %s at input %s "
+                "and K-side rotation before %s.",
+                anchor.past_key_input_name,
+                [node.name for node in anchor.qk_matmul_nodes],
+                anchor.q_input_indices,
+                [node.name for node in anchor.k_consumers],
             )
 
     @staticmethod
     def _rotate_q_side(model, anchor, head_dim, block_idx) -> None:
         """Insert ``... -> R3 -> QK^T`` on the Q path."""
-        insert_online_hadamard_node(
-            model,
-            target_tensor_name=anchor.q_input_tensor,
-            consumer_node=anchor.qk_matmul_node,
-            consumer_input_idx=anchor.q_consumer_input_idx,
-            head_dim=head_dim,
-            name_prefix=f"spinquant_block{block_idx}_q",
-        )
+        for idx, node in enumerate(anchor.qk_matmul_nodes):
+            name_prefix = f"spinquant_block{block_idx}_q"
+            if idx:
+                name_prefix += f"_{idx}"
+            insert_online_hadamard_node(
+                model,
+                target_tensor_name=anchor.q_input_tensors[idx],
+                consumer_nodes=[node],
+                head_dim=head_dim,
+                name_prefix=name_prefix,
+            )
 
     @staticmethod
     def _rotate_k_side(model, anchor, head_dim, block_idx) -> None:
@@ -153,8 +155,7 @@ class R3RotationPass(RotationPass):
         insert_online_hadamard_node(
             model,
             target_tensor_name=anchor.k_input_tensor,
-            consumer_node=anchor.k_concat_node,
-            consumer_input_idx=anchor.k_consumer_input_idx,
+            consumer_nodes=anchor.k_consumers,
             head_dim=head_dim,
             name_prefix=f"spinquant_block{block_idx}_k",
         )
