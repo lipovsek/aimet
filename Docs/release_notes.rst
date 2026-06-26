@@ -6,6 +6,57 @@
 Release notes
 #############
 
+2.34.0
+======
+
+* Bug fixes and Improvements
+    * ONNX
+        * Added ``fold_param_quantizers()`` to ``QuantizationSimModel`` to bake param QDQ into initializers for faster inference (`bc1b47e18`_)
+        * Excluded SpinQuant R3 online rotations from sequential MSE to avoid shape mismatches under GQA (`901cd936d`_)
+        * Supported ScatterElements KV-cache pattern in ``_tie_quantizers_for_kv_cache`` (`94551756e`_)
+        * Aligned ``QcQuantizeOp.quantize_dequantize`` output dtype with input (`9e1195254`_)
+        * Emit per-channel axis for fused bias quantizers in ONNX QDQ export (`725ffe724`_)
+
+    * Torch
+        * Implemented int32 bias overflow protection (`d1b9b0c2b`_)
+        * Removed graph breaks from almost all quantized modules for improved ``torch.compile`` performance (`18501cbdb`_)
+        * Precomputed transposed MatMul weight at ONNX QDQ export time, removing the intermediate transpose in ``nn.Linear`` export (`a203e14fe`_)
+        * Enabled exporting ``FloatQuantizeDequantize`` with the dynamo-based ONNX exporter (`97e64111a`_)
+        * Worked around ``torch.jit.trace`` bug on Gather-ScatterElements sequences (`170ccf418`_)
+        * Represented mxfp4 e8m0 scale with float32 (`ccdeabc10`_)
+        * Propagated ``block_size`` attribute through ``FloatEncoding.to()`` (`1feeb5fc5`_)
+        * Added optional ``producer`` attribute to ``EncodingBase`` (`4eff161e5`_)
+        * Skip importing InternVL on transformers < 4.52 without raising (`3737b161f`_)
+        * AdaScale: Enabled AdaScale for Gemma 4 (`674805703`_)
+
+    * Common
+        * AdaScale: Made block loss function configurable (`25aeac5a1`_)
+        * AdaScale: Made scaled (sum-over-seq-dim) loss the default block loss function (`c1a2c4444`_)
+
+* Documentation
+    * Refactored GenAI model results, added AIMET Torch companion recipe page, and added Qwen3 0.6B/1.7B recipe rows (`b9d1a1034`_, `b5452d769`_)
+
+.. _bc1b47e18: https://github.com/qualcomm/aimet/commit/bc1b47e18
+.. _901cd936d: https://github.com/qualcomm/aimet/commit/901cd936d
+.. _94551756e: https://github.com/qualcomm/aimet/commit/94551756e
+.. _9e1195254: https://github.com/qualcomm/aimet/commit/9e1195254
+.. _725ffe724: https://github.com/qualcomm/aimet/commit/725ffe724
+.. _d1b9b0c2b: https://github.com/qualcomm/aimet/commit/d1b9b0c2b
+.. _18501cbdb: https://github.com/qualcomm/aimet/commit/18501cbdb
+.. _a203e14fe: https://github.com/qualcomm/aimet/commit/a203e14fe
+.. _97e64111a: https://github.com/qualcomm/aimet/commit/97e64111a
+.. _170ccf418: https://github.com/qualcomm/aimet/commit/170ccf418
+.. _ccdeabc10: https://github.com/qualcomm/aimet/commit/ccdeabc10
+.. _1feeb5fc5: https://github.com/qualcomm/aimet/commit/1feeb5fc5
+.. _4eff161e5: https://github.com/qualcomm/aimet/commit/4eff161e5
+.. _3737b161f: https://github.com/qualcomm/aimet/commit/3737b161f
+.. _25aeac5a1: https://github.com/qualcomm/aimet/commit/25aeac5a1
+.. _c1a2c4444: https://github.com/qualcomm/aimet/commit/c1a2c4444
+.. _674805703: https://github.com/qualcomm/aimet/commit/674805703
+.. _b9d1a1034: https://github.com/qualcomm/aimet/commit/b9d1a1034
+.. _b5452d769: https://github.com/qualcomm/aimet/commit/b5452d769
+
+
 2.33.0
 ======
 
