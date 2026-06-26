@@ -28,28 +28,58 @@ def compute_encodings(model: torch.nn.Module):
         Encodings of the quantizers loaded with :ref:`QuantizationSimModel.load_encodings`
         with ``allow_overwrite=False`` will be kept unchanged.
     """
-    entered = set()
+    from ..utils import remove_activation_quantizers
+
+    activation_quantizers = set()
+    param_quantizers = set()
+    standalone_quantizers = set()
+    qmodules = set()
+
+    for module in model.modules():
+        if isinstance(module, BaseQuantizationMixin):
+            activation_quantizers |= set(
+                itertools.chain(
+                    module.output_quantizers.children(),
+                    module.input_quantizers.children(),
+                )
+            )
+            param_quantizers |= set(module.param_quantizers.children())
+            qmodules.add(module)
+
+    for qtzr in model.modules():
+        if (
+            isinstance(qtzr, QuantizerBase)
+            and qtzr not in param_quantizers
+            and qtzr not in activation_quantizers
+        ):
+            standalone_quantizers.add(qtzr)
+
     with (
         _register_zero3_forward_hooks(model, use_dummy_params=False),
         contextlib.ExitStack() as stack,
     ):
-        for module in model.modules():
-            if module in entered:
-                continue
-            if isinstance(module, BaseQuantizationMixin):  # pylint: disable=undefined-variable
-                ctx = module.compute_encodings()
+        for qmodule in qmodules:
+            # Enter compute_encodings with activation quantizers temporarily
+            # removed. Activation quantizers will enter compute_encodings in
+            # the subsequent loop separately
+            with remove_activation_quantizers(qmodule):
+                ctx = qmodule.compute_encodings()
                 stack.enter_context(ctx)
-                entered |= set(
-                    itertools.chain(
-                        module.param_quantizers.values(),
-                        module.output_quantizers,
-                        module.input_quantizers,
-                    )
-                )
-            elif isinstance(module, QuantizerBase):
-                ctx = module.compute_encodings()
+
+        # Some qmoules such as QuantizedLinear recalibrate the weight encoding
+        # as they exit compute_encodings to prevent int32 bias overflow.
+        # Since this recalibration process requires the input scale to be
+        # computed first, we need to make sure that activation quantizers'
+        # compute_encodings finishes earlier than that of qmodules. Therefore,
+        # enter activation quantizer's compute_encodings at the top of ExitStack
+        for qtzr in itertools.chain(
+            activation_quantizers,
+            standalone_quantizers,
+        ):
+            if qtzr.is_overwrite_allowed():
+                passthrough = qtzr in activation_quantizers
+                ctx = qtzr._compute_encodings(passthrough=passthrough)  # pylint: disable=protected-access
                 stack.enter_context(ctx)
-                entered.add(module)
 
         yield
 

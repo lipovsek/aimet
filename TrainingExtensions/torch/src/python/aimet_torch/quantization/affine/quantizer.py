@@ -594,11 +594,16 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
         During ``compute_encodings`` is enabled, the quantizer forward pass performs
         dynamic quantization using the batch statistics.
         """
+        with self._compute_encodings(passthrough=False):
+            yield
+
+    @contextmanager
+    def _compute_encodings(self, passthrough: bool = False):
         if not any(self._is_overwrite_allowed.values()):
             yield
             return
 
-        original_forward = self.forward
+        original_forward = torch.Tensor.clone if passthrough else self.forward
         shape = self.shape
 
         try:

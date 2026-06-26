@@ -350,11 +350,16 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         During ``compute_encodings`` is enabled, the quantizer forward pass performs
         dynamic quantization using the batch statistics.
         """
+        with self._compute_encodings(passthrough=False):
+            yield
+
+    @contextmanager
+    def _compute_encodings(self, passthrough: bool = False):
         if not self.encoding_analyzer or not any(self._is_overwrite_allowed.values()):
             yield
             return
 
-        original_forward = self.forward
+        original_forward = torch.Tensor.clone if passthrough else self.forward
 
         @functools.wraps(original_forward)
         def forward_wrapper(input: torch.Tensor) -> torch.Tensor:

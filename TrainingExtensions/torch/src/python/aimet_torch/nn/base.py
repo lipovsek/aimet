@@ -40,10 +40,6 @@ from aimet_torch.utils import (
 from aimet_torch.deepspeed_utils import SafeGatheredParameters, _shallow_copy
 
 
-def _no_op(in_tensor):
-    return in_tensor
-
-
 class UnknownModuleError(RuntimeError):
     """
     Exception thrown when an unknown module is encountered
@@ -302,10 +298,7 @@ class BaseQuantizationMixin(abc.ABC):
 
         with SafeGatheredParameters(params.values()):
             for param_qtzr, param in params.items():
-                with (
-                    patch_attr(param_qtzr, "forward", _no_op),
-                    param_qtzr.compute_encodings(),
-                ):
+                with param_qtzr._compute_encodings(passthrough=True):  # pylint: disable=protected-access
                     _ = param_qtzr(param)
 
                 if param_qtzr.encoding_analyzer is not None:
@@ -342,14 +335,12 @@ class BaseQuantizationMixin(abc.ABC):
                 if not isinstance(quantizer, QuantizerBase):
                     continue
 
-                if not quantizer._allow_overwrite:  # pylint: disable=protected-access
+                if not quantizer.is_overwrite_allowed():
                     continue
 
                 # Set input/output quantizers into pass-through mode during compute_encodings
                 # NOTE: This behavior is for backawrd-compatibility with V1 quantsim.
-                stack.enter_context(patch_attr(quantizer, "forward", _no_op))
-
-                ctx = quantizer.compute_encodings()
+                ctx = quantizer._compute_encodings(passthrough=True)  # pylint: disable=protected-access
                 stack.enter_context(ctx)
 
             yield

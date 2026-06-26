@@ -1034,7 +1034,8 @@ def _compute_encodings_with_int32_bias_overflow_protection(self):
         bias,
         input_encoding.scale,
         weight_scale.flatten().squeeze(),
-        num_steps=2**31,
+        # Slightly discount from 2**31 to account for numerical instability
+        num_steps=2**31 - 2**6,
     )
     adjusted_weight_scale = adjusted_weight_scale.reshape(weight_scale.shape)
 

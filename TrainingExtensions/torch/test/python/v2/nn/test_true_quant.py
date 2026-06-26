@@ -6,6 +6,7 @@ import ast
 import itertools
 import copy
 import functools
+from aimet_torch.quantization.affine.quantizer import AffineQuantizerBase
 from packaging import version
 from typing import Optional
 
@@ -2406,7 +2407,11 @@ def test_qmha_error(
         functools.partial(nn.ConvTranspose3d, 4, 4, 3),
     ],
 )
-def test_int32_bias_overflow(module_factory, lpbq: bool, zero_point_shift: bool):
+def test_int32_bias_overflow(
+    module_factory,
+    lpbq: bool,
+    zero_point_shift: bool,
+):
     """
     Given: Linear/Conv with very large bias
     When: Concretize int32 bias quantizer
@@ -2415,6 +2420,7 @@ def test_int32_bias_overflow(module_factory, lpbq: bool, zero_point_shift: bool)
     torch.manual_seed(0)
 
     module = module_factory()
+    model = torch.nn.Sequential(nn.Softmax(), module)
     # Tiny weight & huge bias to trigger overflow
     module.weight.copy_(1e-7 * torch.rand_like(module.weight))
     module.bias.copy_(torch.tensor([-1024, -1, 1, 1024]))
@@ -2423,7 +2429,7 @@ def test_int32_bias_overflow(module_factory, lpbq: bool, zero_point_shift: bool)
     )
     dummy_input = torch.randn(input_shape)
     sim = aimet_torch.QuantizationSimModel(
-        module,
+        model,
         dummy_input,
         default_param_bw=4,
         default_output_bw=16,
@@ -2439,17 +2445,34 @@ def test_int32_bias_overflow(module_factory, lpbq: bool, zero_point_shift: bool)
             block_size=2,
         )
 
-    sim.model.param_quantizers["weight"].zero_point_shift = 0.5 * zero_point_shift
+    sim.model[1].param_quantizers["weight"].zero_point_shift = 0.5 * zero_point_shift
+
+    def track_call_count(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            wrapper.call_count += 1
+            return fn(*args, **kwargs)
+
+        wrapper.call_count = 0
+        return wrapper
+
+    for qtzr in sim.quantizers():
+        qtzr._compute_encodings = track_call_count(qtzr._compute_encodings)
+
     sim.compute_encodings(lambda model: model(dummy_input))
+
+    # compute_encodings should be called exactly once for each quantizer
+    assert all(qtzr._compute_encodings.call_count == 1 for qtzr in sim.quantizers())
+
     _ = sim.model(dummy_input)
-    input_scale = sim.model.input_quantizers[0].get_scale()
-    weight_qtzr = sim.model.param_quantizers["weight"]
+    input_scale = sim.model[0].output_quantizers[0].get_scale()
+    weight_qtzr = sim.model[1].param_quantizers["weight"]
     weight_encoding = weight_qtzr.get_encoding()
     assert weight_encoding.scale.shape == weight_qtzr.shape
 
-    sim.model._create_int32_bias_quantizer((dummy_input,), None)
-    bias = sim.model.bias
-    bias_encoding = sim.model.param_quantizers["bias"].get_encoding()
+    sim.model[1]._create_int32_bias_quantizer((sim.model[0](dummy_input),), None)
+    bias = sim.model[1].bias
+    bias_encoding = sim.model[1].param_quantizers["bias"].get_encoding()
     assert torch.all(bias.abs() / bias_encoding.scale <= 2**31)
 
     per_channel_weight_scale = (
@@ -2459,3 +2482,27 @@ def test_int32_bias_overflow(module_factory, lpbq: bool, zero_point_shift: bool)
         bias_encoding.scale,
         input_scale * per_channel_weight_scale.flatten(),
     )
+
+
+def test_compute_encodings_passthrough():
+    """
+    When: Enter aimet_torch.nn.compute_encodings context manager
+    Then: Only weight should be quantized during forward pass
+    """
+    qlinear = QuantizedLinear(10, 10, bias=False)
+    qlinear.param_quantizers["weight"] = QuantizeDequantize(
+        shape=(10, 1), qmin=-128, qmax=127, symmetric=True
+    )
+    qlinear.input_quantizers[0] = QuantizeDequantize(
+        shape=(), qmin=0, qmax=255, symmetric=False
+    )
+    qlinear.output_quantizers[0] = QuantizeDequantize(
+        shape=(), qmin=0, qmax=255, symmetric=False
+    )
+
+    x = torch.randn(10, 10)
+    with aimet_torch.nn.compute_encodings(qlinear):
+        out = qlinear(x)
+
+    expected_out = F.linear(x, qlinear.param_quantizers["weight"](qlinear.weight))
+    assert torch.allclose(out, expected_out)

@@ -271,16 +271,17 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
 
         self._is_overwrite_allowed.update(allow_overwrite)
 
-    def is_overwrite_allowed(self, name: str):
+    def is_overwrite_allowed(self, name: str | None = None) -> bool:
+        if name is None:
+            return any(self._is_overwrite_allowed.values())
+
         return self._is_overwrite_allowed[name]
 
     # Define _allow_overwrite getter/setter for backwards compatibility
     @property
-    @deprecated(
-        f"Use {is_overwrite_allowed.__qualname__}(<param_name: str>) function instead"
-    )
+    @deprecated(f"Use {is_overwrite_allowed.__qualname__}() function instead")
     def _allow_overwrite(self) -> bool:
-        return any(self._is_overwrite_allowed.values())
+        return self.is_overwrite_allowed()
 
     @_allow_overwrite.setter
     @deprecated(f"Use {allow_overwrite.__qualname__} function instead")
