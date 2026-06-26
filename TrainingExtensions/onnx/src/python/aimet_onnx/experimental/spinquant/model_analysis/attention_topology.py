@@ -15,6 +15,7 @@ naturally because the fused linear's module name (e.g. ``qkv_proj``) does not
 match any of the V allow-list names.
 """
 
+import re
 from dataclasses import dataclass
 from typing import List
 
@@ -27,7 +28,10 @@ from aimet_onnx.experimental.spinquant.model_analysis.block_identifier import (
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 
-_V_MODULE_NAMES = frozenset(("v_proj", "v", "value"))
+# Match a V module name (``v_proj``, ``value``, ``v``), optionally suffixed with
+# ``_sha`` and/or a per-head index (``v_proj_sha``, ``v_proj.0``, ``v_proj_sha.1``).
+# Longest alternatives first so ``v_proj`` wins over the ``v`` prefix.
+_V_MODULE_PATTERN = re.compile(r"^(v_proj|value|v)(_sha)?(\.\d+)?$")
 
 
 @dataclass
@@ -48,7 +52,7 @@ def find_attention_topology(
     """Return per-block V projection ops for every decoder block in ``role_map``.
 
     V is identified by matching the second-to-last component of ``Op.name``
-    (the originating ``nn.Module`` attribute name) against ``_V_MODULE_NAMES``.
+    (the originating ``nn.Module`` attribute name) against ``_V_MODULE_PATTERN``.
 
     :param role_map: Decoder role map produced by ``get_decoder_role_map``.
     :return: One ``BlockAttentionTopology`` per block, in topological order.
@@ -62,7 +66,7 @@ def find_attention_topology(
             qkv_names = [op.name for op in block.qkv_linears]
             raise ValueError(
                 f"R2 rotation: block {block_idx}: expected at least one V projection "
-                f"in qkv_linears matching module names {sorted(_V_MODULE_NAMES)}, "
+                f"in qkv_linears matching pattern '{_V_MODULE_PATTERN.pattern}', "
                 f"found 0 (qkv_linears={qkv_names}). Likely fused QKV or non-standard naming."
             )
         result.append(BlockAttentionTopology(v_ops=v_candidates))
@@ -84,5 +88,4 @@ def _is_v_projection(op: Op) -> bool:
     parts = op.name.rsplit("/", 2)
     if len(parts) < 2:
         return False
-    module_name = parts[-2]
-    return module_name in _V_MODULE_NAMES
+    return bool(_V_MODULE_PATTERN.match(parts[-2]))

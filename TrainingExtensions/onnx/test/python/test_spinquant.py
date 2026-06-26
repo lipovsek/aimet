@@ -61,6 +61,10 @@ from aimet_onnx.experimental.spinquant import apply_spinquant
 from aimet_onnx.experimental.spinquant.passes.r3 import is_online_rotation_op
 from aimet_onnx.experimental.spinquant.model_analysis import find_attention_topology
 
+from aimet_onnx.prepare_passes.fix_node_names_in_dynamo_exported_onnx import (
+    fix_node_names_pass,
+)
+
 
 def apply_r1_rotation(model, role_map, backbone_hidden_size):
     """Test shim for the legacy ``apply_r1_rotation`` API."""
@@ -2409,6 +2413,60 @@ class TestApplySpinquant:
 
         y_vit_after = _run_model(visual_model, x_vit)
         assert np.allclose(y_vit_after, y_vit_before @ R_L)
+
+    @pytest.mark.parametrize("dynamo", [True, False])
+    def test_spinquant_r2_sha_gqa(self, dynamo):
+        """R2 on a SHA + GQA decoder must preserve output (rotated-cache)"""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        head_dim, num_kv, group, num_layers = 8, 2, 2, 2
+        seq, past = 4, 3
+        model = transformer_blocks.sha_gqa_decoder(
+            head_dim=head_dim,
+            num_kv=num_kv,
+            group=group,
+            vocab=_VOCAB,
+            num_layers=num_layers,
+            seq=seq,
+            past=past,
+            dynamo=dynamo,
+        )
+        if dynamo:
+            fix_node_names_pass(model)
+
+        # Make dummy input
+        input_dict = make_dummy_input(model)
+        input_dict["input_ids"] = np.random.randint(0, _VOCAB, (1, seq)).astype(
+            np.int64
+        )
+        input_dict["attention_mask"] = np.zeros_like(input_dict["attention_mask"])
+
+        y_before = _build_session(model).run(None, input_dict)
+
+        apply_spinquant(model, enable_r2=True)
+        # After R2, expects V-Cache inputs to be rotated
+        # Rotate value cache from dummy input
+        H = hadamard_rotation_matrix(head_dim).astype(np.float32)
+
+        def _rotate_cache(tensor):
+            return (tensor @ H).astype(np.float32)
+
+        input_dict_r2 = dict(input_dict)
+        for name, tensor in input_dict.items():
+            if name.startswith("past_value_"):
+                input_dict_r2[name] = _rotate_cache(tensor)
+
+        y_after = _build_session(model).run(None, input_dict_r2)
+        # Logits match
+        assert np.allclose(y_before[0], y_after[0], atol=1e-4, rtol=1e-4)
+        # Key cache matches
+        for key_before, key_after in zip(y_before[1::2], y_after[1::2]):
+            assert np.allclose(key_before, key_after, atol=1e-4, rtol=1e-4)
+        # Value cache is rotated
+        for value_before, value_after in zip(y_before[2::2], y_after[2::2]):
+            assert np.allclose(
+                _rotate_cache(value_before), value_after, atol=1e-4, rtol=1e-4
+            )
 
     def test_spinquant_r3_sha_gqa(self):
         """R3 on a SHA + GQA decoder must preserve output (rotated-cache)"""
