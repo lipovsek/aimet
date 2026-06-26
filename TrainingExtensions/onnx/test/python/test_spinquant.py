@@ -2468,7 +2468,8 @@ class TestApplySpinquant:
                 _rotate_cache(value_before), value_after, atol=1e-4, rtol=1e-4
             )
 
-    def test_spinquant_r3_sha_gqa(self):
+    @pytest.mark.parametrize("rescale_key_tensor", [True, False])
+    def test_spinquant_r3_sha_gqa(self, rescale_key_tensor):
         """R3 on a SHA + GQA decoder must preserve output (rotated-cache)"""
         torch.manual_seed(0)
         np.random.seed(0)
@@ -2483,6 +2484,7 @@ class TestApplySpinquant:
             seq=seq,
             past=past,
             dynamo=True,
+            rescale_key_tensor=rescale_key_tensor,
         )
 
         # Make dummy input

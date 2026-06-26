@@ -381,11 +381,12 @@ def _sha_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Te
 class _ShaGqaLayer(nn.Module):
     """SHA + GQA decoder layer using Conv1d projections"""
 
-    def __init__(self, head_dim, num_kv, group, intermediate):
+    def __init__(self, head_dim, num_kv, group, intermediate, rescale_key_tensor):
         super().__init__()
         self.head_dim = head_dim
         self.num_kv = num_kv
         self.group = group
+        self.rescale_key_tensor = rescale_key_tensor
         hidden = num_kv * group * head_dim
         num_q = num_kv * group
         self.input_norm = nn.Parameter(torch.randn(hidden))
@@ -428,7 +429,10 @@ class _ShaGqaLayer(nn.Module):
                 qi = kv * self.group + g
                 q = self.q_proj[qi](h).transpose(1, 2)  # [1, S, head_dim]
                 q = _sha_rope(_sha_rms(q, self.q_norm[qi]).unsqueeze(1), cos, sin)
-                score = q @ total_key / (self.head_dim**0.5) + attention_mask
+                if self.rescale_key_tensor:
+                    score = q @ (total_key / self.head_dim**0.5) + attention_mask
+                else:
+                    score = q @ total_key / (self.head_dim**0.5) + attention_mask
                 score = torch.softmax(score, dim=-1)  # [1, 1, S, total]
                 attn_heads.append((score @ total_value).squeeze(1))  # [1, S, head_dim]
         attn = torch.cat(attn_heads, dim=-1).transpose(1, 2)  # [1, H, S]
@@ -457,13 +461,20 @@ class ShaGqaDecoder(nn.Module):
     """
 
     def __init__(
-        self, head_dim=8, num_kv=2, group=2, intermediate=16, vocab=16, num_layers=2
+        self,
+        head_dim=8,
+        num_kv=2,
+        group=2,
+        intermediate=16,
+        vocab=16,
+        num_layers=2,
+        rescale_key_tensor=False,
     ):
         super().__init__()
         hidden = num_kv * group * head_dim
         self.embed_tokens = nn.Embedding(vocab, hidden)
         self.layers = nn.ModuleList(
-            _ShaGqaLayer(head_dim, num_kv, group, intermediate)
+            _ShaGqaLayer(head_dim, num_kv, group, intermediate, rescale_key_tensor)
             for _ in range(num_layers)
         )
         self.final_norm = nn.Parameter(torch.randn(hidden))
@@ -492,12 +503,15 @@ def sha_gqa_decoder(
     seq=4,
     past=3,
     dynamo=False,
+    rescale_key_tensor=False,
 ) -> onnx.ModelProto:
     """Build and export a :class:`ShaGqaDecoder` to ONNX with named KV-cache I/O.
 
     ``seq`` and ``past`` set the example sequence / past-cache lengths used for the export trace.
     """
-    module = ShaGqaDecoder(head_dim, num_kv, group, intermediate, vocab, num_layers)
+    module = ShaGqaDecoder(
+        head_dim, num_kv, group, intermediate, vocab, num_layers, rescale_key_tensor
+    )
     rot = head_dim // 2
     attention_mask = torch.randn(1, 1, seq, seq + past)
     cos = torch.randn(1, 1, seq, rot)

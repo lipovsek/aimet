@@ -32,7 +32,11 @@ from typing import Dict, List, Set, Tuple
 
 import onnx
 
-from aimet_onnx.common.onnx._utils import _is_grid_preserving_op
+from aimet_onnx.common.onnx._utils import (
+    _is_grid_preserving_op,
+    _get_all_constants,
+    _is_constant_scalar,
+)
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.utils import ModelProto
 
@@ -62,6 +66,17 @@ def _is_passthrough(op_type: str, domain: str = "") -> bool:
     Q/K paths that must be walked through — hence the explicit addition here.
     """
     return op_type == "Cast" or _is_grid_preserving_op(op_type, domain)
+
+
+def _is_constant_rescale(
+    node: onnx.NodeProto, constants: Dict[str, onnx.TensorProto]
+) -> bool:
+    """Return True if ``node`` rescales its input by a constant scalar."""
+    if node.op_type == "Mul":
+        return any(_is_constant_scalar(tensor, constants) for tensor in node.input)
+    if node.op_type == "Div":
+        return _is_constant_scalar(node.input[1], constants)
+    return False
 
 
 @dataclass
@@ -119,6 +134,7 @@ def find_r3_anchors(
 
     consumers_by_tensor = _index_consumers_by_tensor_name(model)
     producer_by_tensor = _index_producer_by_tensor_name(model)
+    constants = _get_all_constants(model, consumers_by_tensor)
 
     seen_matmul_ids: Set[int] = set()
     result: List[BlockR3Anchors] = []
@@ -133,7 +149,7 @@ def find_r3_anchors(
         key_concats = _find_concat_consumers(consumers_by_tensor, past_key_name)
         for concat_node in key_concats:
             current_key_tensor = _find_current_k_input_of_concat(
-                concat_node, past_key_name, producer_by_tensor
+                concat_node, past_key_name, producer_by_tensor, constants
             )
 
             # K transpose can occur before or after concat, R3 logic assumes rotation before Transpose
@@ -149,7 +165,9 @@ def find_r3_anchors(
                     f"no consumers."
                 )
 
-            qk_matmul_nodes = _walk_forward_to_matmuls(concat_node, consumers_by_tensor)
+            qk_matmul_nodes = _walk_forward_to_matmuls(
+                concat_node, consumers_by_tensor, constants
+            )
             q_input_indices = []
             q_input_tensors = []
             for node in qk_matmul_nodes:
@@ -162,7 +180,7 @@ def find_r3_anchors(
                 seen_matmul_ids.add(id(node))
 
                 q_input_idx, q_input_tensor = _find_q_input_of_qk_matmul(
-                    node, concat_node, producer_by_tensor
+                    node, concat_node, producer_by_tensor, constants
                 )
                 q_input_indices.append(q_input_idx)
                 q_input_tensors.append(q_input_tensor)
@@ -242,6 +260,7 @@ def _find_current_k_input_of_concat(
     concat_node: onnx.NodeProto,
     past_key_name: str,
     producer_by_tensor: Dict[str, onnx.NodeProto],
+    constants: Dict[str, onnx.TensorProto],
 ) -> str:
     """Return the tensor name of the current-K input of ``concat_node``.
 
@@ -254,7 +273,7 @@ def _find_current_k_input_of_concat(
     cur_indices = []
     past_key_set = {past_key_name}
     for i, name in enumerate(concat_node.input):
-        if _input_traces_back_to(name, past_key_set, producer_by_tensor):
+        if _input_traces_back_to(name, past_key_set, producer_by_tensor, constants):
             past_indices.append(i)
         else:
             cur_indices.append(i)
@@ -273,10 +292,11 @@ def _find_current_k_input_of_concat(
 def _walk_forward_to_matmuls(
     start_node: onnx.NodeProto,
     consumers_by_tensor: Dict[str, List[onnx.NodeProto]],
+    constants: Dict[str, onnx.TensorProto],
 ) -> List[onnx.NodeProto]:
     """Walk forward from ``start_node`` through pass-through ops until MatMuls.
 
-    Steps only through ops accepted by :func:`_is_passthrough`, returning all
+    Steps through passthrough and scalar Mul/Div ops, returning all
     MatMul consumers reached at the first level where any appear (one per query
     head in SHA, one per group member in GQA). If at any step before reaching a
     MatMul the consumers fan out ambiguously (multiple pass-through consumers,
@@ -303,7 +323,12 @@ def _walk_forward_to_matmuls(
         if matmuls:
             return matmuls
 
-        passthrough = [n for n in consumers if _is_passthrough(n.op_type, n.domain)]
+        passthrough = [
+            n
+            for n in consumers
+            if _is_passthrough(n.op_type, n.domain)
+            or _is_constant_rescale(n, constants)
+        ]
         if len(passthrough) != 1:
             raise ValueError(
                 f"R3 rotation: forward walk from '{start_node.name}' is "
@@ -324,6 +349,7 @@ def _find_q_input_of_qk_matmul(
     qk_matmul_node: onnx.NodeProto,
     concat_node: onnx.NodeProto,
     producer_by_tensor: Dict[str, onnx.NodeProto],
+    constants: Dict[str, onnx.TensorProto],
 ) -> Tuple[int, str]:
     """Return ``(input_idx, tensor_name)`` of the Q-side input of ``qk_matmul_node``.
 
@@ -340,7 +366,9 @@ def _find_q_input_of_qk_matmul(
 
     k_idx = None
     for i, inp_name in enumerate(qk_matmul_node.input):
-        if _input_traces_back_to(inp_name, concat_outputs, producer_by_tensor):
+        if _input_traces_back_to(
+            inp_name, concat_outputs, producer_by_tensor, constants
+        ):
             if k_idx is not None:
                 raise ValueError(
                     f"R3 rotation: both inputs of QK^T MatMul "
@@ -364,6 +392,7 @@ def _input_traces_back_to(
     start_tensor_name: str,
     target_outputs: Set[str],
     producer_by_tensor: Dict[str, onnx.NodeProto],
+    constants: Dict[str, onnx.TensorProto],
 ) -> bool:
     """BFS backward from ``start_tensor_name`` through pass-through producers."""
     if start_tensor_name in target_outputs:
@@ -380,7 +409,9 @@ def _input_traces_back_to(
         producer = producer_by_tensor.get(name)
         if producer is None:
             continue
-        if not _is_passthrough(producer.op_type, producer.domain):
+        if not _is_passthrough(
+            producer.op_type, producer.domain
+        ) and not _is_constant_rescale(producer, constants):
             continue
         for inp in producer.input:
             if inp and inp not in visited:
