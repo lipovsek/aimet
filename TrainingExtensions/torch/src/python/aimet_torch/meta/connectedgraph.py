@@ -93,6 +93,7 @@ MULTI_INPUT_OPS_TO_PARSE = [
     aimet_modules.Outer,
     aimet_modules.Remainder,
     aimet_modules.Where,
+    aimet_modules.Gather,
 ]
 
 # We want to consider following operations as leaf nodes while creating op for connected graph.

@@ -4,6 +4,7 @@
 
 """This file contains unit tests for testing ConnectedGraph module for PyTorch."""
 
+import functools
 import pytest
 import unittest
 import torch
@@ -1425,12 +1426,22 @@ class TestConnectedGraphUtils(unittest.TestCase):
             torch.randn(1, 3, 3),
         ),
         (aimet_modules.Bmm, (torch.randn(1, 3, 3),), torch.randn(1, 3, 3)),
+        (
+            aimet_modules.CustomGather,
+            (torch.randn(3, 3),),
+            torch.tensor([[0, 0], [1, 1]]),
+        ),
         (aimet_modules.Equal, (torch.randn(3),), torch.randn(3)),
         (aimet_modules.FloorDivide, (torch.randn(3),), torch.randn(3)),
         (aimet_modules.Fmod, (torch.randn(3),), torch.randn(3)),
         (
             aimet_modules.Gather,
             (torch.randn(3, 3), torch.tensor(1, dtype=torch.int64)),
+            torch.tensor([[0, 0], [1, 1]]),
+        ),
+        (
+            functools.partial(aimet_modules.GatherNd, 0),
+            (torch.randn(3, 3),),
             torch.tensor([[0, 0], [1, 1]]),
         ),
         (aimet_modules.Greater, (torch.randn(3),), torch.randn(3)),
@@ -1459,9 +1470,6 @@ class TestConnectedGraphUtils(unittest.TestCase):
     ],
 )
 def test_nary_operator_input_ordering(layer, inputs, buffer):
-    if issubclass(layer, aimet_modules.Gather):
-        pytest.xfail(reason="Known failure. FIX ASAP")
-
     class Model(torch.nn.Module):
         def __init__(self, layer):
             super(Model, self).__init__()
@@ -1472,10 +1480,13 @@ def test_nary_operator_input_ordering(layer, inputs, buffer):
             return self.layer(*x, self.buffer)
 
     sim = aimet_torch.QuantizationSimModel(Model(layer()), inputs)
+    cg_node = sim.connected_graph.ordered_ops[0]
 
-    assert sim.connected_graph.ordered_ops[0].inputs[-1].is_const
-    for inp in sim.connected_graph.ordered_ops[0].inputs[:-1]:
-        assert inp.is_model_input
+    for i, inp in enumerate(cg_node.inputs):
+        if i < len(inputs):
+            assert inp.is_model_input
+        else:
+            assert inp.is_const
 
 
 def test_gather_scatter_element_sequence():
