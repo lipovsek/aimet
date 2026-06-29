@@ -18,6 +18,8 @@ from transformers.processing_utils import ProcessorMixin
 
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.bench.eval_context import EvaluationContext
+from GenAILab.bench.utils.prompt_utils import load_text_prompts
+from GenAILab.bench.utils.generation_utils import build_generation_config
 from GenAILab.qai_hub_lm.models.generator import Generator, VLM_Generator
 from .datasets import (
     Wikitext,
@@ -692,29 +694,9 @@ class Interactive(TextEvaluationMetric):
     @staticmethod
     def _get_generation_config(model, tokenizer, **overrides) -> GenerationConfig:
         """Build a GenerationConfig with EOS tokens merged from model config and tokenizer."""
-        eos_ids = set()
-        for src in (
-            getattr(model.config, "eos_token_id", None),
-            tokenizer.eos_token_id,
-        ):
-            if src is None:
-                continue
-            if isinstance(src, (list, tuple)):
-                eos_ids.update(src)
-            else:
-                eos_ids.add(src)
-
-        defaults = dict(
-            max_length=2048,
-            eos_token_id=sorted(eos_ids) if eos_ids else tokenizer.eos_token_id,
-            pad_token_id=tokenizer.pad_token_id,
-            do_sample=True,
-            top_k=40,
-            top_p=0.95,
-            temperature=0.8,
+        return build_generation_config(
+            model, tokenizer, **{"max_length": 2048, **overrides}
         )
-        defaults.update(overrides)
-        return GenerationConfig(**defaults)
 
     @staticmethod
     def get_system_prompt() -> str:
@@ -841,30 +823,13 @@ class TrickyPrompts(Interactive):
 
 @YAMLConfigParser.register_metric
 class Prompts(Interactive):
-    PROMPTS_FILE = Path(__file__).parent / "prompts" / "text_prompts.yaml"
-
     @classmethod
     def get_collection_name(cls):
         return f"{cls.__name__}_generated_text"
 
     @classmethod
-    def _load_prompts(cls):
-        with open(cls.PROMPTS_FILE) as f:
-            return yaml.safe_load(f)
-
-    @classmethod
-    def _normalize_prompt(cls, entry) -> str:
-        if isinstance(entry, str):
-            return entry
-        if isinstance(entry, dict):
-            k, v = next(iter(entry.items()))
-            return f"{k}: {v}"
-        return str(entry)
-
-    @classmethod
     def _generate_all(cls, model, tokenizer):
-        raw_prompts = cls._load_prompts()
-        prompts = [cls._normalize_prompt(p) for p in raw_prompts]
+        prompts = load_text_prompts()
         generated_text = []
         for prompt in prompts:
             print("===============================")

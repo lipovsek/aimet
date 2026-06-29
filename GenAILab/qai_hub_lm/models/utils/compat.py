@@ -11,15 +11,31 @@ def _patch_sdpa_mask():
     # inputs_embeds.shape[1], which under torch.jit.trace yields a 0-dim tensor
     # instead of a Python int.
     # Fix: convert 0-dim tensors to int.
+    #
+    # ``q_length`` is only a parameter of ``sdpa_mask`` in transformers >=5.3.0;
+    # in older versions (and on transformers' internal generation path) it is
+    # not passed at all. So accept it as an optional keyword, normalize it when
+    # present, and only forward it to the original when the original accepts it.
     try:
+        import inspect
+
         import transformers.masking_utils as _mu
 
         _orig = _mu.sdpa_mask
+        _orig_accepts_q_length = "q_length" in inspect.signature(_orig).parameters
 
-        def _patched(batch_size, q_length, *args, **kwargs):
-            if isinstance(q_length, torch.Tensor) and q_length.ndim == 0:
-                q_length = q_length.item()
-            return _orig(batch_size, q_length, *args, **kwargs)
+        def _patched(*args, **kwargs):
+            if "q_length" in kwargs:
+                q_length = kwargs["q_length"]
+                if isinstance(q_length, torch.Tensor) and q_length.ndim == 0:
+                    q_length = q_length.item()
+                if _orig_accepts_q_length:
+                    kwargs["q_length"] = q_length
+                else:
+                    # Older signature has no q_length; drop it so the call
+                    # doesn't fail with an unexpected-keyword error.
+                    kwargs.pop("q_length")
+            return _orig(*args, **kwargs)
 
         _mu.ALL_MASK_ATTENTION_FUNCTIONS["sdpa"] = _patched
         _mu.sdpa_mask = _patched

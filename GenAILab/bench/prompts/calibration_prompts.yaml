@@ -1,0 +1,139 @@
+# Seed prompts for SELF-GENERATED CALIBRATION data only.
+#
+# These must stay DISJOINT from prompts/text_prompts.yaml (the evaluation set):
+# GeneratedDataset auto-regressively generates calibration text from these
+# prompts, and the model is later scored on text_prompts.yaml. Sharing prompts
+# between the two would couple the calibration distribution to the eval
+# distribution and optimistically bias quality metrics. Mirror the same
+# categories as text_prompts.yaml so the calibration distribution stays
+# representative, but never reuse a prompt.
+
+# --- Factual knowledge ---
+- What is electricity?
+- What is a glacier?
+- How would you describe what a molecule is?
+- Can you explain what espresso is?
+- What is a transistor?
+- Who was Isaac Newton and what is he known for?
+- What is the largest moon in our solar system?
+- What kind of company is Boeing?
+- What is the most widely consumed beverage in the world?
+- What causes earthquakes?
+- How does the human immune system fight infection?
+- What is the significance of the Great Wall of China?
+- What is the difference between weather and climate?
+- How does a hydroelectric dam generate electricity?
+- What was the Industrial Revolution and why did it matter?
+
+# --- Math and arithmetic ---
+- What is the sum of the first 15 positive integers?
+- A car travels at 50 mph for 3 hours. How far does it travel?
+- If a jacket costs $80 and is on sale for 25% off, what is the final price?
+- What is the derivative of f(x) = 4x^3 - x + 7?
+- A bag contains 4 red, 6 blue, and 5 yellow balls. What is the probability of drawing a red ball?
+- Calculate the area of a circle with radius 7 cm.
+- If you invest $2,000 at 4% annual compound interest, how much will you have after 2 years?
+- Solve for x: 3x - 5 = 16.
+- What is the least common multiple of 12 and 18?
+- A rectangle has an area of 48 square cm and a width of 6 cm. What is its length?
+
+# --- Reasoning and logic ---
+- "If all mammals are warm-blooded and whales are mammals, what can we conclude about whales? Explain your reasoning."
+- "You have 8 identical-looking coins, but one is heavier. Using a balance scale only twice, how do you find the heavier coin?"
+- A shepherd has 24 goats. All but 7 wander off. How many goats remain?
+- Can a sentence be both true and false at the same time? Explain why or why not.
+- If 3 painters can paint 3 fences in 3 hours, how long would it take 12 painters to paint 12 fences?
+- "You have a 3-liter jug and a 5-liter jug with no markings. How can you measure exactly 4 liters of water?"
+- "A snail climbs 3 feet up a 10-foot well each day but slips back 2 feet each night. How many days until it reaches the top?"
+
+# --- Code generation ---
+- Write a Python function that checks if a given number is prime.
+- Write a Python function that reverses the words in a sentence.
+- Write a Python function that finds the maximum value in a list without using the built-in max.
+- Write a Python class that implements a basic queue with enqueue and dequeue operations.
+- Write a SQL query to count the number of orders placed by each customer from an 'orders' table.
+- Write a Python function that merges two sorted lists into one sorted list.
+- Write a Python function that counts the frequency of each character in a string.
+
+# --- Creative writing ---
+- "Write a short story about a lighthouse keeper who receives a mysterious message in a bottle. Include a twist and a clear ending."
+- Write a short poem about the first snowfall of winter.
+- Write a short story about a clock that can pause time.
+- Compose an encouraging note to someone starting a new job.
+- Create a dialogue between a traveler and a shopkeeper in a foreign market.
+- Write a haiku about a mountain at dawn.
+- Write an opening paragraph for an adventure novel set in a dense jungle.
+- Write a limerick about a dog who wants to be a sailor.
+
+# --- Translation ---
+- "Translate 'Thank you very much for your help' into French."
+- "Translate 'See you tomorrow' into Spanish."
+- "Translate 'Have a safe journey' into German."
+- "Translate 'What time does the museum open?' into Italian."
+- "Translate 'The food here is delicious' into Japanese."
+- "Translate 'Time heals all wounds' into Latin."
+
+# --- Summarization and analysis ---
+- Write an article about the role of public libraries in the digital age.
+- Summarize the key differences between mitosis and meiosis in biology.
+- Explain the pros and cons of remote work versus office work in three paragraphs.
+- Compare and contrast democracy and monarchy as systems of government.
+- What are the main arguments for and against a four-day work week?
+
+# --- Instruction following with constraints ---
+- List exactly 5 tips for staying hydrated. Use numbered points.
+- Explain how the internet works to a 10-year-old in no more than 3 sentences.
+- Describe a sunrise using only words that start with a vowel.
+- Write a product description for a stainless steel water bottle in exactly 50 words.
+- "Name 3 fruits, 3 vegetables, and 3 grains. Format your answer as a bulleted list with category headers."
+
+# --- Advice and recommendations ---
+- What are some places to see in Yellowstone?
+- "I'm planning a trip to Japan. Can you suggest a 5-day itinerary?"
+- What are some effective stretching routines for office workers?
+- "I'm considering a career change from teaching to software engineering. What skills should I acquire?"
+- Can you give me some ideas for a cozy, space-efficient home office?
+- What are the emerging trends in renewable energy that consumers should know about?
+- "I have $5,000 to invest. What are some sensible options for a first-time investor?"
+- What can I do to help a child develop good reading habits?
+- What are some essential tips for caring for an indoor cat?
+- What are some strategies to manage stress during a busy work week?
+
+# --- Classification and extraction ---
+- "Classify the following as either a metal or a non-metal: copper, oxygen, iron, sulfur, gold, helium."
+- "Read this review and determine if the sentiment is positive, negative, or neutral: 'The hotel room was spacious and clean, but the staff were unhelpful and the breakfast was bland.'"
+- "Extract the names, dates, and locations from this sentence: 'Nelson Mandela was born on July 18, 1918 in Mvezo, South Africa and later lived in Johannesburg.'"
+- "Categorize these vehicles by where they travel (land, water, air): submarine, helicopter, bicycle, sailboat, train, jet."
+
+# --- Conversational ---
+- Can you tell me a riddle?
+- Share an interesting historical fact.
+- What are some creative uses for an old newspaper?
+- What are some common themes found in folktales?
+- "If you could have dinner with any inventor from history, who would it be and why?"
+
+# --- Recipes and how-to ---
+- How do you make homemade bread from scratch?
+- What ingredients are used to make a classic Caesar salad?
+- Give me a recipe to make vegetable stir-fry.
+- Can you suggest a simple dish that can be made using rice and beans?
+- Explain step by step how to repot a houseplant.
+
+# --- Multi-step reasoning ---
+- "Plan a healthy weekly meal prep for one person on a $50 grocery budget. Include breakfast, lunch, and dinner ideas."
+- "I need to organize a community fundraiser. Walk me through the major steps from planning to execution."
+- "A small bakery is losing money despite steady foot traffic. Propose a systematic approach to find the cause and suggest fixes."
+- Walk me through the steps you would take to troubleshoot a laptop that will not connect to Wi-Fi.
+
+# --- Science and technical explanation ---
+- Explain the concept of natural selection in simple terms.
+- How do solar panels convert sunlight into electricity?
+- What is the difference between RAM and storage in a computer?
+- Explain how antibiotics work against bacterial infections.
+- What is cloud computing and how does it benefit businesses?
+
+# --- Edge cases for quantized models ---
+- "Continue this sequence: 2, 4, 8, 16, 32, ..."
+- "Rewrite the following sentence in active voice: 'The window was broken by the storm.'"
+- What are three key differences between cats and dogs as pets?
+- Explain what a database is using an analogy a non-technical person would understand.

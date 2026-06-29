@@ -5,6 +5,7 @@
 
 from abc import ABC, abstractmethod
 import ast
+import gc
 import re
 
 from datasets import (
@@ -14,8 +15,15 @@ from datasets import (
     load_dataset,
 )
 import torch
-from transformers import PreTrainedTokenizer
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, PreTrainedTokenizer, pipeline
 
+from GenAILab.bench.determinism import set_seed
+from GenAILab.bench.utils.generation_utils import build_generation_config
+from GenAILab.bench.utils.prompt_utils import (
+    CALIBRATION_PROMPTS_FILE,
+    load_text_prompts,
+)
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 
 
@@ -47,19 +55,36 @@ class InterleavedDatasetWrapper(torch.utils.data.Dataset):
     """Interleaves entries from multiple datasets in round-robin order.
 
     Items are drawn alternately: dataset_0[0], dataset_1[0], dataset_0[1],
-    dataset_1[1], ... until the shortest dataset is exhausted.
+    dataset_1[1], ... Once a dataset is exhausted it is skipped, and the
+    remaining datasets keep being drawn until all are exhausted. The total
+    length is therefore the sum of all sub-dataset lengths (callers that want a
+    smaller calibration set bound iteration separately, e.g. via the recipe's
+    ``num_iterations``).
     """
 
     def __init__(self, datasets: list):
         self.datasets = datasets
-        self._min_len = min(len(d) for d in datasets)
+        # Precompute the flat draw order as (dataset_idx, item_idx) pairs:
+        # round-robin across datasets, skipping any that are exhausted, until
+        # every dataset has been fully consumed.
+        lengths = [len(d) for d in datasets]
+        counters = [0] * len(datasets)
+        self._order: list[tuple[int, int]] = []
+        while any(counters[i] < lengths[i] for i in range(len(datasets))):
+            for i in range(len(datasets)):
+                if counters[i] < lengths[i]:
+                    self._order.append((i, counters[i]))
+                    counters[i] += 1
 
     def __len__(self):
-        return self._min_len * len(self.datasets)
+        return len(self._order)
 
     def __getitem__(self, index: int):
-        ds_idx = index % len(self.datasets)
-        item_idx = index // len(self.datasets)
+        if index < 0:
+            index += len(self._order)
+        if not 0 <= index < len(self._order):
+            raise IndexError(index)
+        ds_idx, item_idx = self._order[index]
         return self.datasets[ds_idx][item_idx]
 
 
@@ -123,6 +148,14 @@ class ChunkedDataset(torch.utils.data.Dataset):
         return len(self.tokenized_data["input_ids"][0]) // self.size_per_chunk
 
     def __getitem__(self, index: int):
+        # Raise IndexError for out-of-range indices so that bare iteration over
+        # this map-style dataset (e.g. itertools.islice without a DataLoader)
+        # terminates correctly. Without this, an out-of-range slice silently
+        # returns an empty (1, 0) tensor and iteration never stops.
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
         start_index = index * self.size_per_chunk
         end_index = (index + 1) * self.size_per_chunk
         return {
@@ -752,3 +785,184 @@ class AOKVQA(MultimodalDataset):
             image_size=image_size,
             include_answer=(split == "train"),
         )
+
+
+@YAMLConfigParser.register_dataset
+class GeneratedDataset(TextDataset):
+    """Calibrate on text the float model generates from seed prompts. Generation
+    runs through the standard HuggingFace ``AutoModelForCausalLM`` / ``generate``
+    API in bfloat16, independent of the quantsim being calibrated.
+
+    YAML usage::
+
+        dataset:
+          name: GeneratedDataset
+          num_inputs: 5
+          max_new_tokens: 512
+          seed: 42
+
+    ``model_id`` selects the float model to generate from. It defaults to the
+    run's top-level ``model:`` (injected by the recipe chain) so calibration
+    matches the quantized model, and need not appear in the dataset config; set
+    it explicitly only to generate from a different model.
+    """
+
+    @staticmethod
+    def load_dataset(split: str):
+        raise NotImplementedError(
+            "GeneratedDataset does not load from disk; it generates text from "
+            "the float model. Use load_encoded_dataset."
+        )
+
+    @classmethod
+    def load_encoded_dataset(
+        cls,
+        tokenizer: PreTrainedTokenizer,
+        context_length: int,
+        *,
+        model_id: str,
+        num_inputs: int = 5,
+        max_new_tokens: int = 512,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        top_k: int = 40,
+        seed: int = 42,
+    ):
+        prompts = load_text_prompts(prompts_file=CALIBRATION_PROMPTS_FILE)
+        target_tokens = num_inputs * context_length
+
+        encoded = cls._generate_encoded(
+            tokenizer=tokenizer,
+            model_id=model_id,
+            prompts=prompts,
+            target_tokens=target_tokens,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            seed=seed,
+        )
+
+        return cls._build_chunked_dataset(encoded, context_length)
+
+    @staticmethod
+    def _build_chunked_dataset(encoded, context_length):
+        num_tokens = encoded["input_ids"].shape[-1]
+        chunk_size = min(context_length, num_tokens)
+        return ChunkedDataset(encoded, chunk_size)
+
+    @classmethod
+    def _generate_encoded(
+        cls,
+        *,
+        tokenizer,
+        model_id,
+        prompts,
+        target_tokens,
+        max_new_tokens,
+        temperature,
+        top_p,
+        top_k,
+        seed,
+    ) -> dict[str, torch.Tensor]:
+        """Load the float model and generate until ``target_tokens`` is reached.
+
+        Seed prompts are cycled in order; generation continues prompt-by-prompt
+        until the concatenated, re-tokenized text has at least ``target_tokens``
+        tokens, then it is truncated to exactly ``target_tokens``.
+        """
+        set_seed(seed)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+        )
+        model.eval()
+
+        gen_config = build_generation_config(
+            model,
+            tokenizer,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            do_sample=True,
+        )
+        # The pipeline applies the chat template and generation prompt, runs
+        # generate() under no-grad, and returns the prompt plus the generated
+        # text (return_full_text=True), matching the original prompt+completion
+        # calibration samples. Device placement comes from the model's
+        # device_map, so no explicit device is passed.
+        generator = pipeline(
+            "text-generation",
+            model=model,
+            tokenizer=tokenizer,
+        )
+        join_token = "\n\n" if tokenizer.bos_token is None else tokenizer.bos_token
+
+        generated_texts = []
+        total_tokens = 0
+        prompt_idx = 0
+        # Cycle through the prompt list until we have enough tokens. A hard cap
+        # (2x the prompts needed in the ideal case) guards against pathological
+        # early-EOS loops that never reach target.
+        max_generations = 2 * (target_tokens // max(max_new_tokens, 1) + len(prompts))
+        progress = tqdm(
+            total=target_tokens,
+            unit="tok",
+            desc=f"Generating calibration text ({model_id})",
+        )
+        try:
+            while (
+                total_tokens < target_tokens and len(generated_texts) < max_generations
+            ):
+                prompt = prompts[prompt_idx % len(prompts)]
+                prompt_idx += 1
+                messages = [
+                    {"role": "system", "content": "You are a helpful AI assistant."},
+                    {"role": "user", "content": prompt},
+                ]
+                # With chat input, return_full_text=True yields the full
+                # conversation as a list of message dicts; render it back to a
+                # single prompt+completion string via the chat template.
+                full_messages = generator(
+                    messages,
+                    generation_config=gen_config,
+                    return_full_text=True,
+                )[0]["generated_text"]
+                text = tokenizer.apply_chat_template(full_messages, tokenize=False)
+                generated_texts.append(text)
+                # Approximate running total; the authoritative count comes
+                # from the final joined re-tokenization below.
+                total_tokens = len(
+                    tokenizer(
+                        join_token.join(generated_texts),
+                        add_special_tokens=True,
+                    )["input_ids"]
+                )
+                # Clamp the bar to its total so a final overshoot doesn't
+                # render as >100%.
+                progress.n = min(total_tokens, target_tokens)
+                progress.refresh()
+        finally:
+            progress.close()
+            # Free the float weights before sim calibration runs.
+            del generator
+            del model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        encoded = tokenizer(
+            join_token.join(generated_texts),
+            return_tensors="pt",
+            add_special_tokens=True,
+        )
+        # Truncate to exactly target_tokens so the dataset is a whole number of
+        # context-length chunks (when target_tokens is a multiple of CL).
+        if encoded["input_ids"].shape[-1] > target_tokens:
+            encoded = {
+                "input_ids": encoded["input_ids"][:, :target_tokens],
+                "attention_mask": encoded["attention_mask"][:, :target_tokens],
+            }
+        return encoded

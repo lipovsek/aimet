@@ -3,13 +3,14 @@
 
 """Shared recipe chain application logic for Torch and ONNX test runners."""
 
+import contextlib
 import gc
 
 import torch
 
 from transformers.processing_utils import ProcessorMixin
 
-from GenAILab.bench.datasets import TextDataset
+from GenAILab.bench.datasets import GeneratedDataset, Interleaved, TextDataset
 from GenAILab.bench.profiler import GPUMeter, RecipeStepStats
 
 
@@ -76,24 +77,36 @@ def apply_recipe_chain(
 
         if dataset_cls is not None:
             # Text datasets need just the tokenizer; multimodal datasets
-            # need the full processor.
+            # need the full processor. Interleaved is text-or-multimodal
+            # depending on its sub-datasets, so it only requires a processor
+            # when the model actually provides one.
             if not issubclass(dataset_cls, TextDataset):
                 if image_size is not None:
                     dataset_kwargs.setdefault("image_size", image_size)
-                assert isinstance(tokenizer, ProcessorMixin), (
-                    f"Multimodal dataset {dataset_cls.__name__} requires a "
-                    f"ProcessorMixin, got {type(tokenizer).__name__}"
-                )
+                if not issubclass(dataset_cls, Interleaved):
+                    assert isinstance(tokenizer, ProcessorMixin), (
+                        f"Multimodal dataset {dataset_cls.__name__} requires a "
+                        f"ProcessorMixin, got {type(tokenizer).__name__}"
+                    )
+            # Interleaved handles per-sub tokenizer/processor selection
+            # internally, so hand it the full tokenizer/processor object.
             dataset_tokenizer = (
                 getattr(tokenizer, "tokenizer", tokenizer)
                 if issubclass(dataset_cls, TextDataset)
                 else tokenizer
             )
-            train_dataset = dataset_cls.load_encoded_dataset(
-                dataset_tokenizer,
-                context_length,
-                **dataset_kwargs,
-            )
+            # Move model to CPU if the dataset is generated, to avoid GPU memory issues during generation.
+            if issubclass(dataset_cls, GeneratedDataset):
+                dataset_kwargs.setdefault("model_id", model_id)
+                gen_ctx = generator.on_device(torch.device("cpu"))
+            else:
+                gen_ctx = contextlib.nullcontext()
+            with gen_ctx:
+                train_dataset = dataset_cls.load_encoded_dataset(
+                    dataset_tokenizer,
+                    context_length,
+                    **dataset_kwargs,
+                )
         else:
             train_dataset = None
 
