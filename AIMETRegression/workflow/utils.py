@@ -23,57 +23,6 @@ from typing import Optional, Dict, Any, List
 import yaml
 
 
-class BaselineSetup:
-    """Handle baseline setup and verification."""
-
-    def __init__(self, suite: str):
-        self.suite = suite
-        self.baselines_dir = Path("AIMETRegression/baselines")
-        self.downloaded_dir = self.baselines_dir / "downloaded"
-
-    def setup(self) -> bool:
-        """
-        Setup baseline for comparison.
-
-        Returns:
-            True if baseline exists, False if this is first run
-        """
-        print("=" * 60)
-        print(f"Baseline Setup for Suite: {self.suite}")
-        print("=" * 60)
-
-        baseline_file = self.downloaded_dir / "latest.json"
-
-        if baseline_file.exists():
-            print("✓ Previous baseline found")
-
-            # Create baselines directory and copy
-            self.baselines_dir.mkdir(parents=True, exist_ok=True)
-
-            target = self.baselines_dir / "latest.json"
-            import shutil
-
-            shutil.copy(baseline_file, target)
-
-            file_size = target.stat().st_size
-            print(f"  Copied to: {target}")
-            print(f"  Size: {file_size} bytes")
-
-            return True
-        else:
-            print("ℹ️  No previous baseline found")
-            print("This is either:")
-            print("  - First run on this branch")
-            print("  - Baseline artifact expired (>30 days old)")
-            print("")
-            print("A new baseline will be created from this run's results.")
-
-            # Create directory for new baseline
-            self.baselines_dir.mkdir(parents=True, exist_ok=True)
-
-            return False
-
-
 class LockfileGenerator:
     """Generate environment lockfiles with metadata."""
 
@@ -403,14 +352,6 @@ def main():
     parser = argparse.ArgumentParser(description="Workflow helper utilities")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
-    # Baseline setup
-    baseline_parser = subparsers.add_parser(
-        "setup-baseline", help="Setup baseline for comparison"
-    )
-    baseline_parser.add_argument(
-        "--suite", default=os.environ.get("INPUT_SUITE", "nightly")
-    )
-
     # Lockfile generation
     lockfile_parser = subparsers.add_parser(
         "generate-lockfile", help="Generate environment lockfile"
@@ -437,18 +378,7 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "setup-baseline":
-        setup = BaselineSetup(args.suite)
-        has_baseline = setup.setup()
-
-        # Set GitHub environment variable
-        if "GITHUB_ENV" in os.environ:
-            with open(os.environ["GITHUB_ENV"], "a") as f:
-                f.write(f"HAS_BASELINE={'true' if has_baseline else 'false'}\n")
-
-        exit(0)
-
-    elif args.command == "generate-lockfile":
+    if args.command == "generate-lockfile":
         generator = LockfileGenerator(args.run_id)
         lockfile, metadata = generator.generate()
         exit(0)

@@ -6,17 +6,16 @@
 """
 Workflow automation utilities for ONNX regression testing.
 
-Provides tools for artifact management, baseline setup, environment lockfiles,
+Provides tools for artifact management, environment lockfiles,
 and AI Hub authentication.
 """
 
 from .artifacts import ArtifactManager, BaselineStrategy
-from .utils import BaselineSetup, LockfileGenerator, AIHubConfig
+from .utils import LockfileGenerator, AIHubConfig
 
 __all__ = [
     "ArtifactManager",
     "BaselineStrategy",
-    "BaselineSetup",
     "LockfileGenerator",
     "AIHubConfig",
 ]

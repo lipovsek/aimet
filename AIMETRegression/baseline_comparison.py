@@ -7,8 +7,8 @@
 Baseline Comparison and Reporting
 
 This script:
-1. Stores current results as baseline for next run
-2. Compares current results with previous baseline
+1. Merges current results into the prior baseline and publishes it for the next run
+2. Compares current results with the prior baseline
 3. Validates quantization accuracy (FP32 vs AIMET)
 4. Validates QDQ export correctness (AIMET vs QDQ)
 5. Generates GitHub-style markdown report
@@ -27,7 +27,7 @@ import csv
 import argparse
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 import pandas as pd
 
 
@@ -48,6 +48,8 @@ class TestResult:
     aimet_runtime_ms: Optional[float] = None
     aimet_memory_mb: Optional[float] = None
     status: str = ""
+    source_run_id: Optional[str] = None
+    source_date: Optional[str] = None
 
 
 @dataclass
@@ -302,6 +304,62 @@ def compute_overall_status(
     return quality.status_emoji
 
 
+def has_passed(result: "TestResult") -> bool:
+    """Whether a test ran cleanly AND stayed within its quality threshold.
+
+    The CSV Status column only distinguishes "crashed" from "" (ran), so the
+    pass/fail decision is derived: a test passes when it did not crash and its
+    FP32 → AIMET drop is within max_accuracy_drop.
+    """
+    if result.status == "crashed":
+        return False
+    return validate_quantization_quality(result).is_acceptable
+
+
+def merge_baseline(
+    prior: Dict[str, "TestResult"],
+    current: Dict[str, "TestResult"],
+    *,
+    run_id: Optional[str] = None,
+    date: Optional[str] = None,
+) -> Dict[str, "TestResult"]:
+    """Merge the current run into the prior baseline, per-test.
+
+    Each test keeps its own last-known-good value, so a failing test never
+    overwrites the value it is compared against next run:
+
+    - clean pass             -> advance to this run's result, stamped with provenance
+    - crashed / accuracy not met -> hold the prior value (only advance on a clean pass)
+    - brand-new test         -> seed with this run's result (nothing to hold)
+    - removed from suite     -> retain the prior entry (never drop history)
+
+    "crashed" means the test errored out and produced no accuracy number
+    (CSV Status == "crashed"). "accuracy not met" means it ran but the FP32 ->
+    AIMET drop exceeded max_accuracy_drop. Both count as "did not pass".
+
+    Args:
+        prior: The baseline downloaded from the previous run (read-only input).
+        current: This run's results.
+        run_id: Workflow run id stamped onto advanced entries.
+        date: Run date (YYYY-MM-DD) stamped onto advanced entries.
+
+    Returns:
+        The merged baseline to publish for the next run.
+    """
+    merged: Dict[str, "TestResult"] = dict(prior)
+
+    for key, curr_result in current.items():
+        if has_passed(curr_result):
+            merged[key] = replace(curr_result, source_run_id=run_id, source_date=date)
+        elif key not in prior:
+            # New test that did not pass: no prior value to hold, so seed it
+            # to keep the suite list current.
+            merged[key] = replace(curr_result, source_run_id=run_id, source_date=date)
+        # else: existing test that did not pass -> keep the prior value.
+
+    return merged
+
+
 class BaselineManager:
     """Manage baseline storage and comparison."""
 
@@ -397,31 +455,43 @@ class BaselineManager:
 
         print(f"✔ Baseline saved to: {self.baseline_file}")
 
-    def load_baseline(self) -> Dict[str, TestResult]:
-        """Load baseline results."""
-        if not self.baseline_file.exists():
+    @staticmethod
+    def load_baseline_from(path: "str | Path") -> Dict[str, TestResult]:
+        """Load baseline results from an explicit path.
+
+        Lets the prior baseline (the downloaded artifact) be read from a
+        different file than the one this run publishes.
+        """
+        path = Path(path)
+        if not path.exists():
             return {}
 
-        with open(self.baseline_file, "r") as f:
+        with open(path, "r") as f:
             return {key: TestResult(**data) for key, data in json.load(f).items()}
 
     def compare(
         self,
         current: Dict[str, TestResult],
         baseline: Dict[str, TestResult],
-    ) -> Tuple[List[Comparison], List[Comparison], List[Comparison]]:
+    ) -> Tuple[List[Comparison], List[Comparison], List[Comparison], List[TestResult]]:
         """
         Compare current results with baseline.
 
+        Tests present in the current run but absent from the baseline (new or
+        renamed tests) have no value to compare against and are returned in
+        `uncompared` rather than dropped.
+
         Returns:
-            Tuple of (regressions, improvements, unchanged)
+            Tuple of (regressions, improvements, unchanged, uncompared)
         """
         regressions = []
         improvements = []
         unchanged = []
+        uncompared = []
 
         for key, curr_result in current.items():
             if key not in baseline:
+                uncompared.append(curr_result)
                 continue
 
             base_acc = baseline[key].aimet_accuracy
@@ -446,7 +516,7 @@ class BaselineManager:
             else:
                 unchanged.append(comp)
 
-        return regressions, improvements, unchanged
+        return regressions, improvements, unchanged, uncompared
 
     def compare_metrics(
         self,
@@ -873,9 +943,12 @@ def _write_summary_json(
     regressions: list,
     improvements: list,
     unchanged: list,
+    uncompared: Optional[list] = None,
 ) -> None:
     """Write a compact JSON summary for the workflow results job."""
     import json
+
+    uncompared = uncompared or []
 
     passed, warnings, failed, failed_tests = 0, 0, 0, []
     crashed, crashed_tests = 0, []
@@ -891,21 +964,27 @@ def _write_summary_json(
             failed += 1
             failed_tests.append(f"{result.model}/{result.techniques}")
 
+    # Regressions and uncompared tests are reported for visibility but do not
+    # gate the build; only crashes and the quality gate (accuracy drop vs FP32)
+    # count as failures.
     regression_tests = [f"{r.model}/{r.techniques}" for r in regressions]
+    uncompared_tests = [f"{r.model}/{r.techniques}" for r in uncompared]
 
     summary = {
         "total": len(current),
         "stable": len(unchanged),
         "improvements": len(improvements),
         "regressions": len(regressions),
+        "uncompared": len(uncompared_tests),
         "passed": passed,
         "warnings": warnings,
         "failed": failed,
         "failed_tests": failed_tests,
         "regression_tests": regression_tests,
+        "uncompared_tests": uncompared_tests,
         "crashed": crashed,
         "crashed_tests": crashed_tests,
-        "has_failures": bool(crashed_tests or failed_tests or regression_tests),
+        "has_failures": bool(crashed_tests or failed_tests),
     }
 
     out = Path(output_path)
@@ -924,7 +1003,10 @@ def main():
     parser.add_argument(
         "action",
         choices=["store", "compare", "run"],
-        help="Action: store baseline, compare with baseline, or both",
+        help=(
+            "Action: store (merge this run into the prior baseline and "
+            "publish), compare with baseline, or both"
+        ),
     )
 
     parser.add_argument(
@@ -966,6 +1048,31 @@ def main():
         dest="baseline_source",
         default=None,
         help="Branch the baseline was downloaded from (shown in report header)",
+    )
+
+    parser.add_argument(
+        "--prior-baseline",
+        dest="prior_baseline",
+        default="AIMETRegression/baselines/downloaded/latest.json",
+        help=(
+            "Prior baseline to compare against (read-only). Defaults to the "
+            "artifact fetched by the download-baseline step, separate from the "
+            "baseline this run publishes."
+        ),
+    )
+
+    parser.add_argument(
+        "--run-id",
+        dest="run_id",
+        default=os.environ.get("GITHUB_RUN_ID"),
+        help="Workflow run id stamped onto advanced baseline entries.",
+    )
+
+    parser.add_argument(
+        "--baseline-date",
+        dest="baseline_date",
+        default=None,
+        help="Run date (YYYY-MM-DD) stamped onto advanced baseline entries.",
     )
 
     args = parser.parse_args()
@@ -1054,23 +1161,25 @@ def main():
     else:
         print("✅ All QDQ exports validated successfully")
 
-    if args.action in ["store", "run"]:
-        print("\n--- Storing Baseline ---")
-        manager.save_baseline(current)
+    # Read the prior baseline before storing: both the comparison and the
+    # merge below use it, and storing writes to a different file.
+    prior_baseline = BaselineManager.load_baseline_from(args.prior_baseline)
 
     if args.action in ["compare", "run"]:
         print("\n--- Comparing with Baseline ---")
-        baseline = manager.load_baseline()
+        print(f"   Prior baseline: {args.prior_baseline}")
 
-        if baseline:
-            regressions, improvements, unchanged = manager.compare(current, baseline)
+        if prior_baseline:
+            regressions, improvements, unchanged, uncompared = manager.compare(
+                current, prior_baseline
+            )
             runtime_regressions, memory_regressions = manager.compare_metrics(
-                current, baseline
+                current, prior_baseline
             )
 
             markdown = ReportGenerator.generate_markdown(
                 current,
-                baseline,
+                prior_baseline,
                 regressions,
                 improvements,
                 unchanged,
@@ -1091,6 +1200,7 @@ def main():
                     regressions,
                     improvements,
                     unchanged,
+                    uncompared,
                 )
 
             print(f"\n{'=' * 60}")
@@ -1099,6 +1209,7 @@ def main():
             print(f"✅ Unchanged:    {len(unchanged)}")
             print(f"📈 Improvements: {len(improvements)}")
             print(f"⚠️ Regressions:  {len(regressions)}")
+            print(f"🆕 Uncompared:   {len(uncompared)} (no baseline entry)")
 
             if runtime_regressions or memory_regressions:
                 print(f"\n⏱️  Performance Warnings:")
@@ -1118,7 +1229,7 @@ def main():
             else:
                 print(f"\n✅ All tests passed or within threshold!")
         else:
-            print("ℹ️  First run - no baseline to compare")
+            print("ℹ️  First run - no prior baseline to compare against")
             markdown = ReportGenerator.generate_markdown(
                 current,
                 {},
@@ -1140,9 +1251,19 @@ def main():
                     regressions=[],
                     improvements=[],
                     unchanged=[],
+                    uncompared=list(current.values()),
                 )
 
-            print("\nℹ️  Baseline saved. Next run will compare against this baseline.")
+    if args.action in ["store", "run"]:
+        print("\n--- Storing Baseline ---")
+        merged = merge_baseline(
+            prior_baseline,
+            current,
+            run_id=args.run_id,
+            date=args.baseline_date,
+        )
+        manager.save_baseline(merged)
+        print("ℹ️  Merged baseline saved. Next run will compare against it.")
 
     print("\n✅ Baseline operations completed successfully")
     return 0

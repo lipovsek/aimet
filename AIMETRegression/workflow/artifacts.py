@@ -347,8 +347,8 @@ class ArtifactManager:
         """
         Attempt to download a baseline artifact from a single branch.
 
-        Searches recent successful workflow runs on the given branch
-        for a matching baseline artifact.
+        Searches recent completed workflow runs on the given branch
+        (newest first) for a matching baseline artifact.
 
         Args:
             branch: Remote branch to search for baseline artifacts.
@@ -365,18 +365,18 @@ class ArtifactManager:
 
         # Only exclude the current run when searching own branch
         exclude_current = branch == self.config.current_branch
-        runs = self._get_successful_runs(
+        runs = self._get_recent_runs(
             branch=branch,
             exclude_current=exclude_current,
             limit=10,
         )
 
         if not runs:
-            print(f"  No successful runs found on {branch}")
+            print(f"  No completed runs found on {branch}")
             print()
             return None
 
-        print(f"  Found {len(runs)} successful run(s)")
+        print(f"  Found {len(runs)} completed run(s)")
 
         for run in runs:
             run_id = run["id"]
@@ -438,16 +438,21 @@ class ArtifactManager:
             print(f"Warning: could not list release branches: {e}")
             return []
 
-    def _get_successful_runs(
+    def _get_recent_runs(
         self, branch: str, exclude_current: bool = True, limit: int = 10
     ) -> List[Dict]:
-        """Get list of successful workflow runs for specific branch."""
+        """Get recent completed workflow runs for a branch, newest first.
+
+        Includes failed runs: a run that failed on a crash or quality gate
+        still publishes a usable baseline, and comparing against the most
+        recent run keeps the baseline from going stale during a failing streak.
+        """
         url = (
             f"{self.api_base}/repos/{self.config.repo}/actions/"
             f"workflows/{self.config.workflow_file}/runs"
         )
 
-        params = {"status": "success", "branch": branch, "per_page": limit}
+        params = {"status": "completed", "branch": branch, "per_page": limit}
 
         try:
             resp = requests.get(url, headers=self.headers, params=params, timeout=30)
