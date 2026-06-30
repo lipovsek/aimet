@@ -166,7 +166,6 @@ The `framework` field at suite level is a shorthand that overrides `_defaults.ya
 | `config_file` | htp_v79 | HTP config: htp_v79, htp_v81 |
 | `calib_samples` | 256 | Calibration samples |
 | `eval_samples` | 200 | Evaluation samples |
-| `fp32_eval_samples` | 200 | FP32 baseline evaluation samples |
 | `qnn_eval_samples` | 50 | On-device evaluation samples (0 to disable) |
 | `qnn_options` | "--target_runtime qnn_dlc" | QNN compilation options (null to disable) |
 | `max_accuracy_drop` | 1.0 | Max acceptable accuracy drop (percentage points) |

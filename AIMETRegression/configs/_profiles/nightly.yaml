@@ -18,10 +18,8 @@
 # Cut samples in half for faster execution
 # Trade-off: Slightly less accurate measurements
 
-fp32_eval_samples: 500
-quant_eval_samples: 500
-calib_samples: 250
 eval_samples: 500
+calib_samples: 250
 
 # ==================== Performance Measurement ====================
 # Minimal profiling for speed

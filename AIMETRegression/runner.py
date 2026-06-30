@@ -416,8 +416,6 @@ def run_single_config(
     # (e.g., pascal_voc=1449, ade20k=2000).
     dataset_len = len(_dataset)
     _SAMPLE_KEYS = [
-        "fp32_eval_samples",
-        "quant_eval_samples",
         "eval_samples",
         "calib_samples",
         "metrics_samples",
@@ -432,6 +430,7 @@ def run_single_config(
     config["_export_dir"] = str(model_artifacts_dir)
 
     static_aten_acc = None
+    eval_samples = int(config.get("eval_samples", 200))
 
     if framework == "onnx":
         print(f"\n[Step 2] Creating FP32 baseline via ONNX export...")
@@ -439,10 +438,9 @@ def run_single_config(
             model, input_spec, model_artifacts_dir, model_name
         )
 
-        fp32_eval_samples = int(config.get("fp32_eval_samples", 200))
-        print(f"[Step 2] Evaluating FP32 accuracy with {fp32_eval_samples} samples...")
+        print(f"[Step 2] Evaluating FP32 accuracy with {eval_samples} samples...")
         fp32_acc = eval_onnx_model(
-            fp32_path, model, dataset_cls, num_samples=fp32_eval_samples
+            fp32_path, model, dataset_cls, num_samples=eval_samples
         )
         print(f"[Step 2] FP32 Accuracy: {fp32_acc:.4f}")
 
@@ -459,8 +457,7 @@ def run_single_config(
     elif framework == "torch":
         ensure_device_patch()
         print(f"\n[Step 2] Evaluating FP32 PyTorch model accuracy...")
-        fp32_eval_samples = int(config.get("fp32_eval_samples", 200))
-        fp32_acc = _eval_pytorch_fp32(model, dataset_cls, fp32_eval_samples)
+        fp32_acc = _eval_pytorch_fp32(model, dataset_cls, eval_samples)
         print(f"[Step 2] FP32 Accuracy: {fp32_acc:.4f}")
 
         print(f"\n[Step 3] Applying {feature_name} quantization (Torch)...")
@@ -560,11 +557,8 @@ def run_single_config(
     else:
         print(f"[Step 4] ❌ ERROR: ONNX file not found at {aimet_onnx_path}")
 
-    quant_eval_samples = int(
-        config.get("quant_onnx_eval_samples", config.get("quant_eval_samples", 200))
-    )
     qdq_acc = eval_onnx_model(
-        str(aimet_onnx_path), model, dataset_cls, num_samples=quant_eval_samples
+        str(aimet_onnx_path), model, dataset_cls, num_samples=eval_samples
     )
     print(f"[Step 4] QDQ Accuracy: {qdq_acc:.4f}")
 

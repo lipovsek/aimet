@@ -14,10 +14,8 @@
 # Only values that differ from defaults are specified here
 
 # ==================== Minimal Sample Counts ====================
-fp32_eval_samples: 50
-quant_eval_samples: 50
-calib_samples: 25
 eval_samples: 50
+calib_samples: 25
 
 # ==================== Minimal Profiling ====================
 metrics_samples: 1

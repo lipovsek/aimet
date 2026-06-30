@@ -29,18 +29,12 @@ qnn_options: "--target_runtime qnn_dlc"
 # These control the accuracy vs. speed tradeoff
 # Higher counts = better accuracy measurement but slower execution
 
-# FP32 baseline evaluation samples (reference accuracy)
-fp32_eval_samples: 200
-
-# Post-quantization ONNX evaluation samples
-quant_eval_samples: 200
+# Number of samples for eval
+eval_samples: 200
 
 # Calibration samples for computing quantization encodings
 # Used by: QuantSim, Lite-MP, AdaRound
 calib_samples: 256
-
-# Evaluation samples after calibration (final accuracy measurement)
-eval_samples: 200
 
 # On-device evaluation samples (via QNN on target hardware)
 # Most expensive - set to 0 to disable on-device testing
