@@ -3447,3 +3447,58 @@ def test_export_with_branch_input_quantizer(tmp_path):
     # Add node only receives unquantized tensors in torch
     for tensor in add_node.input:
         assert producers[tensor].op_type != "DequantizeLinear"
+
+
+@pytest.mark.parametrize("dynamo", [True, False])
+def test_export_with_shared_weight(tmp_path, dynamo: bool):
+    """
+    Given:
+        W -+-> QDQ --------------> consumer_1
+           +-> Identity -> QDQ' -> consumer_2
+
+        where QDQ and QDQ' share the same encoding
+
+    When: Export to onnx QDQ
+    Then: The exported onnx model should have a single QDQ node for the shared weight
+
+        W -> QDQ --+-> consumer_1
+                   +-> consumer_2
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super(Model, self).__init__()
+            self.norm1 = torch.nn.LayerNorm(10, bias=False)
+            self.norm2 = torch.nn.LayerNorm(10, bias=False)
+            with torch.no_grad():
+                self.norm2.weight.copy_(self.norm1.weight)
+
+        def forward(self, x):
+            return self.norm2(self.norm1(x))
+
+    sim = QuantizationSimModel(Model(), torch.randn(1, 3, 10, 10))
+    sim.compute_encodings(lambda model: model(torch.randn(1, 3, 10, 10)))
+    tmp_path = pathlib.Path(".")
+    aimet_torch.onnx.export(
+        sim.model,
+        torch.randn(1, 3, 10, 10),
+        tmp_path / "shared_weight_model_qdq.onnx",
+        dynamo=dynamo,
+    )
+    onnx_model = onnx.load(tmp_path / "shared_weight_model_qdq.onnx")
+
+    producers = {node.output[0]: node for node in onnx_model.graph.node}
+    q_nodes = [
+        node for node in onnx_model.graph.node if node.op_type == "QuantizeLinear"
+    ]
+    assert len(q_nodes) == 4  # shared weight, input, norm1 output, norm2 output
+    for node in onnx_model.graph.node:
+        if node.op_type == "QuantizeLinear":
+            # There shouldn't be any back-to-back QDQ
+            producer = producers.get(node.input[0])
+            assert not (producer and producer.op_type == "DequantizeLinear")
+
+    # There shouldn't be any Identity nodes in the exported model, e.g.
+    #     W -> QDQ -> Identity -> QDQ -+-> consumer_1
+    #                                  +-> consumer_2
+    assert not [node for node in onnx_model.graph.node if node.op_type == "Identity"]

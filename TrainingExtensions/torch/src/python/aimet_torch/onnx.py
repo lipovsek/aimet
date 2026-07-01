@@ -190,7 +190,7 @@ def export(
         prequantize_constants=prequantize_constants,
         base_dir=base_dir,
     )
-    _remove_intermediate_identity_nodes(onnx_qdq_model)
+    _remove_intermediate_identity_nodes(onnx_qdq_model, base_dir=base_dir)
     _remove_dangling_nodes_and_initializers(onnx_qdq_model)
 
     # Add metadata property to indicate the model is exported by AIMET and its version
@@ -572,7 +572,9 @@ def _decouple_back_to_back_qdqs(onnx_model: onnx.ModelProto) -> dict[str, str]:
     onnx_model.graph.node.extend(all_nodes)
 
 
-def _remove_intermediate_identity_nodes(onnx_model: onnx.ModelProto):
+def _remove_intermediate_identity_nodes(
+    onnx_model: onnx.ModelProto, base_dir: str | None
+):
     """
     Remove temporarily added Identity nodes between DequantizeLinear and QuantizeLinear nodes.
 
@@ -580,7 +582,9 @@ def _remove_intermediate_identity_nodes(onnx_model: onnx.ModelProto):
         (weight) -> Q -> DQ -> Identity -> Q -> DQ -> MatMul
 
     After:
-        (weight) -> Q -> DQ -------------> Q -> DQ -> MatMul
+        (weight) ------------------------> Q -> DQ -> MatMul  (if back-to-back QDQs are redundant)
+
+        (weight) -> Q -> DQ -------------> Q -> DQ -> MatMul  (otherwise)
     """
     producers: dict[str, onnx.NodeProto] = {}
     consumers: dict[str, list[onnx.NodeProto]] = {}
@@ -589,6 +593,8 @@ def _remove_intermediate_identity_nodes(onnx_model: onnx.ModelProto):
         producers[node.output[0]] = node
         for inp in node.input:
             consumers.setdefault(inp, []).append(node)
+
+    constants = _get_all_constants(onnx_model, consumers)
 
     for identity in onnx_model.graph.node:
         if identity.op_type != "Identity":
@@ -606,10 +612,87 @@ def _remove_intermediate_identity_nodes(onnx_model: onnx.ModelProto):
         if consumer.op_type != "QuantizeLinear":
             continue
 
-        for consumer in consumers.get(identity.output[0], []):
-            for i, inp in enumerate(consumer.input):
-                if inp == identity.output[0]:
-                    consumer.input[i] = identity.input[0]
+        # If previous Q and next Q doesn't share the same encoding:
+        #                     ┌──────────┐
+        # (weight) -> Q -> DQ ┘ Identity └ Q -> DQ -> ...
+        prev_dq = producer
+        next_q = consumer
+        next_q.input[0] = prev_dq.output[0]
+
+        # If previous Q and next Q share the same encoding:
+        #          ┌─────────────────────┐
+        # (weight) ┘ Q -> DQ -> Identity └ Q -> DQ -> ...
+        prev_q = producers.get(prev_dq.input[0], None)
+        if (
+            prev_q
+            and prev_q.op_type == "QuantizeLinear"
+            and _onnx_encoding_equal(prev_q, next_q, constants, base_dir=base_dir)
+        ):
+            next_q.input[0] = prev_q.input[0]
+
+
+def _onnx_encoding_equal(
+    q_1: onnx.NodeProto,
+    q_2: onnx.NodeProto,
+    constants: dict[str, onnx.TensorProto],
+    base_dir: str | None,
+):
+    for i, qdq in enumerate([q_1, q_2]):
+        if qdq.op_type == "QuantizeLinear":
+            continue
+
+        raise ValueError(
+            f"Expected input {i} to be QuantizeLinear or DequantizeLinear node; "
+            f"got {qdq.domain}::{qdq.op_type}",
+        )
+
+    def get_attributes(qdq_node: onnx.NodeProto):
+        axis = block_size = output_dtype = None
+
+        for attr in qdq_node.attribute:
+            if attr.name == "axis":
+                axis = attr.i
+            if attr.name == "block_size":
+                block_size = attr.i
+            if attr.name == "output_dtype":
+                output_dtype = attr.i
+
+        return axis, block_size, output_dtype
+
+    def get_scale(qdq_node: onnx.NodeProto) -> np.ndarray:
+        scale_proto = constants.get(qdq_node.input[1])
+        if scale_proto is None:
+            raise RuntimeError(
+                f"Cannot find constant with name {qdq_node.input[1]} in onnx model"
+            )
+        return onnx.numpy_helper.to_array(scale_proto, base_dir=base_dir)
+
+    def get_zero_point(qdq_node: onnx.NodeProto) -> np.ndarray | None:
+        if len(qdq_node.input) < 3:
+            return None
+
+        zp_proto = constants.get(qdq_node.input[2])
+
+        if zp_proto is None:
+            raise RuntimeError(
+                f"Cannot find constant with name {qdq_node.input[2]} in onnx model"
+            )
+
+        zp = onnx.numpy_helper.to_array(zp_proto, base_dir=base_dir)
+
+        if np.all(zp == 0):
+            zp = None
+
+        return zp
+
+    try:
+        return bool(
+            get_attributes(q_1) == get_attributes(q_2)
+            and np.all(get_scale(q_1) == get_scale(q_2))
+            and np.all(get_zero_point(q_1) == get_zero_point(q_2))
+        )
+    except RuntimeError:
+        return False
 
 
 def _encoding_equal(
@@ -619,11 +702,7 @@ def _encoding_equal(
     base_dir: str | None,
 ) -> bool:
     for i, qdq in enumerate([qdq_1, qdq_2]):
-        if (qdq.domain, qdq.op_type) in (
-            ("aimet", "quantize_dequantize"),
-            ("aimet", "QuantizeDequantize"),
-            ("aimet", "FloatQuantizeDequantize"),
-        ):
+        if _is_aimet_qdq_node(qdq):
             continue
 
         raise ValueError(
@@ -684,11 +763,14 @@ def _encoding_equal(
 
         return offset
 
-    return bool(
-        get_attributes(qdq_1) == get_attributes(qdq_2)
-        and np.all(get_scale(qdq_1) == get_scale(qdq_2))
-        and np.all(get_offset(qdq_1) == get_offset(qdq_2))
-    )
+    try:
+        return bool(
+            get_attributes(qdq_1) == get_attributes(qdq_2)
+            and np.all(get_scale(qdq_1) == get_scale(qdq_2))
+            and np.all(get_offset(qdq_1) == get_offset(qdq_2))
+        )
+    except RuntimeError:
+        return False
 
 
 def _remove_redundant_qdqs(onnx_model: onnx.ModelProto, base_dir):
