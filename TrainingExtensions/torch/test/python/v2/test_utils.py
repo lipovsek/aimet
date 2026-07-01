@@ -15,7 +15,11 @@ from aimet_torch.v2.experimental import (
 )
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.nn import BaseQuantizationMixin
-from aimet_torch.utils import get_all_quantizers, disable_all_quantizers
+from aimet_torch.utils import (
+    get_all_quantizers,
+    disable_all_quantizers,
+    _decompose_2bit_prequantized_tensor,
+)
 from aimet_torch.v2.utils import (
     allow_recompute,
     enable_recompute,
@@ -27,6 +31,7 @@ from aimet_torch.v2.utils import (
     remove_output_quantizers,
     remove_param_quantizers,
 )
+from aimet_torch.quantization.affine import dequantize
 
 
 @pytest.mark.parametrize(
@@ -458,3 +463,73 @@ def test_get_all_quantizers():
         (list(qmodule.output_quantizers) for _, qmodule in sim.named_qmodules()),
         start=[],
     )
+
+
+@pytest.mark.parametrize(
+    "channel_axis, block_axis",
+    [
+        (None, None),
+        (0, None),
+        (1, None),
+        (0, 1),
+        (1, 0),
+    ],
+)
+@pytest.mark.parametrize("scale", [1e-0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7])
+def test_decomposition(scale: float, channel_axis: int | None, block_axis: int | None):
+    """
+    When: Call _decompose_2bit_prequantized_tensor with pre-quantized input
+    Then: input_qdq should be decomposed losslessly into input_q and scale
+    """
+    qmin = -2
+    qmax = 2
+    scale = torch.tensor(scale)
+    zeros = torch.zeros_like(scale)
+
+    for input_min in range(qmin, min(qmin + 2, qmax)):
+        for input_max in range(qmax, max(qmax - 2, input_min), -1):
+            input_patch = list(range(input_min, input_max + 1, 2))
+
+            if channel_axis is None:
+                scale_shape = ()
+                block_size = None
+            elif block_axis is None:
+                scale_shape = tuple(
+                    6
+                    if axis == channel_axis == 0
+                    else len(input_patch) * 2
+                    if axis == channel_axis == 1
+                    else 1
+                    for axis in range(2)
+                )
+                block_size = None
+            else:
+                if channel_axis == 0:
+                    scale_shape = (6, 2)
+                    block_size = (1, len(input_patch))
+                else:
+                    scale_shape = (2, len(input_patch) * 2)
+                    block_size = (3, 1)
+
+            input_q = torch.tensor(
+                [
+                    input_patch * 2,
+                    input_patch * 2,
+                    input_patch * 2,
+                ]
+                * 2,
+                dtype=torch.float32,
+            )
+            input_qdq = dequantize(
+                input_q, scale.repeat(scale_shape), offset=zeros, block_size=block_size
+            )
+            input_q_, scale_ = _decompose_2bit_prequantized_tensor(
+                input_qdq, scale_shape=scale_shape, block_size=block_size
+            )
+            assert scale_.shape == scale_shape
+            assert input_q_.shape == input_q.shape
+            assert torch.allclose(
+                input_qdq,
+                dequantize(input_q_, scale_, offset=zeros, block_size=block_size),
+            )
+            assert torch.all((qmin <= input_q_) & (input_q_ <= qmax))

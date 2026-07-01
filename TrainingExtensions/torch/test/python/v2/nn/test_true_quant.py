@@ -2506,3 +2506,22 @@ def test_compute_encodings_passthrough():
 
     expected_out = F.linear(x, qlinear.param_quantizers["weight"](qlinear.weight))
     assert torch.allclose(out, expected_out)
+
+
+@torch.no_grad()
+def test_prequantized_weight():
+    """
+    When: QuantizedLinear has a pre-quantized int2 weight
+    Then: The weight encoding should be lossless
+    """
+    qlinear = QuantizedLinear(10, 10, bias=False)
+    weight_scale = torch.arange(0.01, 0.11, step=0.01, dtype=torch.float32).view(10, 1)
+    qlinear.weight.copy_(
+        torch.randint(-1, 2, (10, 10), dtype=torch.float32) * weight_scale
+    )
+    qlinear.param_quantizers["weight"] = QuantizeDequantize(
+        shape=(10, 1), qmin=-2, qmax=1, symmetric=True
+    )
+    qlinear.compute_param_encodings()
+
+    assert torch.allclose(qlinear.param_quantizers["weight"].get_scale(), weight_scale)

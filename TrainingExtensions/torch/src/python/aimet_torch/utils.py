@@ -42,8 +42,9 @@ except ImportError:
 
 from torchvision import datasets, transforms
 
-from aimet_torch.common.utils import AimetLogger, Handle
-from aimet_torch.common.utils import profile as _profile
+from aimet_torch.common.utils import AimetLogger, Handle, profile as _profile
+from aimet_torch.common.quantsim import _get_minimum_scale
+from aimet_torch.quantization._utils import interleave, concretize_block_size
 
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
@@ -1081,8 +1082,6 @@ def reduce(
     :param reduce_op: Reduce operation
     :param block_size: Block size for block-wise reduction
     """
-    from .quantization._utils import interleave, concretize_block_size
-
     output_shape = shape
 
     if block_size is not None:
@@ -1696,3 +1695,61 @@ def _inference_mode(model: torch.nn.Module, prequantize_parameters: bool):
 
         model.apply(cast_param_to_plain_tensor)
         yield
+
+
+class _DecompositionError(RuntimeError):
+    pass
+
+
+@torch.no_grad()
+def _decompose_2bit_prequantized_tensor(
+    input_qdq: torch.Tensor,
+    scale_shape: tuple[int, ...],
+    block_size: tuple[int, ...] | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Decompose a pre-quantized tensor (input_qdq)
+    into an integer tensor (input_q) and float scale (scale)
+
+    scale := gcd(input_qdq)
+    input_q := input_qdq / scale
+    """
+    from aimet_torch.quantization.affine import quantize
+
+    if len(scale_shape) > len(input_qdq.shape):
+        raise ValueError
+
+    concrete_block_size = concretize_block_size(
+        input_qdq.shape, scale_shape, block_size or tuple(-1 for _ in scale_shape)
+    )
+    concrete_block_size = (
+        *input_qdq.shape[: len(input_qdq.shape) - len(concrete_block_size)],
+        *concrete_block_size,
+    )
+    input_qdq_abs = input_qdq.abs()
+    input_qdq_abs = input_qdq_abs.reshape(
+        *interleave(
+            [dim // b for dim, b in zip(input_qdq.shape, concrete_block_size)],
+            concrete_block_size,
+        )
+    )
+    reduce_dims = tuple(range(1, input_qdq_abs.ndim, 2))
+    absmax = input_qdq_abs.amax(dim=reduce_dims, keepdim=True)
+
+    if torch.all((input_qdq_abs == 0) | (input_qdq_abs == absmax)):
+        minimum_scale = _get_minimum_scale(2**2 - 1)
+        scale = absmax.reshape(scale_shape)
+        scale.masked_fill_(scale == 0, minimum_scale)
+        input_q = quantize(
+            input_qdq,
+            scale,
+            offset=torch.zeros_like(scale),
+            qmin=-1,
+            qmax=1,
+            block_size=block_size,
+        )
+        return input_q, scale
+
+    raise _DecompositionError(
+        "Failed to decompose input tensor into input_q (int2) and scale (float)"
+    )

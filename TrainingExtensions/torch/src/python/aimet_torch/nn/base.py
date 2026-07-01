@@ -36,6 +36,8 @@ from aimet_torch.utils import (
     flatten_nn_module_list,
     reduce,
     _torch_compiler_is_compiling,
+    _decompose_2bit_prequantized_tensor,
+    _DecompositionError,
 )
 from aimet_torch.deepspeed_utils import SafeGatheredParameters, _shallow_copy
 
@@ -298,6 +300,29 @@ class BaseQuantizationMixin(abc.ABC):
 
         with SafeGatheredParameters(params.values()):
             for param_qtzr, param in params.items():
+                if (
+                    isinstance(param_qtzr, AffineQuantizerBase)
+                    and not isinstance(param_qtzr, GroupedBlockQuantizeDequantize)
+                    and param_qtzr.symmetric
+                    and -2 <= param_qtzr.qmin <= param_qtzr.qmax <= 2
+                ):
+                    try:
+                        # Try lossless decompostion into param = param_q * scale
+                        _, scale = _decompose_2bit_prequantized_tensor(
+                            param,
+                            scale_shape=param_qtzr.shape,
+                            block_size=param_qtzr.block_size,
+                        )
+                        param_qtzr.set_range(
+                            scale * param_qtzr.qmin, scale * param_qtzr.qmax
+                        )
+                    except _DecompositionError:
+                        # Decomposition failed. Proceed to regular calibration
+                        pass
+                    else:
+                        # Decomposition success
+                        continue
+
                 with param_qtzr._compute_encodings(passthrough=True):  # pylint: disable=protected-access
                     _ = param_qtzr(param)
 
