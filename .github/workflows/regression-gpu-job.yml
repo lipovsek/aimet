@@ -242,6 +242,11 @@ jobs:
       - name: Run test suite
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Authenticate to HuggingFace so model-weight downloads aren't subject
+          # to the low anonymous rate limit, which intermittently 429s and marks
+          # timm/transformers-backed models (mobile_vit, sequencer2d, ...) as
+          # "not run". huggingface_hub reads HF_TOKEN with priority.
+          HF_TOKEN: ${{ secrets.HUGGINGFACE_TOKEN }}
         run: |
           . .venv/bin/activate
           python -m AIMETRegression.suite_runner \
