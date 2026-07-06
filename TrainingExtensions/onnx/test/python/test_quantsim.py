@@ -2519,20 +2519,73 @@ class TestQuantSim:
             assert quantizer.data_type == QuantizationDataType.float
             assert quantizer.bitwidth == 16
 
-    def test_raise_error_with_bfloat16(self):
-        model = models_for_tests.single_residual_model(dtype=torch.bfloat16)
-        with pytest.raises(RuntimeError):
-            sim = QuantizationSimModel(model)
+    @pytest.mark.cuda
+    def test_quantsim_with_bfloat16_internal_values(self, tmp_dir):
+        """
+        Given: Model with internal bfloat16 tensors
+        When: Instantiate quantsim
+        Then: Quantizer placement is the same as for pure float32 model
+        """
+        np.random.seed(0)
+        fp32_model = models_for_tests.simple_mlp_model(torch.float32)
+        bf16_model = models_for_tests.simple_mlp_model(torch.bfloat16)
 
-        model = models_for_tests.model_with_cast(tensor_type=onnx.TensorProto.BFLOAT16)
-        with pytest.raises(RuntimeError):
-            sim = QuantizationSimModel(model)
+        def build_sim(model):
+            return QuantizationSimModel(
+                model,
+                providers=CUDA_PROVIDERS,
+                param_type=aimet_onnx.int8,
+                activation_type=aimet_onnx.int8,
+                quant_scheme=QuantScheme.min_max,
+            )
 
-        model = models_for_tests.model_with_constant(
-            tensor_type=onnx.TensorProto.BFLOAT16
-        )
-        with pytest.raises(RuntimeError):
-            sim = QuantizationSimModel(model)
+        fp32_sim = build_sim(fp32_model)
+        bf16_sim = build_sim(bf16_model)
+
+        fp32_enabled = {
+            name for name, q in fp32_sim.qc_quantize_op_dict.items() if q.enabled
+        }
+        bf16_enabled = {
+            name for name, q in bf16_sim.qc_quantize_op_dict.items() if q.enabled
+        }
+        assert fp32_enabled == bf16_enabled
+
+        """
+        When: Calibrate with bfloat16
+        Then: Encodings are close to fp32 encodings for equivalent model
+        """
+        dummy_input = make_dummy_input(fp32_model)
+        fp32_sim.compute_encodings([dummy_input])
+        bf16_sim.compute_encodings([dummy_input])
+
+        # Weight encodings are comparable across the two sims (same tensor
+        # names, same values up to bf16 precision).
+        weight_names = fp32_enabled.intersection(set(fp32_sim.param_names))
+        for name in weight_names:
+            fp32_enc = fp32_sim.qc_quantize_op_dict[name].get_encodings()[0]
+            bf16_enc = bf16_sim.qc_quantize_op_dict[name].get_encodings()[0]
+            assert np.isclose(fp32_enc.min, bf16_enc.min, atol=0.05), name
+            assert np.isclose(fp32_enc.max, bf16_enc.max, atol=0.05), name
+
+        # Inference produces fp32 outputs of matching shape and close to fp32 sim.
+        fp32_out = fp32_sim.session.run(None, dummy_input)[0]
+        bf16_out = bf16_sim.session.run(None, dummy_input)[0]
+        assert np.allclose(fp32_out, bf16_out, atol=0.1)
+
+        """
+        When: Export bfloat16 model
+        Then: Export contains same tensor encodings as equivalent float32 model
+        """
+        bf16_sim.export(tmp_dir, "bf16_sim", encoding_version="2.0.0")
+        fp32_sim.export(tmp_dir, "fp32_sim", encoding_version="2.0.0")
+        with open(os.path.join(tmp_dir, "bf16_sim.encodings")) as f:
+            bf16_encodings_dict = json.load(f)
+        with open(os.path.join(tmp_dir, "fp32_sim.encodings")) as f:
+            fp32_encodings_dict = json.load(f)
+
+        bf16_encoding_names = {e["name"] for e in bf16_encodings_dict["encodings"]}
+        fp32_encoding_names = {e["name"] for e in fp32_encodings_dict["encodings"]}
+        assert bf16_encoding_names == fp32_encoding_names
 
     def test_matmul_v73_higher_exception_rule(self, tmp_dir):
         model = models_for_tests.model_with_exceptional_ops()

@@ -2501,6 +2501,40 @@ def weight_matmul_model(in_features=10, out_features=20):
     return model
 
 
+def simple_mlp_model(internal_dtype=torch.float32):
+    """
+    Small MLP: fp32 input -> Cast -> Linear -> Relu -> Linear -> Cast -> fp32 output.
+    """
+    in_features, hidden, out_features = 16, 32, 8
+
+    class MLPModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(in_features, hidden)
+            self.fc2 = nn.Linear(hidden, out_features)
+
+        def forward(self, x):
+            x = x.to(internal_dtype)
+            x = torch.relu(self.fc1(x))
+            return self.fc2(x).to(torch.float32)
+
+    torch.manual_seed(0)
+    model = MLPModel().to(internal_dtype).eval()
+    buffer = io.BytesIO()
+    torch.onnx.export(
+        model,
+        torch.randn(1, in_features, dtype=torch.float32),
+        buffer,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=20,
+        dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+        dynamo=False,
+    )
+    buffer.seek(0)
+    return load_model(buffer)
+
+
 def weight_gemm_model(in_features, out_features, transposed_weight=False):
     matmul_layer = helper.make_node(
         "Gemm",

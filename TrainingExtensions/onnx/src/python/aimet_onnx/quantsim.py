@@ -156,7 +156,7 @@ _tie_qtzrs = True
 
 _fuse_supergroups = True
 
-data_types_to_quantize = [np.float32, np.float16]
+data_types_to_quantize = [np.float32, np.float16, np.dtype("bfloat16")]
 
 _DEPRECATED_ARGS = {
     "rounding_mode",
@@ -442,9 +442,17 @@ class QuantizationSimModel:
             ):
                 op_domain = "aimet.customop.cuda"
 
-        if utils.contains_tensor_type(model.model, onnx.TensorProto.BFLOAT16):
+        # Note: bfloat16 I/O is not supported via session.run and will fail during calibration
+        bf16_io = [
+            io.name
+            for io in (*model.model.graph.input, *model.model.graph.output)
+            if io.type.tensor_type.elem_type == onnx.TensorProto.BFLOAT16
+        ]
+        if bf16_io:
             raise RuntimeError(
-                "Quantizing models with BFLOAT16 tensors is not supported"
+                f"BFLOAT16 model inputs/outputs are not supported by "
+                f"QuantizationSimModel. Offending tensors: {bf16_io}. "
+                f"Only intermediate BFLOAT16 tensors are supported."
             )
 
         self._op_domain = op_domain

@@ -6,6 +6,7 @@ import sys
 from packaging import version
 import tempfile
 import math
+import ml_dtypes
 import numpy as np
 import onnx
 import onnxruntime as ort
@@ -119,24 +120,41 @@ def create_model_from_node(
     return model
 
 
-def create_model_from_node_fp16(quant_node, shape):
-    input_info = helper.make_tensor_value_info(
-        name=quant_node.input[0], elem_type=helper.TensorProto.FLOAT16, shape=shape
-    )
+# (numpy dtype, onnx TensorProto dtype) pairs covering both 16-bit floats.
+HALF_FLOAT_DTYPES = [
+    (np.float16, TensorProto.FLOAT16),
+    (ml_dtypes.bfloat16, TensorProto.BFLOAT16),
+]
 
-    output_info = helper.make_tensor_value_info(
-        name=quant_node.output[0], elem_type=helper.TensorProto.FLOAT16, shape=shape
-    )
-    onnx_graph = helper.make_graph(
-        [quant_node], "dummy_graph", [input_info], [output_info], []
-    )
 
-    model = helper.make_model(
-        onnx_graph,
-        opset_imports=[helper.make_operatorsetid("", 20)],
-        ir_version=_DEFAULT_IR_VERSION,
-    )
-    return model
+def run_session(session, feed_dict):
+    """
+    Wrapper over session.run which supports bfloat16 through io_binding
+    """
+    if not any(arr.dtype == ml_dtypes.bfloat16 for arr in feed_dict.values()):
+        return session.run(None, feed_dict)
+
+    binding = session.io_binding()
+    for name, arr in feed_dict.items():
+        arr = np.ascontiguousarray(arr)  # ortvalue requires contiguous array
+        binding.bind_ortvalue_input(
+            name,
+            ort.OrtValue.ortvalue_from_numpy_with_onnx_type(arr, TensorProto.BFLOAT16),
+        )
+
+    out_bufs = []
+    for output in session.get_outputs():
+        out_buf = np.empty(output.shape, dtype=np.dtype("bfloat16"))
+        binding.bind_ortvalue_output(
+            output.name,
+            ort.OrtValue.ortvalue_from_numpy_with_onnx_type(
+                out_buf, TensorProto.BFLOAT16
+            ),
+        )
+        out_bufs.append(out_buf)
+
+    session.run_with_iobinding(binding)
+    return out_bufs
 
 
 def create_encoding(enc_min, enc_max, bitwidth, symmetric):
@@ -1180,8 +1198,9 @@ class TestQcQuantizeOp:
         with pytest.raises(RuntimeError):
             q1._merge_constraints(q2)
 
-    def test_quantize_dequantize_with_pymo_fp16(self):
-        input_arr = np.asarray([[[[-7, -5, -3, 0, 0.1, 2.5]]]]).astype(np.float16)
+    @pytest.mark.parametrize("np_dtype, tp_dtype", HALF_FLOAT_DTYPES)
+    def test_quantize_dequantize_with_pymo_half_float(self, np_dtype, tp_dtype):
+        input_arr = np.asarray([[[[-7, -5, -3, 0, 0.1, 2.5]]]]).astype(np_dtype)
         quant_info = libquant_info.QcQuantizeInfo()
         quant_info.isIntDataType = True
         quant_node = helper.make_node(
@@ -1191,7 +1210,9 @@ class TestQcQuantizeOp:
             domain=op_domain,
             quant_info=libpymo.PtrToInt64(quant_info),
         )
-        model = create_model_from_node_fp16(quant_node, input_arr.shape)
+        model = create_model_from_node(
+            quant_node, input_arr.shape, float_dtype=tp_dtype
+        )
         session = build_session(model, available_providers)
         qc_op = QcQuantizeOp(
             quant_info=quant_info,
@@ -1202,7 +1223,7 @@ class TestQcQuantizeOp:
             use_symmetric_encodings=False,
         )
 
-        session.run(None, {"input": input_arr})
+        run_session(session, {"input": input_arr})
         encodings = libpymo.TfEncoding()
         encodings.bw = 8
         encodings.max = 1
@@ -1212,14 +1233,15 @@ class TestQcQuantizeOp:
 
         qc_op.load_encodings([encodings])
 
-        output = session.run(None, {"input": input_arr})[0]
+        (output,) = run_session(session, {"input": input_arr})
 
         assert np.max(output) <= 1.1
         assert np.min(output) >= -5.1
 
-    def test_update_stats_quantize_dequantize_fp16(self):
-        input_arr = np.asarray([[[[-7, -5, -3, 0, 0.1, 2.5]]]]).astype(np.float16)
-        input_arr2 = np.random.randn(*input_arr.shape).astype(np.float16) * 10
+    @pytest.mark.parametrize("np_dtype, tp_dtype", HALF_FLOAT_DTYPES)
+    def test_update_stats_quantize_dequantize_half_float(self, np_dtype, tp_dtype):
+        input_arr = np.asarray([[[[-7, -5, -3, 0, 0.1, 2.5]]]]).astype(np_dtype)
+        input_arr2 = (np.random.randn(*input_arr.shape) * 10).astype(np_dtype)
         quant_info = libquant_info.QcQuantizeInfo()
         quant_info.isIntDataType = True
         quant_node = helper.make_node(
@@ -1229,7 +1251,9 @@ class TestQcQuantizeOp:
             domain=op_domain,
             quant_info=libpymo.PtrToInt64(quant_info),
         )
-        model = create_model_from_node_fp16(quant_node, input_arr.shape)
+        model = create_model_from_node(
+            quant_node, input_arr.shape, float_dtype=tp_dtype
+        )
         session = build_session(model, available_providers)
         qc_op = QcQuantizeOp(
             quant_info=quant_info,
@@ -1240,23 +1264,24 @@ class TestQcQuantizeOp:
             use_symmetric_encodings=False,
         )
 
-        session.run(None, {"input": input_arr})[0]
+        run_session(session, {"input": input_arr})
         qc_op.compute_encodings()
         assert math.isclose(qc_op.get_encodings()[0].max, 2.5, rel_tol=1e-2)
         assert math.isclose(qc_op.get_encodings()[0].min, -7, rel_tol=1e-2)
 
         qc_op.op_mode = OpMode.quantizeDequantize
-        output = session.run(None, {"input": input_arr2})[0]
+        (output,) = run_session(session, {"input": input_arr2})
         assert np.max(output) <= 2.6
         assert np.min(output) >= -7.1
-        assert not np.allclose(output, input_arr2)
+        assert not np.allclose(output.astype(np.float32), input_arr2.astype(np.float32))
 
     @pytest.mark.parametrize("contiguous", (True, False))
-    def test_quantize_dequantize_fp16_model(self, contiguous):
+    @pytest.mark.parametrize("np_dtype, tp_dtype", HALF_FLOAT_DTYPES)
+    def test_quantize_dequantize_half_float_model(self, contiguous, np_dtype, tp_dtype):
         tensor_quantizer_params = TensorQuantizerParams((10, 15), 0, 1)
-        calibration_tensor = np.random.randn(10, 15).astype(np.float16)
-        input_tensor = (
-            np.random.randn(*calibration_tensor.shape).astype(np.float16) * 10
+        calibration_tensor = np.random.randn(10, 15).astype(np_dtype)
+        input_tensor = (np.random.randn(*calibration_tensor.shape) * 10).astype(
+            np_dtype
         )
         if not contiguous:
             input_tensor = input_tensor.T.copy()
@@ -1264,7 +1289,9 @@ class TestQcQuantizeOp:
             assert not input_tensor.flags["C_CONTIGUOUS"]
 
         quant_info = libquant_info.QcQuantizeInfo()
-        session = create_qc_quantize_model_session_fp16(quant_info, input_tensor.shape)
+        session = create_qc_quantize_model_session(
+            quant_info, input_tensor.shape, float_dtype=tp_dtype
+        )
 
         quantizer = QcQuantizeOp(
             quant_info,
@@ -1276,9 +1303,9 @@ class TestQcQuantizeOp:
         quantizer.update_encoding_stats(calibration_tensor)
         quantizer.compute_encodings()
         quantizer.op_mode = OpMode.quantizeDequantize
-        output = session.run(None, {"input": input_tensor})[0]
+        (output,) = run_session(session, {"input": input_tensor})
         qdq_output = quantizer.quantize_dequantize(input_tensor)
-        assert np.array_equal(output, qdq_output.astype(np.float16))
+        assert np.array_equal(output, qdq_output.astype(np_dtype))
 
         # per-channel
         quantizer.reset_encoding_stats()
@@ -1286,9 +1313,9 @@ class TestQcQuantizeOp:
         quantizer.update_encoding_stats(input_tensor)
         quantizer.compute_encodings()
         quantizer.op_mode = OpMode.quantizeDequantize
-        output = session.run(None, {"input": input_tensor})[0]
+        (output,) = run_session(session, {"input": input_tensor})
         qdq_output = quantizer.quantize_dequantize(input_tensor)
-        assert np.array_equal(output, qdq_output.astype(np.float16))
+        assert np.array_equal(output, qdq_output.astype(np_dtype))
 
         # per-block
         quantizer.reset_encoding_stats()
@@ -1296,9 +1323,9 @@ class TestQcQuantizeOp:
         quantizer.update_encoding_stats(input_tensor)
         quantizer.compute_encodings()
         quantizer.op_mode = OpMode.quantizeDequantize
-        output = session.run(None, {"input": input_tensor})[0]
+        (output,) = run_session(session, {"input": input_tensor})
         qdq_output = quantizer.quantize_dequantize(input_tensor)
-        assert np.array_equal(output, qdq_output.astype(np.float16))
+        assert np.array_equal(output, qdq_output.astype(np_dtype))
 
     @pytest.mark.parametrize(
         "quant_scheme",
