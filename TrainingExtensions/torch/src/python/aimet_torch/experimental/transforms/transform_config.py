@@ -278,6 +278,104 @@ class Qwen3VLBackboneBlockInterface(
         _NormInterface.__init__(self, block)
 
 
+class Qwen3_5BlockInterface(_SeparatedProjMLPInterface, _NormInterface):
+    def __init__(self, block):
+        self.attn = (
+            block.linear_attn
+            if getattr(block, "layer_type", None) == "linear_attention"
+            else block.self_attn
+        )
+        _SeparatedProjMLPInterface.__init__(self, block.mlp)
+        _NormInterface.__init__(self, block)
+
+    @property
+    def is_linear_attn(self):
+        return hasattr(self.attn, "in_proj_qkv")
+
+    @property
+    def q_proj(self):
+        return self.attn.q_proj
+
+    @q_proj.setter
+    def q_proj(self, value):
+        self.attn.q_proj = value
+
+    @property
+    def k_proj(self):
+        return self.attn.k_proj
+
+    @k_proj.setter
+    def k_proj(self, value):
+        self.attn.k_proj = value
+
+    @property
+    def v_proj(self):
+        return self.attn.v_proj
+
+    @v_proj.setter
+    def v_proj(self, value):
+        self.attn.v_proj = value
+
+    @property
+    def in_proj_qkv(self):
+        return self.attn.in_proj_qkv
+
+    @in_proj_qkv.setter
+    def in_proj_qkv(self, value):
+        self.attn.in_proj_qkv = value
+
+    @property
+    def in_proj_z(self):
+        return self.attn.in_proj_z
+
+    @in_proj_z.setter
+    def in_proj_z(self, value):
+        self.attn.in_proj_z = value
+
+    @property
+    def in_proj_b(self):
+        return self.attn.in_proj_b
+
+    @in_proj_b.setter
+    def in_proj_b(self, value):
+        self.attn.in_proj_b = value
+
+    @property
+    def in_proj_a(self):
+        return self.attn.in_proj_a
+
+    @in_proj_a.setter
+    def in_proj_a(self, value):
+        self.attn.in_proj_a = value
+
+    @property
+    def o_proj(self):
+        return self.attn.out_proj if self.is_linear_attn else self.attn.o_proj
+
+    @o_proj.setter
+    def o_proj(self, value):
+        if self.is_linear_attn:
+            self.attn.out_proj = value
+        else:
+            self.attn.o_proj = value
+
+    def qkv_layers(self):
+        if self.is_linear_attn:
+            yield self.attn.in_proj_qkv
+            yield self.attn.in_proj_z
+            yield self.attn.in_proj_b
+            yield self.attn.in_proj_a
+        else:
+            yield self.attn.q_proj
+            yield self.attn.k_proj
+            yield self.attn.v_proj
+
+    def attention_layer_names(self):
+        if self.is_linear_attn:
+            return ["in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "o_proj"]
+        return ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+
 class MergerInterface:
     """Base interface for VLM patch merger modules."""
 

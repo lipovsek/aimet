@@ -12,6 +12,11 @@ from transformers.models.llama.modeling_llama import (
     LlamaForCausalLM,
     LlamaConfig,
 )
+from transformers.models.qwen3_5.modeling_qwen3_5 import (
+    Qwen3_5RMSNorm,
+    Qwen3_5ForCausalLM,
+    Qwen3_5TextConfig,
+)
 from aimet_torch.experimental.spinquant.hadamard_utils import get_hadamard_matrix
 from aimet_torch.experimental.spinquant.spinquant_optimizer import SpinQuant
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
@@ -300,3 +305,57 @@ def test_apply_spinquant_quantsim_equivalence():
     qsim_out = qsim.model(input_ids=dummy_input)
     qsim_out_2 = qsim_2.model(input_ids=dummy_input)
     assert torch.equal(qsim_out[0], qsim_out_2[0])
+
+
+@pytest.mark.parametrize("bias", [True, False])
+def test_fuse_unit_offset_rmsnorm_into_linear(bias):
+    torch.manual_seed(0)
+    dim = 16
+    dummy_input = torch.randn(4, dim)
+
+    norm = Qwen3_5RMSNorm(dim)
+    with torch.no_grad():
+        norm.weight.copy_(torch.randn(dim) * 0.1)
+
+    def _norm_then_linear(norm, linear, x):
+        return linear(norm(x))
+
+    linears = [torch.nn.Linear(dim, dim, bias=bias) for _ in range(3)]
+
+    orig_outs = [_norm_then_linear(norm, lin, dummy_input) for lin in linears]
+    SpinQuant._fuse_norm_layer_into_linears(norm, linears)
+    new_outs = [_norm_then_linear(norm, lin, dummy_input) for lin in linears]
+
+    for orig, new in zip(orig_outs, new_outs):
+        assert torch.allclose(orig, new, atol=1e-6)
+
+    assert torch.allclose(norm.weight, torch.zeros_like(norm.weight))
+
+
+def test_apply_spinquant_qwen3_5_hybrid_is_lossless():
+    torch.manual_seed(0)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # [linear, linear, linear, full, linear, linear].
+    config = Qwen3_5TextConfig(
+        vocab_size=64,
+        hidden_size=192,
+        intermediate_size=100,
+        num_hidden_layers=6,
+        full_attention_interval=4,
+        tie_word_embeddings=False,
+    )
+    model = Qwen3_5ForCausalLM(config).eval().to(device=device, dtype=torch.float32)
+
+    dummy_input = torch.randint(0, 10, (1, 200)).to(device)
+    with torch.no_grad():
+        orig_logits = model(input_ids=dummy_input).logits
+    orig_embed = model.model.embed_tokens.weight.clone()
+
+    SpinQuant.apply_spinquant(model)
+
+    with torch.no_grad():
+        new_logits = model(input_ids=dummy_input).logits
+
+    assert not torch.equal(orig_embed, model.model.embed_tokens.weight)
+    assert torch.allclose(orig_logits, new_logits, atol=1e-4, rtol=1e-4)

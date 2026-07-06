@@ -38,6 +38,15 @@ try:
 except ImportError:
     Qwen3VLTextModel = Qwen3VLTextDecoderLayer = Qwen3VLVisionPatchMerger = None
 
+try:
+    from transformers.models.qwen3_5.modeling_qwen3_5 import (
+        Qwen3_5TextModel,
+        Qwen3_5DecoderLayer,
+        Qwen3_5RMSNorm,
+    )
+except ImportError:
+    Qwen3_5TextModel = Qwen3_5DecoderLayer = Qwen3_5RMSNorm = None
+
 
 from aimet_torch.experimental.spinquant.hadamard_utils import get_hadamard_matrix
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
@@ -51,6 +60,7 @@ from aimet_torch.experimental.transforms.transform_config import (
     Qwen2dot5VLViTBlockInterface,
     Qwen2dot5VLBackboneBlockInterface,
     Qwen3VLBackboneBlockInterface,
+    Qwen3_5BlockInterface,
     MergerInterface,
     Qwen25VLMergerInterface,
     Qwen3VLMergerInterface,
@@ -123,6 +133,15 @@ class SpinQuant:
                     block_interface=Qwen3VLBackboneBlockInterface,
                     merger_type=Qwen3VLVisionPatchMerger,
                     merger_interface=Qwen3VLMergerInterface,
+                )
+            }
+        )
+    if Qwen3_5TextModel is not None and Qwen3_5DecoderLayer is not None:
+        model_config_dict.update(
+            {
+                Qwen3_5TextModel: SpinQuantConfig(
+                    block_type=Qwen3_5DecoderLayer,
+                    block_interface=Qwen3_5BlockInterface,
                 )
             }
         )
@@ -364,14 +383,18 @@ class SpinQuant:
         norm: torch.nn.Module, linears: list[torch.nn.Linear]
     ):
         """Helper function to merge RMS Norm weights into linear layer"""
+        # Qwen3.5's RMSNorm applies (1 + weight) rather than the usual weight,
+        # so its scale to fold is (1 + weight) and its post-fusion values are zeros.
+        unit_offset = Qwen3_5RMSNorm is not None and isinstance(norm, Qwen3_5RMSNorm)
+        effective_weight = norm.weight.data + 1.0 if unit_offset else norm.weight.data
         for linear in linears:
             W = linear.weight.data
             B = linear.bias.data if linear.bias is not None else None
             dtype = linear.weight.dtype
 
-            if norm.weight.data.shape[0] != W.shape[1]:
-                norm_weight = norm.weight.data.repeat(
-                    W.shape[1] // norm.weight.data.shape[0]
+            if effective_weight.shape[0] != W.shape[1]:
+                norm_weight = effective_weight.repeat(
+                    W.shape[1] // effective_weight.shape[0]
                 )
                 norm_bias = (
                     norm.bias.data.repeat(B.shape[0] // norm.bias.data.shape[0])
@@ -379,7 +402,7 @@ class SpinQuant:
                     else None
                 )
             else:
-                norm_weight = norm.weight.data
+                norm_weight = effective_weight
                 norm_bias = norm.bias.data if hasattr(norm, "bias") else None
 
             linear.weight.data = (W.double() * norm_weight.double()).to(dtype=dtype)
@@ -387,7 +410,11 @@ class SpinQuant:
                 linear.bias.data = (B.double() + (W.double() @ norm_bias.double())).to(
                     dtype=dtype
                 )
-        norm.weight.data = torch.ones_like(norm.weight.data)
+        norm.weight.data = (
+            torch.zeros_like(norm.weight.data)
+            if unit_offset
+            else torch.ones_like(norm.weight.data)
+        )
 
     @staticmethod
     def _find_vlm_config(model: torch.nn.Module) -> VLMSpinQuantConfig | None:
