@@ -176,10 +176,12 @@ jobs:
           # --index-strategy unsafe-best-match lets uv pick the newest compatible version across both indexes (so packaging isn't capped at the cu126-index version).
           # Numpy version is capped to <2 to avoid ml_dtypes segfault with numpy 2.x
           # qai-hub (used directly for on-device QNN jobs) is intentionally not listed: qai-hub-models pulls it in transitively and caps its version. Listing it would let uv lock a newer qai-hub first and downgrade qai-hub-models.
+          # huggingface-hub is capped <1.0 (top-level, before qai-hub-models resolves): per-model extras later pull transformers==4.56.2, which requires hf-hub<1.0 but calls .head(allow_redirects=...) — a requests-only kwarg that raises TypeError under hf-hub 1.x's httpx session. uv won't downgrade an already-installed 1.x when the extra is added incrementally, so it must be capped here.
           uv pip install \
             --extra-index-url https://download.pytorch.org/whl/${{ env.VER_CUDA_SHORT }} \
             --index-strategy unsafe-best-match \
             downloads/*.whl \
+            "huggingface-hub<1.0" \
             "numpy<2" \
             $EXTRA_PACKAGES \
             pynvml \
