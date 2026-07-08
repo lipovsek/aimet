@@ -1702,20 +1702,18 @@ class _DecompositionError(RuntimeError):
 
 
 @torch.no_grad()
-def _decompose_2bit_prequantized_tensor(
+def _decompose_prequantized_tensor(
     input_qdq: torch.Tensor,
+    qmin: int,
+    qmax: int,
     scale_shape: tuple[int, ...],
     block_size: tuple[int, ...] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Decompose a pre-quantized tensor (input_qdq)
-    into an integer tensor (input_q) and float scale (scale)
-
-    scale := gcd(input_qdq)
-    input_q := input_qdq / scale
+    into an integer tensor (input_q) and float scale (scale),
+    assuming min(|input_qdq.nonzero()|) == 1 * scale
     """
-    from aimet_torch.quantization.affine import quantize
-
     if len(scale_shape) > len(input_qdq.shape):
         raise ValueError
 
@@ -1726,30 +1724,37 @@ def _decompose_2bit_prequantized_tensor(
         *input_qdq.shape[: len(input_qdq.shape) - len(concrete_block_size)],
         *concrete_block_size,
     )
-    input_qdq_abs = input_qdq.abs()
-    input_qdq_abs = input_qdq_abs.reshape(
+    orig_shape = input_qdq.shape
+
+    input_qdq = input_qdq.reshape(
         *interleave(
             [dim // b for dim, b in zip(input_qdq.shape, concrete_block_size)],
             concrete_block_size,
         )
     )
-    reduce_dims = tuple(range(1, input_qdq_abs.ndim, 2))
-    absmax = input_qdq_abs.amax(dim=reduce_dims, keepdim=True)
+    reduce_dims = tuple(range(1, input_qdq.ndim, 2))
+    absmin = torch.where(
+        input_qdq == 0,
+        float("inf"),
+        input_qdq.abs(),
+    ).amin(dim=reduce_dims, keepdim=True)
 
-    if torch.all((input_qdq_abs == 0) | (input_qdq_abs == absmax)):
-        minimum_scale = _get_minimum_scale(2**2 - 1)
-        scale = absmax.reshape(scale_shape)
-        scale.masked_fill_(scale == 0, minimum_scale)
-        input_q = quantize(
-            input_qdq,
-            scale,
-            offset=torch.zeros_like(scale),
-            qmin=-1,
-            qmax=1,
-            block_size=block_size,
-        )
+    input_scaled = input_qdq / absmin
+    input_q = torch.round(input_scaled)
+
+    if torch.all(
+        torch.isclose(input_q, input_scaled, atol=1e-6)
+        & (qmin <= input_q)
+        & (input_q <= qmax)
+    ):
+        input_q = input_q.reshape(orig_shape)
+        scale = torch.where(
+            absmin == float("inf"),  # absmin == inf means input_qdq is all zeros
+            _get_minimum_scale(qmax - qmin),
+            absmin,
+        ).reshape(scale_shape)
         return input_q, scale
 
     raise _DecompositionError(
-        "Failed to decompose input tensor into input_q (int2) and scale (float)"
+        "Failed to decompose input tensor into input_q (int4) and scale (float)"
     )

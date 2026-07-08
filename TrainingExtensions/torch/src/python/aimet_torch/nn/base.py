@@ -11,6 +11,7 @@ import itertools
 import threading
 import weakref
 from typing import Type, List, Dict, Union, Iterable, Mapping, Optional, Tuple
+import math
 
 import torch
 from torch import nn, _check
@@ -36,7 +37,7 @@ from aimet_torch.utils import (
     flatten_nn_module_list,
     reduce,
     _torch_compiler_is_compiling,
-    _decompose_2bit_prequantized_tensor,
+    _decompose_prequantized_tensor,
     _DecompositionError,
 )
 from aimet_torch.deepspeed_utils import SafeGatheredParameters, _shallow_copy
@@ -304,12 +305,14 @@ class BaseQuantizationMixin(abc.ABC):
                     isinstance(param_qtzr, AffineQuantizerBase)
                     and not isinstance(param_qtzr, GroupedBlockQuantizeDequantize)
                     and param_qtzr.symmetric
-                    and -2 <= param_qtzr.qmin <= param_qtzr.qmax <= 2
+                    and math.ceil((param_qtzr.qmin + param_qtzr.qmax) / 2) == 0
                 ):
                     try:
                         # Try lossless decompostion into param = param_q * scale
-                        _, scale = _decompose_2bit_prequantized_tensor(
+                        _, scale = _decompose_prequantized_tensor(
                             param,
+                            param_qtzr.qmin,
+                            param_qtzr.qmax,
                             scale_shape=param_qtzr.shape,
                             block_size=param_qtzr.block_size,
                         )

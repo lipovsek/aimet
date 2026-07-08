@@ -18,7 +18,7 @@ from aimet_torch.v2.nn import BaseQuantizationMixin
 from aimet_torch.utils import (
     get_all_quantizers,
     disable_all_quantizers,
-    _decompose_2bit_prequantized_tensor,
+    _decompose_prequantized_tensor,
 )
 from aimet_torch.v2.utils import (
     allow_recompute,
@@ -476,19 +476,22 @@ def test_get_all_quantizers():
     ],
 )
 @pytest.mark.parametrize("scale", [1e-0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7])
-def test_decomposition(scale: float, channel_axis: int | None, block_axis: int | None):
+@pytest.mark.parametrize("bitwidth", [2, 4])
+def test_decomposition(
+    bitwidth: int, scale: float, channel_axis: int | None, block_axis: int | None
+):
     """
-    When: Call _decompose_2bit_prequantized_tensor with pre-quantized input
+    When: Call _decompose_prequantized_tensor with pre-quantized input
     Then: input_qdq should be decomposed losslessly into input_q and scale
     """
-    qmin = -2
-    qmax = 2
+    qmin = -(2 ** (bitwidth - 1))
+    qmax = 2 ** (bitwidth - 1)
     scale = torch.tensor(scale)
     zeros = torch.zeros_like(scale)
 
-    for input_min in range(qmin, min(qmin + 2, qmax)):
-        for input_max in range(qmax, max(qmax - 2, input_min), -1):
-            input_patch = list(range(input_min, input_max + 1, 2))
+    for input_min in range(qmin, qmax):
+        for input_max in range(qmax, input_min, -1):
+            input_patch = [1, *range(input_min, input_max + 1, 2)]
 
             if channel_axis is None:
                 scale_shape = ()
@@ -523,8 +526,8 @@ def test_decomposition(scale: float, channel_axis: int | None, block_axis: int |
             input_qdq = dequantize(
                 input_q, scale.repeat(scale_shape), offset=zeros, block_size=block_size
             )
-            input_q_, scale_ = _decompose_2bit_prequantized_tensor(
-                input_qdq, scale_shape=scale_shape, block_size=block_size
+            input_q_, scale_ = _decompose_prequantized_tensor(
+                input_qdq, qmin, qmax, scale_shape=scale_shape, block_size=block_size
             )
             assert scale_.shape == scale_shape
             assert input_q_.shape == input_q.shape

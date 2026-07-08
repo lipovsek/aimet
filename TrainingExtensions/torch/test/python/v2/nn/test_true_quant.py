@@ -2509,18 +2509,21 @@ def test_compute_encodings_passthrough():
 
 
 @torch.no_grad()
-def test_prequantized_weight():
+@pytest.mark.parametrize("bitwidth", [2, 4])
+def test_prequantized_weight(bitwidth: int):
     """
     When: QuantizedLinear has a pre-quantized int2 weight
     Then: The weight encoding should be lossless
     """
+    qmin = -(2 ** (bitwidth - 1))
+    qmax = 2 ** (bitwidth - 1) - 1
     qlinear = QuantizedLinear(10, 10, bias=False)
     weight_scale = torch.arange(0.01, 0.11, step=0.01, dtype=torch.float32).view(10, 1)
     qlinear.weight.copy_(
         torch.randint(-1, 2, (10, 10), dtype=torch.float32) * weight_scale
     )
     qlinear.param_quantizers["weight"] = QuantizeDequantize(
-        shape=(10, 1), qmin=-2, qmax=1, symmetric=True
+        shape=(10, 1), qmin=qmin, qmax=qmax, symmetric=True
     )
     qlinear.compute_param_encodings()
 
