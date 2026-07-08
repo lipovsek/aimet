@@ -2,7 +2,6 @@
 beautifulsoup4
 matplotlib
 onnx
-onnxruntime
 protobuf<7
 pylint<3
 pytest
