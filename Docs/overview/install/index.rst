@@ -50,18 +50,44 @@ Alternative packages
 Install the latest version of AIMET for supported framework and compute platforms including
 ONNX and PyTorch from the .whl files hosted at https://github.com/quic/aimet/releases.
 
-Prerequisites
--------------
+Supported platforms
+--------------------
 
-The AIMET package requires the following host platform setup. The following prerequisites apply
-to all frameworks variants.
+Both packages support Python 3.10 through 3.13. The table below shows how
+each package is obtained per platform.
 
-* 64-bit Intel x86-compatible processor
-* OS: Ubuntu 22.04 LTS
-* Python 3.10
-* For GPU variants:
-    * Nvidia GPU card (Compute capability 5.2 or later)
-    * Nvidia driver version 455 or later (using the latest driver is recommended; both CUDA and cuDNN are supported)
+.. list-table::
+   :header-rows: 1
+   :widths: 34 33 33
+
+   * - Platform
+     - aimet-torch
+     - aimet-onnx
+   * - Linux (x86-64, Ubuntu 22.04 or newer)
+     - Prebuilt wheel
+     - Prebuilt wheel
+   * - Windows
+     - Prebuilt wheel
+     - Prebuilt wheel (x86-64, ARM64)
+   * - macOS (Apple Silicon)
+     - Prebuilt wheel
+     - Build from source
+
+.. note::
+    aimet-torch is pure Python (``py310-none-any``), so one wheel installs on
+    every platform, though it is CI-tested only on Linux. aimet-onnx ships a
+    compiled extension, so it has per-platform wheels. All wheels use the
+    CPython stable ABI (``cp310-abi3``) and run on Python 3.10 through 3.13.
+
+CUDA (GPU) acceleration
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CUDA 12.x is validated for aimet-torch and aimet-onnx on Linux (x86-64), using
+the ``+cu126`` wheels. Windows and macOS builds are CPU-only. GPU acceleration
+additionally requires:
+
+* Nvidia GPU card (Compute capability 5.2 or later)
+* Nvidia driver version 455 or later (using the latest driver is recommended; both CUDA and cuDNN are supported)
 
 Choose and install a package
 ----------------------------

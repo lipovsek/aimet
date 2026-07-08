@@ -28,15 +28,13 @@ AIMET provides two python packages:
 We recommend to start with AIMET-ONNX PTQ techniques, which has fastest turn-around time for quantization and experimentation.
 Defer to QAT with AIMET-Torch only if you have tried AIMET-ONNX mixed precision and advanced techniques for optimizing weights.
 
-Supported platform
-==============
+Supported platforms
+====================
 
-* 64-bit Intel x86-compatible processor
-* Python 3.10
-* Ubuntu 22.04
-* For GPU variants:
-    * Nvidia GPU card (Compute capability 5.2 or later)
-    * Nvidia driver version 455 or later (using the latest driver is recommended; both CUDA and cuDNN are supported)
+AIMET supports Linux, Windows, and macOS, with Python 3.10 through 3.13.
+Operating system and architecture support differs by package; see
+:ref:`Supported platforms <install-index>` for the full per-package,
+per-architecture matrix.
 
 Get Started
 ================
