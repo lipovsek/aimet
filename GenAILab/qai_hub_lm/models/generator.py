@@ -986,7 +986,7 @@ class VLM_Generator(Generator):
         vision_model,
         embedding,
         tokenizer: transformers.PreTrainedTokenizer,
-        sequence_length: int,
+        sequence_length: int | list[int],
         context_length: int,
         position_id_processor=None,
         config: Union[PretrainedConfig | None] = None,

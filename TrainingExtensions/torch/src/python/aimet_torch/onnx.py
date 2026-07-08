@@ -39,6 +39,8 @@ from .quantsim import QuantizationSimModel
 from .experimental import onnx as _onnx
 from .experimental.onnx._export import _get_all_constants
 
+from onnx.external_data_helper import uses_external_data
+
 
 _TORCH_VERSION = version.parse(torch.__version__)
 _TORCH_DEFAULT_OPSET = _constants.ONNX_DEFAULT_OPSET
@@ -197,8 +199,13 @@ def export(
     prop = onnx_qdq_model.metadata_props.add()
     prop.key = "producer"
     prop.value = f"aimet-torch {aimet_torch.__version__}"
-
-    onnx.save(onnx_qdq_model, f)
+    has_external_data = any(uses_external_data(i) for i in onnx_model.graph.initializer)
+    onnx.save(
+        onnx_qdq_model,
+        f,
+        save_as_external_data=has_external_data
+        or onnx_qdq_model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF,
+    )
 
 
 def _why_do_i_need_opset21(model: torch.nn.Module) -> str:

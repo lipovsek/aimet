@@ -50,6 +50,12 @@ class Gemma4_Torch(Gemma4_VLM):
             precision = PrecisionConfig()
         precision.ensure_visual_defaults()
 
+        sequence_length = (
+            max(sequence_length)
+            if isinstance(sequence_length, list)
+            else sequence_length
+        )
+
         default_param_bw = precision.blocks["default"].qtype.bits
         default_output_bw = (
             16
