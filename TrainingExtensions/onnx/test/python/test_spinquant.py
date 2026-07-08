@@ -19,6 +19,7 @@ from onnxruntime import GraphOptimizationLevel, InferenceSession, SessionOptions
 
 from .models.test_models import RMSNorm
 from .models import transformer_blocks
+from .models.transformer_blocks import qwen3_causal_lm
 from .utils import add_genai_tests_path
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.common.hadamard import get_hadamard_matrix
@@ -58,7 +59,7 @@ from aimet_onnx.experimental.spinquant.transforms.rotation_primitives import (
     hadamard_rotation_matrix,
 )
 from aimet_onnx.experimental.spinquant import apply_spinquant
-from aimet_onnx.experimental.spinquant.passes.r3 import is_online_rotation_op
+from aimet_onnx.experimental.spinquant import is_online_rotation_op
 from aimet_onnx.experimental.spinquant.model_analysis import find_attention_topology
 
 from aimet_onnx.prepare_passes.fix_node_names_in_dynamo_exported_onnx import (
@@ -2413,6 +2414,35 @@ class TestApplySpinquant:
 
         y_vit_after = _run_model(visual_model, x_vit)
         assert np.allclose(y_vit_after, y_vit_before @ R_L)
+
+    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+    @pytest.mark.parametrize(
+        "with_lm_head",
+        [True, False],
+    )
+    @pytest.mark.parametrize("hidden_size", [1024, 1536])
+    def test_r1_preserves_output_for_headless_model(self, with_lm_head, hidden_size):
+        """
+        R1 must preserve the output of a real 4-layer Qwen3 export with or without lm_head.
+        """
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = qwen3_causal_lm(
+            num_hidden_layers=4,
+            with_lm_head=with_lm_head,
+            vocab_size=_VOCAB,
+            hidden_size=hidden_size,
+        )
+        output_name = model.graph.output[0].name
+
+        dummy_input = _pad_dummy_input(model)
+
+        y_before = _build_session(model).run([output_name], dummy_input)[0]
+
+        apply_spinquant(model, enable_r1=True)
+
+        y_after = _build_session(model).run([output_name], dummy_input)[0]
+        assert np.allclose(y_before, y_after, atol=1e-4)
 
     @pytest.mark.parametrize("dynamo", [True, False])
     def test_spinquant_r2_sha_gqa(self, dynamo):

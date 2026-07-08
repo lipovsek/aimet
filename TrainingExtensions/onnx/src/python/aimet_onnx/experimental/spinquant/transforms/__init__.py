@@ -22,6 +22,7 @@ from aimet_onnx.experimental.spinquant.transforms.rotation_primitives import (
     right_multiply,
     rotate_gather_weight,
     rotate_linear_weight,
+    is_online_rotation_op,
 )
 
 __all__ = [

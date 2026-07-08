@@ -23,6 +23,7 @@ from aimet_onnx.utils import ModelProto
 from aimet_onnx.experimental.spinquant.model_analysis.norm_detection import (
     ActiveNorm,
     find_active_norms,
+    get_last_norm_op,
 )
 from aimet_onnx.experimental.spinquant.model_analysis.weight_utils import (
     get_weight_product,
@@ -118,9 +119,11 @@ def get_decoder_block_boundaries(
 ) -> Tuple[List[Tuple[Op, Op]], List[ActiveNorm]]:
     """Return block boundaries and active norms for each decoder block.
 
-    The structural assumption is ``total_active_norms == k * N + 1``, where ``k``
-    is the number of active norms per block and ``N`` is the number of decoder
-    blocks. Block *i* spans ``[active[k*i].norm_op, active[k*(i+1)].norm_op)``.
+    ``total_active_norms`` is either ``k * N`` or ``k * N + 1`` for ``k`` active
+    norms per block and ``N`` decoder blocks. Block *i* spans
+    ``[active[k*i].norm_op, active[k*(i+1)].norm_op)``. The last block ends at
+    ``active[k*N]`` when a trailing final norm is active (lm_head present), or at
+    the last RMSNorm in the graph when it is not (headless backbone).
 
     :param model: ONNX ModelProto.
     :param connected_graph: ConnectedGraph built from model.
@@ -151,14 +154,17 @@ def get_decoder_block_boundaries(
     if active_norms_per_block is not None:
         resolved_norms_per_block = active_norms_per_block
     elif expected_num_blocks is not None:
-        remainder = num_active_norms - 1
-        if remainder <= 0 or remainder % expected_num_blocks != 0:
+        # Remainder of 1 allows for a trailing final norm (lm_head present).
+        if num_active_norms <= 0 or num_active_norms % expected_num_blocks not in (
+            0,
+            1,
+        ):
             raise ValueError(
                 f"Cannot infer active_norms_per_block: {num_active_norms} active norm(s) and "
                 f"expected_num_blocks={expected_num_blocks} are inconsistent "
-                f"(require (num_active_norms-1) divisible by expected_num_blocks)."
+                f"(require num_active_norms mod expected_num_blocks in {{0, 1}})."
             )
-        resolved_norms_per_block = remainder // expected_num_blocks
+        resolved_norms_per_block = num_active_norms // expected_num_blocks
     else:
         resolved_norms_per_block = 2  # default: Llama/Qwen2/Mistral/Phi family
         _logger.debug(
@@ -167,14 +173,20 @@ def get_decoder_block_boundaries(
             "Pass expected_num_blocks=<N> to validate the detected block count."
         )
 
-    if (num_active_norms - 1) % resolved_norms_per_block != 0:
+    # If lm_head is present, exclude its active norm from calculations
+    has_lm_head = (num_active_norms - 1) % resolved_norms_per_block == 0
+    if has_lm_head:
+        num_active_norms = num_active_norms - 1
+
+    remainder = num_active_norms % resolved_norms_per_block
+    if remainder:
         raise ValueError(
             f"Active norm count {num_active_norms} is inconsistent with active_norms_per_block={resolved_norms_per_block}: "
-            f"expected (num_active_norms-1) to be divisible by {resolved_norms_per_block} "
-            f"(i.e. resolved_norms_per_block*N+1 active norms for N decoder blocks). "
+            f"expected num_active_norms to be divisible by {resolved_norms_per_block} "
+            f"(i.e. resolved_norms_per_block*N active norms for N decoder blocks)."
         )
 
-    num_blocks = (num_active_norms - 1) // resolved_norms_per_block
+    num_blocks = num_active_norms // resolved_norms_per_block
     if expected_num_blocks is not None and num_blocks != expected_num_blocks:
         raise ValueError(
             f"Expected {expected_num_blocks} decoder blocks but detected {num_blocks}."
@@ -190,8 +202,29 @@ def get_decoder_block_boundaries(
             active_norms[resolved_norms_per_block * i].norm_op,
             active_norms[resolved_norms_per_block * (i + 1)].norm_op,
         )
-        for i in range(num_blocks)
+        for i in range(num_blocks - 1)
     ]
+
+    # Headless backbone: bound the last block with the trailing final non-active norm
+    if not has_lm_head:
+        final_norm = get_last_norm_op(connected_graph)
+        active_norm_ops = {an.norm_op for an in active_norms}
+        if final_norm in active_norm_ops:
+            raise ValueError(
+                f"Last norm '{final_norm.name}' is an active block norm, not a trailing "
+                f"final norm; a headless backbone requires a final norm after the last block."
+            )
+        last_block_start = active_norms[
+            resolved_norms_per_block * (num_blocks - 1)
+        ].norm_op
+        block_boundaries.append((last_block_start, final_norm))
+    else:
+        block_boundaries.append(
+            (
+                active_norms[resolved_norms_per_block * (num_blocks - 1)].norm_op,
+                active_norms[resolved_norms_per_block * num_blocks].norm_op,
+            )
+        )
 
     return block_boundaries, active_norms
 
@@ -341,12 +374,11 @@ def get_decoder_role_map(
         for op in an.downstream_linears
     ]
     if not result.lm_head:
-        raise ValueError(
-            "lm_head not detected: no active norm found after the last block boundary. "
-            "The model must have a final norm with at least one downstream linear op "
-            "outside all decoder block boundaries."
+        _logger.debug(
+            "lm_head not detected: no active norm found after the last block boundary."
         )
-    _logger.debug("lm_head: %s", [op.name for op in result.lm_head])
+    else:
+        _logger.debug("lm_head: %s", [op.name for op in result.lm_head])
 
     first_start_topo = op_topo_idx[id(block_boundaries[0][0])]
     result.embed_tokens = [

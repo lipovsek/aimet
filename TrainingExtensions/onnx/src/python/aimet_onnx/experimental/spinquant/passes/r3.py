@@ -40,11 +40,9 @@ R3 is the last pass in the pipeline. Do not run another role-map-dependent pass
 after R3 in the same context.
 """
 
-import re
 from typing import List
 
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.meta.operations import Op
 
 from aimet_onnx.experimental.spinquant.model_analysis import (
     BlockR3Anchors,
@@ -56,26 +54,10 @@ from aimet_onnx.experimental.spinquant.passes.base import (
 )
 from aimet_onnx.experimental.spinquant.transforms import (
     insert_online_hadamard_node,
+    hadamard_rotation_matrix,
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
-
-# R3 inserts its online Hadamard rotations as ``MatMul`` nodes whose names are
-# the ``spinquant_block{idx}_{q|k}`` prefix from ``_rotate_q_side`` /
-# ``_rotate_k_side`` below plus the ``_R3`` suffix appended by
-# ``insert_online_hadamard_node``. This regex is the single source of truth for
-# recognizing those ops downstream; keep it in sync with the names produced here.
-_ONLINE_ROTATION_OP_RE = re.compile(r"spinquant_block\d+_[qk](_\d+)?_R3$")
-
-
-def is_online_rotation_op(cg_op: Op) -> bool:
-    """Return True if ``cg_op`` is a SpinQuant R3 online Hadamard rotation MatMul.
-
-    R3 online rotations carry a fixed orthonormal Hadamard as their "weight"
-    rather than a learnable parameter, so downstream optimizers (e.g.
-    sequential MSE) should skip them.
-    """
-    return cg_op.type == "MatMul" and bool(_ONLINE_ROTATION_OP_RE.match(cg_op.name))
 
 
 class R3RotationPass(RotationPass):
@@ -133,6 +115,7 @@ class R3RotationPass(RotationPass):
     @staticmethod
     def _rotate_q_side(model, anchor, head_dim, block_idx) -> None:
         """Insert ``... -> R3 -> QK^T`` on the Q path."""
+        h_mat = hadamard_rotation_matrix(head_dim)
         for idx, node in enumerate(anchor.qk_matmul_nodes):
             name_prefix = f"spinquant_block{block_idx}_q"
             if idx:
@@ -141,8 +124,8 @@ class R3RotationPass(RotationPass):
                 model,
                 target_tensor_name=anchor.q_input_tensors[idx],
                 consumer_nodes=[node],
-                head_dim=head_dim,
-                name_prefix=name_prefix,
+                H=h_mat,
+                name_prefix=f"{name_prefix}_R3",
             )
 
     @staticmethod
@@ -152,12 +135,13 @@ class R3RotationPass(RotationPass):
         R3 is spliced on the current-K edge feeding the past-key Concat so K
         values entering the cache are already rotated.
         """
+        h_mat = hadamard_rotation_matrix(head_dim)
         insert_online_hadamard_node(
             model,
             target_tensor_name=anchor.k_input_tensor,
             consumer_nodes=anchor.k_consumers,
-            head_dim=head_dim,
-            name_prefix=f"spinquant_block{block_idx}_k",
+            H=h_mat,
+            name_prefix=f"spinquant_block{block_idx}_k_R3",
         )
 
 

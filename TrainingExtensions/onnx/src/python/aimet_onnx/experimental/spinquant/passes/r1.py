@@ -33,6 +33,7 @@ from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto, ParamUtils
 
 from aimet_onnx.experimental.spinquant.model_analysis import (
+    DecoderBlockRoleMap,
     DecoderModelRoleMap,
     find_post_writing_norms,
     get_weight_product,
@@ -44,6 +45,7 @@ from aimet_onnx.experimental.spinquant.passes.base import (
 from aimet_onnx.experimental.spinquant.transforms import (
     fuse_norm_layers_into_linears,
     hadamard_rotation_matrix,
+    insert_online_hadamard_node,
     rotate_gather_weight,
     rotate_linear_weight,
 )
@@ -106,8 +108,12 @@ def _rotate_backbone(
     for op in role_map.embed_tokens:
         rotate_gather_weight(model, op, R1)
 
-    for op in role_map.lm_head:
-        rotate_linear_weight(model, op, R1, is_writing=False)
+    if role_map.lm_head:
+        for op in role_map.lm_head:
+            rotate_linear_weight(model, op, R1, is_writing=False)
+    else:
+        # Headless backbone: no lm_head to absorb R1's inverse.
+        _insert_final_hadamard_rotation(model, role_map, R1)
 
     for block_idx, block in enumerate(role_map.blocks):
         _logger.debug("Applying R1 to block %d.", block_idx)
@@ -119,6 +125,49 @@ def _rotate_backbone(
             rotate_linear_weight(model, op, R1, is_writing=False)
         for op in block.down_proj:
             rotate_linear_weight(model, op, R1, is_writing=True)
+
+
+def _insert_final_hadamard_rotation(
+    model: ModelProto, role_map: DecoderModelRoleMap, R1: np.ndarray
+) -> None:
+    """Splice an online Hadamard onto the last residual add to un-rotate the stream.
+
+    Used for headless backbones with no lm_head to absorb R1's inverse. All
+    consumers of the residual add are rewired through the inserted MatMul.
+    """
+    residual_add = _find_last_residual_add(role_map.blocks[-1])
+    residual_product = residual_add.outputs[0]
+    consumer_nodes = [op.get_module() for op in residual_product.consumers]
+    if not consumer_nodes:
+        raise RuntimeError(
+            f"Residual add '{residual_add.name}' has no consumers to rewire; "
+            f"cannot un-rotate the residual stream."
+        )
+    insert_online_hadamard_node(
+        model,
+        target_tensor_name=residual_product.name,
+        consumer_nodes=consumer_nodes,
+        H=R1.T,
+        name_prefix=f"spinquant_{residual_product.name}_R1",
+    )
+
+
+def _find_last_residual_add(block: DecoderBlockRoleMap) -> Op:
+    """Return the residual ``Add`` that consumes the last block's down_proj output."""
+    residual_adds = set()
+    for down_proj in block.down_proj:
+        for out_op in down_proj.output_ops:
+            candidates = out_op.output_ops if out_op.type == "Cast" else [out_op]
+            residual_adds.update(op for op in candidates if op.type == "Add")
+
+    if len(residual_adds) != 1:
+        raise RuntimeError(
+            f"lm_head not found and could not isolate the last residual add: "
+            f"expected exactly one 'Add' downstream of the last block's down_proj "
+            f"({[op.name for op in block.down_proj]}), found "
+            f"{[op.name for op in residual_adds]}."
+        )
+    return next(iter(residual_adds))
 
 
 def _rotate_external_embedding(embedding: torch.Tensor, R1: np.ndarray) -> None:

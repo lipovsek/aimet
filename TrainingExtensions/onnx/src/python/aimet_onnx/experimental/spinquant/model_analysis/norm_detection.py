@@ -87,6 +87,14 @@ def find_active_norms(
     return result
 
 
+def get_last_norm_op(connected_graph: ConnectedGraph) -> Op:
+    """Return the op starting the last RMSNorm pattern in topological order."""
+    for op in reversed(connected_graph.ordered_ops):
+        if match_rms_norm_pattern(op, connected_graph.model):
+            return op
+    raise RuntimeError("No RMSNorm ops found in graph")
+
+
 def find_post_writing_norms(model: ModelProto, role_map) -> List[str]:
     """Return op names of affine RMSNorms immediately after writing layers.
 

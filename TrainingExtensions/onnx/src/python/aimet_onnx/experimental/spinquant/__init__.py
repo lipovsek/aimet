@@ -6,9 +6,9 @@ from aimet_onnx.experimental.spinquant.passes import (
     R2RotationPass,
     RotationPass,
     SpinquantContext,
-    is_online_rotation_op,
 )
 from aimet_onnx.experimental.spinquant.spinquant import apply_spinquant
+from aimet_onnx.experimental.spinquant.transforms import is_online_rotation_op
 
 __all__ = [
     "R1RotationPass",

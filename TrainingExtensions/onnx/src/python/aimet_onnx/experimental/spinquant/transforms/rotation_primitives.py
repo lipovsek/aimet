@@ -21,6 +21,7 @@ Storage / role conventions:
 """
 
 from typing import Tuple
+import re
 
 import numpy as np
 import onnx
@@ -200,7 +201,7 @@ def insert_online_hadamard_node(
     model: ModelProto,
     target_tensor_name: str,
     consumer_nodes: list[onnx.NodeProto],
-    head_dim: int,
+    H: np.ndarray,
     name_prefix: str,
 ) -> Tuple[str, onnx.NodeProto]:
     """Insert ``MatMul(target_tensor, H)`` between a producer and one consumer input.
@@ -214,8 +215,7 @@ def insert_online_hadamard_node(
     :param model: ONNX ModelProto to mutate.
     :param target_tensor_name: Name of the tensor to rotate.
     :param consumer_nodes: The NodeProtos whose input index we will rewire.
-    :param head_dim: Size of the (square) Hadamard matrix; rotates the last
-        axis of ``target_tensor_name``.
+    :param H: Hadamard rotation matrix to insert
     :param name_prefix: Prefix used to name the inserted initializer / node /
         output tensor (e.g. ``"block0_q"``).
     :return: ``(output_name, new_node)`` — the name of the new (rotated) output
@@ -232,11 +232,11 @@ def insert_online_hadamard_node(
 
     elem_type = _infer_tensor_elem_type(model, target_tensor_name)
     np_dtype = onnx.helper.tensor_dtype_to_np_dtype(elem_type)
+    H = H.astype(np_dtype)
 
-    H = hadamard_rotation_matrix(head_dim).astype(np_dtype)
-    initializer_name = f"{name_prefix}_R3_hadamard"
-    output_name = f"{name_prefix}_R3_out"
-    node_name = f"{name_prefix}_R3"
+    initializer_name = f"{name_prefix}_hadamard"
+    output_name = f"{name_prefix}_out"
+    node_name = f"{name_prefix}"
 
     initializer = numpy_helper.from_array(H, name=initializer_name)
     model.graph.initializer.append(initializer)
@@ -256,11 +256,11 @@ def insert_online_hadamard_node(
         consumer_node.input[consumer_input_idx] = output_name
 
     _logger.debug(
-        "Inserted online Hadamard MatMul '%s' on tensor '%s' (head_dim=%d, dtype=%s); "
+        "Inserted online Hadamard MatMul '%s' on tensor '%s' (dimension=%d, dtype=%s); "
         "rewired '%s'.input[%d].",
         node_name,
         target_tensor_name,
-        head_dim,
+        H.shape[0],
         np_dtype,
         consumer_node.name,
         consumer_input_idx,
@@ -313,3 +313,21 @@ def _insert_node_after_producer(
             break
     nodes.insert(insert_at, new_node)
     return nodes[insert_at]
+
+
+# SpinQuant inserts online Hadamard rotations as ``MatMul`` nodes whose names
+# are the ``spinquant_`` prefix plus a per-pass ``_R1`` / ``_R3`` suffix (see
+# the ``name_prefix`` values passed to ``insert_online_hadamard_node`` in the R1
+# and R3 passes). This regex is the single source of truth for recognizing those
+# ops downstream; keep it in sync with the names produced there.
+_ONLINE_ROTATION_OP_RE = re.compile(r"spinquant_.+_R[13]$")
+
+
+def is_online_rotation_op(cg_op: Op) -> bool:
+    """Return True if ``cg_op`` is a SpinQuant online Hadamard rotation MatMul.
+
+    R1 / R3 online rotations carry a fixed orthonormal Hadamard as their "weight"
+    rather than a learnable parameter, so downstream optimizers (e.g.
+    sequential MSE) should skip them.
+    """
+    return cg_op.type == "MatMul" and bool(_ONLINE_ROTATION_OP_RE.match(cg_op.name))

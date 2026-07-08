@@ -547,3 +547,104 @@ def sha_gqa_decoder(
     )
     buf.seek(0)
     return onnx.load_model(buf)
+
+
+def qwen3_causal_lm(
+    num_hidden_layers: int = 4,
+    batch: int = 1,
+    seq_len: int = 8,
+    past_seq_len: int = 4,
+    with_lm_head: bool = True,
+    # Dimension defaults are the real Qwen/Qwen3-0.6B config values.
+    hidden_size: int = 1024,
+    num_attention_heads: int = 16,
+    num_key_value_heads: int = 8,
+    head_dim: int = 128,
+    intermediate_size: int = 3072,
+    vocab_size: int = 151936,
+    max_position_embeddings: int = 40960,
+) -> onnx.ModelProto:
+    """Export a Qwen3 causal LM with a KV cache to ONNX.
+
+    Dimensions default to the real Qwen/Qwen3-0.6B config; override any of them
+    (e.g. a smaller vocab_size) for a cheaper export.
+    """
+    from transformers.models.qwen3.modeling_qwen3 import (
+        Qwen3Config,
+        Qwen3ForCausalLM,
+    )
+    from transformers.cache_utils import DynamicCache
+
+    cfg = Qwen3Config(
+        hidden_size=hidden_size,
+        num_attention_heads=num_attention_heads,
+        num_key_value_heads=num_key_value_heads,
+        head_dim=head_dim,
+        intermediate_size=intermediate_size,
+        num_hidden_layers=num_hidden_layers,
+        vocab_size=vocab_size,
+        max_position_embeddings=max_position_embeddings,
+        _attn_implementation="eager",
+    )
+    model = Qwen3ForCausalLM(cfg).eval()
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "norm" in name.lower():
+                param.copy_(torch.randn_like(param))
+
+    class _Wrapper(nn.Module):
+        """Prime a DynamicCache from past-kv inputs and surface the updated cache.
+
+        Also passes a pre-built causal mask dict to bypass create_causal_mask
+        under tracing.
+        """
+
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+
+        def forward(self, input_ids, attention_mask, *past_kv):
+            cache = DynamicCache()
+            for i in range(num_hidden_layers):
+                cache.update(past_kv[2 * i], past_kv[2 * i + 1], i)
+            backbone = self.model if with_lm_head else self.model.model
+            out = backbone(
+                input_ids=input_ids,
+                attention_mask={"full_attention": attention_mask},
+                past_key_values=cache,
+                use_cache=True,
+            )
+            head_out = out.logits if with_lm_head else out.last_hidden_state
+            present = []
+            for i in range(num_hidden_layers):
+                present += [cache.layers[i].keys, cache.layers[i].values]
+            return (head_out, *present)
+
+    token_ids = torch.randint(0, cfg.vocab_size, (batch, seq_len))
+    attention_mask = torch.full((seq_len, past_seq_len + seq_len), -1000.0).triu(
+        1 + past_seq_len
+    )[None, None]
+    past_kv = [
+        torch.randn(batch, cfg.num_key_value_heads, past_seq_len, cfg.head_dim)
+        for _ in range(2 * num_hidden_layers)
+    ]
+
+    input_names = ["input_ids", "attention_mask"]
+    output_names = ["logits" if with_lm_head else "hidden_states"]
+    for i in range(num_hidden_layers):
+        input_names += [f"past_key_{i}_in", f"past_value_{i}_in"]
+        output_names += [f"past_key_{i}_out", f"past_value_{i}_out"]
+
+    buf = io.BytesIO()
+    torch.onnx.export(
+        _Wrapper(model).eval(),
+        (token_ids, attention_mask, *past_kv),
+        buf,
+        input_names=input_names,
+        output_names=output_names,
+        opset_version=17,
+        do_constant_folding=True,
+        dynamo=False,
+    )
+    buf.seek(0)
+    return onnx.load_model(buf)
