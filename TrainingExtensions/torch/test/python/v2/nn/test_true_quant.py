@@ -1457,12 +1457,18 @@ def test_default_kernels(module_type):
     Then: 1) Tracing shouldn't fail
           2) The traced module should produce the same output as the original module
     """
-    traced = torch.jit.trace(qmodule, inputs)
-    torch.manual_seed(0)
-    tout = traced(*inputs)
+    if not (
+        # torch 2.13 fails to handle MaxUnpool during jit tracing.
+        # See https://github.com/pytorch/pytorch/issues/189298
+        version.parse(torch.__version__) >= version.parse("2.13.0")
+        and isinstance(module, (nn.MaxUnpool1d, nn.MaxUnpool2d, nn.MaxUnpool3d))
+    ):
+        traced = torch.jit.trace(qmodule, inputs)
+        torch.manual_seed(0)
+        tout = traced(*inputs)
 
-    for out_, tout_ in zip(tree_flatten(out)[0], tree_flatten(tout)[0]):
-        assert torch.equal(out_, tout_), type(module)
+        for out_, tout_ in zip(tree_flatten(out)[0], tree_flatten(tout)[0]):
+            assert torch.equal(out_, tout_), type(module)
 
     if version.parse(torch.__version__) >= version.parse("2.8.0"):
         """

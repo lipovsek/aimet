@@ -613,7 +613,13 @@ class AffineQuantizerBase(QuantizerBase, _GridMixin):  # pylint: disable=too-man
 
         @functools.wraps(original_forward)
         def forward_wrapper(input: torch.Tensor) -> torch.Tensor:
-            input = input.as_subclass(torch.Tensor)
+            if (
+                not _torch_compiler_is_exporting()
+                and not _torch_compiler_is_compiling()
+                and type(input) != torch.Tensor
+            ):
+                input = input.as_subclass(torch.Tensor)
+
             batch_statistics = self.encoding_analyzer.update_stats(input)
             num_steps = self.qmax - self.qmin
             if self.zero_point_shift == 0.5:

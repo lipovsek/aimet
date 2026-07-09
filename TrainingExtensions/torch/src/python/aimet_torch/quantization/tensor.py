@@ -495,7 +495,7 @@ class QuantizedTensorBase(torch.Tensor):
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):  # pylint: disable=too-many-return-statements
         if _torch_compiler_is_compiling():
-            return func(*args, **kwargs)
+            return super().__torch_function__(func, types, args, kwargs)
 
         if func in HANDLED_FUNCTIONS:
             kwargs = kwargs if kwargs is not None else {}

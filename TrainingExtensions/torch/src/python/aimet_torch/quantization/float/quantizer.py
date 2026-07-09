@@ -25,6 +25,7 @@ from aimet_torch.utils import (
     patch_attr,
     _is_expandable,
     _torch_compiler_is_exporting,
+    _torch_compiler_is_compiling,
     _is_qtensor_casting_enabled,
 )
 from aimet_torch.fp_quantization import fake_cast_to_ieee_float
@@ -363,7 +364,13 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
 
         @functools.wraps(original_forward)
         def forward_wrapper(input: torch.Tensor) -> torch.Tensor:
-            input = input.as_subclass(torch.Tensor)
+            if (
+                not _torch_compiler_is_exporting()
+                and not _torch_compiler_is_compiling()
+                and type(input) != torch.Tensor
+            ):
+                input = input.as_subclass(torch.Tensor)
+
             batch_statistics = self.encoding_analyzer.update_stats(input)
             num_steps = math.pow(2, self.bitwidth) - 1
             dynamic_min, dynamic_max = (
@@ -423,7 +430,11 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
         encoding = self.get_encodings()
         assert encoding is not None
 
-        if not _torch_compiler_is_exporting() and type(input) != torch.Tensor:
+        if (
+            not _torch_compiler_is_exporting()
+            and not _torch_compiler_is_compiling()
+            and type(input) != torch.Tensor
+        ):
             input = input.as_subclass(torch.Tensor)
 
         # Subclasses of torch.Tensor with custom __torch_function__ (in our case, QuantizedTensorBase)
@@ -446,6 +457,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
 
         if (
             not _torch_compiler_is_exporting()
+            and not _torch_compiler_is_compiling()
             and not torch.onnx.is_in_onnx_export()
             and _is_qtensor_casting_enabled()
         ):
