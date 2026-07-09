@@ -368,13 +368,14 @@ class GreedyMixedPrecisionAlgo(MixedPrecisionAlgo):
                 enable_quantizers(param_quantizers_qgp)
                 self._load_param_encodings(self._results_dir)
 
-                # Disable all the quantizers
                 for quantizer_group in quantizer_groups:
                     quantizers = quantizer_group.get_active_quantizers(
                         self._module_name_dict
                     )
-                    disable_quantizers(quantizers)
                     disabled_quantizers[quantizer_group] = quantizers
+
+                # Disable all the quantizers
+                disable_quantizers(itertools.chain(*disabled_quantizers.values()))
 
                 # Loop over all the quantizer groups and enable one at a time and calculate resulting model accuracy and disable the enabled quantizer
                 # Accuracy list will contain tuples of the quantizer, bitwidth, and accuracy score

@@ -748,6 +748,73 @@ class TestAMPv1:
             if q1.bitwidth == 8:
                 assert q2.bitwidth == 8
 
+    def test_mixed_precision_with_tied_quantizers(self, tmpdir):
+        model = single_residual_model().model
+        sim = QuantizationSimModel(model, param_type="int8", activation_type="int16")
+        maxpool_op = next(
+            iter(op for op in sim.connected_graph.ordered_ops if op.type == "MaxPool")
+        )
+        maxpool_output_quantizer = sim.qc_quantize_op_dict[maxpool_op.outputs[0].name]
+        tied_quantizers = {}
+        # Tie all output quantizers until first maxpool
+        for op in sim.connected_graph.ordered_ops:
+            if op == maxpool_op:
+                break
+            if op.outputs[0].name not in sim.qc_quantize_op_dict:
+                continue
+            tied_quantizers[op.outputs[0].name] = maxpool_output_quantizer
+
+        maxpool_output_quantizer.enabled = True
+        sim.set_quantizers(tied_quantizers)
+
+        def eval_callback(*args):
+            return (
+                0.0
+                if maxpool_output_quantizer.enabled
+                and maxpool_output_quantizer.bitwidth == 8
+                else 1.0
+            )
+
+        def calib_callback(session, _):
+            session.run(None, make_dummy_input(model))
+
+        """
+        Given: Model with a sensitive shared quantizer
+        When: Run AMP
+        Then: All QuantizerGroups containing that quantizer should be flagged as sensitive
+        """
+
+        candidates = [
+            ((16, QuantizationDataType.int), (8, QuantizationDataType.int)),
+            ((8, QuantizationDataType.int), (8, QuantizationDataType.int)),
+        ]
+
+        choose_mixed_precision(
+            sim,
+            candidates,
+            CallbackFunc(eval_callback, None),
+            CallbackFunc(eval_callback, None),
+            0.1,
+            tmpdir,
+            False,
+            CallbackFunc(calib_callback, None),
+        )
+
+        other_quantizers = [
+            q
+            for q in sim.qc_quantize_op_dict.values()
+            if q.enabled and q is not maxpool_output_quantizer
+        ]
+
+        # Shared quantizer must be set to int16 based on phase 2 callback
+        assert maxpool_output_quantizer.enabled
+        assert maxpool_output_quantizer.bitwidth == 16
+        # Maxpool quantizer should be most sensitive based on phase 1 callback
+        # All other quantizer should be set to int8
+        for quantizer in other_quantizers:
+            assert quantizer.enabled
+            assert quantizer.bitwidth == 8
+
     @pytest.mark.parametrize(
         "model",
         (
