@@ -175,6 +175,45 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: 
     )
 
 
+class OnnxScatterElements(nn.Module, OnnxToTorchModule):
+    """ScatterElements: scatter updates into data at indices along axis."""
+
+    # ONNX reduction -> torch.scatter_reduce reduce mode.
+    _REDUCE_MAP = {"add": "sum", "mul": "prod", "max": "amax", "min": "amin"}
+
+    def __init__(self, axis: int = 0, reduction: str = "none"):
+        super().__init__()
+        if reduction != "none" and reduction not in self._REDUCE_MAP:
+            raise NotImplementedError(
+                f"ScatterElements reduction {reduction!r} is not supported."
+            )
+        self.axis = axis
+        self.reduction = reduction
+
+    def forward(
+        self, data: torch.Tensor, indices: torch.Tensor, updates: torch.Tensor
+    ) -> torch.Tensor:
+        if self.reduction == "none":
+            return torch.scatter(data, self.axis, indices, updates)
+        return data.scatter_reduce(
+            self.axis,
+            indices,
+            updates,
+            reduce=self._REDUCE_MAP[self.reduction],
+            include_self=True,
+        )
+
+
+@add_converter(operation_type="ScatterElements", version=16)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
+    axis: int = node.attributes.get("axis", 0)
+    reduction: str = node.attributes.get("reduction", "none")
+    return OperationConverterResult(
+        torch_module=OnnxScatterElements(axis=axis, reduction=reduction),
+        onnx_mapping=onnx_mapping_from_node(node=node),
+    )
+
+
 # Bulk-register missing op versions for opsets 18-21.
 # Many ops have unchanged schemas at newer versions but onnx2torch only registers
 # up to opset 13-17. We find the latest registered converter for each op and
