@@ -31,7 +31,14 @@ from .datasets import (
 
 
 class EvaluationMetric(ABC):
-    pass
+    """Base class for GenAI evaluation metrics.
+
+    SCORING_VERSION identifies the metric's scoring semantics; bump it when
+    they change (prompt, tokenization, filtering, aggregation). Absent/1
+    means unchanged.
+    """
+
+    SCORING_VERSION: int = 1
 
 
 class TextEvaluationMetric(EvaluationMetric):
@@ -449,7 +456,13 @@ class MMLUJSDivergence(_JSDivergenceCompute, _MMLUDistanceBase):
 
 @YAMLConfigParser.register_metric
 class MMMU(EvaluationMetric):
-    """Generic MMMU evaluation metric for multimodal models."""
+    """Generic MMMU evaluation metric for multimodal models.
+
+    v2 (2026-07): "Answer:" moved to an assistant turn (LazyMMMUDataset) and
+    letter tokens resolved via the space-prefixed form; not comparable to v1.
+    """
+
+    SCORING_VERSION = 2
 
     @classmethod
     def get_collection_name(cls):
@@ -461,6 +474,14 @@ class MMMU(EvaluationMetric):
         return MMMUDataset.load_encoded_dataset(
             processor, context_length, split="validation", image_size=image_size
         )
+
+    @staticmethod
+    def _token_id(tokenizer, letter):
+        """Resolve the vocab id for an answer letter (space-prefixed, then bare fallback)."""
+        tok_ids = tokenizer(f" {letter}", add_special_tokens=False)["input_ids"]
+        if len(tok_ids) != 1:
+            tok_ids = tokenizer(letter, add_special_tokens=False)["input_ids"]
+        return tok_ids[0]
 
     @classmethod
     def collect_choice_logits(cls, model, processor, context_length, **kwargs) -> dict:
@@ -477,9 +498,6 @@ class MMMU(EvaluationMetric):
         dataset = cls.get_dataset(processor, context_length, **kwargs)
 
         tokenizer = getattr(processor, "tokenizer", processor)
-
-        def _token_id(letter):
-            return tokenizer(letter, add_special_tokens=False)["input_ids"][0]
 
         all_logits = []  # variable-length per sample, padded later
         all_preds = []
@@ -505,7 +523,7 @@ class MMMU(EvaluationMetric):
 
             # Only compare logits for the actual number of options
             choice_letters = [chr(65 + i) for i in range(num_options)]
-            choice_ids = [_token_id(c) for c in choice_letters]
+            choice_ids = [cls._token_id(tokenizer, c) for c in choice_letters]
             choice_logits = torch.tensor([last_logit[c].item() for c in choice_ids])
 
             all_logits.append(choice_logits)

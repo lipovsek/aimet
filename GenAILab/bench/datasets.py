@@ -593,10 +593,14 @@ class LazyMMMUDataset(torch.utils.data.Dataset):
                 content.insert(0, {"type": "image"})
             ordered_images = list(valid_images)
 
-        content.append({"type": "text", "text": f"\n{choices_text}\nAnswer:"})
+        content.append({"type": "text", "text": f"\n{choices_text}"})
 
-        # Apply chat template to get the text with image markers
-        messages = [{"role": "user", "content": content}]
+        # "Answer:" in an assistant turn so continue_final_message continues
+        # the model's response, not the user's text (bump MMMU.SCORING_VERSION if changed).
+        messages = [
+            {"role": "user", "content": content},
+            {"role": "assistant", "content": "Answer:"},
+        ]
         text = self.processor.apply_chat_template(
             messages,
             tokenize=False,

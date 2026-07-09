@@ -72,6 +72,25 @@ def _print_group(model_type, model_id, group_entries):
             if key not in _NON_METRIC_KEYS and key not in metric_names:
                 metric_names.append(key)
 
+    # Flag metrics whose results mix scoring versions within this table
+    metric_versions = {}
+    for name in metric_names:
+        versions = set()
+        for _, entry in group_entries:
+            if name in entry:
+                versions.add(entry[name].get("scoring_version", 1))
+        metric_versions[name] = sorted(versions)
+
+    mixed_version_metrics = [
+        name for name, versions in metric_versions.items() if len(versions) > 1
+    ]
+    header_metric_names = [
+        f"{name} (MIXED VERSIONS!)"
+        if len(metric_versions[name]) > 1
+        else f"{name} (v{metric_versions[name][0]})"
+        for name in metric_names
+    ]
+
     # Determine if any entry has multiple components (VLM)
     is_vlm = any(len(entry.get("components", {})) > 1 for _, entry in group_entries)
 
@@ -125,7 +144,7 @@ def _print_group(model_type, model_id, group_entries):
 
     # Calculate column widths
     metric_col_widths = []
-    for i, name in enumerate(metric_names):
+    for i, name in enumerate(header_metric_names):
         vals = [r["metrics"][i] for r in rows]
         metric_col_widths.append(max(len(name), max((len(v) for v in vals), default=0)))
 
@@ -145,9 +164,17 @@ def _print_group(model_type, model_id, group_entries):
         return "|".join(parts)
 
     # Header
-    header = fmt_row("#", "Recipe", metric_names, "CUDA Peak", "Time")
+    header = fmt_row("#", "Recipe", header_metric_names, "CUDA Peak", "Time")
     total_w = len(header) + 4
     border = "+" + "-" * (total_w - 2) + "+"
+
+    if mixed_version_metrics:
+        print(
+            " WARNING: mixed scoring versions for "
+            f"{', '.join(mixed_version_metrics)} in this table -- these "
+            "results were computed under different scoring semantics and "
+            "must not be compared to each other."
+        )
 
     print(f" {border}")
     print(f" | {header} |")

@@ -82,6 +82,20 @@ Each test run appends to `profiling_data.json` and `profiling_data.csv` in the r
 
 Results include model configuration, precision settings, per-step resource utilization (GPU memory, elapsed time), metric scores, and environment metadata (CUDA version, GPU name, pip freeze, git SHA).
 
+### Metric Versions & Reproducibility
+
+Every recorded metric result carries a `scoring_version` alongside its `result` value (`EvaluationMetric.SCORING_VERSION`, threaded through `MetricResult`). This exists because a metric's *scoring semantics* — its prompt template, tokenization, dataset filtering, or aggregation — can change without its name changing. A `48.2` and a `27.4` on `MMMU` are meaningless to compare if they were computed under different scoring semantics; the version makes that explicit instead of silent.
+
+- **Bump `SCORING_VERSION`** on a metric class whenever you change any of the above. Add a one-line changelog entry to the class docstring explaining what changed. [`tests/unit/helpers/test_metric_versions.py`](tests/unit/helpers/test_metric_versions.py) pins each versioned metric's scoring contract with a golden fingerprint — it will fail if you change scoring behavior without bumping the version, as a forcing function.
+- **Absent `scoring_version` means version 1.** Results recorded before this field existed (or metrics that have never changed scoring semantics) are implicitly version 1 — no backfill needed.
+- **`print_summary` gates comparability.** When a table would mix versions for the same metric, it prints `MMMU (MIXED VERSIONS!)` with a loud warning instead of rendering the numbers side by side as if they were comparable.
+
+**Posted guidance — comparing vs. reproducing:**
+
+- **Comparing a result to a new one:** only compare results with the *same* `scoring_version`. If your baseline was recorded under an older version, re-run *that baseline* under the current version — do not recompute the entire result history. Comparisons are pairwise and local; treat them that way.
+- **Reproducing an old number exactly:** old-version results are archival, not regenerable from the current codebase — the old scoring implementation is not kept around once superseded (this repo intentionally does not carry multiple live scorers per metric). To get the exact old scoring code, find the commit before the `SCORING_VERSION` bump (check the metric's docstring changelog for context) and run from there.
+- **Dataset drift caveat:** some datasets (e.g. `MMMU/MMMU` on HuggingFace) are not pinned to a fixed revision, so even re-running the same code and version is not guaranteed to reproduce a historical number byte-for-byte. `scoring_version` guards against comparing across different *scoring code*; it does not guard against upstream dataset changes.
+
 ### FP Cache
 
 Caches full-precision model outputs (e.g., MMLU logits) so distance metrics can compare quantized vs. FP without re-running the FP model. Entries are stored as `.pt` files (torch tensors) keyed by a hash of the model configuration and metric name. The cache is loaded lazily on first access.

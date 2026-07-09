@@ -65,6 +65,7 @@ class MetricResult:
     metric_name: str
     result: float | list[str]
     profiler: GPUMeter
+    scoring_version: int = 1  # EvaluationMetric.SCORING_VERSION; absent == 1
 
 
 @dataclass
@@ -248,7 +249,10 @@ def _write_stats_to_csv(
         return f'"{escaped}"'
 
     accuracy_table = {
-        result.metric_name: {"result": result.result}
+        result.metric_name: {
+            "result": result.result,
+            "scoring_version": result.scoring_version,
+        }
         | convert_gpu_meter_to_dict(result.profiler, remove_finegrained=True)
         for result in accuracy_results
     }
@@ -321,7 +325,10 @@ def _write_stats_to_json(
             for comp_name, comp_stats in components.items()
         },
     } | {
-        result.metric_name: {"result": result.result}
+        result.metric_name: {
+            "result": result.result,
+            "scoring_version": result.scoring_version,
+        }
         | convert_gpu_meter_to_dict(result.profiler)
         for result in accuracy_results
     }

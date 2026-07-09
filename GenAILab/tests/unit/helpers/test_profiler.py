@@ -67,6 +67,44 @@ class TestWriteStats:
         assert len(data["llama"]) == 1
         assert data["llama"][0]["model_id"] == "org/model"
 
+    def test_json_records_scoring_version(self, results_dir):
+        components = {
+            "backbone": ComponentRecipeStats(
+                steps=[
+                    RecipeStepStats(
+                        recipe_name="Calibration",
+                        recipe_kwargs={},
+                        dataset_name="C4",
+                        dataset_kwargs={},
+                        profiler=None,
+                    )
+                ]
+            )
+        }
+        accuracy_results = [
+            MetricResult(
+                metric_name="MMMU", result=48.2, profiler=None, scoring_version=2
+            ),
+            MetricResult(
+                metric_name="PPL", result=12.5, profiler=None
+            ),  # default version
+        ]
+        write_stats_to_disk(
+            output_folder=results_dir,
+            filename="profiling_data",
+            model_type="llama",
+            model_id="org/model",
+            model_modifiers={"context_length": 64},
+            components=components,
+            accuracy_results=accuracy_results,
+        )
+        json_path = os.path.join(results_dir, "profiling_data.json")
+        with open(json_path) as f:
+            data = json.load(f)
+        entry = data["llama"][0]
+        assert entry["MMMU"]["scoring_version"] == 2
+        assert entry["PPL"]["scoring_version"] == 1
+
     def test_json_appends(self, results_dir):
         _write_sample(results_dir, model_id="org/model1")
         _write_sample(results_dir, model_id="org/model2")

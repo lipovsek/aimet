@@ -337,6 +337,7 @@ def test_llm_quantization(
                     metric_name=metric_cls.__name__,
                     result=result,
                     profiler=profiler if profiler_capture_intermediate_data else None,
+                    scoring_version=metric_cls.SCORING_VERSION,
                 )
             )
 
