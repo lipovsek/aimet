@@ -231,6 +231,7 @@ jobs:
     needs: [ variants, call-build-wheels ]
     uses: ./.github/workflows/run-unit-acceptance-tests.yml
     strategy:
+      fail-fast: false
       matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     with:
       ver_python: ${{ matrix.VER_PYTHON_TEST }}
@@ -278,7 +279,7 @@ jobs:
         run: curl -k -H "Authorization:Bearer ${{ secrets.DOCKER_CREDENTIALS }}" -X DELETE "https://${{ vars.DOCKER_REGISTRY }}/v2/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}/manifests/${{ needs.docker-tag.outputs.tag }}" || true
 
   notify_failure:
-    if: ${{ always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule' }}
+    if: ${{ always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && github.event_name == 'schedule' && github.run_attempt == '1' }}
     name: Notify failure on slack
     needs: [ docker-build-image, call-build-wheels, call-unit-acceptance-tests, docker-push-latest ]
     runs-on: ubuntu-latest
