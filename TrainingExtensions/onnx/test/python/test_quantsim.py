@@ -7307,6 +7307,9 @@ def test_from_onnx_qdq_excess_encodings(
             assert np.allclose(out_i, out_expected_i, atol=out_scale)
 
 
+@pytest.mark.skip_on_windows_amd64(
+    "insufficient disk for large ONNX export on Windows AMD64 runner"
+)
 def test_to_onnx_qdq_large_model(tmp_dir):
     seed = 200
     torch.manual_seed(seed)

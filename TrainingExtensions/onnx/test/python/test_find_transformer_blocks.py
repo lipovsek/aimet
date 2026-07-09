@@ -5,10 +5,15 @@ import io
 import re
 import shutil
 import pytest
-import sys
-import platform
 import onnx
 import torch
+
+from .conftest import skip_module_on_windows_arm64
+
+skip_module_on_windows_arm64(
+    "transformers and onnx_sim is not available on Windows ARM64"
+)
+
 import transformers
 from transformers import AutoModelForCausalLM
 import transformers.masking_utils as mu
@@ -22,11 +27,6 @@ from aimet_onnx.experimental.spinquant.model_analysis.block_identifier import (
     get_decoder_block_boundaries,
 )
 from .utils import add_genai_tests_path
-from .conftest import skip_module_on_windows_arm64
-
-skip_module_on_windows_arm64(
-    "transformers and onnx_sim is not available on Windows ARM64"
-)
 
 _NUM_LAYERS = 2
 _BOTH = ("torchscript", "dynamo")
@@ -488,6 +488,9 @@ def test_get_decoder_blocks_qwen3(add_genai_tests_path):
         shutil.rmtree(cache_dir, ignore_errors=True)
 
 
+@pytest.mark.skip_on_windows_amd64(
+    "insufficient disk for large ONNX export on Windows AMD64 runner"
+)
 def test_get_decoder_blocks_qwen3_5(add_genai_tests_path):
     import GenAILab.qai_hub_lm.transforms.exportable_linear_attention  # noqa: F401
     from GenAILab.bench.yaml_config_parser import YAMLConfigParser

@@ -3,6 +3,7 @@
 
 import os
 import copy
+import shutil
 from unittest.mock import patch
 import numpy as np
 import torch
@@ -795,9 +796,15 @@ class TestAdascaleQuantizer:
 
 
 @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+@pytest.mark.skip_on_windows_amd64(
+    "insufficient disk for large ONNX export on Windows AMD64 runner"
+)
 def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     from transformers import AutoConfig
     from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
+    from GenAILab.qai_hub_lm.backends.onnx.export_utils import (
+        get_model_checkpoint_path,
+    )
     import random
 
     context_length = 32
@@ -817,66 +824,70 @@ def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     if small_model:
         llm_config.num_hidden_layers = 2
 
-    entry = model_cls.instantiate_float_model(
-        model_id, context_length, sequence_length, small_model=small_model
-    )
-    collection = model_cls.instantiate_quantsim(entry)
-    sim = collection.backbone
+    cache_dir = get_model_checkpoint_path(model_id)
+    try:
+        entry = model_cls.instantiate_float_model(
+            model_id, context_length, sequence_length, small_model=small_model
+        )
+        collection = model_cls.instantiate_quantsim(entry)
+        sim = collection.backbone
 
-    onnx_weights_min_max = {}
-    for initializer in sim.model.model.graph.initializer:
-        weight_array = numpy_helper.to_array(initializer)
-        onnx_weights_min_max[initializer.name] = {
-            "min": float(np.min(weight_array)),
-            "max": float(np.max(weight_array)),
+        onnx_weights_min_max = {}
+        for initializer in sim.model.model.graph.initializer:
+            weight_array = numpy_helper.to_array(initializer)
+            onnx_weights_min_max[initializer.name] = {
+                "min": float(np.min(weight_array)),
+                "max": float(np.max(weight_array)),
+            }
+        adascale_model_config_dict["qwen2"].model_config = llm_config
+
+        inputs = {
+            "input_ids": np.random.randint(0, 100, size=(1, 16), dtype=np.int32),
+            "attention_mask": np.random.randint(0, 100, size=(1, 1, 16, 32)).astype(
+                np.float32
+            ),
+            "position_ids": np.arange(0, 16).reshape(1, 16).astype(np.int32),
+            "past_key_0_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
+            "past_value_0_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
+            "past_key_1_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
+            "past_value_1_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
         }
-    adascale_model_config_dict["qwen2"].model_config = llm_config
 
-    inputs = {
-        "input_ids": np.random.randint(0, 100, size=(1, 16), dtype=np.int32),
-        "attention_mask": np.random.randint(0, 100, size=(1, 1, 16, 32)).astype(
-            np.float32
-        ),
-        "position_ids": np.arange(0, 16).reshape(1, 16).astype(np.int32),
-        "past_key_0_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
-        "past_value_0_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
-        "past_key_1_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
-        "past_value_1_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
-    }
-
-    # Create a copy of the weights before applying AdaScale
-    original_weights = {}
-    for initializer in sim.model.model.graph.initializer:
-        weight_array = numpy_helper.to_array(initializer)
-        original_weights[initializer.name] = weight_array.copy()
-
-    AdaScale.apply_adascale(
-        sim,
-        [inputs],
-        adascale_model_config_dict["qwen2"],
-        num_iterations=2,
-    )
-
-    linear_list = [
-        key for key in sim.qc_quantize_op_dict.keys() if "onnx::MatMul" in key
-    ]
-
-    # Dropping the last linear layers since that is always the LM head, which is not modified by adascale
-    param_list = linear_list[:-1]
-
-    # Verify that the encodings are frozen for the parameters modified by AdaScale
-    for param in param_list:
-        assert sim.qc_quantize_op_dict[param]._is_encoding_frozen
-
-    for initializer in sim.model.model.graph.initializer:
-        if initializer.name in param_list:
+        # Create a copy of the weights before applying AdaScale
+        original_weights = {}
+        for initializer in sim.model.model.graph.initializer:
             weight_array = numpy_helper.to_array(initializer)
-            assert not np.all(original_weights[initializer.name] == weight_array)
-        else:
-            weight_array = numpy_helper.to_array(initializer)
-            assert np.all(original_weights[initializer.name] == weight_array)
+            original_weights[initializer.name] = weight_array.copy()
 
-    assert len(sim.model.model.graph.output)
+        AdaScale.apply_adascale(
+            sim,
+            [inputs],
+            adascale_model_config_dict["qwen2"],
+            num_iterations=2,
+        )
+
+        linear_list = [
+            key for key in sim.qc_quantize_op_dict.keys() if "onnx::MatMul" in key
+        ]
+
+        # Dropping the last linear layers since that is always the LM head, which is not modified by adascale
+        param_list = linear_list[:-1]
+
+        # Verify that the encodings are frozen for the parameters modified by AdaScale
+        for param in param_list:
+            assert sim.qc_quantize_op_dict[param]._is_encoding_frozen
+
+        for initializer in sim.model.model.graph.initializer:
+            if initializer.name in param_list:
+                weight_array = numpy_helper.to_array(initializer)
+                assert not np.all(original_weights[initializer.name] == weight_array)
+            else:
+                weight_array = numpy_helper.to_array(initializer)
+                assert np.all(original_weights[initializer.name] == weight_array)
+
+        assert len(sim.model.model.graph.output)
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
