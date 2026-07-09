@@ -1905,8 +1905,7 @@ class QuantizationSimModel:
         export_model (bool, optional):
             If True, then ONNX model is exported. When False, only encodings are exported.
         export_int32_bias (bool, optional):
-            If true, generate and export int32 bias encoding on the fly.
-            Default: `True` if encoding version is 2.0.0 or higher, otherwise `False`.
+            If true, generate and export int32 bias encoding on the fly (default: `True`).
         encoding_version (str, optional):
             Version of the encoding format to use. (default: {quantsim.encoding_version})
             Supported versions are: {sorted(list(quantsim.VALID_ENCODING_VERSIONS))}
@@ -1926,7 +1925,7 @@ class QuantizationSimModel:
         filename_prefix: str,
         export_model: bool = True,
         *,
-        export_int32_bias: Optional[bool] = None,
+        export_int32_bias: bool = True,
         encoding_version: Optional[str] = None,
         force_activation_as: Literal["unsigned"]
         | Literal["signed"]
@@ -1947,11 +1946,6 @@ class QuantizationSimModel:
                 "updated to be able to parse 1.0.0 format"
             )
             warnings.warn(msg, DeprecationWarning, stacklevel=2)
-
-        if export_int32_bias is None:
-            export_int32_bias = version.parse(encoding_version) >= version.parse(
-                "2.0.0"
-            )
 
         with (
             self._concretize_int32_bias_quantizers()
@@ -2374,7 +2368,7 @@ class QuantizationSimModel:
     def to_onnx_qdq(
         self,
         *,
-        export_int32_bias: bool = False,
+        export_int32_bias: bool = True,
         prequantize_constants: bool = False,
         force_activation_as: Literal["unsigned"]
         | Literal["signed"]

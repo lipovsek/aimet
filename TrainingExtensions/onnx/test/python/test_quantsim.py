@@ -528,7 +528,9 @@ class TestQuantSim:
         activation_keys = {enc["name"] for enc in encoding_data["activation_encodings"]}
         param_keys = {enc["name"] for enc in encoding_data["param_encodings"]}
         assert activation_keys == {"4", "input", "output"}
-        assert param_keys == {"conv_w", "fc_w"}
+        # export() concretizes int32 bias by default, so bias params are exported too
+        assert param_keys == {"conv_w", "fc_w", "conv_b", "fc_b"}
+        bias_keys = {"conv_b", "fc_b"}
 
         for enc in itertools.chain(
             encoding_data["param_encodings"], encoding_data["activation_encodings"]
@@ -545,7 +547,9 @@ class TestQuantSim:
             }
             assert isinstance(enc["scale"], list)
             assert enc["dtype"] == "INT"
-            if enc["name"] in param_keys:
+            if enc["name"] in bias_keys:
+                assert enc["bw"] == 32
+            elif enc["name"] in param_keys:
                 assert enc["enc_type"] == EncodingType.PER_CHANNEL.name
             else:
                 assert enc["enc_type"] == EncodingType.PER_TENSOR.name
@@ -578,10 +582,11 @@ class TestQuantSim:
             "version": aimet_onnx.__version__,
         }
         encodings = encodings["encodings"]
-        encoding_keys = set(e["name"] for e in encodings)
+        encoding_keys = sorted(set(e["name"] for e in encodings))
+        bias_keys = ["conv_b", "fc_b"]
 
         if activation_type == aimet_onnx.int8:
-            assert encoding_keys == {
+            assert encoding_keys == [
                 "4",
                 "5",
                 "6",
@@ -591,12 +596,9 @@ class TestQuantSim:
                 "fc_w",
                 "input",
                 "output",
-            }
+            ]
         else:
-            assert encoding_keys == {
-                "conv_w",
-                "fc_w",
-            }
+            assert encoding_keys == ["conv_w", "fc_w"]
 
         # Exported encoding can contain more entry than qc_quantize_op_dict since
         # some grid-preserving op's input/output encodings are auto-generated
@@ -610,17 +612,20 @@ class TestQuantSim:
         expected_encodings = _remove_onnx_qdq_nodes(sim.to_onnx_qdq())
         expected_encoding_keys = set(e["name"] for e in expected_encodings)
 
-        if activation_type == aimet_onnx.int8:
-            assert encoding_keys == expected_encoding_keys | {"conv_b", "fc_b"}
-            encodings = [e for e in encodings if e["name"] in expected_encoding_keys]
-        else:
-            assert encoding_keys == expected_encoding_keys
+        for bias_key in bias_keys:
+            if bias_key in encoding_keys:
+                encoding_keys[encoding_keys.index(bias_key)] = f"{bias_key}_qdq"
+
+        assert sorted(encoding_keys) == sorted(expected_encoding_keys)
 
         encodings = sorted(encodings, key=lambda e: e["name"])
         expected_encodings = sorted(expected_encodings, key=lambda e: e["name"])
 
         for e1, e2 in zip(encodings, expected_encodings):
-            assert e1["name"] == e2["name"]
+            e1_name = e1["name"]
+            if e1_name in bias_keys:
+                e1_name = f"{e1_name}_qdq"
+            assert e1_name == e2["name"]
             assert e1["output_dtype"] == e2["output_dtype"]
             assert np.all(
                 np.array(e1["y_scale"], dtype=np.float32)
@@ -1632,11 +1637,8 @@ class TestQuantSim:
                     if q in reconfigured_quantizers
                 ]
 
-                if encoding_version in ("0.6.1", "1.0.0"):
-                    assert len(mismatched_encodings) == len(reconfigured_tensors)
-                else:
-                    # mismatched_encodings contains 2 extra entries for int32 bias encodings
-                    assert len(mismatched_encodings) == len(reconfigured_tensors) + 2
+                # mismatched_encodings contains 2 extra entries for int32 bias encodings
+                assert len(mismatched_encodings) == len(reconfigured_tensors) + 2
 
                 assert np.allclose(
                     out2,
@@ -2067,7 +2069,8 @@ class TestQuantSim:
         # Ensure that the encodings for the second input of Add op (bias) and output of MatMul aren't in JSON file.
         if model_factory == linear_split_into_matmul_add:
             assert len(encoding_data["activation_encodings"]) == 2
-            assert len(encoding_data["param_encodings"]) == 1
+            # weight + concretized int32 bias for the MatMulAdd supergroup
+            assert len(encoding_data["param_encodings"]) == 2
             activation_names = {
                 encoding["name"] for encoding in encoding_data["activation_encodings"]
             }
@@ -6326,6 +6329,8 @@ def test_to_onnx_qdq_lpbq(seed: int, prequantize_constants: bool):
         if qtzr.enabled
         and (qtzr.data_type == QuantizationDataType.int or qtzr.bitwidth < 16)
     )
+    # to_onnx_qdq() concretizes int32 bias by default, adding one DQ per bias-bearing op
+    expected_num_dq += 1
     assert num_dq == expected_num_dq
 
     """
@@ -7348,6 +7353,7 @@ def test_to_onnx_qdq_large_model(tmp_dir):
             When: Export large model to onnx QDQ
             Then: Output of the pure onnx model should be equal to that of sim.session
             """
+            # Linear layers have bias=False, so int32 bias concretization is unnecessary
             qdq_model = sim.to_onnx_qdq(prequantize_constants=constants_flag)
 
             onnx.save_model(
