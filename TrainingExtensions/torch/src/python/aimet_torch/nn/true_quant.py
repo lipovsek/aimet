@@ -11,7 +11,7 @@ import itertools
 from inspect import signature
 from abc import abstractmethod, ABCMeta
 from collections import OrderedDict
-from typing import Type, Any, Optional, Callable, Set, Mapping, Tuple
+from typing import Type, Any, Optional, Callable, Set, Mapping, Tuple, Iterable
 from weakref import WeakKeyDictionary
 import warnings
 
@@ -285,14 +285,21 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
         with super().compute_encodings(), ctx:
             yield
 
-    def _patch_dequantized_parameters(self):
+    def _patch_dequantized_parameters(
+        self, param_names: Optional[Iterable[str]] = None
+    ) -> _ContextManager:
         # Early exit for stateless modules.
         # This helps mitigate dynamo tracing problems during torch.export.export
-        if not any(self.param_quantizers.values()):
+        if param_names is None:
+            param_names = self.param_quantizers.keys()
+
+        param_quantizers = {name: self.param_quantizers[name] for name in param_names}
+
+        if not any(param_quantizers.values()):
             return contextlib.nullcontext()
 
         stack = contextlib.ExitStack()
-        for param_name, _ in self.param_quantizers.items():
+        for param_name, _ in param_quantizers.items():
             qparam = getattr(self, param_name)
             dqparam = _dequantize_if_applicable(qparam)
             ctx = patch_attr(self, param_name, dqparam)

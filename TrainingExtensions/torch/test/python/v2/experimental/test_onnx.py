@@ -66,6 +66,7 @@ from aimet_torch.nn import (
     QuantizedEmbedding,
     QuantizedLinear,
 )
+from aimet_torch.quantization._utils import blockwise
 
 
 def _get_qdq_encoding_map(onnx_model):
@@ -2182,22 +2183,28 @@ def test_export_fp4_int8(tmp_path: pathlib.Path, dynamo: bool):
     When: Create quantsim with per-channel W8 and export to onnx QDQ
     Then: Exported onnx QDQ should have float4 encoding for the first weight QDQ
           and int8 encoding for the second weight QDQ, and both encodings should
-          match the sim quantizers' encodings
+          match the sim quantizers' encodings.
+          Exported weight should be on mxfp4 grid, not int8 grid.
     """
     fp4_qdq = Q.float.FloatQuantizeDequantize(
         *_float4_e2m1fn,
-        shape=(10, 2),
-        block_size=(1, 5),
+        shape=(100, 10),
+        block_size=(1, 10),
     )
-    model = torch.nn.Sequential(torch.nn.Linear(10, 10))
-    weight = model[0].weight
-    model[0].weight = torch.nn.Parameter(
-        fp4_qdq(weight), requires_grad=weight.requires_grad
-    )
-    x = torch.randn(10, 10)
+    model = torch.nn.Sequential(torch.nn.Linear(100, 100))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.randint(-10, 10, (100, 100), dtype=torch.float32))
+        # Assume certain blocks have vastly different scale
+        model[0].weight[:, :10] /= 128
+
+    with fp4_qdq.compute_encodings():
+        _ = fp4_qdq(model[0].weight)
+
+    model[0].weight = torch.nn.Parameter(fp4_qdq(model[0].weight))
+    x = torch.randn(100, 100)
     sim = aimet_torch.QuantizationSimModel(model, x, default_param_bw=8)
     sim.model[0].param_quantizers["weight"] = Q.affine.QuantizeDequantize(
-        shape=(10, 1), bitwidth=8, symmetric=True
+        shape=(100, 1), bitwidth=8, symmetric=True
     )
     sim.compute_encodings(lambda model: model(x))
 
@@ -2226,17 +2233,17 @@ def test_export_fp4_int8(tmp_path: pathlib.Path, dynamo: bool):
     fp4_weight_encoding = encodings["0.weight"]
     assert fp4_weight_encoding["output_dtype"] == "float4e2m1"
     assert torch.equal(
-        torch.tensor(fp4_weight_encoding["y_scale"]).reshape(10, 2),
+        torch.tensor(fp4_weight_encoding["y_scale"]).reshape(100, 10),
         fp4_qdq.get_scale(),
     )
     assert "y_zero_point" not in fp4_weight_encoding
     assert fp4_weight_encoding.get("axis") == 1
-    assert fp4_weight_encoding.get("block_size") == 5
+    assert fp4_weight_encoding.get("block_size") == 10
 
     int8_weight_encoding = encodings["/0/FloatQuantizeDequantize_output_0_alias"]
     assert int8_weight_encoding["output_dtype"] == "int8"
     assert torch.equal(
-        torch.tensor(int8_weight_encoding["y_scale"]).reshape(10, 1),
+        torch.tensor(int8_weight_encoding["y_scale"]).reshape(100, 1),
         sim.model[0].param_quantizers["weight"].get_scale(),
     )
     assert "y_zero_point" not in int8_weight_encoding
@@ -2267,7 +2274,7 @@ def test_export_fp4_int8(tmp_path: pathlib.Path, dynamo: bool):
         )
     )
     assert torch.allclose(
-        torch.from_numpy(scale_array).reshape(10, 2),
+        torch.from_numpy(scale_array).reshape(100, 10),
         fp4_qdq.get_scale(),
     )
     zp_array = onnx.numpy_helper.to_array(
@@ -2283,13 +2290,21 @@ def test_export_fp4_int8(tmp_path: pathlib.Path, dynamo: bool):
         )
     )
     assert torch.allclose(
-        torch.from_numpy(scale_array).reshape(10, 1),
+        torch.from_numpy(scale_array).reshape(100, 1),
         sim.model[0].param_quantizers["weight"].get_scale(),
     )
     zp_array = onnx.numpy_helper.to_array(
         next(init for init in onnx_qdq_model.graph.initializer if init.name == zp_name)
     )
     assert (zp_array == 0).all()
+
+    onnx_weight = onnx.numpy_helper.to_array(
+        next(
+            init for init in onnx_qdq_model.graph.initializer if init.name == "0.weight"
+        )
+    )
+    onnx_weight = torch.from_numpy(onnx_weight)
+    assert torch.allclose(fp4_qdq(onnx_weight), onnx_weight)
 
 
 def test_control_flow_op_export(tmp_path: pathlib.Path):

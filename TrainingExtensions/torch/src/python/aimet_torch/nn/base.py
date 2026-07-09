@@ -247,14 +247,21 @@ class BaseQuantizationMixin(abc.ABC):
         """
         return super().forward(*args, **kwargs)
 
-    def _patch_quantized_parameters(self):
+    def _patch_quantized_parameters(
+        self, param_names: Optional[Iterable[str]] = None
+    ) -> _ContextManager:
         # Early exit for stateless modules.
         # This helps mitigate dynamo tracing problems during torch.export.export
-        if not any(self.param_quantizers.values()):
+        if param_names is None:
+            param_names = self.param_quantizers.keys()
+
+        param_quantizers = {name: self.param_quantizers[name] for name in param_names}
+
+        if not any(param_quantizers.values()):
             return contextlib.nullcontext()
 
         stack = contextlib.ExitStack()
-        for param_name, param_quantizer in self.param_quantizers.items():
+        for param_name, param_quantizer in param_quantizers.items():
             orig_param = getattr(self, param_name)
 
             if (
