@@ -18,7 +18,6 @@ safetensors
 scikit-learn
 scipy
 tensorboard
-# TODO: Temporary pin; torch 2.13 breaks unit tests
-torch<2.13
+torch
 torchvision
 tqdm
