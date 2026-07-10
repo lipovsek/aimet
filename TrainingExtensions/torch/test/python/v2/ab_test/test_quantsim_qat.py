@@ -95,7 +95,7 @@ def config_path():
 
 @pytest.mark.parametrize("model_cls, input_shape", [(resnet18, (1, 3, 224, 224))])
 class TestQuantsimV2QAT:
-    # Based on https://github.com/quic/aimet/blob/75131de478af7ead6a8676dc36f4c46a6d3390ea/TrainingExtensions/torch/test/python/test_range_learning.py#L81
+    # Based on https://github.com/qualcomm/aimet/blob/75131de478af7ead6a8676dc36f4c46a6d3390ea/TrainingExtensions/torch/test/python/test_range_learning.py#L81
     def test_grad_correctness(self, model_cls, input_shape, config_path):
         model = model_cls()
         dummy_input = torch.randn(input_shape)
@@ -233,7 +233,7 @@ class TestQuantsimV2QAT:
             device=torch.device("cuda"),
         )
 
-    # Based on https://github.com/quic/aimet/blob/75131de478af7ead6a8676dc36f4c46a6d3390ea/TrainingExtensions/torch/test/python/test_quantizer.py#L1050
+    # Based on https://github.com/qualcomm/aimet/blob/75131de478af7ead6a8676dc36f4c46a6d3390ea/TrainingExtensions/torch/test/python/test_quantizer.py#L1050
     @pytest.mark.cuda
     def test_multi_gpu(self, model_cls, input_shape, config_path):
         device = torch.device("cuda")

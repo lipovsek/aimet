@@ -385,7 +385,7 @@ class ModelWithConstantQuantization(torch.nn.Module):
         return x
 
 
-# From https://github.com/quic/aimet/blob/8ed479b24010834bfea09885cf6879b9bd916e8a/TrainingExtensions/torch/test/python/test_quantizer.py#L467
+# From https://github.com/qualcomm/aimet/blob/8ed479b24010834bfea09885cf6879b9bd916e8a/TrainingExtensions/torch/test/python/test_quantizer.py#L467
 class TestQuantizationSimStaticGrad:
     def verify_quantization_wrappers(self, original_model, quantized_model):
         """Test utility to determine if quantization wrappers were added correctly"""
@@ -2895,7 +2895,7 @@ class TestQuantizationSimStaticGrad:
         assert torch.device("cpu") == next(model_cpu.parameters()).device
 
 
-# From https://github.com/quic/aimet/blob/8ed479b24010834bfea09885cf6879b9bd916e8a/TrainingExtensions/torch/test/python/test_quantizer.py#L3015
+# From https://github.com/qualcomm/aimet/blob/8ed479b24010834bfea09885cf6879b9bd916e8a/TrainingExtensions/torch/test/python/test_quantizer.py#L3015
 class TestQuantizationSimLearnedGrid:
     @pytest.mark.cuda
     @pytest.mark.parametrize("device", ["cpu", "cuda:0"])

@@ -8,17 +8,17 @@ External resources
     :hidden:
 
     Qualcomm AI Stack <http://www.qualcomm.com/developer/artificial-intelligence#overview>
-    Qualcomm Hub Models <https://github.com/quic/ai-hub-models/>
-    Qualcomm Hub Apps <https://github.com/quic/ai-hub-apps/>
+    Qualcomm Hub Models <https://github.com/qualcomm/ai-hub-models/>
+    Qualcomm Hub Apps <https://github.com/qualcomm/ai-hub-apps/>
     Qualcomm AI Hub <https://aihub.qualcomm.com/>
 
 `Qualcomm AI Stack <https://www.qualcomm.com/developer/artificial-intelligence#overview>`_
     Information for developers about the Qualcomm AI ecosystem.
 
-`Qualcomm Hub Models <https://github.com/quic/ai-hub-models/>`_
+`Qualcomm Hub Models <https://github.com/qualcomm/ai-hub-models/>`_
     A collection of state-of-the-art machine learning models optimized for deployment on Qualcomm® devices.
 
-`Qualcomm Hub Apps <https://github.com/quic/ai-hub-apps/>`_
+`Qualcomm Hub Apps <https://github.com/qualcomm/ai-hub-apps/>`_
     A collection of sample apps and tutorials to help deploy machine learning models on Qualcomm® devices.
 
 `Qualcomm AI Hub <https://aihub.qualcomm.com/>`_

@@ -13,7 +13,7 @@
 .. _qai_hub_docs: https://app.aihub.qualcomm.com/docs/
 
 .. |aimet| replace:: AIMET
-.. _aimet: https://github.com/quic/aimet
+.. _aimet: https://github.com/qualcomm/aimet
 
 .. |tflite| replace:: TensorFlow Lite
 .. _tflite: https://www.tensorflow.org/lite/

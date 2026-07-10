@@ -144,7 +144,7 @@ class TestQuantsimOnnxExport:
             encoding["name"] for encoding in encoding_dict["param_encodings"]
         } == expected_param_keys
 
-    # From: https://github.com/quic/aimet/blob/ce3dafe75d81893cdb8b45ba8abf53a672c28187/TrainingExtensions/torch/test/python/test_quantizer.py#L2731
+    # From: https://github.com/qualcomm/aimet/blob/ce3dafe75d81893cdb8b45ba8abf53a672c28187/TrainingExtensions/torch/test/python/test_quantizer.py#L2731
     def test_export_to_onnx_direct(self):
         model = ModelWithTwoInputs()
         sim_model = copy.deepcopy(model)
@@ -298,7 +298,7 @@ class TestQuantsimOnnxExport:
             ]
             assert len(filtered_encoding_dict_prop) == 2
 
-    # From: https://github.com/quic/aimet/blob/ce3dafe75d81893cdb8b45ba8abf53a672c28187/TrainingExtensions/torch/test/python/test_quantizer.py#L3733
+    # From: https://github.com/qualcomm/aimet/blob/ce3dafe75d81893cdb8b45ba8abf53a672c28187/TrainingExtensions/torch/test/python/test_quantizer.py#L3733
     def test_multi_output_onnx_op(self):
         """
         Test mapping and exporting of output encodings for multiple output onnx op.
@@ -346,7 +346,7 @@ class TestQuantsimOnnxExport:
                     activation_encoding_names
                 )
 
-    # From: https://github.com/quic/aimet/blob/ce3dafe75d81893cdb8b45ba8abf53a672c28187/TrainingExtensions/torch/test/python/test_quantizer.py#L1935
+    # From: https://github.com/qualcomm/aimet/blob/ce3dafe75d81893cdb8b45ba8abf53a672c28187/TrainingExtensions/torch/test/python/test_quantizer.py#L1935
     def test_mapping_encoding_for_torch_module_with_multiple_onnx_ops(self):
         """
         Test the input and output encoding map to input/output at subgraph level when a torch module generates

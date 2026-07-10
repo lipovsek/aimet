@@ -292,7 +292,7 @@ def _get_seasonal_variant():
 
 
 def print_summary_banner(
-    title: str = None, repo_url: str = "https://github.com/quic/aimet"
+    title: str = None, repo_url: str = "https://github.com/qualcomm/aimet"
 ):
     """
     Print a formatted summary banner for quantization examples.

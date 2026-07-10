@@ -16,7 +16,7 @@ We're thrilled that you'd like to contribute to the AIMET project! Your support 
 
 ## Before you begin
 - Please read our [Code of Conduct](CODE-OF-CONDUCT.md) and [License](LICENSE) and ensure that you agree to abide by them.
-- For every new feature or bug fix, always start a new issue on https://github.com/quic/aimet/issues.
+- For every new feature or bug fix, always start a new issue on https://github.com/qualcomm/aimet/issues.
 - To contribute a bug-fix, please follow the steps in the next sections without any further discussion.
 - To contribute new features, extensions, utility functions or other significant changes, please describe and discuss the change with us via the GitHub issue that you created above. **A pull request (PR) submitted without discussion and agreement with the project maintainers may be subject to rejection, or significant changes may be requested prior to its acceptance.**
 
@@ -30,10 +30,10 @@ Please follow the guidelines below to increase the likelihood and speed of your 
 - Each PR submission will trigger a build, test, code quality check and static analysis processes. Submitters are required to fix all failures and warnings prior to acceptance.
 
 ## Branching strategy
-Contributors should develop on [their own fork](https://help.github.com/en/github/getting-started-with-github/fork-a-repo) on branches based off of the `develop` branch and then pull requests should be made into the [upstream `develop` branch](https://github.com/quic/aimet/tree/develop).
+Contributors should develop on [their own fork](https://help.github.com/en/github/getting-started-with-github/fork-a-repo) on branches based off of the `develop` branch and then pull requests should be made into the [upstream `develop` branch](https://github.com/qualcomm/aimet/tree/develop).
 
 ## Setup
-Go to https://github.com/quic/aimet and fork the repo using [these instructions](https://help.github.com/en/github/getting-started-with-github/fork-a-repo).
+Go to https://github.com/qualcomm/aimet and fork the repo using [these instructions](https://help.github.com/en/github/getting-started-with-github/fork-a-repo).
 
 Follow the [Requirements](packaging/docker_install.md#requirements) and [Setup](packaging/docker_install.md#setup-the-environment) sections in [docker_install.md](packaging/docker_install.md). Then return to this page.
 
@@ -60,7 +60,7 @@ ln -s $(realpath -s .githooks/commit-msg) .git/hooks/commit-msg
 ```
 
 ## Development
-Start a new issue on https://github.com/quic/aimet/issues.
+Start a new issue on https://github.com/qualcomm/aimet/issues.
 
 Create a branch for your feature
 ```

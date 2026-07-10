@@ -38,9 +38,9 @@ To use AdaScale, you need:
 
 .. note::
    For a complete working example including all steps below, see
-   `Examples/torch/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/torch/quantize.py>`_
+   `Examples/torch/quantize.py <https://github.com/qualcomm/aimet/blob/develop/Examples/torch/quantize.py>`_
    or
-   `Examples/onnx/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/onnx/quantize.py>`_
+   `Examples/onnx/quantize.py <https://github.com/qualcomm/aimet/blob/develop/Examples/onnx/quantize.py>`_
    (run with ``--recipe pcq_spinquant_adascale``).
 
 .. _example-script:
@@ -193,9 +193,9 @@ After completing these steps, export the quantized model:
 - **ONNX**: ``quantsim.export(...)``
 
 See
-`Examples/torch/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/torch/quantize.py>`_
+`Examples/torch/quantize.py <https://github.com/qualcomm/aimet/blob/develop/Examples/torch/quantize.py>`_
 or
-`Examples/onnx/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/onnx/quantize.py>`_
+`Examples/onnx/quantize.py <https://github.com/qualcomm/aimet/blob/develop/Examples/onnx/quantize.py>`_
 for the export invocation.
 
 API

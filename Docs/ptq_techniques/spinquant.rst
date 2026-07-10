@@ -66,9 +66,9 @@ To use SpinQuant, you need:
 
 .. note::
    For a complete working example, see
-   `Examples/torch/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/torch/quantize.py>`_
+   `Examples/torch/quantize.py <https://github.com/qualcomm/aimet/blob/develop/Examples/torch/quantize.py>`_
    or
-   `Examples/onnx/quantize.py <https://github.com/quic/aimet/blob/develop/Examples/onnx/quantize.py>`_
+   `Examples/onnx/quantize.py <https://github.com/qualcomm/aimet/blob/develop/Examples/onnx/quantize.py>`_
    (run with ``--recipe pcq_spinquant``).
 
 Procedure

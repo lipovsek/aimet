@@ -4,7 +4,7 @@
 [<img src="https://qaihub-public-assets.s3.us-west-2.amazonaws.com/aimet/docs/assets/images/readme/button-overview.png" width="90" height="40">](https://qualcomm.github.io/aimet-pages/releases/latest/index.html)
 [<img src="https://qaihub-public-assets.s3.us-west-2.amazonaws.com/aimet/docs/assets/images/readme/button-docs.png" width="90" height="40">](https://qualcomm.github.io/aimet-pages/releases/latest/index.html)
 [<img src="https://qaihub-public-assets.s3.us-west-2.amazonaws.com/aimet/docs/assets/images/readme/button-install.png" width="90" height="40">](https://qualcomm.github.io/aimet-pages/releases/latest/overview/install/quick-start.html)
-[<img src="https://qaihub-public-assets.s3.us-west-2.amazonaws.com/aimet/docs/assets/images/readme/button-forum.png" width="90" height="40">](https://github.com/quic/aimet/discussions)
+[<img src="https://qaihub-public-assets.s3.us-west-2.amazonaws.com/aimet/docs/assets/images/readme/button-forum.png" width="90" height="40">](https://github.com/qualcomm/aimet/discussions)
 [<img src="https://qaihub-public-assets.s3.us-west-2.amazonaws.com/aimet/docs/assets/images/readme/button-slack.png" width="90" height="40">](https://qualcomm-ai-hub.slack.com/archives/C08JKBE0UHY)
 [<img src="https://qaihub-public-assets.s3.us-west-2.amazonaws.com/aimet/docs/assets/images/readme/button-new.png" width="90" height="40">](https://qualcomm.github.io/aimet-pages/releases/latest/release_notes.html)
 
@@ -22,7 +22,7 @@ AIMET supports models from the ONNX and PyTorch frameworks.
 
 AIMET is designed to work with [PyTorch](https://pytorch.org) and [ONNX](https://onnx.ai) models.
 
-You can find models quantized with AIMET on [Qualcomm AI Hub Models](https://github.com/quic/ai-hub-models) - a collection of optimized and quantized models.
+You can find models quantized with AIMET on [Qualcomm AI Hub Models](https://github.com/qualcomm/ai-hub-models) - a collection of optimized and quantized models.
 
 ## Why AIMET?
 
@@ -207,7 +207,7 @@ The DFQ method applied to several popular networks, such as MobileNet-v2 and Res
 ## Resources
 * [Documentation Main Page](https://qualcomm.github.io/aimet-pages/releases/latest/index.html)
 * [API Reference](https://qualcomm.github.io/aimet-pages/releases/latest/apiref/index.html)
-* [Discussion Forums](https://github.com/quic/aimet/discussions)
+* [Discussion Forums](https://github.com/qualcomm/aimet/discussions)
 * [Slack](https://qualcomm-ai-hub.slack.com/archives/C08JKBE0UHY)
 * [Tutorial Videos](https://qualcomm.github.io/aimet-pages/index.html#video)
 * [Example Code](Examples/README.md)

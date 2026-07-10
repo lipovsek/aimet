@@ -40,7 +40,7 @@ Install AIMET from PyPI
 
 
 .. note::
-    aimet_tf is not available on PyPI, please download aimet_tf package from https://github.com/quic/aimet/releases
+    aimet_tf is not available on PyPI, please download aimet_tf package from https://github.com/qualcomm/aimet/releases
 
 .. _alternative-packages:
 
@@ -48,7 +48,7 @@ Alternative packages
 ====================
 
 Install the latest version of AIMET for supported framework and compute platforms including
-ONNX and PyTorch from the .whl files hosted at https://github.com/quic/aimet/releases.
+ONNX and PyTorch from the .whl files hosted at https://github.com/qualcomm/aimet/releases.
 
 Supported platforms
 --------------------
@@ -203,7 +203,7 @@ The quantized-dequantized output should be similar to the one shown below.
 Old versions
 ------------
 
-You can also view the release notes for older AIMET versions at https://github.com/quic/aimet/releases.
+You can also view the release notes for older AIMET versions at https://github.com/qualcomm/aimet/releases.
 Follow the documentation corresponding to that release to select and install the appropriate AIMET package.
 
 .. _building-from-source:
@@ -218,4 +218,4 @@ To do so, follow the steps outlined for building the latest AIMET codebase manua
 
 .. |torch_whl_suffix| replace:: \-py310-none-any.whl
 .. |whl_suffix| replace:: \-cp310-abi3-manylinux_2_34_x86_64.whl
-.. |download_url| replace:: \https://github.com/quic/aimet/releases/download/
+.. |download_url| replace:: \https://github.com/qualcomm/aimet/releases/download/

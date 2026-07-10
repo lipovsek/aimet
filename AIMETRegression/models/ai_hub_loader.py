@@ -187,7 +187,7 @@ def load_model_data(model_name: str) -> Tuple[BaseModel, Any, dict, Any]:
             raise ModuleNotFoundError(
                 f"Model '{model_name}' not found in qai_hub_models. "
                 f"Ensure the model name is correct and qai_hub_models is installed. "
-                f"Available models can be found at: https://github.com/quic/ai-hub-models"
+                f"Available models can be found at: https://github.com/qualcomm/ai-hub-models"
             ) from e
 
         # ============ Step 2: Find Model Class ============

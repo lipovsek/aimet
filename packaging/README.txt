@@ -42,5 +42,5 @@ for the user guide and API documentation.
 =================
 Using the Package
 =================
-Please see https://github.com/quic/aimet#getting-started for package requirements
+Please see https://github.com/qualcomm/aimet#getting-started for package requirements
 and usage.

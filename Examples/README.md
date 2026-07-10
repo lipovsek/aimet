@@ -13,12 +13,12 @@ AIMET Examples provide reference code (in the form of *scripts* and *Jupyter Not
 ## Installation Instructions
 - The dataloader, evaluator, and trainer utilized in the examples is for the ImageNet dataset. To run the examples end-to-end, please download it from here: https://www.image-net.org/download.php
 - Install AIMET and its dependencies using the instructions in [this section](../README.md#installation-instructions).
-- Go to https://github.com/quic/aimet/releases and identify the release tag (`<release_tag>`) of the AIMET package that you're working with.
+- Go to https://github.com/qualcomm/aimet/releases and identify the release tag (`<release_tag>`) of the AIMET package that you're working with.
 - Clone the AIMET repo as follows to any location:
 ```bash
 WORKSPACE="<absolute_path_to_workspace>"
 mkdir $WORKSPACE && cd $WORKSPACE
-git clone https://github.com/quic/aimet.git --branch <release_tag>
+git clone https://github.com/qualcomm/aimet.git --branch <release_tag>
 ```
 - Update the environment variable as follows:
 `export PYTHONPATH=$PYTHONPATH:${WORKSPACE}/aimet`

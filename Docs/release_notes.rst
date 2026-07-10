@@ -170,19 +170,19 @@ Release notes
     * Add zero_point_shift to 1.0.0 encoding spec documentation (`094deadfa`_)
     * Add float8/float4 encoding to 2.0.0 spec documentation (`02e75aa95`_)
 
-.. _441ac6dc8: https://github.com/quic/aimet/commit/441ac6dc8
-.. _21dc8e05f: https://github.com/quic/aimet/commit/21dc8e05f
-.. _35d2440db: https://github.com/quic/aimet/commit/35d2440db
-.. _a2da0de9c: https://github.com/quic/aimet/commit/a2da0de9c
-.. _0b90d8a4f: https://github.com/quic/aimet/commit/0b90d8a4f
-.. _85bdbdb88: https://github.com/quic/aimet/commit/85bdbdb88
-.. _4007d7f3f: https://github.com/quic/aimet/commit/4007d7f3f
-.. _18664a4db: https://github.com/quic/aimet/commit/18664a4db
-.. _a775b6e09: https://github.com/quic/aimet/commit/a775b6e09
-.. _a96261475: https://github.com/quic/aimet/commit/a96261475
-.. _a2382756e: https://github.com/quic/aimet/commit/a2382756e
-.. _094deadfa: https://github.com/quic/aimet/commit/094deadfa
-.. _02e75aa95: https://github.com/quic/aimet/commit/02e75aa95
+.. _441ac6dc8: https://github.com/qualcomm/aimet/commit/441ac6dc8
+.. _21dc8e05f: https://github.com/qualcomm/aimet/commit/21dc8e05f
+.. _35d2440db: https://github.com/qualcomm/aimet/commit/35d2440db
+.. _a2da0de9c: https://github.com/qualcomm/aimet/commit/a2da0de9c
+.. _0b90d8a4f: https://github.com/qualcomm/aimet/commit/0b90d8a4f
+.. _85bdbdb88: https://github.com/qualcomm/aimet/commit/85bdbdb88
+.. _4007d7f3f: https://github.com/qualcomm/aimet/commit/4007d7f3f
+.. _18664a4db: https://github.com/qualcomm/aimet/commit/18664a4db
+.. _a775b6e09: https://github.com/qualcomm/aimet/commit/a775b6e09
+.. _a96261475: https://github.com/qualcomm/aimet/commit/a96261475
+.. _a2382756e: https://github.com/qualcomm/aimet/commit/a2382756e
+.. _094deadfa: https://github.com/qualcomm/aimet/commit/094deadfa
+.. _02e75aa95: https://github.com/qualcomm/aimet/commit/02e75aa95
 
 
 2.30.0
@@ -208,16 +208,16 @@ Release notes
     * Add SpinQuant ONNX documentation and examples (`37454b34e`_)
     * Document 2.0.0 encoding specification (`7e54291c3`_)
 
-.. _e5cd62847: https://github.com/quic/aimet/commit/e5cd62847
-.. _4192da749: https://github.com/quic/aimet/commit/4192da749
-.. _00e3c7220: https://github.com/quic/aimet/commit/00e3c7220
-.. _39bf1f69b: https://github.com/quic/aimet/commit/39bf1f69b
-.. _d320cae7e: https://github.com/quic/aimet/commit/d320cae7e
-.. _d7faee0e9: https://github.com/quic/aimet/commit/d7faee0e9
-.. _29fbef23e: https://github.com/quic/aimet/commit/29fbef23e
-.. _c9add2219: https://github.com/quic/aimet/commit/c9add2219
-.. _37454b34e: https://github.com/quic/aimet/commit/37454b34e
-.. _7e54291c3: https://github.com/quic/aimet/commit/7e54291c3
+.. _e5cd62847: https://github.com/qualcomm/aimet/commit/e5cd62847
+.. _4192da749: https://github.com/qualcomm/aimet/commit/4192da749
+.. _00e3c7220: https://github.com/qualcomm/aimet/commit/00e3c7220
+.. _39bf1f69b: https://github.com/qualcomm/aimet/commit/39bf1f69b
+.. _d320cae7e: https://github.com/qualcomm/aimet/commit/d320cae7e
+.. _d7faee0e9: https://github.com/qualcomm/aimet/commit/d7faee0e9
+.. _29fbef23e: https://github.com/qualcomm/aimet/commit/29fbef23e
+.. _c9add2219: https://github.com/qualcomm/aimet/commit/c9add2219
+.. _37454b34e: https://github.com/qualcomm/aimet/commit/37454b34e
+.. _7e54291c3: https://github.com/qualcomm/aimet/commit/7e54291c3
 
 
 2.29.0
@@ -248,18 +248,18 @@ Release notes
         * Disable activation quantizers for re-used stateless nn.Modules (`8f552b7a6`_)
 
 
-.. _f25668610: https://github.com/quic/aimet/commit/f25668610
-.. _4d19f470f: https://github.com/quic/aimet/commit/4d19f470f
-.. _01b912f65: https://github.com/quic/aimet/commit/01b912f65
-.. _c5f65b782: https://github.com/quic/aimet/commit/c5f65b782
-.. _22876ca30: https://github.com/quic/aimet/commit/22876ca30
-.. _c817a17a5: https://github.com/quic/aimet/commit/c817a17a5
-.. _84f880aee: https://github.com/quic/aimet/commit/84f880aee
-.. _8f552b7a6: https://github.com/quic/aimet/commit/8f552b7a6
-.. _1b5072751: https://github.com/quic/aimet/commit/1b5072751
-.. _eb7ae4b72: https://github.com/quic/aimet/commit/eb7ae4b72
-.. _0f2be91bf: https://github.com/quic/aimet/commit/0f2be91bf
-.. _8f552b7a6: https://github.com/quic/aimet/commit/8f552b7a6
+.. _f25668610: https://github.com/qualcomm/aimet/commit/f25668610
+.. _4d19f470f: https://github.com/qualcomm/aimet/commit/4d19f470f
+.. _01b912f65: https://github.com/qualcomm/aimet/commit/01b912f65
+.. _c5f65b782: https://github.com/qualcomm/aimet/commit/c5f65b782
+.. _22876ca30: https://github.com/qualcomm/aimet/commit/22876ca30
+.. _c817a17a5: https://github.com/qualcomm/aimet/commit/c817a17a5
+.. _84f880aee: https://github.com/qualcomm/aimet/commit/84f880aee
+.. _8f552b7a6: https://github.com/qualcomm/aimet/commit/8f552b7a6
+.. _1b5072751: https://github.com/qualcomm/aimet/commit/1b5072751
+.. _eb7ae4b72: https://github.com/qualcomm/aimet/commit/eb7ae4b72
+.. _0f2be91bf: https://github.com/qualcomm/aimet/commit/0f2be91bf
+.. _8f552b7a6: https://github.com/qualcomm/aimet/commit/8f552b7a6
 
 
 2.28.0
@@ -279,10 +279,10 @@ Release notes
 * Documentation
     * Update docs and examples to use new API for setting lm_head precision (`ac3e11e`_)
 
-.. _20ecb0a: https://github.com/quic/aimet/commit/20ecb0ae89a1261250d5b5a8128802bc8d442bae
-.. _0d6f856: https://github.com/quic/aimet/commit/0d6f856cf8b6c1bbb3adc5d8d5e2d0a2c14c72e6
-.. _d9f3a90: https://github.com/quic/aimet/commit/d9f3a9094876db4834e9b1359b36627ff3ef6570
-.. _ac3e11e: https://github.com/quic/aimet/commit/ac3e11e1c6d835a6f65b83e29fd5e36479a9a750
+.. _20ecb0a: https://github.com/qualcomm/aimet/commit/20ecb0ae89a1261250d5b5a8128802bc8d442bae
+.. _0d6f856: https://github.com/qualcomm/aimet/commit/0d6f856cf8b6c1bbb3adc5d8d5e2d0a2c14c72e6
+.. _d9f3a90: https://github.com/qualcomm/aimet/commit/d9f3a9094876db4834e9b1359b36627ff3ef6570
+.. _ac3e11e: https://github.com/qualcomm/aimet/commit/ac3e11e1c6d835a6f65b83e29fd5e36479a9a750
 
 
 2.27.0
@@ -303,21 +303,21 @@ Release notes
     * Common
         * Propagate concat input quantizers to output when possible (`5ee0f13`_)
 
-.. _9ca3bf4: https://github.com/quic/aimet/commit/9ca3bf4cf74bc6b6db2a4d508ee260303a466edf
-.. _1228394: https://github.com/quic/aimet/commit/1228394ae2f534890cf29062332062105e6cd9db
-.. _cacd5cc: https://github.com/quic/aimet/commit/cacd5cc7a08ba91b359d2fdcab30adaaa9f99df8
-.. _525e993: https://github.com/quic/aimet/commit/525e993be3daec18ac7733b6822281bace4d0ca3
-.. _4eb97f0: https://github.com/quic/aimet/commit/4eb97f093e37e2d8c71d40a7aa7222a32063b4d7
-.. _3dd4ca9: https://github.com/quic/aimet/commit/3dd4ca9f44159b27a9eb3e802dd9fdde5af90e16
-.. _b6ea5bd: https://github.com/quic/aimet/commit/b6ea5bd022d4622f77a59694ef5d90fde0f5ac1e
-.. _169952d: https://github.com/quic/aimet/commit/169952d8582a289962eb3a168bb5aa70132c86d8
-.. _ca2a324: https://github.com/quic/aimet/commit/ca2a324a99724a1222818fe5bb53ea0a47fb3850
-.. _30ab60a: https://github.com/quic/aimet/commit/30ab60a7f210a8297e66c743d6f33a92aa186689
-.. _b3de9a2: https://github.com/quic/aimet/commit/b3de9a2b3591648e47067ac619ae8ceeb7984fd0
-.. _54c7462: https://github.com/quic/aimet/commit/54c746272d29058219eb0b57725de5cacd97a6ba
-.. _2cfd07e: https://github.com/quic/aimet/commit/2cfd07edccc6a5715ff99294dbc6057159acdd73
-.. _5ee0f13: https://github.com/quic/aimet/commit/5ee0f13d08b00294460566fe7d4bde5244f9c6db
-.. _3583462: https://github.com/quic/aimet/commit/35834628c5631853d3d7f36fd32b3ea1dceb8926
+.. _9ca3bf4: https://github.com/qualcomm/aimet/commit/9ca3bf4cf74bc6b6db2a4d508ee260303a466edf
+.. _1228394: https://github.com/qualcomm/aimet/commit/1228394ae2f534890cf29062332062105e6cd9db
+.. _cacd5cc: https://github.com/qualcomm/aimet/commit/cacd5cc7a08ba91b359d2fdcab30adaaa9f99df8
+.. _525e993: https://github.com/qualcomm/aimet/commit/525e993be3daec18ac7733b6822281bace4d0ca3
+.. _4eb97f0: https://github.com/qualcomm/aimet/commit/4eb97f093e37e2d8c71d40a7aa7222a32063b4d7
+.. _3dd4ca9: https://github.com/qualcomm/aimet/commit/3dd4ca9f44159b27a9eb3e802dd9fdde5af90e16
+.. _b6ea5bd: https://github.com/qualcomm/aimet/commit/b6ea5bd022d4622f77a59694ef5d90fde0f5ac1e
+.. _169952d: https://github.com/qualcomm/aimet/commit/169952d8582a289962eb3a168bb5aa70132c86d8
+.. _ca2a324: https://github.com/qualcomm/aimet/commit/ca2a324a99724a1222818fe5bb53ea0a47fb3850
+.. _30ab60a: https://github.com/qualcomm/aimet/commit/30ab60a7f210a8297e66c743d6f33a92aa186689
+.. _b3de9a2: https://github.com/qualcomm/aimet/commit/b3de9a2b3591648e47067ac619ae8ceeb7984fd0
+.. _54c7462: https://github.com/qualcomm/aimet/commit/54c746272d29058219eb0b57725de5cacd97a6ba
+.. _2cfd07e: https://github.com/qualcomm/aimet/commit/2cfd07edccc6a5715ff99294dbc6057159acdd73
+.. _5ee0f13: https://github.com/qualcomm/aimet/commit/5ee0f13d08b00294460566fe7d4bde5244f9c6db
+.. _3583462: https://github.com/qualcomm/aimet/commit/35834628c5631853d3d7f36fd32b3ea1dceb8926
 
 
 2.26.0
@@ -355,39 +355,39 @@ Release notes
     * Add AdaScale documentation with HuggingFace LLM example (`c403562`_)
     * Update doc code examples to use aimet_torch.onnx.export (`fed2a06`_)
 
-.. _68710d9: https://github.com/quic/aimet/commit/68710d9bf6cc0eeaed90b529671f8873a2f6bc56
-.. _5fa79cf: https://github.com/quic/aimet/commit/5fa79cfb394b84a7fc469134efbe322d854b2c3d
-.. _4811a34: https://github.com/quic/aimet/commit/4811a34a20d6aa209bd53178fa2cacdd9e147372
-.. _ea9a619: https://github.com/quic/aimet/commit/ea9a619539382ad9f02e8d097ad7068abd62f58e
-.. _beac8f8: https://github.com/quic/aimet/commit/beac8f80226d57adcad6a5cc7c534afbea707045
-.. _bae9953: https://github.com/quic/aimet/commit/bae99538e0043ffadc36a17cb5757687f8979edc
-.. _695465e: https://github.com/quic/aimet/commit/695465ed29923ecee3ae54a87a29ffd1c884dadb
-.. _cb1f9ae: https://github.com/quic/aimet/commit/cb1f9aee2e5f484c53bc3094a74e5243835c8bc1
-.. _abe0ef5: https://github.com/quic/aimet/commit/abe0ef597d70af7429625d0046c82df9cdef3531
-.. _c547cfb: https://github.com/quic/aimet/commit/c547cfb4d279055349e7a202a65ea692c71ad8a8
-.. _310b43d: https://github.com/quic/aimet/commit/310b43d973a7d06cc63fb632eeebf1c9cbd385d7
-.. _fb9629d: https://github.com/quic/aimet/commit/fb9629df4bdd9ccdd939cd93c78778e24165bce2
-.. _d54efa0: https://github.com/quic/aimet/commit/d54efa030dcd525cdccd3e9ecd3b71a8d5b01cb5
-.. _389d71f: https://github.com/quic/aimet/commit/389d71fc418e213e535e09bc24a413923b933a13
-.. _ab6e810: https://github.com/quic/aimet/commit/ab6e81066ff478d0c086ea401791ce0af8252b03
-.. _a1f6795: https://github.com/quic/aimet/commit/a1f6795daaafff3adca9f134b643be6b76b74a9a
-.. _f52f2e2: https://github.com/quic/aimet/commit/f52f2e247db6cb3da3f77347b8800f0cb5d9fd05
-.. _964d11f: https://github.com/quic/aimet/commit/964d11f2ea8833f7185405cfe7a7722189ed1648
-.. _b8bcb47: https://github.com/quic/aimet/commit/b8bcb4793869bbe1007bcfdd70c822b2f717072f
-.. _d518f35: https://github.com/quic/aimet/commit/d518f35a2873eacdaa941d368c028c403e76ba2d
-.. _3cc7252: https://github.com/quic/aimet/commit/3cc72529f747ab3e4355fe8cee60e92cdbd13c4c
-.. _4f84eb1: https://github.com/quic/aimet/commit/4f84eb1e481d239edeb42d6c724746374dae3d79
-.. _ee3d193: https://github.com/quic/aimet/commit/ee3d1933e80ac37c79cf52b53d5a1528b16987ea
-.. _8fc52c6: https://github.com/quic/aimet/commit/8fc52c6c7c710c1c9989e493b0f6d6936239dd0a
-.. _dfa20ee: https://github.com/quic/aimet/commit/dfa20ee4df195d853adcfff503de0f27a8eb7208
-.. _817d3b1: https://github.com/quic/aimet/commit/817d3b1f8f521750737d974f629d0cf54b29861f
-.. _5ce7229: https://github.com/quic/aimet/commit/5ce72290e2e6614e29fe3c8363695d41cb689430
-.. _5084af3: https://github.com/quic/aimet/commit/5084af38f40e297a0f73240c8ce8f9bad40880a0
-.. _e351112: https://github.com/quic/aimet/commit/e35111218ebad4b907443a0a9fb874df3d1b1dcf
-.. _738ee26: https://github.com/quic/aimet/commit/738ee26272a04d6220bb0342a259a8690dc91e28
-.. _3c0de8e: https://github.com/quic/aimet/commit/3c0de8e575fc159d4b0130def6f813c0d9f255ce
-.. _c403562: https://github.com/quic/aimet/commit/c4035624e65de059e9c11d7e201a1aab7f3b35b8
-.. _fed2a06: https://github.com/quic/aimet/commit/fed2a0600c2f45dc9b1bb31d88fc55133d2d0cd3
+.. _68710d9: https://github.com/qualcomm/aimet/commit/68710d9bf6cc0eeaed90b529671f8873a2f6bc56
+.. _5fa79cf: https://github.com/qualcomm/aimet/commit/5fa79cfb394b84a7fc469134efbe322d854b2c3d
+.. _4811a34: https://github.com/qualcomm/aimet/commit/4811a34a20d6aa209bd53178fa2cacdd9e147372
+.. _ea9a619: https://github.com/qualcomm/aimet/commit/ea9a619539382ad9f02e8d097ad7068abd62f58e
+.. _beac8f8: https://github.com/qualcomm/aimet/commit/beac8f80226d57adcad6a5cc7c534afbea707045
+.. _bae9953: https://github.com/qualcomm/aimet/commit/bae99538e0043ffadc36a17cb5757687f8979edc
+.. _695465e: https://github.com/qualcomm/aimet/commit/695465ed29923ecee3ae54a87a29ffd1c884dadb
+.. _cb1f9ae: https://github.com/qualcomm/aimet/commit/cb1f9aee2e5f484c53bc3094a74e5243835c8bc1
+.. _abe0ef5: https://github.com/qualcomm/aimet/commit/abe0ef597d70af7429625d0046c82df9cdef3531
+.. _c547cfb: https://github.com/qualcomm/aimet/commit/c547cfb4d279055349e7a202a65ea692c71ad8a8
+.. _310b43d: https://github.com/qualcomm/aimet/commit/310b43d973a7d06cc63fb632eeebf1c9cbd385d7
+.. _fb9629d: https://github.com/qualcomm/aimet/commit/fb9629df4bdd9ccdd939cd93c78778e24165bce2
+.. _d54efa0: https://github.com/qualcomm/aimet/commit/d54efa030dcd525cdccd3e9ecd3b71a8d5b01cb5
+.. _389d71f: https://github.com/qualcomm/aimet/commit/389d71fc418e213e535e09bc24a413923b933a13
+.. _ab6e810: https://github.com/qualcomm/aimet/commit/ab6e81066ff478d0c086ea401791ce0af8252b03
+.. _a1f6795: https://github.com/qualcomm/aimet/commit/a1f6795daaafff3adca9f134b643be6b76b74a9a
+.. _f52f2e2: https://github.com/qualcomm/aimet/commit/f52f2e247db6cb3da3f77347b8800f0cb5d9fd05
+.. _964d11f: https://github.com/qualcomm/aimet/commit/964d11f2ea8833f7185405cfe7a7722189ed1648
+.. _b8bcb47: https://github.com/qualcomm/aimet/commit/b8bcb4793869bbe1007bcfdd70c822b2f717072f
+.. _d518f35: https://github.com/qualcomm/aimet/commit/d518f35a2873eacdaa941d368c028c403e76ba2d
+.. _3cc7252: https://github.com/qualcomm/aimet/commit/3cc72529f747ab3e4355fe8cee60e92cdbd13c4c
+.. _4f84eb1: https://github.com/qualcomm/aimet/commit/4f84eb1e481d239edeb42d6c724746374dae3d79
+.. _ee3d193: https://github.com/qualcomm/aimet/commit/ee3d1933e80ac37c79cf52b53d5a1528b16987ea
+.. _8fc52c6: https://github.com/qualcomm/aimet/commit/8fc52c6c7c710c1c9989e493b0f6d6936239dd0a
+.. _dfa20ee: https://github.com/qualcomm/aimet/commit/dfa20ee4df195d853adcfff503de0f27a8eb7208
+.. _817d3b1: https://github.com/qualcomm/aimet/commit/817d3b1f8f521750737d974f629d0cf54b29861f
+.. _5ce7229: https://github.com/qualcomm/aimet/commit/5ce72290e2e6614e29fe3c8363695d41cb689430
+.. _5084af3: https://github.com/qualcomm/aimet/commit/5084af38f40e297a0f73240c8ce8f9bad40880a0
+.. _e351112: https://github.com/qualcomm/aimet/commit/e35111218ebad4b907443a0a9fb874df3d1b1dcf
+.. _738ee26: https://github.com/qualcomm/aimet/commit/738ee26272a04d6220bb0342a259a8690dc91e28
+.. _3c0de8e: https://github.com/qualcomm/aimet/commit/3c0de8e575fc159d4b0130def6f813c0d9f255ce
+.. _c403562: https://github.com/qualcomm/aimet/commit/c4035624e65de059e9c11d7e201a1aab7f3b35b8
+.. _fed2a06: https://github.com/qualcomm/aimet/commit/fed2a0600c2f45dc9b1bb31d88fc55133d2d0cd3
 
 
 2.25.1
@@ -398,8 +398,8 @@ Release notes
     * Torch
         * Fix to reduce GPU RAM usage for AdaScale for Qwen 3 VL model (`ee3d193`_)
 
-.. _5084af3: https://github.com/quic/aimet/commit/5084af38f40e297a0f73240c8ce8f9bad40880a0
-.. _ee3d193: https://github.com/quic/aimet/commit/ee3d1933e80ac37c79cf52b53d5a1528b16987ea
+.. _5084af3: https://github.com/qualcomm/aimet/commit/5084af38f40e297a0f73240c8ce8f9bad40880a0
+.. _ee3d193: https://github.com/qualcomm/aimet/commit/ee3d1933e80ac37c79cf52b53d5a1528b16987ea
 
 
 2.25.0
@@ -423,18 +423,18 @@ Release notes
         * Support built-in quantization of SyncBatchNorm (`1e8eceb`_)
 
 
-.. _28f89a7: https://github.com/quic/aimet/commit/28f89a7b4a212d651c62f4a25433ee4a41e25d55
-.. _a29f44f: https://github.com/quic/aimet/commit/a29f44ff6fa1c268da37c71ed0bf44014161d43e
-.. _c014961: https://github.com/quic/aimet/commit/c0149612d5b2d1ee629f6183a5c023ed9e9f09fd
-.. _ae1abd1: https://github.com/quic/aimet/commit/ae1abd1462de8d958fde33df122603300790d31f
-.. _3adcbee: https://github.com/quic/aimet/commit/3adcbeeed4b85845eeb523a50cc9e371b03d96fb
-.. _9972c1b: https://github.com/quic/aimet/commit/9972c1b5bfabcfa1b1487fecbe2aee16e94ca591
-.. _e250abd: https://github.com/quic/aimet/commit/e250abd61d0a95c120aa755e87b51d0270cee95c
-.. _ae7d5ef: https://github.com/quic/aimet/commit/ae7d5ef19b3071dde90d5564ae81907c95f17101
-.. _a8ac6f4: https://github.com/quic/aimet/commit/a8ac6f412b2266fb4043a4d18db7475ab6289140
-.. _135a0af: https://github.com/quic/aimet/commit/135a0afca6250556a363291c1df8c17682645b16
-.. _624ba30: https://github.com/quic/aimet/commit/624ba30ac50a36159ea21b90293ddfa25d79fe6b
-.. _1e8eceb: https://github.com/quic/aimet/commit/1e8eceb320189fd37dc7f1b75f86a47c9ab8d52c
+.. _28f89a7: https://github.com/qualcomm/aimet/commit/28f89a7b4a212d651c62f4a25433ee4a41e25d55
+.. _a29f44f: https://github.com/qualcomm/aimet/commit/a29f44ff6fa1c268da37c71ed0bf44014161d43e
+.. _c014961: https://github.com/qualcomm/aimet/commit/c0149612d5b2d1ee629f6183a5c023ed9e9f09fd
+.. _ae1abd1: https://github.com/qualcomm/aimet/commit/ae1abd1462de8d958fde33df122603300790d31f
+.. _3adcbee: https://github.com/qualcomm/aimet/commit/3adcbeeed4b85845eeb523a50cc9e371b03d96fb
+.. _9972c1b: https://github.com/qualcomm/aimet/commit/9972c1b5bfabcfa1b1487fecbe2aee16e94ca591
+.. _e250abd: https://github.com/qualcomm/aimet/commit/e250abd61d0a95c120aa755e87b51d0270cee95c
+.. _ae7d5ef: https://github.com/qualcomm/aimet/commit/ae7d5ef19b3071dde90d5564ae81907c95f17101
+.. _a8ac6f4: https://github.com/qualcomm/aimet/commit/a8ac6f412b2266fb4043a4d18db7475ab6289140
+.. _135a0af: https://github.com/qualcomm/aimet/commit/135a0afca6250556a363291c1df8c17682645b16
+.. _624ba30: https://github.com/qualcomm/aimet/commit/624ba30ac50a36159ea21b90293ddfa25d79fe6b
+.. _1e8eceb: https://github.com/qualcomm/aimet/commit/1e8eceb320189fd37dc7f1b75f86a47c9ab8d52c
 
 
 2.24.0
@@ -458,16 +458,16 @@ Release notes
         * Add an alias for referencing the eNPU configuration file (`b79611c`_)
 
 
-.. _8a999a1: https://github.com/quic/aimet/commit/8a999a1cf8c42e0a4cdfa9db52e3ea959aa155a4
-.. _af5a82d: https://github.com/quic/aimet/commit/af5a82ddacff1f5f01a9e2d3f5450677a359049c
-.. _ea4af6a: https://github.com/quic/aimet/commit/ea4af6a99ea61029bfaae48f041299cdbccb2508
-.. _489f7df: https://github.com/quic/aimet/commit/489f7df64c73260e83704fd09f0cab63f98f425d
-.. _72246db: https://github.com/quic/aimet/commit/72246dbb168559972fd5c9fc3a02d07b70a732d8
-.. _47f574d: https://github.com/quic/aimet/commit/47f574de4d2f51d5a6189a3f3de18726d5abcf5a
-.. _b58b00b: https://github.com/quic/aimet/commit/b58b00bd35c905ad1499e37f97dea7b0c264dbdd
-.. _ff7a284: https://github.com/quic/aimet/commit/ff7a2841935620615ccd52c001886f8ae8e29705
-.. _b79611c: https://github.com/quic/aimet/commit/b79611c86b52054a286adca257a2ba6d131ed5b0
-.. _1390b96: https://github.com/quic/aimet/commit/1390b96ec4bd014055c4a9c6b116eb9f06a85afd
+.. _8a999a1: https://github.com/qualcomm/aimet/commit/8a999a1cf8c42e0a4cdfa9db52e3ea959aa155a4
+.. _af5a82d: https://github.com/qualcomm/aimet/commit/af5a82ddacff1f5f01a9e2d3f5450677a359049c
+.. _ea4af6a: https://github.com/qualcomm/aimet/commit/ea4af6a99ea61029bfaae48f041299cdbccb2508
+.. _489f7df: https://github.com/qualcomm/aimet/commit/489f7df64c73260e83704fd09f0cab63f98f425d
+.. _72246db: https://github.com/qualcomm/aimet/commit/72246dbb168559972fd5c9fc3a02d07b70a732d8
+.. _47f574d: https://github.com/qualcomm/aimet/commit/47f574de4d2f51d5a6189a3f3de18726d5abcf5a
+.. _b58b00b: https://github.com/qualcomm/aimet/commit/b58b00bd35c905ad1499e37f97dea7b0c264dbdd
+.. _ff7a284: https://github.com/qualcomm/aimet/commit/ff7a2841935620615ccd52c001886f8ae8e29705
+.. _b79611c: https://github.com/qualcomm/aimet/commit/b79611c86b52054a286adca257a2ba6d131ed5b0
+.. _1390b96: https://github.com/qualcomm/aimet/commit/1390b96ec4bd014055c4a9c6b116eb9f06a85afd
 
 
 2.23.0
@@ -486,12 +486,12 @@ Release notes
         * LLM quantization recipes in docs (`6561f0e`_)
         * Fix CUDA discrepancies against CPU wheel (`01e7422`_)
 
-.. _9395e32: https://github.com/quic/aimet/commit/9395e3243fdfdc245540ef8a39b3058b27404baa
-.. _a1c197d: https://github.com/quic/aimet/commit/a1c197d06c72793a4d903fdecdd214389c3f4b3e
-.. _59e0125: https://github.com/quic/aimet/commit/59e01254fefdc99394b984ef4c9a8bb907ac4a3c
-.. _7137849: https://github.com/quic/aimet/commit/71378496f6a966904938b600d562e7d3eb402b90
+.. _9395e32: https://github.com/qualcomm/aimet/commit/9395e3243fdfdc245540ef8a39b3058b27404baa
+.. _a1c197d: https://github.com/qualcomm/aimet/commit/a1c197d06c72793a4d903fdecdd214389c3f4b3e
+.. _59e0125: https://github.com/qualcomm/aimet/commit/59e01254fefdc99394b984ef4c9a8bb907ac4a3c
+.. _7137849: https://github.com/qualcomm/aimet/commit/71378496f6a966904938b600d562e7d3eb402b90
 .. _6561f0e: https://github.qualcomm.com/qualcomm-ai/aimet/commit/6561f0e06e339596201ea93963f75f187094e79c
-.. _01e7422: https://github.com/quic/aimet/commit/01e7422dd0da63f8fcf338dcc1636cf6a0294823
+.. _01e7422: https://github.com/qualcomm/aimet/commit/01e7422dd0da63f8fcf338dcc1636cf6a0294823
 
 
 2.22.0
@@ -507,11 +507,11 @@ Release notes
     * Common
         * Support exporting 1x1 Conv LPBQ to ONNX QDQ (`58ce71d`_)
 
-.. _e8cb098: https://github.com/quic/aimet/commit/e8cb098c19a786ab3cdae693f6cc651d348bc824
-.. _6761a19: https://github.com/quic/aimet/commit/6761a1920718cf161a8c5f42614cd5b25ac0be70
-.. _7b3cc4c: https://github.com/quic/aimet/commit/7b3cc4c927991e0cdd98df5fa69c4c529147b787
-.. _5ad7ea6: https://github.com/quic/aimet/commit/5ad7ea66056a3e243e17f14e2f3daad3c1c517ac
-.. _58ce71d: https://github.com/quic/aimet/commit/58ce71de197e681d364a958da9b2d2389dfbf501
+.. _e8cb098: https://github.com/qualcomm/aimet/commit/e8cb098c19a786ab3cdae693f6cc651d348bc824
+.. _6761a19: https://github.com/qualcomm/aimet/commit/6761a1920718cf161a8c5f42614cd5b25ac0be70
+.. _7b3cc4c: https://github.com/qualcomm/aimet/commit/7b3cc4c927991e0cdd98df5fa69c4c529147b787
+.. _5ad7ea6: https://github.com/qualcomm/aimet/commit/5ad7ea66056a3e243e17f14e2f3daad3c1c517ac
+.. _58ce71d: https://github.com/qualcomm/aimet/commit/58ce71de197e681d364a958da9b2d2389dfbf501
 
 
 2.21.0
@@ -528,12 +528,12 @@ Release notes
     * PyTorch
         * Fix quantization logic to enable input quantizers for layers following ignored layers (`80fb4fe`_)
 
-.. _65c4b3b: https://github.com/quic/aimet/commit/65c4b3b9f58cbeddfb41f79db42e79a80d6427df
-.. _3b8e0f0: https://github.com/quic/aimet/commit/3b8e0f03f7701003377a65cf5d782143f627db2b
-.. _d99b6c4: https://github.com/quic/aimet/commit/d99b6c4a9e54f0f05e2ac2b72487058d7c19fcdc
-.. _e4c49eb: https://github.com/quic/aimet/commit/e4c49eb6c5e1b5c666221313981b8fab44f19ea8
-.. _6ca06d6: https://github.com/quic/aimet/commit/6ca06d60b82b59bf2f30e90663d8cfdb3777da91
-.. _80fb4fe: https://github.com/quic/aimet/commit/80fb4fef91bf81bb5a7356645295168ca1ccef88
+.. _65c4b3b: https://github.com/qualcomm/aimet/commit/65c4b3b9f58cbeddfb41f79db42e79a80d6427df
+.. _3b8e0f0: https://github.com/qualcomm/aimet/commit/3b8e0f03f7701003377a65cf5d782143f627db2b
+.. _d99b6c4: https://github.com/qualcomm/aimet/commit/d99b6c4a9e54f0f05e2ac2b72487058d7c19fcdc
+.. _e4c49eb: https://github.com/qualcomm/aimet/commit/e4c49eb6c5e1b5c666221313981b8fab44f19ea8
+.. _6ca06d6: https://github.com/qualcomm/aimet/commit/6ca06d60b82b59bf2f30e90663d8cfdb3777da91
+.. _80fb4fe: https://github.com/qualcomm/aimet/commit/80fb4fef91bf81bb5a7356645295168ca1ccef88
 
 
 2.20.0
@@ -568,28 +568,28 @@ Release notes
         * Fix symmetry bug in _from_qnn_encoding_dict (`35602ea`_)
         * Align onnx 1.0.0 BQ encoding export ordering with QAIRT expectation (`0182b7a`_)
 
-.. _21cddb6: https://github.com/quic/aimet/commit/21cddb68889e3d01843de8744e8493f6daa3db28
-.. _550c029: https://github.com/quic/aimet/commit/550c0291d074626e555db6b6a5fa3239f333787e
-.. _273dd82: https://github.com/quic/aimet/commit/273dd8202489205ff39d20d52a227053ee6cd2e6
-.. _7e5342b: https://github.com/quic/aimet/commit/7e5342bcf60e6e51467ebf791ab96ac9eadbca65
-.. _3a8659b: https://github.com/quic/aimet/commit/3a8659b3b97b7d923d2f32b44b55fae48b7f6ac2
-.. _755c54a: https://github.com/quic/aimet/commit/755c54ad7f716f39f7088f995f37f25deedb3520
-.. _552ad83: https://github.com/quic/aimet/commit/552ad83f861502f99765358d83ccda252f8a40fa
-.. _ec22d86: https://github.com/quic/aimet/commit/ec22d8682ba076eb6e09b29a96cd3aab827e8e2b
-.. _495567f: https://github.com/quic/aimet/commit/495567f3bf05d447e76580a1b30aa5aa86ce6c0b
-.. _35602ea: https://github.com/quic/aimet/commit/35602eac649576812078a2d93b73d8f319dd25bf
-.. _f94f3e2: https://github.com/quic/aimet/commit/f94f3e22d89f71d6dbced1cfa1393dc83c19f1b4
-.. _b55b058: https://github.com/quic/aimet/commit/b55b058445fe552986e0ddae5f837570aebae69c
-.. _074e85f: https://github.com/quic/aimet/commit/074e85fd15b92c2b65b03059374a5272f07bdeb5
-.. _3136828: https://github.com/quic/aimet/commit/3136828f051ff4f1032b9fc8fec2c31e979dc67c
-.. _59aac3e: https://github.com/quic/aimet/commit/59aac3e4a65c295d6f25d6fb5cb53b7c0441774f
-.. _0182b7a: https://github.com/quic/aimet/commit/0182b7aea8a62647269893a9291fd83cd8959f2c
-.. _8874173: https://github.com/quic/aimet/commit/887417350d00f8a505c6c3c1754868cfcdd552f7
-.. _a8f32fc: https://github.com/quic/aimet/commit/a8f32fce6188564a4cec2db63085d40b26056534
-.. _fd7e40d: https://github.com/quic/aimet/commit/fd7e40dbf43660bfb733ff50fe72ea889f2d8c09
-.. _7d4659d: https://github.com/quic/aimet/commit/7d4659dae2541e6a72c6cea5cba3f6dc676601eb
-.. _4ddbd66: https://github.com/quic/aimet/commit/4ddbd66aac7e75183cfa219a6da60bb576f0e0e8
-.. _2bc8c94: https://github.com/quic/aimet/commit/2bc8c94fcced5ceff790f2c8a0b8347ee42f0be1
+.. _21cddb6: https://github.com/qualcomm/aimet/commit/21cddb68889e3d01843de8744e8493f6daa3db28
+.. _550c029: https://github.com/qualcomm/aimet/commit/550c0291d074626e555db6b6a5fa3239f333787e
+.. _273dd82: https://github.com/qualcomm/aimet/commit/273dd8202489205ff39d20d52a227053ee6cd2e6
+.. _7e5342b: https://github.com/qualcomm/aimet/commit/7e5342bcf60e6e51467ebf791ab96ac9eadbca65
+.. _3a8659b: https://github.com/qualcomm/aimet/commit/3a8659b3b97b7d923d2f32b44b55fae48b7f6ac2
+.. _755c54a: https://github.com/qualcomm/aimet/commit/755c54ad7f716f39f7088f995f37f25deedb3520
+.. _552ad83: https://github.com/qualcomm/aimet/commit/552ad83f861502f99765358d83ccda252f8a40fa
+.. _ec22d86: https://github.com/qualcomm/aimet/commit/ec22d8682ba076eb6e09b29a96cd3aab827e8e2b
+.. _495567f: https://github.com/qualcomm/aimet/commit/495567f3bf05d447e76580a1b30aa5aa86ce6c0b
+.. _35602ea: https://github.com/qualcomm/aimet/commit/35602eac649576812078a2d93b73d8f319dd25bf
+.. _f94f3e2: https://github.com/qualcomm/aimet/commit/f94f3e22d89f71d6dbced1cfa1393dc83c19f1b4
+.. _b55b058: https://github.com/qualcomm/aimet/commit/b55b058445fe552986e0ddae5f837570aebae69c
+.. _074e85f: https://github.com/qualcomm/aimet/commit/074e85fd15b92c2b65b03059374a5272f07bdeb5
+.. _3136828: https://github.com/qualcomm/aimet/commit/3136828f051ff4f1032b9fc8fec2c31e979dc67c
+.. _59aac3e: https://github.com/qualcomm/aimet/commit/59aac3e4a65c295d6f25d6fb5cb53b7c0441774f
+.. _0182b7a: https://github.com/qualcomm/aimet/commit/0182b7aea8a62647269893a9291fd83cd8959f2c
+.. _8874173: https://github.com/qualcomm/aimet/commit/887417350d00f8a505c6c3c1754868cfcdd552f7
+.. _a8f32fc: https://github.com/qualcomm/aimet/commit/a8f32fce6188564a4cec2db63085d40b26056534
+.. _fd7e40d: https://github.com/qualcomm/aimet/commit/fd7e40dbf43660bfb733ff50fe72ea889f2d8c09
+.. _7d4659d: https://github.com/qualcomm/aimet/commit/7d4659dae2541e6a72c6cea5cba3f6dc676601eb
+.. _4ddbd66: https://github.com/qualcomm/aimet/commit/4ddbd66aac7e75183cfa219a6da60bb576f0e0e8
+.. _2bc8c94: https://github.com/qualcomm/aimet/commit/2bc8c94fcced5ceff790f2c8a0b8347ee42f0be1
 
 
 2.19.0
@@ -613,15 +613,15 @@ Release notes
     * Common
         * Disable per-channel quantization of RNN/GRU/LSTM for all HTP backends (`df8b875`_)
 
-.. _df8b875: https://github.com/quic/aimet/commit/df8b87516dc894baf768377a037944fcdd60f0f6
-.. _69f96ff: https://github.com/quic/aimet/commit/69f96ff1af7c69603f325dbdf2a89cf6b22d57a7
-.. _8560e13: https://github.com/quic/aimet/commit/8560e136914216a1003bb2888b827daaae490991
-.. _15c8b9b: https://github.com/quic/aimet/commit/15c8b9b2672671fd3cff1c92267460340c40db48
-.. _2c88364: https://github.com/quic/aimet/commit/2c88364f75f893ec1f798afd7530436685aa5b7a
-.. _104e7e8: https://github.com/quic/aimet/commit/104e7e8284393ae383c31e0c2045ab06674fac35
-.. _832ea91: https://github.com/quic/aimet/commit/832ea917f48fd1fd70096827c3fca647d7621e2d
-.. _c18fd05: https://github.com/quic/aimet/commit/c18fd056674614b44c443679a5620ed5223303d0
-.. _2b7b548: https://github.com/quic/aimet/commit/2b7b54816b0f35db5bf09c107075d7b7285f871c
+.. _df8b875: https://github.com/qualcomm/aimet/commit/df8b87516dc894baf768377a037944fcdd60f0f6
+.. _69f96ff: https://github.com/qualcomm/aimet/commit/69f96ff1af7c69603f325dbdf2a89cf6b22d57a7
+.. _8560e13: https://github.com/qualcomm/aimet/commit/8560e136914216a1003bb2888b827daaae490991
+.. _15c8b9b: https://github.com/qualcomm/aimet/commit/15c8b9b2672671fd3cff1c92267460340c40db48
+.. _2c88364: https://github.com/qualcomm/aimet/commit/2c88364f75f893ec1f798afd7530436685aa5b7a
+.. _104e7e8: https://github.com/qualcomm/aimet/commit/104e7e8284393ae383c31e0c2045ab06674fac35
+.. _832ea91: https://github.com/qualcomm/aimet/commit/832ea917f48fd1fd70096827c3fca647d7621e2d
+.. _c18fd05: https://github.com/qualcomm/aimet/commit/c18fd056674614b44c443679a5620ed5223303d0
+.. _2b7b548: https://github.com/qualcomm/aimet/commit/2b7b54816b0f35db5bf09c107075d7b7285f871c
 
 
 2.18.0
@@ -643,14 +643,14 @@ Release notes
     * Common
         * Set priority among supergroups (`6676a6c`_)
 
-.. _99160d2: https://github.com/quic/aimet/commit/99160d2
-.. _e026fd1: https://github.com/quic/aimet/commit/e026fd1
-.. _ab63866: https://github.com/quic/aimet/commit/ab63866
-.. _47fae94: https://github.com/quic/aimet/commit/47fae94
-.. _283ecc1: https://github.com/quic/aimet/commit/283ecc1
-.. _5a419f3: https://github.com/quic/aimet/commit/5a419f3
-.. _501eebd: https://github.com/quic/aimet/commit/501eebd
-.. _6676a6c: https://github.com/quic/aimet/commit/6676a6c
+.. _99160d2: https://github.com/qualcomm/aimet/commit/99160d2
+.. _e026fd1: https://github.com/qualcomm/aimet/commit/e026fd1
+.. _ab63866: https://github.com/qualcomm/aimet/commit/ab63866
+.. _47fae94: https://github.com/qualcomm/aimet/commit/47fae94
+.. _283ecc1: https://github.com/qualcomm/aimet/commit/283ecc1
+.. _5a419f3: https://github.com/qualcomm/aimet/commit/5a419f3
+.. _501eebd: https://github.com/qualcomm/aimet/commit/501eebd
+.. _6676a6c: https://github.com/qualcomm/aimet/commit/6676a6c
 
 
 2.17.0
@@ -674,19 +674,19 @@ Release notes
         * Remove Conv-Relu supergroup from HTP < V73 config files (`19e5a4e`_)
         * Fix LayerNorm and InstanceNorm weight symmetry in HTP < V73 config files (`eb1ac5c`_, `ce1ea63`_)
 
-.. _434ac6b: https://github.com/quic/aimet/commit/434ac6b8ac5347935a0e3902b2e37e0c49dfe242
-.. _b1dafe6: https://github.com/quic/aimet/commit/b1dafe6fa5173fc2247802313224e40013b68822
-.. _19e5a4e: https://github.com/quic/aimet/commit/19e5a4ecb3a1e58bcf71f455d7d3855bcc5d86f2
-.. _28a7382: https://github.com/quic/aimet/commit/28a73829aee6d77991c100ea4ed9fdeab5fc009c
-.. _eb1ac5c: https://github.com/quic/aimet/commit/eb1ac5c36e7dd198d43d4aa450b5933cf94755b4
-.. _ce1ea63: https://github.com/quic/aimet/commit/ce1ea63845d0f7b6ddef66ebcc70922cbcad511b
-.. _1bf8b82: https://github.com/quic/aimet/commit/1bf8b82fe6c23846d9fe615773797a1df7fb5545
-.. _6a37239: https://github.com/quic/aimet/commit/6a37239ffbaf0187ead2ddee205960c403817e17
-.. _e49660c: https://github.com/quic/aimet/commit/e49660c87fb3097f247e680c93ddc1c1f62c8871
-.. _d57a934: https://github.com/quic/aimet/commit/d57a934cb25539f7f2809c3f5ef8b44e384ef051
-.. _ee949a2: https://github.com/quic/aimet/commit/ee949a2d1ad8a64c0de8bfbf34339251f0804294
-.. _66ccb45: https://github.com/quic/aimet/commit/66ccb45343abd6a475816b395a1658b6998df202
-.. _f0bc6c9: https://github.com/quic/aimet/commit/f0bc6c9b0ae4a45d517c8b96fc032022a07c6217
+.. _434ac6b: https://github.com/qualcomm/aimet/commit/434ac6b8ac5347935a0e3902b2e37e0c49dfe242
+.. _b1dafe6: https://github.com/qualcomm/aimet/commit/b1dafe6fa5173fc2247802313224e40013b68822
+.. _19e5a4e: https://github.com/qualcomm/aimet/commit/19e5a4ecb3a1e58bcf71f455d7d3855bcc5d86f2
+.. _28a7382: https://github.com/qualcomm/aimet/commit/28a73829aee6d77991c100ea4ed9fdeab5fc009c
+.. _eb1ac5c: https://github.com/qualcomm/aimet/commit/eb1ac5c36e7dd198d43d4aa450b5933cf94755b4
+.. _ce1ea63: https://github.com/qualcomm/aimet/commit/ce1ea63845d0f7b6ddef66ebcc70922cbcad511b
+.. _1bf8b82: https://github.com/qualcomm/aimet/commit/1bf8b82fe6c23846d9fe615773797a1df7fb5545
+.. _6a37239: https://github.com/qualcomm/aimet/commit/6a37239ffbaf0187ead2ddee205960c403817e17
+.. _e49660c: https://github.com/qualcomm/aimet/commit/e49660c87fb3097f247e680c93ddc1c1f62c8871
+.. _d57a934: https://github.com/qualcomm/aimet/commit/d57a934cb25539f7f2809c3f5ef8b44e384ef051
+.. _ee949a2: https://github.com/qualcomm/aimet/commit/ee949a2d1ad8a64c0de8bfbf34339251f0804294
+.. _66ccb45: https://github.com/qualcomm/aimet/commit/66ccb45343abd6a475816b395a1658b6998df202
+.. _f0bc6c9: https://github.com/qualcomm/aimet/commit/f0bc6c9b0ae4a45d517c8b96fc032022a07c6217
 
 
 2.16.0
@@ -710,16 +710,16 @@ Release notes
         * Implement partial encoding freezing mechanism in aimet-torch (`1b99a39`_)
         * Improve scale post-processing to prevent scale freezing during QAT (`6fe56b0`_)
 
-.. _5e23ceb: https://github.com/quic/aimet/commit/5e23cebea551c074f7a380ef2f385fd95433bb53
-.. _b924107: https://github.com/quic/aimet/commit/b9241073256c4a455426451efbc1f3d0672e37b2
-.. _ba10947: https://github.com/quic/aimet/commit/ba10947bdbdecdf2980f076560453991c3888e77
-.. _658ec3c: https://github.com/quic/aimet/commit/658ec3c20be379b582321171e28f92e8fab1102b
-.. _1b99a39: https://github.com/quic/aimet/commit/1b99a39b6c19f6b7fc77c871b5dc232981e6eac9
-.. _dc8d978: https://github.com/quic/aimet/commit/dc8d978f672e5a93ecb5c8de64017ccaf949d2bf
-.. _3d4725f: https://github.com/quic/aimet/commit/3d4725fc172bffeadd87ee993b7a30e5d51691b2
-.. _59350af: https://github.com/quic/aimet/commit/59350afb881678dc0313a7445bb2e61d5b14328b
-.. _7d63e66: https://github.com/quic/aimet/commit/7d63e6660050399479c804b474b9cb87c7991fce
-.. _6fe56b0: https://github.com/quic/aimet/commit/6fe56b0d94b1de7f659f4e1d08be5847e4313a09
+.. _5e23ceb: https://github.com/qualcomm/aimet/commit/5e23cebea551c074f7a380ef2f385fd95433bb53
+.. _b924107: https://github.com/qualcomm/aimet/commit/b9241073256c4a455426451efbc1f3d0672e37b2
+.. _ba10947: https://github.com/qualcomm/aimet/commit/ba10947bdbdecdf2980f076560453991c3888e77
+.. _658ec3c: https://github.com/qualcomm/aimet/commit/658ec3c20be379b582321171e28f92e8fab1102b
+.. _1b99a39: https://github.com/qualcomm/aimet/commit/1b99a39b6c19f6b7fc77c871b5dc232981e6eac9
+.. _dc8d978: https://github.com/qualcomm/aimet/commit/dc8d978f672e5a93ecb5c8de64017ccaf949d2bf
+.. _3d4725f: https://github.com/qualcomm/aimet/commit/3d4725fc172bffeadd87ee993b7a30e5d51691b2
+.. _59350af: https://github.com/qualcomm/aimet/commit/59350afb881678dc0313a7445bb2e61d5b14328b
+.. _7d63e66: https://github.com/qualcomm/aimet/commit/7d63e6660050399479c804b474b9cb87c7991fce
+.. _6fe56b0: https://github.com/qualcomm/aimet/commit/6fe56b0d94b1de7f659f4e1d08be5847e4313a09
 
 
 2.15.0
@@ -740,12 +740,12 @@ Release notes
     * Common
         * Added PSNR metrics (`14c8e81`_)
 
-.. _14c8e81: https://github.com/quic/aimet/commit/14c8e81a8309504d564799801cfde102618efc8a
-.. _087e9b1: https://github.com/quic/aimet/commit/087e9b1ddefea24f21580256f8b20606b931d74c
-.. _5181860: https://github.com/quic/aimet/commit/5181860434e75e67cb161e3c0e9135df10b04507
-.. _3d5e0dd: https://github.com/quic/aimet/commit/3d5e0ddd5dab7b0fec2aea5fc20bf21955e918d8
-.. _a97354f: https://github.com/quic/aimet/commit/a97354f0f6b72d790a8c03fea1338d7cb5c6aa64
-.. _6216ca0: https://github.com/quic/aimet/commit/6216ca03e0d15ce47d5c4273f59d72d6d5ad46dc
+.. _14c8e81: https://github.com/qualcomm/aimet/commit/14c8e81a8309504d564799801cfde102618efc8a
+.. _087e9b1: https://github.com/qualcomm/aimet/commit/087e9b1ddefea24f21580256f8b20606b931d74c
+.. _5181860: https://github.com/qualcomm/aimet/commit/5181860434e75e67cb161e3c0e9135df10b04507
+.. _3d5e0dd: https://github.com/qualcomm/aimet/commit/3d5e0ddd5dab7b0fec2aea5fc20bf21955e918d8
+.. _a97354f: https://github.com/qualcomm/aimet/commit/a97354f0f6b72d790a8c03fea1338d7cb5c6aa64
+.. _6216ca0: https://github.com/qualcomm/aimet/commit/6216ca03e0d15ce47d5c4273f59d72d6d5ad46dc
 
 2.14.0
 ======
@@ -771,16 +771,16 @@ Release notes
         * Remove ``Conv3d``, ``Conv3dTranspose``, and ``DepthwiseConv`` ops followed by activation from the supergroup until HTP support is available. (`05f6810`_)
         * Fix color theme issue in documentation causing code snippets to render incorrectly (`2c64eac`_)
 
-.. _2494d90: https://github.com/quic/aimet/commit/2494d9048241b0b84e388f69d3c202b2e45285ee
-.. _754d030: https://github.com/quic/aimet/commit/754d030838cb676b6f6b08f6e8cc91838bcf8be9
-.. _91109af: https://github.com/quic/aimet/commit/91109aff222711a4ce0528e8b2dc2eb2c63cf18d
-.. _f7e700f: https://github.com/quic/aimet/commit/f7e700f98973bdf39907482d3092349ceae2047e
-.. _c0bdb46: https://github.com/quic/aimet/commit/c0bdb466f0e26b5757f473308af0c41c47a50fb1
-.. _374e8db: https://github.com/quic/aimet/commit/374e8dbc344f40cf356d3bae2ede521ad5341622
-.. _51f8990: https://github.com/quic/aimet/commit/51f899080ea7260dc2591023a868b30a88ff5fa4
-.. _05f6810: https://github.com/quic/aimet/commit/05f6810a5a0e1eef2cfaf6525c572fc02b0174bc
-.. _2c64eac: https://github.com/quic/aimet/commit/2c64eac1801724500028e926585c558b936f12ae
-.. _22cac5c: https://github.com/quic/aimet/commit/22cac5c7cb69e8ea66f710ab1b967c6f9b44f0f5
+.. _2494d90: https://github.com/qualcomm/aimet/commit/2494d9048241b0b84e388f69d3c202b2e45285ee
+.. _754d030: https://github.com/qualcomm/aimet/commit/754d030838cb676b6f6b08f6e8cc91838bcf8be9
+.. _91109af: https://github.com/qualcomm/aimet/commit/91109aff222711a4ce0528e8b2dc2eb2c63cf18d
+.. _f7e700f: https://github.com/qualcomm/aimet/commit/f7e700f98973bdf39907482d3092349ceae2047e
+.. _c0bdb46: https://github.com/qualcomm/aimet/commit/c0bdb466f0e26b5757f473308af0c41c47a50fb1
+.. _374e8db: https://github.com/qualcomm/aimet/commit/374e8dbc344f40cf356d3bae2ede521ad5341622
+.. _51f8990: https://github.com/qualcomm/aimet/commit/51f899080ea7260dc2591023a868b30a88ff5fa4
+.. _05f6810: https://github.com/qualcomm/aimet/commit/05f6810a5a0e1eef2cfaf6525c572fc02b0174bc
+.. _2c64eac: https://github.com/qualcomm/aimet/commit/2c64eac1801724500028e926585c558b936f12ae
+.. _22cac5c: https://github.com/qualcomm/aimet/commit/22cac5c7cb69e8ea66f710ab1b967c6f9b44f0f5
 
 2.13.0
 ======
@@ -799,12 +799,12 @@ Release notes
     * Keras
         * Accuracy drop observed with AIMET Keras for certain models. Fix is planned for the next release.
 
-.. _f39c0bf: https://github.com/quic/aimet/commit/f39c0bf3e3fc1e21527f9a99c8b8d42e1ebdd277
-.. _414cdde: https://github.com/quic/aimet/commit/414cddec3d7317cf7251c0134e6f4b3a15bbcb1e
-.. _0fe6701: https://github.com/quic/aimet/commit/0fe67010fd06641c2ef9696f7e36ce87e58456fb
-.. _bfba557: https://github.com/quic/aimet/commit/bfba5573007b41935b217e79ada931598b44da19
-.. _18dfedc: https://github.com/quic/aimet/commit/18dfedcc3fa0eecfec57b7352c1b467b8c826650
-.. _107b339: https://github.com/quic/aimet/commit/107b339fe9cb9ee105e7aa97257751d44d878f34
+.. _f39c0bf: https://github.com/qualcomm/aimet/commit/f39c0bf3e3fc1e21527f9a99c8b8d42e1ebdd277
+.. _414cdde: https://github.com/qualcomm/aimet/commit/414cddec3d7317cf7251c0134e6f4b3a15bbcb1e
+.. _0fe6701: https://github.com/qualcomm/aimet/commit/0fe67010fd06641c2ef9696f7e36ce87e58456fb
+.. _bfba557: https://github.com/qualcomm/aimet/commit/bfba5573007b41935b217e79ada931598b44da19
+.. _18dfedc: https://github.com/qualcomm/aimet/commit/18dfedcc3fa0eecfec57b7352c1b467b8c826650
+.. _107b339: https://github.com/qualcomm/aimet/commit/107b339fe9cb9ee105e7aa97257751d44d878f34
 
 
 2.12.0
@@ -824,10 +824,10 @@ Release notes
     * Keras
         * Accuracy drop observed with AIMET Keras for certain models. Fix is planned for the next release.
 
-.. _62f5879: https://github.com/quic/aimet/commit/62f587909a91d50fe60ae8d453d8e557b6ab67d5
-.. _b73bb71: https://github.com/quic/aimet/commit/b73bb7168532469cf0b93e886508fd00bb071fc6
-.. _ae02aa8: https://github.com/quic/aimet/commit/ae02aa852aff4f8c9dec651dd13cc7d177904642
-.. _b2350b2: https://github.com/quic/aimet/commit/b2350b2f87247a4d879fc83496c7e2d042569917
+.. _62f5879: https://github.com/qualcomm/aimet/commit/62f587909a91d50fe60ae8d453d8e557b6ab67d5
+.. _b73bb71: https://github.com/qualcomm/aimet/commit/b73bb7168532469cf0b93e886508fd00bb071fc6
+.. _ae02aa8: https://github.com/qualcomm/aimet/commit/ae02aa852aff4f8c9dec651dd13cc7d177904642
+.. _b2350b2: https://github.com/qualcomm/aimet/commit/b2350b2f87247a4d879fc83496c7e2d042569917
 
 
 2.11.0
@@ -868,24 +868,24 @@ Release notes
     * Keras
         * Accuracy drop observed with AIMET Keras for certain models. Fix is planned for the next release.
 
-.. _6c92a97: https://github.com/quic/aimet/commit/6c92a9760fdb0fd1f095acd58935564eab18e69f
-.. _6c9f584: https://github.com/quic/aimet/commit/6c9f5848edbbe8bc1a3d87bed2ed0072abda0e9b
-.. _f961ed4: https://github.com/quic/aimet/commit/f961ed40f3f0f1c05315b901add3275751aa3afe
-.. _2ed8305: https://github.com/quic/aimet/commit/2ed8305190856a81881a590d5f7390e02531d912
-.. _a967b8f: https://github.com/quic/aimet/commit/a967b8f0d71abe5d24c0a381abcdda3622982d15
-.. _3c92bb7: https://github.com/quic/aimet/commit/3c92bb72683fb6a5ed89142dbeacf9bea901bf67
-.. _d33e98c: https://github.com/quic/aimet/commit/d33e98c427f4cdcb19bc6443dec772590d1011a5
-.. _08c17b8: https://github.com/quic/aimet/commit/08c17b875cbe6fce0a5d6f2ba75a7ddea508ad0f
-.. _2d4e0eb: https://github.com/quic/aimet/commit/2d4e0eb7b235b1ff7c420362037f0292b183dfe1
-.. _b1415bd: https://github.com/quic/aimet/commit/b1415bded1d7ba539d7a1f35b04adf7a7ebf17be
-.. _45c2a65: https://github.com/quic/aimet/commit/45c2a65e254ee674bfc4c00f4bb5fbe830aa4922
-.. _6f670a4: https://github.com/quic/aimet/commit/6f670a41d75fbe4664a24c3d899ab37faac7fbfc
-.. _bb93c76: https://github.com/quic/aimet/commit/bb93c765bdcc2f06a4d9fd1a07833bb54e2627a9
-.. _50f35dd: https://github.com/quic/aimet/commit/50f35dd933744a2096de22b679e6e4a08ed29cb4
-.. _3750526: https://github.com/quic/aimet/commit/3750526bb6c6e339c16773cc1bdc752fffcb9802
-.. _654f4b1: https://github.com/quic/aimet/commit/654f4b181bc4825c6122f5191d29cc218996caac
-.. _4febdd4: https://github.com/quic/aimet/commit/4febdd4f72a1414c90b37704db220321b8a43d77
-.. _7364b37: https://github.com/quic/aimet/commit/7364b37c9ab5cb0f90f02209634c5fc412cce8d8
+.. _6c92a97: https://github.com/qualcomm/aimet/commit/6c92a9760fdb0fd1f095acd58935564eab18e69f
+.. _6c9f584: https://github.com/qualcomm/aimet/commit/6c9f5848edbbe8bc1a3d87bed2ed0072abda0e9b
+.. _f961ed4: https://github.com/qualcomm/aimet/commit/f961ed40f3f0f1c05315b901add3275751aa3afe
+.. _2ed8305: https://github.com/qualcomm/aimet/commit/2ed8305190856a81881a590d5f7390e02531d912
+.. _a967b8f: https://github.com/qualcomm/aimet/commit/a967b8f0d71abe5d24c0a381abcdda3622982d15
+.. _3c92bb7: https://github.com/qualcomm/aimet/commit/3c92bb72683fb6a5ed89142dbeacf9bea901bf67
+.. _d33e98c: https://github.com/qualcomm/aimet/commit/d33e98c427f4cdcb19bc6443dec772590d1011a5
+.. _08c17b8: https://github.com/qualcomm/aimet/commit/08c17b875cbe6fce0a5d6f2ba75a7ddea508ad0f
+.. _2d4e0eb: https://github.com/qualcomm/aimet/commit/2d4e0eb7b235b1ff7c420362037f0292b183dfe1
+.. _b1415bd: https://github.com/qualcomm/aimet/commit/b1415bded1d7ba539d7a1f35b04adf7a7ebf17be
+.. _45c2a65: https://github.com/qualcomm/aimet/commit/45c2a65e254ee674bfc4c00f4bb5fbe830aa4922
+.. _6f670a4: https://github.com/qualcomm/aimet/commit/6f670a41d75fbe4664a24c3d899ab37faac7fbfc
+.. _bb93c76: https://github.com/qualcomm/aimet/commit/bb93c765bdcc2f06a4d9fd1a07833bb54e2627a9
+.. _50f35dd: https://github.com/qualcomm/aimet/commit/50f35dd933744a2096de22b679e6e4a08ed29cb4
+.. _3750526: https://github.com/qualcomm/aimet/commit/3750526bb6c6e339c16773cc1bdc752fffcb9802
+.. _654f4b1: https://github.com/qualcomm/aimet/commit/654f4b181bc4825c6122f5191d29cc218996caac
+.. _4febdd4: https://github.com/qualcomm/aimet/commit/4febdd4f72a1414c90b37704db220321b8a43d77
+.. _7364b37: https://github.com/qualcomm/aimet/commit/7364b37c9ab5cb0f90f02209634c5fc412cce8d8
 
 
 2.10.0
@@ -916,22 +916,22 @@ Release notes
     * Polish BQ user guide (`f547a49`_)
     * Polish QAT user guide (`339a225`_)
 
-.. _c96894f: https://github.com/quic/aimet/commit/c96894f3795e1b0986ba0c2b6f0b04464d003d0f
-.. _9b8c655: https://github.com/quic/aimet/commit/9b8c655a6a17cc4339f494f17e063f36aa679383
-.. _499df9f: https://github.com/quic/aimet/commit/499df9f24054c291160272d2a4155ad82919d8b7
-.. _4ad0703: https://github.com/quic/aimet/commit/4ad0703ba3e6e6dd688831eb6f297f3c735a4e8b
-.. _5aac9c5: https://github.com/quic/aimet/commit/5aac9c503961aa832ae1350d3fdbc81fd2c10ff0
-.. _31ca7fd: https://github.com/quic/aimet/commit/31ca7fdead574bd8614720bba5a7cae2739c7841
-.. _b47a97e: https://github.com/quic/aimet/commit/b47a97eef0b89ea1becea3b4cbca0de018cc113c
-.. _f333188: https://github.com/quic/aimet/commit/f3331884a2e7da0dc22770fd1ae792564f0fa094
-.. _70029c5: https://github.com/quic/aimet/commit/70029c596cff1d188fcfbc308cc06f99bdff1fdf
-.. _4b94ca9: https://github.com/quic/aimet/commit/4b94ca9267cb9513f996fedc350b583e6f28ce30
-.. _fefd504: https://github.com/quic/aimet/commit/fefd504c79de738a99b82d051e7b70ffcb195a3e
-.. _fe66376: https://github.com/quic/aimet/commit/fe66376f5704b9fa4dc494dd8d22f8a2689fc0c4
-.. _f9d0d6c: https://github.com/quic/aimet/commit/f9d0d6cb1719ef8eaf2a51b8c0984c50240f01f6
-.. _22b5c94: https://github.com/quic/aimet/commit/22b5c94ecf3f743c3954a44fc93de31aab223a47
-.. _f547a49: https://github.com/quic/aimet/commit/f547a49db222011c354ad2df6703e0a60ef5c767
-.. _339a225: https://github.com/quic/aimet/commit/339a22514ef0aaa1961f82d4832e07d45817779f
+.. _c96894f: https://github.com/qualcomm/aimet/commit/c96894f3795e1b0986ba0c2b6f0b04464d003d0f
+.. _9b8c655: https://github.com/qualcomm/aimet/commit/9b8c655a6a17cc4339f494f17e063f36aa679383
+.. _499df9f: https://github.com/qualcomm/aimet/commit/499df9f24054c291160272d2a4155ad82919d8b7
+.. _4ad0703: https://github.com/qualcomm/aimet/commit/4ad0703ba3e6e6dd688831eb6f297f3c735a4e8b
+.. _5aac9c5: https://github.com/qualcomm/aimet/commit/5aac9c503961aa832ae1350d3fdbc81fd2c10ff0
+.. _31ca7fd: https://github.com/qualcomm/aimet/commit/31ca7fdead574bd8614720bba5a7cae2739c7841
+.. _b47a97e: https://github.com/qualcomm/aimet/commit/b47a97eef0b89ea1becea3b4cbca0de018cc113c
+.. _f333188: https://github.com/qualcomm/aimet/commit/f3331884a2e7da0dc22770fd1ae792564f0fa094
+.. _70029c5: https://github.com/qualcomm/aimet/commit/70029c596cff1d188fcfbc308cc06f99bdff1fdf
+.. _4b94ca9: https://github.com/qualcomm/aimet/commit/4b94ca9267cb9513f996fedc350b583e6f28ce30
+.. _fefd504: https://github.com/qualcomm/aimet/commit/fefd504c79de738a99b82d051e7b70ffcb195a3e
+.. _fe66376: https://github.com/qualcomm/aimet/commit/fe66376f5704b9fa4dc494dd8d22f8a2689fc0c4
+.. _f9d0d6c: https://github.com/qualcomm/aimet/commit/f9d0d6cb1719ef8eaf2a51b8c0984c50240f01f6
+.. _22b5c94: https://github.com/qualcomm/aimet/commit/22b5c94ecf3f743c3954a44fc93de31aab223a47
+.. _f547a49: https://github.com/qualcomm/aimet/commit/f547a49db222011c354ad2df6703e0a60ef5c767
+.. _339a225: https://github.com/qualcomm/aimet/commit/339a22514ef0aaa1961f82d4832e07d45817779f
 
 
 2.9.0
@@ -955,19 +955,19 @@ Release notes
     * Common
         * Add docs to build aimet from source (`ae981f7`_)
 
-.. _e78dbec: https://github.com/quic/aimet/commit/e78dbecb76f5f278baabb6f32a45de299f03a75a
-.. _35ad990: https://github.com/quic/aimet/commit/35ad990c4e476f8ef2b51eecbafba1ff25d439cb
-.. _911af75: https://github.com/quic/aimet/commit/911af7587ef111e7d90d66db4988e5df218337ee
-.. _92f63f5: https://github.com/quic/aimet/commit/92f63f55127f90a6c939d4e8e7fd65189d741e4f
-.. _6636515: https://github.com/quic/aimet/commit/66365155f5f0d5620c1bb84321732099ce1d8719
-.. _9a2a407: https://github.com/quic/aimet/commit/9a2a40708a73d105cb56152ece5bd127e0ed9474
-.. _6d1664c: https://github.com/quic/aimet/commit/6d1664c110d86c401e9715f92cbad10230f489a0
-.. _fea395f: https://github.com/quic/aimet/commit/fea395f750de16147a5ce541f2a9723558f0a710
-.. _db99447: https://github.com/quic/aimet/commit/db99447da525b114d081acc81d60dfaa95863e79
-.. _7336ead: https://github.com/quic/aimet/commit/7336eadb286592eb5f798a689ee5b6e8b918483f
-.. _ae981f7: https://github.com/quic/aimet/commit/ae981f73f91580d26024c652a5bbda4d4d8ff77d
-.. _2f05175: https://github.com/quic/aimet/commit/2f0517539ce02bff32c79b82501aca543dbefc33
-.. _ac05d10: https://github.com/quic/aimet/commit/ac05d10752c3f5034f475b483f2cf049e23d66f6
+.. _e78dbec: https://github.com/qualcomm/aimet/commit/e78dbecb76f5f278baabb6f32a45de299f03a75a
+.. _35ad990: https://github.com/qualcomm/aimet/commit/35ad990c4e476f8ef2b51eecbafba1ff25d439cb
+.. _911af75: https://github.com/qualcomm/aimet/commit/911af7587ef111e7d90d66db4988e5df218337ee
+.. _92f63f5: https://github.com/qualcomm/aimet/commit/92f63f55127f90a6c939d4e8e7fd65189d741e4f
+.. _6636515: https://github.com/qualcomm/aimet/commit/66365155f5f0d5620c1bb84321732099ce1d8719
+.. _9a2a407: https://github.com/qualcomm/aimet/commit/9a2a40708a73d105cb56152ece5bd127e0ed9474
+.. _6d1664c: https://github.com/qualcomm/aimet/commit/6d1664c110d86c401e9715f92cbad10230f489a0
+.. _fea395f: https://github.com/qualcomm/aimet/commit/fea395f750de16147a5ce541f2a9723558f0a710
+.. _db99447: https://github.com/qualcomm/aimet/commit/db99447da525b114d081acc81d60dfaa95863e79
+.. _7336ead: https://github.com/qualcomm/aimet/commit/7336eadb286592eb5f798a689ee5b6e8b918483f
+.. _ae981f7: https://github.com/qualcomm/aimet/commit/ae981f73f91580d26024c652a5bbda4d4d8ff77d
+.. _2f05175: https://github.com/qualcomm/aimet/commit/2f0517539ce02bff32c79b82501aca543dbefc33
+.. _ac05d10: https://github.com/qualcomm/aimet/commit/ac05d10752c3f5034f475b483f2cf049e23d66f6
 
 
 2.8.0
@@ -999,22 +999,22 @@ Release notes
   * ONNX
       * Adaround runs over 2x slower with onnxruntime 1.20 or higher. The root cause has been identified, and a fix is in progress
 
-.. _cbe67ae: https://github.com/quic/aimet/commit/cbe67ae291f3519f3207d438450d22964f5a8c0d
-.. _84edcf5: https://github.com/quic/aimet/commit/84edcf580ac76afa8d128316e03c7737f2599c2d
-.. _836ab1e: https://github.com/quic/aimet/commit/836ab1e56de792569155269dbe3c54d717649468
-.. _dc34fa4: https://github.com/quic/aimet/commit/dc34fa46e802cc50bfc16cfbc197e3b56d9d8d9e
-.. _2c8ae88: https://github.com/quic/aimet/commit/2c8ae88193da0f6284e5dc416ee6af53a9aea701
-.. _80cd141: https://github.com/quic/aimet/commit/80cd14176448e586b7b53e624f1dd38b93e78d24
-.. _cbe67ae: https://github.com/quic/aimet/commit/cbe67ae291f3519f3207d438450d22964f5a8c0d
-.. _ce68e75: https://github.com/quic/aimet/commit/ce68e75f2d55ad07e918f9b0ffb2dc23893ceaf6
-.. _6d3aa97: https://github.com/quic/aimet/commit/6d3aa97195317010fe650df7fe612570b53f1d13
-.. _abe8782: https://github.com/quic/aimet/commit/abe87827fa77bc6b850289ae35566e7de437c8d1
-.. _e7d10c7: https://github.com/quic/aimet/commit/e7d10c799d29beb2b8b36cd4bce8dcaacd1bd9f7
-.. _8009871: https://github.com/quic/aimet/commit/8009871262dc702b277b34ae53f70d760e300736
-.. _88706ef: https://github.com/quic/aimet/commit/88706eff5301eeb4274b333efbab140a1bc1b5f5
-.. _a2adae2: https://github.com/quic/aimet/commit/a2adae2e9ca7ee261bb03e407da0598715b9f933
-.. _a2adae2: https://github.com/quic/aimet/commit/a2adae2e9ca7ee261bb03e407da0598715b9f933
-.. _b5521f3: https://github.com/quic/aimet/commit/b5521f3fefc5ee405f0596fcf01be670af81cd4a
+.. _cbe67ae: https://github.com/qualcomm/aimet/commit/cbe67ae291f3519f3207d438450d22964f5a8c0d
+.. _84edcf5: https://github.com/qualcomm/aimet/commit/84edcf580ac76afa8d128316e03c7737f2599c2d
+.. _836ab1e: https://github.com/qualcomm/aimet/commit/836ab1e56de792569155269dbe3c54d717649468
+.. _dc34fa4: https://github.com/qualcomm/aimet/commit/dc34fa46e802cc50bfc16cfbc197e3b56d9d8d9e
+.. _2c8ae88: https://github.com/qualcomm/aimet/commit/2c8ae88193da0f6284e5dc416ee6af53a9aea701
+.. _80cd141: https://github.com/qualcomm/aimet/commit/80cd14176448e586b7b53e624f1dd38b93e78d24
+.. _cbe67ae: https://github.com/qualcomm/aimet/commit/cbe67ae291f3519f3207d438450d22964f5a8c0d
+.. _ce68e75: https://github.com/qualcomm/aimet/commit/ce68e75f2d55ad07e918f9b0ffb2dc23893ceaf6
+.. _6d3aa97: https://github.com/qualcomm/aimet/commit/6d3aa97195317010fe650df7fe612570b53f1d13
+.. _abe8782: https://github.com/qualcomm/aimet/commit/abe87827fa77bc6b850289ae35566e7de437c8d1
+.. _e7d10c7: https://github.com/qualcomm/aimet/commit/e7d10c799d29beb2b8b36cd4bce8dcaacd1bd9f7
+.. _8009871: https://github.com/qualcomm/aimet/commit/8009871262dc702b277b34ae53f70d760e300736
+.. _88706ef: https://github.com/qualcomm/aimet/commit/88706eff5301eeb4274b333efbab140a1bc1b5f5
+.. _a2adae2: https://github.com/qualcomm/aimet/commit/a2adae2e9ca7ee261bb03e407da0598715b9f933
+.. _a2adae2: https://github.com/qualcomm/aimet/commit/a2adae2e9ca7ee261bb03e407da0598715b9f933
+.. _b5521f3: https://github.com/qualcomm/aimet/commit/b5521f3fefc5ee405f0596fcf01be670af81cd4a
 
 2.7.0
 =====
@@ -1062,7 +1062,7 @@ Release notes
     * ONNX
         * Deprecated `use_cuda`, `device`, `rounding_mode`, and `use_symmetric_encodings` args to :func:`QuantizationSimModel.__init__`
 
-.. _1493fe1: https://github.com/quic/aimet/commit/1493fe1d8e40e5b8d041f11603b2d60cd76d94d3
+.. _1493fe1: https://github.com/qualcomm/aimet/commit/1493fe1d8e40e5b8d041f11603b2d60cd76d94d3
 
 2.5.0
 =====

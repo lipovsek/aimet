@@ -111,13 +111,13 @@ Set up your workspace using the following steps:
 
       mkdir $WORKSPACE && cd $WORKSPACE
 
-3. Identify the release tag (``<release_tag>``) of the AIMET package that you're working with at: https://github.com/quic/aimet/releases.
+3. Identify the release tag (``<release_tag>``) of the AIMET package that you're working with at: https://github.com/qualcomm/aimet/releases.
 
 4. Clone the repository:
 
    .. code-block:: bash
 
-      git clone https://github.com/quic/aimet.git --branch <release_tag>
+      git clone https://github.com/qualcomm/aimet.git --branch <release_tag>
 
 5. Update the path environment variable:
 

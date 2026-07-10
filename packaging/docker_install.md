@@ -42,7 +42,7 @@ To obtain the code, first define a workspace and follow these instructions:
 ```bash
 WORKSPACE="<absolute_path_to_workspace>"
 mkdir $WORKSPACE && cd $WORKSPACE
-git clone https://github.com/quic/aimet.git
+git clone https://github.com/qualcomm/aimet.git
 ```
 Clone the google test repo as follows:
 ```
@@ -181,7 +181,7 @@ docker run -p ${port_id}:${port_id} --rm -it -u $(id -u ${USER}):$(id -g ${USER}
 To obtain the code, first define a workspace and follow these instructions:
 
 ```bash
-git clone https://github.com/quic/aimet.git
+git clone https://github.com/qualcomm/aimet.git
 cd aimet
 ```
 ## Setup the environment
@@ -203,7 +203,7 @@ docker run --rm --gpus all nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 bash -c '
     export CMAKE_ARGS="-DENABLE_CUDA=ON -DENABLE_TORCH=ON -DENABLE_ONNX=OFF" ; \
     apt update -qq && apt install -y git g++ libeigen3-dev ninja-build python3-pip &>/dev/null && \
     python3 -m pip install pip-tools && \
-    git clone https://github.com/quic/aimet.git && \
+    git clone https://github.com/qualcomm/aimet.git && \
     python3 -m piptools compile --resolver=backtracking --extra=.,dev,test  --output-file=- aimet/pyproject.toml | python3 -m pip install -r /dev/stdin && \
     python3 -m pip install --no-build-isolation -e ./aimet
     python3 -m pytest ./aimet/TrainingExtensions/{common,torch}/test/python

@@ -199,7 +199,7 @@ def torch_manual_seed():
     torch.manual_seed(10)
 
 
-# From https://github.com/quic/aimet/blob/45297b749974a39f97c0bad1d7c0032a4e5a4003/TrainingExtensions/torch/test/python/test_mixed_precision.py#L227
+# From https://github.com/qualcomm/aimet/blob/45297b749974a39f97c0bad1d7c0032a4e5a4003/TrainingExtensions/torch/test/python/test_mixed_precision.py#L227
 class TestAutoMixedPrecision:
     def test_eval_func_edge_cases(
         self, sim, dummy_input, candidates, forward_pass_callback

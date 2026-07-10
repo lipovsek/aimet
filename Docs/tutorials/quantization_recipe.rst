@@ -14,7 +14,7 @@ to reproduce these results.
 
 Note that the intent here is to show how to quantize the model. To create artifacts that can be directly deployed on 
 the target hardware, additional adaptation steps are required. Refer to the 
-`model adaptation guide <https://github.com/quic/ai-hub-models/blob/main/tutorials/llm/onboarding.md>`_ for more details.
+`model adaptation guide <https://github.com/qualcomm/ai-hub-models/blob/main/tutorials/llm/onboarding.md>`_ for more details.
 
 
 Accuracy Results
@@ -239,7 +239,7 @@ Workflow Overview
 #. Apply the selected Quantization recipe
     - Use ``aimet-onnx`` for `ONNX <https://onnx.ai/>`_ based workflows.
 #. Compute Activations encodings
-    - ``aimet-onnx`` computes activation encodings using representative data. In this tutorial, we use `WikiText (English) <https://github.com/quic/aimet/blob/develop/GenAILab/shared/helpers/datasets.py>`_ for calibration.
+    - ``aimet-onnx`` computes activation encodings using representative data. In this tutorial, we use `WikiText (English) <https://github.com/qualcomm/aimet/blob/develop/GenAILab/shared/helpers/datasets.py>`_ for calibration.
     - ``aimet-onnx`` provides a static graph, ensuring correct quantizer insertion for all activations (including a mixed-precision profile such as INT8 KV Cache) and delivering an accurate quantization simulation.
 #. Export for deployment
     -   Export the ONNX model along with the encodings file for the on-target inference.
@@ -254,7 +254,7 @@ In this tutorial, we apply the quantization recipe to the `Llama 3.2 1B` model. 
 
 The example scripts are designed to be `flattened`, so all AIMET API calls and HuggingFace API calls are visible at the top level.
 
-To understand how this works under the hood using the same driver code, refer to the `Generator <https://github.com/quic/aimet/tree/develop/GenAILab#how-it-all-works>`_ class in ``GenAILab``.
+To understand how this works under the hood using the same driver code, refer to the `Generator <https://github.com/qualcomm/aimet/tree/develop/GenAILab#how-it-all-works>`_ class in ``GenAILab``.
 
 Quantize
 --------
@@ -312,7 +312,7 @@ FAQs
         - Trade off: Slight impact on performance KPIs due to INT4 -> INT8 decoding.
 
 #. Can I run the artifacts generated from the recipes as-is on target hardware?
-    - No. The generated artifacts from the recipes are not directly compatible with QAIRT and require non-trivial adaptation steps for deployment on target hardware. Refer to the `model adaptation guide <https://github.com/quic/ai-hub-models/blob/main/tutorials/llm/onboarding.md>`_ for details.
+    - No. The generated artifacts from the recipes are not directly compatible with QAIRT and require non-trivial adaptation steps for deployment on target hardware. Refer to the `model adaptation guide <https://github.com/qualcomm/ai-hub-models/blob/main/tutorials/llm/onboarding.md>`_ for details.
 
 #. Why does computing MMLU takes a long time?
     - MMLU evaluation can be slow even on high-end GPUs because it involves thousands of questions across 57 subjects. You can trade off accuracy for speed by reducing the number of samples.
