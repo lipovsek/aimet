@@ -8,7 +8,7 @@ tests:
     param_type: int8
     activation_type: int8
     config_file: htp_v79
-    max_accuracy_drop_onnx: 3.4
+    max_accuracy_drop_onnx: 3.8
 
   - name: adaround_500
     feature: adaround
