@@ -31,7 +31,7 @@ Defer to QAT with AIMET-Torch only if you have tried AIMET-ONNX mixed precision 
 Supported platforms
 ====================
 
-AIMET supports Linux, Windows, and macOS, with Python 3.10 through 3.13.
+AIMET supports Linux, Windows, and macOS, with Python 3.10+ (tested through 3.13).
 Operating system and architecture support differs by package; see
 :ref:`Supported platforms <install-index>` for the full per-package,
 per-architecture matrix.

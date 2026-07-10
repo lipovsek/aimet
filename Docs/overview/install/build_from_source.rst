@@ -24,14 +24,15 @@ On Linux/MacOS, you can run the following command to install UV:
 
     curl -LsSf https://astral.sh/uv/install.sh | sh
 
-Create a new uv environment with Python 3.10
+Create a new uv environment with Python 3.10+
 -----------------------------------------------
 
-An example of conda environment setup is shown below:
+AIMET requires Python 3.10 or newer. An example of environment setup with Python 3.10 is shown
+below; substitute any supported Python version (3.10 through 3.13) via ``--python=<version>``:
 
 .. code-block:: bash
 
-    # Create new uv environment with Python 3.10
+    # Create new uv environment with Python 3.10 (or newer, e.g. 3.11/3.12/3.13)
     uv venv --python=3.10 aimet-dev
 
     # Activate the environment
@@ -42,7 +43,7 @@ NVIDIA CUDA support
 
 Skip the following step, if you don't want to compile with CUDA support or already have CUDA installed.
 
-Here, we show how to install CUDA Toolkit 12.1 on Ubuntu 22.04.
+Here, we show how to install CUDA Toolkit 12.1 on Ubuntu 22.04 (also applicable to Ubuntu 22.04 and above; replace ``ubuntu2204`` in the repo URL with your Ubuntu release, e.g. ``ubuntu2404``).
 You can find instructions for other versions and platforms in NVIDIA's documentation: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html
 
 .. code-block:: bash

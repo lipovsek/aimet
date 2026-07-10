@@ -53,7 +53,7 @@ ONNX and PyTorch from the .whl files hosted at https://github.com/qualcomm/aimet
 Supported platforms
 --------------------
 
-Both packages support Python 3.10 through 3.13. The table below shows how
+Both packages support Python 3.10+ (tested through 3.13). The table below shows how
 each package is obtained per platform.
 
 .. list-table::
@@ -63,7 +63,7 @@ each package is obtained per platform.
    * - Platform
      - aimet-torch
      - aimet-onnx
-   * - Linux (x86-64, Ubuntu 22.04 or newer)
+   * - Linux (x86-64, Ubuntu 22.04 and above)
      - Prebuilt wheel
      - Prebuilt wheel
    * - Windows
@@ -77,7 +77,7 @@ each package is obtained per platform.
     aimet-torch is pure Python (``py310-none-any``), so one wheel installs on
     every platform, though it is CI-tested only on Linux. aimet-onnx ships a
     compiled extension, so it has per-platform wheels. All wheels use the
-    CPython stable ABI (``cp310-abi3``) and run on Python 3.10 through 3.13.
+    CPython stable ABI (``cp310-abi3``) and run on Python 3.10+ (tested through 3.13).
 
 CUDA (GPU) acceleration
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -93,6 +93,8 @@ Choose and install a package
 ----------------------------
 
 Use one of the following commands to install AIMET based on your choice of framework and compute platform.
+All wheels below use the CPython stable ABI (``cp310-abi3``) and install on any Python 3.10+ interpreter
+without needing a version-specific URL.
 
 .. tab-set::
     :sync-group: platform
@@ -100,17 +102,29 @@ Use one of the following commands to install AIMET based on your choice of frame
     .. tab-item:: ONNX
         :sync: onnx
 
-        With CUDA 12.x:
+        Linux (x86-64), with CUDA 12.x:
 
         .. parsed-literal::
 
             python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cu126\ |whl_suffix|
 
-        With CPU only:
+        Linux (x86-64), CPU only:
 
         .. parsed-literal::
 
             python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cpu\ |whl_suffix|
+
+        Windows (x86-64), CPU only:
+
+        .. parsed-literal::
+
+            python -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cpu\ |win_amd64_whl_suffix|
+
+        Windows (ARM64), CPU only:
+
+        .. parsed-literal::
+
+            python -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cpu\ |win_arm64_whl_suffix|
 
     .. tab-item:: PyTorch
         :sync: torch
@@ -218,4 +232,6 @@ To do so, follow the steps outlined for building the latest AIMET codebase manua
 
 .. |torch_whl_suffix| replace:: \-py310-none-any.whl
 .. |whl_suffix| replace:: \-cp310-abi3-manylinux_2_34_x86_64.whl
+.. |win_amd64_whl_suffix| replace:: \-cp310-abi3-win_amd64.whl
+.. |win_arm64_whl_suffix| replace:: \-cp310-abi3-win_arm64.whl
 .. |download_url| replace:: \https://github.com/qualcomm/aimet/releases/download/
