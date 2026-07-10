@@ -15,11 +15,15 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer, GenerationConfig, TextStreamer
 from transformers.processing_utils import ProcessorMixin
+from transformers.generation.stopping_criteria import StoppingCriteriaList
 
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.bench.eval_context import EvaluationContext
 from GenAILab.bench.utils.prompt_utils import load_text_prompts
-from GenAILab.bench.utils.generation_utils import build_generation_config
+from GenAILab.bench.utils.generation_utils import (
+    build_generation_config,
+    ContextLengthStoppingCriteria,
+)
 from GenAILab.qai_hub_lm.models.generator import Generator, VLM_Generator
 from .datasets import (
     Wikitext,
@@ -712,9 +716,17 @@ class Interactive(TextEvaluationMetric):
     @staticmethod
     def _get_generation_config(model, tokenizer, **overrides) -> GenerationConfig:
         """Build a GenerationConfig with EOS tokens merged from model config and tokenizer."""
-        return build_generation_config(
-            model, tokenizer, **{"max_length": 2048, **overrides}
-        )
+        return build_generation_config(model, tokenizer, **overrides)
+
+    @staticmethod
+    def _build_stopping_criteria(model: Generator, verbose: bool = False):
+        criteria = [
+            ContextLengthStoppingCriteria(
+                context_length=model.context_length,
+                verbose=verbose,
+            )
+        ]
+        return StoppingCriteriaList(criteria) if criteria else None
 
     @staticmethod
     def get_system_prompt() -> str:
@@ -768,10 +780,12 @@ class Interactive(TextEvaluationMetric):
             skip_prompt=True,
             num_input_tokens=tokenized_user_input["input_ids"].shape[-1],
         )
+        stopping_criteria = cls._build_stopping_criteria(model, verbose=True)
         outputs = model.generate(
             inputs=tokenized_user_input["input_ids"],
             attention_mask=tokenized_user_input["attention_mask"],
             generation_config=model.generation_config,
+            stopping_criteria=stopping_criteria,
             streamer=streamer,
         )
 
@@ -948,10 +962,14 @@ class MultimodalPrompts(EvaluationMetric):
                 skip_prompt=True,
                 num_input_tokens=inputs["input_ids"].shape[-1],
             )
+            stopping_criteria = Interactive._build_stopping_criteria(
+                model, verbose=True
+            )
             print(text, end="")
             outputs = model.generate(
                 **inputs,
                 generation_config=generation_config,
+                stopping_criteria=stopping_criteria,
                 streamer=streamer,
             )
 
