@@ -6,6 +6,43 @@
 Release notes
 #############
 
+2.35.0
+======
+
+* Bug fixes and Improvements
+    * ONNX
+        * Support pattern-matching Rsqrt-based RMSNorm patterns (`f02eed2`_)
+        * Support SpinQuant R1 for models with no lm_head matmul (`ce5933d`_)
+        * Support models with ScatterElements nodes in AdaScale (`71300be`_)
+        * Fix AMP phase 1 computing inaccurate sensitivity for tied quantizers (`6eef3ba`_)
+
+    * Torch
+        * Enable SpinQuant R1 for Qwen3.5 architecture (`6a47c31`_)
+        * Fix graph tracing for Gather op inputs (`d261af1`_)
+        * Fix back-to-back QDQs inserted in ONNX QDQ export for deduplicated weights (`5b4f9ee`_)
+        * Support lossless calibration for pre-quantized weights (`9f8c52e`_, `5fc1007`_)
+        * Fix protobuf error in QDQ export for models > 2GB (`1b7dbab`_)
+        * Add compatibility with torch 2.13 (`7637a27`_)
+        * Export mxfp4-to-int8 quantized weights on mxfp4 grid (`2f45120`_)
+
+    * Common
+        * Disable Gather op output quantizer in htp_v68 config (`2f7dedb`_)
+
+.. _f02eed2: https://github.com/qualcomm/aimet/commit/f02eed2fbb48a3502664e2ca77a8e130e0c0ae6a
+.. _d261af1: https://github.com/qualcomm/aimet/commit/d261af14ebd195621f454b166c344474694f15ef
+.. _5b4f9ee: https://github.com/qualcomm/aimet/commit/5b4f9ee9211bf9e1119da56dec2ea3fa062e94ae
+.. _9f8c52e: https://github.com/qualcomm/aimet/commit/9f8c52e69c0daddf80319750dd6c6808b2a262d9
+.. _5fc1007: https://github.com/qualcomm/aimet/commit/5fc100707ae32a2e65e46c1d56d37f5c596336f4
+.. _6a47c31: https://github.com/qualcomm/aimet/commit/6a47c31cf638d73653ec99463a34025509af9f10
+.. _ce5933d: https://github.com/qualcomm/aimet/commit/ce5933daa01d44f26149b01c6b8aad4bac2dfaef
+.. _1b7dbab: https://github.com/qualcomm/aimet/commit/1b7dbab6d9526e03a9906f4c063ecd7ac74bda23
+.. _7637a27: https://github.com/qualcomm/aimet/commit/7637a271fe964a8b6c7a856296b07db758e84f61
+.. _71300be: https://github.com/qualcomm/aimet/commit/71300befd32faae8d4e10f7dc91a17ae20e43b90
+.. _6eef3ba: https://github.com/qualcomm/aimet/commit/6eef3ba8ab867b873d5b35cd0434ce318d6f2008
+.. _2f45120: https://github.com/qualcomm/aimet/commit/2f451203d28412f645526ccb9d9a950095d3969f
+.. _2f7dedb: https://github.com/qualcomm/aimet/commit/2f7dedb21a6c4175dff3e7579e7ba261538e502e
+
+
 2.34.0
 ======
 
