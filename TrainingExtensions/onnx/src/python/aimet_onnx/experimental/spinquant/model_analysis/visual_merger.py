@@ -9,7 +9,7 @@ from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.meta.operations import Op
 
-from aimet_onnx.experimental.spinquant.model_analysis.weight_utils import (
+from aimet_onnx.experimental.block_topology.weight_utils import (
     get_weight_product,
 )
 

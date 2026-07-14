@@ -30,7 +30,6 @@ from GenAILab.qai_hub_lm.models.base import LLM, SimCollection
 from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
 
-from GenAILab.qai_hub_lm.backends.onnx.adaptations.hub_models import AIHMAdaptation
 from GenAILab.qai_hub_lm.backends.onnx.export_utils import (
     get_onnx_model,
     load_model_components_from_disk,
@@ -71,13 +70,6 @@ class LLM_ONNX(LLM):
         a :class:`ModelCacheEntry` whose ``backbone`` (and, for VLMs, ``visual``
         / ``embedding``) hold the raw ONNX model(s) ready to be quantized.
         """
-        if issubclass(cls, AIHMAdaptation):
-            # If we are working with AIHM adapted models, we need to change the block detection strategy for Qwen3
-            # todo: remove this when we have more robust block matching
-            from aimet_onnx.graph_passes.passes.decoder_block import DecoderBlockQwen3
-
-            DecoderBlockQwen3.NUM_RMSNORM_PER_BLK = 41
-
         cache_sl = (
             "dynamic"
             if isinstance(sequence_length, list) and len(sequence_length) > 1

@@ -28,8 +28,8 @@ from aimet_onnx.utils import (
 )
 from aimet_onnx import ir_utils
 from aimet_onnx.quantsim import QuantizationSimModel
-from aimet_onnx.experimental.adascale.find_blocks import (
-    get_decoder_blocks_end_points,
+from aimet_onnx.experimental.block_topology.block_boundaries import (
+    get_decoder_block_boundaries,
 )
 
 from aimet_onnx.experimental.adascale.quantizer import (
@@ -183,8 +183,8 @@ class AdaScale:
             # Compute param encodings
             sim._compute_param_encodings(overwrite=False)
 
-            blocks_end_points = get_decoder_blocks_end_points(
-                sim, adascale_model_config.model_type
+            blocks_end_points = get_decoder_block_boundaries(
+                sim.model.model, sim.connected_graph
             )
 
             device = get_torch_device(sim.session)
@@ -260,7 +260,7 @@ class AdaScale:
                         sim_model, path=sim_path, external_data="sim_model.data"
                     )
                     qsim_sess = ActivationSampler(
-                        blocks_end_points[idx][0].inputs[0].name,
+                        blocks_end_points[idx][0],
                         sim_path,
                         sim.providers,
                     )
@@ -272,7 +272,7 @@ class AdaScale:
                     del qsim_sess
 
                     fp32_sampler = ActivationSampler(
-                        blocks_end_points[idx][0].inputs[0].name,
+                        blocks_end_points[idx][0],
                         fp32_path,
                         sim.providers,
                     )
@@ -321,10 +321,9 @@ class AdaScale:
     def get_block_start_end_name(
         blocks_end_points: List[Tuple], block_idx: int, input_list_names: List[str]
     ) -> Tuple[List[str], List[str]]:
-        block_inputs = [blocks_end_points[block_idx][0].inputs[0].name]
-        block_input_names = block_inputs + input_list_names
-
-        block_output_names = [blocks_end_points[block_idx][1].inputs[0].name]
+        start_tensor, end_tensor = blocks_end_points[block_idx]
+        block_input_names = [start_tensor] + input_list_names
+        block_output_names = [end_tensor]
 
         return block_input_names, block_output_names
 

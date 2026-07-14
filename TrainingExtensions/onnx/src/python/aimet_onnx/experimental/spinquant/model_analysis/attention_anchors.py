@@ -40,7 +40,7 @@ from aimet_onnx.common.onnx._utils import (
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.utils import ModelProto
 
-from aimet_onnx.experimental.spinquant.model_analysis.block_identifier import (
+from aimet_onnx.experimental.block_topology.role_map import (
     DecoderModelRoleMap,
 )
 

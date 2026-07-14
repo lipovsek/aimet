@@ -27,22 +27,32 @@ from aimet_onnx.graph_passes.fusions import fuse_supergroups
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import ParamUtils, make_dummy_input
 
-from aimet_onnx.experimental.spinquant.model_analysis import (
-    ActiveNorm,
+from aimet_onnx.experimental.block_topology.block_boundaries import (
+    get_decoder_block_boundaries,
+)
+from aimet_onnx.experimental.block_topology.role_map import (
     DecoderBlockRoleMap,
     DecoderModelRoleMap,
-    find_active_norms,
-    find_merger_linear2,
-    find_r3_anchors,
-    get_decoder_block_boundaries,
     get_decoder_role_map,
+)
+from aimet_onnx.experimental.block_topology.block_boundaries import (
+    tensor_to_first_consumer_index,
+)
+from aimet_onnx.experimental.block_topology.norm_detection import (
+    ActiveNorm,
+    find_active_norms,
+    get_last_norm_op,
+    _find_norm_scale_and_consumers,
+)
+from aimet_onnx.experimental.block_topology.weight_utils import (
     get_bias_product as _get_bias_product,
     get_weight_product as _get_weight_product,
     infer_head_dim as _infer_head_dim,
     infer_hidden_size as _infer_hidden_size,
 )
-from aimet_onnx.experimental.spinquant.model_analysis.norm_detection import (
-    _find_norm_scale_and_consumers,
+from aimet_onnx.experimental.spinquant.model_analysis import (
+    find_merger_linear2,
+    find_r3_anchors,
 )
 from aimet_onnx.experimental.spinquant.transforms import (
     apply_transform as _apply_transform,
@@ -1013,7 +1023,7 @@ class TestBlockIdentifier:
         torch.manual_seed(0)
         model = _export_decoder_with_ids(Phi3StyleDecoder())
         cg = ConnectedGraph(model)
-        blocks, _ = get_decoder_block_boundaries(model, cg)
+        blocks = get_decoder_block_boundaries(model, cg)
         assert len(blocks) == 2
 
     def test_llama_block_count(self):
@@ -1021,7 +1031,7 @@ class TestBlockIdentifier:
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
         cg = ConnectedGraph(model)
-        blocks, _ = get_decoder_block_boundaries(model, cg)
+        blocks = get_decoder_block_boundaries(model, cg)
         assert len(blocks) == 2
 
     def test_qwen3_block_count(self):
@@ -1029,28 +1039,55 @@ class TestBlockIdentifier:
         torch.manual_seed(0)
         model = _export_decoder_with_ids(Qwen3StyleDecoder())
         cg = ConnectedGraph(model)
-        blocks, _ = get_decoder_block_boundaries(model, cg)
+        blocks = get_decoder_block_boundaries(model, cg)
         assert len(blocks) == 2
 
     def test_boundaries_are_active_norm_ops(self):
-        """Both start_op and end_op of every boundary must be active norm start ops."""
+        """Every boundary tensor must be the residual input of an active norm op."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
         cg = ConnectedGraph(model)
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
-        active_op_ids = {id(an.norm_op) for an in active_norms}
-        for start_op, end_op in blocks:
-            assert id(start_op) in active_op_ids
-            assert id(end_op) in active_op_ids
+        blocks = get_decoder_block_boundaries(model, cg)
+        active_norms = find_active_norms(model, cg)
+        # Include the final norm's input — it bounds the last block.
+        norm_input_tensors = {an.norm_op.inputs[0].name for an in active_norms}
+        norm_input_tensors.add(get_last_norm_op(cg).inputs[0].name)
+        for start_tensor, end_tensor in blocks:
+            assert start_tensor in norm_input_tensors
+            assert end_tensor in norm_input_tensors
 
     def test_boundaries_non_overlapping(self):
-        """end_op of block i must be the same object as start_op of block i+1."""
+        """end tensor of block i must equal start tensor of block i+1."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
         cg = ConnectedGraph(model)
-        blocks, _ = get_decoder_block_boundaries(model, cg)
+        blocks = get_decoder_block_boundaries(model, cg)
         for i in range(len(blocks) - 1):
-            assert id(blocks[i][1]) == id(blocks[i + 1][0])
+            assert blocks[i][1] == blocks[i + 1][0]
+
+    @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
+    def test_boundary_tensor_resolves_to_norm_op(self, fuse_rmsnorm):
+        """A boundary tensor must resolve to its norm op, not the residual Add
+        that shares the same edge. Covers decomposed and fused RMSNorm.
+        """
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        if fuse_rmsnorm:
+            model = _fuse_rms_norms(model)
+        cg = ConnectedGraph(model)
+        blocks = get_decoder_block_boundaries(model, cg)
+
+        tensor_to_index = tensor_to_first_consumer_index(cg)
+        norm_op_ids = {id(an.norm_op) for an in find_active_norms(model, cg)}
+        norm_op_ids.add(id(get_last_norm_op(cg)))
+
+        for start_tensor, end_tensor in blocks:
+            for tensor in (start_tensor, end_tensor):
+                resolved_op = cg.ordered_ops[tensor_to_index[tensor]]
+                assert id(resolved_op) in norm_op_ids, (
+                    f"boundary tensor '{tensor}' resolved to '{resolved_op.name}' "
+                    f"({resolved_op.type}), not a norm op."
+                )
 
     def test_even_active_norms(self):
         """Even active norm count must raise ValueError."""
@@ -1069,55 +1106,6 @@ class TestBlockIdentifier:
         cg = ConnectedGraph(model)
         with pytest.raises(ValueError):
             get_decoder_block_boundaries(model, cg)
-
-    @pytest.mark.skip_on_windows_amd64("Fails with OSError, no space left on device")
-    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
-    @pytest.mark.parametrize(
-        "model_id, model_type, adaptations",
-        [
-            ["Qwen/Qwen2-0.5B", "qwen2", []],
-            ["Qwen/Qwen3-0.6B", "qwen3", ["SHA_Conv"]],
-        ],
-    )
-    def test_get_decoder_block_boundaries(
-        self, add_genai_tests_path, model_id, model_type, adaptations
-    ):
-        from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
-        from GenAILab.qai_hub_lm.backends.onnx.export_utils import (
-            get_model_checkpoint_path,
-        )
-        from aimet_onnx.experimental.adascale.find_blocks import (
-            get_decoder_blocks_end_points,
-        )
-
-        cache_dir = get_model_checkpoint_path(model_id)
-        try:
-            if adaptations:
-                import GenAILab.qai_hub_lm.transforms.sha_conv
-                from GenAILab.bench.yaml_config_parser import (
-                    YAMLConfigParser,
-                )
-
-                model_cls = YAMLConfigParser.get_model_class(model_type, adaptations)
-            else:
-                model_cls = LLM_ONNX
-
-            entry = model_cls.instantiate_float_model(
-                model_id, 32, 16, small_model=True
-            )
-            collection = model_cls.instantiate_quantsim(entry)
-            blocks, _ = get_decoder_block_boundaries(
-                collection.backbone.model.model,
-                collection.backbone.connected_graph,
-            )
-            assert len(blocks) == 2
-            blocks_old = get_decoder_blocks_end_points(collection.backbone, model_type)
-            assert len(blocks_old) == 2
-
-            # Both methods must identify the same block boundary ops.
-            assert blocks == blocks_old
-        finally:
-            shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 class TestDecoderRoleMap:
@@ -1140,8 +1128,8 @@ class TestDecoderRoleMap:
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        blocks = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks)
 
         assert len(role_map.blocks) == 2
         assert len(role_map.lm_head) == 1
@@ -1160,8 +1148,8 @@ class TestDecoderRoleMap:
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        blocks = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks)
         for block in role_map.blocks:
             assert len(block.qkv_linears) == 3
 
@@ -1187,9 +1175,9 @@ class TestDecoderRoleMap:
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        blocks = get_decoder_block_boundaries(model, cg)
         # Must not raise — VLM backbones exported with use_inputs_embeds=True have no Gather.
-        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        role_map = get_decoder_role_map(cg, blocks)
         assert role_map.embed_tokens == []
 
     @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
@@ -1241,8 +1229,8 @@ class TestDecoderRoleMap:
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        blocks = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks)
 
         # Exactly one embed_tokens — the [vocab, hidden] embedding, not the 1-D Gather.
         assert len(role_map.embed_tokens) == 1
@@ -1257,9 +1245,9 @@ class TestDecoderRoleMap:
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
+        blocks = get_decoder_block_boundaries(model, cg)
         with pytest.raises(ValueError):
-            get_decoder_role_map(cg, blocks, active_norms, active_norms_per_block=3)
+            get_decoder_role_map(cg, blocks, active_norms_per_block=3)
 
     @pytest.mark.skip_on_windows_amd64("Fails with OSError, no space left on device")
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
@@ -1283,8 +1271,8 @@ class TestDecoderRoleMap:
             onnx_model = collection.backbone.model.model
             cg = collection.backbone.connected_graph
 
-            blocks, active_norms = get_decoder_block_boundaries(onnx_model, cg)
-            role_map = get_decoder_role_map(cg, blocks, active_norms)
+            blocks = get_decoder_block_boundaries(onnx_model, cg)
+            role_map = get_decoder_role_map(cg, blocks)
 
             assert len(role_map.blocks) == 2
             assert len(role_map.lm_head) == 1
@@ -1351,8 +1339,9 @@ class TestApplyR1Rotation:
         model = _export_decoder_with_ids(decoder_cls())
         cg = ConnectedGraph(model)
 
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        blocks = get_decoder_block_boundaries(model, cg)
+        active_norms = find_active_norms(model, cg)
+        role_map = get_decoder_role_map(cg, blocks)
 
         """
         When: fuse_norm_layers_into_linears is applied
@@ -1388,8 +1377,9 @@ class TestApplyR1Rotation:
         model = _export_decoder_with_ids(decoder_cls())
         cg = ConnectedGraph(model)
 
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        blocks = get_decoder_block_boundaries(model, cg)
+        active_norms = find_active_norms(model, cg)
+        role_map = get_decoder_role_map(cg, blocks)
         fuse_norm_layers_into_linears(model, active_norms)
         weights_original = _collect_all_weights(model, role_map)
 
@@ -1548,8 +1538,8 @@ class TestApplyR2Rotation:
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
         cg = ConnectedGraph(model)
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        blocks = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks)
 
         topology = find_attention_topology(role_map)
 
@@ -1568,8 +1558,8 @@ class TestApplyR2Rotation:
         torch.manual_seed(0)
         model = _export_decoder_with_ids(Phi3StyleDecoder())
         cg = ConnectedGraph(model)
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        blocks = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks)
 
         with pytest.raises(ValueError, match="R2 rotation"):
             find_attention_topology(role_map)
@@ -1899,10 +1889,14 @@ class TestApplyR3Rotation:
             ``past_key_input_name == "past_key_{i}"``, its ``k_concat_node`` is a
             Concat, and its ``qk_matmul_node`` is a MatMul.
         """
+        from aimet_onnx.experimental.block_topology.block_boundaries import (
+            get_decoder_block_boundaries,
+        )
+        from aimet_onnx.experimental.block_topology.role_map import (
+            get_decoder_role_map,
+        )
         from aimet_onnx.experimental.spinquant.model_analysis import (
             find_r3_anchors,
-            get_decoder_block_boundaries,
-            get_decoder_role_map,
         )
 
         torch.manual_seed(0)
@@ -1910,8 +1904,8 @@ class TestApplyR3Rotation:
         model = _export_decoder_with_pkv(LlamaStyleDecoder())
 
         cg = ConnectedGraph(model)
-        blocks, active_norms = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks, active_norms)
+        blocks = get_decoder_block_boundaries(model, cg)
+        role_map = get_decoder_role_map(cg, blocks)
         anchors = find_r3_anchors(role_map, model)
 
         # Pass: exactly one anchor per block, each pinned to that block's

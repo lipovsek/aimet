@@ -24,11 +24,11 @@ from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto, ParamUtils
 
+from aimet_onnx.experimental.block_topology.weight_utils import (
+    get_weight_product,
+)
 from aimet_onnx.experimental.spinquant.model_analysis import (
     find_attention_topology,
-)
-from aimet_onnx.experimental.spinquant.model_analysis.weight_utils import (
-    get_weight_product,
 )
 from aimet_onnx.experimental.spinquant.passes.base import (
     RotationPass,

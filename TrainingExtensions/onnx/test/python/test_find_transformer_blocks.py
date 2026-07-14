@@ -19,12 +19,12 @@ from transformers import AutoModelForCausalLM
 import transformers.masking_utils as mu
 
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
-from aimet_onnx.experimental.adascale.find_blocks import (
-    get_decoder_blocks_end_points,
-    get_conv_linear_layers_decoder_block,
-)
-from aimet_onnx.experimental.spinquant.model_analysis.block_identifier import (
+from aimet_onnx.experimental.block_topology.block_boundaries import (
     get_decoder_block_boundaries,
+)
+from aimet_onnx.experimental.block_topology.norm_detection import find_active_norms
+from aimet_onnx.experimental.block_topology.block_boundaries import (
+    tensor_to_first_consumer_index,
 )
 from .utils import add_genai_tests_path
 
@@ -298,9 +298,8 @@ def _detect_from_config(config_attr, backend, detect_kwargs):
     model, cfg = _build_block_topology_model(config_attr)
     onnx_model = _export_onnx(model, _sample_inputs(cfg), backend)
     connected_graph = ConnectedGraph(onnx_model)
-    blocks, active_norms = get_decoder_block_boundaries(
-        onnx_model, connected_graph, **detect_kwargs
-    )
+    blocks = get_decoder_block_boundaries(onnx_model, connected_graph, **detect_kwargs)
+    active_norms = find_active_norms(onnx_model, connected_graph)
     return blocks, active_norms, connected_graph
 
 
@@ -315,26 +314,29 @@ def _detect_vlm_backbone(vlm_key, backend, detect_kwargs):
         input_names=["inputs_embeds", "position_ids", "attention_mask"],
     )
     connected_graph = ConnectedGraph(onnx_model)
-    blocks, active_norms = get_decoder_block_boundaries(
-        onnx_model, connected_graph, **detect_kwargs
-    )
+    blocks = get_decoder_block_boundaries(onnx_model, connected_graph, **detect_kwargs)
+    active_norms = find_active_norms(onnx_model, connected_graph)
     return blocks, active_norms, connected_graph
 
 
-def _layer_index(op):
-    """Decoder layer index.
+def _layer_index(connected_graph, tensor_to_index, boundary_tensor):
+    """Decoder layer index of the norm op a boundary tensor feeds, or None.
 
     NOTE: For now, this is only meaningful under torchscript.
           For dynamo, we will need a pass to fix op names to preserve scope hierarchy.
     """
-    match = re.search(r"layers\.(\d+)\b", op.name)
+    idx = tensor_to_index.get(boundary_tensor)
+    if idx is None:
+        return None
+    match = re.search(r"layers\.(\d+)\b", connected_graph.ordered_ops[idx].name)
     return int(match.group(1)) if match else None
 
 
-def _layer_weighted_linear_count(connected_graph, start_op, end_op):
-    """Count per-layer weighted linears in the topological span [start_op, end_op)."""
-    topo = {id(op): i for i, op in enumerate(connected_graph.ordered_ops)}
-    start, end = topo[id(start_op)], topo[id(end_op)]
+def _layer_weighted_linear_count(
+    connected_graph, tensor_to_index, start_tensor, end_tensor
+):
+    """Count per-layer weighted linears in the span [start_tensor, end_tensor)."""
+    start, end = tensor_to_index[start_tensor], tensor_to_index[end_tensor]
     return sum(
         1
         for op in connected_graph.ordered_ops[start:end]
@@ -356,9 +358,9 @@ def _assert_block_detection(
     assert len(blocks) == _NUM_LAYERS
     assert len(active_norms) == active_norms_per_block * _NUM_LAYERS + 1
 
-    # contiguity: block i end is block i+1 start
+    # contiguity: block i end tensor is block i+1 start tensor (same edge)
     for i in range(len(blocks) - 1):
-        assert id(blocks[i][1]) == id(blocks[i + 1][0])
+        assert blocks[i][1] == blocks[i + 1][0]
 
     # every active norm feeds a downstream weight linear
     assert active_norms
@@ -367,19 +369,23 @@ def _assert_block_detection(
 
     # Name-based structural checks only for torchscript backend
     if backend == "torchscript":
-        start_indices = [_layer_index(start) for start, _ in blocks]
+        tensor_to_index = tensor_to_first_consumer_index(connected_graph)
+        start_indices = [
+            _layer_index(connected_graph, tensor_to_index, start) for start, _ in blocks
+        ]
         assert all(idx is not None for idx in start_indices)
         assert start_indices == sorted(set(start_indices))
         for i, (_, end) in enumerate(blocks):
             if i < len(blocks) - 1:
-                assert _layer_index(end) is not None
+                assert _layer_index(connected_graph, tensor_to_index, end) is not None
             else:
-                assert _layer_index(end) is None
+                assert _layer_index(connected_graph, tensor_to_index, end) is None
 
         # homogeneous stacks: identical per-layer weighted-linear count per block.
         if homogeneous:
             counts = [
-                _layer_weighted_linear_count(connected_graph, s, e) for s, e in blocks
+                _layer_weighted_linear_count(connected_graph, tensor_to_index, s, e)
+                for s, e in blocks
             ]
             assert len(set(counts)) == 1
 
@@ -415,9 +421,20 @@ def _strip_matmul_suffix(name):
     return name
 
 
-def verify_find_blocks(sim, model_type):
-    end_points = get_decoder_blocks_end_points(sim, model_type)
-    end_points_names = [(op1.name, op2.name) for op1, op2 in end_points]
+def verify_find_blocks(sim):
+    end_points = get_decoder_block_boundaries(sim.model.model, sim.connected_graph)
+    # Boundaries are residual-stream tensor names (the input to each block's
+    # norm op). Map each back to the norm op it feeds to assert on logical
+    # block identity.
+    consumer_index = tensor_to_first_consumer_index(sim.connected_graph)
+    ordered_ops = sim.connected_graph.ordered_ops
+    end_points_names = [
+        (
+            ordered_ops[consumer_index[start]].name,
+            ordered_ops[consumer_index[end]].name,
+        )
+        for start, end in end_points
+    ]
     assert end_points_names == [
         (
             "/model/model/layers.0/input_layernorm",
@@ -425,10 +442,19 @@ def verify_find_blocks(sim, model_type):
         ),
         ("/model/model/layers.1/input_layernorm", "/model/model/norm"),
     ]
-    conv_linear_blocks = get_conv_linear_layers_decoder_block(sim, end_points)
+    # Per-block weighted linears: slice ordered_ops between boundaries and keep
+    # Conv/MatMul/Gemm ops.
+    linear_types = ("Conv", "MatMul", "Gemm")
     conv_linear_blocks_names = []
-    for ops in conv_linear_blocks:
-        conv_linear_blocks_names.append([_strip_matmul_suffix(op.name) for op in ops])
+    for start, end in end_points:
+        block_ops = ordered_ops[consumer_index[start] : consumer_index[end]]
+        conv_linear_blocks_names.append(
+            [
+                _strip_matmul_suffix(op.name)
+                for op in block_ops
+                if op.type in linear_types
+            ]
+        )
 
     assert conv_linear_blocks_names == [
         [
@@ -467,7 +493,7 @@ def test_get_decoder_blocks(add_genai_tests_path):
     try:
         entry = LLM_ONNX.instantiate_float_model(model_id, 32, 16, small_model=True)
         collection = LLM_ONNX.instantiate_quantsim(entry)
-        verify_find_blocks(collection.backbone, "qwen2")
+        verify_find_blocks(collection.backbone)
     finally:
         shutil.rmtree(cache_dir, ignore_errors=True)
 
@@ -483,7 +509,7 @@ def test_get_decoder_blocks_qwen3(add_genai_tests_path):
     try:
         entry = LLM_ONNX.instantiate_float_model(model_id, 32, 16, small_model=True)
         collection = LLM_ONNX.instantiate_quantsim(entry)
-        verify_find_blocks(collection.backbone, "qwen3")
+        verify_find_blocks(collection.backbone)
     finally:
         shutil.rmtree(cache_dir, ignore_errors=True)
 
@@ -507,14 +533,18 @@ def test_get_decoder_blocks_qwen3_5(add_genai_tests_path):
         entry = model_cls.instantiate_float_model(model_id, 32, 16, small_model=True)
         collection = model_cls.instantiate_quantsim(entry)
 
-        blocks, active_norms = get_decoder_block_boundaries(
+        blocks = get_decoder_block_boundaries(
+            collection.backbone.model.model,
+            collection.backbone.connected_graph,
+        )
+        active_norms = find_active_norms(
             collection.backbone.model.model,
             collection.backbone.connected_graph,
         )
         assert len(blocks) == 2
         assert len(active_norms) == 2 * len(blocks) + 1
         for i in range(len(blocks) - 1):
-            assert id(blocks[i][1]) == id(blocks[i + 1][0])
+            assert blocks[i][1] == blocks[i + 1][0]
     finally:
         shutil.rmtree(cache_dir, ignore_errors=True)
 

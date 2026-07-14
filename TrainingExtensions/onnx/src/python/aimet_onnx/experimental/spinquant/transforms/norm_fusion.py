@@ -10,10 +10,8 @@ from onnx import numpy_helper
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.utils import ModelProto, ParamUtils
 
-from aimet_onnx.experimental.spinquant.model_analysis.norm_detection import ActiveNorm
-from aimet_onnx.experimental.spinquant.model_analysis.weight_utils import (
-    get_weight_product,
-)
+from aimet_onnx.experimental.block_topology.norm_detection import ActiveNorm
+from aimet_onnx.experimental.block_topology.weight_utils import get_weight_product
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 

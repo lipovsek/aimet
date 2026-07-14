@@ -16,12 +16,19 @@ import torch
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 
-from aimet_onnx.experimental.spinquant.model_analysis import (
-    find_merger_linear2,
+from aimet_onnx.experimental.block_topology.block_boundaries import (
     get_decoder_block_boundaries,
+)
+from aimet_onnx.experimental.block_topology.role_map import (
     get_decoder_role_map,
+)
+from aimet_onnx.experimental.block_topology.norm_detection import find_active_norms
+from aimet_onnx.experimental.block_topology.weight_utils import (
     infer_head_dim,
     infer_hidden_size,
+)
+from aimet_onnx.experimental.spinquant.model_analysis import (
+    find_merger_linear2,
 )
 from aimet_onnx.experimental.spinquant.passes import (
     R1RotationPass,
@@ -128,8 +135,9 @@ def _build_context(
 ) -> SpinquantContext:
     """Run model analysis once and build the context shared across passes."""
     bb_cg = ConnectedGraph(model)
-    boundaries, active_norms = get_decoder_block_boundaries(model, bb_cg)
-    role_map = get_decoder_role_map(bb_cg, boundaries, active_norms)
+    boundaries = get_decoder_block_boundaries(model, bb_cg)
+    active_norms = find_active_norms(model, bb_cg)
+    role_map = get_decoder_role_map(bb_cg, boundaries, active_norms=active_norms)
     hidden_size = infer_hidden_size(model, role_map)
 
     # head_dim is only needed by R2; derivation requires a past_value graph

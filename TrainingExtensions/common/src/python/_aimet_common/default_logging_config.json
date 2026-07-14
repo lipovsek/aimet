@@ -130,6 +130,12 @@
             "level": "INFO",
             "handlers": ["console"],
             "propagate": false
+        },
+
+        "BlockTopology": {
+            "level": "INFO",
+            "handlers": ["console"],
+            "propagate": false
         }
     }
 }

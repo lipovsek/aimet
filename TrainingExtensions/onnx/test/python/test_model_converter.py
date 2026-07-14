@@ -19,8 +19,8 @@ import numpy as np
 from dataclasses import dataclass
 import copy
 from aimet_onnx.common.utils import compute_psnr
-from aimet_onnx.experimental.adascale.find_blocks import (
-    get_decoder_blocks_end_points,
+from aimet_onnx.experimental.block_topology.block_boundaries import (
+    get_decoder_block_boundaries,
 )
 from aimet_onnx.common.utils import AimetLogger
 import onnx
@@ -116,8 +116,10 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
         location="fp_model.data",
     )
     common_inputs = ["attention_mask", "position_ids"]
-    adascale_blocks_end_points = get_decoder_blocks_end_points(sim, "qwen2")
-    block_inputs = [adascale_blocks_end_points[0][0].inputs[0].name]
+    adascale_blocks_end_points = get_decoder_block_boundaries(
+        sim.model.model, sim.connected_graph
+    )
+    block_inputs = [adascale_blocks_end_points[0][0]]
 
     model_before_block = os.path.join(CHECKPOINT_DIR, "before_decoder_block.onnx")
     fp_model_path = CHECKPOINT_FP_DIR  # converter._get_onnx_fp_model(fp32_model)
@@ -129,15 +131,15 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
     )
     block_input_tensor = before_session.run(block_inputs, inputs[0])
     for block_id, (block_start, block_end) in enumerate(
-        get_decoder_blocks_end_points(sim, "qwen2")
+        get_decoder_block_boundaries(sim.model.model, sim.connected_graph)
     ):
-        block_inputs = [block_start.inputs[0].name]
+        block_inputs = [block_start]
         block_input_names = (
             block_inputs
             + common_inputs
             + [f"past_key_{block_id}_in", f"past_value_{block_id}_in"]
         )
-        block_output_names = [block_end.inputs[0].name]
+        block_output_names = [block_end]
         block_input_output_names = (block_input_names, block_output_names)
         sim_model = onnx_ir.from_proto(sim.model.model)
         onnx_ir.passes.common.TopologicalSortPass().call(sim_model)
@@ -252,8 +254,10 @@ def test_model_round_trip_with_qwen_dynamo(
         location="fp_model.data",
     )
     common_inputs = ["attention_mask", "position_ids"]
-    adascale_blocks_end_points = get_decoder_blocks_end_points(sim, "qwen2")
-    block_inputs = [adascale_blocks_end_points[0][0].inputs[0].name]
+    adascale_blocks_end_points = get_decoder_block_boundaries(
+        sim.model.model, sim.connected_graph
+    )
+    block_inputs = [adascale_blocks_end_points[0][0]]
 
     model_before_block = os.path.join(CHECKPOINT_DIR, "before_decoder_block.onnx")
     fp_model_path = CHECKPOINT_FP_DIR
@@ -265,15 +269,15 @@ def test_model_round_trip_with_qwen_dynamo(
     )
     block_input_tensor = before_session.run(block_inputs, inputs[0])
     for block_id, (block_start, block_end) in enumerate(
-        get_decoder_blocks_end_points(sim, "qwen2")
+        get_decoder_block_boundaries(sim.model.model, sim.connected_graph)
     ):
-        block_inputs = [block_start.inputs[0].name]
+        block_inputs = [block_start]
         block_input_names = (
             block_inputs
             + common_inputs
             + [f"past_key_{block_id}_in", f"past_value_{block_id}_in"]
         )
-        block_output_names = [block_end.inputs[0].name]
+        block_output_names = [block_end]
         block_input_output_names = (block_input_names, block_output_names)
         sim.model.topological_sort()
         sim_model = onnx_ir.from_proto(sim.model.model)

@@ -1,7 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Static-weight / bias / hidden-size lookup primitives shared across rotation passes."""
+"""Static-weight / bias / hidden-size lookup primitives shared across quantization techniques."""
 
 from typing import Optional, Tuple
 from onnx import numpy_helper
@@ -11,7 +11,7 @@ from aimet_onnx.meta.connectedgraph import Product
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto, ParamUtils
 
-_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
+_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.BlockTopology)
 
 
 def get_weight_product(op: Op) -> Tuple[Optional[Product], bool]:

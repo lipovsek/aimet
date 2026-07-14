@@ -12,10 +12,10 @@ import torch
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto
 
-from aimet_onnx.experimental.spinquant.model_analysis import (
-    ActiveNorm,
+from aimet_onnx.experimental.block_topology.role_map import (
     DecoderModelRoleMap,
 )
+from aimet_onnx.experimental.block_topology.norm_detection import ActiveNorm
 
 
 @dataclass
