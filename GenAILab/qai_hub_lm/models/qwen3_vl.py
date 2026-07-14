@@ -238,6 +238,14 @@ class Qwen_3_VL(VLM):
             axes[f"deepstack_visual_embeds_{i}"] = {0: "num_visual_tokens"}
         return axes
 
+    @classmethod
+    def instantiate_position_processor(cls):
+        return cls.generate_position_ids
+
+    @classmethod
+    def build_vision_wrapper(cls, model):
+        return Qwen3VLVisualWrapper(model.model.visual)
+
     @staticmethod
     def use_dynamo_export() -> bool:
         return False

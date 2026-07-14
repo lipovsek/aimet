@@ -249,6 +249,7 @@ class Gemma3_VLM(VLM):
     @staticmethod
     def get_backbone_input_names(
         layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+        **kwargs,
     ) -> tuple[str, ...]:
         from GenAILab.qai_hub_lm.models.utils.layer_cache import cache_state_names
 
@@ -262,6 +263,7 @@ class Gemma3_VLM(VLM):
     @staticmethod
     def get_backbone_dynamic_axes(
         layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+        **kwargs,
     ) -> dict[str, dict[int, str]]:
         axes: dict[str, dict[int, str]] = {
             "inputs_embeds": {1: "sequence_length"},
@@ -287,8 +289,14 @@ class Gemma3_VLM(VLM):
         return ("pixel_values",)
 
     @staticmethod
-    def get_visual_output_names() -> tuple[str, ...]:
+    def get_visual_output_names(**kwargs) -> tuple[str, ...]:
         return ("image_embeddings",)
+
+    @classmethod
+    def build_vision_wrapper(cls, model):
+        return Gemma3VisionWrapper(
+            model.model.vision_tower, model.model.multi_modal_projector
+        )
 
     @staticmethod
     def get_generator_cls():

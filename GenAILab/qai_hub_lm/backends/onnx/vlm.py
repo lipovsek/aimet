@@ -1,28 +1,30 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""InternVL ONNX model class"""
+"""VLM ONNX quantization — base class and model registrations."""
 
 from __future__ import annotations
 
 import tempfile
+import warnings
+
 import torch
+from transformers import AutoConfig
 
 from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel
 
-from GenAILab.bench.model_cache import DiskBackedModelCache, ModelCacheEntry
-from GenAILab.qai_hub_lm.precision import PrecisionConfig, float16, float32
-from GenAILab.qai_hub_lm.models.base import SimCollection
-from GenAILab.bench.yaml_config_parser import YAMLConfigParser
-from GenAILab.qai_hub_lm.models.internvl import (
-    InternVL_VLM,
-    InternVLVisionWrapper,
-)
-from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
-from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
-
 from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
+from GenAILab.qai_hub_lm.precision import PrecisionConfig, float16, float32
+from GenAILab.bench.model_cache import DiskBackedModelCache, ModelCacheEntry
+from GenAILab.bench.yaml_config_parser import YAMLConfigParser
+from GenAILab.qai_hub_lm.models.base import SimCollection
+from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
+from GenAILab.qai_hub_lm.models.utils.layer_cache import (
+    build_layer_cache_descriptors,
+    _resolve_text_config,
+)
+
 from GenAILab.qai_hub_lm.backends.onnx.export_utils import (
     get_onnx_model,
     load_model_components_from_disk,
@@ -39,9 +41,18 @@ from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
 )
 
 
-@YAMLConfigParser.register_model("internvl_chat")
-class InternVL_ONNX(InternVL_VLM):
-    """InternVL ONNX quantization (text backbone + vision tower)."""
+class VLM_ONNX:
+    """Mixin providing common ONNX VLM float-export + quantsim instantiation.
+
+    Subclasses need only declare the class (inheriting from this mixin and
+    their model-specific VLM base) and register via @YAMLConfigParser.register_model.
+    All model-structure knowledge comes from methods on the VLM model class:
+    get_language_model, get_lm_head, get_embedding, build_vision_wrapper, get_extras.
+
+    The float-export step (:meth:`instantiate_float_model`) is separated from
+    sim construction (:meth:`instantiate_quantsim`) so the caller can transform
+    the float ONNX graph(s) (e.g. apply SpinQuant) before the sims are built.
+    """
 
     @classmethod
     def instantiate_float_model(
@@ -110,8 +121,21 @@ class InternVL_ONNX(InternVL_VLM):
                 )
             return entry
 
-        raise NotImplementedError(
-            "Loading InternVL ONNX from non-HuggingFace checkpoint not yet supported."
+        config = AutoConfig.from_pretrained(model_id)
+        backbone_onnx_model, visual_onnx_model, embedding = (
+            load_model_components_from_disk(
+                model_id,
+                context_length=context_length,
+                sequence_length=cache_sl,
+            )
+        )
+        if visual_onnx_model is None or embedding is None:
+            raise ValueError("Required model components could not be loaded from disk.")
+        return ModelCacheEntry(
+            backbone=backbone_onnx_model,
+            visual=visual_onnx_model,
+            embedding=embedding,
+            config=config,
         )
 
     @classmethod
@@ -121,7 +145,7 @@ class InternVL_ONNX(InternVL_VLM):
         precision: PrecisionConfig | None = None,
         *args,
         **kwargs,
-    ):
+    ) -> SimCollection:
         if precision is None:
             precision = PrecisionConfig()
         precision.ensure_visual_defaults()
@@ -171,10 +195,13 @@ class InternVL_ONNX(InternVL_VLM):
                 ),
             )
 
+        # Setting the LM head weights
         _set_lm_head_precision(backbone_quantsim, precision.lm_head)
+        # Tie KV cache, and set quantization type
         _resolve_kv_cache_quantization(
             backbone_quantsim, precision.resolve_kv_cache_qtype()
         )
+        # Apply block-level granularity (LPBQ/BQ) if configured
         _apply_block_granularity_to_decoder_stack(backbone_quantsim, precision)
 
         if default_activation_qtype in (float16, float32):
@@ -182,12 +209,16 @@ class InternVL_ONNX(InternVL_VLM):
         if visual_activation_qtype in (float16, float32):
             _remove_activation_quantizers(visual_quantsim)
 
+        # Note: embedding quantization is deferred to after recipe application
+        # (in the test runner) to allow recipes like SpinQuant to rotate weights first.
+
         return SimCollection(
             backbone=backbone_quantsim,
             visual=visual_quantsim,
             embedding=embedding,
             config=config,
-            extras=extras,
+            position_id_processor=cls.instantiate_position_processor(),
+            extras=extras or None,
         )
 
     @classmethod
@@ -208,20 +239,26 @@ class InternVL_ONNX(InternVL_VLM):
         )
 
         model = cls.instantiate_model(model_id, small_model).to(dtype=torch.float32)
-        llm_config = model.config.llm_config
-        layer_cache_descs = build_layer_cache_descriptors(llm_config)
+        text_config = _resolve_text_config(model.config)
+        layer_cache_descs = build_layer_cache_descriptors(text_config)
+
+        language_model = cls.get_language_model(model)
+        lm_head = cls.get_lm_head(model)
+
+        backbone_kwargs = {
+            "cache_type": cls.get_cache_type(),
+            "input_names": cls.get_backbone_input_names(
+                layer_cache_descs, config=model.config
+            ),
+        }
+        if lm_head is not None:
+            backbone_kwargs["lm_head"] = lm_head
 
         traceable_backbone = ONNXExportableModuleWithCache(
-            model.language_model,
-            cache_type=cls.get_cache_type(),
-            input_names=cls.get_backbone_input_names(layer_cache_descs),
+            language_model, **backbone_kwargs
         )
-        traceable_visual = InternVLVisionWrapper(
-            model.vision_model,
-            model.mlp1,
-            downsample_ratio=model.downsample_ratio,
-            select_layer=model.select_layer,
-        )
+        traceable_visual = cls.build_vision_wrapper(model)
+
         backbone_onnx_model, visual_onnx_model = get_onnx_model(
             checkpoint=directory,
             fp_backbone_model=traceable_backbone,
@@ -232,25 +269,88 @@ class InternVL_ONNX(InternVL_VLM):
                 context_length,
                 max_seq_len,
                 layer_cache_descriptors=layer_cache_descs,
+                image_size=image_size,
+                config=model.config,
             ),
-            input_names=cls.get_backbone_input_names(layer_cache_descs),
+            input_names=cls.get_backbone_input_names(
+                layer_cache_descs, config=model.config
+            ),
             output_names=cls.get_backbone_output_names(layer_cache_descs),
             fp_visual_model=traceable_visual,
             sample_visual_input=cls.get_sample_vision_inputs(
                 model.config, image_size=image_size
             ),
             visual_input_names=cls.get_visual_input_names(),
-            visual_output_names=cls.get_visual_output_names(),
+            visual_output_names=cls.get_visual_output_names(config=model.config),
             dynamo=cls.use_dynamo_export(),
-            dynamic_axes=cls.get_backbone_dynamic_axes(layer_cache_descs),
+            dynamic_axes=cls.get_backbone_dynamic_axes(
+                layer_cache_descs, config=model.config
+            ),
             visual_dynamic_axes=cls.get_visual_dynamic_axes(),
         )
 
-        embedding = model.language_model.get_input_embeddings()
+        embedding = cls.get_embedding(model)
+        extras = cls.get_extras(model) or None
 
         return ModelCacheEntry(
             backbone=backbone_onnx_model,
             visual=visual_onnx_model,
             embedding=embedding,
             config=model.config,
+            extras=extras,
         )
+
+
+# ---------------------------------------------------------------------------
+# Model registrations
+# ---------------------------------------------------------------------------
+
+from GenAILab.qai_hub_lm.models.qwen2_vl import Qwen_25_VL
+
+
+@YAMLConfigParser.register_model("qwen2_5_vl")
+class Qwen_25_VL_ONNX(VLM_ONNX, Qwen_25_VL):
+    pass
+
+
+try:
+    from GenAILab.qai_hub_lm.models.qwen3_vl import Qwen_3_VL
+
+    @YAMLConfigParser.register_model("qwen3_vl")
+    class Qwen_3_VL_ONNX(VLM_ONNX, Qwen_3_VL):
+        pass
+
+except ImportError:
+    warnings.warn(
+        "Qwen 3VL is not available. Please upgrade to a later version of transformers to use this model."
+    )
+
+try:
+    from GenAILab.qai_hub_lm.models.gemma3 import Gemma3_VLM
+
+    @YAMLConfigParser.register_model("gemma3")
+    class Gemma3_ONNX(VLM_ONNX, Gemma3_VLM):
+        pass
+
+except ImportError:
+    pass
+
+try:
+    from GenAILab.qai_hub_lm.models.gemma4 import Gemma4_VLM
+
+    @YAMLConfigParser.register_model("gemma4")
+    class Gemma4_ONNX(VLM_ONNX, Gemma4_VLM):
+        pass
+
+except ImportError:
+    pass
+
+try:
+    from GenAILab.qai_hub_lm.models.internvl import InternVL_VLM
+
+    @YAMLConfigParser.register_model("internvl_chat")
+    class InternVL_ONNX(VLM_ONNX, InternVL_VLM):
+        pass
+
+except ImportError:
+    pass

@@ -364,6 +364,7 @@ class Gemma4_VLM(VLM):
     @staticmethod
     def get_backbone_input_names(
         layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+        **kwargs,
     ) -> tuple[str, ...]:
         from GenAILab.qai_hub_lm.models.utils.layer_cache import (
             attention_mask_input_names,
@@ -381,6 +382,7 @@ class Gemma4_VLM(VLM):
     @staticmethod
     def get_backbone_dynamic_axes(
         layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+        **kwargs,
     ) -> dict[str, dict[int, str]]:
         from GenAILab.qai_hub_lm.models.utils.layer_cache import (
             AttentionType,
@@ -412,8 +414,23 @@ class Gemma4_VLM(VLM):
         return ("pixel_values", "image_position_ids")
 
     @staticmethod
-    def get_visual_output_names() -> tuple[str, ...]:
+    def get_visual_output_names(**kwargs) -> tuple[str, ...]:
         return ("image_embeddings",)
+
+    @classmethod
+    def get_lm_head(cls, model):
+        softcap = model.config.text_config.final_logit_softcapping
+        return SoftcappedLMHead(model.lm_head, softcap)
+
+    @classmethod
+    def build_vision_wrapper(cls, model):
+        return Gemma4VisionWrapper(model.model.vision_tower, model.model.embed_vision)
+
+    @classmethod
+    def get_extras(cls, model):
+        return {
+            "embed_tokens_per_layer": model.model.language_model.embed_tokens_per_layer,
+        }
 
     @staticmethod
     def get_generator_cls():

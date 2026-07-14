@@ -185,8 +185,16 @@ class Qwen_25_VL(VLM):
         return ("pixel_values", "image_grid_thw")
 
     @staticmethod
-    def get_visual_output_names() -> tuple[str, ...]:
+    def get_visual_output_names(**kwargs) -> tuple[str, ...]:
         return ("image_embeddings",)
+
+    @classmethod
+    def instantiate_position_processor(cls):
+        return cls.generate_position_ids
+
+    @classmethod
+    def build_vision_wrapper(cls, model):
+        return Qwen2VLVisualWrapper(model.model.visual)
 
 
 class Qwen2VLVisualWrapper(torch.nn.Module):

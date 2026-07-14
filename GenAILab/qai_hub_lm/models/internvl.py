@@ -333,6 +333,7 @@ class InternVL_VLM(VLM):
     @staticmethod
     def get_backbone_dynamic_axes(
         layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
+        **kwargs,
     ) -> dict[str, dict[int, str]]:
         from GenAILab.qai_hub_lm.models.utils.layer_cache import (
             AttentionType,
@@ -359,8 +360,25 @@ class InternVL_VLM(VLM):
         return ("pixel_values",)
 
     @staticmethod
-    def get_visual_output_names() -> tuple[str, ...]:
+    def get_visual_output_names(**kwargs) -> tuple[str, ...]:
         return ("image_embeddings",)
+
+    @classmethod
+    def get_language_model(cls, model):
+        return model.language_model
+
+    @classmethod
+    def get_lm_head(cls, model):
+        return None
+
+    @classmethod
+    def build_vision_wrapper(cls, model):
+        return InternVLVisionWrapper(
+            model.vision_model,
+            model.mlp1,
+            downsample_ratio=model.downsample_ratio,
+            select_layer=model.select_layer,
+        )
 
     @staticmethod
     def get_generator_cls() -> type[VLM_Generator]:
