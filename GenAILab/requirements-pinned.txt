@@ -1,7 +1,7 @@
 # Exact pins for HuggingFace ecosystem packages.
 # Auto-updated by the dep-bump workflow — do not edit manually.
 transformers==5.13.1
-tokenizers==0.23.1
+tokenizers==0.22.2
 datasets==5.0.0
 peft==0.19.1
 huggingface_hub[cli]==1.10.2
