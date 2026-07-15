@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 import ast
 import gc
 import re
+import warnings
 
 from datasets import (
     Dataset as HFDataset,
@@ -525,6 +526,212 @@ class MMMLU(TextDataset):
                 "Answer",
                 "Subject",
                 "Unnamed: 0",
+            ],
+        )
+
+
+@YAMLConfigParser.register_dataset
+class MMLUPro(TextDataset):
+    """MMLU Pro Dataset with 10 answer choices (A-J)."""
+
+    @classmethod
+    def _format_question(cls, question: str, choices: list[str]):
+        """Format question with 10 options in MMLU Pro style (without 'Answer:')."""
+        formatted = f"Question:\n{question.strip()}\nOptions:\n"
+        for i, choice in enumerate(choices):
+            formatted += f"{chr(ord('A') + i)}. {choice}"
+            if i < len(choices) - 1:
+                formatted += "\n"
+        return formatted
+
+    @classmethod
+    def _format_question_and_answer(
+        cls, question: str, choices: list[str], answer: str, cot_content: str = None
+    ):
+        """Format question with answer and optional CoT reasoning for few-shot examples."""
+        formatted = f"Question:\n{question.strip()}\nOptions:\n"
+        for i, choice in enumerate(choices):
+            formatted += f"{chr(ord('A') + i)}. {choice}\n"
+
+        # Add the answer with CoT if available
+        formatted += "Answer:"
+        if cot_content:
+            # Use CoT content if available, formatting it properly
+            cot = cot_content.replace(
+                "A: Let's think step by step.", " Let's think step by step."
+            )
+            formatted += cot
+        else:
+            formatted += f" {answer}"
+        return formatted
+
+    @classmethod
+    def load_fewshot(cls, num_fewshot: int = 5, fewshot_split: str = "validation"):
+        """Load few-shot examples grouped by category with CoT reasoning.
+
+        Returns a dict mapping category -> formatted few-shot header string.
+        """
+        if num_fewshot == 0:
+            return {}
+
+        fewshot_data = load_dataset("TIGER-Lab/MMLU-Pro", split=fewshot_split)
+        grouped_fewshot_questions = {}
+
+        for sample in fewshot_data:
+            category = sample["category"]
+
+            if len(grouped_fewshot_questions.get(category, [])) >= num_fewshot:
+                continue
+
+            if category not in grouped_fewshot_questions:
+                grouped_fewshot_questions[category] = []
+
+            question = sample["question"]
+            choices = sample["options"]
+            answer_idx = sample["answer_index"]
+            answer = chr(ord("A") + answer_idx)
+            cot_content = sample.get("cot_content", "")
+
+            grouped_fewshot_questions[category].append(
+                cls._format_question_and_answer(question, choices, answer, cot_content)
+            )
+
+        # Verify we have enough examples per category
+        for category, questions in grouped_fewshot_questions.items():
+            if len(questions) < num_fewshot:
+                warnings.warn(
+                    f"Only {len(questions)} examples available for category '{category}', "
+                    f"requested {num_fewshot}. Using all available."
+                )
+
+        def combine_questions(category, questions):
+            formatted_string = f"The following are multiple choice questions (with answers) about {category}.\n\n"
+            for question in questions:
+                formatted_string += question
+                formatted_string += "\n\n"
+            return formatted_string
+
+        formatted_fewshot_questions = {
+            category: combine_questions(category, questions)
+            for category, questions in grouped_fewshot_questions.items()
+        }
+        return formatted_fewshot_questions
+
+    @staticmethod
+    def load_dataset(split: str = "test"):
+        """Load MMLU Pro dataset from HuggingFace."""
+        if split not in ["test", "validation"]:
+            raise ValueError(
+                "MMLU Pro dataset only supports test and validation splits."
+            )
+        return load_dataset("TIGER-Lab/MMLU-Pro", split=split)
+
+    @classmethod
+    def load_encoded_dataset(
+        cls,
+        tokenizer: PreTrainedTokenizer,
+        context_length: int,
+        split: str,
+        num_fewshot: int = 5,
+        fewshot_split: str = "validation",
+    ):
+        """Load dataset with fully tokenized inputs for generative evaluation.
+
+        Returns a HuggingFace dataset where each sample contains:
+        - 'input_ids': Tokenized prompt including system prompt, question, and "Answer:"
+        - 'attention_mask': Attention mask for the input
+        - 'label': The correct answer as a single-token tensor
+        """
+        SYSTEM_PROMPT = (
+            "The following are multiple choice questions (with answers). "
+            'Think step by step and then finish your answer with "the answer is (X)" '
+            "where X is the correct letter choice."
+        )
+
+        dataset_split = cls.load_dataset(split)
+        fewshot_headers = (
+            cls.load_fewshot(num_fewshot, fewshot_split) if num_fewshot > 0 else {}
+        )
+
+        def tokenize(sample):
+            question = sample["question"]
+            choices = sample["options"]
+            category = sample["category"]
+
+            # Build user prompt with optional few-shot examples
+            user_prompt = list(
+                map(
+                    lambda cat, q, c: (
+                        (fewshot_headers.get(cat, "") if num_fewshot > 0 else "")
+                        + f"Question:\n{q.strip()}\nOptions:\n"
+                        + "\n".join(
+                            f"{chr(ord('A') + i)}. {opt}" for i, opt in enumerate(c)
+                        )
+                    ),
+                    category,
+                    question,
+                    choices,
+                )
+            )
+
+            # Format as chat with system prompt and "Answer:" in assistant turn
+            formatted_prompts = []
+            for prompt in user_prompt:
+                messages = [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "Answer:"},
+                ]
+                text = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    continue_final_message=True,
+                )
+                formatted_prompts.append(text)
+
+            # Tokenize the formatted prompts
+            tokenized_question = tokenizer(
+                formatted_prompts,
+                return_token_type_ids=False,
+                add_special_tokens=False,  # Chat template already added them
+            )
+
+            # Truncate to context_length
+            tokenized_question = {
+                k: list(map(lambda field: field[-context_length:], v))
+                for k, v in tokenized_question.items()
+            }
+
+            # Tokenize answer letters
+            tokenized_answer = tokenizer(
+                list(
+                    map(
+                        lambda answer_idx: chr(ord("A") + answer_idx),
+                        sample["answer_index"],
+                    )
+                ),
+                return_token_type_ids=False,
+                add_special_tokens=False,
+                return_tensors="pt",
+            )
+
+            result = tokenized_question
+            result.update({"label": tokenized_answer["input_ids"]})
+
+            return result
+
+        return dataset_split.map(
+            tokenize,
+            batched=True,
+            remove_columns=[
+                "question",
+                "options",
+                "answer",
+                "answer_index",
+                "category",
+                "src",
+                "question_id",
+                "cot_content",
             ],
         )
 

@@ -303,6 +303,10 @@ class Generator(GenerationMixin, torch.nn.Module):
     def _supports_cache_class(self) -> bool:
         return True
 
+    @contextlib.contextmanager
+    def _optimize_model_for_decode(self):
+        yield
+
     @property
     def device(self) -> torch.device:
         return self.model.device

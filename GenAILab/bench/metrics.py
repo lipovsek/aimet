@@ -4,6 +4,7 @@
 """Metrics for GenAI testing"""
 
 import gc
+import re
 import time
 import warnings
 import yaml
@@ -30,6 +31,7 @@ from .datasets import (
     TinyMMLU as TinyMMLUDataset,
     MMLU as MMLUDataset,
     MMMLU as MMMLUDataset,
+    MMLUPro as MMLUProDataset,
     MMMU as MMMUDataset,
 )
 
@@ -312,6 +314,190 @@ class MMMLU(GenericMMLU):
             tokenizer, context_length, split, num_fewshot
         )
         return DataLoader(dataset)
+
+
+@YAMLConfigParser.register_metric
+class MMLUPro(TextEvaluationMetric):
+    """MMLU Pro evaluation metric with 10 answer choices (A-J) using generative CoT."""
+
+    SYSTEM_PROMPT = (
+        "The following are multiple choice questions (with answers). "
+        'Think step by step and then finish your answer with "the answer is (X)" '
+        "where X is the correct letter choice."
+    )
+
+    @classmethod
+    def get_collection_name(cls):
+        """Get the collection name. Used for indexing into the EvaluationContext."""
+        return f"{cls.__name__}_generated_answers"
+
+    @staticmethod
+    def _extract_answer(text: str) -> str:
+        """Extract answer from generated text using multi-stage regex patterns.
+
+        Follows the MMLU Pro reference implementation with 3 fallback patterns:
+        1. "answer is (A)" or "answer is A"
+        2. "Answer: A" or "answer: A"
+        3. Last standalone capital letter A-J
+        """
+        # First pattern: "answer is (A)" or "answer is A"
+        pattern = r"answer is \(?([A-J])\)?"
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
+
+        # Second pattern: "Answer: A" or "answer: A"
+        match = re.search(r".*[aA]nswer:\s*([A-J])", text)
+        if match:
+            return match.group(1).upper()
+
+        # Third pattern: last standalone letter A-J
+        pattern = r"\b[A-J]\b(?!.*\b[A-J]\b)"
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            return match.group(0).upper()
+
+        return None
+
+    @classmethod
+    def _generate_and_extract(
+        cls,
+        model: Generator,
+        tokenizer: PreTrainedTokenizer,
+        dataloader: DataLoader,
+    ) -> dict:
+        """Generate answers with CoT reasoning and extract predictions.
+
+        Returns a dict with:
+        * ``"predictions"`` – List of extracted answers (or None if extraction failed)
+        * ``"labels"`` – List of correct answers as letters
+        """
+        from GenAILab.bench.utils.generation_utils import build_generation_config
+
+        # Build generation config for CoT (requires longer generations)
+        generation_config = build_generation_config(
+            model,
+            tokenizer,
+            max_new_tokens=2048,
+            do_sample=False,
+            temperature=0.0,
+        )
+        model.generation_config = generation_config
+
+        predictions = []
+        labels = []
+
+        for batch in tqdm(
+            dataloader, total=len(dataloader), desc="Generating MMLU Pro answers"
+        ):
+            # Get tokenized inputs from dataset
+            input_ids = (
+                torch.Tensor(batch["input_ids"])
+                .to(dtype=torch.int, device=model.device)
+                .unsqueeze(0)
+            )
+            attention_mask = (
+                torch.Tensor(batch["attention_mask"])
+                .to(dtype=torch.int, device=model.device)
+                .unsqueeze(0)
+            )
+            label_token = torch.Tensor(batch["label"]).to(dtype=torch.int)
+
+            # Get the prompt length for later extraction
+            prompt_length = input_ids.shape[-1]
+
+            # Generate
+            with torch.no_grad():
+                outputs = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    generation_config=generation_config,
+                )
+
+            # Decode generated text (skip the prompt tokens)
+            generated_tokens = outputs[0, prompt_length:]
+            generated_text = tokenizer.decode(
+                generated_tokens, skip_special_tokens=True
+            )
+
+            # Extract answer from generated text
+            pred = cls._extract_answer(generated_text)
+
+            # Decode label token to letter
+            label_letter = tokenizer.decode(
+                label_token, skip_special_tokens=True
+            ).strip()
+
+            predictions.append(pred)
+            labels.append(label_letter)
+
+        return {
+            "predictions": predictions,
+            "labels": labels,
+        }
+
+    @classmethod
+    def evaluate(
+        cls,
+        model: Generator,
+        tokenizer: PreTrainedTokenizer,
+        context_length: int,
+        *,
+        eval_ctx: EvaluationContext = None,
+        num_fewshot: int = 5,
+        num_samples: int = None,
+        **kwargs,
+    ) -> float:
+        """Evaluate MMLU Pro accuracy with generative CoT reasoning.
+
+        Args:
+            model: The model to evaluate
+            tokenizer: The tokenizer
+            context_length: Maximum context length
+            eval_ctx: Evaluation context for caching
+            num_fewshot: Number of few-shot examples (default: 5)
+            num_samples: Number of samples to evaluate (default: None, evaluates all ~12k samples)
+        """
+        if eval_ctx is None:
+            warnings.warn(
+                "No EvaluationContext provided; MMLU Pro results will not be cached."
+            )
+
+        dataset = MMLUProDataset.load_encoded_dataset(
+            tokenizer, context_length, "test", num_fewshot=num_fewshot
+        )
+        if num_samples is not None:
+            dataset = Subset(dataset, torch.arange(min(num_samples, len(dataset))))
+        dataloader = DataLoader(dataset)
+
+        def collect_qt():
+            return cls._generate_and_extract(model, tokenizer, dataloader)
+
+        data = (
+            eval_ctx.get_or_compute_quant(cls.get_collection_name(), collect_qt)
+            if eval_ctx
+            else collect_qt()
+        )
+
+        # Compute accuracy
+        predictions = data["predictions"]
+        labels = data["labels"]
+
+        correct = 0
+        wrong = 0
+        for pred, label in zip(predictions, labels):
+            if pred is None:
+                # Failed extraction - treat as wrong
+                wrong += 1
+            elif pred == label:
+                correct += 1
+            else:
+                wrong += 1
+
+        if correct + wrong == 0:
+            return 0.0
+
+        return float(correct / (correct + wrong)) * 100
 
 
 # ---------------------------------------------------------------------------
