@@ -38,10 +38,6 @@ Install AIMET from PyPI
 
         pip install aimet-torch
 
-
-.. note::
-    aimet_tf is not available on PyPI, please download aimet_tf package from https://github.com/qualcomm/aimet/releases
-
 .. _alternative-packages:
 
 Alternative packages
