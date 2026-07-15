@@ -4,7 +4,10 @@
 """Quantized Gemma4 modules"""
 
 import torch
-from aimet_torch.nn.true_quant import QuantizationMixin
+from aimet_torch.nn.true_quant import (
+    QuantizationMixin,
+    QuantizedEmbedding,
+)
 
 try:
     from transformers.models.gemma4 import modeling_gemma4
@@ -23,10 +26,16 @@ map_torch_types_to_onnx[modeling_gemma4.Gemma4RMSNorm] = ["RMSNormalization"]
 # These modules compute positional encodings or pooling — no learnable params to quantize
 QuantizationMixin.ignore(modeling_gemma4.Gemma4VisionRotaryEmbedding)
 QuantizationMixin.ignore(modeling_gemma4.Gemma4TextRotaryEmbedding)
-QuantizationMixin.ignore(modeling_gemma4.Gemma4TextScaledWordEmbedding)
 QuantizationMixin.ignore(modeling_gemma4.Gemma4VisionPooler)
 QuantizationMixin.ignore(modeling_gemma4.Gemma4AudioRelPositionalEncoding)
 QuantizationMixin.ignore(modeling_gemma4.Gemma4AudioCausalConv1d)
+
+
+@QuantizationMixin.implements(modeling_gemma4.Gemma4TextScaledWordEmbedding)
+class QuantizedGemma4TextScaledWordEmbedding(
+    QuantizedEmbedding, modeling_gemma4.Gemma4TextScaledWordEmbedding
+):
+    pass
 
 
 @QuantizationMixin.implements(modeling_gemma4.Gemma4RMSNorm)
