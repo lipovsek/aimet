@@ -47,6 +47,14 @@ except ImportError:
     Qwen3VLTextModel = Qwen3VLTextDecoderLayer = None
 
 try:
+    from transformers.models.qwen3_5.modeling_qwen3_5 import (
+        Qwen3_5TextModel,
+        Qwen3_5DecoderLayer,
+    )
+except ImportError:
+    Qwen3_5TextModel = Qwen3_5DecoderLayer = None
+
+try:
     from transformers.models.gemma4.modeling_gemma4 import (
         Gemma4TextModel,
         Gemma4TextDecoderLayer,
@@ -133,6 +141,17 @@ if Qwen3VLTextModel is not None and Qwen3VLTextDecoderLayer is not None:
                 beta_gamma_lr=1e-3,
                 scales_lr=5e-4,
                 enable_caching_after_block=3,
+            )
+        }
+    )
+
+if Qwen3_5TextModel is not None and Qwen3_5DecoderLayer is not None:
+    adascale_model_config_dict.update(
+        {
+            Qwen3_5TextModel: AdaScaleModelConfig(
+                block_type=Qwen3_5DecoderLayer,
+                beta_gamma_lr=1e-3,
+                scales_lr=5e-4,
             )
         }
     )
@@ -572,7 +591,12 @@ class AdaScale:
                     if curr_iteration > num_iterations:
                         pbar.close()
                         break
-                    with torch.set_grad_enabled(True):
+                    with (
+                        torch.set_grad_enabled(True),
+                        # Tolerate in-place cache updates (e.g. linear-attention
+                        # recurrent state) on tensors saved for backward.
+                        torch.autograd.graph.allow_mutation_on_saved_tensors(),
+                    ):
                         quant_out = run_forward(args, kwargs)
 
                         del args, kwargs

@@ -23,6 +23,9 @@ from aimet_torch import QuantizationSimModel, utils
 
 logger = utils.AimetLogger.get_area_logger(utils.AimetLogger.LogAreas.Utils)
 
+# Per-layer tensor attributes on transformers Cache layers.
+_CACHE_LAYER_TENSOR_ATTRS = ("keys", "values", "conv_states", "recurrent_states")
+
 
 def change_tensor_and_cache_device_placement(inputs, device, cache_movement_fn=None):
     """This function moves all tensors and huggingface Cache objects to the provided device"""
@@ -72,17 +75,16 @@ def change_tensor_and_cache_device_placement(inputs, device, cache_movement_fn=N
                     )
                 else:
                     # Compatible with transformers >= 4.55
-                    for layer_idx in range(len(cache_obj)):
-                        cache_obj.layers[
-                            layer_idx
-                        ].keys = change_tensor_device_placement(
-                            cache_obj.layers[layer_idx].keys, device
-                        )
-                        cache_obj.layers[
-                            layer_idx
-                        ].values = change_tensor_device_placement(
-                            cache_obj.layers[layer_idx].values, device
-                        )
+                    for layer in cache_obj.layers:
+                        for attr in _CACHE_LAYER_TENSOR_ATTRS:
+                            if getattr(layer, attr, None) is not None:
+                                setattr(
+                                    layer,
+                                    attr,
+                                    change_tensor_device_placement(
+                                        getattr(layer, attr), device
+                                    ),
+                                )
             except Exception as e:
                 logger.error(
                     "Please provide a cache_movement_fn to move contents of the Cache object used by the model"
