@@ -31,6 +31,7 @@ from aimet_onnx.common import libquant_info
 from aimet_onnx.common.quantsim import calculate_delta_offset, _get_minimum_scale
 from aimet_onnx import lpbq_utils
 from aimet_onnx._encoding import AffineEncoding
+import aimet_onnx
 
 
 FLOAT32_MIN = np.finfo(np.float32).min
@@ -2929,3 +2930,72 @@ def test_import_1_0_0_LPBQ_encodings_with_zero_point_shift():
         assert enc.min == enc.delta * -2
         assert enc.max == enc.delta * 1
         assert enc.offset == -2
+
+
+@pytest.mark.parametrize(
+    "qtype",
+    [
+        aimet_onnx.int2,
+        aimet_onnx.int4,
+        aimet_onnx.int8,
+        aimet_onnx.int16,
+        aimet_onnx.float16,
+        "int2",
+        "int4",
+        "int8",
+        "int16",
+        "float16",
+    ],
+)
+def test_set_precision(qtype: aimet_onnx.qtype | str):
+    quant_info = libquant_info.QcQuantizeInfo()
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=8,
+        use_symmetric_encodings=True,
+    )
+
+    assert qc_op.bitwidth == 8
+    assert qc_op.data_type == QuantizationDataType.int
+
+    qc_op.set_precision(qtype)
+
+    if isinstance(qtype, str):
+        qtype = aimet_onnx.qtype.from_string(qtype)
+
+    dtype, bitwidth = qtype.to_legacy_repr()
+    assert qc_op.data_type == dtype
+    assert qc_op.bitwidth == bitwidth
+
+    qc_op.update_encoding_stats(np.random.randn(10, 10).astype(np.float32))
+    qc_op.compute_encodings()
+
+    encoding_export = qc_op.export_encodings("2.0.0")
+
+    if qtype in (aimet_onnx.float16,):
+        assert not encoding_export
+    else:
+        assert "output_dtype" in encoding_export
+        assert encoding_export["output_dtype"].removeprefix("u") == repr(qtype)
+
+    qc_op.freeze_encodings()
+    qc_op.set_precision(aimet_onnx.float16)
+
+    assert qc_op.bitwidth == bitwidth
+    assert qc_op.data_type == dtype
+
+
+@pytest.mark.parametrize("qtype", ["int0", "uint8", "float8e5m2fnuz", "float8"])
+def test_set_invalid_precision_raises(qtype: str):
+    quant_info = libquant_info.QcQuantizeInfo()
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=8,
+        use_symmetric_encodings=True,
+    )
+    with pytest.raises(ValueError):
+        qc_op.set_precision(qtype)

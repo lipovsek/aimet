@@ -321,10 +321,7 @@ def compute_encodings(sim: "QuantizationSimModel"):
     yield
 
     for op_name, qc_op in enabled_quantizers.items():
-        if (
-            qc_op.data_type == QuantizationDataType.int
-            and not qc_op.is_encoding_frozen()
-        ):
+        if not qc_op.is_encoding_frozen():
             qc_op.compute_encodings()
         qc_op.op_mode = OpMode.quantizeDequantize
 
@@ -972,12 +969,12 @@ class QuantizationSimModel:
         if is_param:
             output_name = input_name + "_qdq"
             op_mode = OpMode.oneShotQuantizeDequantize
-            dtype, bitwidth = self._param_type.to_legacy_repr()
+            precision = self._param_type
             tensor_quantizer_params = self._create_tensor_quantizer_params(input_name)
         else:
             output_name = input_name + "_updated"
             op_mode = OpMode.updateStats
-            dtype, bitwidth = self._activation_type.to_legacy_repr()
+            precision = self._activation_type
             tensor_quantizer_params = None
 
         quant_info = libquant_info.QcQuantizeInfo()
@@ -996,10 +993,9 @@ class QuantizationSimModel:
             quant_info=quant_info,
             quant_scheme=self._quant_scheme,
             op_mode=op_mode,
-            bitwidth=bitwidth,
             tensor_quantizer_params=tensor_quantizer_params,
         )
-        self.qc_quantize_op_dict[input_name].data_type = dtype
+        self.qc_quantize_op_dict[input_name].set_precision(precision)
 
     @staticmethod
     @deprecated("Use `aimet_onnx.utils.OrtInferenceSession` instead")
@@ -4122,7 +4118,6 @@ def set_param_type(
             and (op_types is None or op.type in op_types)
         }
 
-    data_type, bitwidth = param_type.to_legacy_repr()
     zero_point_shift = 0.5 if shift_zero_point else 0.0
 
     for op in sim.connected_graph.ordered_ops:
@@ -4134,8 +4129,7 @@ def set_param_type(
 
         for quantizer in param_quantizers.values():
             if quantizer and quantizer.enabled:
-                quantizer.set_bitwidth(bitwidth)
-                quantizer.data_type = data_type
+                quantizer.set_precision(param_type)
                 quantizer.set_zero_point_shift(zero_point_shift)
 
 

@@ -150,19 +150,15 @@ def _set_precision(
         if isinstance(activation_type, str)
         else activation_type
     )
-    param_dtype, param_bw = param_type.to_legacy_repr()
     for name in sim.param_names:
         quantizer = sim.qc_quantize_op_dict.get(name)
         if quantizer and quantizer.enabled:
-            quantizer.set_bitwidth(param_bw)
-            quantizer.data_type = param_dtype
+            quantizer.set_precision(param_type)
 
-    act_dtype, act_bw = activation_type.to_legacy_repr()
     for name in sim.activation_names:
         quantizer = sim.qc_quantize_op_dict.get(name)
         if quantizer and quantizer.enabled:
-            quantizer.set_bitwidth(act_bw)
-            quantizer.data_type = act_dtype
+            quantizer.set_precision(activation_type)
 
     sim._apply_exception_rules()  # pylint: disable=protected-access
 

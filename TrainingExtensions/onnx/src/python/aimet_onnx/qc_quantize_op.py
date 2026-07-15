@@ -17,6 +17,7 @@ from aimet_onnx.common.defs import (
     MAP_QUANT_SCHEME_TO_PYMO,
     QuantizationDataType,
     EncodingType,
+    qtype,
 )
 from aimet_onnx.common import libquant_info
 from aimet_onnx.common.utils import deprecated
@@ -522,6 +523,37 @@ class QcQuantizeOp:
             self.bitwidth = bitwidth
             self._reset_encodings()
 
+    def precision(self) -> qtype:
+        """
+        Returns the quantization precision of the quantizer
+        """
+        # Note: (float, 8) defaults to float8e4m3
+        return qtype.from_legacy_repr(self.data_type, self.bitwidth)
+
+    def set_precision(self, precision: Union[qtype, str]):
+        """
+        Sets the quantizer to the specified quantization precision.
+
+        Args:
+            precision: Precision to quantize input tensor to. If string value, must be a valid
+                alias of a qtype
+        """
+        if self._is_encoding_frozen:
+            return
+
+        if isinstance(precision, str):
+            precision = qtype.from_string(precision)
+
+        dtype, bitwidth = precision.to_legacy_repr()
+        if dtype == QuantizationDataType.float and bitwidth < 16:
+            raise NotImplementedError(
+                f"Quantizing to precision {precision} is not supported"
+            )
+
+        self.data_type = dtype
+        self.set_bitwidth(bitwidth)
+        self._reset_encodings()
+
     def set_quant_scheme(self, quant_scheme: QuantScheme):
         """
         Set QcQuantizeOp as given quant scheme
@@ -539,6 +571,13 @@ class QcQuantizeOp:
 
         if not self.enabled:
             return None
+
+        if self.data_type == QuantizationDataType.float:
+            if self.bitwidth >= 16:
+                return None
+            raise NotImplementedError(
+                f"Computing encodings for float quantizers with bitwidth {self.bitwidth} is not supported"
+            )
 
         encodings = self._tensor_quantizer.computeEncodings(
             self.use_symmetric_encodings
