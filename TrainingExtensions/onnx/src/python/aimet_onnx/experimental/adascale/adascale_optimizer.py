@@ -107,6 +107,12 @@ adascale_model_config_dict = {
     "qwen3_vl": AdaScaleModelConfig(
         model_type="qwen3", beta_gamma_lr=1e-3, scales_lr=5e-4
     ),
+    "qwen3_5": AdaScaleModelConfig(
+        model_type="qwen3_5", beta_gamma_lr=1e-3, scales_lr=5e-4
+    ),
+    "qwen3_5_text": AdaScaleModelConfig(
+        model_type="qwen3_5", beta_gamma_lr=1e-3, scales_lr=5e-4
+    ),
     "phi3": AdaScaleModelConfig(model_type="phi3", beta_gamma_lr=1e-3, scales_lr=5e-4),
     "qwen2_5_vl": AdaScaleModelConfig(
         model_type="qwen2_5_vl", beta_gamma_lr=1e-3, scales_lr=5e-4
@@ -196,12 +202,16 @@ class AdaScale:
 
             # create a list of common input names to be used for graph slicing and populating input_list
             # Exclude primary sequence inputs (consumed upstream by embedding layer)
-            # and past_key_*/past_value_* (handled per-block below)
+            # and per-layer state inputs (past_key_*/past_value_* for full-attention
+            # layers, recurrent_state_k_*/recurrent_state_v_* for linear-attention
+            # layers). Per-layer inputs are re-attached for the current block below.
             common_input_names = []
             for name in graph_input_names:
                 if name == "inputs_embeds" or "input_ids" in name:
                     continue
                 if "past_key" in name or "past_value" in name:
+                    continue
+                if "recurrent_state" in name:
                     continue
                 common_input_names.append(name)
 
@@ -239,12 +249,15 @@ class AdaScale:
 
                     _logger.info("Optimizing block: %d", idx)
 
-                    # Query only the past_key/past_val for a given block
+                    # Query this block's per-layer state: past_key/value (full attention)
+                    # or recurrent_state_k/v. Exactly one pair.
                     block_kv_tensor_names = []
                     for name in graph_input_names:
                         if (
                             f"past_key_{idx}_in" in name
                             or f"past_value_{idx}_in" in name
+                            or f"recurrent_state_k_{idx}_in" in name
+                            or f"recurrent_state_v_{idx}_in" in name
                         ):
                             block_kv_tensor_names.append(name)
 
@@ -252,7 +265,8 @@ class AdaScale:
                     if len(block_kv_tensor_names) > 0:
                         if len(block_kv_tensor_names) != 2:
                             raise RuntimeError(
-                                f"Unable to find both past_key and past_value for block {idx}."
+                                f"Expected exactly one (key, value) per-layer state pair for "
+                                f"block {idx}, found {block_kv_tensor_names}."
                             )
                         block_input_names.extend(block_kv_tensor_names)
 

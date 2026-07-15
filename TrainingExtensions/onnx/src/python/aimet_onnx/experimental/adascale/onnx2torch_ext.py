@@ -128,6 +128,64 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
     )
 
 
+class OnnxReduceL2(nn.Module, OnnxToTorchModule):
+    """ReduceL2 for opset 18+ where axes is an input rather than an attribute.
+
+    onnx2torch only registers ReduceL2 up to opset 13 (axes-as-attribute, single
+    forward arg). The Qwen3.5 dynamo export emits opset-18 ReduceL2 with axes as a
+    second input, so the stock converter is called with an extra positional arg and
+    fails. Mirrors the ReduceMean opset-18 handling above.
+    """
+
+    def __init__(
+        self,
+        axes: Optional[List[int]] = None,
+        keepdims: int = 1,
+        noop_with_empty_axes: int = 0,
+    ):
+        super().__init__()
+        self.axes = axes
+        self.keepdims = bool(keepdims)
+        self.noop_with_empty_axes = noop_with_empty_axes
+
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        if self.axes is None or len(self.axes) == 0:
+            if self.noop_with_empty_axes:
+                return input_tensor
+            axes = list(range(input_tensor.dim()))
+        else:
+            axes = self.axes
+        return torch.linalg.vector_norm(
+            input_tensor, ord=2, dim=axes, keepdim=self.keepdims
+        )
+
+
+@add_converter(operation_type="ReduceL2", version=18)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
+    keepdims: int = node.attributes.get("keepdims", 1)
+    noop_with_empty_axes: int = node.attributes.get("noop_with_empty_axes", 0)
+
+    axes = None
+    if len(node.input_values) == 2:
+        try:
+            axes = cast(torch.Tensor, get_const_value(node.input_values[1], graph))
+            axes = axes.tolist()
+        except KeyError:
+            pass
+
+    return OperationConverterResult(
+        torch_module=OnnxReduceL2(
+            axes=axes,
+            keepdims=keepdims,
+            noop_with_empty_axes=noop_with_empty_axes,
+        ),
+        onnx_mapping=OnnxMapping(
+            inputs=(node.input_values[0],),
+            outputs=node.output_values,
+        ),
+    )
+
+
 class OnnxReshapeAllowZero(nn.Module, OnnxToTorchModule):
     """Reshape with allowzero=1: zeros in shape are kept as-is (not inherited from input)."""
 

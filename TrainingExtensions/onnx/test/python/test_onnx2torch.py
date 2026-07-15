@@ -42,33 +42,59 @@ class ScatterElementsModel(nn.Module):
         )
 
 
-def _export_and_convert(model, inputs, tmp_dir, name):
+def _export_and_convert(model, inputs, tmp_dir, name, input_names):
     model.eval()
     onnx_path = os.path.join(tmp_dir, f"{name}.onnx")
     torch.onnx.export(
         model,
         inputs,
         onnx_path,
-        input_names=["data", "indices", "updates"],
+        input_names=input_names,
         output_names=["output"],
         dynamo=True,
         verbose=False,
     )
     onnx_model = onnx_ir.load(onnx_path)
-    pt_block, _ = get_pt_block(onnx_model, (["data", "indices", "updates"], ["output"]))
+    pt_block, _ = get_pt_block(onnx_model, (input_names, ["output"]))
     return onnx_path, pt_block
 
 
-def _run_ort(onnx_path, data, indices, updates):
+def _run_ort(onnx_path, feed):
     sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-    return sess.run(
-        None,
-        {
-            "data": data.numpy(),
-            "indices": indices.numpy(),
-            "updates": updates.numpy(),
-        },
-    )[0]
+    return sess.run(None, {name: t.numpy() for name, t in feed.items()})[0]
+
+
+class ReduceL2Model(nn.Module):
+    """Emits an ONNX ReduceL2 node (L2 norm over ``dim``)."""
+
+    def __init__(self, dim, keepdim: bool):
+        super().__init__()
+        self.dim = dim
+        self.keepdim = keepdim
+
+    def forward(self, data):
+        return torch.linalg.vector_norm(data, ord=2, dim=self.dim, keepdim=self.keepdim)
+
+
+@pytest.mark.parametrize("dim", [-1, 1])
+@pytest.mark.parametrize("keepdim", [True, False])
+def test_reduce_l2(dim, keepdim, tmp_dir):
+    """Three-way equivalence for ReduceL2 across dim x keepdim."""
+
+    data = torch.randn(2, 3, 4)
+
+    model = ReduceL2Model(dim=dim, keepdim=keepdim)
+    onnx_path, pt_block = _export_and_convert(
+        model, (data,), tmp_dir, f"reduce_l2_dim{dim}_keep{keepdim}", ["data"]
+    )
+
+    # 1) original torch model, 2) ONNX Runtime, 3) onnx2torch-converted block.
+    orig_out = model(data).detach().numpy()
+    onnx_out = _run_ort(onnx_path, {"data": data})
+    converted_out = pt_block(data).detach().numpy()
+
+    np.testing.assert_allclose(orig_out, onnx_out, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(orig_out, converted_out, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("axis", [0, 1])
@@ -90,12 +116,18 @@ def test_scatter_elements(axis, reduce, tmp_dir):
 
     model = ScatterElementsModel(axis=axis, reduce=reduce)
     onnx_path, pt_block = _export_and_convert(
-        model, (data, indices, updates), tmp_dir, f"scatter_ax{axis}_{reduce}"
+        model,
+        (data, indices, updates),
+        tmp_dir,
+        f"scatter_ax{axis}_{reduce}",
+        ["data", "indices", "updates"],
     )
 
     # 1) original torch model, 2) ONNX Runtime, 3) onnx2torch-converted block.
     orig_out = model(data, indices, updates).detach().numpy()
-    onnx_out = _run_ort(onnx_path, data, indices, updates)
+    onnx_out = _run_ort(
+        onnx_path, {"data": data, "indices": indices, "updates": updates}
+    )
     converted_out = pt_block(data, indices, updates).detach().numpy()
 
     np.testing.assert_array_equal(orig_out, onnx_out)
