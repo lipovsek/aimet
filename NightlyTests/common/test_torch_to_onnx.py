@@ -30,9 +30,26 @@ from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
 import aimet_onnx
 from aimet_onnx.utils import make_dummy_input
 import aimet_torch
-from aimet_torch.v2.nn.transformers import *
+import aimet_torch.v2.nn.transformers
 
-from .utils import tmp_dir, add_genai_tests_path
+
+@pytest.fixture
+def tmp_dir():
+    """
+    Pytest fixture to create and yield a temporary directory.
+    The directory is automatically cleaned up after the test.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        yield tmpdir
+
+
+@pytest.fixture
+def add_genai_tests_path(monkeypatch):
+    """
+    Pytest fixture to add the GenAILab directory to sys.path.
+    """
+    path = os.path.abspath(os.path.join(Path(__file__).parent, "../../../../"))
+    monkeypatch.syspath_prepend(path)
 
 
 @pytest.mark.parametrize(
