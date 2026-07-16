@@ -3666,6 +3666,45 @@ class TestQuantSim:
         assert sim._get_enabled_quantizer("output") is None
         assert sim._get_path_to_effective_quantizer("output_updated") is None
 
+    @pytest.mark.parametrize(
+        "cast_to",
+        [
+            onnx.TensorProto.FLOAT,
+            onnx.TensorProto.FLOAT16,
+            onnx.TensorProto.BFLOAT16,
+        ],
+    )
+    def test_get_enabled_quantizer_propagates_through_float_cast(self, cast_to):
+        """
+        Effective quantizer should propagate through casts between float types
+
+        input -> Cast(cast_to) -> Cast(float32) -> output
+        """
+        model = models_for_tests.cast_chain_model(cast_to)
+        sim = QuantizationSimModel(model)
+        path = sim._get_path_to_effective_quantizer("output")
+        assert [node.op_type for node in path] == ["Cast", "Cast", "QcQuantizeOp"]
+        assert sim._get_enabled_quantizer("output") is sim.qc_quantize_op_dict["input"]
+        assert (
+            sim._get_enabled_quantizer("intermediate")
+            is sim.qc_quantize_op_dict["input"]
+        )
+
+    def test_get_enabled_quantizer_stops_at_non_float_cast(self):
+        """
+        Effective quantizer should not propagate through casts to/from non-float types
+
+        input -> Cast(int32) -> Cast(float32) -> output
+        """
+        model = models_for_tests.cast_chain_model(onnx.TensorProto.INT32)
+        sim = QuantizationSimModel(model)
+
+        assert sim.qc_quantize_op_dict["input"].enabled
+        assert "intermediate" not in sim.qc_quantize_op_dict
+        assert (
+            sim._get_enabled_quantizer("output") is not sim.qc_quantize_op_dict["input"]
+        )
+
     @pytest.mark.parametrize("providers", [CPU_PROVIDERS, CUDA_PROVIDERS])
     def test_fp16_model_encodings(self, providers):
         ort.set_seed(1)

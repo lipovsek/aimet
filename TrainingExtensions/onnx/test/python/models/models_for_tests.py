@@ -4651,6 +4651,47 @@ def model_with_cast(tensor_type: onnx.TensorProto.DataType):
     return model
 
 
+def cast_chain_model(cast_to: onnx.TensorProto.DataType):
+    """
+    input (float32) -> Cast(cast_to) -> Cast(float32) -> output
+    """
+    model = make_model(
+        opset_imports=[helper.make_operatorsetid("", 21)],
+        graph=helper.make_graph(
+            name="CastChain",
+            inputs=[
+                helper.make_tensor_value_info("input", TensorProto.FLOAT, shape=[1, 4]),
+            ],
+            outputs=[
+                helper.make_tensor_value_info(
+                    "output", TensorProto.FLOAT, shape=[1, 4]
+                ),
+            ],
+            value_info=[
+                helper.make_tensor_value_info("intermediate", cast_to, shape=[1, 4]),
+            ],
+            nodes=[
+                helper.make_node(
+                    "Cast",
+                    inputs=["input"],
+                    outputs=["intermediate"],
+                    name="cast_in",
+                    to=cast_to,
+                ),
+                helper.make_node(
+                    "Cast",
+                    inputs=["intermediate"],
+                    outputs=["output"],
+                    name="cast_out",
+                    to=TensorProto.FLOAT,
+                ),
+            ],
+        ),
+    )
+    onnx.checker.check_model(model, True)
+    return model
+
+
 def model_with_constant(tensor_type: onnx.TensorProto.DataType):
     model = make_model(
         opset_imports=[helper.make_operatorsetid("", 21)],

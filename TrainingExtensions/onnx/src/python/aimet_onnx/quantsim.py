@@ -3110,12 +3110,31 @@ class QuantizationSimModel:
                 and self.qc_quantize_op_dict[node.input[0]].enabled
             )
 
+        def is_float_to_float_cast(node: onnx.NodeProto):
+            if node.op_type != "Cast":
+                return False
+
+            input_name = node.input[0]
+            if self.activation_dtypes.get(input_name) not in data_types_to_quantize:
+                # Outputs of QcQuantizeOps are always float dtype
+                producer = self._producers.get(input_name)
+                if not producer or producer.op_type != "QcQuantizeOp":
+                    return False
+
+            to_attr = utils.get_node_attribute(node, "to")
+            if to_attr is None:
+                return False
+
+            output_type = onnx.helper.tensor_dtype_to_np_dtype(to_attr)
+            return output_type in data_types_to_quantize
+
         while (
             producer
             and producer.input
             and (
                 _is_grid_preserving_op(producer.op_type, domain=producer.domain)
                 or is_disabled_quantizer(producer)
+                or is_float_to_float_cast(producer)
             )
         ):
             tensor_name = producer.input[0]
