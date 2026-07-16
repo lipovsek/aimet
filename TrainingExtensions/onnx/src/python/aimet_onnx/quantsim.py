@@ -3300,6 +3300,49 @@ class QuantizationSimModel:
             qtzr.enable_per_channel_quantization(False)
             qtzr.load_encodings([encoding])
 
+    def set_tensor_precision(
+        self, names: str | list[str], precision: qtype | str, *, strict: bool = True
+    ):
+        """
+        Set the quantization precision for each tensor in names to the specified precision
+
+        If quantization is not performed directly on the specified tensor (e.g., for outputs
+        of data movement ops), propagates upwards to the closest enabled quantizer.
+
+        Example:
+
+            sim = QuantizationSimModel(...)
+            sim.set_tensor_precision("/Conv_output_0", aimet_onnx.int16)
+
+        Args:
+            names: List of tensor names to set the precision for
+            precision: Precision to quantize to. If string, must be a valid alias of a qtype
+            strict: If True, throws an error if the tensor does not exist or is not quantized
+        """
+        if isinstance(names, str):
+            names = [names]
+
+        products = self.connected_graph.get_all_products()
+        missing_names = set(names) - set(products.keys())
+
+        if missing_names and strict:
+            raise ValueError(f"No tensor found in graph with names: {missing_names}")
+
+        quantizers = {
+            name: self._get_enabled_quantizer(name)
+            for name in names
+            if name in products
+        }
+        missing_quantizers = set(
+            name for name, qtzr in quantizers.items() if qtzr is None
+        )
+        if missing_quantizers and strict:
+            raise ValueError(f"No quantizer exists for tensors: {missing_quantizers}")
+
+        for quantizer in quantizers.values():
+            if quantizer is not None:
+                quantizer.set_precision(precision)
+
 
 def _to_signed_encoding(encoding: dict) -> dict:
     return _to(encoding, signed=True)

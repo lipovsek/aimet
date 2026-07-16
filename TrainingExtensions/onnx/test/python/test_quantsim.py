@@ -3705,6 +3705,40 @@ class TestQuantSim:
             sim._get_enabled_quantizer("output") is not sim.qc_quantize_op_dict["input"]
         )
 
+    @pytest.mark.parametrize(
+        "names",
+        ["relu_output", ["input", "relu_output"], "output"],
+    )
+    def test_set_tensor_precision(self, names):
+        sim = QuantizationSimModel(models_for_tests.diverse_ops())
+        sim.set_tensor_precision(names, aimet_onnx.int16)
+        for name in [names] if isinstance(names, str) else names:
+            assert sim._get_enabled_quantizer(name).precision() == aimet_onnx.int16
+
+        sim.set_tensor_precision(names, aimet_onnx.float16)
+        for name in [names] if isinstance(names, str) else names:
+            assert sim._get_enabled_quantizer(name).precision() == aimet_onnx.float16
+
+        sim.set_tensor_precision(names, "int8")
+        for name in [names] if isinstance(names, str) else names:
+            assert sim._get_enabled_quantizer(name).precision() == aimet_onnx.int8
+
+        # Invalid precision alias raises, does not touch quantizers
+        with pytest.raises(ValueError):
+            sim.set_tensor_precision(names, "fp11")
+
+        for name in [names] if isinstance(names, str) else names:
+            assert sim._get_enabled_quantizer(name).precision() == aimet_onnx.int8
+
+    @pytest.mark.parametrize("name", ["nonexistent", "output"])
+    def test_set_tensor_precision_strict(self, name):
+        sim = QuantizationSimModel(models_for_tests.diverse_ops())
+        for qtzr in sim.qc_quantize_op_dict.values():
+            qtzr.enabled = False
+        with pytest.raises(ValueError):
+            sim.set_tensor_precision(name, aimet_onnx.int16)
+        sim.set_tensor_precision(name, aimet_onnx.int16, strict=False)
+
     @pytest.mark.parametrize("providers", [CPU_PROVIDERS, CUDA_PROVIDERS])
     def test_fp16_model_encodings(self, providers):
         ort.set_seed(1)
