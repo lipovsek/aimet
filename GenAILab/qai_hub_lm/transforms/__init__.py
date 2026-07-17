@@ -18,6 +18,9 @@ from GenAILab.qai_hub_lm.transforms.fast_exportable import (
 from GenAILab.qai_hub_lm.transforms.moe import (
     Qwen3MoEAdaptation,
 )
+from GenAILab.qai_hub_lm.transforms.split_fused_layers import (
+    Phi3SplitFusedLayersAdaptation,
+)
 from GenAILab.qai_hub_lm.transforms.attention_mask_scale import (
     AttentionMaskScaleAdaptation,
 )
