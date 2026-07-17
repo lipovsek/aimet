@@ -1264,6 +1264,83 @@ def _encoding_equal(enc1: Mapping | None, enc2: Mapping | None) -> bool:
     )
 
 
+def _is_htp_masked_softmax_reducemin(
+    node: onnx.NodeProto,
+    consumers: Mapping[str, List[onnx.NodeProto]],
+    constants: Mapping[str, onnx.TensorProto],
+) -> bool:
+    """
+    Returns True if node is a ReduceMin node within HTP MaskedSoftmax.
+
+    HTP MaskedSoftmax is represented in onnx as
+
+    Softmax(
+        Where(mask, x, ReduceMin(x, axis=-1) + B),
+        axis=-1,
+    )
+
+    where
+      - x: 4D
+      - B: scalar constant <=-20
+    """
+    if node.op_type != "ReduceMin":
+        return False
+
+    reducemin_axes = node.input[1]
+
+    if reducemin_axes not in constants:
+        return False
+
+    reducemin_axes = to_array(constants[reducemin_axes])
+
+    if not (reducemin_axes.size == 1 and reducemin_axes.item() in (-1, 3)):
+        return False
+
+    if node.output[0] not in consumers or len(consumers[node.output[0]]) != 1:
+        return False
+
+    (add,) = consumers[node.output[0]]
+
+    if add.op_type != "Add":
+        return False
+
+    if add.output[0] not in consumers or len(consumers[add.output[0]]) != 1:
+        return False
+
+    B = next(inp for inp in add.input if inp != node.output[0])
+
+    if B not in constants:
+        return False
+
+    B = to_array(constants[B])
+
+    if B.size != 1 or B > -20:
+        return False
+
+    (where,) = consumers[add.output[0]]
+
+    if where.op_type != "Where":
+        return False
+
+    if where.output[0] not in consumers or len(consumers[where.output[0]]) != 1:
+        return False
+
+    (softmax,) = consumers[where.output[0]]
+
+    if softmax.op_type != "Softmax":
+        return False
+
+    softmax_axis = next(
+        (attr.i for attr in softmax.attribute if attr.name == "axis"),
+        None,
+    )
+
+    if softmax_axis not in (-1, 3):
+        return False
+
+    return True
+
+
 def _derive_data_movement_op_encodings(
     model: onnx.ModelProto,
     encodings: Mapping[str, Mapping],
@@ -1277,6 +1354,7 @@ def _derive_data_movement_op_encodings(
 
     new_encodings = {}
     consumers: Mapping[str, List[onnx.NodeProto]] = defaultdict(list)
+    constants: Mapping[str, onnx.TensorProto] = _get_all_constants(model)
 
     for node in model.graph.node:
         for inp in node.input:
@@ -1284,6 +1362,19 @@ def _derive_data_movement_op_encodings(
 
     def derive_encoding(node: onnx.NodeProto):
         derived_encodings = {}
+
+        # Skip deriving encodings if node is a ReduceMin node within HTP MaskedSoftmax
+        # subgraph. This is a temporary workaround for GenAI Notebooks relying
+        # on aimet-torch which doesn't support MaskedSoftmax as supergroup yet.
+        # In aimet-torch, even if the user manually removed all intermediate quantizers
+        # within MaskedSoftmax subgraph, ReduceMin's output encoding will be
+        # re-populated during export since it is a grid-preserving op. As a result,
+        # this intermediate encoding prevents QAIRT Quantizer V2 (IRQV2) from
+        # pattern-matching MaskedSoftmax subgraph as supergroup.
+        # TODO(#7434): Remove this workaround once aimet-torch supports MaskedSoftmax as supergroup
+        if _is_htp_masked_softmax_reducemin(node, consumers, constants):
+            return derived_encodings
+
         input_names = node.input[:] if node.op_type == "Concat" else [node.input[0]]
         output_names = node.output[:] if node.op_type == "Split" else [node.output[0]]
 

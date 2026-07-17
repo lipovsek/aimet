@@ -3517,3 +3517,65 @@ def test_export_with_shared_weight(tmp_path, dynamo: bool):
     #     W -> QDQ -> Identity -> QDQ -+-> consumer_1
     #                                  +-> consumer_2
     assert not [node for node in onnx_model.graph.node if node.op_type == "Identity"]
+
+
+class MaskedSoftmax(torch.nn.Module):
+    def __init__(self):
+        super(MaskedSoftmax, self).__init__()
+        self.amin = aimet_torch.nn.modules.custom.AMin()
+        self.equal = aimet_torch.nn.modules.custom.Equal()
+        self.where = aimet_torch.nn.modules.custom.Where()
+        self.add = aimet_torch.nn.modules.custom.Add()
+        self.softmax = torch.nn.Softmax(-1)
+
+    def forward(self, input: torch.Tensor, mask: torch.Tensor):
+        mask_val = self.add(self.amin(input, [-1], keepdims=True), -20.0)
+        return self.softmax(
+            self.where(self.equal(mask, 0.0), input, mask_val),
+        )
+
+
+# TODO(#7434): Remove this test case once aimet-torch supports MaskedSoftmax as supergroup
+def test_masked_softmax_temporary_workaround(tmp_path: pathlib.Path):
+    """
+    Given: MaskedSoftmax subgraph manually set to supergroup by user
+    When: Export
+    Then: Intermediate outputs of the subgraph should not be quantized
+    """
+    masked_softmax = MaskedSoftmax()
+    qk = torch.randn(1, 3, 3, 3)
+    mask = torch.tensor(
+        [
+            [1, 0, 0],
+            [1, 1, 0],
+            [1, 1, 1],
+        ]
+    ).reshape(1, 1, 3, 3)
+
+    sim = aimet_torch.QuantizationSimModel(
+        masked_softmax,
+        (qk, mask),
+        default_output_bw=16,
+        config_file="htp_v81",
+    )
+    aimet_torch.utils.remove_output_quantizers(sim.model.amin)
+    aimet_torch.utils.remove_output_quantizers(sim.model.equal)
+    aimet_torch.utils.remove_output_quantizers(sim.model.where)
+    aimet_torch.utils.remove_output_quantizers(sim.model.add)
+    aimet_torch.utils.remove_input_quantizers(sim.model.softmax)
+    sim.compute_encodings(lambda model: model(qk, mask))
+    sim.onnx.export(
+        (qk, mask),
+        tmp_path / "masked_softmax.onnx",
+        input_names=["qk", "mask"],
+        output_names=["output"],
+        dynamo=False,
+        encoding_version="2.0.0",
+    )
+    with open(tmp_path / "masked_softmax.encodings") as f:
+        encodings = json.load(f)
+
+    assert {e["name"] for e in encodings["encodings"]} == {
+        "qk",
+        "output",
+    }
