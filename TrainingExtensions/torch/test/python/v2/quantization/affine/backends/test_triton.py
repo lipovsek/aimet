@@ -989,11 +989,11 @@ class TestTritonBackend:
         try:
             with (
                 patch(
-                    "aimet_torch.v2.quantization.affine.backends.triton.TritonQuantizeDequantize.apply",
+                    "aimet_torch.quantization.affine.backends.triton.TritonQuantizeDequantize.apply",
                     side_effect=triton.CompilationError(None, None),
                 ) as triton_mock,
                 patch(
-                    "aimet_torch.v2.quantization.affine.backends.torch_builtins.QuantDequantFunc.apply"
+                    "aimet_torch.quantization.affine.backends.torch_builtins.QuantDequantFunc.apply"
                 ) as torch_builtin_mock,
                 set_backend("triton"),
             ):
@@ -1017,3 +1017,26 @@ class TestTritonBackend:
         finally:
             for k, v in _orig.items():
                 _compile_success[k] = v
+
+    def test_int32_indexing(self):
+        """
+        When: Input size >= 2**31
+        Then: Fall back to aten impl
+        """
+        input = torch.zeros((), dtype=torch.float16, device="cuda").expand(2**31 + 100)
+        scale = torch.tensor(0.1, dtype=torch.float16, device="cuda")
+        offset = torch.tensor(0.0, dtype=torch.float16, device="cuda")
+
+        with (
+            patch(
+                "aimet_torch.quantization.affine.backends.triton.TritonQuantizeDequantize.apply",
+            ) as triton_mock,
+            patch(
+                "aimet_torch.quantization.affine.backends.torch_builtins.quantize_dequantize",
+            ) as torch_builtin_mock,
+            set_backend("triton"),
+        ):
+            _ = quantize_dequantize(input, scale, offset, -8, 7)
+            torch.cuda.synchronize()  # torch.AcceleratorError will be raised if illegal memory access occured
+            assert triton_mock.call_count == 0
+            assert torch_builtin_mock.call_count == 1

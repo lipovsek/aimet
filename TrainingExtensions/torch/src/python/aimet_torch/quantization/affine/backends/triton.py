@@ -1377,8 +1377,19 @@ def quantize(
             "Please ensure triton>=3.0.0 is installed and CUDA is available."
         )
 
-    if not _compile_success[quantize]:
-        # Fall back to aten impl
+    if not (
+        _compile_success[quantize_dequantize]
+        and tensor.is_cuda
+        and scale.is_cuda
+        and offset.is_cuda
+        and tensor.numel() < 2**31
+    ):
+        # Fall back to aten impl if any of the following is true:
+        #  1. Failed to compile Triton kernel
+        #  2. Input, scale, or offset is not on CUDA device
+        #  3. Input tensor is too large for Triton kernel to handle. (>= 2^31 elements)
+        #     AIMET triton kernels use int32 indexing, which cannot handle tensors
+        #     with 2^31 or more elements.
         return torch_builtins.quantize(tensor, scale, offset, qmin, qmax, block_size)
 
     if not (tensor.is_cuda and scale.is_cuda and offset.is_cuda):
@@ -1459,6 +1470,7 @@ def quantize_dequantize(
         and tensor.is_cuda
         and scale.is_cuda
         and offset.is_cuda
+        and tensor.numel() < 2**31
     ) or (
         no_grad
         and scale.numel() == 1
@@ -1467,7 +1479,10 @@ def quantize_dequantize(
         # Fall back to aten impl if any of the following is true:
         #  1. Failed to compile Triton kernel
         #  2. Input, scale, or offset is not on CUDA device
-        #  3. Per-tensor QDQ upon small input without gradient computation.
+        #  3. Input tensor is too large for Triton kernel to handle. (>= 2^31 elements)
+        #     AIMET triton kernels use int32 indexing, which cannot handle tensors
+        #     with 2^31 or more elements.
+        #  4. Per-tensor QDQ upon small input without gradient computation.
         #     This is a heuristic to get around Triton's excessive CUDA kernel
         #     launch overhead that dominates runtime for small inputs.
         #     (See https://github.com/triton-lang/triton/issues/459)
@@ -1563,8 +1578,19 @@ def dequantize(
             "Please ensure triton>=3.0.0 is installed and CUDA is available."
         )
 
-    if not _compile_success[dequantize]:
-        # Fall back to aten impl
+    if not (
+        _compile_success[quantize_dequantize]
+        and tensor.is_cuda
+        and scale.is_cuda
+        and offset.is_cuda
+        and tensor.numel() < 2**31
+    ):
+        # Fall back to aten impl if any of the following is true:
+        #  1. Failed to compile Triton kernel
+        #  2. Input, scale, or offset is not on CUDA device
+        #  3. Input tensor is too large for Triton kernel to handle. (>= 2^31 elements)
+        #     AIMET triton kernels use int32 indexing, which cannot handle tensors
+        #     with 2^31 or more elements.
         return torch_builtins.dequantize(tensor, scale, offset, block_size)
 
     if not (tensor.is_cuda and scale.is_cuda and offset.is_cuda):
