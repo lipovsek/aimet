@@ -232,7 +232,7 @@ def _build_single_batch_loader(
     import numpy as np
     import torch
     from qai_hub_models.datasets import DatasetSplit, instantiate_dataset
-    from qai_hub_models.utils.evaluate import get_deterministic_sample
+    from qai_hub_models.utils.evaluate.helpers import get_deterministic_sample
 
     def to_numpy(x):
         if isinstance(x, np.ndarray):

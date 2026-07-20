@@ -27,7 +27,7 @@ import importlib
 from typing import Tuple, Any, Optional, Union, List
 
 from qai_hub_models.datasets import BaseDataset, DatasetSplit, instantiate_dataset
-from qai_hub_models.utils.evaluate import get_deterministic_sample
+from qai_hub_models.utils.evaluate.helpers import get_deterministic_sample
 from qai_hub_models.utils.base_model import BaseModel
 from qai_hub_models.utils.asset_loaders import always_answer_prompts
 

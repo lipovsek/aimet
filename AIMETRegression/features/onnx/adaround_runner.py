@@ -47,7 +47,7 @@ from typing import Any, Dict, List, Tuple
 import onnx
 import onnxruntime as ort
 from qai_hub_models.datasets import BaseDataset
-from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
+from qai_hub_models.utils.evaluate.helpers import evaluate_session_on_dataset
 import aimet_onnx  # For top-level AdaRound API (AIMET 2.15+)
 
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics

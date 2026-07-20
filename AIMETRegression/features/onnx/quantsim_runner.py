@@ -25,7 +25,7 @@ from typing import Any, Dict, Tuple
 
 import onnxruntime as ort
 from qai_hub_models.datasets import BaseDataset
-from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
+from qai_hub_models.utils.evaluate.helpers import evaluate_session_on_dataset
 
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.onnx._common import (

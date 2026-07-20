@@ -46,7 +46,7 @@ from typing import Any, Dict, List, Tuple, Optional
 
 import onnxruntime as ort
 from qai_hub_models.datasets import BaseDataset
-from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
+from qai_hub_models.utils.evaluate.helpers import evaluate_session_on_dataset
 
 from aimet_onnx.mixed_precision import choose_mixed_precision
 from aimet_onnx.common.amp.utils import AMPSearchAlgo

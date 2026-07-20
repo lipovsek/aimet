@@ -30,7 +30,7 @@ from typing import Any, Dict, Tuple, List
 import onnx
 import onnxruntime as ort
 from qai_hub_models.datasets import BaseDataset
-from qai_hub_models.utils.evaluate import evaluate_session_on_dataset
+from qai_hub_models.utils.evaluate.helpers import evaluate_session_on_dataset
 
 # AIMET imports - these symbols are required objects, not strings
 from aimet_onnx import analyze_per_layer_sensitivity, int4, int8, int16, float16

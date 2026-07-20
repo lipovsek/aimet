@@ -31,7 +31,7 @@ from tqdm import tqdm
 
 from qai_hub_models.datasets import BaseDataset, DatasetSplit, instantiate_dataset
 from qai_hub_models.utils.base_model import BaseModel
-from qai_hub_models.utils.evaluate import (
+from qai_hub_models.utils.evaluate.helpers import (
     get_deterministic_sample,
     DatasetFromIOTuples,
 )

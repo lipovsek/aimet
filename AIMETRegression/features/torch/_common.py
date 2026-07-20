@@ -41,7 +41,7 @@ from aimet_torch.batch_norm_fold import fold_all_batch_norms
 import aimet_torch
 from torch.utils.data import DataLoader
 from qai_hub_models.datasets import BaseDataset, DatasetSplit, instantiate_dataset
-from qai_hub_models.utils.evaluate import get_deterministic_sample
+from qai_hub_models.utils.evaluate.helpers import get_deterministic_sample
 from aimet_torch.nn import QuantizationMixin
 
 __all__ = [
