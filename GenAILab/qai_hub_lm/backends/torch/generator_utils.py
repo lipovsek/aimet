@@ -104,12 +104,11 @@ def generator_factory(
             sim_collection=sim_collection,
             **model_kwargs,
         )
-    else:
-        return mixed_cls(
-            model=sim_collection.backbone.model,
-            tokenizer=tokenizer,
-            sequence_length=sequence_length,
-            context_length=context_length,
-            sim_collection=sim_collection,
-            **model_kwargs,
-        )
+    return mixed_cls(
+        model=sim_collection.backbone.model,
+        tokenizer=tokenizer,
+        sequence_length=sequence_length,
+        context_length=context_length,
+        sim_collection=sim_collection,
+        **model_kwargs,
+    )

@@ -122,7 +122,7 @@ class VLM_ONNX:
             return entry
 
         config = AutoConfig.from_pretrained(model_id)
-        backbone_onnx_model, visual_onnx_model, embedding = (
+        backbone_onnx_model, visual_onnx_model, embedding, extras = (
             load_model_components_from_disk(
                 model_id,
                 context_length=context_length,
@@ -136,6 +136,7 @@ class VLM_ONNX:
             visual=visual_onnx_model,
             embedding=embedding,
             config=config,
+            extras=extras or None,
         )
 
     @classmethod

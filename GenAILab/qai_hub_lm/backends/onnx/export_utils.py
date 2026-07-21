@@ -80,11 +80,35 @@ def check_opset_equal_to(filepath, opset_version: int) -> bool:
     return opset.get("ai.onnx", -1) == opset_version
 
 
+def _load_embedding_pth(
+    path: str | os.PathLike, *, freeze: bool
+) -> torch.nn.Embedding | None:
+    """Load a torch-exported embedding weight (<name>.pth) into an nn.Embedding.
+
+    Returns None if the file does not exist. Accepts either a raw 2D weight tensor
+    or a state_dict with a "weight" key (both forms the torch export may write).
+    """
+    if not os.path.exists(path):
+        return None
+    weights = torch.load(path, map_location="cpu")
+    if isinstance(weights, dict) and "weight" in weights:
+        weights = weights["weight"]
+    if not isinstance(weights, torch.Tensor) or weights.ndim != 2:
+        raise ValueError(f"Expected a 2D embedding tensor in {path}")
+    embedding = torch.nn.Embedding.from_pretrained(weights, freeze=freeze)
+    return embedding.to("cuda" if torch.cuda.is_available() else "cpu")
+
+
 def load_model_components_from_disk(
     checkpoint: str | os.PathLike,
     context_length: int,
     sequence_length: int | str,
-) -> tuple[onnx.ModelProto, onnx.ModelProto | None, torch.nn.Embedding | None]:
+) -> tuple[
+    onnx.ModelProto,
+    onnx.ModelProto | None,
+    torch.nn.Embedding | None,
+    dict[str, torch.nn.Module],
+]:
     candidates = [
         os.path.join(
             checkpoint, f"model_seqlen{sequence_length}_cl{context_length}.onnx"
@@ -106,20 +130,20 @@ def load_model_components_from_disk(
     visual_path = os.path.join(checkpoint, "visual", "model.onnx")
     visual = onnx.load(visual_path) if os.path.exists(visual_path) else None
 
-    embedding_path = os.path.join(checkpoint, "embedding.pth")
-    if os.path.exists(embedding_path):
-        weights = torch.load(embedding_path, map_location="cpu")
-        if isinstance(weights, dict) and "weight" in weights:
-            weights = weights["weight"]
-        if not isinstance(weights, torch.Tensor) or weights.ndim != 2:
-            raise ValueError("Expected a 2D embedding tensor in embedding.pth")
+    embedding = _load_embedding_pth(
+        os.path.join(checkpoint, "embedding.pth"), freeze=False
+    )
 
-        embedding = torch.nn.Embedding.from_pretrained(weights, freeze=False)
-        embedding = embedding.to("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        embedding = None
+    # Extra auxiliary modules the export saved under extras/ (e.g. Gemma4's per-layer-input embedding)
+    extras: dict[str, torch.nn.Module] = {}
+    extras_dir = os.path.join(checkpoint, "extras")
+    if os.path.isdir(extras_dir):
+        for pth in sorted(glob.glob(os.path.join(extras_dir, "*.pth"))):
+            mod = _load_embedding_pth(pth, freeze=True)
+            if mod is not None:
+                extras[os.path.splitext(os.path.basename(pth))[0]] = mod
 
-    return backbone, visual, embedding
+    return backbone, visual, embedding, extras
 
 
 def _dynamo_export(

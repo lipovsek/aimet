@@ -100,7 +100,12 @@ class LLM(ABC):
     @classmethod
     @abstractmethod
     def instantiate_quantsim(cls, model, *args, **kwargs) -> SimCollection:
-        """Instantiate QuantSim models for components from a raw float model"""
+        """Instantiate QuantSim models for components from a raw float model.
+
+        A model whose checkpoint is a packed QAT variant may override this to
+        dequantize, build the sim, and load the trained QAT scales (see
+        Gemma4_Torch)
+        """
         pass
 
     @classmethod

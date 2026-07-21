@@ -102,12 +102,15 @@ def test_llm_quantization(
     else:
         apply_spinquant_pre_sim(model, spinquant_config)
 
+    # Pass model_id so a QAT-aware instantiate_quantsim (e.g. Gemma4_Torch) can
+    # locate the packed checkpoint's scales. Other backends absorb it via **kwargs.
     sim_collection = model_cls.instantiate_quantsim(
         model,
         context_length,
         sequence_length,
         precision=precision,
         image_size=image_size,
+        model_id=model_id,
         **model_kwargs,
     )
     tokenizer = model_cls.instantiate_tokenizer(model_id)
@@ -278,6 +281,26 @@ def test_llm_quantization(
                 ),
                 os.path.join(export_dir, "embedding.pth"),
             )
+
+        # Save any extra auxiliary modules (e.g. Gemma4's per-layer embedding
+        # embed_tokens_per_layer) under extras/<name>.pth so the ONNX phase can
+        # restore them into the generator's extras.
+        if sim_collection.extras:
+            extras_dir = os.path.join(export_dir, "extras")
+            os.makedirs(extras_dir, exist_ok=True)
+            for extra_name, extra_mod in sim_collection.extras.items():
+                if extra_mod is None:
+                    continue
+                if isinstance(extra_mod, QuantizationMixin):
+                    extra_mod.fold_param_quantizers()
+                weight = getattr(extra_mod, "weight", None)
+                if weight is None and hasattr(extra_mod, "state_dict"):
+                    weight = extra_mod.state_dict().get("weight")
+                if weight is not None:
+                    torch.save(
+                        weight.as_subclass(torch.Tensor),
+                        os.path.join(extras_dir, f"{extra_name}.pth"),
+                    )
 
         if test_parameters["eval_in_onnx"]:
             run_group = uuid.uuid4().hex[:16]
