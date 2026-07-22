@@ -66,6 +66,68 @@ def _get_onnx_block_info(onnx_subgraph: onnx_ir.Model):
     return node_name_to_onnx_param
 
 
+def resolve_block_residual_name(graph: onnx_ir.Graph, value_name: str) -> str:
+    """
+    Walk back through leading ``Cast`` producers and return the deepest
+    pre-Cast value name.
+    Used to recover the true cross-block residual when the RMSNorm anchor's input is post-Cast (fp16 graphs).
+    """
+    name_to_value = onnx_ir.convenience.create_value_mapping(graph)
+    if value_name not in name_to_value:
+        return value_name
+    value = name_to_value[value_name]
+    while True:
+        producer = value.producer()
+        if producer is None or producer.op_type != "Cast":
+            break
+        upstream = producer.inputs[0]
+        if upstream is None or upstream.name is None:
+            break
+        value = upstream
+    return value.name
+
+
+def required_extra_block_inputs(
+    graph: onnx_ir.Graph,
+    input_names: List[str],
+    output_names: List[str],
+) -> List[str]:
+    """
+    Return graph-input names the subgraph requires beyond ``input_names``.
+
+    Walks back from ``output_names`` with ``input_names`` as a barrier; any
+    producer-less, non-initializer value reached is an unbounded graph input.
+    """
+
+    name_to_value = onnx_ir.convenience.create_value_mapping(graph)
+    declared = {name_to_value[n] for n in input_names if n in name_to_value}
+    visited_values = set(declared)
+    visited_nodes = set()
+    stack = [name_to_value[n] for n in output_names if n in name_to_value]
+    extras: List[str] = []
+    seen = set(input_names)
+
+    while stack:
+        value = stack.pop()
+        if value in visited_values:
+            continue
+        visited_values.add(value)
+        producer = value.producer()
+        if producer is None:
+            if not value.is_initializer() and value.name and value.name not in seen:
+                extras.append(value.name)
+                seen.add(value.name)
+            continue
+        if producer in visited_nodes:
+            continue
+        visited_nodes.add(producer)
+        for inp in producer.inputs:
+            if inp is None or inp in visited_values:
+                continue
+            stack.append(inp)
+    return extras
+
+
 def get_pt_block(
     model: onnx_ir.Model, block_input_output_names: Tuple[List[str], List[str]]
 ):
@@ -75,6 +137,17 @@ def get_pt_block(
     :param block_input_output_names: input/output names for block end points
     """
     input_names, output_names = block_input_output_names
+
+    # Walk back through leading Casts so the boundary lands on the true
+    # cross-block residual; in fp16 graphs the RMSNorm anchor's first input
+    # is post-Cast and would leave the residual Add's skip input unbounded.
+    input_names = [resolve_block_residual_name(model.graph, n) for n in input_names]
+    output_names = [resolve_block_residual_name(model.graph, n) for n in output_names]
+
+    # Defensive safety net for any other unbounded graph input.
+    extras = required_extra_block_inputs(model.graph, input_names, output_names)
+    if extras:
+        input_names = input_names + extras
     subgraph = onnx_ir.convenience.extract(
         model.graph,
         input_names,
@@ -85,6 +158,7 @@ def get_pt_block(
     )
     ir_utils.remove_aimet_quantizers(subgraph_model)
     ir_utils.inline_all_supergroups(subgraph_model)
+    onnx_ir.passes.common.TopologicalSortPass().call(subgraph_model)
     onnx_ir.external_data.load_to_model(subgraph_model)
     param_map = _get_onnx_block_info(subgraph_model)
     return convert(onnx_ir.to_proto(subgraph_model)), param_map
@@ -129,6 +203,12 @@ def copy_pt_weights_to_onnx(
             raise ValueError(
                 f"pt param shape {pytorch_weight.shape} did not match onnx shape {onnx_param_tensor.const_value.shape}"
             )
+        # Preserve the original initializer dtype so downstream ONNX consumers
+        # (e.g. the activation sampler's ORT session) keep type-consistent
+        # MatMul inputs.
+        onnx_dtype = onnx_param_tensor.const_value.dtype.numpy()
+        if pytorch_weight.dtype != onnx_dtype:
+            pytorch_weight = pytorch_weight.astype(onnx_dtype)
         onnx_param_tensor.const_value = onnx_ir.Tensor(pytorch_weight)
         _logger.info(
             "Copy from PyTorch to ONNX: torch : %s  onnx param : %s",

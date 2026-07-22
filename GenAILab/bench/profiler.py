@@ -195,6 +195,15 @@ def _serialize_component_stats(
     }
 
 
+def _serialize_dtype(value: "str | torch.dtype") -> str:
+    """Render a torch.dtype as a JSON-safe short name (e.g. "float16").
+
+    Idempotent: a string passed in (already serialized) is returned as-is
+    after the same prefix strip, so repeat calls don't double-mangle.
+    """
+    return str(value).removeprefix("torch.")
+
+
 def write_stats_to_disk(
     output_folder: str,
     filename: str,
@@ -207,6 +216,8 @@ def write_stats_to_disk(
     precision: dict | None = None,
     run_group: str | None = None,
 ):
+    if "dtype" in model_modifiers:
+        model_modifiers["dtype"] = _serialize_dtype(model_modifiers["dtype"])
     _write_stats_to_json(
         str(os.path.join(output_folder, filename + ".json")),
         model_type,

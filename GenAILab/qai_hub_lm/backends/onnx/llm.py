@@ -58,6 +58,7 @@ class LLM_ONNX(LLM):
         context_length: int,
         sequence_length: int | list[int],
         small_model: bool = False,
+        dtype: torch.dtype = torch.float32,
         model_cache: DiskBackedModelCache | None = None,
         image_size: tuple[int, int] | None = None,
         *args,
@@ -92,6 +93,7 @@ class LLM_ONNX(LLM):
                         "sequence_length": cache_sl,
                         "context_length": context_length,
                         "small_model": small_model,
+                        "dtype": str(dtype),
                     }
                     key = DiskBackedModelCache.build_key(params)
                     entry = model_cache.get_or_export(
@@ -102,6 +104,7 @@ class LLM_ONNX(LLM):
                             sequence_length,
                             small_model,
                             tmpdir,
+                            dtype=dtype,
                         ),
                         metadata=params,
                     )
@@ -112,6 +115,7 @@ class LLM_ONNX(LLM):
                     sequence_length,
                     small_model,
                     get_model_checkpoint_path(model_id),
+                    dtype=dtype,
                 )
             return entry
 
@@ -208,6 +212,7 @@ class LLM_ONNX(LLM):
         sequence_length: int | list[int],
         small_model: bool,
         directory: str,
+        dtype: torch.dtype = torch.float32,
     ) -> ModelCacheEntry:
         """Export the torch model to ONNX in a temp dir and return a :class:`ModelCacheEntry`."""
         max_seq_len = (
@@ -229,7 +234,7 @@ class LLM_ONNX(LLM):
             )
 
         assert isinstance(instantiated_model, torch.nn.Module)
-        instantiated_model = instantiated_model.to(dtype=torch.float32)
+        instantiated_model = instantiated_model.to(dtype=dtype)
         layer_cache_descs = build_layer_cache_descriptors(instantiated_model.config)
         exportable_model = ONNXExportableModuleWithCache(
             instantiated_model,

@@ -216,6 +216,8 @@ SELECT
          END
        ) AS "Recipe Details (Torch → ONNX)",
 
+       COALESCE(t.model_modifiers->>'dtype', 'float32') AS "Dtype",
+
        -- Resource utilization (combined: torch recipe time + ONNX eval time)
        ROUND((t.components->'backbone'->'resource_utilization'->>'elapsed_ms')::numeric / 60000, 1) AS "Torch Recipe (min)",
        ROUND((o.components->'backbone'->'resource_utilization'->>'elapsed_ms')::numeric / 60000, 1) AS "ONNX Recipe (min)",

@@ -89,7 +89,7 @@ class Qwen_25_VL(VLM):
         **kwargs,
     ):
         dummy_inputs_embeds = torch.zeros(
-            (1, sequence_length, model.config.hidden_size), dtype=torch.int
+            (1, sequence_length, model.config.hidden_size), dtype=model.dtype
         )
         dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
         dummy_position_ids = torch.zeros((3, 1, sequence_length), dtype=torch.int)
@@ -108,11 +108,13 @@ class Qwen_25_VL(VLM):
         return tuple(prepared.values())
 
     @classmethod
-    def get_sample_vision_inputs(cls, config, image_size=(512, 512)):
+    def get_sample_vision_inputs(
+        cls, config, image_size=(512, 512), dtype: torch.dtype = torch.float32
+    ):
         num_patches, pixel_dim, h_patches, w_patches = compute_vision_input_shapes(
             image_size, config.vision_config
         )
-        dummy_pixel_values = torch.ones((num_patches, pixel_dim), dtype=torch.float32)
+        dummy_pixel_values = torch.ones((num_patches, pixel_dim), dtype=dtype)
         dummy_grid_thw = torch.tensor([[1, h_patches, w_patches]], dtype=torch.int64)
         return (
             dummy_pixel_values,

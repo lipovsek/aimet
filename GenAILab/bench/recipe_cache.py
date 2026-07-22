@@ -60,7 +60,7 @@ class CachedProfiler:
 
 def _stable_json_hash(obj) -> str:
     """Produce a deterministic SHA-256 hex digest of a JSON-serializable object."""
-    raw = json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    raw = json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 

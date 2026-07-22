@@ -61,6 +61,7 @@ class VLM_ONNX:
         context_length: int,
         sequence_length: int | list[int],
         small_model: bool = False,
+        dtype: torch.dtype = torch.float32,
         model_cache: DiskBackedModelCache | None = None,
         image_size: tuple[int, int] | None = None,
         *args,
@@ -96,6 +97,7 @@ class VLM_ONNX:
                         "context_length": context_length,
                         "small_model": small_model,
                         "image_size": image_size,
+                        "dtype": str(dtype),
                     }
                     key = DiskBackedModelCache.build_key(params)
                     entry = model_cache.get_or_export(
@@ -107,6 +109,7 @@ class VLM_ONNX:
                             small_model,
                             tmpdir,
                             image_size=image_size,
+                            dtype=dtype,
                         ),
                         metadata=params,
                     )
@@ -118,6 +121,7 @@ class VLM_ONNX:
                     small_model,
                     get_model_checkpoint_path(model_id),
                     image_size=image_size,
+                    dtype=dtype,
                 )
             return entry
 
@@ -231,6 +235,7 @@ class VLM_ONNX:
         small_model: bool,
         directory: str,
         image_size: tuple[int, int] | None = None,
+        dtype: torch.dtype = torch.float32,
     ) -> ModelCacheEntry:
         """Export the torch model to ONNX and return a :class:`ModelCacheEntry`."""
         max_seq_len = (
@@ -239,7 +244,7 @@ class VLM_ONNX:
             else sequence_length
         )
 
-        model = cls.instantiate_model(model_id, small_model).to(dtype=torch.float32)
+        model = cls.instantiate_model(model_id, small_model).to(dtype=dtype)
         text_config = _resolve_text_config(model.config)
         layer_cache_descs = build_layer_cache_descriptors(text_config)
 
@@ -279,7 +284,7 @@ class VLM_ONNX:
             output_names=cls.get_backbone_output_names(layer_cache_descs),
             fp_visual_model=traceable_visual,
             sample_visual_input=cls.get_sample_vision_inputs(
-                model.config, image_size=image_size
+                model.config, image_size=image_size, dtype=model.dtype
             ),
             visual_input_names=cls.get_visual_input_names(),
             visual_output_names=cls.get_visual_output_names(config=model.config),

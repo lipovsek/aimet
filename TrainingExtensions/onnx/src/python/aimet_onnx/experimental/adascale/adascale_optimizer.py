@@ -43,6 +43,8 @@ from aimet_onnx.experimental.adascale.model_converter import (
     get_pt_block,
     copy_pt_weights_to_onnx,
     copy_pt_encodings_to_sim,
+    required_extra_block_inputs,
+    resolve_block_residual_name,
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
@@ -219,16 +221,21 @@ class AdaScale:
             gc.collect()
             torch.cuda.empty_cache()
             with tempfile.TemporaryDirectory() as tempdir:
-                fp32_path = os.path.join(tempdir, "fp32_model.onnx")
+                unquantized_path = os.path.join(tempdir, "unquantized_model.onnx")
                 sim_path = os.path.join(tempdir, "sim_model.onnx")
                 # Deep copy the model to ensure original weights are maintained
                 sim_model: onnx_ir.Model = onnx_ir.from_proto(sim.model.model)
                 onnx_ir.passes.common.TopologicalSortPass().call(sim_model)
-                fp32_model = sim_model.clone()
-                ir_utils.remove_aimet_quantizers(fp32_model)
+                unquantized_model = sim_model.clone()
+                ir_utils.remove_aimet_quantizers(unquantized_model)
 
-                # Save fp32 model + weights once
-                onnx_ir.save(fp32_model, fp32_path, external_data="fp32_model.data")
+                # Save the unquantized model + weights once. Its
+                # dtype matches the sim's float dtype (fp16 by default).
+                onnx_ir.save(
+                    unquantized_model,
+                    unquantized_path,
+                    external_data="unquantized_model.data",
+                )
 
                 for idx in range(len(blocks_end_points)):
                     if (
@@ -270,11 +277,36 @@ class AdaScale:
                             )
                         block_input_names.extend(block_kv_tensor_names)
 
+                    # Step back through leading Casts to land on the true
+                    # cross-block residual (fp16 graphs keep the Cast).
+                    # The sim and unquantized graphs differ on the suffix of
+                    # values produced by quantizer ops ('_updated' on the sim
+                    # side, bare on the unquantized side post-
+                    # remove_aimet_quantizers), so resolve on each graph
+                    # separately.
+                    sim_start_residual = resolve_block_residual_name(
+                        sim_model.graph, blocks_end_points[idx][0]
+                    )
+                    sim_end_residual = resolve_block_residual_name(
+                        sim_model.graph, blocks_end_points[idx][1]
+                    )
+                    unquantized_start_residual = resolve_block_residual_name(
+                        unquantized_model.graph, blocks_end_points[idx][0]
+                    )
+                    # Safety net for any other unbounded graph input.
+                    declared = [sim_start_residual] + block_input_names
+                    extras = required_extra_block_inputs(
+                        sim_model.graph, declared, [sim_end_residual]
+                    )
+                    if extras:
+                        _logger.debug("Block %d adding extra inputs %s", idx, extras)
+                        block_input_names.extend(extras)
+
                     onnx_ir.save(
                         sim_model, path=sim_path, external_data="sim_model.data"
                     )
                     qsim_sess = ActivationSampler(
-                        blocks_end_points[idx][0],
+                        sim_start_residual,
                         sim_path,
                         sim.providers,
                     )
@@ -285,16 +317,16 @@ class AdaScale:
 
                     del qsim_sess
 
-                    fp32_sampler = ActivationSampler(
-                        blocks_end_points[idx][0],
-                        fp32_path,
+                    unquantized_sampler = ActivationSampler(
+                        unquantized_start_residual,
+                        unquantized_path,
                         sim.providers,
                     )
 
                     for input in inputs:
-                        fp_inputs.append(fp32_sampler.sample_acts(input))
+                        fp_inputs.append(unquantized_sampler.sample_acts(input))
 
-                    del fp32_sampler
+                    del unquantized_sampler
 
                     fp_input_list = []
                     qsim_input_list = []
@@ -308,8 +340,9 @@ class AdaScale:
                         fp_input_list.append(fp_list)
                         qsim_input_list.append(qsim_list)
 
-                    block_input_output_names = AdaScale.get_block_start_end_name(
-                        blocks_end_points, idx, block_input_names
+                    block_input_output_names = (
+                        [sim_start_residual] + block_input_names,
+                        [sim_end_residual],
                     )
 
                     AdaScale.optimize_adascale_block(

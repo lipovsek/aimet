@@ -760,11 +760,11 @@ class Gemma4_VLM(VLM):
         ple_dim = model.config.hidden_size_per_layer_input
 
         dummy_inputs_embeds = torch.zeros(
-            (1, sequence_length, hidden_size), dtype=torch.float32
+            (1, sequence_length, hidden_size), dtype=model.dtype
         )
         dummy_attention_mask = torch.ones((1, sequence_length), dtype=torch.int)
         dummy_per_layer_inputs = torch.zeros(
-            (1, sequence_length, num_layers, ple_dim), dtype=torch.float32
+            (1, sequence_length, num_layers, ple_dim), dtype=model.dtype
         )
 
         prepared = Gemma4_VLM.get_generator_cls().prepare_inputs(
@@ -781,7 +781,9 @@ class Gemma4_VLM(VLM):
         return tuple(prepared.values())
 
     @classmethod
-    def get_sample_vision_inputs(cls, config, image_size=None):
+    def get_sample_vision_inputs(
+        cls, config, image_size=None, dtype: torch.dtype = torch.float32
+    ):
         """Dummy inputs for Gemma4 vision QuantSim.
 
         Gemma4's image processor always pads to 2520 patches
@@ -790,9 +792,7 @@ class Gemma4_VLM(VLM):
         vcfg = config.vision_config
         patch_dim = 3 * vcfg.patch_size**2
         num_patches = 2520
-        dummy_pixel_values = torch.zeros(
-            (1, num_patches, patch_dim), dtype=torch.float32
-        )
+        dummy_pixel_values = torch.zeros((1, num_patches, patch_dim), dtype=dtype)
         dummy_position_ids = torch.zeros((1, num_patches, 2), dtype=torch.int64)
         return (dummy_pixel_values, dummy_position_ids)
 

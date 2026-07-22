@@ -234,16 +234,16 @@ class Gemma3_VLM(VLM):
         return tuple(prepared.values())
 
     @classmethod
-    def get_sample_vision_inputs(cls, config, image_size=None):
+    def get_sample_vision_inputs(
+        cls, config, image_size=None, dtype: torch.dtype = torch.float32
+    ):
         """Dummy inputs for Gemma3 vision QuantSim.
 
         SigLIP takes standard [B, C, H, W] pixel values.
         """
         vcfg = config.vision_config
         img_size = vcfg.image_size
-        dummy_pixel_values = torch.zeros(
-            (1, 3, img_size, img_size), dtype=torch.float32
-        )
+        dummy_pixel_values = torch.zeros((1, 3, img_size, img_size), dtype=dtype)
         return (dummy_pixel_values,)
 
     @staticmethod

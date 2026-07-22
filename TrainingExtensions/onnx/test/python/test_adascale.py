@@ -30,6 +30,10 @@ from aimet_onnx.experimental.adascale.quantizer import (
     replace_with_adascale_quantizers,
     QuantizedConv2d,
 )
+from aimet_onnx.experimental.adascale.model_converter import (
+    resolve_block_residual_name,
+    required_extra_block_inputs,
+)
 from .utils import add_genai_tests_path
 
 
@@ -795,11 +799,116 @@ class TestAdascaleQuantizer:
                 assert diff_pct < max_allowed_diff_pct
 
 
+class TestBlockResidualResolution:
+    """Unit tests for the fp16 block-boundary handling that ``apply_adascale``
+    relies on: ``resolve_block_residual_name`` (walks past leading ``Cast``
+    producers) and ``required_extra_block_inputs`` (collects unbounded graph
+    inputs the subgraph still depends on).
+    """
+
+    @staticmethod
+    def _graph(text: str) -> onnx_ir.Graph:
+        return onnx_ir.from_onnx_text(text).graph
+
+    def test_resolve_walks_past_leading_cast(self):
+        """fp16 pattern: RMSNorm anchor's input is post-Cast; the true residual is upstream."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float16[N, 4] residual) => (float[N, 4] anchor_in) {
+                anchor_in = Cast<to=1>(residual)
+            }
+            """
+        )
+        assert resolve_block_residual_name(graph, "anchor_in") == "residual"
+
+    def test_resolve_walks_past_chained_casts(self):
+        """Multiple Casts in a row (e.g., fp16 -> fp32 -> fp16) all get stripped."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float16[N, 4] residual) => (float16[N, 4] anchor_in) {
+                mid = Cast<to=1>(residual)
+                anchor_in = Cast<to=10>(mid)
+            }
+            """
+        )
+        assert resolve_block_residual_name(graph, "anchor_in") == "residual"
+
+    def test_resolve_stops_at_non_cast_producer(self):
+        """Non-Cast producer (Add) is not stepped through — the anchor is the true residual."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float[N, 4] a, float[N, 4] b) => (float[N, 4] residual) {
+                residual = Add(a, b)
+            }
+            """
+        )
+        assert resolve_block_residual_name(graph, "residual") == "residual"
+
+    def test_resolve_unknown_name_returns_input_unchanged(self):
+        """Names not in the graph pass through — this is the fallback path for
+        callers that may pass an already-resolved name."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float[N, 4] x) => (float[N, 4] y) {
+                y = Identity(x)
+            }
+            """
+        )
+        assert resolve_block_residual_name(graph, "not_in_graph") == "not_in_graph"
+
+    def test_required_extras_collects_unbounded_graph_input(self):
+        """When the subgraph reachable from ``output_names`` depends on a graph
+        input not listed in ``input_names``, that input is returned as an extra."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float[N, 4] residual, float[N, 4] side) => (float[N, 4] out) {
+                out = Add(residual, side)
+            }
+            """
+        )
+        extras = required_extra_block_inputs(graph, ["residual"], ["out"])
+        assert extras == ["side"]
+
+    def test_required_extras_empty_when_fully_declared(self):
+        """When every producer chain terminates at an already-declared input,
+        no extras are needed."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float[N, 4] residual) => (float[N, 4] out) {
+                out = Relu(residual)
+            }
+            """
+        )
+        assert required_extra_block_inputs(graph, ["residual"], ["out"]) == []
+
+    def test_required_extras_ignores_initializers(self):
+        """Initializers (constants baked into the graph) are not counted as
+        unbounded inputs — only true graph inputs are."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float[N, 4] residual) => (float[N, 4] out)
+            <float[4] bias = {0.0, 0.0, 0.0, 0.0}>
+            {
+                out = Add(residual, bias)
+            }
+            """
+        )
+        assert required_extra_block_inputs(graph, ["residual"], ["out"]) == []
+
+
 @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
 @pytest.mark.skip_on_windows_amd64(
     "insufficient disk for large ONNX export on Windows AMD64 runner"
 )
-def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16], ids=["fp32", "fp16"])
+def test_adascale_e2e(add_genai_tests_path, dtype, small_model: bool = True):
     from transformers import AutoConfig
     from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
     from GenAILab.qai_hub_lm.backends.onnx.export_utils import (
@@ -827,7 +936,11 @@ def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
     cache_dir = get_model_checkpoint_path(model_id)
     try:
         entry = model_cls.instantiate_float_model(
-            model_id, context_length, sequence_length, small_model=small_model
+            model_id,
+            context_length,
+            sequence_length,
+            small_model=small_model,
+            dtype=dtype,
         )
         collection = model_cls.instantiate_quantsim(entry)
         sim = collection.backbone
@@ -841,16 +954,19 @@ def test_adascale_e2e(add_genai_tests_path, small_model: bool = True):
             }
         adascale_model_config_dict["qwen2"].model_config = llm_config
 
+        # Float inputs must match the exported graph's float dtype (fp16 when
+        # ``dtype=torch.float16``); ORT rejects a dtype mismatch on session run.
+        float_np_dtype = np.float16 if dtype == torch.float16 else np.float32
         inputs = {
             "input_ids": np.random.randint(0, 100, size=(1, 16), dtype=np.int32),
             "attention_mask": np.random.randint(0, 100, size=(1, 1, 16, 32)).astype(
-                np.float32
+                float_np_dtype
             ),
             "position_ids": np.arange(0, 16).reshape(1, 16).astype(np.int32),
-            "past_key_0_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
-            "past_value_0_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
-            "past_key_1_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
-            "past_value_1_in": np.zeros((1, 2, 16, 64)).astype(np.float32),
+            "past_key_0_in": np.zeros((1, 2, 16, 64)).astype(float_np_dtype),
+            "past_value_0_in": np.zeros((1, 2, 16, 64)).astype(float_np_dtype),
+            "past_key_1_in": np.zeros((1, 2, 16, 64)).astype(float_np_dtype),
+            "past_value_1_in": np.zeros((1, 2, 16, 64)).astype(float_np_dtype),
         }
 
         # Create a copy of the weights before applying AdaScale

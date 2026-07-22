@@ -3,6 +3,7 @@
 
 """Utilities for replicating Torch model interface on ONNX InferenceSessions. Borrowed from AI Hub Models"""
 
+import warnings
 import numpy as np
 import torch
 import onnxruntime
@@ -108,6 +109,38 @@ def _resolve_output_shapes(
     return output_shapes
 
 
+def _override_model_inputs_with_session_dtypes(
+    session: onnxruntime.InferenceSession,
+    inputs: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """Cast each input to the dtype its ORT session declared.
+
+    Callers (HF processors, dataset loaders) routinely produce fp32 tensors
+    (e.g. ``pixel_values``) regardless of the graph's precision. When the
+    graph was exported at fp16, ORT rejects the mismatch with
+    ``Unexpected input data type. Actual: (tensor(float)) , expected:
+    (tensor(float16))``. Cast at the boundary so callers stay dtype-agnostic;
+    warn whenever a cast happens so callers comparing against a
+    higher-precision reference don't attribute the induced error to the graph.
+    """
+    expected = {
+        inp.name: _NP_TO_TORCH_DTYPE[_ORT_TYPE_TO_NP_DTYPE[inp.type]]
+        for inp in session.get_inputs()
+    }
+    out: dict[str, torch.Tensor] = {}
+    for name, tensor in inputs.items():
+        target = expected[name]
+        if tensor.dtype != target:
+            warnings.warn(
+                f"Input {name!r}: casting {tensor.dtype} → {target} to match "
+                "ORT session dtype. Cast inputs at the source to silence this.",
+                stacklevel=2,
+            )
+            tensor = tensor.to(target)
+        out[name] = tensor
+    return out
+
+
 def _iobinding_inference(
     session: onnxruntime.InferenceSession,
     *args: torch.Tensor,
@@ -118,6 +151,7 @@ def _iobinding_inference(
     input_names = [inp.name for inp in session.get_inputs()]
 
     inputs = kwargs_to_dict(input_names, *args, **kwargs)
+    inputs = _override_model_inputs_with_session_dtypes(session, inputs)
     output_shapes = _resolve_output_shapes(session, inputs)
 
     if output_shapes is None:
@@ -189,6 +223,7 @@ def mock_torch_onnx_inference(
 
     input_names = [inp.name for inp in session.get_inputs()]
     inputs = kwargs_to_dict(input_names, *args, **kwargs)
+    inputs = _override_model_inputs_with_session_dtypes(session, inputs)
     return _numpy_inference(session, inputs, "cpu")
 
 
@@ -205,6 +240,21 @@ def _flatten_tensor_args(args):
         else:
             flat.append(a)
     return tuple(flat)
+
+
+def _float_dtype_from_session(session) -> torch.dtype:
+    """Derive the graph's float dtype from its declared ORT input types.
+
+    The exported session is the source of truth for precision (the same source
+    :func:`_override_model_inputs_with_session_dtypes` casts inputs against), so
+    there is no need to be told the dtype separately. Returns the first floating
+    input type; falls back to fp32 for graphs with no float inputs.
+    """
+    for inp in session.get_inputs():
+        torch_dtype = _NP_TO_TORCH_DTYPE[_ORT_TYPE_TO_NP_DTYPE[inp.type]]
+        if torch_dtype.is_floating_point:
+            return torch_dtype
+    return torch.float32
 
 
 class TorchONNXInterface(torch.nn.Module):
@@ -225,7 +275,9 @@ class TorchONNXInterface(torch.nn.Module):
 
     @property
     def dtype(self) -> torch.dtype:
-        return torch.float32
+        # Derived from the wrapped session (the source of truth for the exported
+        # graph's precision) so it can never drift from the graph.
+        return _float_dtype_from_session(self.quantsim.session)
 
     def forward(
         self,

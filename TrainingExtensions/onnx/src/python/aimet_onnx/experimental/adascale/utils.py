@@ -255,8 +255,7 @@ def convert_to_torch(obj):
     elif isinstance(obj, types.GeneratorType):
         return (convert_to_torch(v) for v in obj)
     elif isinstance(obj, np.ndarray):
-        tensor = torch.from_numpy(obj)
-        return tensor.float() if np.issubdtype(obj.dtype, np.floating) else tensor
+        return torch.from_numpy(obj)
     else:
         return obj
 

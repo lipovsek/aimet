@@ -218,6 +218,8 @@ SELECT
            )
        END AS "Visual Recipe Details",
 
+       COALESCE(model_modifiers->>'dtype', 'float32') AS "Dtype",
+
        -- Resource utilization: backbone
        ROUND((components->'backbone'->'resource_utilization'->>'elapsed_ms')::numeric / 60000, 1) AS "Backbone Time (min)",
        (components->'backbone'->'resource_utilization'->>'cuda_peak_mb')::numeric AS "Backbone GPU Peak (MB)",
@@ -235,7 +237,6 @@ SELECT
 
     FROM genai_laboratory
     WHERE model_id = {{model_id}}
-	  AND model_id LIKE '%VL%'
       AND environment->>'variant' = 'onnx'
       [[AND model_modifiers->'adaptations' ? {{adaptation}}]]
       [[AND environment->>'actor' = {{actor}}]]

@@ -315,9 +315,14 @@ class AdaScaleLinearWeightQdq(WeightQdq):
         :param input_tensor: Input tensor to be QDQ
         :return: Dequantized tensor after applying AdaScale QDQ
         """
+        # AdaScale trainable params (s2/s3/beta/gamma) stay in fp32 for Adam
+        # numerical stability; the block outputs remain in the weight's dtype
+        # (fp16/bf16 in low-precision graphs). Cast back so downstream
+        # Linear/Conv sees a matching-dtype weight.
+        orig_dtype = input_tensor.dtype
         for scale in self._get_learnable_scales():
             input_tensor = input_tensor / torch.exp(scale)
-        return super().forward(input_tensor)
+        return super().forward(input_tensor.to(orig_dtype))
 
     def _get_learnable_scales(self) -> list[torch.Tensor]:
         return [self.s2, self.s3]
@@ -402,9 +407,10 @@ class AdaScaleConvWeightQdq(WeightQdq):
         :param input_tensor: Input tensor to be QDQ
         :return: Dequantized tensor after applying AdaScale QDQ
         """
+        orig_dtype = input_tensor.dtype
         for scale in self._get_learnable_scales():
             input_tensor = input_tensor / torch.exp(scale)
-        return super().forward(input_tensor)
+        return super().forward(input_tensor.to(orig_dtype))
 
     def _get_learnable_scales(self) -> list[torch.Tensor]:
         return [self.s2, self.s3, self.s4]

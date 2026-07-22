@@ -287,6 +287,8 @@ SELECT
            )
        END AS "Visual Recipe Details",
 
+       COALESCE(t.model_modifiers->>'dtype', 'float32') AS "Dtype",
+
        -- Resource utilization
        ROUND((t.components->'backbone'->'resource_utilization'->>'elapsed_ms')::numeric / 60000, 1) AS "Torch Backbone (min)",
        ROUND((t.components->'visual'->'resource_utilization'->>'elapsed_ms')::numeric / 60000, 1)   AS "Torch Visual (min)",
@@ -321,7 +323,6 @@ SELECT
      AND t.environment->>'variant' = 'torch'
      AND o.environment->>'variant' = 'onnx'
     WHERE t.model_id = {{model_id}}
-      AND t.model_id LIKE '%VL%'
       [[AND t.model_modifiers->'adaptations' ? {{adaptation}}]]
       [[AND t.environment->>'actor' = {{actor}}]]
       [[AND t.environment->>'branch' = {{branch}}]]

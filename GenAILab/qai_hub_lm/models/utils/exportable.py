@@ -55,6 +55,24 @@ class ONNXExportableModuleWithCache(torch.nn.Module):
         if not input_names:
             input_names = self._default_input_names()
         self.input_names = tuple(input_names)
+        self._restore_rotary_buffers_to_fp32()
+
+    def _restore_rotary_buffers_to_fp32(self) -> None:
+        """Restore ``inv_freq`` (and any ``original_inv_freq``) buffers to fp32.
+
+        ONNX ``Range`` (opset 11+) accepts only float/double/int16/int32/int64.
+        HF rotary layers do ``torch.arange(seqlen, dtype=self.inv_freq.dtype)``,
+        so if ``inv_freq`` was cast to fp16 by ``model.to(dtype=torch.float16)``
+        the exported ``Range`` node has fp16 inputs and the graph fails schema
+        validation at load time.
+        """
+        for module in self.model.modules():
+            for name in ("inv_freq", "original_inv_freq"):
+                buf = getattr(module, name, None)
+                if isinstance(buf, torch.Tensor) and buf.dtype != torch.float32:
+                    module.register_buffer(
+                        name, buf.to(torch.float32), persistent=False
+                    )
 
     def _default_input_names(self) -> tuple[str, ...]:
         """Derive input names from model config when none are provided."""

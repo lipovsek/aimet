@@ -59,10 +59,11 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: 
             in_features=in_features,
             out_features=out_features,
             bias=None,
+            dtype=weights.dtype,
         )
 
         with torch.no_grad():
-            torch_module.weight.data = weights
+            torch_module.weight.copy_(weights)
 
         return OperationConverterResult(
             torch_module=torch_module,

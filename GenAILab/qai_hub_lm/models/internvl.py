@@ -312,7 +312,9 @@ class InternVL_VLM(VLM):
         return tuple(prepared.values())
 
     @classmethod
-    def get_sample_vision_inputs(cls, config, image_size=None):
+    def get_sample_vision_inputs(
+        cls, config, image_size=None, dtype: torch.dtype = torch.float32
+    ):
         """Dummy inputs for InternVL vision QuantSim (single tile)."""
         model_image_size = (
             getattr(config, "force_image_size", None) or config.vision_config.image_size
@@ -327,7 +329,7 @@ class InternVL_VLM(VLM):
                 )
         else:
             h = w = model_image_size
-        dummy_pixel_values = torch.zeros((1, 3, h, w), dtype=torch.float32)
+        dummy_pixel_values = torch.zeros((1, 3, h, w), dtype=dtype)
         return (dummy_pixel_values,)
 
     @staticmethod

@@ -282,6 +282,8 @@ SELECT
          )
      END AS "Visual Recipe",
 
+     COALESCE(model_modifiers->>'dtype', 'float32') AS "Dtype",
+
      -- Accuracy columns
      ROUND((accuracy_results->'PPL'->>'result')::numeric, 2)      AS "PPL",
      ROUND((accuracy_results->'TinyMMLU'->>'result')::numeric, 4) AS "TinyMMLU",

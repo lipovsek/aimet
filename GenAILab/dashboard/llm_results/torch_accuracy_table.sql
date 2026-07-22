@@ -154,6 +154,8 @@ SELECT
          )
      END AS "Recipe Details",
 
+     COALESCE(model_modifiers->>'dtype', 'float32') AS "Dtype",
+
      -- Resource utilization columns
      ROUND((components->'backbone'->'resource_utilization'->>'elapsed_ms')::numeric / 60000, 1) AS "Time (min)",
      (components->'backbone'->'resource_utilization'->>'cuda_peak_mb')::numeric AS "GPU Peak (MB)",

@@ -79,6 +79,25 @@ model:
   model_id: Qwen/Qwen3-1.7B
   sequence_length: 2048
   context_length: 4096
+  dtype: float16
+recipe:
+  - name: SeqMSE
+    dataset:
+      name: Wikitext
+      split: train
+  - name: Calibration
+    dataset:
+      name: Wikitext
+      split: train
+metrics:
+  - name: MMLU1000
+  - name: TinyMMLU
+  - name: PPL
+---
+model:
+  model_id: Qwen/Qwen3-1.7B
+  sequence_length: 2048
+  context_length: 4096
 precision:
   kv_cache: int16
 recipe:

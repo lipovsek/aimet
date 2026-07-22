@@ -460,7 +460,7 @@ class Generator(GenerationMixin, torch.nn.Module):
 
         input_tokens = input_ids if input_ids is not None else inputs_embeds
         input_tokens = input_tokens.to(
-            dtype=torch.int32 if input_ids is not None else torch.float32
+            dtype=torch.int32 if input_ids is not None else model.dtype
         )
 
         device = input_tokens.device

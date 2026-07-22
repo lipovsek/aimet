@@ -94,10 +94,12 @@ def test_llm_quantization(
         )
     )
 
-    if model_dtype is not None:
-        warnings.warn(
-            "User-specified dtypes are not yet supported in ONNX GenAILab. All models are FP32 by default."
+    dtype_name = model_dtype or "float32"
+    if dtype_name not in ("float32", "float16"):
+        raise ValueError(
+            f"Unsupported model dtype {dtype_name!r}; expected 'float32' or 'float16'."
         )
+    model_kwargs["dtype"] = getattr(torch, dtype_name)
 
     if test_parameters["eval_in_onnx"]:
         warnings.warn("eval_in_onnx is ignored for ONNX GenAI tests.")
