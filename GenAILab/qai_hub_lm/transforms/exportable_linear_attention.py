@@ -248,7 +248,7 @@ def _roll_indices(npad, seq_len, device):
 
 
 def exportable_gated_delta_net_forward(
-    self, hidden_states, cache_params=None, attention_mask=None
+    self, hidden_states, cache_params=None, attention_mask=None, **kwargs
 ):
     """Single-graph GatedDeltaNet forward for export.
 
