@@ -26,6 +26,7 @@ from transformers import (
     Qwen3Config,
     Qwen3ForCausalLM,
 )
+from transformers.models.llama.modeling_llama import LlamaModel
 from transformers import set_seed
 
 from aimet_torch import QuantizationSimModel
@@ -1260,4 +1261,140 @@ class TestAdaScaleResumability:
                     f"Baseline: {baseline_weight.flatten()[:5]}\n"
                     f"Resumed:  {resumed_weight.flatten()[:5]}\n"
                     f"Max diff: {torch.max(torch.abs(baseline_weight - resumed_weight))}"
+                )
+
+    # (enable_caching_after_block, blocks_completed_before_interrupt)
+    #  - (2, 1): resume point (block 1) is in the non-cached region and <= disable_caching, so it exercises the
+    #            eager-restore + sampler start_block skip path.
+    #  - (1, 2): resume point (block 2) is in the cached region, so it exercises the path where the eagerly-restored
+    #            prefix is chained through internally by the sampler and only blocks from the resume point are yielded.
+    @pytest.mark.parametrize(
+        "enable_caching_after_block, blocks_completed", [(2, 1), (1, 2)]
+    )
+    def test_resume_reproducibility_with_disabled_caching(
+        self,
+        enable_caching_after_block,
+        blocks_completed,
+        fxt_dummy_input,
+        fxt_dataloader,
+        fxt_checkpoint_dir,
+    ):
+        """
+        Resume must produce identical folded weights to an uninterrupted run for a hybrid model that has both a
+        non-cached prefix (``enable_caching_after_block > 0``) and a cached tail. This pins correctness of both the
+        new non-cached start_block skip and the cached-region re-propagation fallback.
+        """
+        num_iter = 200
+
+        def _set_seed_hook(func):
+            def f(*args, **kwargs):
+                set_seed(432)
+                return func(*args, **kwargs)
+
+            return f
+
+        # Llama with disabled caching for the first `enable_caching_after_block` blocks.
+        config = LlamaConfig(**MODEL_CONFIGS["llama"]["config_kwargs"])
+
+        with patch.dict(
+            adascale_model_config_dict,
+            {
+                LlamaModel: AdaScaleModelConfig(
+                    block_type=adascale_model_config_dict[LlamaModel].block_type,
+                    enable_caching_after_block=enable_caching_after_block,
+                )
+            },
+        ):
+            # ----- Baseline: uninterrupted -----
+            set_seed(432)
+            model1 = LlamaForCausalLM(config)
+            model2 = deepcopy(model1)
+            model1.eval()
+            qsim1 = get_quantsim_ready_model(model1, fxt_dummy_input)
+            with patch.object(
+                AdaScale,
+                "adascale_block",
+                wraps=_set_seed_hook(AdaScale.adascale_block),
+            ):
+                AdaScale.apply_adascale(
+                    qsim1, fxt_dataloader, num_iterations=num_iter, checkpoint_dir=None
+                )
+
+            baseline_weights = {}
+            for block_idx, block in enumerate(AdaScale._get_blocks(qsim1)):
+                baseline_weights[block_idx] = {
+                    name: module.weight.data.clone().cpu()
+                    for name, module in block.named_modules()
+                    if isinstance(module, QuantizedLinear)
+                    and isinstance(
+                        module.param_quantizers["weight"], QuantizeDequantize
+                    )
+                }
+
+            # ----- Interrupt after `blocks_completed` blocks, then resume -----
+            set_seed(432)
+            model2.eval()
+            qsim2 = get_quantsim_ready_model(model2, fxt_dummy_input)
+
+            def _seed_then_run(func):
+                wrapped = _set_seed_hook(func)
+
+                def f(*args, **kwargs):
+                    if f._count >= blocks_completed:
+                        raise RuntimeError("cancel")
+                    wrapped(*args, **kwargs)
+                    f._count += 1
+
+                f._count = 0
+                return f
+
+            with patch.object(
+                AdaScale,
+                "adascale_block",
+                side_effect=_seed_then_run(AdaScale.adascale_block),
+            ):
+                with pytest.raises(RuntimeError, match="cancel"):
+                    AdaScale.apply_adascale(
+                        qsim2,
+                        fxt_dataloader,
+                        num_iterations=num_iter,
+                        checkpoint_dir=fxt_checkpoint_dir,
+                    )
+
+            manager = PerBlockCheckpointManager(fxt_checkpoint_dir)
+            assert manager.get_progress()["completed_blocks"] == list(
+                range(blocks_completed)
+            )
+
+            with patch.object(
+                AdaScale,
+                "adascale_block",
+                wraps=_set_seed_hook(AdaScale.adascale_block),
+            ):
+                AdaScale.apply_adascale(
+                    qsim2,
+                    fxt_dataloader,
+                    num_iterations=num_iter,
+                    checkpoint_dir=fxt_checkpoint_dir,
+                )
+
+            resumed_weights = {}
+            for block_idx, block in enumerate(AdaScale._get_blocks(qsim2)):
+                resumed_weights[block_idx] = {
+                    name: module.weight.data.clone().cpu()
+                    for name, module in block.named_modules()
+                    if isinstance(module, QuantizedLinear)
+                    and isinstance(
+                        module.param_quantizers["weight"], QuantizeDequantize
+                    )
+                }
+
+        for block_idx in range(NUM_HIDDEN_LAYERS):
+            for layer_name, baseline_weight in baseline_weights[block_idx].items():
+                resumed_weight = resumed_weights[block_idx][layer_name]
+                assert torch.allclose(baseline_weight, resumed_weight), (
+                    f"Block {block_idx}, layer {layer_name} weight mismatch after resume "
+                    f"(enable_caching_after_block={enable_caching_after_block}, "
+                    f"blocks_completed={blocks_completed}); "
+                    f"max diff: {torch.max(torch.abs(baseline_weight - resumed_weight))}"
                 )

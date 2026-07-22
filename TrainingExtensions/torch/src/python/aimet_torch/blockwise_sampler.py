@@ -299,10 +299,18 @@ class BlockwiseSampler:
         self.disable_caching_until_block = disable_caching_until_block
 
     @torch.no_grad()
-    def run_inference(self, sample) -> Generator[CachedBlockInput, None, None]:
+    def run_inference(
+        self, sample, start_block: int = 0
+    ) -> Generator[CachedBlockInput, None, None]:
         """
         Helper function to run inference on the model using the given sample, pausing and yielding the results after
         each block.
+
+        :param sample: A single sample from the dataloader to run inference on.
+        :param start_block: Index of the first block to yield inputs for. Blocks before this index are not yielded.
+            When ``start_block`` falls in the cached region, the chain is still run through the skipped prefix (using
+            those blocks' current weights) to reach ``start_block``; only the yielding is suppressed. Callers resuming
+            from a checkpoint must therefore restore the skipped prefix's weights before iterating.
         """
 
         class StopForwardExceptionWithInput(utils.StopForwardException):
@@ -317,7 +325,17 @@ class BlockwiseSampler:
             )
 
         next_block_input = None
+        # Non-cached region: capture each block's input via an independent forward pass. We always run through
+        # disable_caching_until_block to seed the cached chain, but only yield inputs for blocks at or after
+        # start_block (earlier blocks are assumed to be handled by a resuming caller).
         for block_idx in range(self.disable_caching_until_block + 1):
+            if (
+                block_idx < start_block
+                and block_idx != self.disable_caching_until_block
+            ):
+                # This block is neither yielded nor needed to seed the cached chain, so skip capturing it.
+                continue
+
             hook = self.blocks[block_idx].register_forward_pre_hook(
                 hook_fn, with_kwargs=True
             )
@@ -336,9 +354,15 @@ class BlockwiseSampler:
                 if self.cache_activations_on_disk:
                     next_block_input.enable_disk_caching()
 
-            yield next_block_input
+            if block_idx >= start_block:
+                yield next_block_input
 
-        for block in self.blocks[self.disable_caching_until_block : -1]:
+        # Cached region: chain each block's output into the next. The chain must run contiguously from
+        # disable_caching_until_block, but we only yield inputs for blocks at or after start_block.
+        for chain_idx, block in enumerate(
+            self.blocks[self.disable_caching_until_block : -1],
+            start=self.disable_caching_until_block,
+        ):
             with next_block_input.load():
                 next_block_input.to(utils.get_device(block))
                 next_block_input.args = block(
@@ -349,10 +373,12 @@ class BlockwiseSampler:
                 if not isinstance(next_block_input.args, tuple):
                     next_block_input.args = (next_block_input.args,)
 
-            yield next_block_input
+            # Running block chain_idx produced the input to block chain_idx + 1.
+            if chain_idx + 1 >= start_block:
+                yield next_block_input
 
     def sample(
-        self, device=None, desc: str = "Blocks processed"
+        self, device=None, desc: str = "Blocks processed", start_block: int = 0
     ) -> Generator[
         Tuple[
             Union[torch.nn.Module, torch.nn.ModuleList],
@@ -366,6 +392,14 @@ class BlockwiseSampler:
         Main generator function for blockwise sampler. Each loop of this generator yields a tuple of
         (block, [list of FP inputs to block], [list of QT inputs to block]) based on the list of blocks provided during
         initialization.
+
+        :param device: Device on which to place the current block and its inputs when yielded.
+        :param desc: Description string for the progress bar.
+        :param start_block: Index of the first block to yield. Blocks before this index are not yielded, which allows
+            callers resuming from a checkpoint to avoid re-optimizing already-completed blocks. When ``start_block``
+            falls in the non-cached region, the skipped blocks are not sampled at all. When it falls in the cached
+            region, the block chain is still run through the skipped prefix to reach ``start_block`` (using those
+            blocks' current weights), so a resuming caller must restore the prefix's weights before iterating.
         """
         device = device if device else utils.get_device(self.sim.model)
 
@@ -373,8 +407,8 @@ class BlockwiseSampler:
         qt_inferences = []
 
         for sample in itertools.islice(self.dataloader, len(self.dataloader)):
-            fp_inferences.append(self.run_inference(sample))
-            qt_inferences.append(self.run_inference(sample))
+            fp_inferences.append(self.run_inference(sample, start_block=start_block))
+            qt_inferences.append(self.run_inference(sample, start_block=start_block))
 
         if self.keep_unused_blocks_on_cpu:
             if self.disable_caching_until_block > 0:
@@ -385,7 +419,9 @@ class BlockwiseSampler:
             else:
                 self.sim.model.to("cpu")
 
-        for block_idx, block in enumerate(tqdm(self.blocks, desc=desc)):
+        for block_idx, block in enumerate(
+            tqdm(self.blocks[start_block:], desc=desc), start=start_block
+        ):
             # Quantizers must be ENABLED when calculating quantized block inputs
             qt_block_inputs = [next(block_input) for block_input in qt_inferences]
 

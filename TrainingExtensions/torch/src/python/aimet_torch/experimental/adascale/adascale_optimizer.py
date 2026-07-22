@@ -429,7 +429,41 @@ class AdaScale:
                 start_block_idx, completed=False, **metadata
             )
 
+        def _restore_completed_block(blk: torch.nn.Module, idx: int):
+            """Install AdaScale quantizers on a completed block and load its saved params."""
+            temp_device = get_device(blk)
+            temp_dtype = next(blk.parameters()).dtype
+            cls._replace_with_adascale_weight_quantizers(blk)
+            checkpoint_manager.load_completed_block(blk, idx)
+            blk.to(device=temp_device, dtype=temp_dtype)
+
+        # If every block is already checkpointed, restore all of them and skip sampling/optimization entirely.
+        if checkpoint_manager and all_blocks_done:
+            for idx, blk in enumerate(adascale_blocks):
+                _restore_completed_block(blk, idx)
+            cls.fold_adascale_quantizers(qsim.model)
+            qsim.model.to(device=device, dtype=dtype)
+            del checkpoint_manager
+            _logger.info(
+                "AdaScale restored from checkpoints; no blocks left to optimize."
+            )
+            return
+
         qsim.model.to(device=torch.device("cpu"), dtype=dtype)
+
+        disable_caching = cls._model_specific_blocks_to_disable_caching(qsim)
+
+        # Resume by yielding from the checkpointed prefix's end. get_resume_point guarantees a contiguous completed
+        # prefix (blocks 0..start_block_idx-1). In the non-cached region the sampler simply skips sampling those
+        # blocks; in the cached region it still chains through them internally (using the weights we restore below)
+        # but does not re-yield them. Either way, the prefix must be restored before sampling so the resume block's
+        # forward pass sees the optimized upstream weights.
+        can_skip_sampling = checkpoint_manager is not None and start_block_idx > 0
+        sampler_start = start_block_idx if can_skip_sampling else 0
+
+        if can_skip_sampling:
+            for idx in range(start_block_idx):
+                _restore_completed_block(adascale_blocks[idx], idx)
 
         sampler = BlockwiseSampler(
             qsim,
@@ -438,33 +472,30 @@ class AdaScale:
             forward_fn,
             keep_unused_blocks_on_cpu=True,
             cache_activations_on_disk=True,
-            disable_caching_until_block=cls._model_specific_blocks_to_disable_caching(
-                qsim
-            ),
+            disable_caching_until_block=disable_caching,
         )
 
         qsim.model.requires_grad_(False)
         beta_gamma_lr, scales_lr = AdaScale._model_specific_lr(qsim)
 
         with remove_activation_quantizers(qsim.model):
-            for block_idx, (block, fp_block_inputs, qt_block_inputs) in enumerate(
-                sampler.sample(device=device, desc="AdaScale blocks processed")
+            for offset, (block, fp_block_inputs, qt_block_inputs) in enumerate(
+                sampler.sample(
+                    device=device,
+                    desc="AdaScale blocks processed",
+                    start_block=sampler_start,
+                )
             ):
-                # Check if block already completed
+                block_idx = sampler_start + offset
+                # The eagerly-restored contiguous prefix is skipped by sampler_start; this still handles any
+                # non-contiguous completed blocks that appear at or after the resume point.
                 if checkpoint_manager and checkpoint_manager.is_block_completed(
                     block_idx
                 ):
                     _logger.info(
                         "Block %d already completed, loading checkpoint...", block_idx
                     )
-                    temp_device = get_device(block)
-                    temp_dtype = next(block.parameters()).dtype
-
-                    cls._replace_with_adascale_weight_quantizers(block)
-                    checkpoint_manager.load_completed_block(block, block_idx)
-
-                    block.to(device=temp_device, dtype=temp_dtype)
-
+                    _restore_completed_block(block, block_idx)
                     continue
 
                 fp_block_inputs = CachedIterable(fp_block_inputs)

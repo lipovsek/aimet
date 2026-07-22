@@ -153,6 +153,137 @@ def test_blockwise_sampler(cache_activations_on_disk, keep_unused_blocks_on_cpu)
                 _verify_equal_tuples_of_tensors(uncached_tensors, cached_tensors)
 
 
+@pytest.mark.parametrize("start_block", [1, 3])
+@pytest.mark.parametrize("disable_caching_until_block", [None, 0, 2])
+def test_blockwise_sampler_start_block(start_block, disable_caching_until_block):
+    """
+    sample(start_block=k) should yield inputs for blocks k..N-1 that match a ground-truth forward pass, regardless of
+    whether start_block falls in the non-cached region (skipped without sampling) or the cached region (chained through
+    internally without re-yielding).
+    """
+    model = ModelWithBlocks()
+    sim = QuantizationSimModel(model, dummy_input=torch.randn(3, 3, 3))
+    dataset = RandomDataset((3, 3, 3), 4)
+
+    def forward_pass_callback(quantized_model):
+        for sample in DataLoader(dataset, batch_size=1, shuffle=False):
+            _ = sim.model(sample)
+
+    sim.compute_encodings(forward_pass_callback)
+
+    num_blocks = len(sim.model.blocks)
+    # None => whole model is non-cached (start_block skips sampling); 0 => everything cached (start_block chains
+    # through the prefix); 2 => start_block=3 lands in the cached region while start_block=1 lands in the non-cached one.
+    if disable_caching_until_block is None:
+        disable_caching_until_block = num_blocks - 1
+    sampler = BlockwiseSampler(
+        sim=sim,
+        blocks=sim.model.blocks,
+        dataloader=DataLoader(dataset, batch_size=1, shuffle=False),
+        cache_activations_on_disk=False,
+        keep_unused_blocks_on_cpu=False,
+        disable_caching_until_block=disable_caching_until_block,
+    )
+
+    yielded_blocks = []
+    for block, fp_block_inputs, qt_block_inputs in sampler.sample(
+        start_block=start_block
+    ):
+        yielded_blocks.append(block)
+
+        # Ground-truth inputs for this block via an independent hooked forward pass.
+        hook = block.register_forward_pre_hook(hook_fn, with_kwargs=True)
+        qt_expected, fp_expected = [], []
+        for sample in DataLoader(dataset, batch_size=1, shuffle=False):
+            try:
+                sim.model(sample)
+            except StopForwardExceptionWithInput as e:
+                qt_expected.append(e.captured_input.args)
+            with disable_all_quantizers(sim.model):
+                try:
+                    sim.model(sample)
+                except StopForwardExceptionWithInput as e:
+                    fp_expected.append(e.captured_input.args)
+        hook.remove()
+
+        with ExitStack() as stack:
+            for fp_block_input in fp_block_inputs:
+                stack.enter_context(fp_block_input.load())
+            for qt_block_input in qt_block_inputs:
+                stack.enter_context(qt_block_input.load())
+
+            for cached, expected in zip((i.args for i in fp_block_inputs), fp_expected):
+                for t1, t2 in zip(cached, expected):
+                    assert torch.equal(t1, t2)
+            for cached, expected in zip((i.args for i in qt_block_inputs), qt_expected):
+                for t1, t2 in zip(cached, expected):
+                    assert torch.equal(t1, t2)
+
+    # Only blocks start_block..N-1 should have been yielded, in order.
+    assert yielded_blocks == list(sim.model.blocks[start_block:])
+
+
+def test_blockwise_sampler_start_block_in_cached_region():
+    """
+    start_block past the non-cached region no longer raises: the sampler chains through the skipped prefix internally
+    and yields only blocks start_block..N-1, matching a ground-truth forward pass.
+    """
+    model = ModelWithBlocks()
+    sim = QuantizationSimModel(model, dummy_input=torch.randn(3, 3, 3))
+    dataset = RandomDataset((3, 3, 3), 3)
+
+    def forward_pass_callback(quantized_model):
+        for sample in DataLoader(dataset, batch_size=1, shuffle=False):
+            _ = sim.model(sample)
+
+    sim.compute_encodings(forward_pass_callback)
+
+    start_block = 2
+    sampler = BlockwiseSampler(
+        sim=sim,
+        blocks=sim.model.blocks,
+        dataloader=DataLoader(dataset, batch_size=1, shuffle=False),
+        cache_activations_on_disk=False,
+        keep_unused_blocks_on_cpu=False,
+        disable_caching_until_block=0,  # start_block=2 lands in the cached region
+    )
+
+    yielded_blocks = []
+    for block, fp_block_inputs, qt_block_inputs in sampler.sample(
+        start_block=start_block
+    ):
+        yielded_blocks.append(block)
+
+        hook = block.register_forward_pre_hook(hook_fn, with_kwargs=True)
+        qt_expected, fp_expected = [], []
+        for sample in DataLoader(dataset, batch_size=1, shuffle=False):
+            try:
+                sim.model(sample)
+            except StopForwardExceptionWithInput as e:
+                qt_expected.append(e.captured_input.args)
+            with disable_all_quantizers(sim.model):
+                try:
+                    sim.model(sample)
+                except StopForwardExceptionWithInput as e:
+                    fp_expected.append(e.captured_input.args)
+        hook.remove()
+
+        with ExitStack() as stack:
+            for fp_block_input in fp_block_inputs:
+                stack.enter_context(fp_block_input.load())
+            for qt_block_input in qt_block_inputs:
+                stack.enter_context(qt_block_input.load())
+
+            for cached, expected in zip((i.args for i in fp_block_inputs), fp_expected):
+                for t1, t2 in zip(cached, expected):
+                    assert torch.equal(t1, t2)
+            for cached, expected in zip((i.args for i in qt_block_inputs), qt_expected):
+                for t1, t2 in zip(cached, expected):
+                    assert torch.equal(t1, t2)
+
+    assert yielded_blocks == list(sim.model.blocks[start_block:])
+
+
 @pytest.mark.cuda
 @pytest.mark.parametrize("num_blocks, disable_cache_until", [(6, 3), (5, 0)])
 def test_blockwise_sampler_with_disabled_caching(num_blocks, disable_cache_until):
