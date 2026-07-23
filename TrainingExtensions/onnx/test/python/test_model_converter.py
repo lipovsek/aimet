@@ -24,6 +24,7 @@ from aimet_onnx.experimental.block_topology.block_boundaries import (
 )
 from aimet_onnx.common.utils import AimetLogger
 import onnx
+from .models.models_for_tests import weight_gemm_model
 from .utils import add_genai_tests_path, tmp_dir
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
@@ -393,6 +394,29 @@ def test_model_with_conv(tmp_dir):
     copy_pt_weights_to_onnx(pt_block, onnx_model, param_map)
     layers_to_check = set(param_map.values())
     _check_onnx_weights(onnx_model, layers_to_check, are_zeros=False)
+
+
+@pytest.mark.parametrize("transposed_weight", [False, True])
+def test_model_with_gemm(transposed_weight):
+    # Gemm stores its weight as [in, out] (transB=0) or [out, in] (transB=1)
+    # copy_pt_weights_to_onnx must reload it in the matching orientation.
+    onnx_model = onnx_ir.from_proto(
+        weight_gemm_model(6, 4, transposed_weight=transposed_weight)
+    )
+    dummy_input = np.random.randn(1, 6).astype(np.float32)
+    pt_block, param_map = get_pt_block(onnx_model, (["input"], ["output"]))
+    assert param_map
+
+    onnx_output = ort.InferenceSession(
+        onnx_ir.to_proto(onnx_model).SerializeToString()
+    ).run(None, {"input": dummy_input})
+
+    # onnx -> torch -> reload back to onnx must preserve the output
+    copy_pt_weights_to_onnx(pt_block, onnx_model, param_map)
+    reloaded_output = ort.InferenceSession(
+        onnx_ir.to_proto(onnx_model).SerializeToString()
+    ).run(None, {"input": dummy_input})
+    assert compute_psnr(onnx_output[0], reloaded_output[0]) == 100
 
 
 @pytest.mark.parametrize(

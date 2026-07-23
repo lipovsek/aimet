@@ -15,7 +15,7 @@ from onnx2torch.onnx_graph import OnnxGraph
 from typing import Tuple, List, Dict, Collection
 from aimet_onnx.common.quantsim import calculate_delta_offset
 
-filter_op = ["MatMul", "Conv"]
+filter_op = ["MatMul", "Conv", "Gemm"]
 
 
 def _get_onnx_subgraph(
@@ -164,6 +164,43 @@ def get_pt_block(
     return convert(onnx_ir.to_proto(subgraph_model)), param_map
 
 
+def _get_tensor_consumers(tensor: onnx_ir.Value):
+    consumers = set()
+    for consumer, _ in tensor.uses():
+        if consumer.op_type in ("Identity", "QcQuantizeOp"):
+            consumers.update(_get_tensor_consumers(consumer.outputs[0]))
+            continue
+        consumers.add(consumer)
+    return consumers
+
+
+def _should_transpose_weight(module: torch.nn.Module, weight: onnx_ir.Value):
+    if not isinstance(module, torch.nn.Linear):
+        return False
+
+    def _is_transposed_weight(node: onnx_ir.Node):
+        if node.op_type not in ("MatMul", "Gemm"):
+            return False
+        if node.op_type == "MatMul":
+            return True
+
+        trans_b = node.attributes.get("transB", 0)
+        if trans_b:
+            trans_b = trans_b.as_int()
+
+        return not trans_b
+
+    consumers = _get_tensor_consumers(weight)
+
+    if not any(_is_transposed_weight(node) for node in consumers):
+        return False
+
+    if not all(_is_transposed_weight(node) for node in consumers):
+        raise RuntimeError(f"Conflicting uses of {weight} by consumers {consumers}")
+
+    return True
+
+
 def copy_pt_weights_to_onnx(
     pt_block: torch.fx.GraphModule,
     onnx_model: onnx_ir.Model,
@@ -194,11 +231,10 @@ def copy_pt_weights_to_onnx(
         else:
             pytorch_weight = module.weight.detach().cpu().numpy()
 
-        if isinstance(module, torch.nn.Linear):
-            pytorch_weight = pytorch_weight.T
-
         onnx_tensor_name = param_map[name]
         onnx_param_tensor = onnx_model.graph.initializers[onnx_tensor_name]
+        if _should_transpose_weight(module, onnx_param_tensor):
+            pytorch_weight = pytorch_weight.T
         if tuple(pytorch_weight.shape) != tuple(onnx_param_tensor.const_value.shape):
             raise ValueError(
                 f"pt param shape {pytorch_weight.shape} did not match onnx shape {onnx_param_tensor.const_value.shape}"
