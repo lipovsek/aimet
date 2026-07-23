@@ -26,6 +26,10 @@ from aimet_onnx.experimental.block_topology.norm_detection import find_active_no
 from aimet_onnx.experimental.block_topology.block_boundaries import (
     tensor_to_first_consumer_index,
 )
+from aimet_onnx.experimental.block_topology.role_map import get_decoder_role_map
+from aimet_onnx.experimental.block_topology.weight_utils import get_weight_product
+from aimet_onnx.utils import ParamUtils
+from onnx import numpy_helper
 from .utils import add_genai_tests_path
 
 _NUM_LAYERS = 2
@@ -405,6 +409,151 @@ def _block_topology_params():
         )
 
 
+# TODO enable role_map support for MoE models.
+_ROLE_MAP_XFAIL = {
+    "qwen2_moe",
+    "qwen3_moe",
+    "glm4_moe",
+    "gpt_oss",
+    "olmoe",
+    "nemotron_h",
+    "qwen3_next",
+}
+
+
+def _role_map_params():
+    """Role-map params: skip parallel-residual models (active_norms_per_block=1),
+    which the 2-norm-per-block role map does not describe. MoE decoders are
+    marked xfail (see _ROLE_MAP_XFAIL)."""
+    for (
+        test_id,
+        config_attr,
+        backends,
+        detect_kwargs,
+        homogeneous,
+    ) in _BLOCK_TOPOLOGY_MODELS:
+        if detect_kwargs.get("active_norms_per_block", 2) != 2:
+            continue
+        backend = backends[0]
+        marks = (
+            [
+                pytest.mark.xfail(
+                    reason="MoE MLP residual writers not yet resolved", strict=True
+                )
+            ]
+            if test_id in _ROLE_MAP_XFAIL
+            else []
+        )
+        yield pytest.param(
+            config_attr,
+            backend,
+            detect_kwargs,
+            homogeneous,
+            id=f"{test_id}-{backend}",
+            marks=marks,
+        )
+
+
+def _residual_axis_size(model, op, *, writes):
+    """Size of the op's residual-facing axis."""
+    weight, is_transposed = get_weight_product(op)
+    if weight is None:
+        return None
+    tensor = ParamUtils.get_param_by_name(model, weight.name)
+    if tensor is None:
+        return None
+    shape = numpy_helper.to_array(tensor).shape
+    transposed = op.type == "Conv" or is_transposed
+    if writes:
+        axis = 0 if transposed else -1
+    else:
+        axis = 1 if transposed else 0
+    return shape[axis]
+
+
+# torchscript op names carry the originating module scope, so when adding new
+# architecture, make sure to extend the role module names in this dict.
+_ROLE_MODULE_NAMES = {
+    "qkv": {
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "qkv_proj",
+        "in_proj_qkv",
+        "in_proj_z",
+        "in_proj_b",
+        "in_proj_a",
+        "in_proj",
+    },
+    "gate_up": {
+        "gate_proj",
+        "up_proj",
+        "gate_up_proj",
+        "w1",
+        "w3",
+    },
+    "o_proj": {"o_proj", "out_proj"},
+    "down_proj": {"down_proj", "w2", "per_layer_projection"},
+}
+
+
+def _module_name(op):
+    """Originating nn.Module name from an op's scoped name (torchscript)."""
+
+    parts = op.name.rstrip("/").split("/")
+    if len(parts) >= 2 and parts[-1] in ("MatMul", "Gemm", "Conv"):
+        return parts[-2]
+    return parts[-1]
+
+
+def _assert_role_map(role_map, model, backend, *, expect_embed_tokens=True):
+    """Assert the decoder role map assigns residual reads/writes correctly."""
+    assert len(role_map.blocks) == _NUM_LAYERS
+
+    # torchscript op names carry the originating nn.Module scope; dynamo names
+    # are flat, so the name check only runs under torchscript.
+    check_names = backend == "torchscript"
+    residual_widths = set()
+    for block_idx, block in enumerate(role_map.blocks):
+        assert block.qkv_linears
+        assert block.gate_up_linears
+        assert len(block.o_proj) == 1
+        assert block.down_proj
+
+        reads = block.qkv_linears + block.gate_up_linears
+        writes = block.o_proj + block.down_proj
+        assert {id(op) for op in reads}.isdisjoint({id(op) for op in writes})
+
+        read_sizes = {_residual_axis_size(model, op, writes=False) for op in reads}
+        write_sizes = {_residual_axis_size(model, op, writes=True) for op in writes}
+        block_sizes = read_sizes | write_sizes
+        assert None not in block_sizes
+
+        # All reads and writes of a block operate on one residual width.
+        assert len(block_sizes) == 1
+        residual_widths |= block_sizes
+
+        # Names must match the expected module for each role (torchscript only).
+        if check_names:
+            for role, ops in (
+                ("qkv", block.qkv_linears),
+                ("gate_up", block.gate_up_linears),
+                ("o_proj", block.o_proj),
+                ("down_proj", block.down_proj),
+            ):
+                for op in ops:
+                    assert _module_name(op) in _ROLE_MODULE_NAMES[role]
+
+    # Every block shares the same residual width (the stream is continuous).
+    assert len(residual_widths) == 1
+
+    if expect_embed_tokens:
+        assert len(role_map.embed_tokens) >= 1
+    else:
+        assert len(role_map.embed_tokens) == 0
+    assert len(role_map.lm_head) == 1
+
+
 def _strip_matmul_suffix(name):
     """Normalize op names by stripping trailing /MatMul for projection layers.
 
@@ -533,18 +682,31 @@ def test_get_decoder_blocks_qwen3_5(add_genai_tests_path):
         entry = model_cls.instantiate_float_model(model_id, 32, 16, small_model=True)
         collection = model_cls.instantiate_quantsim(entry)
 
+        connected_graph = collection.backbone.connected_graph
         blocks = get_decoder_block_boundaries(
             collection.backbone.model.model,
-            collection.backbone.connected_graph,
+            connected_graph,
         )
         active_norms = find_active_norms(
             collection.backbone.model.model,
-            collection.backbone.connected_graph,
+            connected_graph,
         )
         assert len(blocks) == 2
         assert len(active_norms) == 2 * len(blocks) + 1
         for i in range(len(blocks) - 1):
             assert blocks[i][1] == blocks[i + 1][0]
+
+        role_map = get_decoder_role_map(
+            connected_graph, blocks, active_norms=active_norms
+        )
+        assert len(role_map.blocks) == len(blocks)
+        for block_idx, block in enumerate(role_map.blocks):
+            assert len(block.o_proj) == 1
+            assert block.qkv_linears
+            assert block.gate_up_linears
+            assert block.down_proj
+        assert len(role_map.embed_tokens) == 1
+        assert len(role_map.lm_head) == 1
     finally:
         shutil.rmtree(cache_dir, ignore_errors=True)
 
@@ -579,3 +741,27 @@ class TestDecoderBlockBoundaries:
         """Detect blocks on a VLM language backbone (torchscript export)."""
         blocks, active_norms, cg = _detect_vlm_backbone(vlm_key, "torchscript", {})
         _assert_block_detection(blocks, active_norms, cg, "torchscript")
+
+    @pytest.mark.parametrize(
+        "config_attr, backend, detect_kwargs, homogeneous",
+        list(_role_map_params()),
+    )
+    def test_role_map(self, config_attr, backend, detect_kwargs, homogeneous):
+        """Build and validate the decoder role map on a LLM decoder."""
+        blocks, active_norms, cg = _detect_from_config(
+            config_attr, backend, detect_kwargs
+        )
+        role_map = get_decoder_role_map(
+            cg,
+            blocks,
+            active_norms=active_norms,
+            active_norms_per_block=detect_kwargs.get("active_norms_per_block", 2),
+        )
+        _assert_role_map(role_map, cg.model, backend)
+
+    @pytest.mark.parametrize("vlm_key", _VLM_BACKBONE_MODELS)
+    def test_vlm_backbone_role_map(self, vlm_key):
+        """Build and validate the role map on a VLM language backbone."""
+        blocks, active_norms, cg = _detect_vlm_backbone(vlm_key, "torchscript", {})
+        role_map = get_decoder_role_map(cg, blocks, active_norms=active_norms)
+        _assert_role_map(role_map, cg.model, "torchscript", expect_embed_tokens=False)

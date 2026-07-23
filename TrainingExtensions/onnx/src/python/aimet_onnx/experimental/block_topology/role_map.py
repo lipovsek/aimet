@@ -119,16 +119,18 @@ def get_decoder_role_map(
 ) -> DecoderModelRoleMap:
     """Build the decoder linear role map from pre-computed block boundaries.
 
-    Per-block roles are detected via topological-index range queries:
+    Per-block roles. Reads are the weighted linears downstream of each active
+    norm; writes are found by walking back from the residual output tensor to
+    the weighted linear(s) that feed it:
 
     * ``qkv_linears``     — ``downstream_linears`` of the first active norm in
       the block (input norm).
-    * ``o_proj``          — all weighted linears strictly between the input norm
-      and the post-attention norm, excluding QKV projections.
+    * ``o_proj``          — weighted linear(s) that write the attention residual
+      output (the post-attention norm input).
     * ``gate_up_linears`` — ``downstream_linears`` of the second active norm in
       the block (post-attention norm).
-    * ``down_proj``       — all weighted linears strictly between the
-      post-attention norm and the block end, excluding gate/up projections.
+    * ``down_proj``       — weighted linear(s) that write the block residual
+      output (the block-end tensor).
 
     Model-level roles:
 
@@ -148,16 +150,15 @@ def get_decoder_role_map(
         Defaults to 2 (Llama/Qwen2/Mistral/Phi family).
     :return: DecoderModelRoleMap with all roles populated.
     """
-    op_topo_idx = {id(op): i for i, op in enumerate(connected_graph.ordered_ops)}
+    op_topo_idx = {op: i for i, op in enumerate(connected_graph.ordered_ops)}
     if active_norms is None:
         active_norms = find_active_norms(connected_graph.model, connected_graph)
     boundary_topo = tensor_to_first_consumer_index(connected_graph)
 
-    weighted_linears_topo = [
-        op
-        for op in connected_graph.ordered_ops
-        if op.type in _LINEAR_TYPES and get_weight_product(op)[0] is not None
-    ]
+    # tensor name -> producing Op
+    producer_by_tensor = {
+        out.name: op for op in connected_graph.ordered_ops for out in op.outputs
+    }
 
     result = DecoderModelRoleMap()
 
@@ -171,7 +172,7 @@ def get_decoder_role_map(
         block_active_norms = [
             active_norm
             for active_norm in active_norms
-            if start_topo <= op_topo_idx[id(active_norm.norm_op)] < end_topo
+            if start_topo <= op_topo_idx[active_norm.norm_op] < end_topo
         ]
         if len(block_active_norms) != active_norms_per_block:
             raise ValueError(
@@ -184,39 +185,27 @@ def get_decoder_role_map(
 
         input_norm = block_active_norms[0]
         post_attn_norm = block_active_norms[1]
-        attn_end_topo = op_topo_idx[id(post_attn_norm.norm_op)]
 
         qkv_linears = list(input_norm.downstream_linears)
         gate_up_linears = list(post_attn_norm.downstream_linears)
-        qkv_ids = {id(op) for op in qkv_linears}
-        gate_up_ids = {id(op) for op in gate_up_linears}
 
-        # o_proj: all weighted linear op(s) strictly between input_norm and
-        # post_attn_norm that are not QKV projections.
-        o_proj_candidates = [
-            op
-            for op in weighted_linears_topo
-            if start_topo < op_topo_idx[id(op)] < attn_end_topo
-            and id(op) not in qkv_ids
-        ]
+        intermediate_tensor = post_attn_norm.norm_op.inputs[0].name
+        o_proj_candidates = _find_nearest_upstream_linears(
+            intermediate_tensor, start_tensor, producer_by_tensor, op_topo_idx
+        )
         if not o_proj_candidates:
             raise ValueError(
-                f"Block {block_idx}: no o_proj found in topo range "
-                f"({start_topo}, {attn_end_topo})."
+                f"Block {block_idx}: no attention residual writer (o_proj) found "
+                f"for residual output '{intermediate_tensor}'."
             )
 
-        # down_proj: all weighted linear op(s) strictly between post_attn_norm and
-        # the block-end tensor that are not gate/up projections.
-        down_proj_candidates = [
-            op
-            for op in weighted_linears_topo
-            if attn_end_topo < op_topo_idx[id(op)] < end_topo
-            and id(op) not in gate_up_ids
-        ]
+        down_proj_candidates = _find_nearest_upstream_linears(
+            end_tensor, intermediate_tensor, producer_by_tensor, op_topo_idx
+        )
         if not down_proj_candidates:
             raise ValueError(
-                f"Block {block_idx}: no down_proj found in topo range "
-                f"({attn_end_topo}, {end_topo})."
+                f"Block {block_idx}: no MLP residual writer (down_proj) found "
+                f"for residual output '{end_tensor}'."
             )
 
         result.blocks.append(
@@ -258,7 +247,7 @@ def get_decoder_role_map(
     result.lm_head = [
         op
         for an in active_norms
-        if op_topo_idx[id(an.norm_op)] >= last_end_topo
+        if op_topo_idx[an.norm_op] >= last_end_topo
         for op in an.downstream_linears
     ]
     if not result.lm_head:
@@ -273,7 +262,7 @@ def get_decoder_role_map(
         op
         for op in connected_graph.ordered_ops
         if op.type in _EMBEDDING_TYPES
-        and op_topo_idx[id(op)] < first_start_topo
+        and op_topo_idx[op] < first_start_topo
         and _is_embedding_table_gather(op)
     ]
     if not result.embed_tokens:
@@ -299,3 +288,49 @@ def get_decoder_role_map(
     )
 
     return result
+
+
+def _find_nearest_upstream_linears(
+    target_tensor: str,
+    boundary_tensor: str,
+    producer_by_tensor: dict,
+    op_topo_idx: dict,
+) -> List[Op]:
+    """Nearest weighted linears feeding target_tensor, via a backward walk.
+
+    Walks backward from the op producing target_tensor and collects the first
+    weighted linear (MatMul/Gemm/Conv with a static weight) on each path,
+    stopping there; any other op type is crossed transparently.
+
+    NOTE: The walk is fenced at boundary_tensor's producer: that op and anything
+    earlier are skipped, so the walk does not cross into the previous block.
+
+    :param target_tensor: Tensor whose upstream linears are wanted (walk start).
+    :param boundary_tensor: Upstream edge; its producer and earlier ops are the
+        lower fence.
+    :param producer_by_tensor: Map of tensor name -> producing Op.
+    :param op_topo_idx: Map of Op -> topological index.
+    :return: The nearest weighted linear op on each backward path.
+    """
+    start = producer_by_tensor.get(target_tensor)
+    if start is None:
+        return []
+
+    fence_op = producer_by_tensor.get(boundary_tensor)
+    lo = op_topo_idx[fence_op] if fence_op is not None else -1
+
+    linears = []
+    seen = set()
+    queue = [start]
+    while queue:
+        op = queue.pop()
+        if op in seen:
+            continue
+        seen.add(op)
+        if op_topo_idx.get(op, -1) <= lo:
+            continue
+        if op.type in _LINEAR_TYPES and get_weight_product(op)[0] is not None:
+            linears.append(op)
+            continue  # this linear shadows everything upstream of it
+        queue.extend(op.input_ops)
+    return linears
