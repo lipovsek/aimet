@@ -24,10 +24,6 @@ from aimet_onnx.common.defs import QuantScheme
 from aimet_onnx.common.utils import AimetLogger, deprecated
 from aimet_onnx.qc_quantize_op import GroupedBlockQuantizeDequantize
 from aimet_onnx.quantsim import QuantizationSimModel
-from aimet_onnx.sequential_mse.dependency_graph import (
-    DependencyGraph,
-    SUPPORTED_MODULES,
-)
 from aimet_onnx.utils import (
     disable_quantizers,
     OrtInferenceSession,
@@ -36,7 +32,7 @@ from aimet_onnx.utils import (
     LazyExtractor,
     _add_value_info,
 )
-from aimet_onnx.sequential_mse.dependency_graph import DependencyNode
+from aimet_onnx.sequential_mse.dependency_graph import DependencyNode, DependencyGraph
 from aimet_onnx.sequential_mse.transform import (
     modify_graph_with_grouped_conv,
     modify_graph_with_grouped_linear,
@@ -189,7 +185,7 @@ class SequentialMse:
         # Get list of all the enabled param quantizers of supported ops
         param_quantizer_names = []
         for cg_op in self.dependency_graph.conn_graph.ordered_ops:
-            if cg_op.type not in SUPPORTED_MODULES:
+            if not self.dependency_graph.is_supported_op(cg_op):
                 continue
 
             if cg_op.name in self._nodes_to_exclude:
@@ -798,7 +794,9 @@ class SequentialMse:
                 self._cache_subgraph_input_data([node for node in sorted_nodes])
 
             dep_nodes_to_parallelize = [
-                node for node in sorted_nodes if node.cg_op.type in SUPPORTED_MODULES
+                dep_node
+                for dep_node in sorted_nodes
+                if self.dependency_graph.is_supported_op(dep_node.cg_op)
             ]
             if dep_nodes_to_parallelize:
                 self._run_seq_mse(dep_nodes_to_parallelize)

@@ -270,12 +270,20 @@ class DependencyGraph:
         :param dep_node: dependency node
         :return: parameter name
         """
-        assert dep_node.cg_op.type in SUPPORTED_MODULES
+        if dep_node.cg_op.type not in SUPPORTED_MODULES:
+            raise ValueError(
+                f"get_param_name expects an op of type {SUPPORTED_MODULES}, but got "
+                f"{dep_node.cg_op.type} ({dep_node.cg_op.name})."
+            )
         name = None
         for param_name, (_, param_type) in dep_node.cg_op.parameters.items():
             if param_type == "weight":
                 name = param_name
-        assert name is not None
+        if name is None:
+            raise ValueError(
+                f"No static weight parameter found for {dep_node.cg_op.name} "
+                f"(type {dep_node.cg_op.type})."
+            )
         return name
 
     def _populate_data_for_starting_ops(self, inputs: Iterable[Dict[str, np.ndarray]]):

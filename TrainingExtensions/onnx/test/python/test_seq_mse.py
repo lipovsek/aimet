@@ -278,6 +278,36 @@ def _get_rss_mb():
     return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
 
 
+def _weightless_matmul_model():
+    """model with dynamic MatMul"""
+    input_tensor = onnx.helper.make_tensor_value_info(
+        "input", onnx.TensorProto.FLOAT, [4, 8]
+    )
+    state_tensor = onnx.helper.make_tensor_value_info(
+        "state", onnx.TensorProto.FLOAT, [8, 8]
+    )
+    output_tensor = onnx.helper.make_tensor_value_info(
+        "output", onnx.TensorProto.FLOAT, [4, 8]
+    )
+    w0 = onnx.numpy_helper.from_array(
+        np.random.randn(8, 8).astype(np.float32), name="w0"
+    )
+    mm = onnx.helper.make_node("MatMul", ["input", "w0"], ["mm_out"], name="mm")
+    state_mm = onnx.helper.make_node(
+        "MatMul", ["mm_out", "state"], ["output"], name="state_mm"
+    )
+    graph = onnx.helper.make_graph(
+        [mm, state_mm],
+        "weightless_matmul",
+        inputs=[input_tensor, state_tensor],
+        outputs=[output_tensor],
+        initializer=[w0],
+    )
+    model = models_for_tests.make_model(graph)
+    onnx.checker.check_model(model)
+    return model
+
+
 @pytest.mark.parametrize(
     "granularity, shape, channel_axis, block_axis",
     [
@@ -889,6 +919,44 @@ def test_seq_mse_excludes_r3_online_rotations(tmp_dir):
             assert not quantizer.is_encoding_frozen()
         elif cg_op.name == regular_node:
             assert quantizer.is_encoding_frozen()
+
+
+def test_seq_mse_skips_weightless_dynamic_matmul(tmp_dir):
+    model = _weightless_matmul_model()
+    sim = QuantizationSimModel(
+        model=copy.deepcopy(model),
+        quant_scheme=QuantScheme.post_training_tf,
+        default_activation_bw=8,
+        default_param_bw=4,
+        providers=["CPUExecutionProvider"],
+    )
+    inputs = [
+        {
+            "input": np.random.randn(4, 8).astype(np.float32),
+            "state": np.random.randn(8, 8).astype(np.float32),
+        }
+    ]
+
+    # The weightless MatMul must be present in the dependency graph (it consumes
+    # a model input) but flagged as unsupported (no static weight).
+    seq_mse = SequentialMse(model, sim, SeqMseParams(num_batches=1), inputs)
+    dep_graph = seq_mse.dependency_graph
+
+    """
+    When: A model contains a weightless dynamic MatMul (activation x model-input.
+    Then: Seq MSE optimizing (freezing) only the static-weight MatMul and skipping the weightless one,
+     which has no weight param to optimize.
+    """
+    assert "state_mm" in dep_graph._name_to_node
+    weighted_op = dep_graph.conn_graph.get_op_from_module_name("mm")
+    weightless_op = dep_graph.conn_graph.get_op_from_module_name("state_mm")
+    assert dep_graph.is_supported_op(weighted_op)
+    assert not dep_graph.is_supported_op(weightless_op)
+
+    seq_mse.apply_seq_mse_algo()
+
+    assert sim.qc_quantize_op_dict["w0"].is_encoding_frozen()
+    assert not sim.qc_quantize_op_dict["state"].is_encoding_frozen()
 
 
 def test_temporarily_disable_grouped_block_quantizers():
