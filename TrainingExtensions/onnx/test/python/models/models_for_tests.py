@@ -1088,6 +1088,52 @@ def build_dummy_model():
     return model
 
 
+def conv_with_dynamic_weight_static_bias():
+    """Conv with dynamic input, dynamic weight, and static (initializer) bias."""
+    in_channels = 3
+    out_channels = 4
+    kernel_shape = [3, 3]
+
+    input_info = helper.make_tensor_value_info(
+        name="input", elem_type=TensorProto.FLOAT, shape=[1, in_channels, 32, 32]
+    )
+    # Dynamic weight (graph input rather than initializer).
+    weight_info = helper.make_tensor_value_info(
+        name="conv_w",
+        elem_type=TensorProto.FLOAT,
+        shape=[out_channels, in_channels, *kernel_shape],
+    )
+    output_info = helper.make_tensor_value_info(
+        name="output", elem_type=TensorProto.FLOAT, shape=[1, out_channels, 32, 32]
+    )
+
+    conv_node = helper.make_node(
+        "Conv",
+        ["input", "conv_w", "conv_b"],
+        ["output"],
+        "conv",
+        kernel_shape=kernel_shape,
+        pads=[1, 1, 1, 1],
+    )
+
+    # Static bias (initializer).
+    conv_b_init = numpy_helper.from_array(
+        np.random.rand(out_channels).astype(np.float32), "conv_b"
+    )
+
+    onnx_graph = helper.make_graph(
+        [conv_node],
+        "conv_with_dynamic_weight_static_bias",
+        [input_info, weight_info],
+        [output_info],
+        [conv_b_init],
+    )
+
+    op = OperatorSetIdProto()
+    op.version = 13
+    return make_model(onnx_graph, opset_imports=[op])
+
+
 def long_sequential_model(
     training=torch.onnx.TrainingMode.EVAL, opset_version=_DEFAULT_OPSET_VERSION
 ):

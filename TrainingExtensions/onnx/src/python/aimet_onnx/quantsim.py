@@ -1744,7 +1744,7 @@ class QuantizationSimModel:
         assert bias is not None
 
         if weight is None:
-            weight_qtzr = None
+            weight_qtzr = self._get_enabled_quantizer(op.inputs[WEIGHT_INDEX].name)
         else:
             weight_qtzr = self.qc_quantize_op_dict.get(weight.name)
         input_qtzr = self._get_enabled_quantizer(input.name)
@@ -1864,12 +1864,20 @@ class QuantizationSimModel:
 
                 bias_qtzr = self.qc_quantize_op_dict[bias.name]
 
-                if weight is None:
-                    weight_qtzr = None
-                    encoding_type = EncodingType.PER_TENSOR.name
-                else:
+                if weight is not None:
                     weight_qtzr = self.qc_quantize_op_dict[weight.name]
-                    encoding_type = weight_qtzr._encoding_type().name
+                elif op.type in ("Conv", "ConvTranspose", "Gemm", "MatMul"):
+                    weight_qtzr = self._get_enabled_quantizer(
+                        op.inputs[WEIGHT_INDEX].name
+                    )
+                else:
+                    weight_qtzr = None
+
+                encoding_type = (
+                    weight_qtzr._encoding_type().name
+                    if weight_qtzr
+                    else EncodingType.PER_TENSOR.name
+                )
 
                 if bias_qtzr.data_type == QuantizationDataType.float:
                     # Float16 quantizers are not exported to onnx QDQ graph
@@ -1914,8 +1922,8 @@ class QuantizationSimModel:
                         f"Unknown encoding type {encoding_type}, cannot concretize bias quantizers."
                     )
 
-                if weight is None:
-                    # Edge case: Op has no weight. Fall back to statistical bias scale
+                if weight_qtzr is None:
+                    # Edge case: Op has no weight quantizer. Fall back to statistical bias scale
                     get_bias_scale = self._get_statistical_bias_scale
                 else:
                     get_bias_scale = switcher.get(

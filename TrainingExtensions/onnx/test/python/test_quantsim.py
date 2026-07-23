@@ -69,6 +69,7 @@ from .models.models_for_tests import (
     BNAfterConv,
     build_dummy_model,
     conv_relu,
+    conv_with_dynamic_weight_static_bias,
     custom_add_model,
     depthwise_transposed_conv_model,
     instance_norm_model,
@@ -5798,6 +5799,38 @@ def test_bias_export(
     sim.export(tmp_dir, "model", export_int32_bias=True)
     if not lpbq:
         _ = sim.to_onnx_qdq()
+
+
+def test_int32_bias_export_with_dynamic_weight(tmp_dir):
+    """
+    Given: A Conv with dynamic input, dynamic weight, and a static bias
+    When: Export int32 bias encodings
+    Then: A bias encoding should be produced for the static bias tensor
+    """
+    np.random.seed(0)
+    model = conv_with_dynamic_weight_static_bias()
+
+    sim = QuantizationSimModel(model, quant_scheme=QuantScheme.post_training_tf)
+    sim.compute_encodings([make_dummy_input(model)])
+
+    with sim._concretize_int32_bias_quantizers():
+        assert sim.qc_quantize_op_dict["conv_b"].is_initialized()
+
+    sim.export(tmp_dir, "model", export_int32_bias=True, encoding_version="2.0.0")
+    with open(os.path.join(tmp_dir, "model.encodings")) as f:
+        encodings = json.load(f)
+
+    # Bias encodings should be present in encoding file
+    exported_encodings = {enc["name"]: enc for enc in encodings["encodings"]}
+    assert "conv_b" in exported_encodings
+
+    # Bias scale should equal input_scale * weight_scale, and its zero_point
+    # should be zero (omitted from the encoding for symmetric quantization).
+    input_scale = np.array(exported_encodings["input"]["y_scale"])
+    weight_scale = np.array(exported_encodings["conv_w"]["y_scale"])
+    bias_scale = np.array(exported_encodings["conv_b"]["y_scale"])
+    assert np.allclose(bias_scale, input_scale * weight_scale)
+    assert "y_zero_point" not in exported_encodings["conv_b"]
 
 
 def _parse_type(type_str: str) -> tuple[str, int]:
