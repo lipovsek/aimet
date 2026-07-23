@@ -8,13 +8,22 @@ import onnx_ir
 import onnxruntime as ort
 import pytest
 import torch
+from onnx import TensorProto, helper
 from torch import nn as nn
 
 from aimet_onnx.experimental.adascale.model_converter import get_pt_block
 
 # Importing onnx2torch_ext (done transitively by model_converter) registers the
-# custom ScatterElements converter on the onnx2torch registry.
+# custom converters (ScatterElements, Flatten, NonZero, OneHot, Trilu, Clip)
+# on the onnx2torch registry.
 from .utils import tmp_dir  # noqa: F401  pytest fixture
+
+
+@pytest.fixture(autouse=True)
+def _seed():
+    """Seed RNGs so each test's random inputs are deterministic."""
+    np.random.seed(0)
+    torch.manual_seed(0)
 
 
 class ScatterElementsModel(nn.Module):
@@ -132,3 +141,116 @@ def test_scatter_elements(axis, reduce, tmp_dir):
 
     np.testing.assert_array_equal(orig_out, onnx_out)
     np.testing.assert_array_equal(orig_out, converted_out)
+
+
+def _assert_single_node_matches_ort(node, feed, output_type, initializers=()):
+    """
+    Assert the onnx2torch-converted one-node graph matches ONNX Runtime.
+    """
+    input_infos = [
+        helper.make_tensor_value_info(
+            name, helper.np_dtype_to_tensor_dtype(arr.dtype), arr.shape
+        )
+        for name, arr in feed.items()
+    ]
+    graph = helper.make_graph(
+        [node],
+        "g",
+        input_infos,
+        [helper.make_tensor_value_info("output", output_type, None)],
+        list(initializers),
+    )
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    model.ir_version = 10
+    sess = ort.InferenceSession(model.SerializeToString())
+    onnx_out, *_ = sess.run(None, feed)
+    pt_block, _ = get_pt_block(onnx_ir.from_proto(model), (list(feed), ["output"]))
+    converted_out = (
+        pt_block(*(torch.from_numpy(arr) for arr in feed.values())).detach().numpy()
+    )
+
+    np.testing.assert_allclose(onnx_out, converted_out, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float16])
+@pytest.mark.parametrize(
+    "input_shape, axis",
+    [
+        ((2, 3), 2),  # converted forward errors out with stock onnx2torch
+        ((2, 3, 4), 0),
+        ((2, 3, 4), 2),
+        ((2, 3, 4), -1),
+    ],
+)
+def test_flatten(input_shape, axis, dtype):
+    """Flatten matches ONNX Runtime for any axis."""
+    node = helper.make_node("Flatten", ["x"], ["output"], axis=axis)
+    feed = {"x": np.random.randn(*input_shape).astype(dtype)}
+    _assert_single_node_matches_ort(
+        node, feed, helper.np_dtype_to_tensor_dtype(feed["x"].dtype)
+    )
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float16])
+@pytest.mark.parametrize("input_shape", [(3, 4), (2, 3, 4)])
+def test_nonzero(input_shape, dtype):
+    """NonZero matches ONNX Runtime (output is (rank, num_nonzero))."""
+    node = helper.make_node("NonZero", ["x"], ["output"])
+    feed = {"x": (np.random.rand(*input_shape) > 0.5).astype(dtype)}
+    _assert_single_node_matches_ort(node, feed, TensorProto.INT64)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float16])
+@pytest.mark.parametrize("axis", [-1, 0, 1])
+def test_one_hot(axis, dtype):
+    """OneHot matches ONNX Runtime across insertion axes."""
+    values_type = helper.np_dtype_to_tensor_dtype(np.dtype(dtype))
+    node = helper.make_node("OneHot", ["ind", "depth", "values"], ["output"], axis=axis)
+    feed = {"ind": np.random.randint(0, 4, (8, 2)).astype(np.int64)}
+    initializers = [
+        helper.make_tensor("depth", TensorProto.INT64, [], [4]),
+        helper.make_tensor(
+            "values", values_type, [2], np.array([0.0, 1.0], dtype=dtype)
+        ),
+    ]
+    _assert_single_node_matches_ort(node, feed, values_type, initializers)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float16])
+@pytest.mark.parametrize("upper", [0, 1])
+@pytest.mark.parametrize("k", [-1, 0, 1])
+def test_trilu(upper, k, dtype):
+    """Trilu matches ONNX Runtime for upper/lower across diagonals."""
+    node = helper.make_node("Trilu", ["x", "k"], ["output"], upper=upper)
+    feed = {"x": np.random.randn(4, 5).astype(dtype)}
+    initializers = [helper.make_tensor("k", TensorProto.INT64, [], [k])]
+    _assert_single_node_matches_ort(
+        node, feed, helper.np_dtype_to_tensor_dtype(feed["x"].dtype), initializers
+    )
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float16])
+@pytest.mark.parametrize(
+    "min_val, max_val",
+    [
+        (0.0, None),  # rejected by stock onnx2torch
+        (None, 1.0),
+        (-0.5, 0.5),
+    ],
+)
+def test_clip(min_val, max_val, dtype):
+    """Clip matches ONNX Runtime with an omitted optional min/max."""
+    tensor_type = helper.np_dtype_to_tensor_dtype(np.dtype(dtype))
+    inputs = ["x"]
+    initializers = []
+    for name, val in (("min", min_val), ("max", max_val)):
+        if val is None:
+            inputs.append("")  # omitted optional input
+        else:
+            inputs.append(name)
+            initializers.append(
+                helper.make_tensor(name, tensor_type, [], np.array([val], dtype=dtype))
+            )
+    node = helper.make_node("Clip", inputs, ["output"])
+    feed = {"x": np.random.randn(3, 4).astype(dtype)}
+    _assert_single_node_matches_ort(node, feed, tensor_type, initializers)

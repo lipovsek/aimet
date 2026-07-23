@@ -1,10 +1,12 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
+import math
 from typing import List, Optional, cast
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from onnx import defs
 from onnx2torch.node_converters.registry import add_converter
 from onnx2torch.onnx_graph import OnnxGraph
@@ -75,6 +77,45 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: 
 
     return OperationConverterResult(
         torch_module=OnnxMatmul(),
+        onnx_mapping=onnx_mapping_from_node(node=node),
+    )
+
+
+class OnnxFlatten(nn.Module, OnnxToTorchModule):
+    """ONNX Flatten: 2D output ``(prod(dims[:axis]), prod(dims[axis:]))``.
+
+    The existing converter crashes when ``axis`` is 0 or the input rank (it flattens
+    to rank 1, then indexes a missing dim).
+    """
+
+    def __init__(self, axis: int = 1):
+        super().__init__()
+        self.axis = axis
+
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        first_dim = math.prod(input_tensor.shape[: self.axis])
+        return input_tensor.reshape(first_dim, -1)
+
+
+# Override the existing Flatten converters (versions 9/11/13)
+# Stock impl crashes when axis is 0 or the input rank.
+for _flatten_version in (9, 11, 13):
+    _flatten_description = OperationDescription(
+        domain=defs.ONNX_DOMAIN,
+        operation_type="Flatten",
+        version=_flatten_version,
+    )
+    if _flatten_description in _CONVERTER_REGISTRY:
+        del _CONVERTER_REGISTRY[_flatten_description]
+
+
+@add_converter(operation_type="Flatten", version=9)
+@add_converter(operation_type="Flatten", version=11)
+@add_converter(operation_type="Flatten", version=13)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
+    axis: int = node.attributes.get("axis", 1)
+    return OperationConverterResult(
+        torch_module=OnnxFlatten(axis=axis),
         onnx_mapping=onnx_mapping_from_node(node=node),
     )
 
@@ -270,6 +311,169 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: 
     return OperationConverterResult(
         torch_module=OnnxScatterElements(axis=axis, reduction=reduction),
         onnx_mapping=onnx_mapping_from_node(node=node),
+    )
+
+
+def _non_empty_inputs(node: OnnxNode) -> tuple:
+    """Node input names with omitted optional inputs (empty-string names) dropped."""
+    return tuple(name for name in node.input_values if name)
+
+
+class OnnxNonZero(nn.Module, OnnxToTorchModule):
+    """ONNX NonZero: indices shaped ``(rank, num_nonzero)``.
+
+    ``torch.nonzero`` returns the transpose ``(num_nonzero, rank)``
+    Existing converter omits the transpose the ONNX spec requires.
+    """
+
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        return torch.nonzero(input_tensor).T
+
+
+# Override the existing NonZero converter, which is missing the ONNX transpose.
+_nonzero_description = OperationDescription(
+    domain=defs.ONNX_DOMAIN,
+    operation_type="NonZero",
+    version=13,
+)
+if _nonzero_description in _CONVERTER_REGISTRY:
+    del _CONVERTER_REGISTRY[_nonzero_description]
+
+
+@add_converter(operation_type="NonZero", version=13)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
+    return OperationConverterResult(
+        torch_module=OnnxNonZero(),
+        onnx_mapping=OnnxMapping(
+            inputs=(node.input_values[0],),
+            outputs=node.output_values,
+        ),
+    )
+
+
+class OnnxOneHot(nn.Module, OnnxToTorchModule):
+    """
+    ONNX OneHot from ``(indices, depth, values=[off, on])``.
+    """
+
+    def __init__(self, axis: int = -1):
+        super().__init__()
+        self.axis = axis
+
+    def forward(
+        self, indices: torch.Tensor, depth: torch.Tensor, values: torch.Tensor
+    ) -> torch.Tensor:
+        # ONNX OneHot `depth` input has exactly one element (scalar or [1]).
+        if depth.numel() != 1:
+            raise ValueError("Depth input must have exactly one value")
+        depth_int = int(depth.reshape(-1)[0].item())
+
+        # ONNX OneHot `values` input has exactly two elements ([off, on]).
+        if values.numel() != 2:
+            raise ValueError("Values input must have exactly two elements")
+        off_value, on_value = values.reshape(-1)
+
+        indices = indices.long()
+        # ONNX permits negative indices in ``[-depth, depth-1]`` (wrap around).
+        indices = torch.where(indices < 0, indices + depth_int, indices)
+
+        one_hot = F.one_hot(indices, num_classes=depth_int).to(values.dtype)
+        one_hot = off_value + one_hot * (on_value - off_value)
+
+        # ``F.one_hot`` appends the class dim; move it to the requested axis.
+        rank = one_hot.dim()
+        axis = self.axis
+        if axis < 0:
+            axis += rank
+        if axis != rank - 1:
+            one_hot = one_hot.movedim(-1, axis)
+        return one_hot
+
+
+@add_converter(operation_type="OneHot", version=9)
+@add_converter(operation_type="OneHot", version=11)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
+    axis: int = node.attributes.get("axis", -1)
+    return OperationConverterResult(
+        torch_module=OnnxOneHot(axis=axis),
+        onnx_mapping=OnnxMapping(
+            inputs=tuple(node.input_values),
+            outputs=node.output_values,
+        ),
+    )
+
+
+class OnnxTrilu(nn.Module, OnnxToTorchModule):
+    """ONNX Trilu: upper (default) or lower triangular part, optional diagonal ``k``."""
+
+    def __init__(self, upper: bool = True):
+        super().__init__()
+        self.upper = upper
+
+    def forward(
+        self, input_tensor: torch.Tensor, k: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        diagonal = 0 if k is None else int(k.reshape(-1)[0].item())
+        if self.upper:
+            return torch.triu(input_tensor, diagonal=diagonal)
+        return torch.tril(input_tensor, diagonal=diagonal)
+
+
+@add_converter(operation_type="Trilu", version=14)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
+    upper: int = node.attributes.get("upper", 1)
+    return OperationConverterResult(
+        torch_module=OnnxTrilu(upper=bool(upper)),
+        onnx_mapping=OnnxMapping(
+            inputs=_non_empty_inputs(node),
+            outputs=node.output_values,
+        ),
+    )
+
+
+# Override the existing Clip converters (versions 11/12/13): they treat an
+# omitted optional min/max (an empty-string input name) as a present, dynamic
+# tensor and raise "Dynamic value of min/max is not implemented". Empty-string
+# names must be handled as absent.
+for _clip_version in (11, 12, 13):
+    _clip_description = OperationDescription(
+        domain=defs.ONNX_DOMAIN,
+        operation_type="Clip",
+        version=_clip_version,
+    )
+    if _clip_description in _CONVERTER_REGISTRY:
+        del _CONVERTER_REGISTRY[_clip_description]
+
+
+@add_converter(operation_type="Clip", version=11)
+@add_converter(operation_type="Clip", version=12)
+@add_converter(operation_type="Clip", version=13)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
+    from onnx2torch.node_converters.clip import _create_torch_module
+
+    inputs = node.input_values
+    # Min/Max are optional, an omitted input is an empty-string name.
+    min_name = inputs[1] if len(inputs) > 1 and inputs[1] else None
+    max_name = inputs[2] if len(inputs) > 2 and inputs[2] else None
+
+    try:
+        min_val = (
+            float(get_const_value(min_name, graph)) if min_name is not None else None
+        )
+        max_val = (
+            float(get_const_value(max_name, graph)) if max_name is not None else None
+        )
+    except KeyError as exc:
+        raise NotImplementedError(
+            "Dynamic value of min/max is not implemented"
+        ) from exc
+
+    return OperationConverterResult(
+        torch_module=_create_torch_module(min_val=min_val, max_val=max_val),
+        onnx_mapping=OnnxMapping(
+            inputs=(inputs[0],),
+            outputs=node.output_values,
+        ),
     )
 
 
