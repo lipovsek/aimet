@@ -14,6 +14,7 @@ Release notes
         * Add tensor-level set_precision API to aimet-onnx QuantSim (`ad61748`_)
         * Enable AdaScale for Qwen3.5 (`03df10a`_)
     * Torch
+        * Add R2 per-head rotation to aimet-torch SpinQuant (`0ba884a`_)
         * Enable AdaScale for Qwen3.5 (`e5f5462`_)
 
 * Bug fixes and Improvements
@@ -24,6 +25,8 @@ Release notes
         * Consolidate ONNX decoder block detection into block_topology package (`f441f2f`_)
         * Detect decoder residual writers by graph walk in role map (`22e6052`_)
         * Propagate through float-to-float casts to find effective quantizer (`9ca5115`_)
+        * Fix export omitting bias encodings for dynamic convs (`326167c`_)
+
 
     * Torch
         * Fall back from Triton to PyTorch if input size exceeds 2^31 (`a8636b5`_)
@@ -38,6 +41,8 @@ Release notes
         * Add MMLU Pro dataset/metric to GenAI Lab (`c16100b`_)
         * Update GenAILab pinned package dependencies (`7b3f0fb`_)
 
+.. _326167c: https://github.com/qualcomm/aimet/commit/326167c638f41cdd83034cd5480940a9705f1c11
+.. _0ba884a: https://github.com/qualcomm/aimet/commit/0ba884a84ff4b591c71268c87ae0d9acc2b4ec41
 .. _8413aea: https://github.com/qualcomm/aimet/commit/8413aea0d7d412bcbce8278b3f95daf6023981d7
 .. _6f3255b: https://github.com/qualcomm/aimet/commit/6f3255bfa71f01553311f6ac7c8ef64987bb0632
 .. _22e6052: https://github.com/qualcomm/aimet/commit/22e605200c5dab794385a0b00bb44512b666e675
