@@ -464,7 +464,6 @@ class Gemma4_VLM(VLM):
         _OUT_ACT = "output_activation_scale"
         _EMBED_TOKENS = "model.language_model.embed_tokens"
         _EMBED_PER_LAYER = "model.language_model.embed_tokens_per_layer"
-        _EMBED_BITS = {_EMBED_TOKENS: 2, _EMBED_PER_LAYER: 4}
 
         # input_activation_scale keys whose input edge is a SHARED residual.
         # Loading these downgrades the residual stream.
@@ -696,7 +695,13 @@ class Gemma4_VLM(VLM):
                 key = ck_name + "." + _EMBED_SCALE
                 if key not in all_keys or emb_mod is None:
                     continue
-                _fake_quant_embedding(emb_mod, f.get_tensor(key), _EMBED_BITS[ck_name])
+                # Embedding bitwidth is per-model (E2B per_layer=4-bit, E4B=2-bit),
+                # so resolve it from quantization_config rather than hardcoding.
+                num_bits = _resolve_weight_num_bits(ck_name)
+                if num_bits is None:
+                    counts["skipped_no_target"] += 1
+                    continue
+                _fake_quant_embedding(emb_mod, f.get_tensor(key), num_bits)
                 counts["embedding_scales"] += 1
 
         print("[load_qat_encodings] loaded:")

@@ -1420,6 +1420,69 @@ def test_export_external_data(
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
 
 
+@torch.no_grad()
+def test_fold_linear_weight_transpose_preserves_external_data(tmp_path: pathlib.Path):
+    """
+    _fold_linear_weight_transpose creates a transposed weight copy via
+    onnx.numpy_helper.from_array, which always materializes it as inline raw_data
+    even when the source weight was external. This test checks that copy is offloaded
+    back to external data.
+
+    dynamo=True + external_data=True forces the weight external regardless of size
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(10, 20, bias=False)
+
+        def forward(self, x):
+            return self.linear(x)
+
+    x = torch.randn(1, 4, 10)
+    model = Model()
+    sim = QuantizationSimModel(model, x, config_file="htp_v81")
+    sim.compute_encodings(lambda m: m(x))
+
+    onnx_path = os.path.join(tmp_path, "qdq_model.onnx")
+    aimet_torch.onnx.export(
+        sim,
+        x,
+        onnx_path,
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+        dynamo=True,
+        external_data=True,
+    )
+
+    # external_data=True must produce an external data file.
+    assert os.path.exists(onnx_path + ".data")
+
+    onnx_model = onnx.load(onnx_path, load_external_data=False)
+
+    # Match the folded weight by its transposed [10, 20] shape (nn.Linear stores it
+    # as [20, 10]): this both picks the right tensor and guards against the test
+    # passing vacuously, since an unfolded graph has no [10, 20] weight to find.
+    folded_weights = [
+        i for i in onnx_model.graph.initializer if list(i.dims) == [10, 20]
+    ]
+    assert len(folded_weights) == 1, (
+        "Expected exactly one transposed [10, 20] weight -- "
+        "_fold_linear_weight_transpose path not exercised; "
+        f"got {[(i.name, list(i.dims)) for i in folded_weights]}"
+    )
+    (folded_weight,) = folded_weights
+
+    # The core fix: the folded weight must remain external data (not re-inlined).
+    assert folded_weight.data_location == onnx.TensorProto.EXTERNAL, (
+        f"Folded weight '{folded_weight.name}' should remain external data"
+    )
+    assert not folded_weight.HasField("raw_data"), (
+        f"Folded weight '{folded_weight.name}' should have no inline raw_data"
+    )
+
+
 @pytest.mark.parametrize("dynamo", [False, True])
 def test_output_split(tmp_path, dynamo: bool):
     """

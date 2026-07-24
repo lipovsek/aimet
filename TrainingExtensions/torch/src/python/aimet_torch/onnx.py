@@ -8,6 +8,7 @@ import copy
 import contextlib
 import io
 import itertools
+import os
 from packaging import version
 import traceback
 from typing import Any, Mapping, Tuple, Union, Literal
@@ -39,7 +40,7 @@ from .quantsim import QuantizationSimModel
 from .experimental import onnx as _onnx
 from .experimental.onnx._export import _get_all_constants
 
-from onnx.external_data_helper import uses_external_data
+from onnx.external_data_helper import uses_external_data, set_external_data
 
 
 _TORCH_VERSION = version.parse(torch.__version__)
@@ -49,6 +50,27 @@ _TORCH_MAX_OPSET = _constants.ONNX_MAX_OPSET
 
 # Allow at least up to opset 21 to enable [u]int16 QDQ export
 _AIMET_MAX_OPSET = max(_TORCH_MAX_OPSET, 25)
+
+
+def _offload_tensor_to_external_data(tensor: onnx.TensorProto, base_dir: str):
+    """
+    Move a TensorProto's inline ``raw_data`` to an external file (in place), so it
+    doesn't count toward protobuf's 2 GiB per-message ceiling (which large weights
+    overflow on ``graph.initializer.append``, individually or cumulatively).
+
+    set_external_data alone is not enough: raw_data must be written and cleared
+    before append, not deferred to onnx.save, because the in-memory protobuf message
+    accumulates all raw_data bytes and hits the ceiling during append itself.
+    """
+    if not tensor.HasField("raw_data"):
+        return
+    raw = bytes(tensor.raw_data)
+    location = tensor.name.replace("/", "_")
+    Path(base_dir).mkdir(parents=True, exist_ok=True)
+    with open(os.path.join(base_dir, location), "wb") as f:
+        f.write(raw)
+    set_external_data(tensor, location=location, offset=0, length=len(raw))
+    tensor.ClearField("raw_data")
 
 
 @torch.no_grad()
@@ -900,6 +922,16 @@ def _fold_linear_weight_transpose(onnx_model: onnx.ModelProto, base_dir):
             *reversed(tensor.dims),
             *(itertools.repeat(1, 2 - len(tensor.dims))),
         ]
+        # `from_array` above always materializes the transposed weight inline as
+        # raw_data, even when the source weight was stored as external data. Each
+        # such re-inlined weight is then appended to the graph, and their combined
+        # size can exceed protobuf's hard 2 GiB per-message ceiling -- crashing
+        # graph.initializer.append with a DecodeError (e.g. a large multi-layer
+        # backbone, where no single weight is near the limit but the sum is).
+        # So if the source was external, offload the transposed copy back to
+        # external data to keep the in-memory message small.
+        if uses_external_data(tensor):
+            _offload_tensor_to_external_data(transposed, base_dir)
         return transposed
 
     visited = set()

@@ -896,8 +896,18 @@ def _remove_onnx_qdq_nodes(
     model.graph.ClearField("node")
     model.graph.node.extend(node)
 
-    model.graph.ClearField("initializer")
-    model.graph.initializer.extend(list(initializers.values()))
+    # model.graph.ClearField("initializer")
+    # model.graph.initializer.extend(list(initializers.values()))
+    # `initializers` is purely additive: it starts from every existing graph
+    # initializer and only gains new dequantized-const entries (with DQ-output
+    # names that never collide with existing ones). Re-serializing the whole set
+    # via ClearField + extend would needlessly re-encode large tensors (e.g. a
+    # ~2 GiB tied lm_head weight) and overflow protobuf's 2 GiB message ceiling.
+    # Instead, leave existing initializers in place and append only the new ones.
+    existing_init_names = {init.name for init in model.graph.initializer}
+    model.graph.initializer.extend(
+        init for name, init in initializers.items() if name not in existing_init_names
+    )
     from onnxruntime.quantization.onnx_quantizer import ONNXModel
 
     ONNXModel(model).remove_unused_constant()
