@@ -93,3 +93,37 @@ class MatrixTransformOp(InvertibleTransformOp):
 
     def right_hand_merge(self, weight: torch.Tensor) -> torch.Tensor:
         return self.forward(weight.T).T
+
+
+class PerHeadMatrixTransformOp(TransformOp):
+    """
+    Applies a block-diagonal rotation ``block_diag(block, ..., block)`` without ever
+    materializing the dense matrix.
+
+    Equivalent to ``MatrixTransformOp(block_diag_repeat(block, N // block.shape[0]))``
+    but stores only the ``[d, d]`` ``block`` and applies it per head via a batched
+    matmul, so memory is ``O(d^2)`` instead of ``O((N)^2)``. The rotated axis size ``N``
+    must be a multiple of ``d``.
+    """
+
+    def __init__(self, block: torch.Tensor):
+        super().__init__(mergeable=True)
+        self.block = torch.nn.Parameter(block, requires_grad=True)
+
+    def _apply_block_diag(self, x: torch.Tensor, block: torch.Tensor) -> torch.Tensor:
+        # x @ block_diag(block, ..., block), computed per head on the last axis.
+        d = block.shape[0]
+        *lead, n = x.shape
+        x = x.reshape(*lead, n // d, d) @ block
+        return x.reshape(*lead, n)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._apply_block_diag(x, self.block)
+
+    def left_hand_merge(self, weight: torch.Tensor) -> torch.Tensor:
+        # weight @ block_diag(block)^T
+        return self._apply_block_diag(weight, self.block.T)
+
+    def right_hand_merge(self, weight: torch.Tensor) -> torch.Tensor:
+        # block_diag(block)^T @ weight
+        return self.forward(weight.T).T

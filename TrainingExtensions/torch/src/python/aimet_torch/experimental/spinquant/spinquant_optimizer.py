@@ -50,7 +50,10 @@ except ImportError:
 
 from aimet_torch.experimental.spinquant.hadamard_utils import get_hadamard_matrix
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
-from aimet_torch.experimental.transforms.transform_ops import MatrixTransformOp
+from aimet_torch.experimental.transforms.transform_ops import (
+    MatrixTransformOp,
+    PerHeadMatrixTransformOp,
+)
 from aimet_torch.experimental.transforms.transform_config import (
     BlockInterface,
     LlamaBlockInterface,
@@ -146,11 +149,13 @@ class SpinQuant:
             }
         )
 
-    _enable_r1 = True
-    _enable_r2 = False
-
     @staticmethod
-    def apply_spinquant(model: torch.nn.Module):
+    def apply_spinquant(
+        model: torch.nn.Module,
+        *,
+        enable_r1: bool = True,
+        enable_r2: bool = False,
+    ):
         """
         Apply SpinQuant rotation transforms to a transformer-based language model.
 
@@ -159,7 +164,8 @@ class SpinQuant:
 
         1. Fusing RMS normalization layers into subsequent linear layers
         2. Applying R1 Hadamard rotations to embeddings, attention, and MLP layers
-        3. Merging all transforms into the weight matrices
+        3. Applying R2 per-head Hadamard rotations to the attention value/output path
+        4. Merging all transforms into the weight matrices
 
         Supported architectures:
             - LLaMA
@@ -170,6 +176,11 @@ class SpinQuant:
         :param model: A HuggingFace transformer model (e.g., LlamaForCausalLM,
             Qwen2ForCausalLM). The model must have untied embed_tokens and lm_head
             weights.
+        :param enable_r1: If True, apply the R1 (residual-stream) rotation. Defaults to True.
+        :param enable_r2: If True, apply the R2 (per-head value/output) rotation. Defaults
+            to False. Only supported on backbones with separated Q/K/V projections; not
+            supported on fused-QKV (e.g. Phi3) or linear-attention blocks. R2 is applied to
+            the language backbone only (not visual encoders).
         :raises RuntimeError: If embed_tokens and lm_head weights are tied.
 
         Example:
@@ -182,8 +193,13 @@ class SpinQuant:
             ...     old_weight.data.clone().detach().to(old_weight.device),
             ...     requires_grad=old_weight.requires_grad,
             ... )
-            >>> apply_spinquant(model)
+            >>> apply_spinquant(model, enable_r1=True, enable_r2=True)
         """
+        if not (enable_r1 or enable_r2):
+            raise ValueError(
+                "apply_spinquant: at least one of enable_r1 or enable_r2 must be True."
+            )
+
         language_backbone = (
             model.model.language_model
             if hasattr(model.model, "language_model")
@@ -197,9 +213,15 @@ class SpinQuant:
                 f"Supported backbone types: {supported}"
             )
 
-        SpinQuant._apply_spinquant_to_decoder_stack(language_backbone, model.lm_head)
+        SpinQuant._apply_spinquant_to_decoder_stack(
+            language_backbone,
+            model.lm_head,
+            enable_r1=enable_r1,
+            enable_r2=enable_r2,
+        )
 
-        if hasattr(model.model, "visual"):
+        # The visual encoder only supports R1, so skip it entirely when R1 is disabled.
+        if enable_r1 and hasattr(model.model, "visual"):
             language_backbone_hidden_size = language_backbone.embed_tokens.weight.shape[
                 -1
             ]
@@ -252,6 +274,68 @@ class SpinQuant:
             for layer in block_interface.gate_up_layers():
                 layer.add_left_hand_transform(r1_transform_inverse)
             block_interface.down_proj.add_right_hand_transform(r1_transform)
+
+    @staticmethod
+    def _apply_r2_to_decoder_stack(
+        head_dim: int,
+        blocks: List[BlockInterface],
+        device: torch.device,
+    ):
+        """
+        Apply the R2 per-head Hadamard rotation to each block's value/output path.
+
+        R2 rotates the value projection's output channels and the output projection's
+        input channels by a per-head Hadamard ``R2 = H / sqrt(head_dim)``, expressed as
+        a block-diagonal matrix (one ``R2`` per head). In float the two rotations cancel
+        through ``softmax(QK^T) @ V @ Wo`` (V is linear along head_dim), while reducing
+        per-head outliers under quantization. R2 acts on the head_dim axis and is
+        independent of R1, which acts on the residual-stream (hidden) axis.
+
+        The rotation is applied per head via ``PerHeadMatrixTransformOp``, which stores
+        only the ``head_dim x head_dim`` block rather than materializing the dense
+        block-diagonal matrix. Grouped-query attention (num_kv_heads !=
+        num_attention_heads) is handled naturally, since the op derives the head count
+        from each layer's own axis size.
+
+        :param head_dim: Per-head dimension. Must divide the v_proj output and o_proj
+            input sizes.
+        :param blocks: Decoder blocks with separated Q/K/V projections.
+        :param device: Device to build the rotation matrix on.
+        """
+        matrix = get_hadamard_matrix(head_dim) / torch.sqrt(torch.tensor(head_dim))
+        matrix = matrix.to(device=device, dtype=torch.float32)
+
+        # Validate every block up front so we never leave the model partially rotated.
+        for block_interface in blocks:
+            if not hasattr(block_interface, "v_proj"):
+                raise RuntimeError(
+                    "R2 rotation is only supported for blocks with separated Q/K/V "
+                    f"projections; block {type(block_interface).__name__} does not expose "
+                    "a 'v_proj' (fused-QKV or linear-attention blocks are not supported)."
+                )
+            v_out = block_interface.v_proj.weight.shape[0]
+            o_in = block_interface.o_proj.weight.shape[1]
+            if v_out % head_dim != 0:
+                raise ValueError(
+                    f"R2 rotation: v_proj output size {v_out} is not divisible by "
+                    f"head_dim={head_dim}."
+                )
+            if o_in % head_dim != 0:
+                raise ValueError(
+                    f"R2 rotation: o_proj input size {o_in} is not divisible by "
+                    f"head_dim={head_dim}."
+                )
+
+        for block_interface in blocks:
+            # v_proj writes into value space (right transform, uses R); o_proj reads
+            # from it (left transform, uses R^T) so the two cancel. R^T == R only for
+            # power-of-two Hadamard matrices, so transpose explicitly.
+            block_interface.v_proj.add_right_hand_transform(
+                PerHeadMatrixTransformOp(block=matrix)
+            )
+            block_interface.o_proj.add_left_hand_transform(
+                PerHeadMatrixTransformOp(block=matrix.T)
+            )
 
     @staticmethod
     def _convert_modules_to_transformed_modules(model: torch.nn.Module):
@@ -379,6 +463,26 @@ class SpinQuant:
         return target_modules
 
     @staticmethod
+    def _get_head_dim(decoder_model: torch.nn.Module) -> int:
+        """Return the per-head dimension from the backbone config for R2."""
+        config = getattr(decoder_model, "config", None)
+        if config is None:
+            raise ValueError(
+                "R2 rotation: could not read head_dim; backbone has no 'config'."
+            )
+        head_dim = getattr(config, "head_dim", None)
+        if head_dim is None:
+            hidden_size = getattr(config, "hidden_size", None)
+            num_heads = getattr(config, "num_attention_heads", None)
+            if hidden_size is None or num_heads is None:
+                raise ValueError(
+                    "R2 rotation: could not derive head_dim from backbone config "
+                    "(missing head_dim, or hidden_size/num_attention_heads)."
+                )
+            head_dim = hidden_size // num_heads
+        return head_dim
+
+    @staticmethod
     def _fuse_norm_layer_into_linears(
         norm: torch.nn.Module, linears: list[torch.nn.Linear]
     ):
@@ -491,16 +595,20 @@ class SpinQuant:
     def _apply_spinquant_to_decoder_stack(
         decoder_model: torch.nn.Module,
         lm_head: torch.nn.Module,
+        enable_r1: bool = True,
+        enable_r2: bool = False,
     ) -> None:
         """
         Apply SpinQuant rotation transforms to a decoder-only language backbone.
 
         This processes the language backbone in isolation, applying norm fusion and
-        R1 Hadamard rotations to embeddings, attention, and MLP layers.
+        R1/R2 Hadamard rotations to embeddings, attention, and MLP layers.
 
         :param decoder_model: Language backbone with .embed_tokens, .norm, and decoder
             blocks (e.g., model.model for LlamaForCausalLM).
         :param lm_head: The lm_head linear layer (e.g., model.lm_head).
+        :param enable_r1: If True, apply the R1 (residual-stream) rotation.
+        :param enable_r2: If True, apply the R2 (per-head value/output) rotation.
         :raises RuntimeError: If embed_tokens and lm_head weights are tied.
         """
         if decoder_model.embed_tokens.weight is lm_head.weight:
@@ -531,9 +639,9 @@ class SpinQuant:
         # We need to work with the transformed wrapper directly
         SpinQuant._convert_block_layers_to_transformed(blocks)
 
-        if SpinQuant._enable_r1:
+        device = lm_head.weight.device
+        if enable_r1:
             hidden_size = decoder_model.embed_tokens.weight.shape[-1]
-            device = lm_head.weight.device
             SpinQuant._apply_r1_to_decoder_stack(
                 hidden_size=hidden_size,
                 embedding_layer=decoder_model.embed_tokens,
@@ -542,8 +650,13 @@ class SpinQuant:
                 device=device,
             )
 
-        if SpinQuant._enable_r2:
-            raise NotImplementedError("R2 transform is not yet implemented.")
+        if enable_r2:
+            head_dim = SpinQuant._get_head_dim(decoder_model)
+            SpinQuant._apply_r2_to_decoder_stack(
+                head_dim=head_dim,
+                blocks=blocks,
+                device=device,
+            )
 
         # Merge transforms and revert
         decoder_model.embed_tokens = (
@@ -569,6 +682,9 @@ class SpinQuant:
     ) -> None:
         """
         Apply SpinQuant rotation transforms to a visual encoder (ViT) and its merger modules.
+
+        Only the R1 rotation is applied to visual encoders (R2 is backbone-only), so this
+        is invoked only when R1 is enabled.
 
         :param visual_encoder: Visual transformer module with .patch_embed.proj and ViT blocks.
         :param language_backbone_hidden_size: Hidden size of the language backbone, needed for
@@ -621,74 +737,68 @@ class SpinQuant:
             merger.linear2 = TransformationMixin.from_module(merger.linear2)
         SpinQuant._convert_block_layers_to_transformed(vit_blocks)
 
-        if SpinQuant._enable_r1:
-            device = next(visual_encoder.parameters()).device
+        device = next(visual_encoder.parameters()).device
 
-            # Apply R1 to ViT blocks if registered
-            if len(vit_blocks) > 0:
-                vit_hidden_size = visual_encoder.patch_embed.proj.weight.shape[0]
-                SpinQuant._apply_r1_to_decoder_stack(
-                    hidden_size=vit_hidden_size,
-                    embedding_layer=None,
-                    lm_head=None,
-                    blocks=vit_blocks,
-                    device=device,
-                )
+        # Apply R1 to ViT blocks if registered
+        if len(vit_blocks) > 0:
+            vit_hidden_size = visual_encoder.patch_embed.proj.weight.shape[0]
+            SpinQuant._apply_r1_to_decoder_stack(
+                hidden_size=vit_hidden_size,
+                embedding_layer=None,
+                lm_head=None,
+                blocks=vit_blocks,
+                device=device,
+            )
 
-                # Rotate patch_embed.proj weight directly
-                patch_embed_shape = visual_encoder.patch_embed.proj.weight.shape
-                patch_embed_hadamard_rotation = get_hadamard_matrix(
-                    vit_hidden_size
-                ) / torch.sqrt(torch.tensor(vit_hidden_size))
-                new_patch_embed_weight = (
-                    visual_encoder.patch_embed.proj.weight.data.clone()
+            # Rotate patch_embed.proj weight directly
+            patch_embed_shape = visual_encoder.patch_embed.proj.weight.shape
+            patch_embed_hadamard_rotation = get_hadamard_matrix(
+                vit_hidden_size
+            ) / torch.sqrt(torch.tensor(vit_hidden_size))
+            new_patch_embed_weight = (
+                visual_encoder.patch_embed.proj.weight.data.clone()
+                .detach()
+                .to(torch.float64)
+                .reshape([vit_hidden_size, -1])
+            )
+            new_patch_embed_weight = (
+                patch_embed_hadamard_rotation.T.to(device=device, dtype=torch.float64)
+                @ new_patch_embed_weight
+            ).to(torch.float32)
+            visual_encoder.patch_embed.proj.weight = torch.nn.Parameter(
+                new_patch_embed_weight.reshape(patch_embed_shape)
+            )
+
+            # Rotate merger.linear1 weights
+            for merger in mergers:
+                mlp0_shape = merger.linear1.weight.data.shape
+                new_mlp0_weight = (
+                    merger.linear1.weight.data.clone()
                     .detach()
                     .to(torch.float64)
-                    .reshape([vit_hidden_size, -1])
+                    .reshape(-1, vit_hidden_size)
                 )
-                new_patch_embed_weight = (
-                    patch_embed_hadamard_rotation.T.to(
+                new_mlp0_weight = (
+                    new_mlp0_weight
+                    @ patch_embed_hadamard_rotation.T.to(
                         device=device, dtype=torch.float64
                     )
-                    @ new_patch_embed_weight
-                ).to(torch.float32)
-                visual_encoder.patch_embed.proj.weight = torch.nn.Parameter(
-                    new_patch_embed_weight.reshape(patch_embed_shape)
+                ).to(dtype=torch.float32)
+                merger.linear1.weight = torch.nn.Parameter(
+                    new_mlp0_weight.reshape(mlp0_shape)
                 )
 
-                # Rotate merger.linear1 weights
-                for merger in mergers:
-                    mlp0_shape = merger.linear1.weight.data.shape
-                    new_mlp0_weight = (
-                        merger.linear1.weight.data.clone()
-                        .detach()
-                        .to(torch.float64)
-                        .reshape(-1, vit_hidden_size)
-                    )
-                    new_mlp0_weight = (
-                        new_mlp0_weight
-                        @ patch_embed_hadamard_rotation.T.to(
-                            device=device, dtype=torch.float64
-                        )
-                    ).to(dtype=torch.float32)
-                    merger.linear1.weight = torch.nn.Parameter(
-                        new_mlp0_weight.reshape(mlp0_shape)
-                    )
-
-            # Post-MLP Hadamard rotation on merger.linear2 (always, even without ViT blocks)
-            post_mlp_hadamard_rotation = get_hadamard_matrix(
-                language_backbone_hidden_size
-            ) / torch.sqrt(torch.tensor(language_backbone_hidden_size))
-            post_mlp_hadamard_rotation = post_mlp_hadamard_rotation.to(
-                device=device, dtype=torch.float32
+        # Post-MLP Hadamard rotation on merger.linear2 (always, even without ViT blocks)
+        post_mlp_hadamard_rotation = get_hadamard_matrix(
+            language_backbone_hidden_size
+        ) / torch.sqrt(torch.tensor(language_backbone_hidden_size))
+        post_mlp_hadamard_rotation = post_mlp_hadamard_rotation.to(
+            device=device, dtype=torch.float32
+        )
+        for merger in mergers:
+            merger.linear2.add_right_hand_transform(
+                MatrixTransformOp(matrix=post_mlp_hadamard_rotation)
             )
-            for merger in mergers:
-                merger.linear2.add_right_hand_transform(
-                    MatrixTransformOp(matrix=post_mlp_hadamard_rotation)
-                )
-
-        if SpinQuant._enable_r2:
-            raise NotImplementedError("R2 transform is not yet implemented.")
 
         # Merge transforms and revert
         if hasattr(visual_encoder, "pos_embed"):

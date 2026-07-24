@@ -20,6 +20,10 @@ from transformers.models.qwen3_5.modeling_qwen3_5 import (
 from aimet_torch.experimental.spinquant.hadamard_utils import get_hadamard_matrix
 from aimet_torch.experimental.spinquant.spinquant_optimizer import SpinQuant
 from aimet_torch.experimental.transforms.transformed_layers import TransformationMixin
+from aimet_torch.experimental.transforms.transform_ops import (
+    MatrixTransformOp,
+    PerHeadMatrixTransformOp,
+)
 from aimet_torch.quantsim import QuantizationSimModel
 
 
@@ -305,6 +309,141 @@ def test_apply_spinquant_quantsim_equivalence():
     qsim_out = qsim.model(input_ids=dummy_input)
     qsim_out_2 = qsim_2.model(input_ids=dummy_input)
     assert torch.equal(qsim_out[0], qsim_out_2[0])
+
+
+@pytest.mark.parametrize("num_heads", [1, 3])
+def test_per_head_matrix_transform_matches_block_diag(num_heads):
+    """PerHeadMatrixTransformOp equals a dense block-diagonal MatrixTransformOp."""
+    torch.manual_seed(0)
+    d = 4
+    block = torch.randn(d, d)
+    dense = torch.block_diag(*([block] * num_heads))
+
+    per_head = PerHeadMatrixTransformOp(block=block)
+    reference = MatrixTransformOp(matrix=dense)
+
+    x = torch.randn(2, num_heads * d)
+    # left_hand_merge rotates input columns (weight [out, N]); right_hand_merge
+    # rotates output rows (weight [N, in]).
+    weight_lh = torch.randn(5, num_heads * d)
+    weight_rh = torch.randn(num_heads * d, 5)
+
+    assert torch.allclose(per_head.forward(x), reference.forward(x), atol=1e-5)
+    assert torch.allclose(
+        per_head.left_hand_merge(weight_lh),
+        reference.left_hand_merge(weight_lh),
+        atol=1e-5,
+    )
+    assert torch.allclose(
+        per_head.right_hand_merge(weight_rh),
+        reference.right_hand_merge(weight_rh),
+        atol=1e-5,
+    )
+
+
+@pytest.mark.parametrize("hidden_size", [64, 192])
+@pytest.mark.parametrize("use_bias", [True, False])
+@pytest.mark.parametrize("num_kv_heads", [None, 2])
+def test_apply_spinquant_r2_is_lossless(hidden_size, use_bias, num_kv_heads):
+    """R2 (with R1) must not change float outputs, incl. grouped-query attention."""
+    torch.manual_seed(0)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    config = LlamaConfig(
+        vocab_size=10,
+        hidden_size=hidden_size,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        num_key_value_heads=num_kv_heads,
+        tie_word_embeddings=False,
+        intermediate_size=100,
+        attention_bias=use_bias,
+        mlp_bias=use_bias,
+    )
+    dummy_input = torch.randint(0, 10, (1, 200)).to(device)
+    model = LlamaForCausalLM(config=config).to(device)
+    if use_bias:
+        for module in model.modules():
+            if isinstance(module, torch.nn.Linear) and module.bias is not None:
+                with torch.no_grad():
+                    module.bias.copy_(torch.randn(module.bias.shape).to(device))
+
+    orig_out = model(input_ids=dummy_input)
+    orig_v = model.model.layers[0].self_attn.v_proj.weight.clone()
+    orig_o = model.model.layers[0].self_attn.o_proj.weight.clone()
+
+    SpinQuant.apply_spinquant(model, enable_r1=True, enable_r2=True)
+
+    new_out = model(input_ids=dummy_input)
+    new_v = model.model.layers[0].self_attn.v_proj.weight.clone()
+    new_o = model.model.layers[0].self_attn.o_proj.weight.clone()
+
+    # V/O weights are rotated, output is unchanged
+    assert not torch.equal(orig_v, new_v)
+    assert not torch.equal(orig_o, new_o)
+    assert torch.allclose(orig_out.logits, new_out.logits, atol=1e-4, rtol=1e-4)
+
+
+def test_apply_spinquant_r2_only_rotates_value_output_path():
+    """With only R2 enabled, q/k/gate/up/down weights are untouched."""
+    torch.manual_seed(0)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    config = LlamaConfig(
+        vocab_size=10,
+        hidden_size=64,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        tie_word_embeddings=False,
+        intermediate_size=100,
+    )
+    dummy_input = torch.randint(0, 10, (1, 200)).to(device)
+    model = LlamaForCausalLM(config=config).to(device)
+
+    orig_out = model(input_ids=dummy_input)
+    attn = model.model.layers[0].self_attn
+    orig_q = attn.q_proj.weight.clone()
+    orig_v = attn.v_proj.weight.clone()
+
+    SpinQuant.apply_spinquant(model, enable_r1=False, enable_r2=True)
+
+    new_out = model(input_ids=dummy_input)
+    assert torch.equal(orig_q, model.model.layers[0].self_attn.q_proj.weight)
+    assert not torch.equal(orig_v, model.model.layers[0].self_attn.v_proj.weight)
+    assert torch.allclose(orig_out.logits, new_out.logits, atol=1e-4, rtol=1e-4)
+
+
+def test_apply_spinquant_r2_unsupported_block_raises():
+    """R2 on a linear-attention (no v_proj) block must raise RuntimeError."""
+    torch.manual_seed(0)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # All-linear-attention Qwen3.5 config: blocks have no v_proj.
+    config = Qwen3_5TextConfig(
+        vocab_size=64,
+        hidden_size=192,
+        intermediate_size=100,
+        num_hidden_layers=2,
+        full_attention_interval=100,  # no full-attention layers -> all linear
+        tie_word_embeddings=False,
+    )
+    model = Qwen3_5ForCausalLM(config).eval().to(device=device, dtype=torch.float32)
+
+    with pytest.raises(RuntimeError):
+        SpinQuant.apply_spinquant(model, enable_r1=False, enable_r2=True)
+
+
+def test_apply_spinquant_requires_at_least_one_rotation():
+    config = LlamaConfig(
+        vocab_size=10,
+        hidden_size=64,
+        num_hidden_layers=1,
+        tie_word_embeddings=False,
+        intermediate_size=100,
+    )
+    model = LlamaForCausalLM(config=config)
+    with pytest.raises(ValueError):
+        SpinQuant.apply_spinquant(model, enable_r1=False, enable_r2=False)
 
 
 @pytest.mark.parametrize("bias", [True, False])

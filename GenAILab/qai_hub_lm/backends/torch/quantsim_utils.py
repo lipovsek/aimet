@@ -76,9 +76,11 @@ def apply_spinquant_pre_sim(model, spinquant_config: dict | None) -> None:
             requires_grad=old_weight.requires_grad,
         )
 
-    SpinQuantOptimizer._enable_r1 = spinquant_config.get("enable_r1", True)
-    SpinQuantOptimizer._enable_r2 = spinquant_config.get("enable_r2", False)
-    SpinQuantOptimizer.apply_spinquant(model)
+    SpinQuantOptimizer.apply_spinquant(
+        model,
+        enable_r1=spinquant_config.get("enable_r1", True),
+        enable_r2=spinquant_config.get("enable_r2", False),
+    )
 
 
 def _remove_decoder_block_weight_quantizers(
