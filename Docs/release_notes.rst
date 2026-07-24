@@ -6,6 +6,58 @@
 Release notes
 #############
 
+2.36.0
+======
+
+* New Features
+    * ONNX
+        * Add tensor-level set_precision API to aimet-onnx QuantSim (`ad61748`_)
+        * Enable AdaScale for Qwen3.5 (`03df10a`_)
+    * Torch
+        * Enable AdaScale for Qwen3.5 (`e5f5462`_)
+
+* Bug fixes and Improvements
+    * ONNX
+        * Skip weightless dynamic MatMuls in sequential MSE (`8413aea`_)
+        * Fix bugged or missing op types in onnx2torch (`6f3255b`_)
+        * Define QcQuantizeOp interface to set precision via qtype (`d0c1e4b`_)
+        * Consolidate ONNX decoder block detection into block_topology package (`f441f2f`_)
+        * Detect decoder residual writers by graph walk in role map (`22e6052`_)
+        * Propagate through float-to-float casts to find effective quantizer (`9ca5115`_)
+
+    * Torch
+        * Fall back from Triton to PyTorch if input size exceeds 2^31 (`a8636b5`_)
+        * Skip deriving data movement op output encoding for MaskedSoftmax subgraph (`75bf0f7`_)
+        * Fall back to chained sampling for cached-region resume in BlockwiseSampler (`5341997`_)
+        * Remove erroneous QuantizationMixin.ignore in Gemma4 (`dcfe9de`_)
+
+    * Common
+        * Add fp16 support in GenAILab (`fec7c2c`_)
+        * Onboard gemma4 qat model to GenAILab (`f65cf66`_)
+        * Add SplitFusedLayers adaptation to GenAI Lab (`0c1729d`_)
+        * Add MMLU Pro dataset/metric to GenAI Lab (`c16100b`_)
+        * Update GenAILab pinned package dependencies (`7b3f0fb`_)
+
+.. _8413aea: https://github.com/qualcomm/aimet/commit/8413aea0d7d412bcbce8278b3f95daf6023981d7
+.. _6f3255b: https://github.com/qualcomm/aimet/commit/6f3255bfa71f01553311f6ac7c8ef64987bb0632
+.. _22e6052: https://github.com/qualcomm/aimet/commit/22e605200c5dab794385a0b00bb44512b666e675
+.. _5341997: https://github.com/qualcomm/aimet/commit/53419977e18ecc590a2d59aeae14a75e3093b8f6
+.. _fec7c2c: https://github.com/qualcomm/aimet/commit/fec7c2cb4face57dbbbcac9c7a0e2b5d690927b0
+.. _f65cf66: https://github.com/qualcomm/aimet/commit/f65cf6625d8ba1862a6ffb8f716d8ff36cf24dcb
+.. _0c1729d: https://github.com/qualcomm/aimet/commit/0c1729d5dc179fd2b9098c3ce6654d49ff256e7f
+.. _75bf0f7: https://github.com/qualcomm/aimet/commit/75bf0f75281579ebfedd4cecbbc0c6e92bdac130
+.. _a8636b5: https://github.com/qualcomm/aimet/commit/a8636b572c46542b4ed3864c487c77e33ab818c4
+.. _ad61748: https://github.com/qualcomm/aimet/commit/ad61748ebc0547f9e2ba2a6546bbcacf27e9693f
+.. _9ca5115: https://github.com/qualcomm/aimet/commit/9ca5115993c5ecb254cf932fcce2beebd22e3ac0
+.. _e5f5462: https://github.com/qualcomm/aimet/commit/e5f546229444db0ed0466c5b6c291b01f92253cb
+.. _dcfe9de: https://github.com/qualcomm/aimet/commit/dcfe9de8b23c94f33f35e937e34715d15563b7b3
+.. _03df10a: https://github.com/qualcomm/aimet/commit/03df10a75c82604a8e32fd4a7517880b454acf67
+.. _d0c1e4b: https://github.com/qualcomm/aimet/commit/d0c1e4ba31b5ca93bf097afb615c317e0d934c56
+.. _c16100b: https://github.com/qualcomm/aimet/commit/c16100b691d323761f7163c8212a0bac9d1f1670
+.. _7b3f0fb: https://github.com/qualcomm/aimet/commit/7b3f0fba0d7bf535b989a0a899400668b77d532f
+.. _f441f2f: https://github.com/qualcomm/aimet/commit/f441f2fc3a6661fd5521c7db1c6a05d173716e31
+
+
 2.35.1
 ======
 
