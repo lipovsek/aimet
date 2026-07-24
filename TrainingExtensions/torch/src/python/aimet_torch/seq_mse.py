@@ -8,6 +8,8 @@
 from typing import List, Optional, Tuple, Callable, overload
 import contextlib
 import copy
+import inspect
+import types
 import warnings
 import torch
 from torch.utils.data import DataLoader
@@ -586,6 +588,13 @@ def _copy_as_fp_model_with_shared_weights(model):
             setattr(new_model, name, child.get_original_module())
         else:
             setattr(new_model, name, _copy_as_fp_model_with_shared_weights(child))
+
+    # Rebind per-instance methods (a monkey-patched forward) to the FP copy;
+    # a shallow copy keeps __self__ on the original, so they'd run its quantized children.
+    for attr, value in vars(model).items():
+        if inspect.ismethod(value) and value.__self__ is model:
+            setattr(new_model, attr, types.MethodType(value.__func__, new_model))
+
     return new_model
 
 

@@ -3,6 +3,7 @@
 
 # /usr/bin/env python
 
+import types
 import itertools
 import copy
 import json
@@ -741,4 +742,31 @@ def test_fp_modules():
     sim.compute_encodings(lambda model: model(x))
     sim.exclude_layers_from_quantization([sim.model[0]])
     aimet_torch.utils.remove_all_quantizers(sim.model[1])
+    apply_seq_mse(sim, [x], num_candidates=2)
+
+
+def test_monkey_patched_forward_runs_fp_children():
+    """
+    When: A model's forward is monkey-patched with an instance-bound method
+    Then: The FP shared-weight copy rebinds that forward to itself, so it runs FP
+          children rather than the sim's quantized children.
+    """
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = torch.nn.Linear(8, 8)
+            self.fc2 = torch.nn.Linear(8, 8)
+
+        def forward(self, x):
+            return self.fc2(self.fc1(x))
+
+    def patched_forward(self, x):
+        return self.fc2(self.fc1(x))
+
+    model = Model()
+    model.forward = types.MethodType(patched_forward, model)
+    x = torch.randn(4, 8)
+    sim = aimet_torch.QuantizationSimModel(model, dummy_input=x)
+    sim.compute_encodings(lambda m: m(x))
     apply_seq_mse(sim, [x], num_candidates=2)
