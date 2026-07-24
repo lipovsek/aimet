@@ -198,6 +198,7 @@ def deepspeed_zero3_offload_config():
                 "weight_decay": 1e-5,
             },
         },
+        "gradient_clipping": 0.0,
     }
 
 
