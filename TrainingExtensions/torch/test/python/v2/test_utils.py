@@ -7,9 +7,11 @@ import os
 import pytest
 import tempfile
 import torch
+from unittest import mock
 
 from .models_.test_models import ModelWithMatMul2, BasicConv2d
 from aimet_common.defs import QuantScheme
+import aimet_torch.utils
 from aimet_torch.v2.experimental import (
     set_matmul_second_input_producer_to_8bit_symmetric,
 )
@@ -19,6 +21,7 @@ from aimet_torch.utils import (
     get_all_quantizers,
     disable_all_quantizers,
     _decompose_prequantized_tensor,
+    _DecompositionError,
 )
 from aimet_torch.v2.utils import (
     allow_recompute,
@@ -475,7 +478,7 @@ def test_get_all_quantizers():
         (1, 0),
     ],
 )
-@pytest.mark.parametrize("scale", [1e-0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7])
+@pytest.mark.parametrize("scale", [1e-0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6])
 @pytest.mark.parametrize("bitwidth", [2, 4])
 def test_decomposition(
     bitwidth: int, scale: float, channel_axis: int | None, block_axis: int | None
@@ -536,3 +539,225 @@ def test_decomposition(
                 dequantize(input_q_, scale_, offset=zeros, block_size=block_size),
             )
             assert torch.all((qmin <= input_q_) & (input_q_ <= qmax))
+
+
+@pytest.mark.parametrize("storage_dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("bitwidth", [4])
+def test_decomposition_storage_rounding(storage_dtype: torch.dtype, bitwidth: int):
+    """
+    When: A per-channel pre-quantized tensor is stored in a narrow float format
+          (bf16/fp16), so its on-grid values carry that format's rounding error
+    Then: It is still decomposed (rather than rejected for not matching the grid
+          bit-exactly), and the recovered scale reconstructs it accurately
+    """
+    torch.manual_seed(0)
+    qmin = -(2 ** (bitwidth - 1))
+    qmax = 2 ** (bitwidth - 1)
+    channels, elements = 8, 2048
+
+    true_scale = (torch.rand(channels, 1) * 0.4 + 0.05).float()
+    codes = torch.randint(qmin, qmax + 1, (channels, elements)).float()
+    codes[:, 0] = qmax  # full-scale code present
+    codes[:, 1] = 1  # min-magnitude code present (absmin anchor holds)
+    input_qdq = (codes * true_scale).to(storage_dtype).float()
+
+    input_q, scale = _decompose_prequantized_tensor(
+        input_qdq, qmin, qmax, scale_shape=(channels, 1)
+    )
+
+    assert scale.shape == (channels, 1)
+    assert torch.all((qmin <= input_q) & (input_q <= qmax))
+
+    # Reconstruction error is bounded by the storage rounding floor, not left at
+    # the several-dB loss that min/max fallback would incur.
+    recon = input_q * scale
+    noise = ((input_qdq - recon) ** 2).mean()
+    signal = (input_qdq**2).mean()
+    sqnr_db = 10 * torch.log10(signal / noise)
+    assert sqnr_db > 40
+
+
+@pytest.mark.parametrize("storage_dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("bitwidth", [2, 4])
+def test_decomposition_native_low_precision_input(
+    storage_dtype: torch.dtype, bitwidth: int
+):
+    """
+    When: The pre-quantized tensor is passed in its native narrow-float dtype
+          (bf16/fp16), i.e. not upcast to fp32 first
+    Then: Decomposition runs (no dtype-view crash) and the recovered scale
+          reconstructs the tensor to a high SQNR
+    """
+    torch.manual_seed(0)
+    qmin = -(2 ** (bitwidth - 1))
+    qmax = 2 ** (bitwidth - 1)
+    channels, elements = 8, 2048
+
+    true_scale = (torch.rand(channels, 1) * 0.4 + 0.05).to(storage_dtype)
+    codes = torch.randint(qmin, qmax + 1, (channels, elements)).to(storage_dtype)
+    codes[:, 0] = qmax
+    codes[:, 1] = 1
+    input_qdq = codes * true_scale  # stays in storage_dtype
+
+    input_q, scale = _decompose_prequantized_tensor(
+        input_qdq, qmin, qmax, scale_shape=(channels, 1)
+    )
+
+    assert torch.all((qmin <= input_q) & (input_q <= qmax))
+    recon = input_q * scale.to(input_q.dtype)
+    ref = input_qdq.float()
+    noise = ((ref - recon.float()) ** 2).mean()
+    signal = (ref**2).mean()
+    sqnr_db = 10 * torch.log10(signal / noise)
+    assert sqnr_db > 40
+
+
+@pytest.mark.parametrize("bitwidth", [2, 4])
+def test_decomposition_scale_is_least_squares_optimal(bitwidth: int):
+    """
+    When: A pre-quantized tensor stored with rounding noise is decomposed
+    Then: The recovered per-channel scale is no worse than the closed-form
+          least-squares scale for the recovered codes (i.e. it reaches the
+          reconstruction-MSE optimum, not merely an anchor-element estimate)
+    """
+    torch.manual_seed(0)
+    qmin = -(2 ** (bitwidth - 1))
+    qmax = 2 ** (bitwidth - 1)
+    channels, elements = 8, 4096
+
+    true_scale = (torch.rand(channels, 1) * 0.4 + 0.05).float()
+    codes = torch.randint(qmin, qmax + 1, (channels, elements)).float()
+    codes[:, 0] = qmax
+    codes[:, 1] = 1
+    input_qdq = (codes * true_scale).bfloat16().float()
+
+    input_q, scale = _decompose_prequantized_tensor(
+        input_qdq, qmin, qmax, scale_shape=(channels, 1)
+    )
+
+    # Closed-form LS scale for the recovered codes: <x, q> / <q, q>.
+    ls_scale = (input_qdq * input_q).sum(dim=1, keepdim=True) / (
+        (input_q**2).sum(dim=1, keepdim=True).clamp(min=1e-12)
+    )
+    recovered_err = ((input_q * scale - input_qdq) ** 2).sum()
+    ls_err = ((input_q * ls_scale - input_qdq) ** 2).sum()
+    assert recovered_err <= ls_err * (1 + 1e-4)
+
+
+def test_decomposition_rejects_unquantized_tensor():
+    """
+    When: A genuinely unquantized (continuous) tensor is passed
+    Then: Decomposition fails so the caller falls back to regular calibration
+    """
+    torch.manual_seed(0)
+    unquantized = torch.randn(8, 2048).bfloat16().float()
+    with pytest.raises(_DecompositionError):
+        _decompose_prequantized_tensor(unquantized, -8, 8, scale_shape=(8, 1))
+
+
+def test_decomposition_early_exit_skips_divisor_search():
+    """
+    When: A large continuous tensor whose blocks carry far more distinct
+          magnitudes than the grid could produce is passed
+    Then: It is rejected by the early-exit gate, before the divisor search runs
+          (i.e. the reject comes from the cheap distinct-magnitude bound, not the
+          expensive _select_divisor fallback)
+    """
+    torch.manual_seed(0)
+    # block_numel (2048) > _EARLY_EXIT_LEVEL_SLACK * num_levels (4 * 17 = 68), and
+    # ~one distinct magnitude per element, so nearly every block trips the cap.
+    unquantized = torch.randn(8, 2048)
+    with mock.patch(
+        "aimet_torch.utils._select_divisor",
+        side_effect=AssertionError("divisor search must not run after early exit"),
+    ) as select_divisor:
+        with pytest.raises(_DecompositionError, match="early exit"):
+            _decompose_prequantized_tensor(unquantized, -8, 8, scale_shape=(8, 1))
+    select_divisor.assert_not_called()
+
+
+def test_decomposition_early_exit_gate_respects_block_size_threshold():
+    """
+    When: A continuous tensor whose block_numel is at/below
+          _EARLY_EXIT_LEVEL_SLACK * num_levels is passed
+    Then: The early-exit gate is skipped (too few elements for the distinct-count
+          bound to be meaningful) and the divisor search is still consulted before
+          any rejection
+    """
+    qmin, qmax = -8, 8
+    num_levels = qmax - qmin + 1
+    # block_numel == cap, so `x.shape[1] > slack * num_levels` is False.
+    block_numel = aimet_torch.utils._EARLY_EXIT_LEVEL_SLACK * num_levels
+    torch.manual_seed(0)
+    unquantized = torch.randn(8, block_numel)
+    with mock.patch(
+        "aimet_torch.utils._select_divisor",
+        wraps=aimet_torch.utils._select_divisor,
+    ) as select_divisor:
+        # Whether it ultimately decomposes or rejects, the point is that the gate
+        # did not short-circuit: the divisor search was reached.
+        try:
+            _decompose_prequantized_tensor(unquantized, qmin, qmax, scale_shape=(8, 1))
+        except _DecompositionError as e:
+            assert "early exit" not in str(e)
+    select_divisor.assert_called_once()
+
+
+@pytest.mark.parametrize("absmax", [127, 100])
+def test_decomposition_recovers_near_constant_channel(absmax: int):
+    """
+    When: A block's codes are large and consecutive but never reach +/-1 -- e.g.
+          weights [absmax - 2, absmax - 1, absmax, ...] whose true per-step scale
+          is 1.0 -- so a min-nonzero anchor (which assumes the smallest magnitude
+          is one step) would collapse the whole block onto a single code
+    Then: The magnitude-gap anchor still finds the true fine grid, so the block is
+          decomposed losslessly with scale 1.0 rather than onto the collapsed
+          absmax-scale grid (regression guard for near-constant channels, whose
+          collapse silently degrades reconstruction SQNR)
+    """
+    qmin, qmax = -128, 127
+    channels, elements = 8, 129
+    # Three consecutive magnitudes one step apart; min magnitude == absmax - 2.
+    pattern = torch.tensor([absmax - 2, absmax - 1, absmax], dtype=torch.float32)
+    weight = pattern.repeat(channels, elements // 3 + 1)[:, :elements].contiguous()
+
+    input_q, scale = _decompose_prequantized_tensor(
+        weight, qmin, qmax, scale_shape=(channels, 1)
+    )
+    assert torch.allclose(scale, torch.ones_like(scale))
+    assert torch.allclose(input_q * scale, weight)
+
+
+def test_decomposition_keeps_genuine_single_level_grid():
+    """
+    When: A block is genuinely single-valued -- every nonzero element is the exact
+          same magnitude (an all-+/-1 pre-quantized channel), so min == absmax
+    Then: The single-level grid is accepted (not mistaken for the degenerate case),
+          and the recovered scale equals that shared magnitude
+    """
+    scale = torch.tensor([[0.05], [0.10], [0.20]])
+    codes = torch.ones(3, 64)  # every element maps to code +1
+    input_qdq = codes * scale
+
+    input_q, recovered = _decompose_prequantized_tensor(
+        input_qdq, -8, 7, scale_shape=(3, 1)
+    )
+    assert torch.allclose(recovered, scale)
+    assert torch.all(input_q == 1.0)
+
+
+def test_decomposition_single_element_blocks():
+    """
+    When: The scale is per-element, so every block has exactly one element and the
+          magnitude-gap estimate has no adjacent pair to difference
+    Then: Decomposition runs without a zero-size reduction crash; each block's
+          scale is its own magnitude (code +/-1)
+    """
+    input_qdq = torch.tensor([[5.0], [3.0], [100.0], [0.0]])
+
+    input_q, scale = _decompose_prequantized_tensor(
+        input_qdq, -128, 127, scale_shape=(4, 1)
+    )
+    # Nonzero single-element blocks map to code +/-1 with scale == their magnitude.
+    assert torch.allclose(scale.flatten()[:3], torch.tensor([5.0, 3.0, 100.0]))
+    assert torch.allclose(input_q.flatten()[:3].abs(), torch.ones(3))

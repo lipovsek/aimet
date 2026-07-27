@@ -114,9 +114,11 @@ class ModuleData:
                 # Cast input to dtype only if it is a floating point tensor (float, half, bfloat16, etc.).
                 # If input is a non-float tensor (e.g. long, bool), leave the input uncasted.
                 return tree_map(
-                    lambda x: x.to(dtype)
-                    if isinstance(x, torch.Tensor) and x.is_floating_point()
-                    else x,
+                    lambda x: (
+                        x.to(dtype)
+                        if isinstance(x, torch.Tensor) and x.is_floating_point()
+                        else x
+                    ),
                     inp,
                 )
             return inp
@@ -1701,6 +1703,291 @@ class _DecompositionError(RuntimeError):
     pass
 
 
+# Half-ULP relative rounding error of each floating-point storage format
+# (mantissa bits: bf16=7, fp16=10).  fp32-native data has no meaningful storage
+# rounding; a tiny floor keeps the on-grid tolerance well defined.
+_ULP_REL_BF16 = 2.0**-8
+_ULP_REL_FP16 = 2.0**-11
+_ULP_REL_FP32 = 2.0**-20
+
+# Per-element on-grid test: dev <= _ULP_SAFETY * ulp_rel * |x / scale|, where
+# |x / scale| is the true stored magnitude (|code| on the dense grid, |code +
+# 0.5| on the shifted grid).  A genuine pre-quantized value lands on the grid to
+# within storage noise, whose bound scales with that magnitude, so no absolute
+# near-zero floor is needed.  The dense grid's code-0 element is exactly 0 and is
+# excluded from the test anyway; the shifted grid's code-0 element is 0.5 * scale, so
+# scaling the tolerance by |code + 0.5| (not |code|) is what keeps it on-grid.
+# _ULP_SAFETY absorbs round-to-nearest plus any upstream arithmetic before the
+# value was stored in its narrow float format.
+_ULP_SAFETY = 3.0
+
+# Candidate-divisor gating: reject divisors clearly worse than the per-block best
+# off-grid fraction, then among survivors take the smallest (coarsest grid) whose
+# mean on-grid deviation is within _FIT_MARGIN of the best.
+_VALID_MARGIN = 0.005
+_FIT_MARGIN = 0.5
+
+# Absolute cap on the winning divisor's off-grid fraction.  The relative margin
+# above only compares candidates against each other; for a genuinely unquantized
+# (continuous) block every candidate scores a large, similar off-grid fraction,
+# so the "best of a bad lot" can still pass the relative test.  A true quantized
+# block's winning divisor lands at ~0 off-grid (bounded by storage noise only),
+# so this ceiling is what separates the two.
+_ABS_OFFGRID_CEIL = 0.05
+
+# Tensor-level accept gates: fraction of blocks that must cleanly fit some grid,
+# and the reconstruction relRMS ceiling (scaled off the measured noise floor).
+_MIN_MATCHED_FRAC = 0.90
+_RECON_RELRMS_MULT = 5.0
+_RECON_RELRMS_FLOOR = 1e-3
+
+# Number of least-squares scale-refinement iterations (see _refine_scale_ls).
+_DECOMPOSE_LS_ITERS = 4
+
+# Early-exit gate.  A block that lies on a uniform grid has at most
+# (qmax - qmin + 1) distinct magnitudes (its codes are integers in that range and
+# share one scale), regardless of which divisor recovers the step.  A continuous
+# (non-quantized) block instead has close to one distinct magnitude per element.
+# If most blocks show far more distinct magnitudes than the grid could produce,
+# the tensor cannot be QDQ, so the divisor search is skipped.  The slack factor
+# leaves margin for storage rounding splitting a level into a few nearby values.
+_EARLY_EXIT_LEVEL_SLACK = 4
+_EARLY_EXIT_MIN_OVER_FRAC = 0.90
+
+
+@torch.no_grad()
+def _storage_ulp_rel(x: torch.Tensor) -> float:
+    """Infer the half-ULP relative rounding error of the format ``x`` was
+    originally stored in.
+
+    If ``x`` is itself a narrow float (bf16/fp16), that format's rounding error
+    is returned directly.  If ``x`` is fp32, the format it was upcast from is
+    read off the bit pattern: a bf16/fp16 value upcast to fp32 zero-pads the
+    mantissa, so the newly added low mantissa bits are exactly zero iff the value
+    truly came from that narrower format (bf16 zero-pads the low 16 bits, fp16
+    the low 13).  A narrow-float origin is only credited when *every* nonzero
+    element carries the fingerprint (a true upcast makes it exact for all of
+    them); any weaker or mixed pattern falls back to the fp32 bound, i.e. the
+    tightest tolerance, so an ambiguous tensor is never granted the looser
+    narrow-float tolerance it cannot justify.  bf16 is checked first because its
+    zero pattern is a superset of fp16's.
+    """
+    if x.dtype == torch.bfloat16:
+        return _ULP_REL_BF16
+    if x.dtype == torch.float16:
+        return _ULP_REL_FP16
+    if x.dtype != torch.float32:
+        # Any other dtype (fp64, etc.): use the widest bound, which only loosens
+        # the on-grid tolerance and never wrongly tightens it.
+        return _ULP_REL_BF16
+
+    flat = x.reshape(-1)
+    nz = flat != 0
+    if not bool(nz.any()):
+        return _ULP_REL_FP32
+    bits = flat[nz].view(torch.int32)
+    if bool(((bits & 0xFFFF) == 0).all()):
+        return _ULP_REL_BF16
+    if bool(((bits & 0x1FFF) == 0).all()):
+        return _ULP_REL_FP16
+    return _ULP_REL_FP32
+
+
+@torch.no_grad()
+def _candidate_divisors(k_ests, active, max_k, odd_only, device):
+    """Small set of candidate integer divisors k such that ``scale = anchor / k``:
+    a +/-2 window around each unique rounded per-block estimate, plus ``{1, max_k}``
+    backstops.  ``k_ests`` is a list of per-block estimate tensors (each [B]); the
+    windows around all of them are unioned, so complementary estimates (e.g. a
+    min-nonzero anchor and a magnitude-gap anchor) can each contribute the true
+    divisor for the blocks they suit.  ``odd_only`` restricts to odd divisors for
+    the shifted (zero_point_shift == 0.5) grid, whose codes are the odd
+    integers."""
+    centre_list = []
+    for k_est in k_ests:
+        if active.any():
+            centre_list.append(torch.unique(k_est[active].round().long()))
+    if centre_list:
+        centres = torch.unique(torch.cat(centre_list))
+    else:
+        centres = torch.tensor([1], dtype=torch.long, device=device)
+    offs = torch.arange(-2, 3, dtype=torch.long, device=device)
+    around = (centres.unsqueeze(1) + offs.unsqueeze(0)).reshape(-1)
+    cand = torch.cat(
+        [around, torch.tensor([1, max_k], dtype=torch.long, device=device)]
+    )
+    cand = torch.unique(cand)
+    cand = cand[(cand >= 1) & (cand <= max_k)]
+    if odd_only:
+        cand = cand[cand % 2 == 1]
+        if cand.numel() == 0:
+            cand = torch.tensor([1], dtype=torch.long, device=device)
+    return cand
+
+
+@torch.no_grad()
+def _select_divisor(
+    x, absmax, min_nonzero, zero_point_shift, max_level, ulp_rel, eps=1e-12
+):
+    """Pick the coarsest divisor ``k`` (``scale = anchor / k``) that explains each
+    block's grid, without assuming the smallest nonzero magnitude equals one step.
+
+    Anchoring the scale at ``absmax`` and sweeping candidate divisors recovers the
+    step even for blocks whose codes never reach +/-1 (e.g. a depthwise conv with
+    only a handful of taps per channel), which a "min nonzero == 1 * scale"
+    assumption cannot handle.  Selection is a two-stage relative-margin gate:
+    reject divisors clearly worse than the best off-grid fraction, then among
+    survivors take the smallest (coarsest grid) whose mean on-grid deviation is
+    within ``_FIT_MARGIN`` of the best.  The per-element on-grid tolerance is set
+    from the tensor's measured storage precision (``ulp_rel``).
+
+    Returns ``(k_chosen [B] long, accepted [B] bool)``.
+    """
+    B, _ = x.shape
+    device = x.device
+    nonzero = x.abs() > eps
+    nnz = nonzero.sum(dim=1).clamp(min=1).to(x.dtype)
+    active = torch.isfinite(min_nonzero) & (absmax > 0)
+
+    # The shifted grid (zero_point_shift == 0.5) places codes at the half
+    # integers, i.e. its stored values are odd multiples of half the step, so its
+    # anchor is 2 * absmax and its divisors are the odd integers up to
+    # 2 * max_level + 1.  The dense grid (zero_point_shift == 0) uses absmax and
+    # every integer divisor up to max_level.  Only these two shifts are supported.
+    shifted_grid = zero_point_shift == 0.5
+    anchor = (2.0 if shifted_grid else 1.0) * absmax
+    max_k = (2 * max_level + 1) if shifted_grid else max_level
+    # Two complementary per-block estimates of the divisor k = anchor / step:
+    #   - min-nonzero anchor: assumes the smallest nonzero magnitude is one step.
+    #     Correct when the block's codes reach +/-1, wrong when they do not
+    #     (e.g. a near-constant channel [99, 100, 101], whose min-nonzero is 99).
+    #   - magnitude-gap anchor: step = smallest positive gap between distinct
+    #     sorted magnitudes.  Correct precisely when codes are consecutive (so the
+    #     gap is one step) even if they never reach +/-1, which recovers the true
+    #     fine grid of near-constant channels the min-nonzero anchor collapses.
+    # Both windows are searched; the on-grid fit below picks whichever k fits.
+    k_est_min = absmax / min_nonzero.clamp(min=eps)
+    xs, _ = x.abs().sort(dim=1)
+    gaps = xs[:, 1:] - xs[:, :-1]
+    if gaps.shape[1] == 0:
+        # Single-element blocks have no gap; fall back to the anchor (one step).
+        min_gap = anchor.clamp(min=eps)
+    else:
+        gaps = torch.where(gaps > eps, gaps, gaps.new_full((), float("inf")))
+        min_gap = gaps.min(dim=1).values
+        # All magnitudes equal (no positive gap): fall back to a single-step block.
+        min_gap = torch.where(torch.isfinite(min_gap), min_gap, anchor.clamp(min=eps))
+    k_est_gap = anchor / min_gap.clamp(min=eps)
+    cand = _candidate_divisors(
+        [k_est_min, k_est_gap], active, max_k, odd_only=shifted_grid, device=device
+    )
+    num_cand = cand.numel()
+
+    rel_noise = _ULP_SAFETY * ulp_rel
+    offgrid = x.new_full((B, num_cand), 1.0)
+    meandev = x.new_full((B, num_cand), 1.0)
+    for j, k_int in enumerate(cand.tolist()):
+        s_k = (anchor / k_int).clamp(min=eps)
+        r = x / s_k.unsqueeze(1)
+        # Storage noise scales with the true stored magnitude |x/scale|, which is
+        # |code| on the dense grid and |code + 0.5| on the shifted grid.  Capture
+        # it BEFORE shifting r to integer-code space, otherwise the shifted grid's
+        # zero-code element (whose value is 0.5 * scale, not 0, so it is never
+        # masked out by `nonzero`) would get a zero tolerance and be judged
+        # off-grid on nothing but bf16/fp16 rounding noise.
+        thr = r.abs().mul_(rel_noise)
+        r = r - zero_point_shift
+        # dev = |r - round(r)|, the distance from the nearest integer code.
+        dev = r.round().sub_(r).abs_()
+        bad = dev > thr
+        bad &= nonzero
+        offgrid[:, j] = bad.sum(dim=1).float() / nnz
+        meandev[:, j] = dev.mul_(nonzero).sum(dim=1) / nnz
+
+    min_off = offgrid.min(dim=1, keepdim=True).values
+    valid = offgrid <= min_off + _VALID_MARGIN
+    masked = torch.where(valid, meandev, meandev.new_full((), float("inf")))
+    best_fit = masked.min(dim=1, keepdim=True).values
+    fit_ok = valid & (meandev <= best_fit * (1.0 + _FIT_MARGIN))
+    has_valid = valid.any(dim=1)
+    smallest_good = fit_ok.float().argmax(dim=1)  # first True == smallest k
+    best_resid = offgrid.argmin(dim=1)  # fallback for non-quantized blocks
+    col = torch.where(has_valid, smallest_good, best_resid)
+
+    k_chosen = cand[col]
+    chosen_offgrid = torch.gather(offgrid, 1, col.unsqueeze(1)).squeeze(1)
+    accepted = has_valid & active & (chosen_offgrid <= _ABS_OFFGRID_CEIL)
+    return k_chosen, accepted
+
+
+@torch.no_grad()
+def _refine_scale(
+    x, k_chosen, zero_point_shift, qmin, qmax, eps=1e-12, iters=_DECOMPOSE_LS_ITERS
+):
+    """Recover the per-block scale in two stages: a robust median seed followed by
+    least-squares (Lloyd) refinement.
+
+    Seed: ``median(|x_i| / |code_i|)`` over on-grid elements, using the anchor
+    scale (``absmax / k``) only to derive the integer codes.  This is immune to
+    any single element's storage noise, unlike reading the scale off one point.
+
+    Refine: with the codes held fixed, the scale that minimizes reconstruction
+    error ``||code * scale - x||`` in closed form is ``<x, code> / <code, code>``
+    (with ``code + zero_point_shift`` for a shifted grid), not the median.  A few
+    Lloyd iterations
+    drive the scale to that optimum, which is the exact quantity governing how
+    idempotently the recovered grid reconstructs the weight.  A per-block
+    keep-best guard makes the refinement monotone: a block adopts a refined scale
+    only if it strictly lowers that block's reconstruction error, so the result is
+    never worse than the seed.
+
+    Returns ``(scale [B], codes [B, N])``.
+    """
+    absmax = x.abs().amax(dim=1)
+    anchor = (2.0 if zero_point_shift == 0.5 else 1.0) * absmax
+    s_anchor = anchor / k_chosen.to(x.dtype)
+
+    def _codes(s):
+        r = x / s.unsqueeze(1)
+        r = r - zero_point_shift
+        return r.round().clamp(qmin, qmax)
+
+    def _sse(s):
+        code = _codes(s)
+        denom = code + zero_point_shift
+        return ((denom * s.unsqueeze(1) - x) ** 2).sum(dim=1)
+
+    # Stage 1: robust median seed.
+    code = _codes(s_anchor)
+    denom = code + zero_point_shift
+    nonzero = x.abs() > eps
+    valid = nonzero & (denom.abs() > eps)
+    safe_denom = torch.where(denom.abs() > eps, denom, torch.ones_like(denom))
+    ratio = (x / safe_denom).abs()
+    ratio = torch.where(valid, ratio, ratio.new_full((), float("nan")))
+    s_med = torch.nanmedian(ratio, dim=1).values
+    s_med = torch.where(torch.isfinite(s_med) & (s_med > 0), s_med, s_anchor)
+
+    # Stage 2: Lloyd refinement, monotone via per-block keep-best.
+    best_s = s_med
+    best_sse = _sse(best_s)
+    s = s_med
+    for _ in range(iters):
+        code = _codes(s)
+        denom = code + zero_point_shift
+        num = (x * denom).sum(dim=1)
+        den = (denom * denom).sum(dim=1).clamp(min=eps)
+        s_new = num / den
+        s_new = torch.where(s_new > eps, s_new, s)
+        sse_new = _sse(s_new)
+        improve = sse_new < best_sse
+        best_s = torch.where(improve, s_new, best_s)
+        best_sse = torch.where(improve, sse_new, best_sse)
+        s = s_new
+
+    return best_s, _codes(best_s)
+
+
 @torch.no_grad()
 def _decompose_prequantized_tensor(
     input_qdq: torch.Tensor,
@@ -1708,14 +1995,39 @@ def _decompose_prequantized_tensor(
     qmax: int,
     scale_shape: tuple[int, ...],
     block_size: tuple[int, ...] | None = None,
+    zero_point_shift: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Decompose a pre-quantized tensor (input_qdq)
-    into an integer tensor (input_q) and float scale (scale),
-    assuming min(|input_qdq.nonzero()|) == 1 * scale
+    Decompose a pre-quantized tensor (input_qdq) into an integer tensor (input_q)
+    and float scale (scale), recovering the grid the tensor already lies on.
+
+    Rather than assuming the smallest nonzero magnitude equals one step, the true
+    step of each block is found by anchoring at its largest magnitude and sweeping
+    candidate integer divisors (see _select_divisor).  This recovers weights whose
+    codes never reach +/-1 -- e.g. depthwise convolutions with only a few taps per
+    channel, or channels sliced out of a larger fused weight -- which a
+    min-nonzero anchor cannot.  The dense grid (``zero_point_shift == 0``) and the
+    shifted grid whose codes are the odd integers (``zero_point_shift == 0.5``) are
+    both supported.
+
+    A block is accepted when its elements land on the recovered grid within a
+    tolerance derived from the tensor's own storage precision (bf16/fp16/fp32);
+    the tensor as a whole is accepted only if enough blocks fit cleanly and the
+    overall reconstruction error stays at the storage-noise floor, otherwise
+    ``_DecompositionError`` is raised so the caller falls back to min/max
+    calibration.  The recovered scale is refined to the per-block least-squares
+    optimum (see _refine_scale).
     """
     if len(scale_shape) > len(input_qdq.shape):
         raise ValueError
+
+    if zero_point_shift not in (0.0, 0.5):
+        raise ValueError(
+            f"zero_point_shift must be 0.0 (dense grid) or 0.5 (shifted grid), "
+            f"got {zero_point_shift}"
+        )
+    max_level = max(abs(qmin), abs(qmax))
+    min_scale = _get_minimum_scale(qmax - qmin)
 
     concrete_block_size = concretize_block_size(
         input_qdq.shape, scale_shape, block_size or tuple(-1 for _ in scale_shape)
@@ -1726,35 +2038,90 @@ def _decompose_prequantized_tensor(
     )
     orig_shape = input_qdq.shape
 
-    input_qdq = input_qdq.reshape(
+    reshaped = input_qdq.reshape(
         *interleave(
             [dim // b for dim, b in zip(input_qdq.shape, concrete_block_size)],
             concrete_block_size,
         )
     )
-    reduce_dims = tuple(range(1, input_qdq.ndim, 2))
-    absmin = torch.where(
-        input_qdq == 0,
-        float("inf"),
-        input_qdq.abs(),
-    ).amin(dim=reduce_dims, keepdim=True)
+    ndim = reshaped.ndim
+    block_count_dims = tuple(range(0, ndim, 2))
+    block_size_dims = tuple(range(1, ndim, 2))
+    permuted = reshaped.permute(*block_count_dims, *block_size_dims)
+    permuted_shape = permuted.shape
+    num_blocks = 1
+    for d in block_count_dims:
+        num_blocks *= reshaped.shape[d]
 
-    input_scaled = input_qdq / absmin
-    input_q = torch.round(input_scaled)
+    # (num_blocks, block_numel); compute in fp32 for a stable divisor search.
+    x = permuted.reshape(num_blocks, -1).float()
 
-    if torch.all(
-        torch.isclose(input_q, input_scaled, atol=1e-6)
-        & (qmin <= input_q)
-        & (input_q <= qmax)
-    ):
-        input_q = input_q.reshape(orig_shape)
-        scale = torch.where(
-            absmin == float("inf"),  # absmin == inf means input_qdq is all zeros
-            _get_minimum_scale(qmax - qmin),
-            absmin,
-        ).reshape(scale_shape)
-        return input_q, scale
+    ulp_rel = _storage_ulp_rel(x)
 
-    raise _DecompositionError(
-        "Failed to decompose input tensor into input_q (int4) and scale (float)"
+    # Early exit: if most blocks carry far more distinct magnitudes than a grid of
+    # (qmax - qmin + 1) levels could ever produce, the tensor is not pre-quantized.
+    # This bound holds for any divisor, so it is a safe reject that skips the
+    # expensive divisor search and falls back to min/max calibration.  Only worth
+    # the sort for blocks large enough for the search to dominate runtime.
+    num_levels = qmax - qmin + 1
+    if x.shape[1] > _EARLY_EXIT_LEVEL_SLACK * num_levels:
+        xs, _ = x.abs().sort(dim=1)
+        distinct = (xs[:, 1:] != xs[:, :-1]).sum(dim=1) + 1
+        over_cap = distinct > _EARLY_EXIT_LEVEL_SLACK * num_levels
+        if over_cap.float().mean().item() >= _EARLY_EXIT_MIN_OVER_FRAC:
+            raise _DecompositionError(
+                f"not QDQ-like (early exit): {over_cap.float().mean().item():.3f} of "
+                f"blocks exceed {_EARLY_EXIT_LEVEL_SLACK * num_levels} distinct magnitudes"
+            )
+
+    x_abs = x.abs()
+    absmax = x_abs.amax(dim=1)
+    min_nonzero = torch.where(x_abs > 0, x_abs, x.new_full((), float("inf"))).amin(
+        dim=1
     )
+    active = torch.isfinite(min_nonzero) & (absmax > 0)
+
+    k_chosen, accepted = _select_divisor(
+        x, absmax, min_nonzero, zero_point_shift, max_level, ulp_rel
+    )
+    scale, _ = _refine_scale(x, k_chosen, zero_point_shift, qmin, qmax)
+    # Inactive (all-zero) blocks have no grid to recover; give them the minimum
+    # representable scale.  Active blocks keep their recovered scale, clamped to
+    # the same floor since AIMET never produces a scale below min_scale in
+    # practice -- a smaller scale would trigger a known HTP underflow bug.
+    scale = torch.where(
+        active, scale.clamp_min(min_scale), x.new_full(scale.shape, min_scale)
+    )
+
+    # Tensor-level verification, gates scaled to the measured noise floor.
+    s_col = scale.unsqueeze(1)
+    codes = (x / s_col - zero_point_shift).round().clamp(qmin, qmax)
+    recon = (codes + zero_point_shift) * s_col
+
+    code_absmax = int(codes.abs().max().item()) if codes.numel() else 0
+    # All-zero blocks reconstruct exactly (0 == 0) and count as matched.
+    matched = (accepted & active) | ~active
+    matched_frac = matched.float().mean().item() if num_blocks > 0 else 0.0
+    recon_relrms = (recon - x).norm() / x.norm().clamp(min=1e-12)
+    recon_gate = max(_RECON_RELRMS_MULT * ulp_rel, _RECON_RELRMS_FLOOR)
+
+    if not (
+        code_absmax > 0
+        and matched_frac >= _MIN_MATCHED_FRAC
+        and recon_relrms.item() <= recon_gate
+    ):
+        raise _DecompositionError(
+            f"not QDQ-like: matched={matched_frac:.4f}, relRMS={recon_relrms.item():.2e} "
+            f"(gate={recon_gate:.2e}, ulp_rel={ulp_rel:.2e}), code_absmax={code_absmax}"
+        )
+
+    # Map codes back to the original layout, and scale to scale_shape.
+    inv_perm = tuple(
+        int(i)
+        for i in torch.argsort(
+            torch.tensor(block_count_dims + block_size_dims)
+        ).tolist()
+    )
+    input_q = codes.reshape(permuted_shape).permute(*inv_perm).reshape(orig_shape)
+    scale = scale.reshape(scale_shape)
+    return input_q, scale
