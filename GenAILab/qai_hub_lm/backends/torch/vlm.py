@@ -205,61 +205,6 @@ except ImportError:
     pass
 
 try:
-    from GenAILab.qai_hub_lm.models.gemma4 import Gemma4_VLM
-
-    @YAMLConfigParser.register_model("gemma4")
-    class Gemma4_Torch(VLM_Torch, Gemma4_VLM):
-        @classmethod
-        def instantiate_quantsim(
-            cls,
-            model,
-            context_length,
-            sequence_length,
-            precision=None,
-            image_size=None,
-            model_id=None,
-            **kwargs,
-        ):
-            """Build the W4A8 sim; if the checkpoint is a packed Gemma QAT model,
-            dequantize it, then load its trained QAT scales onto the sim and
-            disable the quantizers the load left uninitialized.
-
-            The returned SimCollection is what Stage 2 produces: QAT scales loaded
-            (frozen) and uninitialized quantizers nulled -- no recipe needed. A
-            standard float gemma4 model_id skips all QAT work (no-op).
-            """
-            is_qat = cls.is_qat_checkpoint(model.config)
-            if is_qat:
-                print(f"[Gemma4] Dequantizing packed QAT weights for {model_id}")
-                cls.dequantize_packed_weights(model)
-
-            sim_collection = super().instantiate_quantsim(
-                model,
-                context_length,
-                sequence_length,
-                precision=precision,
-                image_size=image_size,
-                **kwargs,
-            )
-
-            if is_qat:
-                if model_id is None:
-                    raise RuntimeError(
-                        "Gemma4 QAT checkpoint requires model_id to locate "
-                        "model.safetensors; pass model_id to instantiate_quantsim."
-                    )
-                counts = cls.load_qat_encodings(sim_collection, model_id)
-                n = cls.disable_uninitialized_quantizers(sim_collection.backbone.model)
-                print(
-                    f"[Gemma4 QAT] loaded {counts}; nulled {n} uninitialized quantizers"
-                )
-
-            return sim_collection
-
-except ImportError:
-    pass
-
-try:
     from GenAILab.qai_hub_lm.models.internvl import InternVL_VLM
 
     @YAMLConfigParser.register_model("internvl_chat")
