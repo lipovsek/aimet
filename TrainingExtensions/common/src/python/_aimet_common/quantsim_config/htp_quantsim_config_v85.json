@@ -1,0 +1,201 @@
+{
+  "defaults":
+  {
+    "hw_version": "V85",
+    "ops":
+    {
+      "is_output_quantized": "True"
+    },
+    "params":
+    {
+      "is_quantized": "True",
+      "is_symmetric": "True"
+    },
+    "per_channel_quantization": "False",
+    "strict_symmetric": "False",
+    "unsigned_symmetric": "False"
+  },
+
+  "params":
+  {
+    "bias":
+    {
+      "is_quantized": "False"
+    }
+  },
+
+  "op_type":
+  {
+    "Conv":
+    {
+      "per_channel_quantization": "True"
+    },
+    "ConvTranspose":
+    {
+      "per_channel_quantization": "True"
+    },
+    "Gemm":
+    {
+      "per_channel_quantization": "True"
+    },
+    "MatMul":
+    {
+      "per_channel_quantization": "True"
+    },
+    "PRelu":
+    {
+      "per_channel_quantization": "True"
+    },
+    "Cast":
+    {
+      "is_output_quantized": "False"
+    },
+    "ChannelShuffle":
+    {
+      "is_output_quantized": "False"
+    },
+    "Gather":
+    {
+      "is_output_quantized": "False"
+    },
+    "NonMaxSuppression":
+    {
+      "is_output_quantized": "False"
+    },
+    "GroupNormalization":
+    {
+      "params": {
+        "bias":
+        {
+          "is_quantized": "True"
+        }
+      }
+    },
+    "LayerNormalization":
+    {
+      "params": {
+        "weight": {
+          "is_symmetric": "False"
+        }
+      }
+    },
+    "BatchNormalization":
+    {
+      "params": {
+        "running_mean": {
+          "is_quantized": "False"
+        },
+        "running_var": {
+          "is_quantized": "False"
+        }
+      }
+    },
+    "InstanceNormalization":
+    {
+      "params": {
+        "weight": {
+          "is_symmetric": "False"
+        }
+      }
+    },
+    "Relu":
+    {
+      "encoding_constraints":
+      {
+        "min": 0.0
+      }
+    },
+    "RMSNormalization":
+    {
+      "params": {
+        "weight": {
+          "is_symmetric": "False"
+        }
+      }
+    },
+    "Sigmoid":
+    {
+      "encoding_constraints":
+      {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "Softmax":
+    {
+      "encoding_constraints":
+      {
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "Tanh":
+    {
+      "encoding_constraints":
+      {
+        "min": -1.0,
+        "max": 1.0
+      }
+    }
+  },
+
+  "supergroup_pass_list":
+  [
+    "LayerNormalization",
+    "RMSNormalization",
+    "MatmulAdd"
+  ],
+  "supergroups":
+  [
+    {
+      "op_list": ["Add", "Relu"]
+    },
+    {
+      "op_list": ["Conv", "BatchNormalization","HardSwish"]
+    },
+    {
+      "op_list": ["Conv", "BatchNormalization","PRelu"]
+    },
+    {
+      "op_list": ["Conv", "BatchNormalization", "LeakyRelu"]
+    },
+    {
+      "op_list": ["Conv", "BatchNormalization", "Relu"]
+    },
+    {
+      "op_list": ["Conv", "Transpose", "Relu"]
+    },
+    {
+      "op_list": ["Conv", "Transpose", "PRelu"]
+    },
+    {
+      "op_list": ["Conv", "Transpose", "LeakyRelu"]
+    },
+	{
+      "op_list": ["Conv", "Clip"]
+	},
+    {
+      "op_list": ["Conv", "PRelu"]
+    },
+    {
+      "op_list": ["Conv", "LeakyRelu"]
+    },
+    {
+      "op_list": ["Conv", "Relu"]
+    },
+    {
+      "op_list": ["ConvTranspose", "Relu"]
+    },
+    {
+      "op_list": ["Gemm", "Relu"]
+    }
+  ],
+
+  "model_input":
+  {
+    "is_input_quantized": "True"
+  },
+
+  "model_output":
+  {}
+}
