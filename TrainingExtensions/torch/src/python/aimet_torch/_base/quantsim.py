@@ -830,6 +830,7 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         use_embedded_encodings: bool = False,
         export_model: bool = True,
         filename_prefix_encodings: str = None,
+        apply_param_qdq: bool = True,
     ):
         """
         .. warning::
@@ -866,7 +867,22 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
                             specified
         :param filename_prefix_encodings: File name prefix to be used when saving encodings.
                                           If None, then user defaults to filename_prefix value
+        :param apply_param_qdq: If True (default), weights are quantize-dequantized (rounded onto
+                the quantization grid) before export so the exported weights match the simulated
+                weights. If False, the original floating point weights are exported unchanged.
+
+                .. warning::
+                    ``apply_param_qdq=False`` is intended for debugging only and must NOT be used
+                    to export a model for on-target deployment, as the exported weights will not
+                    match the quantized weights the target runs.
         """
+        if not apply_param_qdq:
+            logger.warning(
+                "apply_param_qdq=False exports original floating point weights without "
+                "applying quantize-dequantize. This is intended for debugging only and "
+                "must NOT be used to export a model for on-target deployment."
+            )
+
         if propagate_encodings and quantsim.encoding_version != "0.6.1":
             raise RuntimeError(
                 f"Encoding version {quantsim.encoding_version} is not supported when propagate_encodings is True. To continue using "
@@ -896,7 +912,9 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         model_path = os.path.join(path, model_filename)
 
         # Create a version of the model without any quantization ops
-        model_to_export = self.get_original_model(self.model, qdq_weights=True)
+        model_to_export = self.get_original_model(
+            self.model, qdq_weights=apply_param_qdq
+        )
 
         if _SAVE_TORCH_MODEL_DURING_EXPORT:
             msg = _red(

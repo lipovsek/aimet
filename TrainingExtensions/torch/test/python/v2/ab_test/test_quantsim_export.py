@@ -3,6 +3,7 @@
 
 
 import pytest
+import logging
 import tempfile
 import torch.nn
 import copy
@@ -525,3 +526,70 @@ class TestQuantsimOnnxExport:
                         torch.float32
                     ),
                 )
+
+    def test_export_apply_param_qdq(self, caplog):
+        """
+        Given: A quantsim model whose weight does not sit exactly on the
+               quantization grid
+        """
+        model = BasicConv2d(kernel_size=3)
+        dummy_input = torch.randn(2, 64, 8, 8)
+        sim = QuantizationSimModel(model, dummy_input, default_param_bw=8)
+        sim.compute_encodings(lambda m, _: m(dummy_input), None)
+
+        orig_weight = sim.model.conv.weight.as_subclass(torch.Tensor).clone()
+
+        # The aimet "Quant" logger does not propagate to the root logger, so
+        # attach caplog's handler to it directly to capture warnings.
+        quant_logger = logging.getLogger("Quant")
+
+        def _export(tmp_dir, prefix, *, apply_param_qdq):
+            caplog.clear()
+            quant_logger.addHandler(caplog.handler)
+            try:
+                sim.export(
+                    tmp_dir, prefix, dummy_input, apply_param_qdq=apply_param_qdq
+                )
+            finally:
+                quant_logger.removeHandler(caplog.handler)
+            # A warning is logged iff the debugging opt-out is used
+            assert ("apply_param_qdq=False" in caplog.text) == (not apply_param_qdq)
+            onnx_model = onnx.load(os.path.join(tmp_dir, prefix + ".onnx"))
+            weight = next(
+                onnx.numpy_helper.to_array(tensor)
+                for tensor in onnx_model.graph.initializer
+                if tensor.name == "conv.weight"
+            )
+            with open(os.path.join(tmp_dir, prefix + ".encodings")) as f:
+                encodings = json.load(f)
+            return torch.from_numpy(weight), encodings
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            """
+            When: Export with apply_param_qdq=True (default)
+            Then: The exported weight is quantize-dequantized (grid-aligned),
+                  so it differs from the original float weight
+            """
+            qdq_weight, qdq_encodings = _export(
+                tmp_dir, "with_qdq", apply_param_qdq=True
+            )
+            weight_qtzr = sim.model.conv.param_quantizers["weight"]
+            expected_qdq = (
+                weight_qtzr(orig_weight).dequantize().as_subclass(torch.Tensor)
+            )
+            assert torch.allclose(qdq_weight, expected_qdq)
+            assert not torch.allclose(qdq_weight, orig_weight)
+
+            """
+            When: Export with apply_param_qdq=False
+            Then: The exported weight equals the original float weight
+            """
+            fp_weight, fp_encodings = _export(tmp_dir, "no_qdq", apply_param_qdq=False)
+            assert torch.allclose(fp_weight, orig_weight)
+
+            """
+            Then: The exported encodings are identical regardless of
+                  apply_param_qdq (quantization info lives in the .encodings
+                  file, not the weight initializers)
+            """
+            assert qdq_encodings == fp_encodings
