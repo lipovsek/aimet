@@ -72,6 +72,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         # List of ops in the order they are traversed using the forward function
         self.ordered_ops = get_ordered_ops(self.starting_ops)
         self._assert_no_conflicting_shared_parameters()
+        self._warn_on_conflicting_shared_bias_initializers()
 
     def get_op_from_module_name(self, name: str) -> Op:
         """
@@ -136,6 +137,31 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             " to ensure each consumer takes a unique copy of the initializer as input."
         )
         raise RuntimeError("\n".join(msg))
+
+    def _warn_on_conflicting_shared_bias_initializers(self):
+        """
+        Warns when a bias initializer is consumed by more than one node, which prevents
+        computation of correct bias scales.
+        """
+        bias_to_consumers: dict[Product, list[Op]] = {}
+        for op in self._ops.values():
+            if op.type not in ("Gemm", "Conv", "ConvTranspose"):
+                continue
+            for product, param_type in op.parameters.values():
+                if param_type == "bias":
+                    bias_to_consumers.setdefault(product, []).append(op)
+
+        multi_consumer_bias = [
+            bias for bias, consumers in bias_to_consumers.items() if len(consumers) > 1
+        ]
+
+        if multi_consumer_bias:
+            logger.warning(
+                "Bias tensors %s are consumed by multiple nodes. This will prevent the computation"
+                " of correct bias scales. Please call ``aimet_onnx.utils.duplicate_shared_initializers(onnx_model.graph)``"
+                " prior to QuantizationSimModel creation to allow exporting bias scales.",
+                multi_consumer_bias,
+            )
 
     @staticmethod
     def _create_ir_op(node: NodeProto) -> Op:

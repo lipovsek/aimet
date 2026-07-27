@@ -1759,6 +1759,14 @@ class QuantizationSimModel:
         ):
             return self._get_statistical_bias_scale(op)
 
+        if len(bias.consumers) > 1:
+            raise RuntimeError(
+                f"Cannot determine single analytical bias scale for bias tensor {bias} with "
+                f"multiple uses ({bias.consumers}). Call "
+                "``aimet_onnx.utils.duplicate_shared_initializers(onnx_model.graph)`` before "
+                "instantiating QuantizationSimModel to resolve the conflicts"
+            )
+
         channel_axis = None
         num_channels = None
         block_axis = None

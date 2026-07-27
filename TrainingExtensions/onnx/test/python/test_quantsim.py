@@ -59,7 +59,11 @@ from aimet_onnx.quantsim import (
 )
 import aimet_onnx
 from aimet_onnx.qc_quantize_op import OpMode, GroupedBlockQuantizeDequantize
-from aimet_onnx.utils import make_dummy_input, get_node_attribute
+from aimet_onnx.utils import (
+    make_dummy_input,
+    get_node_attribute,
+    duplicate_shared_initializers,
+)
 from aimet_onnx import int8
 from aimet_onnx._encoding import EncodingBase, AffineEncoding
 from .models import models_for_tests, test_models
@@ -3967,6 +3971,30 @@ class TestQuantSim:
             match=r"Found shared parameter\(s\) with conflicting consumer types",
         ):
             _ = QuantizationSimModel(model)
+
+    def test_shared_bias_analytic_scale(self, tmp_path: pathlib.Path):
+        """
+        Given: A model whose bias initializer is shared between two Conv nodes
+        When: Export int32 bias encodings, which derives analytic bias scales
+        Then: Raise RuntimeError, since a shared bias cannot have a single analytic scale
+              Duplicating the shared initializer beforehand resolves the conflict.
+        """
+        model = models_for_tests.conv_model_with_shared_bias(tmp_path)
+
+        sim = QuantizationSimModel(model, quant_scheme=QuantScheme.post_training_tf)
+        sim.compute_encodings([make_dummy_input(model)])
+
+        with pytest.raises(RuntimeError):
+            sim.export(str(tmp_path), "model", export_int32_bias=True)
+
+        # Does not raise runtime error with export_int32_bias=False
+        sim.export(str(tmp_path), "model", export_int32_bias=False)
+
+        # Duplicating the shared bias gives each Conv its own tensor, resolving the conflict.
+        duplicate_shared_initializers(model.graph)
+        sim = QuantizationSimModel(model, quant_scheme=QuantScheme.post_training_tf)
+        sim.compute_encodings([make_dummy_input(model)])
+        sim.export(str(tmp_path), "model", export_int32_bias=True)
 
 
 class TestEncodingPropagation:
