@@ -250,7 +250,6 @@ def optional_dependencies() -> dict[str, list[str]]:
             "sphinx-rtd-theme",
             "sphinx-tabs",
         ],
-        "v1-deps": [],  # This is empty for aimet-onnx
     }
 
     aimet_variant = get_aimet_variant()
@@ -266,16 +265,6 @@ def optional_dependencies() -> dict[str, list[str]]:
         # Read torch-specific test deps (deepspeed, spconv - Linux only)
         torch_test_deps = _read_requirements_file("reqs_pip_test_torch.txt")
         optional_deps["test"].extend(torch_test_deps)
-
-        try:
-            import torch
-        except ImportError:
-            return optional_deps
-
-        from packaging import version
-
-        v = version.parse(torch.__version__)
-        optional_deps["v1-deps"].append(f"torch=={v.major}.{v.minor}.*")
 
     return optional_deps
 
