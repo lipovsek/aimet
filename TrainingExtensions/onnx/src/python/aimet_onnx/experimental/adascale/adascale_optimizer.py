@@ -187,35 +187,40 @@ class AdaScale:
         Warning: This feature is currently considered experimental pending API changes
         """
         # pylint: disable=protected-access
+        sim._compute_param_encodings(overwrite=False)
+
+        blocks_end_points = get_decoder_block_boundaries(
+            sim.model.model, sim.connected_graph
+        )
+        cls._apply_adascale(
+            sim,
+            inputs,
+            blocks_end_points,
+            num_iterations,
+            loss_fn=loss_fn,
+            beta_gamma_lr=adascale_model_config.beta_gamma_lr,
+            scales_lr=adascale_model_config.scales_lr,
+        )
+
+    @classmethod
+    def _apply_adascale(
+        cls,
+        sim: QuantizationSimModel,
+        inputs: Collection[Dict[str, np.ndarray]],
+        block_end_points: List[Tuple[str, str]],
+        num_iterations: int = 1500,
+        *,
+        loss_fn: Optional[_LossFn] = None,
+        beta_gamma_lr: float = 1e-3,
+        scales_lr: float = 5e-4,
+    ):
         with cls._disable_activation_quantizers(sim):
-            # Compute param encodings
-            sim._compute_param_encodings(overwrite=False)
-
-            blocks_end_points = get_decoder_block_boundaries(
-                sim.model.model, sim.connected_graph
-            )
-
             device = get_torch_device(sim.session)
             graph_input_names = [inp.name for inp in sim.session.get_inputs()]
             if graph_input_names != list(inputs[0].keys()):
                 raise ValueError(
                     "Graph input names do not match the keys in the provided inputs."
                 )
-
-            # create a list of common input names to be used for graph slicing and populating input_list
-            # Exclude primary sequence inputs (consumed upstream by embedding layer)
-            # and per-layer state inputs (past_key_*/past_value_* for full-attention
-            # layers, recurrent_state_k_*/recurrent_state_v_* for linear-attention
-            # layers). Per-layer inputs are re-attached for the current block below.
-            common_input_names = []
-            for name in graph_input_names:
-                if name == "inputs_embeds" or "input_ids" in name:
-                    continue
-                if "past_key" in name or "past_value" in name:
-                    continue
-                if "recurrent_state" in name:
-                    continue
-                common_input_names.append(name)
 
             del sim.session
             gc.collect()
@@ -237,7 +242,7 @@ class AdaScale:
                     external_data="unquantized_model.data",
                 )
 
-                for idx in range(len(blocks_end_points)):
+                for idx in range(len(block_end_points)):
                     if (
                         _DEBUG_NUM_PARTIAL_ITERATIONS is not None
                         and idx >= _DEBUG_NUM_PARTIAL_ITERATIONS
@@ -256,108 +261,73 @@ class AdaScale:
 
                     _logger.info("Optimizing block: %d", idx)
 
-                    # Query this block's per-layer state: past_key/value (full attention)
-                    # or recurrent_state_k/v. Exactly one pair.
-                    block_kv_tensor_names = []
-                    for name in graph_input_names:
-                        if (
-                            f"past_key_{idx}_in" in name
-                            or f"past_value_{idx}_in" in name
-                            or f"recurrent_state_k_{idx}_in" in name
-                            or f"recurrent_state_v_{idx}_in" in name
-                        ):
-                            block_kv_tensor_names.append(name)
-
-                    block_input_names = list(common_input_names)
-                    if len(block_kv_tensor_names) > 0:
-                        if len(block_kv_tensor_names) != 2:
-                            raise RuntimeError(
-                                f"Expected exactly one (key, value) per-layer state pair for "
-                                f"block {idx}, found {block_kv_tensor_names}."
-                            )
-                        block_input_names.extend(block_kv_tensor_names)
-
                     # Step back through leading Casts to land on the true
                     # cross-block residual (fp16 graphs keep the Cast).
-                    # The sim and unquantized graphs differ on the suffix of
-                    # values produced by quantizer ops ('_updated' on the sim
-                    # side, bare on the unquantized side post-
-                    # remove_aimet_quantizers), so resolve on each graph
-                    # separately.
-                    sim_start_residual = resolve_block_residual_name(
-                        sim_model.graph, blocks_end_points[idx][0]
+                    # TODO: Move this to block endpoint logic
+                    start_residual = resolve_block_residual_name(
+                        unquantized_model.graph, block_end_points[idx][0]
                     )
-                    sim_end_residual = resolve_block_residual_name(
-                        sim_model.graph, blocks_end_points[idx][1]
+                    end_residual = resolve_block_residual_name(
+                        unquantized_model.graph, block_end_points[idx][1]
                     )
-                    unquantized_start_residual = resolve_block_residual_name(
-                        unquantized_model.graph, blocks_end_points[idx][0]
+                    extra_inputs = required_extra_block_inputs(
+                        sim_model.graph, [start_residual], [end_residual]
                     )
-                    # Safety net for any other unbounded graph input.
-                    declared = [sim_start_residual] + block_input_names
-                    extras = required_extra_block_inputs(
-                        sim_model.graph, declared, [sim_end_residual]
-                    )
-                    if extras:
-                        _logger.debug("Block %d adding extra inputs %s", idx, extras)
-                        block_input_names.extend(extras)
+                    if extra_inputs:
+                        _logger.debug(
+                            "Block %d adding extra inputs %s", idx, extra_inputs
+                        )
 
                     onnx_ir.save(
                         sim_model, path=sim_path, external_data="sim_model.data"
                     )
                     qsim_sess = ActivationSampler(
-                        sim_start_residual,
+                        start_residual,
                         sim_path,
                         sim.providers,
                     )
 
                     fp_inputs, qsim_inputs = [], []
                     for input in inputs:  # pylint: disable=redefined-builtin
-                        qsim_inputs.append(qsim_sess.sample_acts(input))
+                        sample = qsim_sess.sample_acts(input)
+                        qsim_inputs.append(
+                            [sample] + [input[name] for name in extra_inputs]
+                        )
 
                     del qsim_sess
 
                     unquantized_sampler = ActivationSampler(
-                        unquantized_start_residual,
+                        start_residual,
                         unquantized_path,
                         sim.providers,
                     )
 
                     for input in inputs:
-                        fp_inputs.append(unquantized_sampler.sample_acts(input))
+                        sample = unquantized_sampler.sample_acts(input)
+                        fp_inputs.append(
+                            [sample] + [input[name] for name in extra_inputs]
+                        )
 
                     del unquantized_sampler
 
-                    fp_input_list = []
-                    qsim_input_list = []
-                    for i in range(len(fp_inputs)):
-                        fp_list, qsim_list = [], []
-                        fp_list.append(fp_inputs[i])
-                        qsim_list.append(qsim_inputs[i])
-                        for name in block_input_names:
-                            fp_list.append(inputs[i][name])
-                            qsim_list.append(inputs[i][name])
-                        fp_input_list.append(fp_list)
-                        qsim_input_list.append(qsim_list)
-
                     block_input_output_names = (
-                        [sim_start_residual] + block_input_names,
-                        [sim_end_residual],
+                        [start_residual] + extra_inputs,
+                        [end_residual],
                     )
 
                     AdaScale.optimize_adascale_block(
                         sim_model,
                         sim.qc_quantize_op_dict,
-                        fp_input_list,
-                        qsim_input_list,
+                        fp_inputs,
+                        qsim_inputs,
                         block_input_output_names,
-                        adascale_model_config.beta_gamma_lr,
-                        adascale_model_config.scales_lr,
+                        beta_gamma_lr,
+                        scales_lr,
                         num_iterations,
                         device,
                         loss_fn=loss_fn,
                     )
-                    del fp_input_list, qsim_input_list, fp_inputs, qsim_inputs
+                    del fp_inputs, qsim_inputs
                     gc.collect()
                     torch.cuda.empty_cache()
 
@@ -378,8 +348,8 @@ class AdaScale:
     def optimize_adascale_block(
         sim_model: onnx_ir.Model,
         quantizer_dict: Dict[str, QcQuantizeOp],
-        fp_inputs: List[np.ndarray],
-        quantized_inputs: List[np.ndarray],
+        fp_inputs: List[List[np.ndarray]],
+        quantized_inputs: List[List[np.ndarray]],
         block_input_output_names: Tuple[List[str], List[str]],
         beta_gamma_lr: float = 1e-3,
         scales_lr: float = 5e-4,
@@ -421,15 +391,12 @@ class AdaScale:
         )
         pytorch_block.requires_grad_(False)
 
-        torch_fp_input = convert_to_torch(fp_inputs)
-        torch_quant_input = convert_to_torch(quantized_inputs)
+        torch_fp_input = [convert_to_torch(inp) for inp in fp_inputs]
+        torch_quant_input = [convert_to_torch(inp) for inp in quantized_inputs]
         pytorch_block.to(device)
         fp_out = []
         with torch.no_grad():
             for input_tensor in torch_fp_input:
-                if isinstance(input_tensor, torch.Tensor):
-                    input_tensor = [input_tensor]
-
                 input_tensor = [
                     inp_t.to(device=device) for inp_t in input_tensor
                 ]  # Create a new tensor

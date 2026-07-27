@@ -125,7 +125,9 @@ def required_extra_block_inputs(
             if inp is None or inp in visited_values:
                 continue
             stack.append(inp)
-    return extras
+
+    # Normalize order to graph input order
+    return [inp.name for inp in graph.inputs if inp.name in extras]
 
 
 def get_pt_block(
@@ -138,16 +140,6 @@ def get_pt_block(
     """
     input_names, output_names = block_input_output_names
 
-    # Walk back through leading Casts so the boundary lands on the true
-    # cross-block residual; in fp16 graphs the RMSNorm anchor's first input
-    # is post-Cast and would leave the residual Add's skip input unbounded.
-    input_names = [resolve_block_residual_name(model.graph, n) for n in input_names]
-    output_names = [resolve_block_residual_name(model.graph, n) for n in output_names]
-
-    # Defensive safety net for any other unbounded graph input.
-    extras = required_extra_block_inputs(model.graph, input_names, output_names)
-    if extras:
-        input_names = input_names + extras
     subgraph = onnx_ir.convenience.extract(
         model.graph,
         input_names,

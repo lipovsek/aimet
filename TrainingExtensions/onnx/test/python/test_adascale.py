@@ -36,6 +36,15 @@ from aimet_onnx.experimental.adascale.model_converter import (
 )
 from .utils import add_genai_tests_path
 
+# TODO: Move block definitions to a util file
+from .test_find_transformer_blocks import (
+    _block_topology_params,
+    _build_block_topology_model,
+    _detect_from_config,
+    _export_onnx,
+    _sample_inputs,
+)
+
 
 class ModelWithLinears(torch.nn.Module):
     def __init__(self):
@@ -901,6 +910,56 @@ class TestBlockResidualResolution:
             """
         )
         assert required_extra_block_inputs(graph, ["residual"], ["out"]) == []
+
+
+# MoE models whose torchscript export bakes a fixed expert-routing Split
+# (sized to the experts hit while tracing).
+# These fail basic ORT inference when routed to a different number of experts
+_UNEXPORTABLE_MOE = {
+    "Qwen2MoeConfig",
+    "Glm4MoeConfig",
+    "Qwen3NextConfig",
+    "OlmoeConfig",
+}
+
+
+@pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+@pytest.mark.skip_on_windows_amd64(
+    "insufficient disk for large ONNX export on Windows AMD64 runner"
+)
+@pytest.mark.parametrize(
+    "config_attr, backend, detect_kwargs, _",
+    list(_block_topology_params()),
+)
+def test_adascale_block_topologies(config_attr, backend, detect_kwargs, _):
+    """Run AdaScale over the decoder blocks detected on each transformer topology."""
+    if config_attr in _UNEXPORTABLE_MOE:
+        pytest.skip(
+            f"{config_attr}: export bakes a fixed expert-routing for MoE, fails ORT inference"
+        )
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model, cfg = _build_block_topology_model(config_attr)
+    onnx_model = _export_onnx(model, _sample_inputs(cfg), backend)
+    end_points, *_ = _detect_from_config(config_attr, backend, detect_kwargs)
+    inputs = [
+        {
+            t.name: tensor.numpy()
+            for t, tensor in zip(onnx_model.graph.input, _sample_inputs(cfg))
+        }
+    ]
+    sim = aimet_onnx.QuantizationSimModel(
+        onnx_model, param_type="int4", activation_type="int16"
+    )
+    sim.compute_encodings(inputs)
+    output = sim.session.run(None, inputs[0])[0]
+    # Smoke test for sampler, converter, reloading
+    AdaScale._apply_adascale(
+        sim, inputs, end_points, num_iterations=1, beta_gamma_lr=0.0, scales_lr=0.0
+    )
+    # Weights/encodings should be loaded back in original state
+    output_after_adascale = sim.session.run(None, inputs[0])[0]
+    assert np.allclose(output, output_after_adascale, rtol=1e-4, atol=5e-4)
 
 
 @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")

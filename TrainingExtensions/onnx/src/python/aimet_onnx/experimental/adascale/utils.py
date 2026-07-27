@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import itertools
-import types
 import math
 from typing import Optional, Tuple, Callable, List
 import functools
@@ -247,17 +246,8 @@ def get_encoding_shape_with_blocks(
     return new_encoding_shape
 
 
-def convert_to_torch(obj):
-    if isinstance(obj, dict):
-        return {k: convert_to_torch(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return type(obj)(convert_to_torch(v) for v in obj)
-    elif isinstance(obj, types.GeneratorType):
-        return (convert_to_torch(v) for v in obj)
-    elif isinstance(obj, np.ndarray):
-        return torch.from_numpy(obj)
-    else:
-        return obj
+def convert_to_torch(obj: list):
+    return [torch.from_numpy(t) if isinstance(t, np.ndarray) else t for t in obj]
 
 
 def change_tensor_device_placement(input_data, device: torch.device):

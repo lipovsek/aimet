@@ -96,11 +96,11 @@ class ActivationSampler:
 
         return all_data
 
-    def sample_acts(self, model_inputs: Dict[str, np.ndarray]) -> List:
+    def sample_acts(self, model_inputs: Dict[str, np.ndarray]) -> np.ndarray:
         """
         Given the model_inputs retrieve the activation tensors corresponding to activation_name
         :param model_inputs: inputs to the model
-        :return: Tuple of module's quantized input activation and its fp activation output
+        :return: Activation sample for the given input
         """
         module_input_act = self.run_session(
             self._sess, model_inputs, self._activation_name

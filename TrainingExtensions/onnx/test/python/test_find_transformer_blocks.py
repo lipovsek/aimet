@@ -1,6 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
+import contextlib
 import io
 import re
 import shutil
@@ -83,9 +84,11 @@ _BLOCK_TOPOLOGY_MODELS = [
 _VLM_BACKBONE_MODELS = ["llava", "internvl", "qwen2_5_vl", "qwen3_vl"]
 
 
+@contextlib.contextmanager
 def _patch_sdpa_mask():
     """Make HF mask construction traceable under torch.jit.trace."""
     orig = mu.sdpa_mask
+    orig_registered = mu.ALL_MASK_ATTENTION_FUNCTIONS["sdpa"]
 
     def patched(*args, **kwargs):
         if (
@@ -98,8 +101,13 @@ def _patch_sdpa_mask():
             args = (args[0], args[1].item(), *args[2:])
         return orig(*args, **kwargs)
 
-    mu.ALL_MASK_ATTENTION_FUNCTIONS["sdpa"] = patched
-    mu.sdpa_mask = patched
+    try:
+        mu.ALL_MASK_ATTENTION_FUNCTIONS["sdpa"] = patched
+        mu.sdpa_mask = patched
+        yield
+    finally:
+        mu.sdpa_mask = orig
+        mu.ALL_MASK_ATTENTION_FUNCTIONS["sdpa"] = orig_registered
 
 
 def _make_config(config_attr, **extra):
@@ -279,7 +287,7 @@ def _export_onnx(model, inputs, backend, input_names=None):
     if input_names is None:
         input_names = ["input_ids", "position_ids", "attention_mask"]
     buf = io.BytesIO()
-    with torch.no_grad():
+    with _patch_sdpa_mask(), torch.no_grad():
         if backend == "dynamo":
             program = torch.export.draft_export(model, inputs, strict=False)
             torch.onnx.export(program, (), buf, input_names=input_names, dynamo=True)
@@ -298,7 +306,6 @@ def _export_onnx(model, inputs, backend, input_names=None):
 
 def _detect_from_config(config_attr, backend, detect_kwargs):
     """Build, export, and run block detection for one LLM (model, backend) case."""
-    _patch_sdpa_mask()
     model, cfg = _build_block_topology_model(config_attr)
     onnx_model = _export_onnx(model, _sample_inputs(cfg), backend)
     connected_graph = ConnectedGraph(onnx_model)
@@ -309,7 +316,6 @@ def _detect_from_config(config_attr, backend, detect_kwargs):
 
 def _detect_vlm_backbone(vlm_key, backend, detect_kwargs):
     """Build, export, and run block detection for one VLM-backbone (model, backend) case."""
-    _patch_sdpa_mask()
     model, cfg = _build_vlm_backbone(vlm_key)
     onnx_model = _export_onnx(
         model,
