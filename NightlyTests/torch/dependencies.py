@@ -16,7 +16,11 @@ import wget
 import torch
 from transformers import BertTokenizer
 from models import mnist_torch_model
-from aimet_common.utils import AimetLogger
+
+try:
+    from aimet_torch.common.utils import AimetLogger
+except ImportError:
+    from aimet_onnx.common.utils import AimetLogger
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Test)
 

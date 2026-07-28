@@ -111,12 +111,12 @@ jobs:
       # Download both aimet-torch and aimet-onnx wheels for acceptance tests
       # for joint testing of torch and onnx packages in the same environment
       - uses: actions/download-artifact@v3
-        if: inputs.run_acceptance_tests == 'true'
+        if: inputs.run_acceptance_tests
         with:
           name: "torch-${{ inputs.ver_cuda == '' && 'cpu' || 'gpu' }}-wheel"
           path: "downloads"
       - uses: actions/download-artifact@v3
-        if: inputs.run_acceptance_tests == 'true'
+        if: inputs.run_acceptance_tests
         with:
           name: "onnx-${{ inputs.ver_cuda == '' && 'cpu' || 'gpu' }}-wheel"
           path: "downloads"
@@ -285,12 +285,12 @@ jobs:
       # Download both aimet-torch and aimet-onnx wheels for acceptance tests
       # for joint testing of torch and onnx packages in the same environment
       - uses: actions/download-artifact@v3
-        if: inputs.run_acceptance_tests == 'true'
+        if: inputs.run_acceptance_tests
         with:
           name: "torch-${{ inputs.ver_cuda == '' && 'cpu' || 'gpu' }}-wheel"
           path: "downloads"
       - uses: actions/download-artifact@v3
-        if: inputs.run_acceptance_tests == 'true'
+        if: inputs.run_acceptance_tests
         with:
           name: "onnx-${{ inputs.ver_cuda == '' && 'cpu' || 'gpu' }}-wheel"
           path: "downloads"
