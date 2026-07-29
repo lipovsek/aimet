@@ -391,6 +391,32 @@ def _passthrough_linear_attn_mask(self, attention_mask, past_key_values):
     so the mask is nulled and the exportable forward bakes in npad=0 — breaking
     decode, where padded positions must be located from the mask. Passing the
     mask through unconditionally keeps that information live in the graph.
+
+    This is the transformers <=5.12.1 hook (the model exposed an instance
+    method). In 5.13.0 the equivalent logic moved to a module-level function;
+    see ``_passthrough_recurrent_attn_mask``.
+    """
+    return attention_mask
+
+
+def _passthrough_recurrent_attn_mask(
+    config=None,
+    inputs_embeds=None,
+    attention_mask=None,
+    past_key_values=None,
+    **kwargs,
+):
+    """Always hand the linear-attention layers the real mask (transformers >=5.13.0).
+
+    Patches ``qwen3_5_modeling.create_recurrent_attention_mask``, which nulls the
+    mask when it is not a 2D padding mask (``ndim != 2``), on cached forwards, or
+    when all-ones. The generator feeds a 4D mask carrying the (left-)padding, so
+    the stock function drops it and the exportable forward bakes in ``npad=0``,
+    corrupting decode. Passing it through keeps the padding info live.
+
+    The signature mirrors the stock call (invoked by keyword with ``config``,
+    ``inputs_embeds``, ``attention_mask``, ``past_key_values``, ``position_ids``);
+    ``**kwargs`` absorbs the args we don't use.
     """
     return attention_mask
 
@@ -415,12 +441,34 @@ def _patch_gated_delta_net_instances(
                 exportable_gated_delta_net_forward, module
             )
 
-    # Keep the linear-attention mask live (the stock model nulls it).
+    # Keep the linear-attention mask live (the stock model nulls it). The hook
+    # differs by transformers version (transition landed in 5.13.0):
+    #  - <=5.12.1: an instance method ``_update_linear_attn_mask`` on the model.
+    #  - >=5.13.0: a module-level ``create_recurrent_attention_mask`` imported
+    #    into the modeling namespace and called from ``Qwen3_5Model.forward``.
+    patched_any = False
     for module in model.modules():
         if hasattr(module, "_update_linear_attn_mask"):
             module._update_linear_attn_mask = types.MethodType(
                 _passthrough_linear_attn_mask, module
             )
+            patched_any = True
+
+    import transformers.models.qwen3_5.modeling_qwen3_5 as qwen3_5_modeling
+
+    if hasattr(qwen3_5_modeling, "create_recurrent_attention_mask"):
+        qwen3_5_modeling.create_recurrent_attention_mask = (
+            _passthrough_recurrent_attn_mask
+        )
+        patched_any = True
+
+    if not patched_any:
+        raise RuntimeError(
+            "ExportableLinearAttention could not find a linear-attention mask hook "
+            "to patch (neither `_update_linear_attn_mask` nor "
+            "`create_recurrent_attention_mask`). The transformers Qwen3.5 masking "
+            "API has likely changed; decode will silently corrupt without this patch."
+        )
 
 
 @YAMLConfigParser.register_adaptation(
