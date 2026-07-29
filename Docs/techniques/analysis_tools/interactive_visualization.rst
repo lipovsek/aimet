@@ -36,4 +36,5 @@ API
     .. tab-item:: ONNX
         :sync: onnx
 
-        Interactive visualization does not support ONNX.
+        .. include:: ../../apiref/onnx/interactive_visualization.rst
+            :start-after: # start-after

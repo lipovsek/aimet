@@ -19,6 +19,7 @@ aimet_onnx API
     aimet_onnx.mixed_precision <amp>
     aimet_onnx.quant_analyzer <quant_analyzer>
     aimet_onnx.layer_output_utils <layer_output_generation>
+    aimet_onnx.analysis <interactive_visualization>
 
 ..
   # start-after
@@ -37,3 +38,4 @@ AIMET quantization for ONNX models provides the following functionality.
 - :ref:`aimet_onnx.mixed_precision <api-onnx-amp>`
 - :ref:`aimet_onnx.quant_analyzer <apiref-onnx-quant-analyzer>`
 - :ref:`aimet_onnx.layer_output_utils <apiref-onnx-layer-output-generation>`
+- :ref:`aimet_onnx.analysis <apiref-onnx-interactive-visualization>`
