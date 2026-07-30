@@ -14,10 +14,10 @@ import numpy as np
 from torchvision import models
 
 # Import AIMET specific modules
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch.winnow.winnow_utils import zero_out_input_channels
-from aimet_common.defs import CostMetric, LayerCompRatioPair
-from aimet_common.input_match_search import InputMatchSearch
+from aimet_torch.common.defs import CostMetric, LayerCompRatioPair
+from aimet_torch.common.input_match_search import InputMatchSearch
 
 from aimet_torch.data_subsampler import DataSubSampler
 from aimet_torch.channel_pruning.weight_reconstruction import WeightReconstructor

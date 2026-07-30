@@ -13,7 +13,7 @@ import json
 import onnx
 from packaging import version
 
-from aimet_common import quantsim as quantsim_common
+from aimet_torch.common import quantsim as quantsim_common
 import aimet_torch.v2.nn as aimet_nn
 from aimet_torch.v2.nn import QuantizationMixin
 from aimet_torch.v2.quantization.affine import Quantize, QuantizeDequantize

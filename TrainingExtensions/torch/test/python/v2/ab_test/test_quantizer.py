@@ -18,9 +18,9 @@ import torch.nn as nn
 from packaging.version import Version
 from torchvision import models
 
-from aimet_common.defs import QuantScheme, QuantizationDataType
-from aimet_common import quantsim as common_quantsim
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.defs import QuantScheme, QuantizationDataType
+from aimet_torch.common import quantsim as common_quantsim
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch import onnx_utils
 from aimet_torch import utils
 import aimet_torch._base.nn.modules.custom as aimet_modules

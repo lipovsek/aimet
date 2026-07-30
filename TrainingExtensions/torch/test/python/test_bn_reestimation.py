@@ -6,7 +6,7 @@ import copy
 import pytest
 import aimet_torch.v2.quantsim as v2
 from aimet_torch.v2.quantization.base import QuantizerBase
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme
 from aimet_torch.bn_reestimation import reestimate_bn_stats, _get_active_bn_modules
 
 import torch

@@ -5,7 +5,7 @@
 import unittest
 import logging
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Test)

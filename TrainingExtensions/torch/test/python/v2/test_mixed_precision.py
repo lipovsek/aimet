@@ -22,13 +22,13 @@ import pytest
 from aimet_torch import onnx_utils
 from aimet_torch.v2.quantsim import QuantizationSimModel
 
-from aimet_common.defs import QuantizationDataType
-from aimet_common.amp.utils import (
+from aimet_torch.common.defs import QuantizationDataType
+from aimet_torch.common.amp.utils import (
     AMPSearchAlgo,
     calculate_starting_bit_ops,
     sort_accuracy_list,
 )
-from aimet_common.amp.mixed_precision_algo import (
+from aimet_torch.common.amp.mixed_precision_algo import (
     interpolation_search,
     brute_force_search,
     binary_search,
@@ -42,7 +42,7 @@ from aimet_torch.amp.quantizer_groups import QuantizerGroup, find_quantizer_grou
 from aimet_torch.v2.nn import BaseQuantizationMixin
 from aimet_torch.nn.modules import custom
 from aimet_torch.amp.utils import _mock_v1_quantizers
-from aimet_common.defs import CallbackFunc
+from aimet_torch.common.defs import CallbackFunc
 from ..models import test_models
 
 
@@ -438,7 +438,7 @@ class TestAutoMixedPrecision:
         assert parsed_accuracy_list[2][2] >= parsed_accuracy_list[3][2]
 
         # Replace parsed lists quantizer groups with the ones in algo
-        # parsed_accuracy_list = aimet_common.amp.utils.map_quantizer_groups_for_acc_list(parsed_accuracy_list, algo.quantizer_groups)
+        # parsed_accuracy_list = aimet_torch.common.amp.utils.map_quantizer_groups_for_acc_list(parsed_accuracy_list, algo.quantizer_groups)
         assert parsed_accuracy_list == accuracy_list
 
     def test_save_load_accuracy_list_reverse(
@@ -479,7 +479,7 @@ class TestAutoMixedPrecision:
         assert parsed_accuracy_list[2][2] >= parsed_accuracy_list[3][2]
 
         # Replace parsed lists quantizer groups with the ones in algo
-        # parsed_accuracy_list = aimet_common.amp.utils.map_quantizer_groups_for_acc_list(parsed_accuracy_list, algo.quantizer_groups)
+        # parsed_accuracy_list = aimet_torch.common.amp.utils.map_quantizer_groups_for_acc_list(parsed_accuracy_list, algo.quantizer_groups)
         assert parsed_accuracy_list == accuracy_list
 
     def test_phase2_brute_force(

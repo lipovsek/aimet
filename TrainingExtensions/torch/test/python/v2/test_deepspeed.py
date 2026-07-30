@@ -20,8 +20,8 @@ from packaging import version
 
 from torch.utils.data import Dataset, DataLoader
 
-from aimet_common import quantsim_config
-from aimet_common.defs import QuantScheme
+from aimet_torch.common import quantsim_config
+from aimet_torch.common.defs import QuantScheme
 import aimet_torch.v2 as aimet
 from aimet_torch.v2.quantization.affine.quantizer import QuantizeDequantize
 from aimet_torch.v2.quantization.base.quantizer import QuantizerBase

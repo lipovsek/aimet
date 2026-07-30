@@ -12,13 +12,13 @@ import signal
 from torch import nn
 import torch.nn.functional as functional
 
-from aimet_common.defs import CostMetric, LayerCompRatioPair
-from aimet_common.cost_calculator import SpatialSvdCostCalculator
-from aimet_common import comp_ratio_select
-from aimet_common.bokeh_plots import BokehServerSession
-from aimet_common.bokeh_plots import DataTable
-from aimet_common.bokeh_plots import ProgressBar
-from aimet_common.utils import start_bokeh_server_session
+from aimet_torch.common.defs import CostMetric, LayerCompRatioPair
+from aimet_torch.common.cost_calculator import SpatialSvdCostCalculator
+from aimet_torch.common import comp_ratio_select
+from aimet_torch.common.bokeh_plots import BokehServerSession
+from aimet_torch.common.bokeh_plots import DataTable
+from aimet_torch.common.bokeh_plots import ProgressBar
+from aimet_torch.common.utils import start_bokeh_server_session
 
 from aimet_torch.utils import create_rand_tensors_given_shapes, get_device
 from .models import mnist_torch_model

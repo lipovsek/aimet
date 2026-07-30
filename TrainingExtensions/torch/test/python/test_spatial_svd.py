@@ -16,7 +16,7 @@ from .models import mnist_torch_model
 from aimet_torch.svd.svd_splitter import SpatialSvdModuleSplitter
 from aimet_torch.svd.svd_pruner import SpatialSvdPruner
 from aimet_torch.layer_database import LayerDatabase
-from aimet_common.defs import CostMetric, LayerCompRatioPair
+from aimet_torch.common.defs import CostMetric, LayerCompRatioPair
 
 
 def get_data_loader(data_set_size, batch_size=1):

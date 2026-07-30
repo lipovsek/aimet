@@ -12,8 +12,8 @@ import math
 import os
 import torch
 
-from aimet_common.connected_graph.connectedgraph_utils import CG_SPLIT
-from aimet_common.defs import (
+from aimet_torch.common.connected_graph.connectedgraph_utils import CG_SPLIT
+from aimet_torch.common.defs import (
     QuantScheme,
     QuantizationDataType,
     QuantDtypeBwInfo,

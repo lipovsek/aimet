@@ -9,10 +9,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from aimet_common.comp_ratio_select import GreedyCompRatioSelectAlgo
-from aimet_common.defs import CostMetric
-from aimet_common.cost_calculator import SpatialSvdCostCalculator
-from aimet_common.compression_algo import CompressionAlgo
+from aimet_torch.common.comp_ratio_select import GreedyCompRatioSelectAlgo
+from aimet_torch.common.defs import CostMetric
+from aimet_torch.common.cost_calculator import SpatialSvdCostCalculator
+from aimet_torch.common.compression_algo import CompressionAlgo
 
 from aimet_torch.utils import create_rand_tensors_given_shapes, get_device
 from .models import mnist_torch_model

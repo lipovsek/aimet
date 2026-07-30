@@ -9,9 +9,9 @@ import torch.nn.functional as functional
 import pytest
 import copy
 
-import aimet_common.defs
-from aimet_common.defs import LayerCompRatioPair
-from aimet_common.utils import AimetLogger
+import aimet_torch.common.defs
+from aimet_torch.common.defs import LayerCompRatioPair
+from aimet_torch.common.utils import AimetLogger
 from .models import mnist_torch_model as mnist_model
 from aimet_torch.utils import create_rand_tensors_given_shapes, get_device
 from aimet_torch.layer_database import LayerDatabase, Layer
@@ -227,7 +227,11 @@ class TestWeightSvdPruning:
         conv2 = comp_layer_db.find_layer_by_name("conv2")
         weight_svd_pruner = WeightSvdPruner()
         weight_svd_pruner._prune_layer(
-            orig_layer_db, comp_layer_db, conv2, 0.5, aimet_common.defs.CostMetric.mac
+            orig_layer_db,
+            comp_layer_db,
+            conv2,
+            0.5,
+            aimet_torch.common.defs.CostMetric.mac,
         )
 
         conv2_a = comp_layer_db.find_layer_by_name("conv2.0")
@@ -276,7 +280,7 @@ class TestWeightSvdPruning:
         mo_layer_db = pruner.prune_model(
             layer_db,
             layer_comp_ratio_list,
-            aimet_common.defs.CostMetric.mac,
+            aimet_torch.common.defs.CostMetric.mac,
             trainer=None,
         )
         # Using python implementation
@@ -284,7 +288,7 @@ class TestWeightSvdPruning:
         py_layer_db = pruner.prune_model(
             layer_db,
             layer_comp_ratio_list,
-            aimet_common.defs.CostMetric.mac,
+            aimet_torch.common.defs.CostMetric.mac,
             trainer=None,
         )
 
@@ -328,7 +332,7 @@ class TestWeightSvdPruning:
         mo_layer_db = pruner.prune_model(
             layer_db,
             layer_comp_ratio_list,
-            aimet_common.defs.CostMetric.mac,
+            aimet_torch.common.defs.CostMetric.mac,
             trainer=None,
         )
         # Using python implementation
@@ -336,7 +340,7 @@ class TestWeightSvdPruning:
         py_layer_db = pruner.prune_model(
             layer_db,
             layer_comp_ratio_list,
-            aimet_common.defs.CostMetric.mac,
+            aimet_torch.common.defs.CostMetric.mac,
             trainer=None,
         )
 

@@ -12,7 +12,7 @@ import torch.nn as nn
 
 from unittest import mock
 
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme
 import aimet_torch._base.nn.modules.custom as aimet_modules
 import aimet_torch.v2.quantsim as v2
 

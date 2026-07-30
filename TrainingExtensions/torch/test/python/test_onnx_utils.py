@@ -12,7 +12,7 @@ import aimet_torch._base.nn.modules.custom as aimet_modules
 import onnx
 import pytest
 import torch
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 from aimet_torch import onnx_utils
 from aimet_torch.model_preparer import prepare_model
 from aimet_torch.onnx_utils import (

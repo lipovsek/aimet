@@ -8,15 +8,15 @@ import torch
 import tempfile
 from bokeh.models import Range1d
 from bokeh.plotting import figure
-from aimet_common.utils import (
+from aimet_torch.common.utils import (
     AimetLogger,
     start_bokeh_server_session,
 )
-from aimet_common import bokeh_plots
+from aimet_torch.common import bokeh_plots
 from aimet_torch import plotting_utils
 from aimet_torch import visualize_model
-from aimet_common.bokeh_plots import BokehServerSession
-from aimet_common.bokeh_plots import ProgressBar
+from aimet_torch.common.bokeh_plots import BokehServerSession
+from aimet_torch.common.bokeh_plots import ProgressBar
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Test)
 

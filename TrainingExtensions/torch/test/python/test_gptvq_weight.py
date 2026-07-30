@@ -15,7 +15,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from aimet_common import quantsim
+from aimet_torch.common import quantsim
 from aimet_torch.gptvq.defs import GPTVQSupportedModules
 from aimet_torch.gptvq.gptvq_weight import GPTVQ, GPTVQParameters
 from aimet_torch.utils import is_vector_encoding

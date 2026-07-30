@@ -15,9 +15,9 @@ import torch
 import torch.nn.functional as functional
 from torchvision import models
 
-from aimet_common.utils import AimetLogger
-from aimet_common.defs import QuantScheme
-from aimet_common.quantsim import calculate_delta_offset
+from aimet_torch.common.utils import AimetLogger
+from aimet_torch.common.defs import QuantScheme
+from aimet_torch.common.quantsim import calculate_delta_offset
 from aimet_torch.utils import (
     create_fake_data_loader,
     create_rand_tensors_given_shapes,

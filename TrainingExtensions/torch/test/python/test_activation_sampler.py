@@ -7,7 +7,7 @@
 import pytest
 import torch
 
-from aimet_common.utils import AimetLogger
+from aimet_torch.common.utils import AimetLogger
 import aimet_torch.v2.quantsim as v2
 from .models.test_models import TinyModel
 from aimet_torch.utils import create_fake_data_loader, CachedDataset

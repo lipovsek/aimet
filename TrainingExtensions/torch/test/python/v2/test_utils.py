@@ -10,7 +10,7 @@ import torch
 from unittest import mock
 
 from .models_.test_models import ModelWithMatMul2, BasicConv2d
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme
 import aimet_torch.utils
 from aimet_torch.v2.experimental import (
     set_matmul_second_input_producer_to_8bit_symmetric,

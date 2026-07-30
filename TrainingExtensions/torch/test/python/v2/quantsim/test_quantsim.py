@@ -17,8 +17,8 @@ import torch
 from torch import nn, randn
 
 from aimet_torch.common.onnx._utils import _get_all_constants, _get_effective_encoding
-from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
-from aimet_common.defs import QuantizationDataType, QuantScheme
+from aimet_torch.common.quantsim_config.utils import get_path_for_per_channel_config
+from aimet_torch.common.defs import QuantizationDataType, QuantScheme
 from aimet_torch.common import quantsim as aimet_common_quantsim
 import aimet_torch
 from aimet_torch import onnx_utils

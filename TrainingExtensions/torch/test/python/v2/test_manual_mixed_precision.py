@@ -11,9 +11,9 @@ import pytest
 import torch
 from torch import nn
 
-from aimet_common.defs import QuantizationDataType
+from aimet_torch.common.defs import QuantizationDataType
 
-from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
+from aimet_torch.common.quantsim_config.utils import get_path_for_per_channel_config
 from aimet_torch.v2.nn import BaseQuantizationMixin
 from aimet_torch.v2.quantization.affine import QuantizeDequantize
 from aimet_torch.v2.quantization.base.quantizer import QuantizerBase

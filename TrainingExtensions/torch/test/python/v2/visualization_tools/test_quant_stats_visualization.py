@@ -8,10 +8,10 @@ import os.path
 import torch
 from ...models.test_models import TinyModel
 from ...models.test_models import ModelWithUnusedMatmul
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.v2.visualization_tools import visualize_stats, visualize_advanced_stats
-from aimet_common.quantsim_config.utils import get_path_for_per_channel_config
+from aimet_torch.common.quantsim_config.utils import get_path_for_per_channel_config
 
 
 def evaluate(model: torch.nn.Module, dummy_input: torch.Tensor):

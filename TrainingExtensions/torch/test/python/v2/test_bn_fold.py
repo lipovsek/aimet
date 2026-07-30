@@ -18,7 +18,7 @@ from aimet_torch.v2.batch_norm_fold import (
 from ..models.test_models import TransposedConvModel
 from aimet_torch.v2.quantsim import QuantizationSimModel
 from aimet_torch.model_preparer import prepare_model
-from aimet_common.defs import QuantScheme
+from aimet_torch.common.defs import QuantScheme
 
 from ..test_bn_fold import MyModel, _initialize_bn_params
 

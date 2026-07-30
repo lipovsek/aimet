@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 from ..models_ import test_models
 
-from aimet_common.quantsim_config.utils import (
+from aimet_torch.common.quantsim_config.utils import (
     get_path_for_per_channel_config,
     get_path_for_per_tensor_config,
 )

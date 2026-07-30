@@ -14,7 +14,7 @@ import aimet_torch
 from aimet_torch.v2.experimental import propagate_output_encodings
 from aimet_torch.nn.modules import custom
 import aimet_torch.utils
-from aimet_common.connected_graph.connectedgraph_utils import (
+from aimet_torch.common.connected_graph.connectedgraph_utils import (
     get_all_input_ops,
     get_all_output_ops,
     get_all_ops_with_constant_inputs,
@@ -22,7 +22,7 @@ from aimet_common.connected_graph.connectedgraph_utils import (
 )
 from .models import test_models
 from .v2.models_ import test_models as test_models_
-from aimet_common.connected_graph.product import Product
+from aimet_torch.common.connected_graph.product import Product
 from aimet_torch.meta.connectedgraph import ConnectedGraph
 from aimet_torch.meta.operation import Op
 from aimet_torch.meta import connectedgraph_utils
