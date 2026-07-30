@@ -8,6 +8,19 @@ import torch
 
 from GenAILab.bench.fp_cache import DiskBackedFPCache
 from GenAILab.bench.eval_context import EvaluationContext
+from GenAILab.bench.yaml_config_parser import ModelConfig
+
+
+def _model_config(model_id="test-model", sequence_length=32, context_length=64):
+    """Minimal ModelConfig for EvaluationContext (only used for hashing/metadata)."""
+    return ModelConfig(
+        model_cls=object,
+        model_id=model_id,
+        model_type="llama",
+        context_length=context_length,
+        sequence_length=sequence_length,
+        adaptations=[],
+    )
 
 
 @pytest.fixture
@@ -17,8 +30,7 @@ def fp_cache(tmp_path):
 
 @pytest.fixture
 def eval_ctx(fp_cache):
-    model_args = {"model_id": "test-model", "sequence_length": 32, "context_length": 64}
-    return EvaluationContext(fp_cache=fp_cache, model_args=model_args)
+    return EvaluationContext(fp_cache=fp_cache, model_config=_model_config())
 
 
 class TestEvaluationContext:
@@ -49,9 +61,9 @@ class TestEvaluationContext:
         assert result1 is result2
 
     def test_quant_cache_isolated(self, fp_cache):
-        args = {"model_id": "test", "seq": 32}
-        ctx1 = EvaluationContext(fp_cache=fp_cache, model_args=args)
-        ctx2 = EvaluationContext(fp_cache=fp_cache, model_args=args)
+        config = _model_config(model_id="test")
+        ctx1 = EvaluationContext(fp_cache=fp_cache, model_config=config)
+        ctx2 = EvaluationContext(fp_cache=fp_cache, model_config=config)
 
         ctx1.get_or_compute_quant("mmlu", lambda: {"x": torch.tensor(1.0)})
         # ctx2 should not have ctx1's quant cache
@@ -67,9 +79,9 @@ class TestEvaluationContext:
         assert result["x"].item() == 2.0
 
     def test_fp_cache_shared(self, fp_cache):
-        args = {"model_id": "test", "seq": 32}
-        ctx1 = EvaluationContext(fp_cache=fp_cache, model_args=args)
-        ctx2 = EvaluationContext(fp_cache=fp_cache, model_args=args)
+        config = _model_config(model_id="test")
+        ctx1 = EvaluationContext(fp_cache=fp_cache, model_config=config)
+        ctx2 = EvaluationContext(fp_cache=fp_cache, model_config=config)
 
         data = {"logits": torch.randn(5, 4)}
         ctx1.get_or_compute_fp("mmlu", lambda: data)

@@ -26,6 +26,18 @@ from GenAILab.bench.utils.prompt_utils import (
     load_text_prompts,
 )
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
+from GenAILab.qai_hub_lm.schema import (
+    InterleavedSpec,
+    WikitextSpec,
+    TinyMMLUSpec,
+    MMLUSpec,
+    MMLUProSpec,
+    MMMLUSpec,
+    MMMUSpec,
+    C4Spec,
+    AOKVQASpec,
+    GeneratedDatasetSpec,
+)
 
 
 class Dataset(ABC):
@@ -89,7 +101,7 @@ class InterleavedDatasetWrapper(torch.utils.data.Dataset):
         return self.datasets[ds_idx][item_idx]
 
 
-@YAMLConfigParser.register_dataset
+@YAMLConfigParser.register_dataset(InterleavedSpec)
 class Interleaved(MultimodalDataset):
     """Meta-dataset that interleaves entries from multiple sub-datasets.
 
@@ -167,7 +179,7 @@ class ChunkedDataset(torch.utils.data.Dataset):
         }
 
 
-@YAMLConfigParser.register_dataset
+@YAMLConfigParser.register_dataset(WikitextSpec)
 class Wikitext(TextDataset):
     """Wikitest dataset"""
 
@@ -194,7 +206,7 @@ class Wikitext(TextDataset):
         return ChunkedDataset(encoded_dataset_split, context_length)
 
 
-@YAMLConfigParser.register_dataset
+@YAMLConfigParser.register_dataset(TinyMMLUSpec)
 class TinyMMLU(TextDataset):
     """TinyMMLU dataset"""
 
@@ -245,7 +257,7 @@ class TinyMMLU(TextDataset):
         )
 
 
-@YAMLConfigParser.register_dataset
+@YAMLConfigParser.register_dataset(MMLUSpec)
 class MMLU(TextDataset):
     """MMLU Dataset"""
 
@@ -384,7 +396,7 @@ class MMLU(TextDataset):
         )
 
 
-@YAMLConfigParser.register_dataset
+@YAMLConfigParser.register_dataset(MMMLUSpec)
 class MMMLU(TextDataset):
     """MMLU Dataset"""
 
@@ -530,7 +542,7 @@ class MMMLU(TextDataset):
         )
 
 
-@YAMLConfigParser.register_dataset
+@YAMLConfigParser.register_dataset(MMLUProSpec)
 class MMLUPro(TextDataset):
     """MMLU Pro Dataset with 10 answer choices (A-J)."""
 
@@ -839,7 +851,7 @@ class LazyMMMUDataset(torch.utils.data.Dataset):
         return inputs
 
 
-@YAMLConfigParser.register_dataset
+@YAMLConfigParser.register_dataset(MMMUSpec)
 class MMMU(MultimodalDataset):
     """MMMU Dataset."""
 
@@ -862,7 +874,7 @@ class MMMU(MultimodalDataset):
         )
 
 
-@YAMLConfigParser.register_dataset
+@YAMLConfigParser.register_dataset(C4Spec)
 class C4(TextDataset):
     """C4 dataset"""
 
@@ -972,7 +984,7 @@ class LazyAOKVQADataset(torch.utils.data.Dataset):
         return inputs
 
 
-@YAMLConfigParser.register_dataset
+@YAMLConfigParser.register_dataset(AOKVQASpec)
 class AOKVQA(MultimodalDataset):
     """A-OKVQA dataset for multimodal backbone calibration (CC BY 4.0)."""
 
@@ -998,7 +1010,7 @@ class AOKVQA(MultimodalDataset):
         )
 
 
-@YAMLConfigParser.register_dataset
+@YAMLConfigParser.register_dataset(GeneratedDatasetSpec)
 class GeneratedDataset(TextDataset):
     """Calibrate on text the float model generates from seed prompts. Generation
     runs through the standard HuggingFace ``AutoModelForCausalLM`` / ``generate``

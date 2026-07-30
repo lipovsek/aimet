@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from GenAILab.qai_hub_lm.precision import (
+from GenAILab.bench.precision import (
     Granularity,
     PrecisionConfig,
     WeightPrecision,

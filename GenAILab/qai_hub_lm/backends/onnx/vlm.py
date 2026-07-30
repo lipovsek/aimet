@@ -15,8 +15,8 @@ from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel
 
 from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
-from GenAILab.qai_hub_lm.precision import PrecisionConfig, float16, float32
 from GenAILab.bench.model_cache import DiskBackedModelCache, ModelCacheEntry
+from GenAILab.bench.precision import PrecisionConfig, float16, float32
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.qai_hub_lm.models.base import SimCollection
 from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache

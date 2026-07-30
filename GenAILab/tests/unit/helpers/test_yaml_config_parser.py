@@ -53,18 +53,28 @@ class TestRegistration:
         assert YAMLConfigParser.metrics_lookup["MyMetric"] is MyMetric
 
     def test_register_dataset(self):
-        @YAMLConfigParser.register_dataset
+        from GenAILab.qai_hub_lm.schema.dataset import WikitextSpec
+
+        @YAMLConfigParser.register_dataset(WikitextSpec)
         class MyDataset:
             pass
 
-        assert YAMLConfigParser.dataset_lookup["MyDataset"] is MyDataset
+        # register_dataset keys the lookup by the spec's wire name ("Wikitext").
+        assert YAMLConfigParser.dataset_lookup["Wikitext"] is MyDataset
 
     def test_register_recipe(self):
-        @YAMLConfigParser.register_recipe
-        class MyRecipe:
-            pass
+        from GenAILab.qai_hub_lm.schema.recipe import RemoveQuantizationSpec
 
-        assert YAMLConfigParser.recipe_lookup["MyRecipe"] is MyRecipe
+        # register_recipe binds the lowering to its spec and enforces that
+        # apply()'s explicit kwargs match the spec exactly (fixtures excluded).
+        @YAMLConfigParser.register_recipe(RemoveQuantizationSpec)
+        class MyRecipe:
+            @staticmethod
+            def apply(quantsim, generator, dataloader, **kwargs):
+                pass
+
+        # keyed by the spec's wire name ("RemoveQuantization").
+        assert YAMLConfigParser.recipe_lookup["RemoveQuantization"] is MyRecipe
 
     def test_register_model(self):
         @YAMLConfigParser.register_model("test_vlm")
@@ -405,7 +415,9 @@ class TestValidateConfig:
         assert doc["recipe"]["backbone"][0]["name"] == "Calibration"
 
     def test_recipe_both_name_and_backbone_raises(self):
-        with pytest.raises(RuntimeError, match="cannot have both"):
+        # Component form ({backbone: ...}) with a stray top-level "name" is
+        # rejected by the schema's extra="forbid".
+        with pytest.raises(RuntimeError, match="Extra inputs are not permitted"):
             YAMLConfigParser.validate_config(
                 {
                     "model": {
@@ -453,8 +465,9 @@ class TestValidateConfig:
         )
 
     def test_spinquant_backbone_only_on_vlm_raises(self):
-        # SpinQuant on backbone but missing from visual is rejected.
-        with pytest.raises(RuntimeError, match="backbone but not the visual"):
+        # SpinQuant on backbone but missing from visual is rejected: the schema
+        # requires the pre-sim prefix to be identical across all components.
+        with pytest.raises(RuntimeError, match="Pre-sim prefix of component"):
             YAMLConfigParser.validate_config(
                 {
                     "model": {
@@ -471,8 +484,9 @@ class TestValidateConfig:
             )
 
     def test_spinquant_not_first_visual_step_raises(self):
-        # SpinQuant must be the first visual step on a VLM.
-        with pytest.raises(RuntimeError, match="must be the first step in the visual"):
+        # SpinQuant must be the first visual step on a VLM: a pre-sim step after
+        # an on-sim step breaks the required pre-sim-first ordering.
+        with pytest.raises(RuntimeError, match="appears after an on-sim step"):
             YAMLConfigParser.validate_config(
                 {
                     "model": {
@@ -498,14 +512,23 @@ class TestParseDocument:
     @pytest.fixture(autouse=True)
     def _setup_registry(self):
         """Register minimal recipes and metrics for parse tests."""
+        from GenAILab.qai_hub_lm.schema.recipe import (
+            RemoveQuantizationSpec,
+            CalibrationSpec,
+        )
+        from GenAILab.qai_hub_lm.schema.dataset import C4Spec
 
-        @YAMLConfigParser.register_recipe
+        @YAMLConfigParser.register_recipe(RemoveQuantizationSpec)
         class RemoveQuantization:
-            pass
+            @staticmethod
+            def apply(quantsim, generator, dataloader, **kwargs):
+                pass
 
-        @YAMLConfigParser.register_recipe
+        @YAMLConfigParser.register_recipe(CalibrationSpec)
         class Calibration:
-            pass
+            @staticmethod
+            def apply(quantsim, generator, dataloader, num_iterations=20, **kwargs):
+                pass
 
         @YAMLConfigParser.register_metric
         class PPL:
@@ -515,7 +538,7 @@ class TestParseDocument:
         class TinyMMLU:
             pass
 
-        @YAMLConfigParser.register_dataset
+        @YAMLConfigParser.register_dataset(C4Spec)
         class C4:
             pass
 
@@ -535,12 +558,8 @@ class TestParseDocument:
             "metrics": [{"name": "TinyMMLU"}],
         }
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
-        assert "model" in result
-        assert "precision" in result
-        assert "recipe" in result
-        assert "metrics" in result
-        assert result["model"]["model_type"] == "llama"
-        assert result["metrics"][0]["class"].__name__ == "TinyMMLU"
+        assert result.model.model_type == "llama"
+        assert result.metrics[0].metric_cls.__name__ == "TinyMMLU"
 
     @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
     def test_with_recipe_and_dataset(self, mock_detect, tmp_path):
@@ -559,8 +578,8 @@ class TestParseDocument:
             "metrics": [{"name": "PPL"}],
         }
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
-        assert result["recipe"]["backbone"][0]["class"].__name__ == "Calibration"
-        assert result["recipe"]["backbone"][0]["dataset"]["class"].__name__ == "C4"
+        assert result.recipe.backbone[0].technique_cls.__name__ == "Calibration"
+        assert result.recipe.backbone[0].dataset_cls.__name__ == "C4"
 
     @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
     def test_unknown_recipe_raises(self, mock_detect, tmp_path):
@@ -573,7 +592,7 @@ class TestParseDocument:
             "recipe": {"backbone": {"name": "NonexistentRecipe"}},
             "metrics": [{"name": "PPL"}],
         }
-        with pytest.raises(LookupError, match="NonexistentRecipe"):
+        with pytest.raises((LookupError, RuntimeError), match="NonexistentRecipe"):
             YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
 
     @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
@@ -601,8 +620,7 @@ class TestParseDocument:
             "export": True,
         }
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
-        assert result["export"] is not None
-        assert isinstance(result["export"], str)
+        assert isinstance(result.export, str)
 
     @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
     def test_export_false(self, mock_detect, tmp_path):
@@ -616,7 +634,7 @@ class TestParseDocument:
             "export": False,
         }
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
-        assert result["export"] is False
+        assert not result.export
 
     @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
     def test_precision_parsed(self, mock_detect, tmp_path):
@@ -630,10 +648,10 @@ class TestParseDocument:
             "precision": {"activations": 8, "kv_cache": 4},
         }
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
-        from GenAILab.qai_hub_lm.precision import int8, int4
+        from GenAILab.bench.precision import int8, int4
 
-        assert result["precision"].activations == int8
-        assert result["precision"].kv_cache == int4
+        assert result.precision.activations == int8
+        assert result.precision.kv_cache == int4
 
     @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
     def test_unrecognized_section_raises(self, mock_detect, tmp_path):
@@ -746,12 +764,11 @@ class TestParseDocument:
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
 
         # SpinQuant flags are extracted, step is stripped from the chain.
-        assert result["spinquant"] == {"enable_r1": True, "enable_r2": False}
-        backbone_names = [
-            step["class"].__name__ for step in result["recipe"]["backbone"]
-        ]
-        assert "SpinQuant" not in backbone_names
-        assert backbone_names == ["Calibration"]
+        assert result.recipe.pre_sim[0].recipe_kwargs == {
+            "enable_r1": True,
+            "enable_r2": False,
+        }
+        assert result.recipe.backbone[0].technique_cls.__name__ == "Calibration"
 
     @patch.object(YAMLConfigParser, "detect_model_type", return_value="llama")
     def test_no_spinquant_yields_none(self, mock_detect, tmp_path):
@@ -772,4 +789,4 @@ class TestParseDocument:
             "metrics": [{"name": "PPL"}],
         }
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
-        assert result["spinquant"] is None
+        assert len(result.recipe.pre_sim) == 0

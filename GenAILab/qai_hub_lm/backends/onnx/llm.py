@@ -18,7 +18,7 @@ from aimet_onnx.utils import duplicate_shared_initializers
 
 from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.bench.model_cache import DiskBackedModelCache, ModelCacheEntry
-from GenAILab.qai_hub_lm.precision import (
+from GenAILab.bench.precision import (
     PrecisionConfig,
     float16,
     float32,

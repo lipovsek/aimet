@@ -128,6 +128,42 @@ class PrecisionConfig:
     visual_weight: WeightPrecision | None = None
     visual_activations: qtype | None = None
 
+    @classmethod
+    def from_schema(cls, schema) -> "PrecisionConfig":
+        """Resolve a validated ``schema.PrecisionSchema`` into a PrecisionConfig.
+
+        This is the GenAILab-side resolution step: the schema (clean, aimet-free,
+        synced to AIHM) carries qtypes as named strings / bare ints; here we bind
+        them to aimet ``qtype`` objects via ``resolve_qtype``. AIHM resolves the
+        same schema into its own representation. Parity with the legacy
+        ``from_dict`` path is enforced by ``tests/.../test_precision_parity.py``.
+        """
+
+        def _wp(wp_schema) -> WeightPrecision:
+            # schema enums are str-enums; .value yields "int4"/"PCQ" etc., which
+            # resolve_qtype / Granularity already accept. Bare ints pass through.
+            qt = wp_schema.qtype
+            return WeightPrecision(
+                qtype=resolve_qtype(qt.value if isinstance(qt, Enum) else qt),
+                granularity=Granularity(wp_schema.granularity.value),
+                block_size=wp_schema.block_size,
+            )
+
+        def _qt(value) -> qtype:
+            return resolve_qtype(value.value if isinstance(value, Enum) else value)
+
+        kwargs: dict = {
+            "activations": _qt(schema.activations),
+            "kv_cache": _qt(schema.kv_cache),
+            "embedding": _qt(schema.embedding),
+            "lm_head": _wp(schema.lm_head),
+            "blocks": {k: _wp(v) for k, v in schema.blocks.items()},
+        }
+        if schema.visual is not None:
+            kwargs["visual_weight"] = _wp(schema.visual.weight)
+            kwargs["visual_activations"] = _qt(schema.visual.activations)
+        return cls(**kwargs)
+
     def ensure_visual_defaults(self) -> None:
         """Populate visual precision fields with defaults if not already set.
 

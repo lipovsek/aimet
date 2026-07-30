@@ -3,17 +3,111 @@
 
 """Config parser for GenAI model testing"""
 
+from __future__ import annotations
+
 import os
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 from transformers import AutoConfig
 
+from pydantic import ValidationError
+
 from .export import get_test_artifacts_path
-from GenAILab.qai_hub_lm.precision import PrecisionConfig
+from GenAILab.bench.precision import PrecisionConfig
+from GenAILab.qai_hub_lm.models.base import VLM
+from GenAILab.qai_hub_lm.schema import (
+    FP_WEIGHT_ALLOWED_TECHNIQUES,
+    PrecisionSchema,
+    Recipe,
+    contract_mismatch,
+    dataset_name_of,
+    split_recipe,
+    technique_name_of,
+)
+
+# apply() parameters that are execution fixtures, not schema-defined recipe
+# knobs. Excluded when checking that a lowering implements exactly the schema's
+# kwargs for its technique.
+_RECIPE_APPLY_FIXTURES = {
+    # on-sim technique fixtures
+    "quantsim",
+    "generator",
+    "dataloader",
+    "component",
+    # pre-sim technique fixture (the float-model bundle)
+    "float_model",
+}
+
+
+@dataclass(frozen=True)
+class ResolvedStep:
+    """A single recipe step with its resolved implementation class."""
+
+    name: str  # technique name (e.g. "Calibration")
+    technique_cls: type  # resolved implementation class
+    recipe_kwargs: dict[str, Any] = field(default_factory=dict)
+    dataset_cls: type | None = None
+    dataset_kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResolvedRecipe:
+    """Pre-sim + per-component on-sim chains, unified under one object."""
+
+    pre_sim: tuple[ResolvedStep, ...]
+    backbone: tuple[ResolvedStep, ...]
+    visual: tuple[ResolvedStep, ...] | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedMetric:
+    """A single metric with its resolved class and kwargs."""
+
+    name: str
+    metric_cls: type
+    metric_kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """Parsed model section."""
+
+    model_cls: type
+    model_id: str
+    model_type: str
+    context_length: int
+    sequence_length: int | list[int]
+    adaptations: list[str | dict]
+    image_size: list[int] | None = None
+    encodings: str | None = None
+    dtype: str | None = None
+    extra_kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProfilerConfig:
+    """Parsed profiler section."""
+
+    capture_intermediate_data: bool = False
+    gpu_meter_kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ParsedConfig:
+    """The fully typed output of parse_document(). Replaces task_params dict."""
+
+    model: ModelConfig
+    precision: PrecisionConfig
+    recipe: ResolvedRecipe
+    metrics: tuple[ResolvedMetric, ...]
+    profiler: ProfilerConfig
+    export: str | None = None  # None = no export; str = export dir path
+    eval_in_onnx: bool = False
+    run_group: str | None = None
 
 
 @dataclass
@@ -154,14 +248,76 @@ class YAMLConfigParser:
     # ========================
 
     @classmethod
-    def register_recipe(cls, recipe_cls):
-        cls.recipe_lookup[recipe_cls.__name__] = recipe_cls
-        return recipe_cls
+    def register_recipe(cls, spec_cls):
+        """Register a recipe lowering, bound to its schema technique ``spec_cls``.
+
+        The ``spec_cls`` argument (e.g. ``SeqMSESpec``) is the hard reference
+        from the lowering to the schema. This is the schema<->lowering binding
+        *and* its enforcement: at import time it verifies the lowering's
+        ``apply()`` implements EXACTLY the spec's kwargs -- no more, no less
+        (fixtures and ``**kwargs`` excluded). Because both the torch and onnx
+        lowerings register against the same spec, this equality pivots on the
+        schema and transitively guarantees a recipe valid under one backend is
+        valid under the other.
+
+        Usage:
+            @YAMLConfigParser.register_recipe(SeqMSESpec)
+            class SeqMSE(QuantizationTechnique): ...
+        """
+        name = technique_name_of(spec_cls)
+
+        def decorator(recipe_cls):
+            missing, extra = contract_mismatch(
+                spec_cls, recipe_cls.apply, ignore_params=_RECIPE_APPLY_FIXTURES
+            )
+            if missing or extra:
+                problems = []
+                if missing:
+                    problems.append(
+                        f"does not implement schema kwargs {sorted(missing)} "
+                        f"(they would be silently swallowed by **kwargs)"
+                    )
+                if extra:
+                    problems.append(
+                        f"implements kwargs {sorted(extra)} not in the schema "
+                        f"(add them to {spec_cls.__name__}, or the other backend's "
+                        f"lowering would reject valid recipes)"
+                    )
+                raise TypeError(
+                    f"{recipe_cls.__name__}.apply() is out of contract with "
+                    f"{spec_cls.__name__} ('{name}'): " + "; ".join(problems)
+                )
+
+            cls.recipe_lookup[name] = recipe_cls
+            return recipe_cls
+
+        return decorator
 
     @classmethod
-    def register_dataset(cls, dataset_cls):
-        cls.dataset_lookup[dataset_cls.__name__] = dataset_cls
-        return dataset_cls
+    def register_dataset(cls, spec_cls):
+        """Register a dataset lowering, bound to its schema ``spec_cls``.
+
+        The ``spec_cls`` argument (e.g. ``WikitextSpec``) is a hard reference
+        from the lowering to the schema: a dataset can only be registered under
+        a spec the schema declares, so the spec union and the registry cannot
+        silently drift.
+
+        Unlike ``register_recipe``, this does NOT enforce kwarg agreement yet:
+        the ``load_encoded_dataset`` signatures are heterogeneous (tokenizer vs
+        processor, image_size, source_datasets, ...). The per-dataset spec now
+        makes that check straightforward to add; it is intentionally left off.
+
+        Usage:
+            @YAMLConfigParser.register_dataset(WikitextSpec)
+            class Wikitext(TextDataset): ...
+        """
+        name = dataset_name_of(spec_cls)
+
+        def decorator(dataset_cls):
+            cls.dataset_lookup[name] = dataset_cls
+            return dataset_cls
+
+        return decorator
 
     @classmethod
     def register_metric(cls, metric_cls):
@@ -322,20 +478,6 @@ class YAMLConfigParser:
     # Config validation & parsing
     # ========================
 
-    @staticmethod
-    def _blocks_qtype_is_float(blocks_raw) -> bool:
-        """Return True if precision.blocks declares a floating-point qtype."""
-        # blocks_raw can be: int/str shorthand, flat WeightPrecision dict, or
-        # {"default": {...}} mapping. Pull the qtype out of whichever form we got.
-        if isinstance(blocks_raw, (int, str)):
-            qt = blocks_raw
-        elif isinstance(blocks_raw, dict):
-            inner = blocks_raw.get("default", blocks_raw)
-            qt = inner.get("qtype") if isinstance(inner, dict) else inner
-        else:
-            return False
-        return qt in ("float16", "float32")
-
     @classmethod
     def validate_config(cls, doc):
         if "model" not in doc:
@@ -362,145 +504,49 @@ class YAMLConfigParser:
         if "context_length" not in doc["model"]:
             raise RuntimeError("Context length not specified.")
 
-        # Normalize single recipe to component format
+        # Validate + normalize the recipe section via the shared schema. The
+        # schema (qai_hub_lm/schema) owns all recipe SHAPE, VOCABULARY, and
+        # SEMANTIC RULES that used to live as ~140 lines of hand-written checks
+        # here: single/list/component normalization, auto-insert Calibration when
+        # no terminal step is present, SpinQuant >=1-rotation, pre-sim-before-
+        # post-sim ordering, and backbone=>visual SpinQuant consistency.
+        #
+        # ``Recipe.to_components()`` lowers the validated recipe back into the
+        # ``{component: [step_dict, ...]}`` shape that ``parse_document`` resolves
+        # (name -> recipe class) downstream, so the resolution code is unchanged.
+        #
+        # NOTE: auto-insert of Calibration is now silent (the schema records it);
+        # the previous warnings.warn banner is intentionally dropped.
         if "recipe" in doc:
-            if isinstance(doc["recipe"], list):
-                # Top-level list of recipe steps → treat as backbone chain
-                doc["recipe"] = {"backbone": doc["recipe"]}
-            elif isinstance(doc["recipe"], dict):
-                has_recipe_name = "name" in doc["recipe"]
-                has_backbone = "backbone" in doc["recipe"]
-                if not has_recipe_name and not has_backbone:
-                    raise RuntimeError(
-                        "Recipe must have either 'name' or 'backbone' specified."
-                    )
-                elif has_recipe_name and has_backbone:
-                    raise RuntimeError(
-                        "Recipe cannot have both 'name' and 'backbone' specified."
-                    )
-                elif has_recipe_name:
-                    doc["recipe"] = {"backbone": doc["recipe"]}
+            try:
+                recipe = Recipe.model_validate(doc["recipe"])
+            except ValidationError as exc:
+                raise RuntimeError(f"Invalid recipe section:\n{exc}") from exc
+            doc["recipe"] = recipe.to_components()
 
-            # Normalize each component's value: dict → [dict], list stays as-is
-            for comp_name in list(doc["recipe"].keys()):
-                comp_val = doc["recipe"][comp_name]
-                if isinstance(comp_val, dict):
-                    doc["recipe"][comp_name] = [comp_val]
-                elif isinstance(comp_val, list):
-                    for step in comp_val:
-                        if not isinstance(step, dict) or "name" not in step:
-                            raise RuntimeError(
-                                f"Each recipe step in '{comp_name}' must be a dict with a 'name' key."
-                            )
-                else:
-                    raise RuntimeError(
-                        f"Recipe component '{comp_name}' must be a dict or list."
-                    )
-
-            # Auto-insert Calibration if no Calibration or RemoveQuantization is present
-            _TERMINAL_RECIPES = {"Calibration", "RemoveQuantization", "Skip"}
-            for comp_name, recipe_list in doc["recipe"].items():
-                step_names = {step["name"] for step in recipe_list}
-                if not step_names & _TERMINAL_RECIPES:
-                    recipe_list.append(
-                        {
-                            "name": "Calibration",
-                            "dataset": {"name": "Wikitext", "split": "train"},
-                        }
-                    )
-                    warnings.warn(
-                        f"\n"
-                        f"{'=' * 70}\n"
-                        f"  AUTO-INSERTED Calibration step for '{comp_name}'\n"
-                        f"\n"
-                        f"  No Calibration, RemoveQuantization, or Skip recipe was found\n"
-                        f"  in the '{comp_name}' recipe chain. A Calibration step using\n"
-                        f"  the Wikitext dataset (split=train) has been automatically\n"
-                        f"  appended to ensure activation encodings are computed.\n"
-                        f"\n"
-                        f"  To suppress this, add an explicit Calibration or\n"
-                        f"  RemoveQuantization step to your config.\n"
-                        f"{'=' * 70}",
-                        stacklevel=2,
-                    )
-
-            # When backbone weights are FP, weight-modifying recipes (SeqMSE,
-            # AdaScale, AdaRound, ...) are no-ops — only activation/full-pipeline
-            # recipes are meaningful. Reject anything else early so users don't
-            # silently get wrong results.
-            blocks_raw = doc.get("precision", {}).get("blocks")
-            if blocks_raw is not None and cls._blocks_qtype_is_float(blocks_raw):
-                _FP_WEIGHT_ALLOWED_RECIPES = {
-                    "Calibration",
-                    "SpinQuant",
-                    "RemoveQuantization",
-                    "Skip",
-                }
+            # Cross-section rule (NOT in the recipe schema, since it reads
+            # precision): when block weights are floating point, weight-modifying
+            # recipes are no-ops, so only the FP-weight-allowed techniques are
+            # permitted. Reject anything else early so users don't silently get
+            # wrong results. Reads the VALIDATED precision schema rather than
+            # re-parsing the raw dict.
+            try:
+                precision_schema = PrecisionSchema.model_validate(
+                    doc.get("precision") or {}
+                )
+            except ValidationError as exc:
+                raise RuntimeError(f"Invalid precision section:\n{exc}") from exc
+            if precision_schema.blocks["default"].is_float:
+                allowed = set(FP_WEIGHT_ALLOWED_TECHNIQUES)  # set of name strings
                 for comp_name, recipe_list in doc["recipe"].items():
                     for step in recipe_list:
-                        if step["name"] not in _FP_WEIGHT_ALLOWED_RECIPES:
+                        if step["name"] not in allowed:
                             raise RuntimeError(
                                 f"Recipe '{step['name']}' modifies weights and is "
                                 f"incompatible with floating-point block weights "
                                 f"(precision.blocks.qtype). Only "
-                                f"{sorted(_FP_WEIGHT_ALLOWED_RECIPES)} are allowed."
+                                f"{sorted(allowed)} are allowed."
                             )
-
-            # SpinQuant requires at least one rotation enabled.
-            for comp_name, recipe_list in doc["recipe"].items():
-                for step in recipe_list:
-                    if step["name"] != "SpinQuant":
-                        continue
-                    if (
-                        not step.get("enable_r1", True)
-                        and not step.get("enable_r2", False)
-                        and not step.get("enable_r3", False)
-                    ):
-                        raise RuntimeError(
-                            f"SpinQuant step in '{comp_name}' has all of enable_r1, enable_r2, "
-                            f"and enable_r3 set to false. Enable at least one rotation."
-                        )
-
-            # If SpinQuant is in the backbone recipes and a visual component
-            # exists, SpinQuant must also be in the visual recipes. The R1
-            # rotation on the decoder stack changes the expected input
-            # distribution, so the merger's post-MLP Hadamard rotation must also
-            # be applied. Validated here on raw step names (before SpinQuant is
-            # extracted out of the chain).
-            backbone_step_names = {
-                step["name"] for step in doc["recipe"].get("backbone", [])
-            }
-            if "SpinQuant" in backbone_step_names and "visual" in doc["recipe"]:
-                visual_steps = doc["recipe"]["visual"]
-                visual_step_names = {step["name"] for step in visual_steps}
-                if "SpinQuant" not in visual_step_names:
-                    raise RuntimeError(
-                        "SpinQuant is specified for the backbone but not the visual component. "
-                        "When using SpinQuant on a VLM, it must be applied to both the backbone "
-                        "and visual components to maintain consistency between the decoder stack "
-                        "and the vision encoder merger layers."
-                    )
-
-                # The single backbone SpinQuant pass applies the visual rotation
-                # as a side effect (one apply_spinquant call rotates both the
-                # decoder stack and the visual encoder), so the visual SpinQuant
-                # entry is only a marker and must come before any other visual
-                # step.
-                # TODO: Remove this check once individual APIs are invoked for
-                # each recipe.
-                first_spinquant_idx = next(
-                    i
-                    for i, step in enumerate(visual_steps)
-                    if step["name"] == "SpinQuant"
-                )
-                if first_spinquant_idx > 0:
-                    steps_before = [
-                        step["name"] for step in visual_steps[:first_spinquant_idx]
-                    ]
-                    raise RuntimeError(
-                        f"SpinQuant must be the first step in the visual recipe, but found "
-                        f"{steps_before} before it."
-                    )
 
         # Backward compatibility: migrate top-level dataset into backbone component
         if "dataset" in doc:
@@ -518,34 +564,38 @@ class YAMLConfigParser:
                 raise RuntimeError("Metric name not specified.")
 
     @classmethod
-    def parse_document(cls, doc, export_base_dir="GenAILab/artifacts/exports"):
+    def parse_document(
+        cls, doc, export_base_dir="GenAILab/artifacts/exports"
+    ) -> ParsedConfig:
         cls.validate_config(doc)
-        task_params = {}
 
-        task_params["export"] = doc.pop("export", False)
-        if not isinstance(task_params["export"], (bool, str)):
+        # Export/eval_in_onnx/run_group
+        export_val = doc.pop("export", False)
+        if not isinstance(export_val, (bool, str)):
             raise ValueError("Export field must be a boolean or a string path.")
 
-        task_params["eval_in_onnx"] = doc.pop("eval_in_onnx", False)
-        if not isinstance(task_params["eval_in_onnx"], bool):
+        eval_in_onnx = doc.pop("eval_in_onnx", False)
+        if not isinstance(eval_in_onnx, bool):
             raise ValueError("eval_in_onnx field must be a boolean value.")
 
-        task_params["run_group"] = doc.pop("run_group", None)
+        run_group = doc.pop("run_group", None)
 
-        if task_params["eval_in_onnx"] and not task_params["export"]:
+        if eval_in_onnx and not export_val:
             warnings.warn(
                 "eval_in_onnx is enabled, but export is disabled. Overriding export to True."
             )
 
-        if task_params["export"] or task_params["eval_in_onnx"]:
-            task_params["export"] = (
+        if export_val or eval_in_onnx:
+            export_dir = (
                 get_test_artifacts_path(doc, base_dir=export_base_dir)
-                if isinstance(task_params["export"], bool)
-                else task_params["export"]
+                if isinstance(export_val, bool)
+                else export_val
             )
-            Path(task_params["export"]).mkdir(parents=True, exist_ok=True)
-            with open(os.path.join(task_params["export"], "config.yaml"), "w") as file:
+            Path(export_dir).mkdir(parents=True, exist_ok=True)
+            with open(os.path.join(export_dir, "config.yaml"), "w") as file:
                 yaml.dump(doc, file)
+        else:
+            export_dir = None
 
         # Model setup
         model_id = doc["model"]["model_id"]
@@ -559,12 +609,7 @@ class YAMLConfigParser:
             model_cls = cls.get_model_class(
                 model_type, adaptation_names, adaptation_kwargs
             )
-            task_params["model"] = doc.pop("model")
-            task_params["model"]["class"] = model_cls
-            task_params["model"]["model_type"] = model_type
-            task_params["model"]["adaptations"] = (
-                adaptations_raw  # Preserve original form for profiler output
-            )
+            model_dict = doc.pop("model")
         except LookupError as exc:
             raise LookupError(
                 f"Failed to configure model for model_id='{model_id}', "
@@ -576,7 +621,7 @@ class YAMLConfigParser:
         # the full pipeline including export.
         # A local directory as model_id means the model is already exported.
         is_local_checkpoint = os.path.isdir(model_id)
-        will_export = task_params["export"] or (
+        will_export = export_dir or (
             "ONNX" in cls.get_default_llm().__name__ and not is_local_checkpoint
         )
         has_exclusive = any(
@@ -595,100 +640,163 @@ class YAMLConfigParser:
                     f"    adaptations:\n" + "".join(f"      - {a}\n" for a in missing)
                 )
 
-        # Precision config
-        precision = PrecisionConfig.from_dict(doc.pop("precision", None))
-        task_params["precision"] = precision
+        # Extract known model fields
+        context_length = model_dict.pop("context_length")
+        sequence_length = model_dict.pop("sequence_length")
+        image_size = model_dict.pop("image_size", None)
+        encodings = model_dict.pop("encodings", None)
+        dtype = model_dict.pop("dtype", None)
+        # model_id already extracted above; remove it from the dict
+        model_dict.pop("model_id")
+        # Remaining keys go into extra_kwargs
+        extra_kwargs = model_dict
 
-        # SpinQuant rotates the float graph *before* the sim is built (applied
-        # in the test runner via apply_spinquant_pre_sim), so it is not a
-        # recipe-chain step. Pull its flags out here and strip the step from the
-        # parsed recipe lists; the chain never sees it. This applies to both the
-        # ONNX and torch frameworks.
-        spinquant_config = None
+        model_config = ModelConfig(
+            model_cls=model_cls,
+            model_id=model_id,
+            model_type=model_type,
+            context_length=context_length,
+            sequence_length=sequence_length,
+            adaptations=adaptations_raw,
+            image_size=image_size,
+            encodings=encodings,
+            dtype=dtype,
+            extra_kwargs=extra_kwargs,
+        )
 
-        # Recipe parsing — each component is a list of recipe steps
-        task_params["recipe"] = {}
+        # Precision config: validate through the shared schema (shape, vocab,
+        # extra="forbid" typo-catching, polymorphic blocks/visual normalization),
+        # then resolve the validated schema into the aimet-coupled PrecisionConfig
+        # (qtype objects). validate_config already validated this section; re-run
+        # here since parse_document may be called on the raw doc.
+        precision_schema = PrecisionSchema.model_validate(
+            doc.pop("precision", None) or {}
+        )
+        precision = PrecisionConfig.from_schema(precision_schema)
+
+        # Recipe parsing. ``validate_config`` already validated + normalized the
+        # recipe via the shared schema and lowered it to component form; here we
+        # split off the pre-sim steps (e.g. SpinQuant, which rotates the float
+        # model before the sim is built) and resolve only the on-sim chains to
+        # recipe classes.
         if "recipe" in doc:
-            for component_name, recipe_list in doc["recipe"].items():
-                parsed_steps = []
-                for step_config in recipe_list:
-                    recipe_name = step_config["name"]
+            # doc["recipe"] is already the lowered component dict (from
+            # validate_config). Reconstruct the validated Recipe to split it.
+            recipe_obj = Recipe.model_validate(doc["recipe"])
+            pre_sim_steps, on_sim_components = split_recipe(recipe_obj)
 
-                    if recipe_name == "SpinQuant":
-                        flags = {
-                            k: v
-                            for k, v in step_config.items()
-                            if k not in ("name", "dataset")
-                        }
-                        # Prefer the backbone step's flags; fall back to the
-                        # first SpinQuant seen if it is only in the visual chain.
-                        if component_name == "backbone" or spinquant_config is None:
-                            spinquant_config = flags
-                        continue
+            # Helper to resolve a step dict to ResolvedStep
+            def resolve_step(step_config: dict) -> ResolvedStep:
+                recipe_name = step_config["name"]
+                try:
+                    recipe_cls = cls.get_recipe(recipe_name)
+                except LookupError as exc:
+                    raise LookupError(
+                        f"Specified quantization recipe name ({recipe_name}) not found."
+                    ) from exc
 
+                recipe_kwargs = {
+                    k: v for k, v in step_config.items() if k not in ("name", "dataset")
+                }
+                dataset_cls = None
+                dataset_kwargs = {}
+                if "dataset" in step_config:
+                    dataset_config = step_config["dataset"]
+                    dataset_name = dataset_config["name"]
                     try:
-                        recipe_cls = cls.get_recipe(recipe_name)
+                        dataset_cls = cls.get_dataset(dataset_name)
                     except LookupError as exc:
                         raise LookupError(
-                            f"Specified quantization recipe name ({recipe_name}) not found."
+                            f"Specified dataset name ({dataset_name}) not found."
                         ) from exc
+                    dataset_kwargs = {
+                        k: v for k, v in dataset_config.items() if k != "name"
+                    }
 
-                    parsed = step_config.copy()
-                    parsed["class"] = recipe_cls
-                    del parsed["name"]
+                return ResolvedStep(
+                    name=recipe_name,
+                    technique_cls=recipe_cls,
+                    recipe_kwargs=recipe_kwargs,
+                    dataset_cls=dataset_cls,
+                    dataset_kwargs=dataset_kwargs,
+                )
 
-                    # Parse dataset within step
-                    if "dataset" in step_config:
-                        dataset_config = parsed["dataset"]
-                        dataset_name = dataset_config["name"]
-                        try:
-                            dataset_cls = cls.get_dataset(dataset_name)
-                            dataset_config["class"] = dataset_cls
-                            del dataset_config["name"]
-                        except LookupError as exc:
-                            raise LookupError(
-                                f"Specified dataset name ({dataset_name}) not found."
-                            ) from exc
-
-                    parsed_steps.append(parsed)
-                task_params["recipe"][component_name] = parsed_steps
+            pre_sim_resolved = tuple(resolve_step(s) for s in pre_sim_steps)
+            backbone_resolved = tuple(
+                resolve_step(s) for s in on_sim_components["backbone"]
+            )
+            visual_resolved = (
+                tuple(resolve_step(s) for s in on_sim_components["visual"])
+                if "visual" in on_sim_components
+                else None
+            )
             del doc["recipe"]
         else:
-            has_encodings = "encodings" in task_params.get("model", {})
+            has_encodings = encodings is not None
             default_recipe = "Skip" if has_encodings else "RemoveQuantization"
-            task_params["recipe"] = {
-                "backbone": [{"class": cls.get_recipe(default_recipe)}],
-                "visual": [{"class": cls.get_recipe(default_recipe)}],
-            }
+            default_cls = cls.get_recipe(default_recipe)
+            default_step = ResolvedStep(
+                name=default_recipe,
+                technique_cls=default_cls,
+                recipe_kwargs={},
+                dataset_cls=None,
+                dataset_kwargs={},
+            )
+            pre_sim_resolved = ()
+            backbone_resolved = (default_step,)
+            # Only VLMs get a visual recipe; LLMs have visual=None
+            visual_resolved = (default_step,) if issubclass(model_cls, VLM) else None
 
-        # SpinQuant flags extracted from the recipe lists above; None when
-        # SpinQuant was not requested.
-        task_params["spinquant"] = spinquant_config
+        resolved_recipe = ResolvedRecipe(
+            pre_sim=pre_sim_resolved,
+            backbone=backbone_resolved,
+            visual=visual_resolved,
+        )
 
         # Metrics parsing
-        metrics = (
+        metrics_list = (
             doc["metrics"] if isinstance(doc["metrics"], list) else [doc["metrics"]]
         )
-        task_params["metrics"] = []
-        for metric in metrics:
+        resolved_metrics = []
+        for metric in metrics_list:
             metric_name = metric["name"]
             try:
                 metric_cls = cls.get_metric(metric_name)
-                task_params["metrics"].append(metric)
-                task_params["metrics"][-1]["class"] = metric_cls
-                del task_params["metrics"][-1]["name"]
             except LookupError as exc:
                 raise LookupError(
                     f"Specified metric name ({metric_name}) not found."
                 ) from exc
+            metric_kwargs = {k: v for k, v in metric.items() if k != "name"}
+            resolved_metrics.append(
+                ResolvedMetric(
+                    name=metric_name,
+                    metric_cls=metric_cls,
+                    metric_kwargs=metric_kwargs,
+                )
+            )
         del doc["metrics"]
 
-        task_params["profiler"] = doc.pop("profiler", {})
+        # Profiler parsing
+        profiler_dict = doc.pop("profiler", {})
+        capture_intermediate = profiler_dict.pop("capture_intermediate_data", False)
+        profiler_config = ProfilerConfig(
+            capture_intermediate_data=capture_intermediate,
+            gpu_meter_kwargs=profiler_dict,
+        )
 
         if len(doc) > 0:
             raise ValueError(f"Unrecognized sections in config: {doc.keys()}")
 
-        return task_params
+        return ParsedConfig(
+            model=model_config,
+            precision=precision,
+            recipe=resolved_recipe,
+            metrics=tuple(resolved_metrics),
+            profiler=profiler_config,
+            export=export_dir,
+            eval_in_onnx=eval_in_onnx,
+            run_group=run_group,
+        )
 
     @classmethod
     def parse(cls, filename, export_base_dir="GenAILab/artifacts/exports"):

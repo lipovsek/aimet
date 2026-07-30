@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 import torch
 
-from GenAILab.qai_hub_lm.precision import PrecisionConfig
+from GenAILab.bench.precision import PrecisionConfig
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ class TestInstantiateQuantsimOrchestration:
 
     def test_float16_activations_removes_quantizers(self):
         """When activations are float16, remove_activation_quantizers should be called."""
-        from GenAILab.qai_hub_lm.precision import float16
+        from GenAILab.bench.precision import float16
 
         precision = PrecisionConfig.from_dict(
             {"blocks": {"default": {"qtype": 4}}, "activations": "float16"}

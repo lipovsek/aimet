@@ -18,7 +18,7 @@ from aimet_onnx.experimental.llm_configurator.llm_configurator import (
     _tie_quantizers_for_kv_cache,
 )
 
-from GenAILab.qai_hub_lm.precision import (
+from GenAILab.bench.precision import (
     Granularity,
     PrecisionConfig,
     WeightPrecision,
@@ -43,46 +43,6 @@ def quantize_embedding_weights(embedding: torch.nn.Module, n_bits: int):
     offset = torch.round(w_min / scale) - qmin
     w_q = torch.clamp(torch.round(w / scale + offset), qmin, qmax)
     embedding.weight.data = (w_q - offset) * scale
-
-
-def apply_spinquant_pre_sim(
-    backbone_onnx_model: onnx.ModelProto,
-    spinquant_config: dict | None,
-    *,
-    visual_onnx_model: onnx.ModelProto | None = None,
-    embedding: torch.nn.Module | None = None,
-) -> None:
-    """Apply SpinQuant rotations to the raw ONNX model(s) before quantsim creation.
-
-    SpinQuant rotates float weights (R1/R2) and may insert online Hadamard
-    MatMuls (R3). It must run on the float ONNX graph *before* the
-    ``QuantizationSimModel`` is built, so the sim wraps the rotated graph and
-    calibrates against the rotated weights.
-
-    No-op when ``spinquant_config`` is ``None`` (SpinQuant not requested).
-
-    :param backbone_onnx_model: backbone ONNX model, mutated in-place.
-    :param spinquant_config: dict of flags from the YAML SpinQuant recipe step
-        (``enable_r1`` / ``enable_r2`` / ``enable_r3``); ``None`` to skip.
-    :param visual_onnx_model: optional visual ONNX model (VLM), mutated in-place.
-    :param embedding: optional embedding ``torch.nn.Module`` (VLM exported with
-        ``use_inputs_embeds=True``); its ``.weight`` tensor is rotated in-place.
-    """
-    if spinquant_config is None:
-        return
-
-    # Imported lazily so the (experimental) SpinQuant dependency is only
-    # required when a config actually requests it.
-    from aimet_onnx.experimental.spinquant import apply_spinquant
-
-    apply_spinquant(
-        backbone_onnx_model,
-        visual_model=visual_onnx_model,
-        embedding=embedding.weight if embedding is not None else None,
-        enable_r1=spinquant_config.get("enable_r1", True),
-        enable_r2=spinquant_config.get("enable_r2", False),
-        enable_r3=spinquant_config.get("enable_r3", False),
-    )
 
 
 def get_ort_providers(

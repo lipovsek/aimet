@@ -6,7 +6,7 @@ This document describes the YAML config format consumed by the GenAILab harness.
 2. [**Reference**](#reference) — exhaustive schema for every field.
 3. [**Currently registered values**](#currently-registered-values) — names you can use in `recipe`, `dataset`, `metrics`, `model.adaptations`. Snapshot as of **2026-05-20**; new entries are added by `@YAMLConfigParser.register_*` decorators, so keep this in mind when reading.
 
-The schema is enforced by [yaml_config_parser.py](bench/yaml_config_parser.py) and [precision.py](qai_hub_lm/precision.py).
+The schema is enforced by [yaml_config_parser.py](bench/yaml_config_parser.py) and [precision.py](bench/precision.py).
 
 ---
 

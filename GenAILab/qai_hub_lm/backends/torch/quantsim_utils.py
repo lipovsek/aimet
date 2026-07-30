@@ -12,7 +12,7 @@ from aimet_torch.v2.quantsim.config_utils import (
 )
 from aimet_torch import QuantizationSimModel
 
-from GenAILab.qai_hub_lm.precision import (
+from GenAILab.bench.precision import (
     Granularity,
     PrecisionConfig,
     WeightPrecision,

@@ -22,7 +22,7 @@ from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
     _tie_quantizers_for_kv_cache,
     _set_lm_head_precision,
 )
-from GenAILab.qai_hub_lm.precision import WeightPrecision
+from GenAILab.bench.precision import WeightPrecision
 from aimet_onnx.common.defs import int8
 from GenAILab.bench.onnx.quant_recipes import (
     _prefill_inputs,

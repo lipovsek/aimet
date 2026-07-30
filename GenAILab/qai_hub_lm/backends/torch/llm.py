@@ -17,7 +17,7 @@ from aimet_torch.v2.nn.true_quant import (
 from aimet_torch.v2.utils import remove_activation_quantizers
 from aimet_torch import QuantizationSimModel
 
-from GenAILab.qai_hub_lm.precision import (
+from GenAILab.bench.precision import (
     PrecisionConfig,
     float16,
     float32,

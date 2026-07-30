@@ -3,8 +3,11 @@
 
 """Shared recipe chain application logic for Torch and ONNX test runners."""
 
+from __future__ import annotations
+
 import contextlib
 import gc
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -13,20 +16,12 @@ from transformers.processing_utils import ProcessorMixin
 from GenAILab.bench.datasets import GeneratedDataset, Interleaved, TextDataset
 from GenAILab.bench.profiler import GPUMeter, RecipeStepStats
 
-
-def extract_recipe_config(recipe_dict):
-    """Extract recipe class, dataset config, and kwargs from a recipe config dict."""
-    recipe_dict = recipe_dict.copy()
-    recipe_cls = recipe_dict.pop("class")
-    dataset_config = recipe_dict.pop("dataset", {}).copy()
-    dataset_cls = dataset_config.pop("class", None)
-    dataset_kwargs = dataset_config
-    recipe_kwargs = recipe_dict
-    return recipe_cls, recipe_kwargs, dataset_cls, dataset_kwargs
+if TYPE_CHECKING:
+    from GenAILab.bench.yaml_config_parser import ResolvedStep
 
 
-def apply_recipe_chain(
-    recipe_list,
+def apply_quantization_chain(
+    recipe_list: list[ResolvedStep] | tuple[ResolvedStep, ...],
     sim_component,
     generator,
     tokenizer,
@@ -40,17 +35,18 @@ def apply_recipe_chain(
     model_kwargs,
     component="backbone",
     recipe_cache=None,
-    spinquant_config=None,
+    pre_sim=None,
 ):
-    """Apply a chain of recipe steps, with automatic cache lookup and save.
+    """Apply a chain of on-sim recipe steps, with automatic cache lookup and save.
 
     If recipe_cache is provided, performs a cache lookup first and skips
     already-cached steps. After each cacheable step, saves to the cache.
     Returns the full list of RecipeStepStats (cached + newly computed).
 
-    ``spinquant_config`` carries the pre-sim SpinQuant rotation flags (aimet-onnx
-    only) so the cache base hash distinguishes rotated from non-rotated graphs;
-    SpinQuant is not a chain step.
+    ``pre_sim`` is the flat pre-sim step list (e.g. the SpinQuant step that
+    rotated the float model before the sim was built). It is folded into the
+    cache base hash so the chain distinguishes rotated from non-rotated graphs;
+    pre-sim steps are applied by ``apply_pre_quantization_chain``, not here.
     """
     skip_to = 0
     cached_step_stats = []
@@ -65,15 +61,16 @@ def apply_recipe_chain(
             model_kwargs,
             framework,
             component,
-            spinquant_config,
+            pre_sim,
         )
 
     step_stats = list(cached_step_stats)
 
-    for i, recipe_config in enumerate(recipe_list[skip_to:], start=skip_to):
-        recipe_cls, recipe_kwargs, dataset_cls, dataset_kwargs = extract_recipe_config(
-            recipe_config
-        )
+    for i, step in enumerate(recipe_list[skip_to:], start=skip_to):
+        recipe_cls = step.technique_cls
+        recipe_kwargs = step.recipe_kwargs
+        dataset_cls = step.dataset_cls
+        dataset_kwargs = step.dataset_kwargs
 
         if dataset_cls is not None:
             # Text datasets need just the tokenizer; multimodal datasets
@@ -146,3 +143,37 @@ def apply_recipe_chain(
         gc.collect()
         torch.cuda.empty_cache()
     return step_stats
+
+
+def apply_pre_quantization_chain(
+    pre_sim: tuple[ResolvedStep, ...],
+    float_model,
+    profiler_kwargs=None,
+    profiler_capture_intermediate_data=False,
+):
+    """Apply the pre-sim technique chain on the float model, before the sim is built.
+
+    ``pre_sim`` is the FLAT pre-sim step tuple (e.g. SpinQuant). Each pre-sim
+    technique acts on the whole float model, so it is applied exactly ONCE here
+    (no component axis). ``float_model`` is the backend float bundle (nn.Module
+    for torch; the entry with backbone/visual/embedding for onnx).
+
+    Returns ``{technique_name: profiler_or_None}`` so the runner can re-attach
+    pre-sim work to the recorded recipe for reporting.
+    """
+    profilers = {}
+    for step in pre_sim:
+        name = step.name
+        technique_cls = step.technique_cls
+        kwargs = step.recipe_kwargs
+        if profiler_kwargs is not None:
+            with GPUMeter(
+                **profiler_kwargs,
+                capture_intermediate_data=profiler_capture_intermediate_data,
+            ) as profiler:
+                technique_cls.apply(float_model, **kwargs)
+            profilers[name] = profiler
+        else:
+            technique_cls.apply(float_model, **kwargs)
+            profilers[name] = None
+    return profilers

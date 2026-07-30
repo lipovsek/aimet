@@ -6,3 +6,4 @@ onnxruntime-gpu
 einops
 timm
 click
+pydantic

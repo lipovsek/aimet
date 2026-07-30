@@ -17,10 +17,51 @@ from aimet_onnx.experimental.adascale.adascale_optimizer import (
     apply_adascale,
     adascale_model_config_dict,
 )
+from aimet_onnx.experimental.spinquant import apply_spinquant
 
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
+from GenAILab.qai_hub_lm.schema import (
+    RemoveQuantizationSpec,
+    ClipSpec,
+    SkipSpec,
+    CalibrationSpec,
+    SeqMSESpec,
+    AdaScaleSpec,
+    SpinQuantSpec,
+)
 from GenAILab.qai_hub_lm.models.generator import Generator
 from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import kwargs_to_dict
+
+
+class PreQuantizationTechnique(ABC):
+    """A technique that runs on the float model BEFORE the sim is built.
+
+    apply() receives the float-model bundle (what ``instantiate_float_model``
+    returns: an entry with ``.backbone`` / ``.visual`` / ``.embedding``). A single
+    call rotates the whole model (all components together).
+    """
+
+    @staticmethod
+    @abstractmethod
+    def apply(float_model, **kwargs):
+        """Apply the technique to the float model, in place."""
+
+
+@YAMLConfigParser.register_recipe(SpinQuantSpec)
+class SpinQuant(PreQuantizationTechnique):
+    """Rotate the float ONNX graph (R1/R2/R3) before the sim is built."""
+
+    @staticmethod
+    def apply(float_model, *, enable_r1=True, enable_r2=False, enable_r3=False):
+        embedding = float_model.embedding
+        apply_spinquant(
+            float_model.backbone,
+            visual_model=float_model.visual,
+            embedding=embedding.weight if embedding is not None else None,
+            enable_r1=enable_r1,
+            enable_r2=enable_r2,
+            enable_r3=enable_r3,
+        )
 
 
 def _get_lm_head_node_names(quantsim: QuantizationSimModel) -> list[str]:
@@ -94,7 +135,7 @@ class QuantizationTechnique(ABC):
         """Apply quantization technique"""
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(RemoveQuantizationSpec)
 class RemoveQuantization(QuantizationTechnique):
     """Remove all quantization nodes from quantsim model"""
 
@@ -110,7 +151,7 @@ class RemoveQuantization(QuantizationTechnique):
         quantsim._rebuild_session()
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(ClipSpec)
 class Clip(QuantizationTechnique):
     """Clamp activation quantizer encodings to a fixed symmetric range.
 
@@ -165,7 +206,7 @@ class Clip(QuantizationTechnique):
         print(f"Clip: clamped {n_clipped} activation encodings to [-{value}, {value}]")
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(SkipSpec)
 class Skip(QuantizationTechnique):
     """Do nothing. Useful for testing fully precomputed encodings."""
 
@@ -179,7 +220,7 @@ class Skip(QuantizationTechnique):
         pass
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(CalibrationSpec)
 class Calibration(QuantizationTechnique):
     """Calibrate quantization parameters.
 
@@ -211,7 +252,7 @@ class Calibration(QuantizationTechnique):
         quantsim.compute_encodings(_forward)
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(SeqMSESpec)
 class SeqMSE(QuantizationTechnique):
     @classmethod
     def cacheable(cls):
@@ -248,7 +289,7 @@ class SeqMSE(QuantizationTechnique):
         seq_mse.apply_seq_mse_algo()
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(AdaScaleSpec)
 class AdaScale(QuantizationTechnique):
     """Apply AdaScale to model"""
 

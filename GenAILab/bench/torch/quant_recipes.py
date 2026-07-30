@@ -17,7 +17,47 @@ from aimet_torch.v2.utils import remove_all_quantizers
 from aimet_torch.utils import change_tensor_device_placement
 
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
+from GenAILab.qai_hub_lm.schema import (
+    RemoveQuantizationSpec,
+    ClipSpec,
+    SkipSpec,
+    CalibrationSpec,
+    SeqMSESpec,
+    AdaScaleSpec,
+    SpinQuantSpec,
+)
+from GenAILab.qai_hub_lm.backends.torch.quantsim_utils import apply_spinquant_pre_sim
 from GenAILab.qai_hub_lm.models.generator import Generator
+
+
+class PreQuantizationTechnique(ABC):
+    """A technique that runs on the float model BEFORE the sim is built.
+
+    Unlike QuantizationTechnique (which operates on the quantsim), apply() here
+    receives the float-model bundle (what ``instantiate_float_model`` returns).
+    A single call rotates the whole model (all components together).
+    """
+
+    @staticmethod
+    @abstractmethod
+    def apply(float_model, **kwargs):
+        """Apply the technique to the float model, in place."""
+
+
+@YAMLConfigParser.register_recipe(SpinQuantSpec)
+class SpinQuant(PreQuantizationTechnique):
+    """Rotate the float model (R1/R2) before the sim is built."""
+
+    @staticmethod
+    def apply(float_model, *, enable_r1=True, enable_r2=False, enable_r3=False):
+        apply_spinquant_pre_sim(
+            float_model,
+            {
+                "enable_r1": enable_r1,
+                "enable_r2": enable_r2,
+                "enable_r3": enable_r3,
+            },
+        )
 
 
 def _prefill_inputs(
@@ -68,7 +108,7 @@ class QuantizationTechnique(ABC):
         """Apply quantization technique"""
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(RemoveQuantizationSpec)
 class RemoveQuantization(QuantizationTechnique):
     """Remove all quantization nodes from quantsim model"""
 
@@ -83,7 +123,7 @@ class RemoveQuantization(QuantizationTechnique):
         remove_all_quantizers(quantsim.model)
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(ClipSpec)
 class Clip(QuantizationTechnique):
     """Clamp activation quantizer encodings to a fixed symmetric range.
 
@@ -133,7 +173,7 @@ class Clip(QuantizationTechnique):
         print(f"Clip: clamped {n_clipped} activation quantizers to [-{value}, {value}]")
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(SkipSpec)
 class Skip(QuantizationTechnique):
     """Do nothing. Useful for testing fully precomputed encodings."""
 
@@ -147,7 +187,7 @@ class Skip(QuantizationTechnique):
         pass
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(CalibrationSpec)
 class Calibration(QuantizationTechnique):
     """Calibrate quantization parameters.
 
@@ -182,7 +222,7 @@ class Calibration(QuantizationTechnique):
                 generator(**inputs)
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(SeqMSESpec)
 class SeqMSE(QuantizationTechnique):
     """Apply SeqMSE to model"""
 
@@ -196,16 +236,19 @@ class SeqMSE(QuantizationTechnique):
         quantsim: QuantizationSimModel,
         generator: Generator,
         dataloader: DataLoader,
+        num_iterations: int = 20,
         **kwargs,
     ):
         # Step 1: Collect calibration inputs in FP mode.
-        inputs = _prefill_inputs(generator, dataloader, 20, torch.device("cpu"))
+        inputs = _prefill_inputs(
+            generator, dataloader, num_iterations, torch.device("cpu")
+        )
 
         # Step 2: Optimize weight quantization parameters to minimize layer-wise MSE.
         apply_seq_mse(quantsim, inputs, num_candidates=20)
 
 
-@YAMLConfigParser.register_recipe
+@YAMLConfigParser.register_recipe(AdaScaleSpec)
 class AdaScale(QuantizationTechnique):
     """Apply AdaScale to model"""
 

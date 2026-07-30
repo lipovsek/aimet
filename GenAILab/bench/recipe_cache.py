@@ -24,6 +24,8 @@ Storage layout:
     │       └── quantizer_flags.json   (both: per-quantizer freeze state)
 """
 
+from __future__ import annotations
+
 import copy
 import functools
 import hashlib
@@ -32,6 +34,7 @@ import datetime
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import onnx
 import torch
@@ -40,6 +43,9 @@ from GenAILab.bench.profiler import (
     RecipeStepStats,
     convert_gpu_meter_to_dict,
 )
+
+if TYPE_CHECKING:
+    from GenAILab.bench.yaml_config_parser import ResolvedStep
 
 
 @dataclass
@@ -166,18 +172,20 @@ class RecipeCache:
         model_kwargs: dict,
         framework: str,
         component: str = "backbone",
-        spinquant_config: dict | None = None,
+        pre_sim: tuple[ResolvedStep, ...] | None = None,
     ) -> str:
         """Hash for a freshly-instantiated component (before any recipes).
 
         Uses precision_config.weight_identity() so experiments differing only
         in activations/kv_cache share cache entries for weight-modifying recipes.
 
-        ``spinquant_config`` folds the pre-sim SpinQuant rotation flags into the
-        base identity. For aimet-onnx, SpinQuant rotates the float graph before
-        the sim is built and is no longer a recipe-chain step, so without this
-        the rotated and non-rotated graphs (or differing R1/R2/R3 flags) would
-        collide on the same cache key.
+        ``pre_sim`` is the flat pre-sim step tuple (e.g. the SpinQuant step that
+        rotates the float model before the sim is built). Its identity is folded
+        into the base hash so a chain cached on a rotated graph never collides
+        with one on a non-rotated graph (or a graph rotated with different
+        R1/R2/R3 flags). When there are no pre-sim steps, NO pre-sim key is added
+        -- the base hash is then byte-identical to the pre-pre-sim behavior, so
+        existing cache entries for non-rotated runs stay valid.
         """
         identity = {
             "model_id": model_id,
@@ -187,59 +195,57 @@ class RecipeCache:
             "framework": framework,
             "component": component,
         }
-        if spinquant_config is not None:
-            identity["spinquant"] = spinquant_config
+        if pre_sim:
+            ps_identity = {step.name: step.recipe_kwargs for step in pre_sim}
+            # Key kept as "spinquant" for cache-key stability with prior runs.
+            identity["spinquant"] = ps_identity
         return _stable_json_hash(identity)
 
     @staticmethod
-    def step_hash(parent_hash: str, step_config: dict) -> str:
+    def step_hash(parent_hash: str, step: ResolvedStep) -> str:
         """Extend a chain hash with one recipe step."""
+        dataset_dict = {}
+        if step.dataset_cls is not None:
+            dataset_dict = {
+                "class": step.dataset_cls.__name__,
+                **step.dataset_kwargs,
+            }
         step_identity = {
             "parent": parent_hash,
-            "recipe": step_config.get("class", "").__name__
-            if hasattr(step_config.get("class", ""), "__name__")
-            else str(step_config.get("class", "")),
-            "recipe_kwargs": {
-                k: v for k, v in step_config.items() if k not in ("class", "dataset")
-            },
-            "dataset": _serialize_dataset_config(step_config.get("dataset", {})),
+            "recipe": step.technique_cls.__name__,
+            "recipe_kwargs": step.recipe_kwargs,
+            "dataset": _serialize_dataset_config(dataset_dict),
         }
         return _stable_json_hash(step_identity)
 
     def lookup(
         self,
-        recipe_list: list[dict],
+        recipe_list: list[ResolvedStep] | tuple[ResolvedStep, ...],
         sim_component,
         model_id: str,
         precision_config,
         model_kwargs: dict,
         framework: str,
         component: str = "backbone",
-        spinquant_config: dict | None = None,
+        pre_sim: tuple[ResolvedStep, ...] | None = None,
     ) -> tuple[int, list, list[str]]:
         """Compute hashes, find the longest cached prefix, load state, and log.
 
         Returns (skip_to, cached_step_stats, chain_hashes).
         """
-        from GenAILab.bench.recipe_chain import (
-            extract_recipe_config,
-        )  # circular
-
         base = self.compute_base_hash(
             model_id,
             precision_config,
             model_kwargs,
             framework,
             component,
-            spinquant_config,
+            pre_sim,
         )
         hashes = compute_chain_hashes(self, base, recipe_list)
         skip, chain = find_cache_hit(self, hashes)
         if skip > 0:
             cached_stats = self.load(chain, sim_component, framework)
-            remaining = [
-                extract_recipe_config(r)[0].__name__ for r in recipe_list[skip:]
-            ]
+            remaining = [step.technique_cls.__name__ for step in recipe_list[skip:]]
             log_cache_hit(component, cached_stats, len(recipe_list), remaining)
         else:
             log_cache_miss(component, len(recipe_list))
@@ -597,7 +603,9 @@ def _serialize_dataset_config(dataset_config: dict) -> dict:
 
 
 def compute_chain_hashes(
-    recipe_cache: RecipeCache, base_hash: str, recipe_list: list[dict]
+    recipe_cache: RecipeCache,
+    base_hash: str,
+    recipe_list: list[ResolvedStep] | tuple[ResolvedStep, ...],
 ) -> list[str]:
     """Pre-compute Merkle chain hashes for all recipe steps.
 
@@ -605,8 +613,8 @@ def compute_chain_hashes(
     and index i+1 is the hash after step i.
     """
     hashes = [base_hash]
-    for config in recipe_list:
-        hashes.append(recipe_cache.step_hash(hashes[-1], config))
+    for step in recipe_list:
+        hashes.append(recipe_cache.step_hash(hashes[-1], step))
     return hashes
 
 

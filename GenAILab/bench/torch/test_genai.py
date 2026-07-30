@@ -30,12 +30,14 @@ from GenAILab.bench.determinism import set_seed
 from GenAILab.bench.eval_context import EvaluationContext
 from GenAILab.bench.fp_cache import DiskBackedFPCache
 from GenAILab.bench.metrics import TextEvaluationMetric
-from GenAILab.bench.recipe_chain import apply_recipe_chain
-from GenAILab.bench import datasets, metrics
+from GenAILab.bench.recipe_chain import (
+    apply_pre_quantization_chain,
+    apply_quantization_chain,
+)
+from GenAILab.bench import datasets, metrics  # noqa: F401 — triggers registration
 from GenAILab.qai_hub_lm.backends import torch as models  # noqa: F401 — triggers registration
-from GenAILab.bench.torch import quant_recipes
+from GenAILab.bench.torch import quant_recipes  # noqa: F401 — triggers registration
 from GenAILab.qai_hub_lm.backends.torch.generator_utils import generator_factory
-from GenAILab.qai_hub_lm.backends.torch.quantsim_utils import apply_spinquant_pre_sim
 
 
 def test_llm_quantization(
@@ -45,40 +47,25 @@ def test_llm_quantization(
         pytest.skip("No GenAI test parameters provided.")
     set_seed(42)
 
-    test_parameters = YAMLConfigParser.parse_document(
-        test_config, export_base_dir=export_dir
-    )
-    print(test_parameters)
+    config = YAMLConfigParser.parse_document(test_config, export_base_dir=export_dir)
+    print(config)
 
-    model_kwargs = test_parameters.pop("model")
-    # Snapshot model args before destructive pops for the EvaluationContext hash
-    eval_ctx = EvaluationContext(fp_cache=fp_cache, model_args=model_kwargs.copy())
+    eval_ctx = EvaluationContext(fp_cache=fp_cache, model_config=config.model)
 
-    model_cls: type[LLM] = model_kwargs.pop("class")
-    context_length = model_kwargs.pop("context_length")
-    sequence_length = model_kwargs.pop("sequence_length")
-    model_id = model_kwargs.pop("model_id")
-    model_type = model_kwargs.pop("model_type")
-    image_size = model_kwargs.pop("image_size", None)
-    precomputed_encodings = model_kwargs.pop("encodings", None)
+    model_cls = config.model.model_cls
+    context_length = config.model.context_length
+    sequence_length = config.model.sequence_length
+    model_id = config.model.model_id
+    model_type = config.model.model_type
+    image_size = config.model.image_size
+    precomputed_encodings = config.model.encodings
 
-    if "dtype" in model_kwargs:
-        model_kwargs["dtype"] = getattr(torch, model_kwargs["dtype"])
+    # Build model_kwargs for instantiate_float_model
+    model_kwargs = config.model.extra_kwargs.copy()
+    if config.model.dtype:
+        model_kwargs["dtype"] = getattr(torch, config.model.dtype)
 
-    precision = test_parameters.pop("precision")
-
-    all_recipes = test_parameters.pop("recipe")
-    profiler_kwargs = test_parameters.pop("profiler")
-    profiler_capture_intermediate_data = profiler_kwargs.pop(
-        "capture_intermediate_data", False
-    )
-    metrics = test_parameters.pop("metrics")
-
-    # SpinQuant rotates the float model before the sim is built. Load the raw
-    # model first, rotate it, then build the sim on the rotated graph. The
-    # parser pulls the SpinQuant flags out of the recipe chain so the chain
-    # never contains a SpinQuant step.
-    spinquant_config = test_parameters.pop("spinquant", None)
+    precision = config.precision
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -88,19 +75,16 @@ def test_llm_quantization(
         **model_kwargs,
     )
 
-    # SpinQuant rotates the float model before the sim is built, so it is not a
-    # recipe-chain step (the parser strips it out). Profile it here and re-attach
-    # it as a synthetic leading step below so the recorded recipe still reflects
-    # that SpinQuant was applied (and with which rotations).
-    spinquant_profiler = None
-    if spinquant_config is not None:
-        with GPUMeter(
-            **profiler_kwargs,
-            capture_intermediate_data=profiler_capture_intermediate_data,
-        ) as spinquant_profiler:
-            apply_spinquant_pre_sim(model, spinquant_config)
-    else:
-        apply_spinquant_pre_sim(model, spinquant_config)
+    # Apply the pre-sim chain; the torch float model is the nn.Module.
+    # Each pre-sim technique rotates the whole model once.
+    # ``pre_sim_profilers`` maps technique name -> profiler for
+    # re-attachment to the recorded recipe below.
+    pre_sim_profilers = apply_pre_quantization_chain(
+        config.recipe.pre_sim,
+        model,
+        profiler_kwargs=config.profiler.gpu_meter_kwargs,
+        profiler_capture_intermediate_data=config.profiler.capture_intermediate_data,
+    )
 
     # Pass model_id so a QAT-aware instantiate_quantsim (e.g. Gemma4_Torch) can
     # locate the packed checkpoint's scales. Other backends absorb it via **kwargs.
@@ -156,46 +140,46 @@ def test_llm_quantization(
             else contextlib.nullcontext()
         )
         with visual_ctx:
-            backbone_steps = apply_recipe_chain(
-                all_recipes["backbone"],
+            backbone_steps = apply_quantization_chain(
+                config.recipe.backbone,
                 sim_collection.backbone,
                 generator,
                 tokenizer,
                 context_length,
                 image_size,
-                profiler_kwargs,
-                profiler_capture_intermediate_data,
+                config.profiler.gpu_meter_kwargs,
+                config.profiler.capture_intermediate_data,
                 framework="torch",
                 model_id=model_id,
                 precision=precision,
                 model_kwargs=model_kwargs,
                 component="backbone",
                 recipe_cache=recipe_cache,
-                spinquant_config=spinquant_config,
+                pre_sim=config.recipe.pre_sim,
             )
 
         visual_steps = []
-        if "visual" in all_recipes and sim_collection.visual is not None:
+        if config.recipe.visual is not None and sim_collection.visual is not None:
             # Disable backbone quantizers during visual recipes and switch
             # the generator to yield vision model inputs from prefill().
             backbone_ctx = remove_all_quantizers(sim_collection.backbone.model)
             with backbone_ctx, generator.visual_quantization_mode():
-                visual_steps = apply_recipe_chain(
-                    all_recipes["visual"],
+                visual_steps = apply_quantization_chain(
+                    config.recipe.visual,
                     sim_collection.visual,
                     generator,
                     tokenizer,
                     context_length,
                     image_size,
-                    profiler_kwargs,
-                    profiler_capture_intermediate_data,
+                    config.profiler.gpu_meter_kwargs,
+                    config.profiler.capture_intermediate_data,
                     framework="torch",
                     model_id=model_id,
                     precision=precision,
                     model_kwargs=model_kwargs,
                     component="visual",
                     recipe_cache=recipe_cache,
-                    spinquant_config=spinquant_config,
+                    pre_sim=config.recipe.pre_sim,
                 )
 
         # Finalize embedding quantization after recipes have had a chance to
@@ -217,7 +201,7 @@ def test_llm_quantization(
         torch.cuda.empty_cache()
 
     run_group = None
-    export_dir = test_parameters["export"] if test_parameters["export"] else None
+    export_dir = config.export
     # TODO: remove skip exports for models that require Dynamo export
     if export_dir and not model_cls.use_dynamo_export():
         tokenizer.save_pretrained(export_dir)
@@ -302,7 +286,7 @@ def test_llm_quantization(
                         os.path.join(extras_dir, f"{extra_name}.pth"),
                     )
 
-        if test_parameters["eval_in_onnx"]:
+        if config.eval_in_onnx:
             run_group = uuid.uuid4().hex[:16]
 
             # Use the last Calibration step's dataset for ONNX re-calibration
@@ -336,10 +320,10 @@ def test_llm_quantization(
                 "recipe": onnx_recipe,
                 "metrics": [
                     {
-                        "name": metric["class"].__name__,
-                        **{k: v for k, v in metric.items() if k != "class"},
+                        "name": metric.name,
+                        **metric.metric_kwargs,
                     }
-                    for metric in metrics
+                    for metric in config.metrics
                 ],
             }
 
@@ -349,8 +333,8 @@ def test_llm_quantization(
     with generator.on_device(device):
         evaluation_results = []
         with torch.no_grad():
-            for metric_kwargs in metrics:
-                metric_cls = metric_kwargs.pop("class")
+            for metric in config.metrics:
+                metric_cls = metric.metric_cls
                 tokenizer_arg = (
                     tokenizer.tokenizer
                     if isinstance(tokenizer, ProcessorMixin)
@@ -358,7 +342,7 @@ def test_llm_quantization(
                     else tokenizer
                 )
                 with GPUMeter(
-                    capture_intermediate_data=False, **profiler_kwargs
+                    capture_intermediate_data=False, **config.profiler.gpu_meter_kwargs
                 ) as profiler:
                     extra_metric_kwargs = {}
                     if not issubclass(metric_cls, TextEvaluationMetric):
@@ -369,7 +353,7 @@ def test_llm_quantization(
                         context_length,
                         eval_ctx=eval_ctx,
                         **extra_metric_kwargs,
-                        **metric_kwargs,
+                        **metric.metric_kwargs,
                     )
                     print(f"{metric_cls.__name__} result: {result}")
 
@@ -378,7 +362,7 @@ def test_llm_quantization(
                         metric_name=metric_cls.__name__,
                         result=result,
                         profiler=profiler
-                        if profiler_capture_intermediate_data
+                        if config.profiler.capture_intermediate_data
                         else None,
                         scoring_version=metric_cls.SCORING_VERSION,
                     )
@@ -391,33 +375,23 @@ def test_llm_quantization(
     if precomputed_encodings is not None:
         model_kwargs["encodings"] = precomputed_encodings
 
-    # Re-attach SpinQuant as a synthetic leading step so the recorded recipe
-    # reflects the pre-sim rotation. The single apply_spinquant_pre_sim call
-    # rotates both backbone and visual graphs, so the profiler is attached to the
-    # backbone step only; the visual marker carries no profiler to avoid
-    # double-counting the rotation time in aggregated utilization.
-    if spinquant_config is not None:
-        backbone_steps = [
-            RecipeStepStats(
-                recipe_name="SpinQuant",
-                recipe_kwargs=spinquant_config,
-                dataset_name="",
-                dataset_kwargs={},
-                profiler=spinquant_profiler,
-            ),
-            *backbone_steps,
-        ]
-        if visual_steps:
-            visual_steps = [
-                RecipeStepStats(
-                    recipe_name="SpinQuant",
-                    recipe_kwargs=spinquant_config,
-                    dataset_name="",
-                    dataset_kwargs={},
-                    profiler=None,
-                ),
-                *visual_steps,
-            ]
+    # Re-attach pre-sim steps (e.g. SpinQuant) as synthetic leading steps so the
+    # recorded recipe reflects the pre-sim rotations. A single pre-sim pass
+    # rotates the whole model, so the same markers are prepended to both
+    # backbone and visual component recipes.
+    pre_markers = [
+        RecipeStepStats(
+            recipe_name=step.name,
+            recipe_kwargs=step.recipe_kwargs,
+            dataset_name="",
+            dataset_kwargs={},
+            profiler=pre_sim_profilers.get(step.name),
+        )
+        for step in config.recipe.pre_sim
+    ]
+    backbone_steps = [*pre_markers, *backbone_steps]
+    if visual_steps:
+        visual_steps = [*pre_markers, *visual_steps]
 
     components = {
         "backbone": ComponentRecipeStats(steps=backbone_steps),

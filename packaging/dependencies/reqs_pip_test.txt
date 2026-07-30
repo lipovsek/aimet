@@ -3,6 +3,7 @@ beautifulsoup4
 matplotlib
 onnx
 protobuf<7
+pydantic
 pylint<3
 pytest
 pytest-xdist
