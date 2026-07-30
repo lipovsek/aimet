@@ -54,12 +54,9 @@ jobs:
     if: ${{ github.event.inputs.framework != 'torch' }}
     uses: ./.github/workflows/build-wheels.yml
     with:
-      # TODO: runs-on can be removed once ephemeral runners are fully adopted —
-      # the runner-id is dynamically generated and does not use this value.
       variants: >
         {"include":[{
           "id":"onnx-gpu",
-          "runs-on":"k8s-gpu",
           "VER_PYTHON":"3.10",
           "VER_ONNXRUNTIME":"1.19.2",
           "VER_CUDA":"12.6.3",
@@ -67,7 +64,6 @@ jobs:
           "PIP_INDEX":""
         }]}
       image-tag: latest
-      use-ephemeral-runner: true
     secrets: inherit
 
   build-aimet-torch-gpu:
@@ -75,12 +71,9 @@ jobs:
     if: ${{ github.event.inputs.framework != 'onnx' }}
     uses: ./.github/workflows/build-wheels.yml
     with:
-      # TODO: runs-on can be removed once ephemeral runners are fully adopted —
-      # the runner-id is dynamically generated and does not use this value.
       variants: >
         {"include":[{
           "id":"torch-gpu",
-          "runs-on":"k8s-gpu",
           "VER_PYTHON":"3.10",
           "VER_TORCH":"2.*",
           "VER_CUDA":"12.6.3",
@@ -88,7 +81,6 @@ jobs:
           "PIP_INDEX":""
         }]}
       image-tag: latest
-      use-ephemeral-runner: true
     secrets: inherit
 
   #=============================================================================

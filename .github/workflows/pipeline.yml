@@ -90,7 +90,6 @@ jobs:
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
               {
                  "id":              "torch-cpu",
-                 "runs-on":         "ubuntu-latest",
                  "VER_PYTHON_BUILD": "3.10",
                  "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "2.*",
@@ -103,7 +102,6 @@ jobs:
               },
               {
                  "id":              "torch-gpu",
-                 "runs-on":         "k8s-gpu",
                  "VER_PYTHON_BUILD": "3.10",
                  "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "2.*",
@@ -123,7 +121,6 @@ jobs:
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
               {
                  "id":              "onnx-cpu",
-                 "runs-on":         "ubuntu-latest",
                  "VER_PYTHON_BUILD": "3.10",
                  "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "",
@@ -136,7 +133,6 @@ jobs:
               },
               {
                  "id":              "onnx-gpu",
-                 "runs-on":         "k8s-gpu",
                  "VER_PYTHON_BUILD": "3.10",
                  "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "",
@@ -155,7 +151,6 @@ jobs:
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
               {
                  "id":              "onnx-torch-cpu",
-                 "runs-on":         "ubuntu-latest",
                  "VER_PYTHON_BUILD": "3.10",
                  "VER_PYTHON_TEST":  "3.10",
                  "VER_TORCH":       "2.*",
@@ -205,7 +200,6 @@ jobs:
     with:
       variants: ${{ needs.variants.outputs.matrix }}
       image-tag: ${{ needs.docker-tag.outputs.tag }}
-      use-ephemeral-runner: true
       build-windows-wheel: false
     secrets: inherit
 
@@ -223,10 +217,8 @@ jobs:
       env_name: ${{ matrix.id }}
       run_unit_tests: ${{ matrix.RUN_UNIT_TESTS == 'ON' }}
       run_acceptance_tests: ${{ matrix.RUN_ACCEPTANCE_TESTS == 'ON' }}
-      runs_on: ${{ matrix.runs-on }}
       pip_index: ${{ matrix.PIP_INDEX }}
       include_windows_tests: false
-      use-ephemeral-runner: true
 
     secrets: inherit
 

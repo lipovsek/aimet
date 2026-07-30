@@ -9,47 +9,13 @@ on:
       image-tag:
         required: true
         type: string
-      use-ephemeral-runner:
-        required: false
-        type: boolean
-        default: false
       build-windows-wheel:
         required: false
         type: boolean
         default: false
 
 jobs:
-  # TODO: Once nightly and pypi-release pipelines are migrated to ephemeral runners,
-  # build-linux (which requires a container: block for static k8s/ubuntu runners) can be
-  # removed and build-linux-ephemeral will be the only Linux build job.
-  build-linux:
-    if: ${{ !inputs.use-ephemeral-runner }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(inputs.variants) }}
-    runs-on: ${{ matrix.runs-on }}
-    defaults:
-      run:
-        shell: bash
-    container:
-      image: "${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}:${{ inputs.image-tag }}"
-      credentials:
-        username: ${{ secrets.DOCKER_LOGIN }}
-        password: ${{ secrets.DOCKER_CREDENTIALS }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/build-wheel
-        with:
-          id: ${{ matrix.id }}
-          ver-torch: ${{ matrix.VER_TORCH }}
-          ver-onnxruntime: ${{ matrix.VER_ONNXRUNTIME }}
-          ver-cuda: ${{ matrix.VER_CUDA }}
-          pip-index: ${{ matrix.PIP_INDEX }}
-          build-targets: ${{ matrix.BUILD_TARGETS }}
-          build-tests: ${{ (matrix.id == 'onnx-cpu' || matrix.id == 'onnx-gpu') && 'ON' || 'OFF' }}
-
   start-runner:
-    if: ${{ inputs.use-ephemeral-runner }}
     name: Start runner (${{ matrix.id }})
     strategy:
       fail-fast: false
@@ -65,8 +31,7 @@ jobs:
           kubeconfig: ${{ secrets.KUBECONFIG }}
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
-  build-linux-ephemeral:
-    if: ${{ inputs.use-ephemeral-runner }}
+  build-linux:
     needs: [start-runner]
     strategy:
       fail-fast: false
@@ -88,9 +53,9 @@ jobs:
           build-tests: ${{ (matrix.id == 'onnx-cpu' || matrix.id == 'onnx-gpu') && 'ON' || 'OFF' }}
 
   cleanup-runner:
-    if: always() && inputs.use-ephemeral-runner
+    if: always()
     name: Cleanup runner (${{ matrix.id }})
-    needs: [start-runner, build-linux-ephemeral]
+    needs: [start-runner, build-linux]
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.variants) }}
