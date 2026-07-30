@@ -10,6 +10,7 @@
 #include "DlQuantization/TensorQuantizer.h"
 #include "Eigen/Core"
 #include "OnnxOpUtils.h"
+#include "QcQuantizeInfo.h"
 #include <numeric>
 
 #ifdef ONNX_CUDA
@@ -27,14 +28,28 @@ void copyInputTensorsToOutputTensors(const T* inTensor, size_t count, T* outTens
 
 void quantizeDequantizeFp16Cpu(const float* in, uint64_t cnt, float* out);
 
+inline bool usesTensorQuantizerPath(const QcQuantizeInfo* quantInfo)
+{
+    if (quantInfo->tensorQuantizer)
+    {
+        const auto qtype = quantInfo->tensorQuantizer->getQuantizationType();
+        if (qtype.isFloat())
+        {
+            // float16 keeps the existing float path; lower-precision float qtypes need BlockTensorQuantizer.
+            return qtype.bitwidth() < 16;
+        }
+    }
+
+    return quantInfo->isIntDataType;
+}
 
 template <typename T>
-void modeSpecificActionBroadcastInt(const T* inTensor, T* outTensor, const std::vector<int64_t> inputShape,
-                                    DlQuantization::BlockTensorQuantizer* tensorQuantizer,
-                                    const DlQuantization::TensorQuantizerOpMode opMode,
-                                    const bool useSymmetricEncoding, DlQuantization::IAllocator* allocator,
-                                    bool useCuda, void* stream,
-                                    DlQuantization::IForLoopRunner* runner = nullptr)
+void modeSpecificActionTensorQuantizer(const T* inTensor, T* outTensor, const std::vector<int64_t> inputShape,
+                                       DlQuantization::BlockTensorQuantizer* tensorQuantizer,
+                                       const DlQuantization::TensorQuantizerOpMode opMode,
+                                       const bool useSymmetricEncoding, DlQuantization::IAllocator* allocator,
+                                       bool useCuda, void* stream,
+                                       DlQuantization::IForLoopRunner* runner = nullptr)
 {
     int64_t numElements = std::accumulate(inputShape.begin(), inputShape.end(), int64_t(1), std::multiplies<int64_t>());
 

@@ -27,6 +27,7 @@ add_library(MoDlQuantization STATIC
       src/Fp16Quantization.cpp
 
       include/DlQuantization/Quantization.hpp
+      include/DlQuantization/QuantizationType.hpp
       include/DlQuantization/QuantizerFactory.hpp
       include/DlQuantization/IQuantizationEncodingAnalyzer.hpp
       include/DlQuantization/TensorQuantizer.h

@@ -68,6 +68,36 @@ protected:
     }
 };
 
+// qtype should stay stable even when legacy bitwidth metadata changes.
+TEST_F(TestTensorQuantizer, SetEncodingsDoesNotChangeFp8QuantizationType)
+{
+    BlockTensorQuantizer tensorQuantizer({}, QuantizationType::Fp8E4M3FN(), QUANTIZATION_TF);
+
+    TfEncoding encoding;
+    encoding.bw     = 4;
+    encoding.delta  = 1.0;
+    encoding.offset = 0.0;
+    encoding.min    = -448.0;
+    encoding.max    = 448.0;
+
+    tensorQuantizer.setEncodings({encoding});
+
+    EXPECT_TRUE(tensorQuantizer.getQuantizationType().isFloat());
+    EXPECT_EQ(tensorQuantizer.getQuantizationType().bitwidth(), 8);
+    EXPECT_EQ(tensorQuantizer.bitwidth, 4);
+}
+
+TEST_F(TestTensorQuantizer, LegacyBitwidthMutationDoesNotChangeQuantizationType)
+{
+    BlockTensorQuantizer tensorQuantizer({}, 8, QUANTIZATION_TF);
+
+    tensorQuantizer.bitwidth = 4;
+
+    EXPECT_TRUE(tensorQuantizer.getQuantizationType().isInt());
+    EXPECT_EQ(tensorQuantizer.getQuantizationType().bitwidth(), 8);
+    EXPECT_EQ(tensorQuantizer.bitwidth, 4);
+}
+
 TEST_F(TestTensorQuantizer, SanityTestTfEnhancedPerTensorQdqCpu)
 {
     BlockTensorQuantizer tensorQuantizer({}, 8, QUANTIZATION_TF_ENHANCED);

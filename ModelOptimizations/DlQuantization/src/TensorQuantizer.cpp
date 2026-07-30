@@ -7,6 +7,7 @@
 #include "tensor_utils.hpp"
 #include "trim_functions.hpp"
 #include <Eigen/Core>
+#include <cmath>
 #include <stdexcept>
 #include <type_traits>
 
@@ -14,9 +15,15 @@ namespace DlQuantization
 {
 
 BlockTensorQuantizer::BlockTensorQuantizer(TensorDims shape, int bitwidth, QuantizationMode quantScheme) :
-    bitwidth(bitwidth),
+    BlockTensorQuantizer(shape, QuantizationType::Int(bitwidth), quantScheme)
+{
+}
+
+BlockTensorQuantizer::BlockTensorQuantizer(TensorDims shape, QuantizationType qtype, QuantizationMode quantScheme) :
+    bitwidth(qtype.bitwidth()),
     isEncodingValid(false),
     _quantScheme(quantScheme),
+    _qtype(qtype),
     _useStrictSymmetric(false),
     _useUnsignedSymmetric(false),
     _symmetric(false),
@@ -68,6 +75,34 @@ void BlockTensorQuantizer::quantizeDequantize(const T* input, T* output, const T
     {
         throw std::runtime_error("Cannot perform quantization before computing encodings");
     }
+
+    if (_qtype.isFloat())
+    {
+        if (_qtype.bitwidth() != 8)
+        {
+            throw std::runtime_error("BlockTensorQuantizer floating-point QDQ currently supports FP8 qtypes only");
+        }
+
+        if constexpr (std::is_same_v<T, float>)
+        {
+            if (getNumel(_shape) == 1)
+            {
+                quantizeDequantizeFp8(input, getNumel(tensorShape), _encodings[0], output, _qtype.floatSpec(), mode,
+                                      stream);
+            }
+            else
+            {
+                quantizeDequantizeFp8Broadcast(input, output, _encodings, _qtype.floatSpec(), tensorShape, _shape,
+                                                mode, stream);
+            }
+        }
+        else
+        {
+            throw std::runtime_error("BlockTensorQuantizer FP8 QDQ currently supports float tensors only");
+        }
+        return;
+    }
+
     if (getNumel(_shape) == 1)
     {
         // More efficient per-tensor quantization impl which avoids separate cudaMemcpy for encodings
@@ -143,6 +178,34 @@ Encodings BlockTensorQuantizer::computeEncodings(bool useSymmetricEncodings) con
     {
         throw std::runtime_error("Cannot compute encodings before updating stats");
     }
+
+    if (_qtype.isFloat())
+    {
+        if (_qtype.bitwidth() != 8)
+        {
+            throw std::runtime_error("BlockTensorQuantizer floating-point encodings currently support FP8 qtypes only");
+        }
+
+        Encodings encodings = _encodingAnalyzer->computeEncoding(bitwidth, useSymmetricEncodings, _useStrictSymmetric,
+                                                                 _useUnsignedSymmetric, _zeroPointShift);
+
+        for (TfEncoding& encoding: encodings)
+        {
+            // Interim FP8 path: derive scale from the analyzer-produced range until raw amax stats are exposed.
+            const double amax  = std::max(std::abs(encoding.min), std::abs(encoding.max));
+            const double scale = computeFp8Scale(amax, _qtype.floatSpec());
+
+            // For FP8, delta stores scale and offset is unused; min/max describe the scaled FP8 range.
+            encoding.delta  = scale;
+            encoding.offset = 0.0;
+            encoding.bw     = _qtype.bitwidth();
+            encoding.min    = -scale * _qtype.floatSpec().maxValue;
+            encoding.max    = scale * _qtype.floatSpec().maxValue;
+        }
+
+        return encodings;
+    }
+
     return _encodingAnalyzer->computeEncoding(bitwidth, useSymmetricEncodings, _useStrictSymmetric,
                                               _useUnsignedSymmetric, _zeroPointShift);
 }
@@ -156,6 +219,7 @@ void BlockTensorQuantizer::setEncodings(const Encodings& encodings)
     isEncodingValid = true;
     _encodings      = encodings;
     bitwidth        = encodings[0].bw;
+    // Keep qtype as construction-time configuration; encoding.bw only updates the legacy bitwidth field.
 }
 
 }   // namespace DlQuantization

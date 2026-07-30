@@ -82,9 +82,9 @@ void QcQuantizeOp<T>::computeImpl(const Ort::Custom::Tensor<T>& input, Ort::Cust
         runner = std::make_unique<OrtForLoopRunner>(ortCtx);
     }
 
-    if (quantInfo->isIntDataType)
+    if (usesTensorQuantizerPath(quantInfo))
     {
-        modeSpecificActionBroadcastInt(inputPtr, resultPtr, inputShape, quantInfo->tensorQuantizer.get(), opMode,
+        modeSpecificActionTensorQuantizer(inputPtr, resultPtr, inputShape, quantInfo->tensorQuantizer.get(), opMode,
             quantInfo->useSymmetricEncoding, allocator, useCuda, stream, runner.get());
     }
     else

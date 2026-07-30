@@ -10,6 +10,7 @@
 
 #include "DlQuantization/IForLoopRunner.h"
 #include "DlQuantization/Quantization.hpp"
+#include "DlQuantization/QuantizationType.hpp"
 
 #ifdef GPU_QUANTIZATION_ENABLED
 #include <cuda_fp16.h>
@@ -35,6 +36,9 @@ template <typename DTYPE>
 void quantizeDequantize(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out, ComputationMode mode_cpu_gpu,
                         RoundingMode rounding_mode, void* stream, IForLoopRunner* runner = nullptr);
 
+void quantizeDequantizeFp8(const float* in, uint64_t cnt, const TfEncoding& encoding, float* out,
+                           const FloatQuantizationSpec& fp8Spec, ComputationMode modeCpuGpu, void* stream = nullptr);
+
 
 void quantizeDequantizeFp16ForGPU(const float* in, uint64_t cnt, float* out, void* stream);
 
@@ -57,6 +61,18 @@ void dequantizeFromPackedFxp(const uint8_t* input, uint64_t cnt, const TfEncodin
 template <typename DTYPE>
 void quantizeDequantizeCpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out,
                            RoundingMode rounding_mode, IForLoopRunner* runner = nullptr);
+
+void quantizeDequantizeFp8Cpu(const float* in, uint64_t cnt, const TfEncoding& encoding, float* out,
+                              const FloatQuantizationSpec& fp8Spec);
+
+void quantizeDequantizeFp8Broadcast(const float* inTensor, float* outTensor, const Encodings& encodings,
+                                    const FloatQuantizationSpec& fp8Spec, const TensorDims& inputShape,
+                                    const TensorDims& encodingShape, ComputationMode mode, void* stream = nullptr);
+
+void quantizeDequantizeFp8BroadcastCpu(const float* in, float* out, const Encodings& encodings,
+                                       const FloatQuantizationSpec& fp8Spec, int64_t numElement,
+                                       const TensorDims& inputStrides, const TensorDims& encodingStrides,
+                                       const TensorDims& inputShape);
 
 template <typename DTYPE>
 void quantizeToFxpCpu(const DTYPE* in, uint64_t cnt, const TfEncoding& encoding, DTYPE* out, RoundingMode rounding_mode,

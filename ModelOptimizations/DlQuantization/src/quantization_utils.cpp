@@ -183,6 +183,16 @@ void computeDeltaAndOffsetFromMinMax(uint8_t bw, TfEncoding& encoding, bool useS
     encoding.max = origEncoding.max;
 }
 
+double computeFp8Scale(double amax, const FloatQuantizationSpec& fp8Spec)
+{
+    if (!(amax > 0))
+    {
+        throw std::invalid_argument("FP8 amax must be positive");
+    }
+
+    return amax / fp8Spec.maxValue;
+}
+
 // Function to slice a tensor along an axis. Output shape will be the same for each slice.
 template <typename DTYPE>
 void slice(const DTYPE* input, const std::vector<uint32_t>& inputDim, int32_t axis,

@@ -6,6 +6,7 @@
 #include "tensor_utils.hpp"
 #include <Eigen/Core>
 #include <algorithm>
+#include <cfenv>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -23,6 +24,66 @@ using namespace std;
 // Minimum number of elements per parallel chunk. Tensors smaller than this
 // threshold are processed sequentially to avoid thread-dispatch overhead.
 static constexpr size_t MIN_ELEMENTS_PER_CHUNK = 1024;
+
+namespace
+{
+
+// std::nearbyint follows the active floating-point rounding mode; set nearest-even for FP8 fake-cast.
+class RoundToNearestEvenGuard
+{
+public:
+    RoundToNearestEvenGuard() : _roundingMode(std::fegetround())
+    {
+        std::fesetround(FE_TONEAREST);
+    }
+
+    ~RoundToNearestEvenGuard()
+    {
+        std::fesetround(_roundingMode);
+    }
+
+private:
+    int _roundingMode;
+};
+
+template <typename DTYPE>
+DTYPE fakeCastToFp8(DTYPE value, const FloatQuantizationSpec& fp8Spec)
+{
+    const DTYPE maxValue     = static_cast<DTYPE>(fp8Spec.maxValue);
+    const DTYPE exponentMin  = static_cast<DTYPE>(fp8Spec.exponentMin);
+    const DTYPE mantissaBits = static_cast<DTYPE>(fp8Spec.mantissaBits);
+
+    if (value > maxValue)
+    {
+        value = maxValue;
+    }
+    else if (value < -maxValue)
+    {
+        value = -maxValue;
+    }
+
+    DTYPE exponent = std::floor(std::log2(std::fabs(value)));
+    if (exponent < exponentMin)
+    {
+        exponent = exponentMin;
+    }
+
+    const DTYPE step = std::exp2(exponent - mantissaBits);
+    DTYPE       out  = std::nearbyint(value / step) * step;
+
+    if (out > maxValue)
+    {
+        out = maxValue;
+    }
+    else if (out < -maxValue)
+    {
+        out = -maxValue;
+    }
+
+    return out;
+}
+
+}   // namespace
 
 inline double randUniformCpu()
 {
@@ -80,6 +141,22 @@ void quantizeDequantize(const DTYPE* in, uint64_t cnt, const TfEncoding& encodin
     default:
         throw runtime_error("Unknown computation mode.");
         break;
+    }
+}
+
+void quantizeDequantizeFp8(const float* in, uint64_t cnt, const TfEncoding& encoding, float* out,
+                           const FloatQuantizationSpec& fp8Spec, ComputationMode modeCpuGpu, void* stream)
+{
+    switch (modeCpuGpu)
+    {
+    case COMP_MODE_CPU:
+        quantizeDequantizeFp8Cpu(in, cnt, encoding, out, fp8Spec);
+        break;
+    case COMP_MODE_GPU:
+        (void) stream;
+        throw runtime_error("FP8 quantize-dequantize is not supported for GPU mode.");
+    default:
+        throw runtime_error("Unknown computation mode.");
     }
 }
 
@@ -172,6 +249,24 @@ void quantizeDequantizeCpu(const DTYPE* in, uint64_t cnt, const TfEncoding& enco
     }
 
     qdqLoop(0, static_cast<size_t>(cnt));
+}
+
+void quantizeDequantizeFp8Cpu(const float* in, uint64_t cnt, const TfEncoding& encoding, float* out,
+                              const FloatQuantizationSpec& fp8Spec)
+{
+    RoundToNearestEvenGuard guard;
+
+    const float scale = static_cast<float>(encoding.delta);
+    if (!(scale > 0))
+    {
+        throw std::invalid_argument("FP8 quantize-dequantize scale must be positive");
+    }
+
+    for (uint64_t i = 0; i < cnt; ++i)
+    {
+        const float scaled = in[i] / scale;
+        out[i]            = fakeCastToFp8(scaled, fp8Spec) * scale;
+    }
 }
 
 
@@ -688,6 +783,77 @@ void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings
     }
 
     qdqLoop(0, static_cast<size_t>(numElement));
+}
+
+void quantizeDequantizeFp8BroadcastCpu(const float* in, float* out, const Encodings& encodings,
+                                       const FloatQuantizationSpec& fp8Spec, int64_t numElement,
+                                       const TensorDims& inputStrides, const TensorDims& encodingStrides,
+                                       const TensorDims& inputShape)
+{
+    RoundToNearestEvenGuard guard;
+
+    auto ndim = inputStrides.size();
+
+    int64_t    encodingIdx = 0;
+    TensorDims coords(ndim);
+    for (int64_t i = 0; i < numElement; ++i)
+    {
+        const float scale = static_cast<float>(encodings[encodingIdx].delta);
+        if (!(scale > 0))
+        {
+            throw std::invalid_argument("FP8 quantize-dequantize scale must be positive");
+        }
+
+        const float scaled = in[i] / scale;
+        out[i]            = fakeCastToFp8(scaled, fp8Spec) * scale;
+
+        for (int d = ndim - 1; d >= 0; d--)
+        {
+            coords[d]++;
+            if (coords[d] < inputShape[d])
+            {
+                encodingIdx += encodingStrides[d];
+                break;
+            }
+
+            coords[d] = 0;
+            encodingIdx -= encodingStrides[d] * (inputShape[d] - 1);
+        }
+    }
+}
+
+void quantizeDequantizeFp8Broadcast(const float* inTensor, float* outTensor, const Encodings& encodings,
+                                    const FloatQuantizationSpec& fp8Spec, const TensorDims& inputShape,
+                                    const TensorDims& encodingShape, ComputationMode mode, void* stream)
+{
+    auto numElements = getNumel(inputShape);
+
+    auto bcShapes        = getBroadcastableShapes(inputShape, encodingShape);
+    auto bcTensorShape   = std::get<0>(bcShapes);
+    auto bcEncShape      = std::get<1>(bcShapes);
+    auto inputStrides    = shapeToStrides(bcTensorShape);
+    auto encodingStrides = shapeToStrides(bcEncShape);
+
+    for (size_t idx = 0; idx < inputStrides.size(); idx++)
+    {
+        if (bcEncShape[idx] == 1 and bcTensorShape[idx] != 1)
+        {
+            encodingStrides[idx] = 0;
+        }
+    }
+
+    switch (mode)
+    {
+    case COMP_MODE_CPU:
+        quantizeDequantizeFp8BroadcastCpu(inTensor, outTensor, encodings, fp8Spec, numElements, inputStrides,
+                                          encodingStrides, bcTensorShape);
+        break;
+    case COMP_MODE_GPU:
+        (void) stream;
+        throw std::runtime_error("FP8 broadcast quantize-dequantize is not supported for GPU mode.");
+    default:
+        throw std::runtime_error("Unknown computation mode.");
+    }
 }
 
 

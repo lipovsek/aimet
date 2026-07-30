@@ -9,6 +9,7 @@
 #include "DlQuantization/IForLoopRunner.h"
 #include <DlQuantization/IQuantizationEncodingAnalyzer.hpp>
 #include <DlQuantization/Quantization.hpp>
+#include <DlQuantization/QuantizationType.hpp>
 
 
 namespace DlQuantization
@@ -40,6 +41,15 @@ public:
      * @param quantScheme Quantization scheme (e.g. TF-Enhanced)
      */
     BlockTensorQuantizer(TensorDims shape, int bitwidth, QuantizationMode quantScheme);
+
+    /**
+     * Constructor
+     *
+     * @param shape Shape of the quantizer's encoding vectors
+     * @param qtype Quantization type to use for quantization
+     * @param quantScheme Quantization scheme (e.g. TF-Enhanced)
+     */
+    BlockTensorQuantizer(TensorDims shape, QuantizationType qtype, QuantizationMode quantScheme);
 
     // TODO: Remove symmetric arg, use this->_symmetric
     Encodings computeEncodings(bool useSymmetricEncodings) const;
@@ -153,6 +163,11 @@ public:
         return _encodings;
     }
 
+    QuantizationType getQuantizationType() const
+    {
+        return _qtype;
+    }
+
     double getZeroPointShift() const
     {
         return _zeroPointShift;
@@ -170,6 +185,7 @@ public:
 
 private:
     QuantizationMode _quantScheme;
+    QuantizationType _qtype;
     bool _useStrictSymmetric;
     bool _useUnsignedSymmetric;   // TODO: Remove
     bool _symmetric;

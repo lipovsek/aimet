@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "DlQuantization/Quantization.hpp"
+#include "DlQuantization/QuantizationType.hpp"
 
 namespace DlQuantization
 {
@@ -25,6 +26,8 @@ void computeMinMaxRangeFromDeltaOffset(uint8_t bw, TfEncoding& encoding, bool us
 
 void computeDeltaAndOffsetFromMinMax(uint8_t bw, TfEncoding& encoding, bool useSymmetricEncodings,
                                      bool useUnsignedSymmetric, bool useStrictSymmetric);
+
+double computeFp8Scale(double amax, const FloatQuantizationSpec& fp8Spec);
 
 // Function to slice a tensor along an axis, allocate and populate output buffers. Output shape will be the same for
 // each slice.
