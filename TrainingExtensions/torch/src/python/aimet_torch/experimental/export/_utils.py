@@ -14,6 +14,7 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 
 
 _GRID_PRESERVING_OPS = (
+    torch.ops.aten._unsafe_view,
     torch.ops.aten.alias,
     torch.ops.aten.alias_copy,
     torch.ops.aten.amax,
