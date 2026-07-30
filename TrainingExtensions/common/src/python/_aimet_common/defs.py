@@ -538,6 +538,15 @@ class qtype(abc.ABC):
             )
         return QTYPE_ALIASES[name]
 
+    @staticmethod
+    def as_qtype(dtype: Union["qtype", str]) -> "qtype":
+        """Returns the given qtype, resolving a string alias if necessary"""
+        if isinstance(dtype, qtype):
+            return dtype
+        if isinstance(dtype, str):
+            return qtype.from_string(dtype)
+        raise TypeError(f"Cannot interpret object of type {type(dtype)} as qtype")
+
 
 @dataclass(frozen=True)
 class Int(qtype):

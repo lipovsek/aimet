@@ -34,3 +34,15 @@ def test_invalid_qtypes():
 
     with pytest.raises(ValueError):
         qtype.float(1, -1)
+
+
+def test_as_qtype():
+    for key, value in QTYPE_ALIASES.items():
+        assert qtype.as_qtype(key) == value
+        assert qtype.as_qtype(value) == value
+
+    with pytest.raises(TypeError):
+        qtype.as_qtype(4)
+
+    with pytest.raises(ValueError):
+        qtype.as_qtype("invalid alias")
