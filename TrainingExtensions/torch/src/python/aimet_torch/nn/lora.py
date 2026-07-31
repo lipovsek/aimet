@@ -7,13 +7,19 @@
 
 """Quantized LoRA layers"""
 
-__all__ = ["QuantizedLinear"]
+__all__ = [
+    "QuantizedLora",
+    "QuantizedLinear",
+    "QuantizedConv",
+]
 
 try:
     import peft.tuners.lora.layer as lora
 except ImportError:
     lora = None
+    QuantizedLora = None
     QuantizedLinear = None
+    QuantizedConv = None
 else:
     import torch
     from torch import nn
