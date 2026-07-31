@@ -42,7 +42,12 @@ except ImportError:
 
 from torchvision import datasets, transforms
 
-from aimet_torch.common.utils import AimetLogger, Handle, profile as _profile
+from aimet_torch.common.utils import (
+    deprecated,
+    AimetLogger,
+    Handle,
+    profile as _profile,
+)
 from aimet_torch.common.quantsim import _get_minimum_scale
 from aimet_torch.quantization._utils import interleave, concretize_block_size
 
@@ -1242,6 +1247,10 @@ def is_recompute_enabled():
     return _ENABLE_RECOMPUTE
 
 
+@deprecated(
+    "Use PyTorch native API (torch.utils.checkpoint) instead.",
+    deletion_planned="2.38.0",
+)
 def enable_recompute():
     """
     Enable recomputation for memory saving.

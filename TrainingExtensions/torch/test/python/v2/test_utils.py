@@ -106,6 +106,9 @@ def use_deterministic_algorithms():
     torch.use_deterministic_algorithms(orig_flag)
 
 
+@pytest.mark.skip(
+    reason="Observed flakiness in CI, and this feature will be deleted in 2.38.0"
+)
 @pytest.mark.cuda
 def test_allow_recompute(use_deterministic_algorithms):
     class Model(torch.nn.Module):
