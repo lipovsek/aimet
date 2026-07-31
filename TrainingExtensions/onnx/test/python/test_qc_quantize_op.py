@@ -29,7 +29,8 @@ from aimet_onnx.qc_quantize_op import (
 )
 from aimet_onnx.common import libquant_info
 from aimet_onnx.common.quantsim import calculate_delta_offset, _get_minimum_scale
-from aimet_onnx import lpbq_utils
+from aimet_onnx import qtype
+from aimet_onnx.utils import numpy_from_TfEncoding, numpy_to_TfEncoding
 from aimet_onnx._encoding import AffineEncoding
 import aimet_onnx
 
@@ -2017,16 +2018,14 @@ class TestLPBQOp:
             tensor_quantizer_params=tensor_quantizer_params,
         )
 
-        encodings = lpbq_utils.scale_offset_arrays_to_encodings(scale, offset, bitwidth)
+        encodings = numpy_to_TfEncoding(scale, offset, qtype.int(bitwidth))
         """
         When: Load blockwise encodings to an LPBQ quantizer
         Then: Quantizer should apply LPBQ to encodings during load_encodings
         """
         lpbq_op.load_encodings(encodings)
         lpbq_encodings = lpbq_op.get_encodings()
-        lpbq_scale, lpbq_offset = lpbq_utils.encodings_to_scale_offset_arrays(
-            lpbq_encodings, (2, 3)
-        )
+        lpbq_scale, lpbq_offset = numpy_from_TfEncoding(lpbq_encodings, (2, 3))
         assert np.allclose(lpbq_scale, expected_lpbq_scale)
         assert np.allclose(lpbq_offset, offset)
         """
@@ -2127,9 +2126,7 @@ class TestLPBQOp:
         lpbq_op.compute_encodings()
 
         encodings = lpbq_op.get_encodings()
-        scale, _ = lpbq_utils.encodings_to_scale_offset_arrays(
-            encodings, expected_scale.shape
-        )
+        scale, _ = numpy_from_TfEncoding(encodings, expected_scale.shape)
         assert np.allclose(scale, expected_scale)
 
     def test_grouped_block_qdq_perchannel_mode(self):

@@ -10,7 +10,7 @@ import math
 import platform
 import tempfile
 from pathlib import Path
-from typing import Dict, Iterable, List, Set, Union, Tuple, Callable, Optional
+from typing import Dict, Iterable, List, Set, Union, Tuple, Callable, Optional, Sequence
 from contextlib import contextmanager
 import os
 import pickle
@@ -26,6 +26,9 @@ from onnxruntime import SessionOptions, InferenceSession
 import shutil
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from aimet_onnx.common import libquant_info
+from aimet_onnx.common import libpymo
+from aimet_onnx.common.quantsim import compute_min_max_given_delta_offset
+from aimet_onnx.common.defs import qtype, Int
 from aimet_onnx.common.utils import AimetLogger, compute_psnr, deprecated
 from aimet_onnx.common.onnx._utils import (  # pylint: disable=unused-import
     _ParamUtils,
@@ -1106,3 +1109,55 @@ def duplicate_shared_initializers(graph: GraphProto) -> int:
         shared_tensor_count,
     )
     return duplicate_count
+
+
+def numpy_to_TfEncoding(
+    scale: np.ndarray, offset: np.ndarray, dtype: qtype
+) -> list[libpymo.TfEncoding]:
+    """
+    Converts scale offset arrays to a list of TfEncoding objects
+    """
+    dtype = qtype.as_qtype(dtype)
+    if not isinstance(dtype, Int):
+        raise NotImplementedError(
+            f"Converting {dtype} encodings to TfEncoding is not supported"
+        )
+    _, bitwidth = dtype.to_legacy_repr()
+
+    # Flatten arrays
+    scales_flat = scale.flatten()
+    offsets_flat = offset.flatten()
+
+    # Vectorized min/max computation
+    min_vals, max_vals = compute_min_max_given_delta_offset(
+        scales_flat, offsets_flat, bitwidth, False, False
+    )
+
+    # Construct TfEncoding objects
+    encodings = []
+    for scale, offset, min_val, max_val in zip(
+        scales_flat, offsets_flat, min_vals, max_vals
+    ):
+        encoding = libpymo.TfEncoding()
+
+        encoding.bw = bitwidth
+        encoding.min = min_val
+        encoding.max = max_val
+        encoding.delta = scale
+        encoding.offset = offset
+        encodings.append(encoding)
+
+    return encodings
+
+
+def numpy_from_TfEncoding(
+    encodings: List[libpymo.TfEncoding], shape: Sequence[int]
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Converts list of TfEncoding objects to scale & offset numpy arrays with the given shape
+    """
+    num_encodings = np.prod(shape)
+    assert len(encodings) == num_encodings
+    scale = np.array([enc.delta for enc in encodings]).reshape(shape)
+    offset = np.array([enc.offset for enc in encodings]).reshape(shape)
+    return scale, offset

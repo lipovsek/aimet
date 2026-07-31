@@ -5,6 +5,8 @@
 import numpy as np
 
 from aimet_onnx import lpbq_utils
+from aimet_onnx.utils import numpy_from_TfEncoding, numpy_to_TfEncoding
+from aimet_onnx import qtype
 
 
 class TestLPBQUtils:
@@ -40,13 +42,11 @@ class TestLPBQUtils:
         scale = np.asarray([[25.6, 11.111], [256.0, 25.555]], np.float32)
         offset = np.asarray([[-128, -128], [-128, -128]])
 
-        encodings = lpbq_utils.scale_offset_arrays_to_encodings(scale, offset, 4)
+        encodings = numpy_to_TfEncoding(scale, offset, qtype.int(4))
         lpbq_encodings = lpbq_utils.compress_encoding_scales(
             encodings, scale.shape, (1, 2), scale_bw
         )
-        lpbq_scale, lpbq_offset = lpbq_utils.encodings_to_scale_offset_arrays(
-            lpbq_encodings, scale.shape
-        )
+        lpbq_scale, lpbq_offset = numpy_from_TfEncoding(lpbq_encodings, scale.shape)
 
         expected_lpbq_scale = np.asarray(
             [

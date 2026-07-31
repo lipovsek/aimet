@@ -13,6 +13,7 @@ from aimet_onnx.common.defs import EncodingType, QuantizationDataType
 from aimet_onnx.common import libpymo
 
 from . import lpbq_utils
+from .utils import numpy_from_TfEncoding
 
 if TYPE_CHECKING:
     from aimet_onnx.qc_quantize_op import QcQuantizeOp, GroupedBlockQuantizeDequantize
@@ -1178,9 +1179,7 @@ class LPBQEncoding(AffineEncoding):
             # In any case, this corresponds to no-encoding in encoding_version 2.0.0
             return None
 
-        scale, _ = lpbq_utils.encodings_to_scale_offset_arrays(
-            encodings, qtzr._encoding_shape()
-        )
+        scale, _ = numpy_from_TfEncoding(encodings, qtzr._encoding_shape())
         compressed_bw = qtzr.bitwidth
         decompressed_bw = qtzr.decompressed_bw
         per_block_int_scale, per_channel_scale = lpbq_utils.grouped_dynamic_quantize(

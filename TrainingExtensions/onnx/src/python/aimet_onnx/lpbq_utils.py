@@ -7,8 +7,9 @@
 from typing import List, Tuple, Sequence
 import numpy as np
 
-from aimet_onnx.common.quantsim import compute_min_max_given_delta_offset
+from aimet_onnx import qtype
 from aimet_onnx.common import libpymo
+from aimet_onnx.utils import numpy_to_TfEncoding, numpy_from_TfEncoding
 
 
 def _split_blocks(encoding: np.ndarray, block_grouping) -> np.ndarray:
@@ -82,10 +83,10 @@ def compress_encoding_scales(
     :param scale_bitwidth: Bitwidth of quantize-dequantize operation to be performed on the encoding scales
     """
     assert len(encoding_shape) == len(block_grouping)
-    scale, offset = encodings_to_scale_offset_arrays(encodings, encoding_shape)
+    scale, offset = numpy_from_TfEncoding(encodings, encoding_shape)
     compressed_scales = _compress_encoding_scales(scale, block_grouping, scale_bitwidth)
-    new_encodings = scale_offset_arrays_to_encodings(
-        compressed_scales, offset, encodings[0].bw
+    new_encodings = numpy_to_TfEncoding(
+        compressed_scales, offset, qtype.int(encodings[0].bw)
     )
     return new_encodings
 
@@ -99,48 +100,3 @@ def _compress_encoding_scales(
     grouped_int_scale = _split_blocks(int_scale, block_grouping)
     dequantized_scale = grouped_int_scale * per_group_scale_factor
     return dequantized_scale.reshape(scale.shape)
-
-
-def encodings_to_scale_offset_arrays(
-    encodings: List[libpymo.TfEncoding], shape: Sequence[int]
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Converts list of TfEncoding objects to scale & offset numpy arrays with the given shape
-    """
-    num_encodings = np.prod(shape)
-    assert len(encodings) == num_encodings
-    scale = np.array([enc.delta for enc in encodings]).reshape(shape)
-    offset = np.array([enc.offset for enc in encodings]).reshape(shape)
-    return scale, offset
-
-
-def scale_offset_arrays_to_encodings(
-    scales: np.ndarray, offsets: np.ndarray, bitwidth
-) -> List[libpymo.TfEncoding]:
-    """
-    Converts scale offset arrays to a list of TfEncoding objects
-    """
-    # Flatten arrays
-    scales_flat = scales.flatten()
-    offsets_flat = offsets.flatten()
-
-    # Vectorized min/max computation
-    min_vals, max_vals = compute_min_max_given_delta_offset(
-        scales_flat, offsets_flat, bitwidth, False, False
-    )
-
-    # Construct TfEncoding objects
-    encodings = []
-    for scale, offset, min_val, max_val in zip(
-        scales_flat, offsets_flat, min_vals, max_vals
-    ):
-        encoding = libpymo.TfEncoding()
-
-        encoding.bw = bitwidth
-        encoding.min = min_val
-        encoding.max = max_val
-        encoding.delta = scale
-        encoding.offset = offset
-        encodings.append(encoding)
-
-    return encodings

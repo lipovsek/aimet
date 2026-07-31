@@ -23,6 +23,7 @@ from aimet_onnx.utils import (
     duplicate_shared_initializers,
     OrtInferenceSession,
 )
+from aimet_onnx import qtype
 import aimet_onnx.utils as utils
 from aimet_onnx.utils import ParamUtils, disable_quantizers, LazyExtractor
 from aimet_onnx.adaround.utils import ModelData
@@ -291,6 +292,45 @@ class TestUtils:
         assert utils.contains_tensor_type(model, onnx.TensorProto.BFLOAT16)
         assert utils.contains_tensor_type(model, onnx.TensorProto.FLOAT)
         assert not utils.contains_tensor_type(model, onnx.TensorProto.FLOAT16)
+
+    @pytest.mark.parametrize("symmetric", [True, False])
+    @pytest.mark.parametrize("bitwidth", [4, 8, 16])
+    def test_tf_encoding_conversion(self, symmetric, bitwidth):
+        scales = np.array([0.1, 0.5, 10.5, 20.5], np.float32).reshape(2, 2)
+        if symmetric:
+            offsets = np.full_like(scales, -(2 ** (bitwidth - 1)))
+        else:
+            offsets = np.random.randint(
+                -(2 ** (bitwidth - 1)), 2 ** (bitwidth - 1) - 1, scales.shape
+            ).astype(np.float32)
+
+        tf_encodings = utils.numpy_to_TfEncoding(scales, offsets, qtype.int(bitwidth))
+
+        num_steps = 2**bitwidth - 1
+        assert len(tf_encodings) == scales.size
+        for enc, scale, offset in zip(
+            tf_encodings, scales.flatten(), offsets.flatten()
+        ):
+            assert enc.bw == bitwidth
+            assert enc.delta == scale
+            assert enc.offset == offset
+            assert np.allclose(enc.min, scale * offset)
+            assert np.allclose(enc.max, (num_steps + offset) * scale)
+
+        # Round-trip back to scale/offset arrays preserves the original values
+        recovered_scales, recovered_offsets = utils.numpy_from_TfEncoding(
+            tf_encodings, scales.shape
+        )
+        assert np.array_equal(recovered_scales, scales)
+        assert np.array_equal(recovered_offsets, offsets)
+
+    def test_to_tf_encoding_rejects_non_int_dtype(self):
+        scales = np.array([0.1, 0.5], np.float32)
+        offsets = np.zeros_like(scales)
+        with pytest.raises(NotImplementedError):
+            utils.numpy_to_TfEncoding(
+                scales, offsets, qtype.float(exponent_bits=5, mantissa_bits=10)
+            )
 
 
 class TestDuplicateSharedInitializers:
