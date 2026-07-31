@@ -4,6 +4,7 @@
 
 import copy
 import os.path
+import re
 import tempfile
 
 import numpy as np
@@ -67,8 +68,10 @@ class TestQuantStatsVisualization:
         sim = _tiny_sim()
         with tempfile.TemporaryDirectory() as tmp_dir:
             missing = tmp_dir
+        # re.escape: on Windows the temp path contains backslashes (e.g. \\Users),
+        # which are invalid regex escapes for pytest.raises(match=...).
         with pytest.raises(
-            NotADirectoryError, match=f"'{missing}' is not a directory."
+            NotADirectoryError, match=re.escape(f"'{missing}' is not a directory.")
         ):
             visualize_stats(sim, save_path=os.path.join(missing, "quant_stats.html"))
 

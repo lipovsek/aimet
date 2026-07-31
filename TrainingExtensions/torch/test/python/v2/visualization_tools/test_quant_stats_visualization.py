@@ -3,6 +3,7 @@
 
 
 import pytest
+import re
 import tempfile
 import os.path
 import torch
@@ -138,7 +139,11 @@ class TestQuantStatsVisualization:
         sim.compute_encodings(evaluate, dummy_input)
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = tmp_dir
-        with pytest.raises(NotADirectoryError, match=f"'{tmp}' is not a directory."):
+        # re.escape: on Windows the temp path contains backslashes (e.g. \\Users),
+        # which are invalid regex escapes for pytest.raises(match=...).
+        with pytest.raises(
+            NotADirectoryError, match=re.escape(f"'{tmp}' is not a directory.")
+        ):
             function(
                 sim,
                 dummy_input,
