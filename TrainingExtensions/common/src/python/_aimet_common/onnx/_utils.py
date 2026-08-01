@@ -655,6 +655,157 @@ def _is_htp_interpolation_op(op_type: str, domain: str = "") -> bool:
     )
 
 
+def _is_metadata_op(op_type: str, domain: str = "") -> bool:
+    return (domain, op_type) in (
+        ("", "Shape"),
+        ("", "Size"),
+    )
+
+
+def _parse(markdown: str) -> dict[str, list[str]]:
+    onnx_to_qnn_ir = {}
+    rows = markdown.strip().split("\n")[2:]  # Skip the header and separator lines
+    for row in rows:
+        _, onnx_op, qnn_ir_op, *_ = (entry.strip() for entry in row.split("|"))
+        assert onnx_op in _all_op_schemas
+        onnx_to_qnn_ir.setdefault(onnx_op, []).append(qnn_ir_op)
+
+    return onnx_to_qnn_ir
+
+
+_onnx_to_qnn_ir: dict[str, list[str]] = _parse(
+    """
+| ONNX Operator        | QNN IR Operation         |
+|----------------------|--------------------------|
+| Abs                  | ElementWiseAbs           |
+| Add                  | ElementWiseAdd           |
+| And                  | ElementWiseAnd           |
+| ArgMax               | Argmax                   |
+| ArgMin               | Argmin                   |
+| Asin                 | ElementWiseAsin          |
+| Atan                 | ElementWiseAtan          |
+| AveragePool          | PoolAvg2d                |
+| AveragePool          | PoolAvg3d                |
+| BatchNormalization   | Batchnorm                |
+| Cast                 | Cast                     |
+| Ceil                 | ElementWiseCeil          |
+| Clip                 | ReluMinMax               |
+| Col2Im               | Col2Im                   |
+| Concat               | Concat                   |
+| ConstantOfShape      | ConstantOfShape          |
+| Conv                 | Conv2d                   |
+| Conv                 | Conv3d                   |
+| Conv                 | DepthWiseConv2d          |
+| ConvTranspose        | TransposeConv2d          |
+| ConvTranspose        | TransposeConv3d          |
+| Cos                  | ElementWiseCos           |
+| CumSum               | CumulativeSum            |
+| DepthToSpace         | DepthToSpace             |
+| DequantizeLinear     | Dequantize               |
+| Div                  | ElementWiseDivide        |
+| Elu                  | Elu                      |
+| Equal                | ElementWiseEqual         |
+| Exp                  | ElementWiseExp           |
+| Flatten              | Reshape                  |
+| Floor                | ElementWiseFloor         |
+| Gather               | Gather                   |
+| GatherElements       | GatherElements           |
+| GatherND             | GatherNd                 |
+| Gelu                 | Gelu                     |
+| Gemm                 | FullyConnected           |
+| GlobalAveragePool    | PoolAvg2d                |
+| GlobalAveragePool    | PoolAvg3d                |
+| GlobalMaxPool        | PoolMax2d                |
+| GlobalMaxPool        | PoolMax3d                |
+| Greater              | ElementWiseGreater       |
+| GreaterOrEqual       | ElementWiseGreaterEqual  |
+| GridSample           | GridSample               |
+| GroupNormalization   | GroupNorm                |
+| GRU                  | Gru                      |
+| HardSwish            | HardSwish                |
+| InstanceNormalization| InstanceNorm             |
+| IsInf                | IsInf                    |
+| IsNaN                | ElementWiseNotEqual      |
+| IsNaN                | IsNan                    |
+| LayerNormalization   | LayerNorm                |
+| LeakyRelu            | Prelu                    |
+| Less                 | ElementWiseLess          |
+| LessOrEqual          | ElementWiseLessEqual     |
+| Log                  | ElementWiseLog           |
+| LogSoftmax           | LogSoftmax               |
+| LpNormalization      | L2Norm                   |
+| LpPool               | L2Pool2d                 |
+| LRN                  | Lrn                      |
+| LSTM                 | Lstm                     |
+| MatMul               | MatMul                   |
+| MatMul               | FullyConnected           |
+| Max                  | ElementWiseMaximum       |
+| MaxPool              | PoolMax2d                |
+| MaxPool              | PoolMax3d                |
+| MaxRoiPool           | RoiPooling               |
+| Min                  | ElementWiseMinimum       |
+| Mod                  | ElementWiseFmod          |
+| Mod                  | ElementWiseMod           |
+| Mul                  | ElementWiseMultiply      |
+| Neg                  | ElementWiseNeg           |
+| NonMaxSuppression    | NonMaxSuppression        |
+| NonZero              | NonZero                  |
+| Not                  | ElementWiseNot           |
+| OneHot               | OneHot                   |
+| Or                   | ElementWiseOr            |
+| Pad                  | Pad                      |
+| Pow                  | ElementWisePower         |
+| PRelu                | Prelu                    |
+| QLinearConv          | Conv2d                   |
+| QLinearConv          | Conv3d                   |
+| QLinearConv          | DepthWiseConv2d          |
+| QLinearMatMul        | MatMul                   |
+| QuantizeLinear       | Quantize                 |
+| RandomUniformLike    | RandomUniformLike        |
+| Reciprocal           | ElementWiseDivide        |
+| ReduceMax            | ReduceMax                |
+| ReduceMean           | ReduceMean               |
+| ReduceMin            | ReduceMin                |
+| ReduceProd           | ReduceProd               |
+| ReduceSum            | ReduceSum                |
+| ReduceSumSquare      | ReduceSumSquare          |
+| Relu                 | Relu                     |
+| Reshape              | Reshape                  |
+| Resize               | Resize                   |
+| RMSNormalization     | RmsNorm                  |
+| RoiAlign             | RoiAlign                 |
+| RotaryEmbedding      | RotaryEmbedding          |
+| Round                | ElementWiseRound         |
+| Scatter              | ScatterElements          |
+| ScatterElements      | ScatterElements          |
+| ScatterND            | ScatterNd                |
+| Shape                | Shape                    |
+| Sigmoid              | Sigmoid                  |
+| Sign                 | ElementWiseSign          |
+| Sin                  | ElementWiseSin           |
+| Slice                | StridedSlice             |
+| Softmax              | Softmax                  |
+| Softplus             | ElementWiseSoftplus      |
+| SpaceToDepth         | SpaceToDepth             |
+| Split                | Split                    |
+| Sqrt                 | ElementWiseSquareRoot    |
+| Squeeze              | Reshape                  |
+| STFT                 | Stft                     |
+| Sub                  | ElementWiseSubtract      |
+| Sum                  | ElementWiseAdd           |
+| Tanh                 | Tanh                     |
+| Tile                 | Tile                     |
+| TopK                 | TopK                     |
+| Transpose            | Transpose                |
+| Unsqueeze            | Reshape                  |
+| Where                | ElementWiseSelect        |
+| Xor                  | ElementWiseXor           |
+"""
+)
+
+del _parse
+
+
 def _convert_version_with_external_weights(model, target_opset_version):
     """
     Upgrade opset version with weights flushed to disk temporarily

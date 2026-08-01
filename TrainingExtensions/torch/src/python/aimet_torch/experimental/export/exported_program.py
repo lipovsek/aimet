@@ -19,14 +19,49 @@ from ._utils import (
     _is_multi_output_op,
     _refresh_output_specs,
 )
+from .qnn import _qnn_decompositions
 
 
 class ExportedProgram(torch.export.ExportedProgram):
+    """
+    Quantization-friendly ExportedProgram subclass for QNN.
+
+    Conceptually,
+
+                                 Export   (`torch.export`)
+                                   |
+                          ATen ... |
+                                   |
+                                   V
+                                 Lower    (`from_torch_exported_program`)
+                                   |
+    quantization-friendly ATen ... |
+                                   |
+                                   V
+                                 Quantize (`compute_missing_encodings`)
+                                   |
+                quantized ATen ... |
+                                   |
+                                   V
+                                 Lower
+                                   |
+           quantized core ATen ... |
+                                   |
+                                   V
+                                 (...)
+    """
+
     @classmethod
-    def from_torch_exported_program(cls, ep: torch.export.ExportedProgram):
-        new_ep = cls.__new__(cls)
-        new_ep.__dict__ = ep.__dict__
-        return new_ep
+    def from_torch_exported_program(
+        cls, ep: torch.export.ExportedProgram
+    ) -> "ExportedProgram":
+        """
+        Convert a PyTorch ExportedProgram to AIMET ExportedProgram,
+        lowering ATen IR to quantization-friendly IR for QNN
+        """
+        # Run QNN decompositions to perform post-export quantization based on QNN-friendly IR
+        ep = cls._shallow_copy_as_subclass(ep)
+        return ep.run_decompositions(_qnn_decompositions())
 
     def run_decompositions(
         self,
@@ -34,9 +69,38 @@ class ExportedProgram(torch.export.ExportedProgram):
         decompose_custom_triton_ops: bool = False,
     ) -> "ExportedProgram":
         ep = super().run_decompositions(decomp_table, decompose_custom_triton_ops)
+
+        # super().run_decompositions() can ambiguate metadata of some constant nodes
+        # that is useful for determining whether the constant originated from
+        # Tensor or non-Tensor constant (numpy array, python scalar, etc) in the
+        # original model. To avoid such ambiguity, restore the original metadata
+        # of placeholder nodes from the original ExportedProgram.
+        original_node_metadata = {
+            node.name: node.meta
+            for node in self.graph_module.graph.nodes
+            if node.op == "placeholder"
+        }
+        for node in ep.graph_module.graph.nodes:
+            orig_metadata = original_node_metadata.get(node.name)
+            if orig_metadata is not None:
+                node.meta.clear()
+                node.meta.update(original_node_metadata[node.name])
+
         # super().run_decompositions returns the base ExportedProgram classs.
         # Cast it back to subclass to access additional methods and properties
-        return self.from_torch_exported_program(ep)
+        return self._shallow_copy_as_subclass(ep)
+
+    @classmethod
+    def _shallow_copy_as_subclass(cls, ep: torch.export.ExportedProgram):
+        """
+        Cast a shallow-copy of PyTorch ExprotedProgram to aimet subclass
+        """
+        if type(ep) == cls:
+            return ep
+
+        new_ep = cls.__new__(cls)
+        new_ep.__dict__ = ep.__dict__
+        return new_ep
 
     @contextmanager
     def compute_missing_encodings(self, param_bw: int, activation_bw: int):
@@ -58,39 +122,24 @@ class ExportedProgram(torch.export.ExportedProgram):
             >>> # *Fully* quantized aten graph
             >>> torch.export.save(ep, "fully_quantized_model.pt2")
         """
-        # Step 1. Lower Aten to core Aten.
-        #
-        # At this stage, the set of decomposition rules should be selected carefully
-        # because some of the default decompositions are too aggressive for QAIRT/HTP.
-        #
-        # For example, default decomposition table contains the following entry:
-        #   ``prelu(x, c) -> where(x >= 0, x, x * c)``
-        #
-        # Adding intermediate output QDQ to the decomposed prelu subgraph graph will harm
-        # both accuracy and performance on QAIRT/HTP.
-        #
-        # Here, we put an empty decomposition table as a temporary placeholder
-        # TODO: Fill out decomposition table
-        self.run_decompositions({})
-
-        # Step 2. Add missing quantizers
+        # Step 1. Add missing quantizers
         #
         # Add QuantizeDequantize module after
         # every floating-point op doesn't have quantized outputs.
         newly_added_qtzrs = self._add_missing_quantizers(param_bw, activation_bw)
 
-        # Step 3. Enter compute_encodings mode and yield control back to user to
+        # Step 2. Enter compute_encodings mode and yield control back to user to
         # calibrate encodings of the newly added quantizers. While the control
         # flow is yielded, the user is expected to run forward passes with
         # calibration dataset
         with aimet_torch.nn.compute_encodings(self.module()):
             yield
 
-        # Step 4. Inline QuantizeDequantize modules into torch.ao Q/DQ operators
+        # Step 3. Inline QuantizeDequantize modules into torch.ao Q/DQ operators
         # (torch.ops.quantized_decomposed.(de)quantize_per_*)
         self._inline_qdq(newly_added_qtzrs)
 
-        # Step 5. Post-processing
+        # Step 4. Post-processing
         _post_process(self)
         self._fold_param_qantizers()
         _remove_dangling_nodes(self)
