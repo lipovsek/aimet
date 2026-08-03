@@ -368,12 +368,10 @@ def test_llm_quantization(
                     )
                 )
 
-    model_kwargs["context_length"] = context_length
-    model_kwargs["sequence_length"] = sequence_length
-    if image_size is not None:
-        model_kwargs["image_size"] = list(image_size)
-    if precomputed_encodings is not None:
-        model_kwargs["encodings"] = precomputed_encodings
+    # Snapshot of the authored model section for the report, derived from the
+    # parsed config (not the instantiation kwargs) so fields like ``adaptations``
+    # are always recorded.
+    report_modifiers = config.model.report_modifiers()
 
     # Re-attach pre-sim steps (e.g. SpinQuant) as synthetic leading steps so the
     # recorded recipe reflects the pre-sim rotations. A single pre-sim pass
@@ -402,14 +400,12 @@ def test_llm_quantization(
     results_folder = Path(results_dir)
     results_folder.mkdir(parents=True, exist_ok=True)
     precision_dict = precision.to_dict()
-    if "dtype" in model_kwargs:
-        model_kwargs["dtype"] = str(model_kwargs["dtype"])
     write_stats_to_disk(
         output_folder=str(results_folder),
         filename="profiling_data",
         model_type=model_type,
         model_id=model_id,
-        model_modifiers=model_kwargs,
+        model_modifiers=report_modifiers,
         components=components,
         accuracy_results=evaluation_results,
         export_location=export_dir,
@@ -423,7 +419,7 @@ def test_llm_quantization(
             filename="profiling_data",
             model_type=model_type,
             model_id=model_id,
-            model_modifiers=model_kwargs,
+            model_modifiers=report_modifiers,
             components=components,
             accuracy_results=evaluation_results,
             precision=precision_dict,

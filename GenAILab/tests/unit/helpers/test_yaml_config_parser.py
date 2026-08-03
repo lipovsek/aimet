@@ -11,6 +11,7 @@ import pytest
 from GenAILab.bench.yaml_config_parser import (
     YAMLConfigParser,
     AdaptationInfo,
+    ModelConfig,
 )
 
 
@@ -790,3 +791,72 @@ class TestParseDocument:
         }
         result = YAMLConfigParser.parse_document(doc, export_base_dir=str(tmp_path))
         assert len(result.recipe.pre_sim) == 0
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig.report_modifiers — the snapshot recorded under the report's
+# ``model_modifiers`` field. Derived from the parsed config so it stays
+# independent of the kwargs used to instantiate the model.
+# ---------------------------------------------------------------------------
+
+
+class TestReportModifiers:
+    @staticmethod
+    def _model_config(**overrides):
+        base = dict(
+            model_cls=object,
+            model_id="org/model",
+            model_type="llama",
+            context_length=64,
+            sequence_length=32,
+            adaptations=[],
+            extra_kwargs={},
+        )
+        base.update(overrides)
+        return ModelConfig(**base)
+
+    def test_records_adaptations(self):
+        """adaptations are baked into the model class, not an instantiation
+        kwarg, so they must be added explicitly (this was the regression)."""
+        cfg = self._model_config(adaptations=["SHA", {"AIHM": {"foo": 1}}])
+        assert cfg.report_modifiers()["adaptations"] == [
+            "SHA",
+            {"AIHM": {"foo": 1}},
+        ]
+
+    def test_includes_extra_kwargs_and_shape(self):
+        cfg = self._model_config(
+            context_length=4096,
+            sequence_length=[1, 128],
+            extra_kwargs={"num_hidden_layers": 2},
+        )
+        mods = cfg.report_modifiers()
+        assert mods["num_hidden_layers"] == 2
+        assert mods["context_length"] == 4096
+        assert mods["sequence_length"] == [1, 128]
+
+    def test_optional_fields_omitted_when_unset(self):
+        mods = self._model_config().report_modifiers()
+        assert "image_size" not in mods
+        assert "encodings" not in mods
+        assert "dtype" not in mods
+
+    def test_optional_fields_included_when_set(self):
+        cfg = self._model_config(
+            image_size=[224, 224], encodings="/enc", dtype="float16"
+        )
+        mods = cfg.report_modifiers()
+        assert mods["image_size"] == [224, 224]
+        assert mods["encodings"] == "/enc"
+        assert mods["dtype"] == "float16"
+
+    def test_dtype_override_wins(self):
+        """ONNX resolves an unset dtype to float32 and passes it explicitly."""
+        cfg = self._model_config(dtype=None)
+        assert cfg.report_modifiers(dtype="float32")["dtype"] == "float32"
+
+    def test_does_not_mutate_extra_kwargs(self):
+        extra = {"num_hidden_layers": 2}
+        cfg = self._model_config(extra_kwargs=extra)
+        cfg.report_modifiers()
+        assert extra == {"num_hidden_layers": 2}

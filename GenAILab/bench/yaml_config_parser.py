@@ -87,6 +87,34 @@ class ModelConfig:
     dtype: str | None = None
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
 
+    def report_modifiers(self, *, dtype: str | None = None) -> dict[str, Any]:
+        """Model-section fields to record under the report's ``model_modifiers``.
+
+        Built straight from the parsed config rather than the kwargs used to
+        instantiate the model, so the recorded snapshot always reflects the
+        authored model section — in particular ``adaptations``, which are baked
+        into the model class and never passed to the constructor. ``model_id``,
+        ``model_type`` and the model class are separate top-level report fields
+        and are intentionally omitted here.
+
+        Args:
+            dtype: Resolved dtype name to record when the framework applies a
+                default (e.g. ONNX resolves ``float32``). Falls back to the
+                configured ``dtype`` and is omitted when neither is set.
+        """
+        modifiers: dict[str, Any] = dict(self.extra_kwargs)
+        modifiers["adaptations"] = self.adaptations
+        modifiers["context_length"] = self.context_length
+        modifiers["sequence_length"] = self.sequence_length
+        dtype_name = dtype or self.dtype
+        if dtype_name is not None:
+            modifiers["dtype"] = dtype_name
+        if self.image_size is not None:
+            modifiers["image_size"] = list(self.image_size)
+        if self.encodings is not None:
+            modifiers["encodings"] = self.encodings
+        return modifiers
+
 
 @dataclass(frozen=True)
 class ProfilerConfig:
