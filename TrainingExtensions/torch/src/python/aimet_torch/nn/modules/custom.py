@@ -1182,3 +1182,29 @@ class QuantizedDynamicLinear(_DispatchMixin, QuantizationMixin, DynamicLinear):
 
     __quant_init__ = QuantizationMixin.__ternary__
     _builtin_torch_fn = F.linear
+
+
+@QuantizationMixin.implements(RotaryEmbedding)
+class QuantizedRotaryEmbedding(QuantizationMixin, RotaryEmbedding):
+    def __quant_init__(self):
+        super().__quant_init__()
+        self.input_quantizers = torch.nn.ModuleList([None, None, None, None])
+        self.output_quantizers = torch.nn.ModuleList([None])
+
+    def forward(self, x, cos_cache, sin_cache, position_ids=None):
+        if self.input_quantizers[0]:
+            x = self.input_quantizers[0](x)
+        if self.input_quantizers[1]:
+            cos_cache = self.input_quantizers[1](cos_cache)
+        if self.input_quantizers[2]:
+            sin_cache = self.input_quantizers[2](sin_cache)
+
+        # position ids need not be quantized
+        inputs = (x, cos_cache, sin_cache, position_ids)
+
+        output = super().forward(*inputs)
+
+        if self.output_quantizers[0]:
+            output = self.output_quantizers[0](output)
+
+        return output

@@ -489,26 +489,27 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
                 "quantsim.html#aimet_torch.QuantizationSimModel.onnx"
             )
 
-        qlora_layers = [
-            name
-            for name, qmodule in self.named_qmodules()
-            if isinstance(qmodule, aimet_torch.nn.lora.QuantizedLora)
-        ]
+        if hasattr(aimet_torch.nn.lora, "QuantizedLora"):
+            qlora_layers = [
+                name
+                for name, qmodule in self.named_qmodules()
+                if isinstance(qmodule, aimet_torch.nn.lora.QuantizedLora)
+            ]
 
-        if len(qlora_layers) > 3:
-            # Only show up to 3 layer names for readability
-            qlora_layers = [*qlora_layers[:3], "..."]
+            if len(qlora_layers) > 3:
+                # Only show up to 3 layer names for readability
+                qlora_layers = [*qlora_layers[:3], "..."]
 
-        if qlora_layers:
-            raise RuntimeError(
-                "QuantizationSimModel.export does not support exporting QuantizedLora layers. "
-                f"Found the following QuantizedLora layers in the model: [{', '.join(qlora_layers)}]. "
-                "Please use aimet_torch.onnx.export() or sim.onnx.export() instead, "
-                "which supports exporting QuantizedLora layers. "
-                "For more information, see "
-                "https://quic.github.io/aimet-pages/releases/latest/apiref/torch/"
-                "quantsim.html#aimet_torch.QuantizationSimModel.onnx"
-            )
+            if qlora_layers:
+                raise RuntimeError(
+                    "QuantizationSimModel.export does not support exporting QuantizedLora layers. "
+                    f"Found the following QuantizedLora layers in the model: [{', '.join(qlora_layers)}]. "
+                    "Please use aimet_torch.onnx.export() or sim.onnx.export() instead, "
+                    "which supports exporting QuantizedLora layers. "
+                    "For more information, see "
+                    "https://quic.github.io/aimet-pages/releases/latest/apiref/torch/"
+                    "quantsim.html#aimet_torch.QuantizationSimModel.onnx"
+                )
 
         if isinstance(dummy_input, torch.Tensor):
             dummy_input = (dummy_input,)
@@ -989,8 +990,10 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
 
         propagate_output_encodings(
             self,
-            lambda module: module in htp_interpolation_ops
-            or (isinstance(module, QuantizedReLU) and module.output_quantizers[0]),
+            lambda module: (
+                module in htp_interpolation_ops
+                or (isinstance(module, QuantizedReLU) and module.output_quantizers[0])
+            ),
         )
 
     def _disable_quantizers_for_constant_rescale_ops(self):

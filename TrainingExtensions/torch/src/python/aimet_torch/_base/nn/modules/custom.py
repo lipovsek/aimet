@@ -709,6 +709,62 @@ class NullRequant(Reshape):
         return super().forward(input, input.shape)
 
 
+class RotaryEmbedding(torch.nn.Module):
+    """
+    nn.Module implementation for RotaryEmbedding
+    """
+
+    def __init__(self, interleaved: bool, rotary_embedding_dim: int, head_size: int):
+        super().__init__()
+        self.interleaved = interleaved
+        self.rotary_embedding_dim = rotary_embedding_dim
+        self.head_size = head_size
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos_cache: torch.Tensor,
+        sin_cache: torch.Tensor,
+        position_ids: torch.Tensor = None,
+    ) -> torch.Tensor:
+        x_rotary, x_rem = torch.split(
+            x,
+            [self.rotary_embedding_dim, self.head_size - self.rotary_embedding_dim],
+            dim=-1,
+        )
+
+        # Based on the interleave flag, either divide the input in halves or interleave
+        if self.interleaved:
+            x1, x2 = torch.unbind(x_rotary.reshape(*x_rotary.shape[:-1], -1, 2), dim=-1)
+        else:
+            x1, x2 = torch.split(x_rotary, self.rotary_embedding_dim // 2, dim=-1)
+
+        # Get sin_cache and cos_cache using position ids if provided
+        if position_ids is not None:
+            cos_cache = cos_cache[position_ids]
+            sin_cache = sin_cache[position_ids]
+
+        # Shape: [batch_size, seq_length, rotary_embedding_dim/2] -> [batch_size, 1, seq_length, rotary_embedding_dim/2]
+        cos_cache = torch.unsqueeze(cos_cache, dim=1)
+        sin_cache = torch.unsqueeze(sin_cache, dim=1)
+
+        # Calculate rotation matrix terms
+        real = (cos_cache * x1) - (sin_cache * x2)
+        imag = (sin_cache * x1) + (cos_cache * x2)
+
+        # Re-insert rotational matrix terms into the input
+        if self.interleaved:
+            real = torch.unsqueeze(real, dim=-1)
+            imag = torch.unsqueeze(imag, dim=-1)
+            x_rotary = torch.reshape(torch.concat((real, imag), dim=-1), x_rotary.shape)
+        else:
+            x_rotary = torch.concat((real, imag), dim=-1)
+
+        output = torch.concat((x_rotary, x_rem), dim=-1)
+
+        return output
+
+
 _spconv_custom_module_names = (
     "CustomSparseConv3d",
     "CustomSparseConv3d_WithIndicesFeatures",

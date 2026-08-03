@@ -67,7 +67,7 @@ from aimet_torch import torchscript_utils, utils, onnx_utils
 from aimet_torch.meta.connectedgraph import ConnectedGraph, Op, _UnsafeGraphError
 from aimet_torch._base.nn.modules.custom import Outer
 from aimet_torch.quantsim_config.quantsim_config import QuantSimConfigurator
-from aimet_torch._base.nn.modules.custom import MatMul, Cast
+from aimet_torch._base.nn.modules.custom import MatMul, Cast, RotaryEmbedding
 from aimet_torch.onnx_utils import OnnxSaver, OnnxExportApiArgs, CustomMarker
 from aimet_torch.experimental.quantsim._export_utils import _export_to_1_0_0
 
@@ -656,6 +656,39 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
                 weight_qtzr = wrapper.param_quantizers.get("weight", None)
                 if weight_qtzr:
                     weight_qtzr.use_symmetric_encodings = weight_qtzr.bitwidth >= 16
+
+            elif isinstance(original_module, RotaryEmbedding):
+                if original_module not in self.connected_graph._module_to_op_dict:
+                    continue
+
+                cos_cache_quantizer, sin_cache_quantizer = (
+                    wrapper.input_quantizers[1],
+                    wrapper.input_quantizers[2],
+                )
+
+                op = self.connected_graph._module_to_op_dict[original_module]
+                cos_cache_op = (
+                    op.inputs[1].producer if (not cos_cache_quantizer.enabled) else None
+                )
+                sin_cache_op = (
+                    op.inputs[2].producer if (not sin_cache_quantizer.enabled) else None
+                )
+
+                target_quantizer_for_cos_cache = self._get_target_quantizer(
+                    cos_cache_quantizer, cos_cache_op
+                )
+                target_quantizer_for_sin_cache = self._get_target_quantizer(
+                    sin_cache_quantizer, sin_cache_op
+                )
+                if cos_cache_quantizer is None or sin_cache_quantizer is None:
+                    logger.warning(
+                        "Could not find quantizers for RotaryEmbedding cos_cache and/or sin_cache for layer: %s. "
+                        "Symmetric encodings will not be set. Consider using model preparer if needed.",
+                        str(original_module),
+                    )
+                else:
+                    target_quantizer_for_cos_cache.use_symmetric_encodings = True
+                    target_quantizer_for_sin_cache.use_symmetric_encodings = True
 
             elif isinstance(original_module, (MatMul, Outer)):
                 # Skip unused modules

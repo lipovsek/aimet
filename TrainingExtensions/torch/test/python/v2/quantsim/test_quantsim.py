@@ -2616,6 +2616,76 @@ def test_layernorm_exception_rule():
     assert not sim.model[0].param_quantizers["weight"].symmetric
 
 
+def test_rotary_embedding_exception_rule_direct_caches():
+    """
+    Given: RotaryEmbedding with cos/sin caches as direct model inputs (input quantizers enabled)
+    When: QuantizationSimModel is created
+    Then: cos_cache and sin_cache input quantizers should be set to symmetric
+    """
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.rotary = custom.RotaryEmbedding(
+                interleaved=False, rotary_embedding_dim=4, head_size=8
+            )
+
+        def forward(self, x, cos_cache, sin_cache):
+            return self.rotary(x, cos_cache, sin_cache)
+
+    model = Model()
+    dummy_input = (
+        torch.randn(1, 1, 2, 8),
+        torch.randn(1, 2, 2),
+        torch.randn(1, 2, 2),
+    )
+    sim = QuantizationSimModel(model, dummy_input)
+    assert sim.model.rotary.input_quantizers[1].symmetric
+    assert sim.model.rotary.input_quantizers[2].symmetric
+
+
+def test_rotary_embedding_exception_rule_producer_caches():
+    """
+    Given: RotaryEmbedding with cos/sin caches produced by upstream linear layers
+           (input quantizers disabled, producer output quantizers are active)
+    When: QuantizationSimModel is created
+    Then: Symmetric encoding is applied to the producer output quantizers
+    """
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.cos_proj = nn.Linear(4, 2)
+            self.sin_proj = nn.Linear(4, 2)
+            self.rotary = custom.RotaryEmbedding(
+                interleaved=False, rotary_embedding_dim=4, head_size=8
+            )
+
+        def forward(self, x, cache_input):
+            cos_cache = self.cos_proj(cache_input)
+            sin_cache = self.sin_proj(cache_input)
+            return self.rotary(x, cos_cache, sin_cache)
+
+    model = Model()
+    dummy_input = (
+        torch.randn(1, 1, 2, 8),
+        torch.randn(1, 2, 4),
+    )
+    sim = QuantizationSimModel(model, dummy_input)
+    # upstream output quantizers handle quantization, so rotary's input quantizers are disabled
+    assert (
+        sim.model.rotary.input_quantizers[1] is None
+        or not sim.model.rotary.input_quantizers[1].enabled
+    )
+    assert (
+        sim.model.rotary.input_quantizers[2] is None
+        or not sim.model.rotary.input_quantizers[2].enabled
+    )
+    # exception rule propagates symmetric encoding to the producer output quantizers
+    assert sim.model.cos_proj.output_quantizers[0].symmetric
+    assert sim.model.sin_proj.output_quantizers[0].symmetric
+
+
 @pytest.mark.parametrize(
     "model_factory, dummy_input",
     [

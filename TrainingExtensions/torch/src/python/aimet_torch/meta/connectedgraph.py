@@ -110,6 +110,7 @@ SKIP_LIST_FOR_SUBGRAPH_TRACE = [
     aimet_modules.Addmm,
     aimet_modules.Baddbmm,
     aimet_modules.GridSample,
+    aimet_modules.RotaryEmbedding,
 ]
 
 
@@ -1016,8 +1017,10 @@ class ConnectedGraph(AimetCommonConnectedGraph):
             if product.is_model_input and name not in input_structure:
                 input_structure[name] = list(
                     filter(
-                        lambda consumer: consumer
-                        and consumer.type not in ["TupleConstruct", "ListConstruct"],
+                        lambda consumer: (
+                            consumer
+                            and consumer.type not in ["TupleConstruct", "ListConstruct"]
+                        ),
                         product.consumers,
                     )
                 )
