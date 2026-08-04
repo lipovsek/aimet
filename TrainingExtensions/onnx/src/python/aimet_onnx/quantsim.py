@@ -67,6 +67,7 @@ from aimet_onnx.common.quantsim import (
     VALID_ENCODING_VERSIONS,
     _INT32_MINIMUM_SCALE,
     _adjust_weight_scale_against_bias_overflow,
+    _adjust_weight_scale_against_export_dtype_underflow,
     _adjust_weight_scale_against_scale_underflow,
     compute_min_max_given_delta_offset,
 )
@@ -1555,6 +1556,17 @@ class QuantizationSimModel:
         3. Accumulator Bias Overflow
            - occurs if:   |b'| > 2**31
            - bad because: HexNN internally stores b' as int32
+
+        4. Export-dtype Bias-scale Underflow
+           - occurs if:   sx * sw < finfo(export_dtype).tiny (fp16 export only)
+           - bad because: The bias's y_scale in the exported QDQ graph carries
+                          the surrounding activation dtype; on fp16 it collapses
+                          to zero, breaking ``bias_scale = sx * sw`` fusion and
+                          causing divide-by-zero at export time.
+
+        Stage 4 gates on both (a) the bias's export dtype and (b) whether any
+        channel actually underflows, so fp32 export and well-scaled fp16 export
+        remain bit-identical to today.
         """
         # pylint: disable=redefined-builtin, protected-access
 
@@ -1672,6 +1684,27 @@ class QuantizationSimModel:
                     num_steps=2**31 - 2**15,
                 )
 
+            # Prevent export-dtype bias-scale underflow (4)
+            # No-op unless the bias tensor exports at a dtype whose `tiny` is
+            # larger than _INT32_MINIMUM_SCALE (currently only fp16) AND some
+            # channel of input_scale * weight_scale falls below that floor.
+            # If input_scale itself underflows the floor, no weight bump can
+            # save it — leave the scales untouched here and let
+            # ``_concretize_int32_bias_quantizers`` raise if the caller later
+            # asks for int32-bias export.
+            if bias is not None:
+                bias_floor = self._get_bias_scale_floor(bias.name)
+                if (
+                    bias_floor > _INT32_MINIMUM_SCALE
+                    and not np.any(input_scale < bias_floor)
+                    and np.any(input_scale * adjusted_weight_scale < bias_floor)
+                ):
+                    adjusted_weight_scale = (
+                        _adjust_weight_scale_against_export_dtype_underflow(
+                            input_scale, adjusted_weight_scale, bias_floor
+                        )
+                    )
+
             offset = np.array([enc.offset for enc in encodings], dtype=np.float32)
             adjusted_min, adjusted_max = compute_min_max_given_delta_offset(
                 adjusted_weight_scale,
@@ -1695,8 +1728,36 @@ class QuantizationSimModel:
                 enc.min, enc.max, enc.delta = new_min, new_max, new_scale
             weight_qtzr.load_encodings(encodings)
             logger.info(
-                "Adjusted weight scale for %s to prevent bias overflow.", op.name
+                "Adjusted weight scale for %s to prevent bias/scale overflow-underflow.",
+                op.name,
             )
+
+    def _get_bias_scale_floor(self, bias_name: str) -> float:
+        """
+        Return the minimum representable bias scale for `bias_name`.
+
+        The int32 bias scale is exported as `QuantizeLinear.y_scale` /
+        `DequantizeLinear.x_scale`, whose ONNX-required dtype matches the
+        surrounding activation dtype.
+        If that dtype is fp16, values like `_INT32_MINIMUM_SCALE` (~2.33e-12) underflow to zero on cast,
+        producing divide-by-zero during export.
+        Floor at the greater of the int32 precision floor and the smallest normal of the export dtype so
+        the scale round-trips through the exported graph without loss.
+
+        TODO: Drop the dtype floor once we can always export scales as fp32.
+        ONNX opset 23+ decouples Q/DQ scale dtype from tensor dtype
+        (``y_scale`` can be fp32 even for fp16 tensors), but as of ORT
+        1.23.2 the CPUExecutionProvider has no Q/DQ opset-23 kernels, so
+        emitting that pattern breaks session load. When ORT ships opset-23
+        Q/DQ kernels and the HTP converter accepts them, switch export to
+        force fp32 scales unconditionally and remove this floor.
+        """
+        export_dtype = self.activation_dtypes.get(bias_name, np.float32)
+        if np.issubdtype(export_dtype, np.floating):
+            dtype_floor = float(np.finfo(export_dtype).tiny)
+        else:
+            dtype_floor = 0.0
+        return max(_INT32_MINIMUM_SCALE, dtype_floor)
 
     def _get_statistical_bias_scale(self, op: Op) -> np.ndarray:
         r"""
@@ -1718,9 +1779,10 @@ class QuantizationSimModel:
                 f'Couldn\'t find the value of "{bias.name}" statically from the graph.'
             )
 
-        bias_float = to_array(bias_proto)
-
-        bias_scale = np.maximum(abs(bias_float) / 2**31, _INT32_MINIMUM_SCALE)
+        bias_float = to_array(bias_proto).astype(np.float64, copy=False)
+        bias_scale = np.maximum(
+            abs(bias_float) / 2**31, self._get_bias_scale_floor(bias.name)
+        )
 
         bias_qtzr = self.qc_quantize_op_dict[bias.name]
         if not bias_qtzr.quant_info.usePerChannelMode:
@@ -1933,10 +1995,35 @@ class QuantizationSimModel:
                 if weight_qtzr is None:
                     # Edge case: Op has no weight quantizer. Fall back to statistical bias scale
                     get_bias_scale = self._get_statistical_bias_scale
+                    is_analytic = False
                 else:
                     get_bias_scale = switcher.get(
                         op.type, self._get_statistical_bias_scale
                     )
+                    is_analytic = op.type in (
+                        "Conv",
+                        "Gemm",
+                        "MatMul",
+                        "ConvTranspose",
+                    )
+
+                # If the caller opted into int32-bias export and the bias
+                # y_scale will be cast to fp16, an input_scale below fp16.tiny
+                # means no weight_scale bump can produce a survivable
+                # bias_scale. Raise instead of silently emitting divide-by-zero.
+                if is_analytic:
+                    bias_floor = self._get_bias_scale_floor(bias.name)
+                    if bias_floor > _INT32_MINIMUM_SCALE:
+                        input_scale = input_qtzr._get_scale()
+                        if np.any(input_scale < bias_floor):
+                            raise RuntimeError(
+                                f"input_scale ({float(input_scale.min()):.3e}) for "
+                                f"{op.name} is below the fp16 export-dtype floor "
+                                f"({bias_floor:.3e}); cannot derive an analytic "
+                                "bias_scale that round-trips through the export "
+                                "dtype. Please recalibrate the input encoding or "
+                                "increase activation precision."
+                            )
 
                 bias_scale = get_bias_scale(op)
 

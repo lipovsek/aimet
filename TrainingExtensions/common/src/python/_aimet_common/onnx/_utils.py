@@ -333,6 +333,14 @@ def _quantize_const(
     )
 
     y_scale = y_scale.astype(np.float32)
+    if np.any(y_scale == 0.0):
+        raise RuntimeError(
+            f"y_scale for constant {name} contains zero entries "
+            f"(count={int(np.sum(y_scale == 0.0))}/{y_scale.size}); "
+            "cannot divide `const` by zero. This usually means an upstream "
+            "encoding (weight/input) collapsed to zero. "
+            "Please check provided input for calibration or increase precision of the model."
+        )
     const_q = const / y_scale + y_zero_point
 
     if "int" in output_dtype:

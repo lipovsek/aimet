@@ -566,6 +566,64 @@ def _adjust_weight_scale_against_scale_underflow(
     return ret.numpy() if issubclass(ret_type, np.ndarray) else ret
 
 
+def _adjust_weight_scale_against_export_dtype_underflow(
+    input_scale: Union[np.ndarray, torch.Tensor],
+    weight_scale: T_w,
+    floor: float,
+) -> T_w:
+    """
+    Bump ``weight_scale`` so that ``bias_scale = input_scale * weight_scale >= floor``,
+    per output channel.
+
+    The int32 bias scale is exported as ``QuantizeLinear.y_scale`` /
+    ``DequantizeLinear.x_scale``, whose ONNX dtype matches the surrounding
+    activation dtype. When that dtype is fp16 (w8a16/w16a16), a bias_scale
+    smaller than ``fp16.tiny`` (~6.1e-5) underflows to zero on cast and causes
+    divide-by-zero during ``_quantize_const``.
+
+    Bumping ``weight_scale`` (rather than clamping ``bias_scale`` directly)
+    preserves the ``bias_scale = input_scale * weight_scale`` invariant that
+    backends rely on to fuse ``input_q @ weight_q + bias_q`` without rescaling.
+
+    Raises RuntimeError if ``input_scale`` itself is below ``floor`` — no
+    weight_scale bump can produce a bias_scale that survives fp16 export
+    when input_scale itself underflows.
+    """
+    ret_type = type(weight_scale)
+    ret_dtype = weight_scale.dtype if isinstance(weight_scale, torch.Tensor) else None
+
+    input_scale = _to_torch_tensor(input_scale)
+    weight_scale = _to_torch_tensor(weight_scale)
+    ret_shape = weight_scale.shape
+
+    if torch.any(input_scale <= 0):
+        raise RuntimeError("input_scale must be strictly positive.")
+    if torch.any(input_scale < floor):
+        raise RuntimeError(
+            f"input_scale ({float(input_scale.min()):.3e}) is below the "
+            f"export-dtype floor ({floor:.3e}); cannot derive an analytic "
+            "bias_scale that round-trips through the export dtype. "
+            "Please recalibrate the input encoding or increase activation precision."
+        )
+
+    required = torch.as_tensor(floor, dtype=torch.float64) / input_scale.to(
+        torch.float64
+    )
+    adjusted = torch.maximum(weight_scale.to(torch.float64), required)
+    adjusted = (
+        adjusted.to(ret_dtype).reshape(ret_shape)
+        if ret_dtype
+        else adjusted.reshape(ret_shape)
+    )
+
+    if issubclass(ret_type, float):
+        return adjusted.item()
+    elif issubclass(ret_type, np.ndarray):
+        return adjusted.cpu().numpy().astype(np.float32)
+    else:
+        return adjusted
+
+
 _INT4_MINIMUM_SCALE = _get_minimum_scale(2**4 - 1)
 _INT8_MINIMUM_SCALE = _get_minimum_scale(2**8 - 1)
 _INT16_MINIMUM_SCALE = _get_minimum_scale(2**16 - 1)

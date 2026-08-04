@@ -16,7 +16,7 @@ import pathlib
 import time
 import random
 import sys
-from typing import Callable
+from typing import Callable, Dict
 
 from onnx.external_data_helper import uses_external_data, _get_all_tensors
 import onnx.numpy_helper
@@ -46,6 +46,7 @@ from aimet_onnx.common.quantsim_config.utils import (
     get_path_for_per_tensor_config,
 )
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
+from aimet_onnx.meta.operations import Op
 from aimet_onnx.quantsim import (
     QuantizationSimModel,
     load_encodings_to_sim,
@@ -58,7 +59,11 @@ from aimet_onnx.quantsim import (
     set_param_type,
 )
 import aimet_onnx
-from aimet_onnx.qc_quantize_op import OpMode, GroupedBlockQuantizeDequantize
+from aimet_onnx.qc_quantize_op import (
+    OpMode,
+    GroupedBlockQuantizeDequantize,
+    QcQuantizeOp,
+)
 from aimet_onnx.utils import (
     make_dummy_input,
     get_node_attribute,
@@ -3874,26 +3879,34 @@ class TestQuantSim:
             fp32_sim.qc_quantize_op_dict.keys() == fp16_sim.qc_quantize_op_dict.keys()
         )
 
-        fp32_quantizers = list(fp32_sim.qc_quantize_op_dict.values())
-        fp16_quantizers = list(fp16_sim.qc_quantize_op_dict.values())
+        # Weight tensors of Conv/Gemm/MatMul/ConvTranspose ops in the fp16 sim
+        # may legitimately diverge from their fp32 counterparts because stage 4
+        # of ``_adjust_weight_scales_against_overflow`` bumps weight_scale to
+        # keep ``sx * sw >= fp16.tiny``. Skip tight comparison for those.
+        analytic_op_types = ("Conv", "Gemm", "MatMul", "ConvTranspose")
+        stage4_weight_names = set()
+        for op in fp16_sim.connected_graph.get_all_ops().values():
+            if op.type not in analytic_op_types:
+                continue
+            weight, _ = fp16_sim._get_weight_and_bias(op)
+            if weight is not None:
+                stage4_weight_names.add(weight.name)
 
-        for i in range(len(fp32_quantizers)):
-            assert fp32_quantizers[i].enabled == fp16_quantizers[i].enabled
-            if fp32_quantizers[i].enabled and fp16_quantizers[i].enabled:
-                fp32_encodings = fp32_quantizers[i].encodings[0]
-                fp16_encodings = fp16_quantizers[i].encodings[0]
+        for name, fp32_qtzr in fp32_sim.qc_quantize_op_dict.items():
+            fp16_qtzr = fp16_sim.qc_quantize_op_dict[name]
+            assert fp32_qtzr.enabled == fp16_qtzr.enabled
+            if not (fp32_qtzr.enabled and fp16_qtzr.enabled):
+                continue
 
-                fp32_values = [
-                    fp32_encodings.min,
-                    fp32_encodings.max,
-                    fp32_encodings.delta,
-                ]
-                fp16_values = [
-                    fp16_encodings.min,
-                    fp16_encodings.max,
-                    fp16_encodings.delta,
-                ]
+            fp32_encodings = fp32_qtzr.encodings[0]
+            fp16_encodings = fp16_qtzr.encodings[0]
+            fp32_values = [fp32_encodings.min, fp32_encodings.max, fp32_encodings.delta]
+            fp16_values = [fp16_encodings.min, fp16_encodings.max, fp16_encodings.delta]
 
+            if name in stage4_weight_names:
+                # Stage 4 only bumps up: fp16 weight scale >= fp32 weight scale.
+                assert fp16_encodings.delta >= fp32_encodings.delta - 1e-6
+            else:
                 assert np.allclose(fp32_values, fp16_values, atol=0.01)
                 assert abs(fp32_encodings.offset - fp16_encodings.offset) <= 1
 
@@ -5904,6 +5917,262 @@ def test_int32_bias_export_with_dynamic_weight(tmp_dir):
     bias_scale = np.array(exported_encodings["conv_b"]["y_scale"])
     assert np.allclose(bias_scale, input_scale * weight_scale)
     assert "y_zero_point" not in exported_encodings["conv_b"]
+
+
+def test_statistical_bias_scale_fp16_bias_no_overflow():
+    """
+    Ensure statistical bias scale doesn't overflow in case of fp16 bias
+    """
+    np.random.seed(0)
+    model = standalone_batchnorm((1, 4, 8, 8))
+    sim = QuantizationSimModel(model)
+
+    bias_name = "batchnorm.bias"
+    bias_fp32 = np.array([1.0, 10.0, 100.0, 1000.0], dtype=np.float32)
+    fp16_ini = onnx.numpy_helper.from_array(
+        bias_fp32.astype(np.float16), name=bias_name
+    )
+
+    bias_present_in_initializer = False
+    for ini in sim.model.model.graph.initializer:
+        if ini.name == bias_name:
+            ini.CopyFrom(fp16_ini)
+            bias_present_in_initializer = True
+            break
+
+    if not bias_present_in_initializer:
+        pytest.fail(f"initializer {bias_name!r} not found")
+
+    bn_op = next(
+        op
+        for op in sim.connected_graph.get_all_ops().values()
+        if op.type == "BatchNormalization"
+    )
+    scale = sim._get_statistical_bias_scale(bn_op)
+
+    floor = sim._get_bias_scale_floor(bias_name)
+    expected = np.maximum(np.abs(bias_fp32.astype(np.float64)) / 2**31, floor).max()
+    assert np.allclose(scale, expected)
+    assert scale > _INT32_MINIMUM_SCALE * 10
+
+
+def test_statistical_bias_scale_fp16_export_dtype_representable():
+    """
+    Regression: when the bias will be exported with an fp16 ``y_scale``, the
+    scale floor must be ``fp16.tiny`` (not ``_INT32_MINIMUM_SCALE``) so that
+    casting the scale to fp16 during export does not underflow to zero and
+    trigger divide-by-zero in ``_quantize_const``.
+    """
+    np.random.seed(0)
+    model = standalone_batchnorm((1, 4, 8, 8))
+    sim = QuantizationSimModel(model)
+
+    bias_name = "batchnorm.bias"
+    # tiny bias values → statistical scale = abs(bias)/2**31 is far below fp16.tiny
+    tiny_bias = np.array([1e-9, 1e-10, 0.0, 1e-12], dtype=np.float32)
+    fp32_ini = onnx.numpy_helper.from_array(tiny_bias, name=bias_name)
+    for ini in sim.model.model.graph.initializer:
+        if ini.name == bias_name:
+            ini.CopyFrom(fp32_ini)
+            break
+    else:
+        pytest.fail(f"initializer {bias_name!r} not found")
+
+    # Simulate fp16 export dtype for this bias
+    sim.activation_dtypes[bias_name] = np.float16
+
+    bn_op = next(
+        op
+        for op in sim.connected_graph.get_all_ops().values()
+        if op.type == "BatchNormalization"
+    )
+    scale = sim._get_statistical_bias_scale(bn_op)
+
+    fp16_tiny = float(np.finfo(np.float16).tiny)
+    assert scale >= fp16_tiny
+    # fp16 cast round-trips without underflow
+    assert np.float16(scale) > np.float16(0.0)
+
+
+def _set_underflowing_scales(
+    sim: QuantizationSimModel, gemm_op: Op
+) -> tuple[QcQuantizeOp, QcQuantizeOp, float]:
+    """Force input_scale * weight_scale < fp16.tiny on ``gemm_op`` so the
+    fp16-export bias-scale underflow guard is exercised."""
+    weight, _ = sim._get_weight_and_bias(gemm_op)
+    input_qtzr: QcQuantizeOp = sim._get_enabled_quantizer(gemm_op.inputs[0].name)
+    weight_qtzr: QcQuantizeOp = sim.qc_quantize_op_dict[weight.name]
+
+    input_enc = input_qtzr.get_encodings()[0]
+    small_input_scale: float = 1e-3
+    input_enc.delta = small_input_scale
+    input_enc.min = input_enc.offset * small_input_scale
+    input_enc.max = input_enc.min + (2**input_qtzr.bitwidth - 1) * small_input_scale
+    input_qtzr.load_encodings([input_enc])
+
+    weight_encs = weight_qtzr.get_encodings()
+    tiny_weight_scale: float = 1e-8
+    for enc in weight_encs:
+        enc.delta = tiny_weight_scale
+        enc.min = -(2 ** (weight_qtzr.bitwidth - 1)) * tiny_weight_scale
+        enc.max = (2 ** (weight_qtzr.bitwidth - 1) - 1) * tiny_weight_scale
+        enc.offset = -(2 ** (weight_qtzr.bitwidth - 1))
+    weight_qtzr.load_encodings(weight_encs)
+
+    return input_qtzr, weight_qtzr, tiny_weight_scale
+
+
+def test_analytic_bias_underflow_bumps_weight_scale_at_calibration() -> None:
+    """
+    Regression: when the bias will be exported with an fp16 ``y_scale`` and
+    ``input_scale * weight_scale`` underflows ``fp16.tiny``,
+    ``_adjust_weight_scales_against_overflow`` bumps ``weight_scale`` per
+    output channel so the product clears the floor. This preserves the
+    ``bias_scale = input_scale * weight_scale`` fusion invariant and keeps
+    sim and exported QDQ in agreement (the bump is applied to the sim's
+    weight quantizer, not just to the exported encoding).
+    """
+    np.random.seed(0)
+    model = standalone_gemm(in_channels=4, out_channels=4)
+    sim = QuantizationSimModel(model)
+    dummy_input: Dict[str, np.ndarray] = {
+        "input": np.random.randn(1, 4).astype(np.float32)
+    }
+    sim.compute_encodings([dummy_input])
+
+    gemm_op: Op = next(
+        op for op in sim.connected_graph.get_all_ops().values() if op.type == "Gemm"
+    )
+    _, bias = sim._get_weight_and_bias(gemm_op)
+    input_qtzr, weight_qtzr, tiny_weight_scale = _set_underflowing_scales(sim, gemm_op)
+    sim.activation_dtypes[bias.name] = np.float16
+    fp16_tiny: float = float(np.finfo(np.float16).tiny)
+
+    sim._adjust_weight_scales_against_overflow()
+
+    post_input_scale: np.ndarray = input_qtzr._get_scale()
+    post_weight_scale: np.ndarray = weight_qtzr._get_scale()
+    assert np.all(post_weight_scale >= tiny_weight_scale)
+    # Fusion invariant preserved: bias_scale = input_scale * weight_scale
+    post_bias_scale: np.ndarray = post_input_scale * post_weight_scale
+    assert np.all(post_bias_scale >= fp16_tiny)
+    assert np.all(post_bias_scale.astype(np.float16) > np.float16(0.0))
+
+
+def test_adjust_weight_scales_skips_fp16_floor_when_bias_is_fp32() -> None:
+    """
+    ``_adjust_weight_scales_against_overflow`` stage 4 is a no-op when the
+    bias exports at fp32 (or any dtype whose ``tiny`` is smaller than
+    ``_INT32_MINIMUM_SCALE``). Stages 1-3 may still adjust weight_scale for
+    their own reasons, but stage 4 must NOT push it further to satisfy the
+    fp16 floor.
+
+    Test strategy: run the guard once with the bias tagged fp16 and once
+    with it tagged fp32. The fp16 run should end at ``sx * sw >= fp16.tiny``;
+    the fp32 run should end below the floor (stage 4 skipped).
+    """
+    np.random.seed(0)
+    fp16_tiny: float = float(np.finfo(np.float16).tiny)
+
+    def _run(bias_dtype: np.dtype) -> np.ndarray:
+        model = standalone_gemm(in_channels=4, out_channels=4)
+        sim = QuantizationSimModel(model)
+        dummy_input: Dict[str, np.ndarray] = {
+            "input": np.random.randn(1, 4).astype(np.float32)
+        }
+        sim.compute_encodings([dummy_input])
+        gemm_op: Op = next(
+            op for op in sim.connected_graph.get_all_ops().values() if op.type == "Gemm"
+        )
+        _, bias = sim._get_weight_and_bias(gemm_op)
+        input_qtzr, weight_qtzr, _ = _set_underflowing_scales(sim, gemm_op)
+        sim.activation_dtypes[bias.name] = bias_dtype
+        sim._adjust_weight_scales_against_overflow()
+        return input_qtzr._get_scale() * weight_qtzr._get_scale()
+
+    # fp32 bias: stage 4 skipped, so bias_scale stays below fp16.tiny.
+    assert np.all(_run(np.float32) < fp16_tiny)
+    # fp16 bias: stage 4 fires and lifts bias_scale to >= fp16.tiny.
+    assert np.all(_run(np.float16) >= fp16_tiny)
+
+
+def test_analytic_bias_underflow_raises_when_input_scale_underflows() -> None:
+    """
+    When input_scale itself is below fp16.tiny, no weight_scale bump can
+    produce a bias_scale that survives fp16 export. Stage 4 (in
+    ``_adjust_weight_scales_against_overflow``) silently skips this case
+    to avoid disrupting non-export flows, but ``_concretize_int32_bias_quantizers``
+    must raise instead of silently emitting a broken graph.
+    """
+    np.random.seed(0)
+    model = standalone_gemm(in_channels=4, out_channels=4)
+    sim = QuantizationSimModel(model)
+    dummy_input: Dict[str, np.ndarray] = {
+        "input": np.random.randn(1, 4).astype(np.float32)
+    }
+    sim.compute_encodings([dummy_input])
+
+    gemm_op: Op = next(
+        op for op in sim.connected_graph.get_all_ops().values() if op.type == "Gemm"
+    )
+    _, bias = sim._get_weight_and_bias(gemm_op)
+    input_qtzr: QcQuantizeOp = sim._get_enabled_quantizer(gemm_op.inputs[0].name)
+
+    input_enc = input_qtzr.get_encodings()[0]
+    tiny_input_scale: float = 1e-12  # below np.finfo(np.float16).tiny (~6.1e-5)
+    input_enc.delta = tiny_input_scale
+    input_enc.min = input_enc.offset * tiny_input_scale
+    input_enc.max = input_enc.min + (2**input_qtzr.bitwidth - 1) * tiny_input_scale
+    input_qtzr.load_encodings([input_enc])
+
+    sim.activation_dtypes[bias.name] = np.float16
+
+    with pytest.raises(RuntimeError, match="input_scale"):
+        with sim._concretize_int32_bias_quantizers():
+            pass
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Exporting fp32 y_scale for a Q/DQ pair whose tensor is fp16 requires "
+        "ONNX opset 23 Q/DQ kernels. As of ORT 1.23.2 the CPUExecutionProvider "
+        "has no opset-23 Q/DQ kernels, so the exported model fails to load. "
+        "When ORT ships those kernels (and the HTP converter accepts them), "
+        "export can drop the fp16 y_scale path entirely and this test should "
+        "start passing — remove ``_get_bias_scale_floor`` and this xfail."
+    ),
+)
+def test_fp16_bias_export_uses_fp32_scale():
+    """Sentinel for the "always export fp32 bias scales" migration.
+
+    Builds a Gemm with fp16-tagged bias and asserts the exported ``y_scale`` is
+    fp32 (not fp16). Fails today because we still emit fp16 y_scales in the
+    fp16 export path — the floor logic in ``_get_bias_scale_floor`` is the
+    workaround. When we can drop that workaround, this test flips green.
+    """
+    np.random.seed(0)
+    model = standalone_gemm(in_channels=4, out_channels=4)
+    sim = QuantizationSimModel(model)
+    dummy_input = {"input": np.random.randn(1, 4).astype(np.float32)}
+    sim.compute_encodings([dummy_input])
+
+    gemm_op = next(
+        op for op in sim.connected_graph.get_all_ops().values() if op.type == "Gemm"
+    )
+    _, bias = sim._get_weight_and_bias(gemm_op)
+    sim.activation_dtypes[bias.name] = np.float16
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sim.export(tmp, "model", export_int32_bias=True, encoding_version="2.0.0")
+        with open(os.path.join(tmp, "model.encodings")) as f:
+            encodings = json.load(f)
+
+    bias_enc = next(enc for enc in encodings["encodings"] if enc["name"] == bias.name)
+    exported_scale_dtype = np.array(bias_enc["y_scale"]).dtype
+    assert exported_scale_dtype == np.float32, (
+        f"expected fp32 bias y_scale for fp16-tagged bias, got {exported_scale_dtype}"
+    )
 
 
 def _parse_type(type_str: str) -> tuple[str, int]:
