@@ -1280,6 +1280,7 @@ class TestQcQuantizeOp:
     @pytest.mark.parametrize("contiguous", (True, False))
     @pytest.mark.parametrize("np_dtype, tp_dtype", HALF_FLOAT_DTYPES)
     def test_quantize_dequantize_half_float_model(self, contiguous, np_dtype, tp_dtype):
+        np.random.seed(0)
         tensor_quantizer_params = TensorQuantizerParams((10, 15), 0, 1)
         calibration_tensor = np.random.randn(10, 15).astype(np_dtype)
         input_tensor = (np.random.randn(*calibration_tensor.shape) * 10).astype(
