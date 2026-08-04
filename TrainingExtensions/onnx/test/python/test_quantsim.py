@@ -2533,6 +2533,51 @@ class TestQuantSim:
             assert quantizer.data_type == QuantizationDataType.float
             assert quantizer.bitwidth == 16
 
+    @pytest.mark.parametrize(
+        "model_factory",
+        [
+            models_for_tests.model_with_exceptional_ops,
+            lambda: models_for_tests.build_dummy_model(),
+            lambda: models_for_tests.single_residual_model().model,
+            lambda: models_for_tests.transposed_conv_model().model,
+            lambda: models_for_tests.instance_norm_model().model,
+            lambda: models_for_tests.layernorm_model(),
+            lambda: models_for_tests.dynamic_matmul_model(1),
+            lambda: models_for_tests.matmul_with_constant_first_input(),
+            lambda: test_models.rmsnorm_model(dim=32),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "param_type, activation_type",
+        [
+            ("int4", "int16"),
+            ("int8", "int16"),
+            ("int8", "int8"),
+            ("int4", "float16"),
+        ],
+    )
+    @pytest.mark.parametrize("config_file", [None, "htp_v68", "htp_v81"])
+    def test_quantsim_exception_rules_idempotency(
+        self, model_factory, param_type, activation_type, config_file
+    ):
+        model = model_factory()
+        sim_1 = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type=param_type,
+            activation_type=activation_type,
+            config_file=config_file,
+        )
+        sim_2 = QuantizationSimModel(
+            model,
+            param_type=param_type,
+            activation_type=activation_type,
+            config_file=config_file,
+        )
+        _assert_sim_equal(sim_1, sim_2)
+        # Applying exception rules a second time should not change configuration
+        sim_1._apply_exception_rules()
+        _assert_sim_equal(sim_1, sim_2)
+
     @pytest.mark.cuda
     def test_quantsim_with_bfloat16_internal_values(self, tmp_dir):
         """

@@ -43,6 +43,23 @@ class TestLiteMp:
 
         sim.compute_encodings(inputs=[make_dummy_input(model)])
 
+    def test_flip_to_int16_applies_layernorm_exception_rule(self):
+        model = models_for_tests.standalone_layernorm(input_shape=(1, 8, 32))
+        sim = QuantizationSimModel(
+            model, param_type=int8, activation_type=int8, config_file="htp_v81"
+        )
+        assert not sim.qc_quantize_op_dict["scale"].use_symmetric_encodings
+
+        layer_sensitivity_dict = {
+            layer_name: 0.0 for layer_name in sim.connected_graph.get_all_ops()
+        }
+        flip_layers_to_higher_precision(
+            sim, layer_sensitivity_dict, percent_to_flip=100, override_precision=int16
+        )
+
+        # After flipping, int16 exception rule should force scale to symmetric
+        assert sim.qc_quantize_op_dict["scale"].use_symmetric_encodings
+
     @pytest.mark.parametrize("percent_flip", [30.5, 50, 80])
     def test_flip_to_int16(self, percent_flip):
         model = models_for_tests.single_residual_model().model

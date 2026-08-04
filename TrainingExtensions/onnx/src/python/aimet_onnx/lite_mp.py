@@ -57,3 +57,5 @@ def flip_layers_to_higher_precision(
                 q.set_bitwidth(16)
             else:
                 q.enabled = False
+
+    sim._apply_exception_rules()  # pylint: disable=protected-access
