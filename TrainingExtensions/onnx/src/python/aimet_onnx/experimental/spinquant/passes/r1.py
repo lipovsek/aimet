@@ -32,11 +32,11 @@ from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto, ParamUtils
 
-from aimet_onnx.experimental.block_topology.role_map import (
-    DecoderBlockRoleMap,
-    DecoderModelRoleMap,
+from aimet_onnx.experimental.llm_topology.topology import (
+    BlockTopology,
+    LlmTopology,
 )
-from aimet_onnx.experimental.block_topology.weight_utils import get_weight_product
+from aimet_onnx.experimental.llm_topology.weight_utils import get_weight_product
 from aimet_onnx.experimental.spinquant.model_analysis import (
     find_post_writing_norms,
 )
@@ -66,7 +66,7 @@ class R1RotationPass(RotationPass):
         """Verify R1 architectural pre-conditions and that all weights exist with the right shape."""
         _validate_backbone_weights(
             ctx.backbone_model,
-            ctx.backbone_role_map,
+            ctx.backbone_topology,
             ctx.backbone_hidden_size,
         )
         if ctx.visual_model is not None:
@@ -89,7 +89,7 @@ class R1RotationPass(RotationPass):
             "Backbone: Applying R1 Hadamard rotation with backbone_hidden_size=%d.",
             ctx.backbone_hidden_size,
         )
-        _rotate_backbone(ctx.backbone_model, ctx.backbone_role_map, R1)
+        _rotate_backbone(ctx.backbone_model, ctx.backbone_topology, R1)
 
         if ctx.embedding is not None:
             _rotate_external_embedding(ctx.embedding, R1)
@@ -103,9 +103,7 @@ class R1RotationPass(RotationPass):
             _rotate_merger_linear2(ctx.visual_model, ctx.visual_merger_linear2, R1)
 
 
-def _rotate_backbone(
-    model: ModelProto, role_map: DecoderModelRoleMap, R1: np.ndarray
-) -> None:
+def _rotate_backbone(model: ModelProto, role_map: LlmTopology, R1: np.ndarray) -> None:
     """Rotate every weight in ``role_map`` with R1 in-place."""
     for op in role_map.embed_tokens:
         rotate_gather_weight(model, op, R1)
@@ -119,18 +117,18 @@ def _rotate_backbone(
 
     for block_idx, block in enumerate(role_map.blocks):
         _logger.debug("Applying R1 to block %d.", block_idx)
-        for op in block.qkv_linears:
+        for op in block.qkv.ops:
             rotate_linear_weight(model, op, R1, is_writing=False)
         for op in block.o_proj:
             rotate_linear_weight(model, op, R1, is_writing=True)
-        for op in block.gate_up_linears:
+        for op in block.gate_up.ops:
             rotate_linear_weight(model, op, R1, is_writing=False)
         for op in block.down_proj:
             rotate_linear_weight(model, op, R1, is_writing=True)
 
 
 def _insert_final_hadamard_rotation(
-    model: ModelProto, role_map: DecoderModelRoleMap, R1: np.ndarray
+    model: ModelProto, role_map: LlmTopology, R1: np.ndarray
 ) -> None:
     """Splice an online Hadamard onto the last residual add to un-rotate the stream.
 
@@ -154,7 +152,7 @@ def _insert_final_hadamard_rotation(
     )
 
 
-def _find_last_residual_add(block: DecoderBlockRoleMap) -> Op:
+def _find_last_residual_add(block: BlockTopology) -> Op:
     """Return the residual ``Add`` that consumes the last block's down_proj output."""
     residual_adds = set()
     for down_proj in block.down_proj:
@@ -192,7 +190,7 @@ def _rotate_merger_linear2(
 
 
 def _validate_backbone_weights(
-    model: ModelProto, role_map: DecoderModelRoleMap, hidden_size: int
+    model: ModelProto, role_map: LlmTopology, hidden_size: int
 ) -> None:
     """Verify R1 architectural compatibility and that every weight in ``role_map``
     exists with the correct shape.
@@ -235,9 +233,9 @@ def _validate_backbone_weights(
 
     linear_ops_with_role = [(op, False) for op in role_map.lm_head]
     for block in role_map.blocks:
-        linear_ops_with_role += [(op, False) for op in block.qkv_linears]
+        linear_ops_with_role += [(op, False) for op in block.qkv.ops]
         linear_ops_with_role += [(op, True) for op in block.o_proj]
-        linear_ops_with_role += [(op, False) for op in block.gate_up_linears]
+        linear_ops_with_role += [(op, False) for op in block.gate_up.ops]
         linear_ops_with_role += [(op, True) for op in block.down_proj]
 
     for op, is_writing in linear_ops_with_role:

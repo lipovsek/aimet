@@ -28,7 +28,7 @@ from aimet_onnx.utils import (
 )
 from aimet_onnx import ir_utils
 from aimet_onnx.quantsim import QuantizationSimModel
-from aimet_onnx.experimental.block_topology.block_boundaries import (
+from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries,
 )
 

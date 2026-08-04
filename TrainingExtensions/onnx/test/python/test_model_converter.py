@@ -19,7 +19,7 @@ import numpy as np
 from dataclasses import dataclass
 import copy
 from aimet_onnx.common.utils import compute_psnr
-from aimet_onnx.experimental.block_topology.block_boundaries import (
+from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries,
 )
 from aimet_onnx.common.utils import AimetLogger

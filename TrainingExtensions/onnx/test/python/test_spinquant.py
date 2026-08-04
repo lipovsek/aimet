@@ -27,24 +27,25 @@ from aimet_onnx.graph_passes.fusions import fuse_supergroups
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import ParamUtils, make_dummy_input
 
-from aimet_onnx.experimental.block_topology.block_boundaries import (
+from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries,
 )
-from aimet_onnx.experimental.block_topology.role_map import (
-    DecoderBlockRoleMap,
-    DecoderModelRoleMap,
-    get_decoder_role_map,
+from aimet_onnx.experimental.llm_topology.layer_roles import LinearRole
+from aimet_onnx.experimental.llm_topology.topology import (
+    BlockTopology,
+    LlmTopology,
+    get_llm_topology,
 )
-from aimet_onnx.experimental.block_topology.block_boundaries import (
+from aimet_onnx.experimental.llm_topology.block_boundaries import (
     tensor_to_first_consumer_index,
 )
-from aimet_onnx.experimental.block_topology.norm_detection import (
+from aimet_onnx.experimental.llm_topology.norm_detection import (
     ActiveNorm,
     find_active_norms,
     get_last_norm_op,
     _find_norm_scale_and_consumers,
 )
-from aimet_onnx.experimental.block_topology.weight_utils import (
+from aimet_onnx.experimental.llm_topology.weight_utils import (
     get_bias_product as _get_bias_product,
     get_weight_product as _get_weight_product,
     infer_head_dim as _infer_head_dim,
@@ -70,7 +71,6 @@ from aimet_onnx.experimental.spinquant.transforms.rotation_primitives import (
 )
 from aimet_onnx.experimental.spinquant import apply_spinquant
 from aimet_onnx.experimental.spinquant import is_online_rotation_op
-from aimet_onnx.experimental.spinquant.model_analysis import find_attention_topology
 
 from aimet_onnx.prepare_passes.fix_node_names_in_dynamo_exported_onnx import (
     fix_node_names_pass,
@@ -221,7 +221,7 @@ def _verify_fusion(model: onnx.ModelProto, pre_state: dict):
             )
 
 
-def _collect_all_weights(model: onnx.ModelProto, role_map: DecoderModelRoleMap) -> dict:
+def _collect_all_weights(model: onnx.ModelProto, role_map: LlmTopology) -> dict:
     weights = {}
 
     def _store_linear(op):
@@ -249,9 +249,7 @@ def _collect_all_weights(model: onnx.ModelProto, role_map: DecoderModelRoleMap) 
     for op in role_map.lm_head:
         _store_linear(op)
     for block in role_map.blocks:
-        for op in (
-            block.qkv_linears + block.o_proj + block.gate_up_linears + block.down_proj
-        ):
+        for op in block.qkv.ops + block.o_proj + block.gate_up.ops + block.down_proj:
             _store_linear(op)
     return weights
 
@@ -1109,7 +1107,7 @@ class TestBlockIdentifier:
 
 
 class TestDecoderRoleMap:
-    """Tests for get_decoder_role_map.
+    """Tests for get_llm_topology.
 
     Each test parametrizes ``fuse_rmsnorm``: False keeps the decomposed RMSNorm pattern
     (ReduceMean / Sqrt / Mul chain), True coalesces it into a single ``RMSNormalization``
@@ -1129,29 +1127,29 @@ class TestDecoderRoleMap:
             model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
         blocks = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks)
+        role_map = get_llm_topology(cg, blocks)
 
         assert len(role_map.blocks) == 2
         assert len(role_map.lm_head) == 1
         assert len(role_map.embed_tokens) == 1
         for block in role_map.blocks:
-            assert len(block.qkv_linears) == 3
+            assert len(block.qkv.ops) == 3
             assert len(block.o_proj) == 1
-            assert len(block.gate_up_linears) == 2
+            assert len(block.gate_up.ops) == 2
             assert len(block.down_proj) == 1
 
     @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
     def test_qwen3_qkv_count(self, fuse_rmsnorm):
-        """Qwen3 q_norm/k_norm are internal; qkv_linears still has 3 (q_proj, k_proj, v)."""
+        """Qwen3 q_norm/k_norm are internal; qkv group still has 3 (q_proj, k_proj, v)."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(Qwen3StyleDecoder())
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
         blocks = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks)
+        role_map = get_llm_topology(cg, blocks)
         for block in role_map.blocks:
-            assert len(block.qkv_linears) == 3
+            assert len(block.qkv.ops) == 3
 
     @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
     def test_missing_embed_tokens_warns(self, fuse_rmsnorm):
@@ -1177,7 +1175,7 @@ class TestDecoderRoleMap:
         cg = ConnectedGraph(model)
         blocks = get_decoder_block_boundaries(model, cg)
         # Must not raise — VLM backbones exported with use_inputs_embeds=True have no Gather.
-        role_map = get_decoder_role_map(cg, blocks)
+        role_map = get_llm_topology(cg, blocks)
         assert role_map.embed_tokens == []
 
     @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
@@ -1230,7 +1228,7 @@ class TestDecoderRoleMap:
             model = _fuse_rms_norms(model)
         cg = ConnectedGraph(model)
         blocks = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks)
+        role_map = get_llm_topology(cg, blocks)
 
         # Exactly one embed_tokens — the [vocab, hidden] embedding, not the 1-D Gather.
         assert len(role_map.embed_tokens) == 1
@@ -1247,7 +1245,7 @@ class TestDecoderRoleMap:
         cg = ConnectedGraph(model)
         blocks = get_decoder_block_boundaries(model, cg)
         with pytest.raises(ValueError):
-            get_decoder_role_map(cg, blocks, active_norms_per_block=3)
+            get_llm_topology(cg, blocks, active_norms_per_block=3)
 
     @pytest.mark.skip_on_windows_amd64("Fails with OSError, no space left on device")
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
@@ -1272,15 +1270,15 @@ class TestDecoderRoleMap:
             cg = collection.backbone.connected_graph
 
             blocks = get_decoder_block_boundaries(onnx_model, cg)
-            role_map = get_decoder_role_map(cg, blocks)
+            role_map = get_llm_topology(cg, blocks)
 
             assert len(role_map.blocks) == 2
             assert len(role_map.lm_head) == 1
             assert len(role_map.embed_tokens) == 1
             for block in role_map.blocks:
-                assert len(block.qkv_linears) == 3
+                assert len(block.qkv.ops) == 3
                 assert len(block.o_proj) == 1
-                assert len(block.gate_up_linears) == 2
+                assert len(block.gate_up.ops) == 2
                 assert len(block.down_proj) == 1
         finally:
             shutil.rmtree(cache_dir, ignore_errors=True)
@@ -1341,7 +1339,7 @@ class TestApplyR1Rotation:
 
         blocks = get_decoder_block_boundaries(model, cg)
         active_norms = find_active_norms(model, cg)
-        role_map = get_decoder_role_map(cg, blocks)
+        role_map = get_llm_topology(cg, blocks)
 
         """
         When: fuse_norm_layers_into_linears is applied
@@ -1379,7 +1377,7 @@ class TestApplyR1Rotation:
 
         blocks = get_decoder_block_boundaries(model, cg)
         active_norms = find_active_norms(model, cg)
-        role_map = get_decoder_role_map(cg, blocks)
+        role_map = get_llm_topology(cg, blocks)
         fuse_norm_layers_into_linears(model, active_norms)
         weights_original = _collect_all_weights(model, role_map)
 
@@ -1533,36 +1531,80 @@ _R2_DECODER_PARAMS = [
 class TestApplyR2Rotation:
     """Tests for R2RotationPass."""
 
-    def test_find_attention_topology_returns_v(self):
-        """Topology helper must identify the V projection (not Q or K)."""
+    def test_topology_splits_v_projection(self):
+        """Topology must identify the V projection (not Q or K) per block."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
         cg = ConnectedGraph(model)
         blocks = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks)
+        topology = get_llm_topology(cg, blocks)
 
-        topology = find_attention_topology(role_map)
-
-        assert len(topology) == len(role_map.blocks)
-        for t in topology:
-            assert len(t.v_ops) == 1
-            assert "/v/" in t.v_ops[0].name
+        for block in topology.blocks:
+            assert len(block.v_proj) == 1
+            assert "/v/" in block.v_proj[0].name
+            # V must be split out of the coarse qkv read group, not duplicated.
+            assert block.v_proj[0] in block.qkv.ops
 
     def test_infer_head_dim_from_past_value_input(self):
         """``infer_head_dim`` must read head_dim from the attached past_value_0 input."""
         model = _export_decoder_with_ids(LlamaStyleDecoder())
         assert _infer_head_dim(model) == _HEAD_DIM
 
-    def test_find_attention_topology_rejects_fused_qkv(self):
-        """Phi3-style fused QKV must be rejected with a clear error."""
+    def test_topology_detects_fused_qkv(self):
+        """Phi3-style fused QKV must classify as FUSED_QKV with no V split.
+
+        R2 relies on this: a block with no ``v_proj`` (fused QKV) is rejected by
+        ``R2RotationPass.validate`` because there is no per-head V path to rotate.
+        """
         torch.manual_seed(0)
         model = _export_decoder_with_ids(Phi3StyleDecoder())
         cg = ConnectedGraph(model)
         blocks = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks)
+        topology = get_llm_topology(cg, blocks)
 
-        with pytest.raises(ValueError, match="R2 rotation"):
-            find_attention_topology(role_map)
+        for block in topology.blocks:
+            assert not block.v_proj
+            assert block.qkv.role(LinearRole.FUSED_QKV)
+
+    def test_topology_splits_all_qkv_roles(self):
+        """Unfused attention must split into distinct q/k/v ops within the qkv group."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks = get_decoder_block_boundaries(model, cg)
+        topology = get_llm_topology(cg, blocks)
+
+        for block in topology.blocks:
+            assert len(block.q_proj) == 1
+            assert len(block.k_proj) == 1
+            assert len(block.v_proj) == 1
+            assert not block.qkv.role(LinearRole.FUSED_QKV)
+            assert "/q/" in block.q_proj[0].name
+            assert "/k/" in block.k_proj[0].name
+            assert "/v/" in block.v_proj[0].name
+            # The three splits together are exactly the coarse qkv read group.
+            split = block.q_proj + block.k_proj + block.v_proj
+            assert {id(op) for op in split} == {id(op) for op in block.qkv.ops}
+
+    def test_topology_identifies_dynamic_attention_matmuls(self):
+        """Each block must expose the two dynamic (non-weighted) attention MatMuls."""
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        cg = ConnectedGraph(model)
+        blocks = get_decoder_block_boundaries(model, cg)
+        topology = get_llm_topology(cg, blocks)
+
+        for block in topology.blocks:
+            assert block.qk_matmul
+            assert block.attn_v_matmul
+            # Dynamic MatMuls carry no static weight (both inputs are activations)
+            # and Q·Kᵀ is distinct from softmax·V.
+            for m in block.qk_matmul + block.attn_v_matmul:
+                assert m.type == "MatMul"
+                assert _get_weight_product(m)[0] is None
+            qk_ids = {id(m) for m in block.qk_matmul}
+            av_ids = {id(m) for m in block.attn_v_matmul}
+            assert qk_ids.isdisjoint(av_ids)
 
     @pytest.mark.parametrize("decoder_cls", _R2_DECODER_PARAMS)
     def test_r2_alone_preserves_output(self, decoder_cls):
@@ -1889,11 +1931,11 @@ class TestApplyR3Rotation:
             ``past_key_input_name == "past_key_{i}"``, its ``k_concat_node`` is a
             Concat, and its ``qk_matmul_node`` is a MatMul.
         """
-        from aimet_onnx.experimental.block_topology.block_boundaries import (
+        from aimet_onnx.experimental.llm_topology.block_boundaries import (
             get_decoder_block_boundaries,
         )
-        from aimet_onnx.experimental.block_topology.role_map import (
-            get_decoder_role_map,
+        from aimet_onnx.experimental.llm_topology.topology import (
+            get_llm_topology,
         )
         from aimet_onnx.experimental.spinquant.model_analysis import (
             find_r3_anchors,
@@ -1905,7 +1947,7 @@ class TestApplyR3Rotation:
 
         cg = ConnectedGraph(model)
         blocks = get_decoder_block_boundaries(model, cg)
-        role_map = get_decoder_role_map(cg, blocks)
+        role_map = get_llm_topology(cg, blocks)
         anchors = find_r3_anchors(role_map, model)
 
         # Pass: exactly one anchor per block, each pinned to that block's
@@ -2051,7 +2093,7 @@ def _export_qwen3_causal_lm_with_kv_cache(
     Wraps a genuine ``Qwen3DecoderLayer`` stack with the prologue/epilogue that
     ``apply_spinquant`` needs to run end-to-end: a ``Gather`` embed_tokens, a
     final ``RMSNorm``, and an ``lm_head`` MatMul. With those present,
-    ``get_decoder_block_boundaries`` / ``get_decoder_role_map`` detect 2 blocks,
+    ``get_decoder_block_boundaries`` / ``get_llm_topology`` detect 2 blocks,
     and the export still emits the genuine ``past_key_<i> -> Concat -> QK^T``
     topology ``find_r3_anchors`` pins on — so the top-level ``apply_spinquant``
     R3 path can be exercised against a real attention graph rather than the

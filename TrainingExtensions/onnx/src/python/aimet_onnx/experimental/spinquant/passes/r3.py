@@ -35,7 +35,7 @@ Limitations (this iteration):
   (Transpose / Reshape / Cast / Identity).
 * Prefill-only exports without KV-cache inputs are not supported.
 
-Note on graph staleness: inserting nodes invalidates ``ctx.backbone_role_map``.
+Note on graph staleness: inserting nodes invalidates ``ctx.backbone_topology``.
 R3 is the last pass in the pipeline. Do not run another role-map-dependent pass
 after R3 in the same context.
 """
@@ -166,6 +166,6 @@ def _get_or_build_anchor_cache(ctx: SpinquantContext) -> List[BlockR3Anchors]:
     cached = getattr(ctx, _ANCHOR_CACHE_KEY, None)
     if cached is not None:
         return cached
-    anchors = find_r3_anchors(ctx.backbone_role_map, ctx.backbone_model)
+    anchors = find_r3_anchors(ctx.backbone_topology, ctx.backbone_model)
     object.__setattr__(ctx, _ANCHOR_CACHE_KEY, anchors)
     return anchors

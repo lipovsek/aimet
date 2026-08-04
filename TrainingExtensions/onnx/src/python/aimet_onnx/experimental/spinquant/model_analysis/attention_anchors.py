@@ -40,8 +40,8 @@ from aimet_onnx.common.onnx._utils import (
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.utils import ModelProto
 
-from aimet_onnx.experimental.block_topology.role_map import (
-    DecoderModelRoleMap,
+from aimet_onnx.experimental.llm_topology.topology import (
+    LlmTopology,
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
@@ -109,9 +109,7 @@ class BlockR3Anchors:
     q_input_tensors: list[str]
 
 
-def find_r3_anchors(
-    role_map: DecoderModelRoleMap, model: ModelProto
-) -> List[BlockR3Anchors]:
+def find_r3_anchors(role_map: LlmTopology, model: ModelProto) -> List[BlockR3Anchors]:
     """Return per-block R3 anchors, pinned by ``past_key_*`` graph inputs.
 
     The number of past_key inputs in the model must equal the number of

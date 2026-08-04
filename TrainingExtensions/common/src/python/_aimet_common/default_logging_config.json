@@ -132,7 +132,7 @@
             "propagate": false
         },
 
-        "BlockTopology": {
+        "LlmTopology": {
             "level": "INFO",
             "handlers": ["console"],
             "propagate": false

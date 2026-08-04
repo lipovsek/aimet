@@ -13,7 +13,7 @@ from typing import List
 
 from aimet_onnx.utils import ModelProto
 
-from aimet_onnx.experimental.block_topology.norm_detection import (
+from aimet_onnx.experimental.llm_topology.norm_detection import (
     _find_norm_scale_and_consumers,
 )
 
@@ -26,7 +26,7 @@ def find_post_writing_norms(model: ModelProto, role_map) -> List[str]:
     affine RMSNorm in between.
 
     :param model: ONNX ModelProto.
-    :param role_map: DecoderModelRoleMap.
+    :param role_map: LlmTopology.
     :return: List of norm op names for detected post-writing norms.
     """
     found = []

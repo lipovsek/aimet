@@ -16,16 +16,8 @@ import torch
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 
-from aimet_onnx.experimental.block_topology.block_boundaries import (
-    get_decoder_block_boundaries,
-)
-from aimet_onnx.experimental.block_topology.role_map import (
-    get_decoder_role_map,
-)
-from aimet_onnx.experimental.block_topology.norm_detection import find_active_norms
-from aimet_onnx.experimental.block_topology.weight_utils import (
-    infer_head_dim,
-    infer_hidden_size,
+from aimet_onnx.experimental.llm_topology.topology import (
+    analyze_llm_topology,
 )
 from aimet_onnx.experimental.spinquant.model_analysis import (
     find_merger_linear2,
@@ -134,39 +126,31 @@ def _build_context(
     embedding: Optional[torch.Tensor],
 ) -> SpinquantContext:
     """Run model analysis once and build the context shared across passes."""
-    bb_cg = ConnectedGraph(model)
-    boundaries = get_decoder_block_boundaries(model, bb_cg)
-    active_norms = find_active_norms(model, bb_cg)
-    role_map = get_decoder_role_map(bb_cg, boundaries, active_norms=active_norms)
-    hidden_size = infer_hidden_size(model, role_map)
-
-    # head_dim is only needed by R2; derivation requires a past_value graph
-    # input. Tolerate missing KV-cache inputs here so non-R2 flows still work,
-    # and let R2.validate raise a targeted error when it actually needs the value.
-    try:
-        head_dim = infer_head_dim(model)
-    except ValueError:
-        head_dim = None
+    # analyze_llm_topology derives block boundaries, per-block roles, active
+    # norms, hidden_size, and head_dim in one pass. head_dim is only needed by
+    # R2/R3; it is left None when the export has no KV-cache 'past_value' input,
+    # and those passes raise a targeted error when they actually need it.
+    topology = analyze_llm_topology(model)
 
     visual_merger_linear2 = None
     if visual_model is not None:
         visual_merger_linear2 = find_merger_linear2(ConnectedGraph(visual_model))
 
-    _check_embedding_consistency(role_map, embedding)
+    _check_embedding_consistency(topology, embedding)
 
     return SpinquantContext(
         backbone_model=model,
-        backbone_role_map=role_map,
-        backbone_active_norms=active_norms,
-        backbone_hidden_size=hidden_size,
-        backbone_head_dim=head_dim,
+        backbone_topology=topology,
+        backbone_active_norms=topology.active_norms,
+        backbone_hidden_size=topology.hidden_size,
+        backbone_head_dim=topology.head_dim,
         visual_model=visual_model,
         visual_merger_linear2=visual_merger_linear2,
         embedding=embedding,
     )
 
 
-def _check_embedding_consistency(role_map, embedding: Optional[torch.Tensor]) -> None:
+def _check_embedding_consistency(topology, embedding: Optional[torch.Tensor]) -> None:
     """Reject inconsistent (embedding, embed_tokens) combinations.
 
     A backbone exported with ``use_inputs_embeds=True`` has no Gather op for
@@ -174,13 +158,13 @@ def _check_embedding_consistency(role_map, embedding: Optional[torch.Tensor]) ->
     gets rotated alongside the backbone. Conversely, a backbone with embed_tokens
     must NOT receive an external embedding (it would be rotated twice).
     """
-    if embedding is not None and role_map.embed_tokens:
+    if embedding is not None and topology.embed_tokens:
         raise ValueError(
             "embedding was provided but backbone contains embed_tokens op(s). "
             "Pass embedding only for VLM backbones exported with use_inputs_embeds=True "
             "(i.e. backbone has no Gather op for token embeddings)."
         )
-    if embedding is None and not role_map.embed_tokens:
+    if embedding is None and not topology.embed_tokens:
         raise ValueError(
             "Backbone has no embed_tokens op but no external embedding was provided. "
             "Pass embedding=torch.load('embedding.pth') for VLM backbones exported with "

@@ -18,11 +18,11 @@ from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto
 
-from aimet_onnx.experimental.block_topology.weight_utils import (
+from aimet_onnx.experimental.llm_topology.weight_utils import (
     get_weight_product,
 )
 
-_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.BlockTopology)
+_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 
 
 # Op types that only reshape/reformat activations without changing the

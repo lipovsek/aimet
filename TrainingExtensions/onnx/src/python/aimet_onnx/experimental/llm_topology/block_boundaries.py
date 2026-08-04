@@ -19,12 +19,12 @@ from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto
 
-from aimet_onnx.experimental.block_topology.norm_detection import (
+from aimet_onnx.experimental.llm_topology.norm_detection import (
     find_active_norms,
     get_last_norm_op,
 )
 
-_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.BlockTopology)
+_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 
 
 def get_decoder_block_boundaries(

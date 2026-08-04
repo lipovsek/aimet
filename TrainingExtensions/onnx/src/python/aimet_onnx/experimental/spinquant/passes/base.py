@@ -12,10 +12,10 @@ import torch
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto
 
-from aimet_onnx.experimental.block_topology.role_map import (
-    DecoderModelRoleMap,
+from aimet_onnx.experimental.llm_topology.topology import (
+    LlmTopology,
 )
-from aimet_onnx.experimental.block_topology.norm_detection import ActiveNorm
+from aimet_onnx.experimental.llm_topology.norm_detection import ActiveNorm
 
 
 @dataclass
@@ -27,7 +27,7 @@ class SpinquantContext:
     ONNX model via ``backbone_model`` / ``visual_model``.
 
     :param backbone_model: backbone.onnx ModelProto.
-    :param backbone_role_map: Decoder role map for the backbone.
+    :param backbone_topology: LLM topology (blocks + intra-block roles) for the backbone.
     :param backbone_active_norms: Active norms in topological order.
     :param backbone_hidden_size: Hidden dimension of the language backbone residual stream.
     :param backbone_head_dim: Per-head dimension derived from a ``past_value`` graph
@@ -39,7 +39,7 @@ class SpinquantContext:
     """
 
     backbone_model: ModelProto
-    backbone_role_map: DecoderModelRoleMap
+    backbone_topology: LlmTopology
     backbone_active_norms: List[ActiveNorm]
     backbone_hidden_size: int
     backbone_head_dim: Optional[int] = None

@@ -153,7 +153,7 @@ class AimetLogger(metaclass=SingletonType):
         AdaScale = "AdaScale"
         FPTQuant = "FPTQuant"
         SpinQuant = "SpinQuant"
-        BlockTopology = "BlockTopology"
+        LlmTopology = "LlmTopology"
 
     def __init__(self):
         self._logger = logging.getLogger()

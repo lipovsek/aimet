@@ -24,11 +24,9 @@ from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto, ParamUtils
 
-from aimet_onnx.experimental.block_topology.weight_utils import (
+from aimet_onnx.experimental.llm_topology.layer_roles import LinearRole
+from aimet_onnx.experimental.llm_topology.weight_utils import (
     get_weight_product,
-)
-from aimet_onnx.experimental.spinquant.model_analysis import (
-    find_attention_topology,
 )
 from aimet_onnx.experimental.spinquant.passes.base import (
     RotationPass,
@@ -58,9 +56,9 @@ class R2RotationPass(RotationPass):
     def validate(self, ctx: SpinquantContext) -> None:
         """Verify each block has unfused QKV with a clean V/O attention path."""
         head_dim = _require_head_dim(ctx)
-        topologies = _get_or_build_topology_cache(ctx)
-        for topology, block in zip(topologies, ctx.backbone_role_map.blocks):
-            for v_op in topology.v_ops:
+        for block_idx, block in enumerate(ctx.backbone_topology.blocks):
+            _require_v_ops(block, block_idx)
+            for v_op in block.v_proj:
                 _validate_v_op(ctx.backbone_model, v_op, head_dim)
             for o_op in block.o_proj:
                 _validate_o_op(ctx.backbone_model, o_op, head_dim)
@@ -68,16 +66,14 @@ class R2RotationPass(RotationPass):
     def apply(self, ctx: SpinquantContext) -> None:
         """Rotate each block's V output channels and O input channels per head."""
         head_dim = _require_head_dim(ctx)
-        topologies = _get_or_build_topology_cache(ctx)
         R2 = hadamard_rotation_matrix(head_dim)
         _logger.info(
             "Backbone: Applying R2 Hadamard rotation per head (head_dim=%d).", head_dim
         )
 
-        for block_idx, (topology, block) in enumerate(
-            zip(topologies, ctx.backbone_role_map.blocks)
-        ):
-            for v_op in topology.v_ops:
+        for block_idx, block in enumerate(ctx.backbone_topology.blocks):
+            _require_v_ops(block, block_idx)
+            for v_op in block.v_proj:
                 v_axis_size = _get_rotated_axis_size(
                     ctx.backbone_model, v_op, is_writing=True
                 )
@@ -117,17 +113,24 @@ def _require_head_dim(ctx: SpinquantContext) -> int:
     return head_dim
 
 
-_TOPOLOGY_CACHE_KEY = "_r2_topology_cache"
+def _require_v_ops(block, block_idx: int) -> None:
+    """Raise if ``block`` has no V projection (e.g. fused QKV or unusual naming).
 
-
-def _get_or_build_topology_cache(ctx: SpinquantContext):
-    """Compute attention topology once per ctx and cache it on the ctx instance."""
-    cached = getattr(ctx, _TOPOLOGY_CACHE_KEY, None)
-    if cached is not None:
-        return cached
-    topologies = find_attention_topology(ctx.backbone_role_map)
-    object.__setattr__(ctx, _TOPOLOGY_CACHE_KEY, topologies)
-    return topologies
+    R2 rotates the V/O path per head; a block whose ``qkv`` group contains no
+    op classified as V (fused ``qkv_proj``, or a non-standard name the role
+    classifier does not recognize) cannot be rotated.
+    """
+    if not block.v_proj:
+        qkv_names = [op.name for op in block.qkv.ops]
+        reason = (
+            "fused QKV projection (no separable per-head V path)"
+            if block.qkv.role(LinearRole.FUSED_QKV)
+            else "non-standard naming the role classifier does not recognize"
+        )
+        raise ValueError(
+            f"R2 rotation: block {block_idx}: expected at least one V projection "
+            f"in the qkv group, found 0 (qkv={qkv_names}). Cause: {reason}."
+        )
 
 
 def _get_rotated_axis_size(model: ModelProto, op: Op, is_writing: bool) -> int:

@@ -11,7 +11,7 @@ from aimet_onnx.meta.connectedgraph import Product
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto, ParamUtils
 
-_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.BlockTopology)
+_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 
 
 def get_weight_product(op: Op) -> Tuple[Optional[Product], bool]:
@@ -87,7 +87,7 @@ def infer_hidden_size(model: ModelProto, role_map) -> int:
     that have no Gather op: reading-layer weight has hidden on the input axis.
 
     :param model: ONNX ModelProto.
-    :param role_map: DecoderModelRoleMap produced by ``get_decoder_role_map``.
+    :param role_map: LlmTopology produced by ``get_llm_topology``.
     :return: The hidden dimension size.
     """
     for op in role_map.embed_tokens:

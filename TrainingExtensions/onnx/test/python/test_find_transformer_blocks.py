@@ -20,15 +20,16 @@ from transformers import AutoModelForCausalLM
 import transformers.masking_utils as mu
 
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
-from aimet_onnx.experimental.block_topology.block_boundaries import (
+from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries,
 )
-from aimet_onnx.experimental.block_topology.norm_detection import find_active_norms
-from aimet_onnx.experimental.block_topology.block_boundaries import (
+from aimet_onnx.experimental.llm_topology.norm_detection import find_active_norms
+from aimet_onnx.experimental.llm_topology.block_boundaries import (
     tensor_to_first_consumer_index,
 )
-from aimet_onnx.experimental.block_topology.role_map import get_decoder_role_map
-from aimet_onnx.experimental.block_topology.weight_utils import get_weight_product
+from aimet_onnx.experimental.llm_topology.layer_roles import LinearRole
+from aimet_onnx.experimental.llm_topology.topology import get_llm_topology
+from aimet_onnx.experimental.llm_topology.weight_utils import get_weight_product
 from aimet_onnx.utils import ParamUtils
 from onnx import numpy_helper
 from .utils import add_genai_tests_path
@@ -521,14 +522,41 @@ def _assert_role_map(role_map, model, backend, *, expect_embed_tokens=True):
     check_names = backend == "torchscript"
     residual_widths = set()
     for block_idx, block in enumerate(role_map.blocks):
-        assert block.qkv_linears
-        assert block.gate_up_linears
+        assert block.qkv.ops
+        assert block.gate_up.ops
         assert len(block.o_proj) == 1
         assert block.down_proj
 
-        reads = block.qkv_linears + block.gate_up_linears
+        reads = block.qkv.ops + block.gate_up.ops
         writes = block.o_proj + block.down_proj
         assert {id(op) for op in reads}.isdisjoint({id(op) for op in writes})
+
+        # Fine-grained role split must partition each coarse read group by
+        # identity: every classified op comes from its parent group, and the
+        # attention roles do not overlap. (Some exotic reads — e.g. mamba
+        # in_proj_z — may be left unclassified, so this is a subset, not an
+        # exact-cover, check.)
+        qkv_ids = {id(op) for op in block.qkv.ops}
+        gate_up_ids = {id(op) for op in block.gate_up.ops}
+        q_ids = {id(op) for op in block.q_proj}
+        k_ids = {id(op) for op in block.k_proj}
+        v_ids = {id(op) for op in block.v_proj}
+        for split in (
+            block.q_proj,
+            block.k_proj,
+            block.v_proj,
+            block.qkv.role(LinearRole.FUSED_QKV),
+        ):
+            assert {id(op) for op in split} <= qkv_ids
+        for split in (
+            block.gate_proj,
+            block.up_proj,
+            block.gate_up.role(LinearRole.FUSED_GATE_UP),
+        ):
+            assert {id(op) for op in split} <= gate_up_ids
+        assert q_ids.isdisjoint(k_ids)
+        assert q_ids.isdisjoint(v_ids)
+        assert k_ids.isdisjoint(v_ids)
 
         read_sizes = {_residual_axis_size(model, op, writes=False) for op in reads}
         write_sizes = {_residual_axis_size(model, op, writes=True) for op in writes}
@@ -542,8 +570,8 @@ def _assert_role_map(role_map, model, backend, *, expect_embed_tokens=True):
         # Names must match the expected module for each role (torchscript only).
         if check_names:
             for role, ops in (
-                ("qkv", block.qkv_linears),
-                ("gate_up", block.gate_up_linears),
+                ("qkv", block.qkv.ops),
+                ("gate_up", block.gate_up.ops),
                 ("o_proj", block.o_proj),
                 ("down_proj", block.down_proj),
             ):
@@ -702,14 +730,12 @@ def test_get_decoder_blocks_qwen3_5(add_genai_tests_path):
         for i in range(len(blocks) - 1):
             assert blocks[i][1] == blocks[i + 1][0]
 
-        role_map = get_decoder_role_map(
-            connected_graph, blocks, active_norms=active_norms
-        )
+        role_map = get_llm_topology(connected_graph, blocks, active_norms=active_norms)
         assert len(role_map.blocks) == len(blocks)
         for block_idx, block in enumerate(role_map.blocks):
             assert len(block.o_proj) == 1
-            assert block.qkv_linears
-            assert block.gate_up_linears
+            assert block.qkv.ops
+            assert block.gate_up.ops
             assert block.down_proj
         assert len(role_map.embed_tokens) == 1
         assert len(role_map.lm_head) == 1
@@ -757,7 +783,7 @@ class TestDecoderBlockBoundaries:
         blocks, active_norms, cg = _detect_from_config(
             config_attr, backend, detect_kwargs
         )
-        role_map = get_decoder_role_map(
+        role_map = get_llm_topology(
             cg,
             blocks,
             active_norms=active_norms,
@@ -766,8 +792,8 @@ class TestDecoderBlockBoundaries:
         _assert_role_map(role_map, cg.model, backend)
 
     @pytest.mark.parametrize("vlm_key", _VLM_BACKBONE_MODELS)
-    def test_vlm_backbone_role_map(self, vlm_key):
+    def test_vlm_backbone_topology(self, vlm_key):
         """Build and validate the role map on a VLM language backbone."""
         blocks, active_norms, cg = _detect_vlm_backbone(vlm_key, "torchscript", {})
-        role_map = get_decoder_role_map(cg, blocks, active_norms=active_norms)
+        role_map = get_llm_topology(cg, blocks, active_norms=active_norms)
         _assert_role_map(role_map, cg.model, "torchscript", expect_embed_tokens=False)
