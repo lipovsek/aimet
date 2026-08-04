@@ -263,7 +263,9 @@ def _register_ignored_modules() -> None:
     except (ImportError, ModuleNotFoundError):
         pass
 
-    # FFNet (qai-hub-models 0.54+): UpsampleCat under qai_hub_models namespace
+    # FFNet (qai-hub-models 0.54+): UpsampleCat under qai_hub_models namespace.
+    # Catch broadly: importing a qai_hub_models model can raise non-import errors
+    # (e.g. pydantic ValidationError on a bad release) that must not crash the suite (#7516).
     try:
         from qai_hub_models.models._shared.ffnet.external_repos.ffnet.models.ffnet_blocks import (
             UpsampleCat,
@@ -271,10 +273,13 @@ def _register_ignored_modules() -> None:
 
         QuantizationMixin.ignore(UpsampleCat)
         print(f"[QuantSim Torch] Ignoring qai_hub_models FFNet UpsampleCat")
-    except (ImportError, ModuleNotFoundError):
-        pass
+    except Exception as error:  # pylint: disable=broad-except
+        print(
+            f"[QuantSim Torch] Skipping qai_hub_models FFNet UpsampleCat registration: {error}"
+        )
 
-    # MiDaS: Interpolate (upsample-only, no learnable weights)
+    # MiDaS: Interpolate (upsample-only, no learnable weights).
+    # Catch broadly for the same reason as the FFNet import above (#7516).
     try:
         from qai_hub_models.models.midas.external_repos.midas.midas.blocks import (
             Interpolate,
@@ -282,8 +287,8 @@ def _register_ignored_modules() -> None:
 
         QuantizationMixin.ignore(Interpolate)
         print(f"[QuantSim Torch] Ignoring MiDaS Interpolate")
-    except (ImportError, ModuleNotFoundError):
-        pass
+    except Exception as error:  # pylint: disable=broad-except
+        print(f"[QuantSim Torch] Skipping MiDaS Interpolate registration: {error}")
 
     # YOLOv7: Concat from vendored yolov7 source (no learnable weights)
     try:
