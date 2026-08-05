@@ -404,6 +404,9 @@ def test_apply_seq_mse_for_conv(
 ):
     model = single_conv_layer_model()
     providers = ["CUDAExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
+
+    # TODO: Workaround for test relying on np random state, fix test and remove
+    make_dummy_input(model.model)
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,
@@ -1261,6 +1264,9 @@ def test_bq_lpbq_single_layer(
         raise ValueError(f"Unsupported model kind: {model_kind}")
 
     providers = ["CUDAExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
+
+    # TODO: Workaround for test relying on np random state, fix test and remove
+    make_dummy_input(model.model)
     sim = QuantizationSimModel(
         model=copy.deepcopy(model),
         quant_scheme=QuantScheme.post_training_tf,

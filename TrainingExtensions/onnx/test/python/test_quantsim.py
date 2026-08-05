@@ -692,9 +692,9 @@ class TestQuantSim:
     def test_lstm(
         self, tmp_path: pathlib.Path, cls, num_layers: int, bidirectional: bool
     ):
-        ort.set_seed(0)
-        np.random.seed(0)
-        torch.random.manual_seed(0)
+        ort.set_seed(1)
+        np.random.seed(1)
+        torch.random.manual_seed(1)
         seq_len = 3
         batch_size = 5
         input_size = 100

@@ -456,9 +456,6 @@ class QuantizationSimModel:
         self._op_domain = op_domain
         self.providers = providers
 
-        if not dummy_input:
-            dummy_input = make_dummy_input(model.model)
-
         self.qc_quantize_op_dict = {}
         self._quant_scheme = quant_scheme
         self._param_type = param_type
@@ -719,7 +716,7 @@ class QuantizationSimModel:
         valid_ops = list(self.connected_graph.get_all_ops().values())
         return valid_ops
 
-    def _get_activations_to_quantize(self, dummy_input: Dict[str, np.ndarray]):
+    def _get_activations_to_quantize(self, dummy_input: Dict[str, np.ndarray] | None):
         """
         Get the names of activations to quantize
 
@@ -728,6 +725,8 @@ class QuantizationSimModel:
         try:
             self.activation_dtypes = self._infer_activation_dtypes()
         except onnx.shape_inference.InferenceError:
+            if dummy_input is None:
+                dummy_input = make_dummy_input(self.model.model)
             self.activation_dtypes = self._observe_activation_dtypes(dummy_input)
 
         self.input_name_to_nodes = self.model.input_name_to_nodes()
