@@ -7,8 +7,6 @@
 # pylint: disable=wrong-import-order
 from collections import defaultdict
 import contextlib
-import tempfile
-from pathlib import Path
 import os
 from typing import (
     Any,
@@ -26,12 +24,12 @@ from typing import (
     Iterable,
 )
 from functools import wraps
-import itertools
 import json
 import warnings
 import numpy as np
 import onnx
 import onnx_ir
+from onnx_ir.passes.common import ShapeInferencePass
 
 from onnx import helper
 from onnx.numpy_helper import to_array
@@ -104,7 +102,6 @@ from aimet_onnx.quantsim_config.quantsim_config import QuantSimConfigurator
 from aimet_onnx.utils import (
     build_session,
     make_dummy_input,
-    save_model_with_external_weights,
     add_hook_to_get_activation,
     remove_activation_hooks,
     create_ort_session_options_with_aimet_custom_ops,
@@ -817,31 +814,17 @@ class QuantizationSimModel:
         """
         Get the data type for each activation through shape inference
         """
-        with tempfile.TemporaryDirectory(dir=self._path) as tempdir:
-            save_path = os.path.join(tempdir, "inferred_model.onnx")
-            save_model_with_external_weights(
-                self.model.model, save_path, location=Path(save_path).name + ".data"
-            )
-            onnx.shape_inference.infer_shapes_path(save_path)
-            # Do not load the weights for the shape inference model, we only need to access the graph's `value_info`
-            inferred_model = onnx.load(save_path, load_external_data=False)
+        ir_model: onnx_ir.Model = onnx_ir.from_proto(self.model.model)
+        ShapeInferencePass(strict_mode=True, data_prop=False).call(ir_model)
+        value_map = onnx_ir.convenience.create_value_mapping(ir_model.graph)
 
-        activation_dtypes = {}
-        for val_info in itertools.chain(
-            inferred_model.graph.value_info,
-            inferred_model.graph.input,
-            inferred_model.graph.output,
-        ):
-            act_name = val_info.name
-            dtype = onnx.helper.tensor_dtype_to_np_dtype(
-                val_info.type.tensor_type.elem_type
-            )
-            activation_dtypes[act_name] = dtype
+        # ShapeInferencePass catches InferenceError internally, re-raise if failed
+        if any(value.dtype is None for value in value_map.values()):
+            raise onnx.shape_inference.InferenceError()
 
-        for val_info in inferred_model.graph.initializer:
-            act_name = val_info.name
-            dtype = onnx.helper.tensor_dtype_to_np_dtype(val_info.data_type)
-            activation_dtypes[act_name] = dtype
+        activation_dtypes = {
+            act_name: value.dtype.numpy() for act_name, value in value_map.items()
+        }
         return activation_dtypes
 
     def _observe_activation_dtypes(self, dummy_input: Dict[str, np.ndarray]):
