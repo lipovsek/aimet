@@ -102,7 +102,6 @@ jobs:
           "ENABLE_TESTS":"OFF",
           "PIP_INDEX":""
         }]}
-      image-tag: latest
     secrets: inherit
 
   build-aimet-torch-gpu:
@@ -124,7 +123,6 @@ jobs:
           "ENABLE_TESTS":"OFF",
           "PIP_INDEX":""
         }]}
-      image-tag: latest
     secrets: inherit
 
   # ===========================================================================

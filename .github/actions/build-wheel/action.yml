@@ -33,10 +33,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Make uv accessible to all users
-      shell: bash
-      run: sudo cp /root/.local/bin/uv ${VIRTUAL_ENV}/bin/uv
-
     - name: Generate CMAKE_ARGS
       shell: bash
       run: |
@@ -108,7 +104,7 @@ runs:
       run: |
         set -x
         . ${VIRTUAL_ENV}/bin/activate
-        ${VIRTUAL_ENV}/bin/uv pip install wheel
+        uv pip install wheel
         wheel tags --remove --python-tag=py310 --abi-tag=none --platform-tag=any wheelhouse/aimet*.whl
         ls -al wheelhouse/
 

@@ -6,8 +6,6 @@
 # shellcheck disable=SC2034 # various definitions appear unused in this included source.
 # shellcheck source=/dev/null # venv paths are OS-specific
 
-REPO_ROOT=$(git rev-parse --show-toplevel)
-
 COLOR_GREEN='\033[0;32m'
 COLOR_GREY='\033[0;37m'
 COLOR_RED='\033[0;31m'

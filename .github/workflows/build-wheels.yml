@@ -6,9 +6,6 @@ on:
       variants:
         required: true
         type: string
-      image-tag:
-        required: true
-        type: string
       build-windows-wheel:
         required: false
         type: boolean
@@ -27,7 +24,7 @@ jobs:
         with:
           runner-id: ${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
           gpu-request: "0"
-          docker-image: ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}:${{ inputs.image-tag }}
+          docker-image: ${{ matrix.VER_CUDA != '' && format('docker-registry.qualcomm.com/library/nvidia/cuda:{0}-cudnn-devel-ubuntu22.04', matrix.VER_CUDA) || 'docker-registry.qualcomm.com/library/ubuntu:22.04' }}
           kubeconfig: ${{ secrets.KUBECONFIG }}
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
@@ -42,6 +39,12 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          ver-python: ${{ matrix.VER_PYTHON_BUILD || matrix.VER_PYTHON || '3.10' }}
+          ver-torch: ${{ matrix.VER_TORCH }}
+          ver-onnxruntime: ${{ matrix.VER_ONNXRUNTIME }}
+          ver-cuda: ${{ matrix.VER_CUDA }}
       - uses: ./.github/actions/build-wheel
         with:
           id: ${{ matrix.id }}

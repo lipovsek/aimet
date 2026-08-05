@@ -3,20 +3,22 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
+set -eu
+
 # Only run on Linux
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "Skipping Ubuntu deps installation (not on Linux)"
   exit 0
 fi
 
-REPO_ROOT=$(git rev-parse --show-toplevel)
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-. "${REPO_ROOT}/scripts/all/util/common.sh"
+. "${SCRIPT_DIR}/../all/util/common.sh"
 
 set_strict_mode
 
 run_as_root apt-get update
-run_as_root apt-get install -y \
+run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   acl \
   ca-certificates \
   clang \

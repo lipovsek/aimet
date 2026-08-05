@@ -7,12 +7,6 @@ on:
 
   # Run the workflow manually from the Actions tab
   workflow_dispatch:
-    inputs:
-      build_docker_images:
-        description: "Build docker images if set to true"
-        required: false
-        type: boolean
-        default: true
 
   # Call workflow from other workflows
   workflow_call:
@@ -21,11 +15,6 @@ on:
         description: "Branch to run nightly tests on"
         required: true
         type: string
-      build_docker_images:
-        description: "Build docker images if set to true"
-        required: false
-        type: boolean
-        default: true
 
 jobs:
   pre-commit-check:
@@ -39,7 +28,6 @@ jobs:
     needs: pre-commit-check
     outputs:
       ref_name: ${{ steps.set_branch_name.outputs.REF_BRANCH }}
-      build_docker_images: ${{ steps.set_build_docker_images.outputs.BUILD_DOCKER_IMAGES }}
     steps:
       - name: Set input ref_name if provided, otherwise current working ref
         id: set_branch_name
@@ -52,44 +40,6 @@ jobs:
 
           echo "REF_BRANCH=${REF_BRANCH}" >> "$GITHUB_OUTPUT"
           echo "Using ref_name: ${REF_BRANCH} for nightly."
-
-      - name: Set build_docker_images from input or default to true for schedule
-        id: set_build_docker_images
-        run: |
-          if [[ -n "${{ inputs.build_docker_images }}" ]]; then
-            BUILD_DOCKER_IMAGES="${{ inputs.build_docker_images }}"
-          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
-            BUILD_DOCKER_IMAGES="true"
-          else
-            BUILD_DOCKER_IMAGES="false"
-          fi
-
-          echo "BUILD_DOCKER_IMAGES=${BUILD_DOCKER_IMAGES}" >> "$GITHUB_OUTPUT"
-          echo "build_docker_images: ${BUILD_DOCKER_IMAGES}"
-
-  docker-tag:
-    name: Check if 'latest' tag could be used (no build docker images)
-    runs-on: ubuntu-latest
-    needs: set_vars
-    outputs:
-      tag: ${{ steps.tag.outputs.value }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.set_vars.outputs.ref_name }}
-      - name: "Set a docker image tag"
-        id: tag
-        shell: bash
-        run: |
-          set -x
-
-          # Build docker images if specified (defaults to true for schedule events).
-          if [[ "${{ needs.set_vars.outputs.build_docker_images }}" == "true" ]]; then
-            tag="$(git rev-parse --short HEAD)"
-          else
-            tag="latest"
-          fi
-          echo "value=$tag" >> $GITHUB_OUTPUT
 
   variants:
     # TODO: #6790 enable testing with python 3.11 and 3.13
@@ -184,39 +134,12 @@ jobs:
         run: |
           echo "value=$VALUE" >> $GITHUB_OUTPUT
 
-  docker-build-image:
-    name: Docker image ${{ matrix.id }}
-    runs-on: ubuntu-latest
-    needs: [ docker-tag, variants, set_vars ]
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.set_vars.outputs.ref_name }}
-      - uses: ./.github/actions/docker-build-image
-        with:
-          dockerfile: Jenkins/fast-release/Dockerfile.ci
-          docker-login: ${{ secrets.DOCKER_LOGIN }}
-          docker-password: ${{ secrets.DOCKER_CREDENTIALS }}
-          docker-registry: ${{ vars.DOCKER_REGISTRY }}
-          image-name: "${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}"
-          image-tag: ${{ needs.docker-tag.outputs.tag }}
-          build-args: |
-            VER_PYTHON=${{ matrix.VER_PYTHON_BUILD }}
-            VER_CUDA=${{ matrix.VER_CUDA }}
-            VER_TORCH=${{ matrix.VER_TORCH }}
-            VER_ONNXRUNTIME=${{ matrix.VER_ONNXRUNTIME }}
-            AIMET_VARIANT=${{ matrix.id }}
-
   call-build-wheels:
     name: Call build-wheels
-    needs: [ docker-tag, variants, docker-build-image ]
+    needs: [ variants ]
     uses: ./.github/workflows/build-wheels.yml
     with:
       variants: ${{ needs.variants.outputs.matrix }}
-      image-tag: ${{ needs.docker-tag.outputs.tag }}
       build-windows-wheel: true
     secrets: inherit
 
@@ -239,41 +162,10 @@ jobs:
       include_windows_tests: true
     secrets: inherit
 
-  docker-push-latest:
-    needs: [ set_vars, variants, docker-tag, call-unit-acceptance-tests ]
-    runs-on: ubuntu-latest
-    if: ${{ github.ref_name == github.event.repository.default_branch && needs.set_vars.outputs.build_docker_images == 'true' && needs.docker-tag.outputs.tag != 'latest' }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
-    steps:
-      - uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker
-      - run: sudo sh -c "cp /tmp/certs/* /usr/local/share/ca-certificates/ && update-ca-certificates"
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ vars.DOCKER_REGISTRY }}
-          username: ${{ secrets.DOCKER_LOGIN }}
-          password: ${{ secrets.DOCKER_CREDENTIALS }}
-      - name: Create the 'latest' docker image tag
-        run: docker buildx imagetools create ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}:${{ needs.docker-tag.outputs.tag }} --tag ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}:latest
-
-  cleanup:
-    needs: [ variants, docker-tag, docker-push-latest ]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
-    steps:
-      - name: Delete temp docker image
-        if: needs.docker-tag.outputs.tag != 'latest'
-        run: curl -k -H "Authorization:Bearer ${{ secrets.DOCKER_CREDENTIALS }}" -X DELETE "https://${{ vars.DOCKER_REGISTRY }}/v2/${{ vars.DOCKER_IMAGE }}-${{ matrix.id }}/manifests/${{ needs.docker-tag.outputs.tag }}" || true
-
   notify_failure:
     if: ${{ always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && github.event_name == 'schedule' && github.run_attempt == '1' }}
     name: Notify failure on slack
-    needs: [ docker-build-image, call-build-wheels, call-unit-acceptance-tests, docker-push-latest ]
+    needs: [ call-build-wheels, call-unit-acceptance-tests ]
     runs-on: ubuntu-latest
     steps:
     - uses: slackapi/slack-github-action@v1.25.0

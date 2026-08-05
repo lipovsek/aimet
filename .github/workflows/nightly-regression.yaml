@@ -72,7 +72,6 @@ jobs:
           "ENABLE_TESTS":"OFF",
           "PIP_INDEX":""
         }]}
-      image-tag: latest
     secrets: inherit
 
   build-aimet-torch-gpu:
@@ -89,7 +88,6 @@ jobs:
           "ENABLE_TESTS":"OFF",
           "PIP_INDEX":""
         }]}
-      image-tag: latest
     secrets: inherit
 
   #=============================================================================
@@ -106,7 +104,6 @@ jobs:
         with:
           runner-id: onnx-gpu-nightly-${{ github.run_id }}-${{ github.run_attempt }}
           gpu-request: "1"
-          docker-image: ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-onnx-gpu:latest
           kubeconfig: ${{ secrets.KUBECONFIG }}
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
@@ -153,7 +150,6 @@ jobs:
         with:
           runner-id: torch-gpu-nightly-${{ github.run_id }}-${{ github.run_attempt }}
           gpu-request: "1"
-          docker-image: ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_IMAGE }}-torch-gpu:latest
           kubeconfig: ${{ secrets.KUBECONFIG }}
           pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 

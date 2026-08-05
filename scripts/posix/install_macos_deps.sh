@@ -9,9 +9,9 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
     exit 0
 fi
 
-REPO_ROOT=$(git rev-parse --show-toplevel)
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-. "${REPO_ROOT}/scripts/all/util/common.sh"
+. "${SCRIPT_DIR}/../all/util/common.sh"
 
 set_strict_mode
 
