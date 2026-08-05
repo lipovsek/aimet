@@ -6,7 +6,7 @@
 
 import json
 from typing import Dict, List, Union
-from jsonschema import validate
+from jsonschema.validators import validator_for
 
 from ..quantsim_config.quantsim_config_schema import QUANTSIM_CONFIG_SCHEMA
 from ..utils import AimetLogger, convert_configs_values_to_bool
@@ -55,6 +55,9 @@ class ConfigDictKeys:
     MAX = "max"
 
 
+schema_validator = validator_for(QUANTSIM_CONFIG_SCHEMA)(QUANTSIM_CONFIG_SCHEMA)
+
+
 class JsonConfigImporter:
     """Class for importing and validating json configuration file"""
 
@@ -80,7 +83,7 @@ def _validate_syntax(quantsim_config: ConfigDictType):
     Validate config dict syntax, ensuring keys and values are as expected.  Throw an exception if anything is amiss.
     :param quantsim_config: Configuration dictionary to validate
     """
-    validate(quantsim_config, schema=QUANTSIM_CONFIG_SCHEMA)
+    schema_validator.validate(quantsim_config)
 
 
 def _validate_supported_kernels(supported_kernels: List):
