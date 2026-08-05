@@ -7,6 +7,8 @@ import torch
 from transformers import GenerationConfig
 from transformers.generation.stopping_criteria import StoppingCriteria
 
+from GenAILab.qai_hub_lm.models.generator import Generator
+
 
 class ContextLengthStoppingCriteria(StoppingCriteria):
     """Stop generation when reaching the model's context length limit.
@@ -23,8 +25,11 @@ class ContextLengthStoppingCriteria(StoppingCriteria):
         verbose: If True, prints a message when stopping (default: False)
     """
 
-    def __init__(self, context_length: int, verbose: bool = False):
+    def __init__(
+        self, context_length: int, sequence_lengths: list[int], verbose: bool = False
+    ):
         self.context_length = context_length
+        self.min_sequence_length = min(sequence_lengths)
         self.verbose = verbose
         self._warned = False
 
@@ -42,14 +47,8 @@ class ContextLengthStoppingCriteria(StoppingCriteria):
             True if generation should stop (at or exceeding context_length), False otherwise
         """
         current_len = input_ids.shape[-1]
-
-        # Account for KV cache length if available
-        past_key_values = kwargs.get("past_key_values", None)
-        if past_key_values is not None and hasattr(past_key_values, "get_seq_length"):
-            kv_len = past_key_values.get_seq_length()
-            current_len = kv_len + input_ids.shape[-1]
-
-        should_stop = current_len >= self.context_length
+        next_len = current_len + self.min_sequence_length
+        should_stop = next_len >= self.context_length
 
         if should_stop and self.verbose and not self._warned:
             print(
@@ -75,6 +74,7 @@ def build_generation_config(model, tokenizer, **overrides) -> GenerationConfig:
     eos_ids = set()
     for src in (
         getattr(model.config, "eos_token_id", None),
+        getattr(model.generation_config, "eos_token_id", None),
         tokenizer.eos_token_id,
     ):
         if src is None:

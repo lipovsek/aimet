@@ -909,6 +909,7 @@ class Interactive(TextEvaluationMetric):
         criteria = [
             ContextLengthStoppingCriteria(
                 context_length=model.context_length,
+                sequence_lengths=model.sequence_lengths,
                 verbose=verbose,
             )
         ]

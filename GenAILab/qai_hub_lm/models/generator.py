@@ -267,13 +267,20 @@ class Generator(GenerationMixin, torch.nn.Module):
     def sequence_length(self) -> int:
         return self.sequence_lengths[-1]
 
-    def _select_sequence_length(self, num_tokens: int) -> int:
-        """Pick the smallest sequence_length that can fit *num_tokens*."""
-        best = self.sequence_lengths[-1]
-        for sl in reversed(self.sequence_lengths):
+    @staticmethod
+    def select_sequence_length_from_options(num_tokens: int, options: list[int]):
+        """Pick the smallest option that can fit *num_tokens*."""
+        # NOTE: expects that options is pre-sorted
+        best = options[-1]
+        for sl in reversed(options):
             if num_tokens <= sl:
                 best = sl
         return best
+
+    def _select_sequence_length(self, num_tokens: int) -> int:
+        return self.select_sequence_length_from_options(
+            num_tokens, self.sequence_lengths
+        )
 
     @staticmethod
     def can_generate() -> bool:
