@@ -6209,10 +6209,10 @@ def _parse_type(type_str: str) -> tuple[str, int]:
         # normalization layers tolerance rationale:
         #   * off-by-one in input/output qtzn respectively
         #   * No off-by-one in weight qtzn; weights are exported spot-on
-        (partial(standalone_batchnorm, (1, 32, 4096, 10)), 2),
-        (partial(standalone_batchnorm_constants, (1, 32, 4096, 10)), 2),
-        (partial(standalone_instancenorm, (1, 32, 40960)), 2),
-        (partial(standalone_layernorm, (1, 40960, 32)), 2),
+        (partial(standalone_batchnorm, (1, 8, 2048, 4)), 2),
+        (partial(standalone_batchnorm_constants, (1, 8, 2048, 4)), 2),
+        (partial(standalone_instancenorm, (1, 32, 2048)), 2),
+        (partial(standalone_layernorm, (1, 2048, 32)), 2),
     ],
 )
 def test_to_onnx_qdq(
