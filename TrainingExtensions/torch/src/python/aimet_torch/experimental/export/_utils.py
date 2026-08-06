@@ -14,9 +14,10 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 
 
 _GRID_PRESERVING_OPS = (
-    torch.ops.aten._unsafe_view,
     torch.ops.aten.alias,
     torch.ops.aten.alias_copy,
+    torch.ops.aten.as_strided,
+    torch.ops.aten.as_strided_copy,
     torch.ops.aten.amax,
     torch.ops.aten.amin,
     torch.ops.aten.clone,
@@ -85,6 +86,7 @@ _GRID_PRESERVING_OPS = (
     torch.ops.aten.unfold,
     torch.ops.aten.unfold_backward,
     torch.ops.aten.unfold_copy,
+    torch.ops.aten._unsafe_view,
     torch.ops.aten.unsqueeze,
     torch.ops.aten.unsqueeze_,
     torch.ops.aten.unsqueeze_copy,
