@@ -788,7 +788,8 @@ def test_disable_subgraph_quantizers():
 
     assert enabled == {q for q in sim.qc_quantize_op_dict.values() if q.enabled}
 
-    subgraph = seq_mse._split_onnx_graph(seq_mse._extractor, ["4"], ["output"])
+    subgraph_path = seq_mse._split_onnx_graph(seq_mse._extractor, ["4"], ["output"])
+    subgraph = onnx.load_model(subgraph_path, load_external_data=False)
     with seq_mse._disable_subgraph_quantizers(subgraph):
         assert not sim.qc_quantize_op_dict["fc_w"].enabled
         assert not sim.qc_quantize_op_dict["4"].enabled

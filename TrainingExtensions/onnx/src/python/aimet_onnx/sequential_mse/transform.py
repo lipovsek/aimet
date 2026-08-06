@@ -44,14 +44,14 @@ def modify_graph_with_grouped_conv(
             node.output[0],
         )
 
-        # Get weight tensor
-        weight_tensor = _get_weight_tensor(graph, weight_name)
+        # Get weight shape
+        weight_shape = _get_weight_shape(graph, weight_name)
 
-        num_blocks = weight_tensor.shape[block_axis] // block_size
+        num_blocks = weight_shape[block_axis] // block_size
 
         # Transform the weight tensor to support grouped convolution
         weight_info = _transform_conv_weight(
-            graph, weight_name, weight_tensor.shape, num_blocks
+            graph, weight_name, weight_shape, num_blocks
         )
         transformed_weight_name = weight_info["final_output"]
         new_nodes.extend(weight_info["nodes"])
@@ -173,13 +173,13 @@ def modify_graph_with_grouped_linear(
                 weight_name, producer_of, initializer_names
             )
 
-        # Get weight tensor
-        weight_tensor = _get_weight_tensor(graph, weight_name)
+        # Get weight shape
+        weight_shape = _get_weight_shape(graph, weight_name)
 
         # Transform the weight tensor to support block-wise linear operation
-        num_blocks = weight_tensor.shape[block_axis] // block_size
+        num_blocks = weight_shape[block_axis] // block_size
         weight_info = _transform_linear_weight(
-            graph, weight_name, weight_tensor.shape, num_blocks, trans_b
+            graph, weight_name, weight_shape, num_blocks, trans_b
         )
         transformed_weight_name = weight_info["final_output"]
         new_nodes.extend(weight_info["nodes"])
@@ -227,11 +227,10 @@ def _make_name(base: str, suffix: str) -> str:
     return f"{base}_{suffix}"
 
 
-def _get_weight_tensor(graph: onnx.GraphProto, weight_name: str) -> np.ndarray:
+def _get_weight_shape(graph: onnx.GraphProto, weight_name: str) -> Tuple[int, ...]:
     """
 
-    Retrieves the weight tensor from the graph's initializers and converts it
-    to a numpy array.
+    Retrieves the shape of the weight tensor from the graph's initializers.
 
     NOTE: If quantize op has been inserted, the weight name
     may include a "_qdq" suffix. This function strips that suffix to
@@ -239,7 +238,7 @@ def _get_weight_tensor(graph: onnx.GraphProto, weight_name: str) -> np.ndarray:
 
     :param graph: The ONNX model graph.
     :param weight_name: The name of the weight tensor.
-    :return: The weight tensor as numpy array.
+    :return: The shape of the weight tensor.
     """
     # Find the initializer matching the weight name (strip "_qdq" if present)
     initializer = next(
@@ -254,7 +253,7 @@ def _get_weight_tensor(graph: onnx.GraphProto, weight_name: str) -> np.ndarray:
     if initializer is None:
         raise ValueError(f"Weight initializer not found for {weight_name}")
 
-    return numpy_helper.to_array(initializer)
+    return tuple(initializer.dims)
 
 
 def _transform_conv_weight(

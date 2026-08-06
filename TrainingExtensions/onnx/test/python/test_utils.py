@@ -1309,14 +1309,16 @@ class TestLazyExtractor:
 
             # Create LazyExtractor and extract subgraph
             graph_extractor = LazyExtractor(inferred_model)
-            if small_model:
-                assert not graph_extractor.lazy_load_data
-            else:
-                assert graph_extractor.lazy_load_data
 
             output_name = inferred_model.graph.node[0].output[0]
-            sub_model_1 = graph_extractor.extract_model(["input"], [output_name])
-            sub_model_2 = graph_extractor.extract_model([output_name], ["output"])
+            sub_model_1 = onnx.load(
+                graph_extractor.extract_model(["input"], [output_name]),
+                load_external_data=True,
+            )
+            sub_model_2 = onnx.load(
+                graph_extractor.extract_model([output_name], ["output"]),
+                load_external_data=True,
+            )
 
             # Verify that weights are correctly loaded in extracted model
             assert (

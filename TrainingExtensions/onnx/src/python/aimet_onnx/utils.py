@@ -6,7 +6,6 @@
 
 import copy
 import itertools
-import math
 import platform
 import tempfile
 from pathlib import Path
@@ -19,9 +18,6 @@ import torch
 import onnx
 from onnx import helper, numpy_helper
 from onnx.utils import Extractor
-from onnx.external_data_helper import (
-    load_external_data_for_model,
-)
 from onnxruntime import SessionOptions, InferenceSession
 import shutil
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
@@ -50,8 +46,6 @@ else:
     )
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
-
-ONE_B_PARAMS = 2**28
 
 OP_TYPES_WITH_PARAMS = [
     "Conv",
@@ -697,32 +691,14 @@ class LazyExtractor(Extractor):
     """
     Wrapper Extractor to handle models with external data
 
-    Wraps the original Extractor to keep data on disk during extraction and load weights on extracted model.
+    Keeps data on disk during extraction and returns a subgraph path referencing the same
+    external data.
     """
 
     def __init__(self, model: onnx.ModelProto):
         """
         :param model: ONNX model to set up extractor for
         """
-        self.model_dir: Optional[str] = None
-        self.model_with_no_data: Optional[onnx.ModelProto] = None
-        self.lazy_load_data: bool = False
-
-        for init in model.graph.initializer:
-            total_params = math.prod(init.dims)
-            # Having more than 1B parameters is a good enough heuristic for large models
-            # Goal is to avoid loading large models fully into memory
-            if total_params > ONE_B_PARAMS:
-                self.lazy_load_data = True
-                break
-
-        # If model is small enough, no need to lazy load data
-        if not self.lazy_load_data:
-            self.model_with_no_data = model
-            super().__init__(self.model_with_no_data)
-            return
-
-        # Initialize extractor to lazily load data from disk post extraction
         self.model_dir = tempfile.mkdtemp()
         model_path = os.path.join(self.model_dir, "model.onnx")
 
@@ -746,23 +722,22 @@ class LazyExtractor(Extractor):
         self.model_with_no_data = onnx.load_model(model_path, load_external_data=False)
         super().__init__(self.model_with_no_data)
 
-    def extract_model(
-        self, input_names: List[str], output_names: List[str]
-    ) -> onnx.ModelProto:
+    def extract_model(self, input_names: List[str], output_names: List[str]) -> str:
         """
         Extracts a sub-model from the original model given input and output names.
 
         :param input_names: input names of split graph
         :param output_names: output names of split graph
-        :return: extracted model with external data loaded
+        :return: path to the extracted subgraph
         """
-        # pylint: disable=protected-access
         model = super().extract_model(input_names, output_names)
-        if self.lazy_load_data:
-            # Load external data for extracted model
-            load_external_data_for_model(model, self.model_dir)
-
-        return model
+        # Get a temporary (closed) file
+        with tempfile.NamedTemporaryFile(
+            suffix=".onnx", dir=self.model_dir, delete=False
+        ) as f:
+            subgraph_path = f.name
+        onnx.save_model(model, subgraph_path)
+        return subgraph_path
 
     def __del__(self):
         """

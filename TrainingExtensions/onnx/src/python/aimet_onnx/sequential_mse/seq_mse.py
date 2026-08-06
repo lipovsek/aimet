@@ -494,14 +494,17 @@ class SequentialMse:
         )
         sim_inputs = self.dependency_graph.get_sim_data(dep_nodes_to_parallelize)
 
-        subgraph_model = self._split_onnx_graph(
+        subgraph_path = self._split_onnx_graph(
             self._extractor, subgraph_inp_names, subgraph_outs_names
         )
+        subgraph_model = onnx.load_model(subgraph_path, load_external_data=False)
 
         # Transform graph for bq/lpbq quantizers
         subgraph_model, sim_inputs, num_blocks = (
             self._transform_graph_for_block_quantization(subgraph_model, sim_inputs)
         )
+        # Re-save transformed graph
+        onnx.save_model(subgraph_model, subgraph_path)
 
         # Determine which axis carries the sequence dimension:
         #   3-D inputs (num_blocks, seq_len, block_size)  -> Linear BQ, chunk along dim 1
@@ -510,7 +513,7 @@ class SequentialMse:
         chunk_dim = 3 if first_input.ndim == 4 else 1
         dataset_len = len(next(iter(sim_inputs.values())))
 
-        with self._create_session(subgraph_model) as session:
+        with self._create_session(subgraph_path) as session:
             all_out_shapes, all_out_dtypes = self._infer_bq_output_shapes(
                 session, subgraph_model, sim_inputs, num_blocks, chunk_dim, dataset_len
             )
@@ -702,13 +705,13 @@ class SequentialMse:
     @staticmethod
     def _split_onnx_graph(
         extractor: LazyExtractor, input_names: List[str], output_names: List[str]
-    ) -> onnx.ModelProto:
+    ) -> str:
         """
         Splits the onnx graph from input names to output names using extractor
 
         :param input_names: input names of split graph
         :param output_names: output names of split graph
-        :return: float split model and sim split model
+        :return: path to the subgraph
         """
         return extractor.extract_model(list(input_names), list(output_names))
 
@@ -760,10 +763,10 @@ class SequentialMse:
         _logger.debug(
             f"Subgraph input names: {subgraph_inp_names}, Subgraph output names: {subgraph_out_names}"
         )
-        sim_split_model = self._split_onnx_graph(
+        sim_split_path = self._split_onnx_graph(
             self._extractor, subgraph_inp_names, subgraph_out_names
         )
-        with self._create_session(sim_split_model) as session:
+        with self._create_session(sim_split_path) as session:
             subgraph_outs = self._run_onnx_graph(session, subgraph_inps)
         self.dependency_graph.update_sim_data(subgraph_out_names, subgraph_outs)
         _logger.debug(
@@ -802,11 +805,11 @@ class SequentialMse:
                 self._run_seq_mse(dep_nodes_to_parallelize)
 
     @contextmanager
-    def _create_session(self, model: onnx.ModelProto):
+    def _create_session(self, model: Union[onnx.ModelProto, str]):
         """
         Build and return onnxruntime inference session
 
-        :param model: onnx model
+        :param model: onnx model or path to onnx model
         :return: Session
         """
         try:
