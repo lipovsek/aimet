@@ -73,8 +73,10 @@ def set_seed():
 def set_export_to_onnx_direct(export_to_onnx_direct):
     entry_state = onnx_utils.EXPORT_TO_ONNX_DIRECT
     onnx_utils.EXPORT_TO_ONNX_DIRECT = export_to_onnx_direct
-    yield
-    onnx_utils.EXPORT_TO_ONNX_DIRECT = entry_state
+    try:
+        yield
+    finally:
+        onnx_utils.EXPORT_TO_ONNX_DIRECT = entry_state
 
 
 class ConcatModel(torch.nn.Module):
@@ -2059,9 +2061,10 @@ class TestEncodingPropagation:
             old_setting = quantsim.SKIP_TORCH_ENCODINGS_EXPORT
             quantsim.SKIP_TORCH_ENCODINGS_EXPORT = skip_torch_encodings
 
-            yield
-
-            quantsim.SKIP_TORCH_ENCODINGS_EXPORT = old_setting
+            try:
+                yield
+            finally:
+                quantsim.SKIP_TORCH_ENCODINGS_EXPORT = old_setting
 
         model = test_models.SingleResidualWithAvgPool()
         dummy_input = torch.randn(1, 3, 28, 28)
@@ -2090,9 +2093,10 @@ class TestEncodingPropagation:
             old_setting = aimet_common_quantsim.encoding_version
             aimet_common_quantsim.encoding_version = encoding_version
 
-            yield
-
-            aimet_common_quantsim.encoding_version = old_setting
+            try:
+                yield
+            finally:
+                aimet_common_quantsim.encoding_version = old_setting
 
         model = test_models.SingleResidualWithAvgPool()
         dummy_input = torch.randn(1, 3, 28, 28)

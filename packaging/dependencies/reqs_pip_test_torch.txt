@@ -1,3 +1,4 @@
-deepspeed
+# TODO: Temporary pin; deepspeed 0.19.4 breaks SeqMSE zero3 unit tests
+deepspeed<0.19.4
 onnxruntime
 spconv; sys_platform != "darwin"

@@ -36,8 +36,10 @@ from ..models_.models_to_test import (
 def set_encoding_version(version):
     old_version = quantsim_common.encoding_version
     quantsim_common.encoding_version = version
-    yield
-    quantsim_common.encoding_version = old_version
+    try:
+        yield
+    finally:
+        quantsim_common.encoding_version = old_version
 
 
 class DummyModel(torch.nn.Module):
