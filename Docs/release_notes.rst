@@ -6,6 +6,40 @@
 Release notes
 #############
 
+2.37.0
+======
+
+* New Features
+    * ONNX
+        * Add quantization sensitivity analysis and result visualization (`5da2808`_)
+        * Add quant stats range visualizer (``aimet_onnx.analysis.visualize_stats``) (`3284154`_)
+    * Torch
+        * Add support for the RotaryEmbedding op (`2f50387`_)
+
+* Bug fixes and Improvements
+    * ONNX
+        * Guard analytical bias-scale against fp16 export-dtype underflow (`9728bba`_)
+        * Raise error on shared bias tensor with analytic scale (`43ede58`_)
+
+    * Torch
+        * Recover pre-quantized weight grid scale via divisor search (`8e91e22`_)
+        * Deprecate the ``enable_recompute`` API (`c85549d`_)
+        * Fix QuantizedLora attribute error (`d016c84`_)
+
+    * Common
+        * Add recipe schema to GenAI Lab (`ad454cf`_)
+
+.. _5da2808: https://github.com/qualcomm/aimet/commit/5da28088f8d72ee370e48d7602d95e6aa87b2971
+.. _3284154: https://github.com/qualcomm/aimet/commit/32841549596117eb869215bfc014641e4003a433
+.. _2f50387: https://github.com/qualcomm/aimet/commit/2f50387da8740acacc0f2591a6de7ca0ac48e2af
+.. _9728bba: https://github.com/qualcomm/aimet/commit/9728bba33968466ef0635976dd100031fb1f2ee8
+.. _43ede58: https://github.com/qualcomm/aimet/commit/43ede58cbaa02b11daaf05b5686abbd002c40f58
+.. _8e91e22: https://github.com/qualcomm/aimet/commit/8e91e22d43bf339effb9196c19c9b5ff422f13f5
+.. _c85549d: https://github.com/qualcomm/aimet/commit/c85549d03fac9a6267fcc5df4a3040ca5cf6422f
+.. _d016c84: https://github.com/qualcomm/aimet/commit/d016c841a156abe19f906d1ce0c2faaff6367d86
+.. _ad454cf: https://github.com/qualcomm/aimet/commit/ad454cfab6a0e40b0591e890075ddd8b0b9f3968
+
+
 2.36.0
 ======
 
