@@ -173,9 +173,9 @@ def _qnn_decompositions() -> dict[torch._ops.OperatorBase, Callable]:
     """
     decomp_table = core_aten_decompositions()
     skiplist = [
-        op
+        getattr(opoverloadpacket, name)
         for opoverloadpacket in _qnn_friendly_aten_ops()
-        for op in opoverloadpacket.op_overloads()
+        for name in opoverloadpacket.overloads()
     ]
 
     for op in skiplist:
@@ -189,8 +189,8 @@ _additional_decomposition_registry: dict[torch._ops.OperatorBase, Callable] = {}
 
 def _register_qnn_decomposition(op: torch._ops.OpOverloadPacket):
     def decorator(decomp: Callable):
-        for overload in op.op_overloads():
-            _additional_decomposition_registry[overload] = decomp
+        for name in op.overloads():
+            _additional_decomposition_registry[getattr(op, name)] = decomp
         return decomp
 
     return decorator
