@@ -13,28 +13,55 @@ from GenAILab.qai_hub_lm.models.generator import Generator, VLM_Generator
 from GenAILab.qai_hub_lm.backends.onnx.generator_utils import _VisualONNXAdapter
 
 
+def _tiny_sim():
+    """Build a real QuantizationSimModel over a two-layer MLP."""
+    import io
+
+    import onnx
+    from aimet_onnx.quantsim import QuantizationSimModel
+
+    class MLP(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.l1 = torch.nn.Linear(8, 8)
+            self.l2 = torch.nn.Linear(8, 4)
+
+        def forward(self, x):
+            return self.l2(torch.relu(self.l1(x)))
+
+    x = torch.randn(1, 8)
+    buf = io.BytesIO()
+    torch.onnx.export(
+        MLP().eval(), (x,), buf, input_names=["x"], output_names=["y"], opset_version=17
+    )
+    buf.seek(0)
+    return QuantizationSimModel(
+        onnx.load_model(buf),
+        dummy_input={"x": x.numpy()},
+        providers=["CPUExecutionProvider"],
+    )
+
+
+def _enabled_flags(sim):
+    return {name: q.enabled for name, q in sim.qc_quantize_op_dict.items()}
+
+
 class TestONNXFPModeMixin:
-    def test_fp_mode_removes_quant_nodes(self):
+    def test_fp_mode_disables_and_restores_quantizers(self):
         from GenAILab.qai_hub_lm.backends.onnx.generator_utils import generator_factory
 
-        mock_backbone = MagicMock()
-        mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
-        mock_backbone._remove_quantization_nodes.return_value.__exit__ = MagicMock(
-            return_value=False
-        )
-        mock_config = MagicMock()
-        collection = SimCollection(backbone=mock_backbone, config=mock_config)
+        backbone = _tiny_sim()
+        before = _enabled_flags(backbone)
+        # Guard the premise: the sim must start with something enabled to disable
+        assert any(before.values())
 
+        collection = SimCollection(backbone=backbone, config=MagicMock())
         tok = MagicMock()
         tok.eos_token_id = 0
 
         with patch(
             "GenAILab.qai_hub_lm.backends.onnx.generator_utils.TorchONNXInterface"
-        ) as mock_interface:
-            mock_interface.return_value = MagicMock()
-            mock_interface.return_value.config = mock_config
-            mock_interface.return_value.dtype = MagicMock()
-
+        ):
             gen = generator_factory(
                 sim_collection=collection,
                 generator_cls=Generator,
@@ -43,43 +70,33 @@ class TestONNXFPModeMixin:
                 context_length=32,
             )
             with gen.fp_mode():
-                mock_backbone._remove_quantization_nodes.assert_called()
-                mock_backbone._rebuild_session.assert_called()
+                assert not any(_enabled_flags(backbone).values())
 
-    def test_handles_visual_model(self):
+            # Restored to the original per-quantizer state, not blanket-enabled
+            assert _enabled_flags(backbone) == before
+
+    def test_fp_mode_covers_visual_model(self):
         from GenAILab.qai_hub_lm.backends.onnx.generator_utils import generator_factory
 
-        mock_backbone = MagicMock()
-        mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
-        mock_backbone._remove_quantization_nodes.return_value.__exit__ = MagicMock(
-            return_value=False
-        )
-        mock_visual = MagicMock()
-        mock_visual._remove_quantization_nodes.return_value.__enter__ = MagicMock()
-        mock_visual._remove_quantization_nodes.return_value.__exit__ = MagicMock(
-            return_value=False
-        )
+        backbone = _tiny_sim()
+        visual = _tiny_sim()
+        backbone_before = _enabled_flags(backbone)
+        visual_before = _enabled_flags(visual)
+
         mock_config = MagicMock()
         mock_config.text_config = MagicMock()
-        embedding = MagicMock()
-
         collection = SimCollection(
-            backbone=mock_backbone,
-            visual=mock_visual,
-            embedding=embedding,
+            backbone=backbone,
+            visual=visual,
+            embedding=MagicMock(),
             config=mock_config,
         )
-
         tok = MagicMock()
         tok.eos_token_id = 0
 
         with patch(
             "GenAILab.qai_hub_lm.backends.onnx.generator_utils.TorchONNXInterface"
-        ) as mock_interface:
-            mock_bb_wrapped = MagicMock()
-            mock_vis_wrapped = MagicMock()
-            mock_interface.side_effect = [mock_bb_wrapped, mock_vis_wrapped]
-
+        ):
             gen = generator_factory(
                 sim_collection=collection,
                 generator_cls=VLM_Generator,
@@ -88,8 +105,11 @@ class TestONNXFPModeMixin:
                 context_length=32,
             )
             with gen.fp_mode():
-                mock_visual._remove_quantization_nodes.assert_called()
-                mock_visual._rebuild_session.assert_called()
+                assert not any(_enabled_flags(backbone).values())
+                assert not any(_enabled_flags(visual).values())
+
+            assert _enabled_flags(backbone) == backbone_before
+            assert _enabled_flags(visual) == visual_before
 
 
 class TestGeneratorFactory:
@@ -97,10 +117,6 @@ class TestGeneratorFactory:
         from GenAILab.qai_hub_lm.backends.onnx.generator_utils import generator_factory
 
         mock_backbone = MagicMock()
-        mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
-        mock_backbone._remove_quantization_nodes.return_value.__exit__ = MagicMock(
-            return_value=False
-        )
         mock_config = MagicMock()
         collection = SimCollection(backbone=mock_backbone, config=mock_config)
 
@@ -128,15 +144,7 @@ class TestGeneratorFactory:
         from GenAILab.qai_hub_lm.backends.onnx.generator_utils import generator_factory
 
         mock_backbone = MagicMock()
-        mock_backbone._remove_quantization_nodes.return_value.__enter__ = MagicMock()
-        mock_backbone._remove_quantization_nodes.return_value.__exit__ = MagicMock(
-            return_value=False
-        )
         mock_visual = MagicMock()
-        mock_visual._remove_quantization_nodes.return_value.__enter__ = MagicMock()
-        mock_visual._remove_quantization_nodes.return_value.__exit__ = MagicMock(
-            return_value=False
-        )
         mock_config = MagicMock()
         mock_config.text_config = MagicMock()
         embedding = MagicMock()

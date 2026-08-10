@@ -13,6 +13,8 @@ from GenAILab.qai_hub_lm.models.utils.layer_cache import _resolve_text_config
 
 from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import TorchONNXInterface
 
+from aimet_onnx.utils import disable_quantizers
+
 
 class _VisualONNXAdapter(torch.nn.Module):
     """Reassembles flat ONNX visual outputs into the list structure expected
@@ -53,22 +55,15 @@ class ONNXFPModeMixin:
 
     @contextlib.contextmanager
     def fp_mode(self):
-        try:
-            with contextlib.ExitStack() as stack:
-                stack.enter_context(
-                    self.sim_collection.backbone._remove_quantization_nodes()
-                )
-                self.sim_collection.backbone._rebuild_session()
-                if self.sim_collection.visual is not None:
-                    stack.enter_context(
-                        self.sim_collection.visual._remove_quantization_nodes()
-                    )
-                    self.sim_collection.visual._rebuild_session()
-                yield
-        finally:
-            self.sim_collection.backbone._rebuild_session()
+        with contextlib.ExitStack() as stack:
+            sim = self.sim_collection.backbone
+            stack.enter_context(disable_quantizers(sim, sim.qc_quantize_op_dict.keys()))
             if self.sim_collection.visual is not None:
-                self.sim_collection.visual._rebuild_session()
+                sim = self.sim_collection.visual
+                stack.enter_context(
+                    disable_quantizers(sim, sim.qc_quantize_op_dict.keys())
+                )
+            yield
 
 
 class ONNXDevicePlacementMixin:
