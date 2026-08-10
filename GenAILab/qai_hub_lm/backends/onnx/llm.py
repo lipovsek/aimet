@@ -117,15 +117,21 @@ class LLM_ONNX(LLM):
                     get_model_checkpoint_path(model_id),
                     dtype=dtype,
                 )
-            return entry
+        else:
+            onnx_model, *_ = load_model_components_from_disk(
+                model_id,
+                context_length=context_length,
+                sequence_length=cache_sl,
+            )
+            config = AutoConfig.from_pretrained(model_id)
+            entry = ModelCacheEntry(backbone=onnx_model, config=config)
 
-        onnx_model, *_ = load_model_components_from_disk(
-            model_id,
-            context_length=context_length,
-            sequence_length=cache_sl,
-        )
-        config = AutoConfig.from_pretrained(model_id)
-        return ModelCacheEntry(backbone=onnx_model, config=config)
+        # Tied embeddings share one lm_head.weight initializer between the
+        # embedding Gather and the lm_head MatMul; unshare it here so every
+        # path (fresh export, cache hit, disk load) hands downstream pre-sim
+        # techniques and ConnectedGraph a graph they accept.
+        duplicate_shared_initializers(entry.backbone.graph)
+        return entry
 
     @classmethod
     def instantiate_quantsim(
@@ -140,13 +146,6 @@ class LLM_ONNX(LLM):
 
         onnx_model = entry.backbone
         config = entry.config
-
-        # Models with tied input/output embeddings (e.g. Qwen 3.5) export — via
-        # dynamo — a single ``lm_head.weight`` initializer feeding both the
-        # embedding Gather and the lm_head MatMul. AIMET's ConnectedGraph rejects
-        # a shared initializer with conflicting consumer op types, so give each
-        # consumer its own copy. No-op when no initializers are shared.
-        duplicate_shared_initializers(onnx_model.graph)
 
         block_prec = precision.blocks["default"]
         # default_param_qtype must be int for the quantsim wiring; when block

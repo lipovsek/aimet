@@ -13,6 +13,7 @@ from transformers import AutoConfig
 
 from aimet_onnx import quantsim
 from aimet_onnx.quantsim import QuantizationSimModel
+from aimet_onnx.utils import duplicate_shared_initializers
 
 from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.bench.model_cache import DiskBackedModelCache, ModelCacheEntry
@@ -123,25 +124,35 @@ class VLM_ONNX:
                     image_size=image_size,
                     dtype=dtype,
                 )
-            return entry
-
-        config = AutoConfig.from_pretrained(model_id)
-        backbone_onnx_model, visual_onnx_model, embedding, extras = (
-            load_model_components_from_disk(
-                model_id,
-                context_length=context_length,
-                sequence_length=cache_sl,
+        else:
+            config = AutoConfig.from_pretrained(model_id)
+            backbone_onnx_model, visual_onnx_model, embedding, extras = (
+                load_model_components_from_disk(
+                    model_id,
+                    context_length=context_length,
+                    sequence_length=cache_sl,
+                )
             )
-        )
-        if visual_onnx_model is None or embedding is None:
-            raise ValueError("Required model components could not be loaded from disk.")
-        return ModelCacheEntry(
-            backbone=backbone_onnx_model,
-            visual=visual_onnx_model,
-            embedding=embedding,
-            config=config,
-            extras=extras or None,
-        )
+            if visual_onnx_model is None or embedding is None:
+                raise ValueError(
+                    "Required model components could not be loaded from disk."
+                )
+            entry = ModelCacheEntry(
+                backbone=backbone_onnx_model,
+                visual=visual_onnx_model,
+                embedding=embedding,
+                config=config,
+                extras=extras or None,
+            )
+
+        # Tied embeddings share one lm_head.weight initializer between the
+        # embedding Gather and the lm_head MatMul; unshare it here so every
+        # path (fresh export, cache hit, disk load) hands downstream pre-sim
+        # techniques and ConnectedGraph a graph they accept.
+        duplicate_shared_initializers(entry.backbone.graph)
+        if entry.visual is not None:
+            duplicate_shared_initializers(entry.visual.graph)
+        return entry
 
     @classmethod
     def instantiate_quantsim(
