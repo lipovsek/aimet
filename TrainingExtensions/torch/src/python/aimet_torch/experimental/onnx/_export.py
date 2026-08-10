@@ -189,6 +189,40 @@ onnx.defs.register_schema(
 )
 
 
+onnx.defs.register_schema(
+    onnx.defs.OpSchema(
+        name="_UnsafeBarrier",
+        domain="aimet",
+        since_version=1,
+        doc="Internal barrier to prevent encoding propagation across supergroup boundary.",
+        inputs=[
+            onnx.defs.OpSchema.FormalParameter(
+                name="input",
+                type_str="T",
+            ),
+        ],
+        outputs=[
+            onnx.defs.OpSchema.FormalParameter(
+                name="output",
+                type_str="T",
+            )
+        ],
+        type_constraints=[
+            (
+                "T",
+                [
+                    "tensor(float)",
+                    "tensor(double)",
+                    "tensor(float16)",
+                    "tensor(bfloat16)",
+                ],
+                "Constrain input and output types to numeric tensors.",
+            )
+        ],
+    )
+)
+
+
 @onnxscript.script(aimet_opset, default_opset=onnxscript.opset1)
 def _quantize_dequantize_placeholder(
     tensor: onnxscript.FLOAT,
@@ -631,6 +665,36 @@ def register_symbolic(symbolic_fn):
     return decorator
 
 
+torch.library.define(
+    "aimet::_unsafe_barrier",
+    "(Tensor input) -> Tensor",
+)
+
+
+@torch.library.impl("aimet::_unsafe_barrier", "meta")
+def _(tensor: torch.Tensor):
+    return torch.empty_like(tensor)
+
+
+@torch.library.impl("aimet::_unsafe_barrier", "default")
+def _unsafe_barrier(tensor: torch.Tensor):
+    """
+    Barrier node to prevent encoding propagation across supergroup boundary.
+    """
+    return tensor.clone()
+
+
+def _unsafe_barrier_symbolic(g, tensor):
+    return g.op("aimet::_UnsafeBarrier", tensor)
+
+
+torch.onnx.register_custom_op_symbolic(
+    symbolic_name="aimet::_unsafe_barrier",
+    symbolic_fn=_unsafe_barrier_symbolic,
+    opset_version=11,
+)
+
+
 def export(
     model: torch.nn.Module,
     args: tuple[Any, ...] = (),
@@ -658,12 +722,17 @@ def export(
             block_size or (),
         )
 
+    # pylint: disable=protected-access
+    def _unsafe_barrier(tensor: torch.Tensor):
+        return aimet_opset._UnsafeBarrier(tensor)
+
     if version.parse(torch.__version__) >= version.parse("2.6.0"):
         custom_translation_table = kwargs.get("custom_translation_table", {})
         kwargs["custom_translation_table"] = {
             **custom_translation_table,
             torch.ops.aimet.quantize_dequantize.default: _quantize_dequantize_placeholder,
             torch.ops.aimet.float_quantize_dequantize.default: _float_quantize_dequantize,
+            torch.ops.aimet._unsafe_barrier.default: _unsafe_barrier,
         }
 
     with _precompute_encodings(model):

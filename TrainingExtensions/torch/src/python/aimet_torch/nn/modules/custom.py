@@ -1199,10 +1199,29 @@ class QuantizedRotaryEmbedding(QuantizationMixin, RotaryEmbedding):
         if self.input_quantizers[2]:
             sin_cache = self.input_quantizers[2](sin_cache)
 
+        # pylint: disable=protected-access
+        if torch.onnx.is_in_onnx_export():
+            # During export, insert unsafe barrier nodes around
+            # supergroup boundary to prevent input/output encoding
+            # propagated across supergroup boundaries through data movement ops
+            # NOTE: This is a temporary workaround only for RotaryEmbedding
+            # and should be deleted asap. Do not use this elsewhere :(
+            x = torch.ops.aimet._unsafe_barrier(x)
+            cos_cache = torch.ops.aimet._unsafe_barrier(cos_cache)
+            sin_cache = torch.ops.aimet._unsafe_barrier(sin_cache)
+
         # position ids need not be quantized
         inputs = (x, cos_cache, sin_cache, position_ids)
 
         output = super().forward(*inputs)
+
+        if torch.onnx.is_in_onnx_export():
+            # During export, insert unsafe barrier nodes around
+            # supergroup boundary to prevent input/output encoding
+            # propagated across supergroup boundaries through data movement ops
+            # NOTE: This is a temporary workaround only for RotaryEmbedding
+            # and should be deleted asap. Do not use this elsewhere :(
+            output = torch.ops.aimet._unsafe_barrier(output)
 
         if self.output_quantizers[0]:
             output = self.output_quantizers[0](output)

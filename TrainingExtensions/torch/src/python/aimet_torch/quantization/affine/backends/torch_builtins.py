@@ -307,7 +307,7 @@ if _torch_version >= (2, 4, 0):
         ") -> Tensor",
     )
 
-    @torch.library.register_fake("aimet::quantize_dequantize")
+    @torch.library.impl("aimet::quantize_dequantize", "meta")
     def quantize_dequantize_meta(  # pylint: disable=unused-argument
         tensor: torch.Tensor,
         scale: torch.Tensor,

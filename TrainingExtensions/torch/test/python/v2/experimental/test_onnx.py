@@ -3642,3 +3642,53 @@ def test_masked_softmax_temporary_workaround(tmp_path: pathlib.Path):
         "qk",
         "output",
     }
+
+
+@pytest.mark.parametrize("dynamo", [True, False])
+def test_rotary_embedding_export(tmp_path: pathlib.Path, dynamo: bool):
+    """
+    When: Exported custom RotaryEmbedding module to onnx QDQ
+    Then: Intermediate outputs should not be quantized
+    """
+    rope = aimet_ops.RotaryEmbedding(
+        interleaved=False, rotary_embedding_dim=4, head_size=8
+    )
+    dummy_input = (
+        torch.randn(1, 1, 2, 8),
+        torch.randn(1, 2, 2),
+        torch.randn(1, 2, 2),
+    )
+    sim = QuantizationSimModel(rope, dummy_input)
+    sim.compute_encodings(lambda m: m(*dummy_input))
+    aimet_torch.onnx.export(
+        sim.model,
+        dummy_input,
+        str(tmp_path / "rotary_embedding.onnx"),
+        input_names=["input", "cos", "sin"],
+        output_names=["output"],
+        dynamo=dynamo,
+    )
+    onnx_model = onnx.load_model(tmp_path / "rotary_embedding.onnx")
+    onnx.checker.check_model(onnx_model)
+
+    sess = ort.InferenceSession(
+        onnx_model.SerializeToString(),
+        providers=["CPUExecutionProvider"],
+    )
+    (ort_out,) = sess.run(
+        None,
+        {
+            "input": dummy_input[0].detach().numpy(),
+            "cos": dummy_input[1].detach().numpy(),
+            "sin": dummy_input[2].detach().numpy(),
+        },
+    )
+    expected_out = sim.model(*dummy_input)
+    assert torch.allclose(torch.from_numpy(ort_out), expected_out)
+
+    dq_nodes = [dq for dq in onnx_model.graph.node if dq.op_type == "DequantizeLinear"]
+    assert len(dq_nodes) == 4
+    assert dq_nodes[0].output[0] == "input_qdq"
+    assert dq_nodes[1].output[0] == "cos_qdq"
+    assert dq_nodes[2].output[0] == "sin_qdq"
+    assert dq_nodes[3].output[0] == "output"

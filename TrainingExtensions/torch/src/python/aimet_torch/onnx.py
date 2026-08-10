@@ -601,6 +601,46 @@ def _decouple_back_to_back_qdqs(onnx_model: onnx.ModelProto) -> dict[str, str]:
     onnx_model.graph.node.extend(all_nodes)
 
 
+def _remove_unsafe_barrier(onnx_model):
+    """
+    Remove _UnsafeBarrier nodes temporarily inserted by AIMET to suppress
+    encoding propagation across supergroup boundary
+    """
+    producers: dict[str, onnx.NodeProto] = {}
+    consumers: dict[str, list[onnx.NodeProto]] = {}
+
+    for node in onnx_model.graph.node:
+        producers[node.output[0]] = node
+        for inp in node.input:
+            consumers.setdefault(inp, []).append(node)
+
+    for node in onnx_model.graph.node:
+        if (node.domain, node.op_type) != ("aimet", "_UnsafeBarrier"):
+            continue
+
+        producer = producers.get(node.input[0], None)
+
+        for consumer in consumers.get(node.output[0], []):
+            for i, inp in enumerate(consumer.input):
+                if inp == node.output[0]:
+                    consumer.input[i] = node.input[0]
+
+        if producer:
+            for output in onnx_model.graph.output:
+                if output.name == node.output[0]:
+                    for i, _ in enumerate(producer.output):
+                        if producer.output[i] == node.input[0]:
+                            producer.output[i] = output.name
+
+    all_nodes = [
+        node
+        for node in onnx_model.graph.node
+        if (node.domain, node.op_type) != ("aimet", "_UnsafeBarrier")
+    ]
+    onnx_model.graph.ClearField("node")
+    onnx_model.graph.node.extend(all_nodes)
+
+
 def _remove_intermediate_identity_nodes(
     onnx_model: onnx.ModelProto, base_dir: str | None
 ):
@@ -1084,6 +1124,7 @@ def _to_onnx(
         name: (AffineEncoding._from_qnn_encoding_dict(encoding, version="2.0.0"), False)
         for name, encoding in derived_encodings.items()
     }
+    _remove_unsafe_barrier(onnx_model)
     return onnx_model, tensor_to_encoding_map
 
 
