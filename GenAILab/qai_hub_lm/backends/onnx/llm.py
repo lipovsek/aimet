@@ -242,6 +242,19 @@ class LLM_ONNX(LLM):
             input_names=cls.get_backbone_input_names(layer_cache_descs),
         )
 
+        eos_ids = set()
+        for src in (
+            getattr(instantiated_model.config, "eos_token_id", None),
+            getattr(instantiated_model.generation_config, "eos_token_id", None),
+        ):
+            if src is None:
+                continue
+            if isinstance(src, (list, tuple)):
+                eos_ids.update(src)
+            else:
+                eos_ids.add(src)
+        instantiated_model.config.eos_token_id = list(eos_ids)
+
         onnx_model, *_ = get_onnx_model(
             checkpoint=directory,
             fp_backbone_model=exportable_model,
