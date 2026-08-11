@@ -47,7 +47,6 @@ from aimet_torch.common.quantsim import (
 from aimet_torch.utils import (
     patch_attr,
     _ContextManager,
-    allow_recompute,
     _torch_compiler_is_exporting,
     _torch_compiler_is_compiling,
 )
@@ -1958,9 +1957,6 @@ class QuantizedLinear(_DispatchMixin, QuantizationMixin, nn.Linear):
     _builtin_torch_fn = F.linear
     __quant_init__ = QuantizationMixin.__unary__
 
-    # Only allow activation recompute (a.k.a activation checkpointing) for QuantizedLinear.
-    # This is mainly to reduce memory footprint of QAT of large language models.
-    @allow_recompute
     def forward(self, *args, **kwargs):
         if _torch_compiler_is_exporting():
             return super().forward(*args, **kwargs)

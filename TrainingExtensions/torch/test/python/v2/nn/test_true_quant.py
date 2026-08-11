@@ -55,7 +55,6 @@ from aimet_torch.v2.nn import (
 from aimet_torch.nn.fake_quant import _legacy_impl
 from aimet_torch.nn.true_quant import _dispatch, _dispatchable_torch_functions
 from aimet_torch.v2.quantization.tensor import QuantizedTensor, DequantizedTensor
-from aimet_torch.v2.utils import enable_recompute
 from aimet_torch.v2.nn import custom
 from aimet_torch.v2.quantsim.config_utils import (
     set_grouped_blockwise_quantization_for_weights,
@@ -592,81 +591,6 @@ class TestQuantizedLayers:
         tq_output = tq_layer(input)
 
         assert torch.allclose(fq_output, tq_output.dequantize())
-
-    @pytest.mark.cuda
-    @pytest.mark.usefixtures("register_int_linear")
-    def test_layers_with_recompute(self, use_torch_builtin_backend):
-        qlinear = QuantizedLinear(4096, 4096)
-        qlinear.input_quantizers[0] = Quantize(shape=(), bitwidth=8, symmetric=False)
-        qlinear.output_quantizers[0] = Quantize(shape=(), bitwidth=8, symmetric=False)
-        qlinear.param_quantizers["weight"] = Quantize(
-            shape=(), bitwidth=8, symmetric=True
-        )
-        qlinear.cuda()
-
-        # Using dummy backend is no good for testing memory saving in real life.
-        # Set kernel to None so as to use FakeQuantizedLinear under the hood.
-        qlinear.set_kernel(None)
-
-        x = torch.randn((100, 4096), device="cuda:0")
-
-        with qlinear.compute_encodings():
-            qlinear(x)
-
-        torch.cuda.empty_cache()
-        with enable_recompute():
-            out = qlinear(x)
-        torch.cuda.synchronize()
-        mem_with_recompute = torch.cuda.memory_allocated()
-
-        out.backward(torch.ones_like(out))
-        grads_with_recompute = [
-            param.grad.clone().detach().cpu() for param in qlinear.parameters()
-        ]
-        for param in qlinear.parameters():
-            param.grad = None
-
-        del out
-
-        torch.cuda.empty_cache()
-        out = qlinear(x)
-        torch.cuda.synchronize()
-        mem_without_recompute = torch.cuda.memory_allocated()
-
-        out.backward(torch.ones_like(out))
-        grads_without_recompute = [
-            param.grad.clone().detach().cpu() for param in qlinear.parameters()
-        ]
-        for param in qlinear.parameters():
-            param.grad = None
-
-        # Expected memory saving:
-        #   - Input quantizer save:
-        #      - mask of shape [100, 4096] * 1 byte
-        #      - quantized uint8 tensor of shape [100, 4096] * 1 byte
-        #   - Weight quantizer saves:
-        #      - mask of shape [4096, 4096] * 1 byte
-        #      - quantized uint8 tensor of shape [4096, 4096] * 1 byte
-        #   - F.linear saves:
-        #      - quantized weight of shape [4096, 4096] * 4 bytes
-        #      - quantized input of shape [100, 4096] * 4 bytes
-        #   - Output quantizer saves:
-        #      - linear output of shape [100, 4096] * 4 bytes
-        #      - mask of shape [100, 4096] * 1 byte
-        #      - quantized uint8 tensor of shape [100, 4096] * 1 byte
-        expected_memory_saving = 0
-        expected_memory_saving += (1 + 1) * x.numel()  # input quantizer
-        expected_memory_saving += (1 + 1) * qlinear.weight.numel()  # weight quantizer
-        expected_memory_saving += 4 * (qlinear.weight.numel() + x.numel())  # F.linear
-        expected_memory_saving += (4 + 1 + 1) * out.numel()  # output quantizer
-        actual_memory_saving = mem_without_recompute - mem_with_recompute
-
-        # Considering noise factors, actual memory saving should be no less than
-        # 90% of the expected memory saving
-        assert expected_memory_saving * 0.9 <= actual_memory_saving
-
-        for grad_0, grad_1 in zip(grads_with_recompute, grads_without_recompute):
-            assert torch.equal(grad_0, grad_1)
 
     def test_remove_quantizers(self, input):
         qlinear = QuantizedLinear(10, 10, bias=False)
