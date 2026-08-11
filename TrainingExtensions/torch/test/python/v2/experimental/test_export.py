@@ -350,6 +350,17 @@ def test_compute_missing_encodings(device: str):
         for inp in node.all_input_nodes:
             assert _is_torch_ao_qdq_node(inp)
 
+        if isinstance(
+            node.target, torch._ops.OpOverload
+        ) and node.target.overloadpacket in (torch.ops.aten.relu, torch.ops.aten.relu_):
+            # Relu input/output encoding should be identical non-negative encoding
+            (input_dq,) = node.all_input_nodes
+            (output_q,) = node.users
+            assert input_dq.args[1:] == output_q.args[1:]
+            _, _, zero_point, _, _, dtype = input_dq.args
+            assert zero_point == 0
+            assert dtype == torch.uint16
+
         for user in node.users:
             assert _is_torch_ao_qdq_node(user)
 

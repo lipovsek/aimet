@@ -164,9 +164,26 @@ class ExportedProgram(torch.export.ExportedProgram):
         for node in graph.nodes:
             # Exclude grid-preserving ops (aka data movement ops) if its input is already quantized.
             # This is to avoid redundant quantize-dequantize pairs around data movement ops.
-            if _is_grid_preserving_op(node):
+            if _is_grid_preserving_op(node) and node.target.overloadpacket not in (
+                torch.ops.aten.relu,
+                torch.ops.aten.relu_,
+            ):
                 continue
 
+            # Nodes followed by relu will inherit output encoding from relu
+            if all(
+                isinstance(user.target, torch._ops.OpOverload)
+                and user.target.overloadpacket
+                in (torch.ops.aten.relu, torch.ops.aten.relu_)
+                for user in node.users
+            ):
+                continue
+
+            # Exclude multi-output ops such as torch.split.
+            # Each output of multi-output ops will be quantized separately after the following getitem node
+            #                             ┌─ getitem -> x0 -> QDQ
+            # x -> split -> (x0, x1, x2) ─┼─ getitem -> x1 -> QDQ
+            #                             └─ getitem -> x2 -> QDQ
             if _is_multi_output_op(node):
                 continue
 
