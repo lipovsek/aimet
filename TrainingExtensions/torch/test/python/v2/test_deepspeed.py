@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as functional
 import torch.distributed as dist
 import deepspeed as ds
+from deepspeed.runtime.zero import ZeroParamStatus
 import tempfile
 import json
 from packaging import version
@@ -917,3 +918,35 @@ def test_conv_transpose(
 
     assert sim_deepspeed.model.conv1.param_quantizers["weight"].shape == (1, 10, 1, 1)
     assert sim_deepspeed.model.conv2.param_quantizers["weight"].shape == (1, 10, 1, 1)
+
+
+@pytest.mark.cuda
+def test_gathered_parameters_idempotency(
+    init_process_group, deepspeed_zero3_offload_config
+):
+    """
+    Given: Model pre-partitioned with deepspeed zero3 offload
+    """
+    with ds.zero.Init(config_dict_or_path=deepspeed_zero3_offload_config):
+        # ds.zero.Init context pre-partitoins the pytorch models at instantiation time.
+        # PyTorch modules instantiated under this context will only hold a partition
+        # of their parameters
+        model = torch.nn.Linear(10, 10, bias=False, device="cuda")
+        assert all(param.numel() == 0 for param in model.parameters())  # sanity check
+        assert all(
+            hasattr(param, "ds_shape") for param in model.parameters()
+        )  # sanity check
+
+    weight = dict.__getitem__(model._parameters, "weight")
+
+    """
+    When: Call SafeGatheredParameters multiple times on the same parameter
+    Then: Parameter should be re-sharded after exiting the first SafeGatheredParameters
+    """
+    assert weight.ds_status == ZeroParamStatus.NOT_AVAILABLE
+    with SafeGatheredParameters([weight]):
+        assert weight.ds_status != ZeroParamStatus.NOT_AVAILABLE
+        with SafeGatheredParameters([weight]):
+            assert weight.ds_status != ZeroParamStatus.NOT_AVAILABLE
+        assert weight.ds_status != ZeroParamStatus.NOT_AVAILABLE
+    assert weight.ds_status == ZeroParamStatus.NOT_AVAILABLE

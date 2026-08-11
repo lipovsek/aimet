@@ -95,6 +95,7 @@ containers = (
     torch.nn.ParameterList,
     torch.nn.ParameterDict,
 )
+_original_torch_linear = torch.nn.functional.linear
 
 
 class _NOT_SPECIFIED:
@@ -538,6 +539,13 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
 
         try:
             with contextlib.ExitStack() as stack:
+                # Workaround for deepspeed.
+                # Deepspeed globally mokey-patches F.linear to memory-efficient implementation
+                # which may disturb with legacy export mechanism
+                stack.enter_context(
+                    patch_attr(torch.nn.functional, "linear", _original_torch_linear)
+                )
+
                 for qtzr in self.model.modules():
                     if not isinstance(qtzr, AffineQuantizerBase):
                         continue
@@ -550,8 +558,6 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
                     with utils.in_eval_mode(self.model), torch.no_grad():
                         _ = self.model(*dummy_input)
 
-                # TODO
-                # stack.enter_context(self._concretize_int32_bias_quantizers(dummy_input))
                 return super().export(
                     path, filename_prefix, dummy_input, *args, **kwargs
                 )

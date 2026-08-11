@@ -306,7 +306,7 @@ class SequentialMse(SequentialMseBase):
     @classmethod
     def _get_quantized_weight(cls, quant_module: BaseQuantizationMixin):
         w = quant_module.weight
-        return quant_module.param_quantizers["weight"](w)
+        return quant_module.param_quantizers["weight"].forward(w)
 
     @classmethod
     def _get_original_module(cls, quant_module: BaseQuantizationMixin):

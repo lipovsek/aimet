@@ -18,7 +18,7 @@ try:
     from deepspeed.runtime.zero import ZeroParamStatus, GatheredParameters
     from deepspeed.utils import safe_set_local_fp32_param
 
-    class SafeGatheredParameters(GatheredParameters):
+    class SafeGatheredParameters:
         """
         Shallow wrapper around ref:`GatheredParameters`.
         Unlike ref:`GatheredParameters`, this function can be also called
@@ -26,16 +26,45 @@ try:
         Additionally, this function ensure the synchronization of parameters.
         """
 
+        # Keep track of the parameters that are already gathered to avoid double-gathering
+        _already_gathered: set[int] = set()
+
+        def __init__(self, params, *args, **kwargs):
+            self.params = list(params)
+            self.args = args
+            self.kwargs = kwargs.copy()
+            self._ctx = None
+
+        def __enter__(self):
+            params = [
+                param
+                for param in self.params
+                if (ds_id := getattr(param, "ds_id", None)) is not None
+                and ds_id not in self._already_gathered
+            ]
+            self._ctx = GatheredParameters(params, *self.args, **self.kwargs)
+
+            if self._ctx.enabled:
+                self._already_gathered |= set(param.ds_id for param in self._ctx.params)
+
+            return self._ctx.__enter__()
+
         def __exit__(self, *exc):
-            super().__exit__(*exc)
+            assert self._ctx is not None
 
-            if not self.enabled:
-                return
+            ret = self._ctx.__exit__(*exc)
 
-            if self.src_rank is not None:
-                for param in self.params:
+            if not self._ctx.enabled:
+                return ret
+
+            self._already_gathered -= set(param.ds_id for param in self._ctx.params)
+
+            if self._ctx.src_rank is not None:
+                for param in self._ctx.params:
                     if hasattr(param, "_z3_optimizer"):
                         safe_set_local_fp32_param(param, param.ds_tensor)
+
+            return ret
 
     @contextlib.contextmanager
     def _do_patch_dummy_parameters(module):
