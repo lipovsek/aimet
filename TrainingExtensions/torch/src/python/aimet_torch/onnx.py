@@ -974,6 +974,7 @@ def _fold_linear_weight_transpose(onnx_model: onnx.ModelProto, base_dir):
             _offload_tensor_to_external_data(transposed, base_dir)
         return transposed
 
+    aliases = {}
     visited = set()
 
     for weight in list(constants.values()):
@@ -1034,6 +1035,7 @@ def _fold_linear_weight_transpose(onnx_model: onnx.ModelProto, base_dir):
         weight_t = transpose_2d(weight)
         onnx_model.graph.initializer.append(weight_t)
         constants[weight_t.name] = weight_t
+        aliases[weight_t.name] = weight.name
 
         replaced_nodes: dict[str, onnx.NodeProto] = {}
         for qdq, transpose in qdq_transpose_pairs:
@@ -1077,6 +1079,8 @@ def _fold_linear_weight_transpose(onnx_model: onnx.ModelProto, base_dir):
         onnx_model.graph.ClearField("node")
         onnx_model.graph.node.extend(all_nodes.values())
 
+    return aliases
+
 
 def _to_onnx(
     model: torch.nn.Module,
@@ -1087,14 +1091,14 @@ def _to_onnx(
     base_dir = str(Path(str(f)).absolute().parent)
     _onnx.export(model, args, f, **kwargs)
     onnx_model = onnx.load(f, load_external_data=False)
-    _fold_linear_weight_transpose(onnx_model, base_dir)
-    aliases = _duplicate_shared_qdq_inputs(onnx_model, base_dir)
+    aliases = _fold_linear_weight_transpose(onnx_model, base_dir)
+    aliases |= _duplicate_shared_qdq_inputs(onnx_model, base_dir)
     _remove_redundant_qdqs(onnx_model, base_dir)
     _decouple_back_to_back_qdqs(onnx_model)
     _remove_dangling_nodes_and_initializers(onnx_model)
 
     param_names = {
-        f"{layer_name}.{param_name}"
+        f"{layer_name}.{param_name}" if layer_name else param_name
         for layer_name, layer in model.named_modules()
         if isinstance(layer, QuantizationMixin)
         for param_name, quantizer in layer.param_quantizers.items()

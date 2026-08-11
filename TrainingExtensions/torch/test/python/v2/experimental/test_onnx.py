@@ -3441,7 +3441,10 @@ def test_qlinear_onnx_export(
     if dynamo and qtzr_cls is Q.float.FloatQuantizeDequantize:
         pytest.skip("Exporting float quantizer with dynamo is not implemented yet")
 
-    qlinear = QuantizedLinear(in_features=10, out_features=12)
+    model = torch.nn.Linear(in_features=10, out_features=12)
+    sim = QuantizationSimModel(model, torch.randn(10))
+    qlinear = sim.model
+    aimet_torch.utils.remove_activation_quantizers(qlinear)
 
     if qtzr_cls is Q.affine.QuantizeDequantize:
         qlinear.param_quantizers["weight"] = Q.affine.QuantizeDequantize(
@@ -3466,6 +3469,19 @@ def test_qlinear_onnx_export(
 
         while x.ndim < ndim:
             x = x.unsqueeze(0)
+
+        if qtzr_cls is Q.affine.QuantizeDequantize:
+            sim.onnx.export(
+                (x,),
+                tmp_path / "qlinear.onnx",
+                input_names=["input"],
+                output_names=["output"],
+                dynamo=dynamo,
+                encoding_version="1.0.0",
+            )
+            with open(tmp_path / "qlinear.encodings") as f:
+                encodings = json.load(f)
+            assert len(encodings["param_encodings"]) == 1
 
         aimet_torch.onnx.export(
             qlinear,
