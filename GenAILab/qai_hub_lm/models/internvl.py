@@ -18,9 +18,9 @@ from transformers.models.internvl.video_processing_internvl import (
     InternVLVideoProcessor,
 )
 
-from GenAILab.qai_hub_lm.models.base import VLM
-from GenAILab.qai_hub_lm.models.generator import Generator, VLM_Generator
-from GenAILab.qai_hub_lm.models.utils.layer_cache import (
+from .base import VLM
+from .generator import Generator, VLM_Generator
+from .utils.layer_cache import (
     LayerCacheDescriptor,
     _resolve_text_config,
 )
@@ -337,7 +337,7 @@ class InternVL_VLM(VLM):
         layer_cache_descriptors: list[LayerCacheDescriptor] | None = None,
         **kwargs,
     ) -> dict[str, dict[int, str]]:
-        from GenAILab.qai_hub_lm.models.utils.layer_cache import (
+        from .utils.layer_cache import (
             AttentionType,
             attention_mask_input_names,
         )
