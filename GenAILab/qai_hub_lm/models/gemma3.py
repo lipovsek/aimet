@@ -103,7 +103,7 @@ class Gemma3_VLM_Generator(VLM_Generator):
             return
         num_images = pixel_values.shape[0]
         for i in range(num_images):
-            yield (pixel_values[i].unsqueeze(0),)
+            yield {"pixel_values": pixel_values[i].unsqueeze(0)}
 
     def forward(
         self,
