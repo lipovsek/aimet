@@ -8137,7 +8137,7 @@ def test_set_lpbq_for_params(op_types):
             assert isinstance(param_qtzr, GroupedBlockQuantizeDequantize), f"{op.name}"
             assert param_qtzr.bitwidth == 4
             assert param_qtzr.quant_info.blockSize == 8
-            assert param_qtzr.decompressed_bw == 8
+            assert param_qtzr._scale_quantizer.scale_bits == 4
         else:
             for inp in op.inputs:
                 qtzr = sim.qc_quantize_op_dict.get(inp.name)

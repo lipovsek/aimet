@@ -1845,9 +1845,10 @@ class QuantizationSimModel:
                 #   * Gemm with channel_axis=1
                 return self._get_statistical_bias_scale(op)
 
-        if isinstance(weight_qtzr, GroupedBlockQuantizeDequantize):
+        if weight_qtzr._encoding_type() == EncodingType.LPBQ:
             # NOTE: In LPBQ, bias encodings should be derived from per-channel weight scale
-            weight_scale = weight_qtzr._get_per_channel_scale()
+            scale_encoding = weight_qtzr._scale_encoding_dict()
+            weight_scale = scale_encoding["x_scale"] if scale_encoding else None
         else:
             weight_scale = weight_qtzr._get_scale()
 

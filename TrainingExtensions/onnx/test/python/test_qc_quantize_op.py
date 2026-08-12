@@ -2092,6 +2092,40 @@ class TestLPBQOp:
             "block_size": 3,
         }
 
+    def test_decompressed_bw_property(self):
+        input_shape = (2, 9)
+        bitwidth = 4
+        decompressed_bw = 8
+        quant_info = libquant_info.QcQuantizeInfo()
+        tensor_quantizer_params = TensorQuantizerParams(
+            input_shape, channel_axis=0, block_axis=1
+        )
+        lpbq_op = GroupedBlockQuantizeDequantize(
+            quant_info,
+            bitwidth,
+            decompressed_bw,
+            block_size=3,
+            quant_scheme=QuantScheme.post_training_tf,
+            op_mode=OpMode.quantizeDequantize,
+            tensor_quantizer_params=tensor_quantizer_params,
+        )
+        """
+        When: Reading decompressed_bw
+        Then: Should reflect the compressed bitwidth plus the scale quantizer's scale bits
+        """
+        assert lpbq_op.decompressed_bw == decompressed_bw
+        assert lpbq_op._scale_quantizer.scale_bits == decompressed_bw - bitwidth
+
+        """
+        When: Writing decompressed_bw
+        Then: Scale quantizer should be rebuilt with the new scale bitwidth, and reading
+              decompressed_bw back should return the newly set value
+        """
+        new_decompressed_bw = 16
+        lpbq_op.decompressed_bw = new_decompressed_bw
+        assert lpbq_op._scale_quantizer.scale_bits == new_decompressed_bw - bitwidth
+        assert lpbq_op.decompressed_bw == new_decompressed_bw
+
     def test_compute_lpbq_encodings(self):
         input_shape = (4, 2)
         bitwidth = 4

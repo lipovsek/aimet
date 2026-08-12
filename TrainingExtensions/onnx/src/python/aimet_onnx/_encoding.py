@@ -12,9 +12,6 @@ from typing import Any, Literal, TypeVar, Type, TYPE_CHECKING
 from aimet_onnx.common.defs import EncodingType, QuantizationDataType
 from aimet_onnx.common import libpymo
 
-from . import lpbq_utils
-from .utils import numpy_from_TfEncoding
-
 if TYPE_CHECKING:
     from aimet_onnx.qc_quantize_op import QcQuantizeOp, GroupedBlockQuantizeDequantize
 
@@ -119,14 +116,7 @@ class EncodingBase(ABC):
         Args:
             qtzr: QcQuantizeOp object
         """
-        from aimet_onnx.qc_quantize_op import GroupedBlockQuantizeDequantize
-
-        if (
-            isinstance(qtzr, GroupedBlockQuantizeDequantize)
-            and qtzr.quant_info.usePerChannelMode
-            and qtzr.tensor_quantizer_params
-            and qtzr.quant_info.blockSize
-        ):
+        if qtzr._encoding_type() == EncodingType.LPBQ:  # pylint:disable = protected-access
             subcls = LPBQEncoding
         elif qtzr.data_type == QuantizationDataType.int:
             subcls = AffineEncoding
@@ -1179,20 +1169,13 @@ class LPBQEncoding(AffineEncoding):
             # In any case, this corresponds to no-encoding in encoding_version 2.0.0
             return None
 
-        scale, _ = numpy_from_TfEncoding(encodings, qtzr._encoding_shape())
         compressed_bw = qtzr.bitwidth
-        decompressed_bw = qtzr.decompressed_bw
-        per_block_int_scale, per_channel_scale = lpbq_utils.grouped_dynamic_quantize(
-            scale, qtzr._block_grouping(), decompressed_bw - compressed_bw
-        )
-
-        per_channel_scale = per_channel_scale.squeeze(
-            tuple(range(1, per_channel_scale.ndim, 2))
-        )
+        scale_encoding = qtzr._scale_encoding_dict()
+        decompressed_bw = scale_encoding["input_dtype"].bits + compressed_bw
 
         return LPBQEncoding(
-            per_channel_float_scale=per_channel_scale,
-            per_block_int_scale=per_block_int_scale,
+            per_channel_float_scale=scale_encoding["x_scale"],
+            per_block_int_scale=scale_encoding["x"],
             dtype=f"int{compressed_bw}",
             decompressed_dtype=f"int{decompressed_bw}",
             channel_axis=channel_axis,
@@ -1204,11 +1187,13 @@ class LPBQEncoding(AffineEncoding):
         """
         Load encoding to QcQuantizeOp object
         """
-        from aimet_onnx.qc_quantize_op import GroupedBlockQuantizeDequantize
+        # pylint:disable = protected-access
+        from aimet_onnx.qc_quantize_op import LPBQScaleQuantizer
 
-        if not isinstance(qtzr, GroupedBlockQuantizeDequantize):
+        # TODO: Remove check and tests for this path
+        if qtzr._encoding_type() != EncodingType.LPBQ:
             raise RuntimeError(
-                "LPBQEncoding can only be loaded to GroupedBlockQuantizeDequantize quantizer."
+                "LPBQEncoding can only be loaded to a quantizer with LPBQ enabled."
             )
 
         if qtzr.tensor_quantizer_params is None:
@@ -1217,7 +1202,9 @@ class LPBQEncoding(AffineEncoding):
                 "channel/block quantization."
             )
 
-        qtzr.decompressed_bw = self.decompressed_bitwidth()
+        qtzr._scale_quantizer = LPBQScaleQuantizer(
+            self.decompressed_bitwidth() - self.bitwidth
+        )
         return super().load_to(qtzr)
 
     @property

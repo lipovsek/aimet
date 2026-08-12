@@ -945,7 +945,7 @@ def _temporarily_disable_block_grouping(sim: QuantizationSimModel):
     """
     Set all grouped block quantizers to regular block-wise quantization for the duration of the context manager.
 
-    NOTE: block grouping of 1 is equivalent to standard block-wise quantization, as each block has its own encodings.
+    NOTE: disabling scale quantization is equivalent to standard block-wise quantization, as each block has its own encodings.
 
     :param sim: QuantizationSimModel object
     """
@@ -956,19 +956,17 @@ def _temporarily_disable_block_grouping(sim: QuantizationSimModel):
         and isinstance(sim.qc_quantize_op_dict[name], GroupedBlockQuantizeDequantize)
     ]
 
-    original_block_groupings = {
-        quantizer: quantizer._block_grouping for quantizer in quantizers
+    original_scale_quantizers = {
+        quantizer: quantizer._scale_quantizer for quantizer in quantizers
     }
 
     try:
         for quantizer in quantizers:
-            quantizer._block_grouping = lambda q=quantizer: [
-                1 for _ in range(len(q._encoding_shape()))
-            ]
+            quantizer._scale_quantizer = None
         yield
     finally:
-        for quantizer, original_block_grouping in original_block_groupings.items():
-            quantizer._block_grouping = original_block_grouping
+        for quantizer, original_scale_quantizer in original_scale_quantizers.items():
+            quantizer._scale_quantizer = original_scale_quantizer
 
 
 def _has_unit_kernel_only(model: onnx.ModelProto) -> bool:

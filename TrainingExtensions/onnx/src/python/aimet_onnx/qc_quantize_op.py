@@ -6,6 +6,7 @@
 
 # pylint: disable=too-many-lines
 from __future__ import annotations
+import abc
 import copy
 from dataclasses import dataclass
 from typing import Union, List, Optional, Dict, Tuple
@@ -25,6 +26,7 @@ from aimet_onnx.common.quantsim import (
     calculate_delta_offset,
     create_encoding_from_min_max,
 )
+from aimet_onnx.utils import numpy_from_TfEncoding, numpy_to_TfEncoding
 from aimet_onnx import lpbq_utils
 from ._encoding import EncodingBase, LPBQEncoding
 
@@ -86,6 +88,7 @@ class QcQuantizeOp:
         self.data_type = QuantizationDataType.int
         self.tensor_quantizer_params = tensor_quantizer_params
         self._encoding_min_max_fixed_vals = None
+        self._scale_quantizer: Optional[ScaleQuantizer] = None
 
     def _copy(self) -> QcQuantizeOp:
         # pylint: disable=protected-access
@@ -464,6 +467,10 @@ class QcQuantizeOp:
             raise RuntimeError(
                 f"{type(self).load_encodings.__qualname__} is not supported for floating-point quantizers."
             )
+
+        if self._scale_quantizer is not None:
+            encoding = self._quantize_encodings(encoding)
+
         self._tensor_quantizer.setEncodings(encoding)
         self.op_mode = OpMode.quantizeDequantize
 
@@ -654,6 +661,8 @@ class QcQuantizeOp:
             return EncodingType.PER_TENSOR
         if not self.quant_info.blockSize:
             return EncodingType.PER_CHANNEL
+        if isinstance(self._scale_quantizer, LPBQScaleQuantizer):
+            return EncodingType.LPBQ
         return EncodingType.PER_BLOCK
 
     def update_encoding_stats(self, tensor: np.ndarray):
@@ -798,6 +807,20 @@ class QcQuantizeOp:
                         self.use_unsigned_symmetric,
                         is_unsigned_symmetric,
                     )
+            if self._encoding_type() == EncodingType.LPBQ:
+                decompressed_bw = self._scale_quantizer.scale_bits + self.bitwidth
+                encoding_mismatch_info.bitwidth_mismatch = None
+                if self.bitwidth != encoding_dict["compressed_bw"]:
+                    encoding_mismatch_info.bitwidth_mismatch = (
+                        self.bitwidth,
+                        encoding_dict["compressed_bw"],
+                    )
+                if decompressed_bw != encoding_dict["bw"]:
+                    # Possibly overwriting above bitwidth mismatch, but leaving as is to simplify mismatch info instead of adding LPBQ specific field.
+                    encoding_mismatch_info.bitwidth_mismatch = (
+                        decompressed_bw,
+                        encoding_dict["bw"],
+                    )
 
     def _merge_constraints(self, other: "QcQuantizeOp") -> None:
         """
@@ -806,6 +829,22 @@ class QcQuantizeOp:
         # pylint: disable=protected-access
         if self.quant_info.usePerChannelMode != other.quant_info.usePerChannelMode:
             raise RuntimeError("Can't merge per-tensor and per-channel quantizer")
+
+        if self._encoding_type() == EncodingType.LPBQ:
+            if not other._encoding_type() == EncodingType.LPBQ:
+                raise RuntimeError("Can't merge regular quantizer into LPBQ quantizer")
+
+            if self.bitwidth != other.bitwidth:
+                raise RuntimeError(
+                    "Can't merge LPBQ quantizers with different bitwidths: "
+                    f"{self.bitwidth} vs {other.bitwidth}"
+                )
+
+            if self._scale_quantizer.scale_bits != other._scale_quantizer.scale_bits:
+                raise RuntimeError(
+                    "Can't merge LPBQ quantizers with different scale bitwidths: "
+                    f"{self._scale_quantizer.scale_bits} vs {other._scale_quantizer.scale_bits}"
+                )
 
         if (
             self.quant_info.usePerChannelMode
@@ -865,9 +904,45 @@ class QcQuantizeOp:
 
         self.set_fixed_encoding_range(fixed_range)
 
+    def _block_axis(self) -> Optional[int]:
+        """Axis along which the scale grid is blocked, or None if not blockwise"""
+        if not self.quant_info.usePerChannelMode:
+            return None
+        if self.data_type == QuantizationDataType.float:
+            return None
+        if self.quant_info.blockSize > 0 and self.quant_info.blockAxis >= 0:
+            return self.quant_info.blockAxis
+        return None
+
+    def _quantize_encodings(self, encodings):
+        if self._scale_quantizer is None:
+            return encodings
+
+        if self.get_zero_point_shift() != 0.0:
+            raise NotImplementedError(
+                "Zero-point-shift is not supported with quantized scales"
+            )
+
+        scale, offset = numpy_from_TfEncoding(encodings, self._encoding_shape())
+        scale = self._scale_quantizer.quantize_dequantize(scale, self._block_axis())
+        return numpy_to_TfEncoding(scale, offset, self.precision())
+
+    def _scale_encoding_dict(self) -> Optional[dict]:
+        """
+        Returns scale_quantizer encoding dict (if present)
+        """
+        encodings = self.get_encodings()
+        if self._scale_quantizer is None or encodings is None:
+            return None
+
+        scale, _ = numpy_from_TfEncoding(encodings, self._encoding_shape())
+        return self._scale_quantizer.as_encoding_dict(
+            scale, self._block_axis(), self.quant_info.channelAxis
+        )
+
 
 class GroupedBlockQuantizeDequantize(QcQuantizeOp):
-    """Class for performing Grouped Block Quantize Dequantize"""
+    """LPBQ QcQuantizeOp constructor for backward compatibility"""
 
     def __init__(
         self,
@@ -897,101 +972,106 @@ class GroupedBlockQuantizeDequantize(QcQuantizeOp):
             use_symmetric_encodings=True,
             tensor_quantizer_params=tensor_quantizer_params,
         )
-        self.decompressed_bw = decompressed_bw
+        self._scale_quantizer = LPBQScaleQuantizer(decompressed_bw - bitwidth)
         self._enable_blockwise_quantization(block_size)
         self.data_type = QuantizationDataType.int
 
-    def export_encodings(self, encoding_version: str = "0.6.1"):
-        """
-        Exports the quantizer's encodings in the selected format.
-
-        :param encoding_version: Version string indicated the encoding export format.
-        """
-        if self._tensor_quantizer.getZeroPointShift() != 0.0:
-            raise NotImplementedError(
-                "Exporting encodings with shifted zero point is not supported"
-            )
-
-        return super().export_encodings(encoding_version)
-
-    def _get_per_channel_scale(self) -> Optional[np.ndarray]:
-        scale = self._get_scale()
-        if scale is None:
-            return None
-
-        decompressed_bw = self.decompressed_bw
-        compressed_bw = self.bitwidth
-        _, per_channel_scale = lpbq_utils.grouped_dynamic_quantize(
-            scale, self._block_grouping(), decompressed_bw - compressed_bw
+    @property
+    def decompressed_bw(self):
+        """Get the decompressed per-channel bitwidth"""
+        if self._scale_quantizer is None:
+            return self.bitwidth
+        if isinstance(self._scale_quantizer, LPBQScaleQuantizer):
+            return self.bitwidth + self._scale_quantizer.scale_bits
+        raise RuntimeError(
+            f"`decompressed_bw` property is not valid for scale quantizer {self._scale_quantizer}"
         )
-        return per_channel_scale
 
-    def _block_grouping(self):
-        grouping = [1 for _ in range(len(self._encoding_shape()))]
-        if self.quant_info.blockSize > 0 and self.quant_info.blockAxis >= 0:
-            grouping[self.quant_info.blockAxis] = -1
+    @decompressed_bw.setter
+    def decompressed_bw(self, decompressed_bw):
+        self._scale_quantizer = LPBQScaleQuantizer(decompressed_bw - self.bitwidth)
 
+
+class ScaleQuantizer(abc.ABC):
+    """
+    Applies QDQ to the scales of a QcQuantizeOp
+    """
+
+    @abc.abstractmethod
+    def quantize_dequantize(
+        self, scale: np.ndarray, block_axis: Optional[int]
+    ) -> np.ndarray:
+        """
+        Quantize-dequantize the scale grid
+
+        :param scale: Base per-block affine scale grid
+        :param block_axis: Axis along which the tensor is blocked, or None if not blockwise
+        """
+
+    @abc.abstractmethod
+    def as_encoding_dict(
+        self, scale: np.ndarray, block_axis: Optional[int], channel_axis: int
+    ) -> dict:
+        """
+        Returns the inputs and attributes of the onnx::DequantizeLinear op that reconstructs
+        ``scale`` from its compressed representation, keyed by ONNX DequantizeLinear inputs
+        (``x``, ``x_scale``, ``x_zero_point`` (optional), ``input_dtype``, ``axis``).
+
+        :param scale: Base per-block affine scale grid
+        :param block_axis: Axis along which the tensor is blocked, or None if not blockwise
+        :param channel_axis: Axis along which the reconstructed scale varies per channel
+        """
+
+
+@dataclass(frozen=True)
+class LPBQScaleQuantizer(ScaleQuantizer):
+    """
+    Low-power blockwise quantization.
+
+    Per-block scales within each channel are quantized to a shared integer grid and
+    reconstructed as ``per_block_int_scale * per_channel_float_scale``.
+    """
+
+    scale_bits: int
+
+    def quantize_dequantize(self, scale, block_axis):
+        """Apply LPBQ QDQ to scale"""
+        grouping = self._grouping(scale.ndim, block_axis)
+        return lpbq_utils._compress_encoding_scales(  # pylint:disable = protected-access
+            scale, grouping, self.scale_bits
+        )
+
+    def as_encoding_dict(self, scale, block_axis, channel_axis):
+        grouping = self._grouping(scale.ndim, block_axis)
+        per_block_int_scale, per_channel_float_scale = (
+            lpbq_utils.grouped_dynamic_quantize(scale, grouping, self.scale_bits)
+        )
+        # Grouping expands each axis into a (group, block) pair; drop the singleton block axes
+        per_channel_float_scale = per_channel_float_scale.squeeze(
+            tuple(range(1, per_channel_float_scale.ndim, 2))
+        )
+        return {
+            "x": per_block_int_scale,
+            "x_scale": per_channel_float_scale,
+            "input_dtype": qtype.int(self.scale_bits),
+            "axis": channel_axis,
+        }
+
+    @staticmethod
+    def _grouping(ndim: int, block_axis: Optional[int]):
+        """
+        Group all blocks along ``block_axis`` together (a single scale per channel).
+
+        If block_axis is None, returns group_size 1 for all axes (no quantization)
+        """
+        grouping = [1] * ndim
+        if block_axis is not None:
+            if not 0 <= block_axis < ndim:
+                raise ValueError(
+                    f"block_axis={block_axis} is out of range for a scale of rank {ndim}"
+                )
+            grouping[block_axis] = -1
         return grouping
-
-    def load_encodings(self, encoding: List[libpymo.TfEncoding]):
-        block_grouping = self._block_grouping()
-
-        if any(dim != 1 for dim in block_grouping):
-            encoding = lpbq_utils.compress_encoding_scales(
-                encoding,
-                self._encoding_shape(),
-                block_grouping,
-                scale_bitwidth=self.decompressed_bw - self.bitwidth,
-            )
-        super().load_encodings(encoding)
-
-    def _encoding_type(self):
-        encoding_type = super()._encoding_type()
-        if encoding_type == EncodingType.PER_BLOCK:
-            return EncodingType.LPBQ
-        return encoding_type
-
-    def _fill_mismatching_encoding_settings_info(
-        self,
-        encoding_dict: Optional[dict],
-        encoding_mismatch_info: _EncodingMismatchInfo,
-    ):
-        super()._fill_mismatching_encoding_settings_info(
-            encoding_dict, encoding_mismatch_info
-        )
-        encoding_mismatch_info.bitwidth_mismatch = None
-        if self.bitwidth != encoding_dict["compressed_bw"]:
-            encoding_mismatch_info.bitwidth_mismatch = (
-                self.bitwidth,
-                encoding_dict["compressed_bw"],
-            )
-        if self.decompressed_bw != encoding_dict["bw"]:
-            # Possibly overwriting above bitwidth mismatch, but leaving as is to simplify mismatch info instead of adding LPBQ specific field.
-            encoding_mismatch_info.bitwidth_mismatch = (
-                self.decompressed_bw,
-                encoding_dict["bw"],
-            )
-
-    def _merge_constraints(self, other: "QcQuantizeOp") -> None:
-        """
-        Merge configuration with other QcQuantizeOp.
-        """
-        if not isinstance(other, GroupedBlockQuantizeDequantize):
-            raise RuntimeError("Can't merge regular quantizer into LPBQ quantizer")
-
-        if self.bitwidth != other.bitwidth:
-            raise RuntimeError(
-                "Can't merge LPBQ quantizers with different bitwidths: "
-                f"{self.bitwidth} vs {other.bitwidth}"
-            )
-
-        if self.decompressed_bw != other.decompressed_bw:
-            raise RuntimeError(
-                "Can't merge LPBQ quantizers with different decompressed bitwidths: "
-                f"{self.decompressed_bw} vs {other.decompressed_bw}"
-            )
-
-        return super()._merge_constraints(other)
 
 
 def _get_symmetric_properties(

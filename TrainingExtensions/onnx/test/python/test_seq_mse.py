@@ -984,21 +984,22 @@ def test_temporarily_disable_grouped_block_quantizers():
     ]
     assert len(quantizers) == 3
 
-    # -1 in LPBQ indicates that all the blocks in a dimension are grouped together
     for quantizer in quantizers:
-        assert quantizer._block_grouping() == [1, -1, 1, 1]
+        assert quantizer._scale_quantizer is not None
 
     """
     When: _temporarily_disable_grouped_block_quantizers is called
-    Then: quantizer._block_grouping() returns all 1s during the context manager scope
+    Then: scale quantization is disabled during the context manager scope and restored after
     """
+
+    original_scale_quantizers = [quantizer._scale_quantizer for quantizer in quantizers]
 
     with _temporarily_disable_block_grouping(sim):
         for quantizer in quantizers:
-            assert quantizer._block_grouping() == [1, 1, 1, 1]
+            assert quantizer._scale_quantizer is None
 
-    for quantizer in quantizers:
-        assert quantizer._block_grouping() == [1, -1, 1, 1]
+    for quantizer, original in zip(quantizers, original_scale_quantizers):
+        assert quantizer._scale_quantizer is original
 
 
 @pytest.mark.parametrize("loss_fn", ["mse"])

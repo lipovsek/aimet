@@ -5,6 +5,7 @@
 import numpy as np
 
 from aimet_onnx import lpbq_utils
+from aimet_onnx.qc_quantize_op import LPBQScaleQuantizer
 from aimet_onnx.utils import numpy_from_TfEncoding, numpy_to_TfEncoding
 from aimet_onnx import qtype
 
@@ -58,3 +59,28 @@ class TestLPBQUtils:
 
         assert np.allclose(lpbq_scale, expected_lpbq_scale)
         assert np.allclose(lpbq_offset, offset)
+
+
+class TestLPBQScaleQuantizer:
+    def test_as_encoding_dict(self):
+        scale = np.abs(np.random.randn(4, 8)) + 0.1
+        enc = LPBQScaleQuantizer(scale_bits=4).as_encoding_dict(
+            scale, block_axis=1, channel_axis=0
+        )
+        assert set(enc) == {"x", "x_scale", "input_dtype", "axis"}
+        # x_scale is squeezed to one value per channel; x keeps the per-block shape
+        assert enc["x_scale"].shape == (4, 1)
+        assert enc["x"].shape == scale.shape
+        assert enc["input_dtype"] == qtype.int(4)
+        assert enc["axis"] == 0
+
+    def test_quantize_dequantize_without_block_axis_is_identity(self):
+        scale = np.abs(np.random.randn(4, 8)) + 0.1
+        quantizer = LPBQScaleQuantizer(scale_bits=4)
+        qdq = quantizer.quantize_dequantize(scale, block_axis=None)
+        assert np.array_equal(qdq, scale)
+
+    def test_equality(self):
+        # _merge_constraints relies on scale_bits equality
+        assert LPBQScaleQuantizer(scale_bits=4) == LPBQScaleQuantizer(scale_bits=4)
+        assert LPBQScaleQuantizer(scale_bits=4) != LPBQScaleQuantizer(scale_bits=8)
