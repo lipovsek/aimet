@@ -55,6 +55,7 @@ from aimet_torch.v2.quantsim.config_utils import (
     set_grouped_blockwise_quantization_for_weights,
 )
 import aimet_torch
+from aimet_torch.onnx import _to_onnx
 from aimet_torch.nn.modules import custom as aimet_ops
 from aimet_torch.nn import (
     QuantizedConv1d,
@@ -3663,7 +3664,7 @@ def test_masked_softmax_temporary_workaround(tmp_path: pathlib.Path):
 @pytest.mark.parametrize("dynamo", [True, False])
 def test_rotary_embedding_export(tmp_path: pathlib.Path, dynamo: bool):
     """
-    When: Exported custom RotaryEmbedding module to onnx QDQ
+    When: Exporting custom RotaryEmbedding module to onnx QDQ
     Then: Intermediate outputs should not be quantized
     """
     rope = aimet_ops.RotaryEmbedding(
@@ -3708,3 +3709,46 @@ def test_rotary_embedding_export(tmp_path: pathlib.Path, dynamo: bool):
     assert dq_nodes[1].output[0] == "cos_qdq"
     assert dq_nodes[2].output[0] == "sin_qdq"
     assert dq_nodes[3].output[0] == "output"
+
+
+@pytest.mark.parametrize("dynamo", [True, False])
+def test_rotary_embedding_export_encodings(tmp_path: pathlib.Path, dynamo: bool):
+    """
+    When: Exporting custom RotaryEmbedding module to onnx
+    Then: RoPE output encodings should not have _UnsafeBarrier in the tensor name
+    """
+
+    class RoPEModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.rope = aimet_ops.RotaryEmbedding(
+                interleaved=False, rotary_embedding_dim=4, head_size=8
+            )
+            self.add = aimet_ops.Add()
+            self.sub = aimet_ops.Subtract()
+
+        def forward(self, x, cos_cache, sin_cache):
+            rope_out = self.rope(self.add(x, 2), cos_cache, sin_cache)
+            return self.sub(rope_out, 2)
+
+    rope = RoPEModel()
+    dummy_input = (
+        torch.randn(1, 1, 2, 8),
+        torch.randn(1, 2, 2),
+        torch.randn(1, 2, 2),
+    )
+    input_names = ["input", "cos", "sin"]
+    output_names = ["output"]
+    sim = QuantizationSimModel(rope, dummy_input)
+    sim.compute_encodings(lambda m: m(*dummy_input))
+    _, tensor_to_encoding_map = _to_onnx(
+        sim.model,
+        dummy_input,
+        str(tmp_path / "rotary_embedding.onnx"),
+        input_names=input_names,
+        output_names=output_names,
+        dynamo=dynamo,
+    )
+
+    assert len(tensor_to_encoding_map.keys()) == 6
+    assert ("concat_1" if dynamo else "/rope/Concat_output_0") in tensor_to_encoding_map

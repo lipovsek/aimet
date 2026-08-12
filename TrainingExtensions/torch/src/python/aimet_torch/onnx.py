@@ -601,10 +601,11 @@ def _decouple_back_to_back_qdqs(onnx_model: onnx.ModelProto) -> dict[str, str]:
     onnx_model.graph.node.extend(all_nodes)
 
 
-def _remove_unsafe_barrier(onnx_model):
+def _remove_unsafe_barrier(onnx_model, tensor_to_encoding_map):
     """
     Remove _UnsafeBarrier nodes temporarily inserted by AIMET to suppress
-    encoding propagation across supergroup boundary
+    encoding propagation across supergroup boundaries and re-map output encodings
+    of unsafe barrier nodes to those of their producer's outputs.
     """
     producers: dict[str, onnx.NodeProto] = {}
     consumers: dict[str, list[onnx.NodeProto]] = {}
@@ -618,6 +619,7 @@ def _remove_unsafe_barrier(onnx_model):
         if (node.domain, node.op_type) != ("aimet", "_UnsafeBarrier"):
             continue
 
+        producer_output_tensor = node.input[0]
         producer = producers.get(node.input[0], None)
 
         for consumer in consumers.get(node.output[0], []):
@@ -630,7 +632,13 @@ def _remove_unsafe_barrier(onnx_model):
                 if output.name == node.output[0]:
                     for i, _ in enumerate(producer.output):
                         if producer.output[i] == node.input[0]:
-                            producer.output[i] = output.name
+                            producer.output[i] = producer_output_tensor = output.name
+
+        # Re-map output encoding of unsafe_barrier op to its producer output tensor
+        if node.output[0] in tensor_to_encoding_map:
+            tensor_to_encoding_map[producer_output_tensor] = tensor_to_encoding_map.pop(
+                node.output[0]
+            )
 
     all_nodes = [
         node
@@ -1128,7 +1136,8 @@ def _to_onnx(
         name: (AffineEncoding._from_qnn_encoding_dict(encoding, version="2.0.0"), False)
         for name, encoding in derived_encodings.items()
     }
-    _remove_unsafe_barrier(onnx_model)
+
+    _remove_unsafe_barrier(onnx_model, tensor_to_encoding_map)
     return onnx_model, tensor_to_encoding_map
 
 
