@@ -62,6 +62,22 @@
     {
       "is_output_quantized": "False"
     },
+    "Sin":
+    {
+      "encoding_constraints":
+      {
+        "min": -1.0,
+        "max": 1.0
+      }
+    },
+    "Cos":
+    {
+      "encoding_constraints":
+      {
+        "min": -1.0,
+        "max": 1.0
+      }
+    },
     "Tanh":
     {
       "encoding_constraints":
