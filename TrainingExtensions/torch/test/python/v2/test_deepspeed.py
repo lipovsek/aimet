@@ -216,7 +216,6 @@ def per_channel_quantsim_config():
         yield os.path.join(tmp_dir, "config_file.json")
 
 
-@pytest.mark.skip(reason="Temporarily disabled to unblock release due to flakiness")
 @pytest.mark.cuda
 def test_deepspeed_zero3_offload(
     unlabeled_data_loader,
@@ -353,9 +352,7 @@ def test_deepspeed_zero3_offload(
 
     """
     When: Compute encodings after deepspeed initialization
-    Then:
-      1) All quantizer encodings must be inititalized
-      2) get_{encoding, scale, offset, min, max} returns real tensors, not empty tensors
+    Then: All quantizer encodings must be inititalized and should be almost equal with baseline model
     """
     with (
         aimet.nn.compute_encodings(sim_deepspeed.model),
@@ -366,9 +363,32 @@ def test_deepspeed_zero3_offload(
             _ = sim_deepspeed.model(data)
             _ = sim_baseline.model(data)
 
-    for qtzr in sim_deepspeed.model.modules():
-        if isinstance(qtzr, QuantizerBase):
-            assert qtzr.is_initialized()
+    for ds_qtzr, baseline_qtzr in zip(
+        sim_deepspeed.quantizers(), sim_baseline.quantizers()
+    ):
+        assert ds_qtzr.is_initialized()
+        assert baseline_qtzr.is_initialized()
+        assert torch.allclose(
+            ds.utils.safe_get_full_fp32_param(ds_qtzr.min),
+            baseline_qtzr.min,
+        )
+        assert torch.allclose(
+            ds.utils.safe_get_full_fp32_param(ds_qtzr.max),
+            baseline_qtzr.max,
+        )
+
+    # Baseline model and deepspeed model doesn't always calibrate exactly
+    # equal scale due to floating point precision error. Therefore, copy baseline
+    # model's encodings to deepspeed model to avoid trivial difference in scale
+    # causing significant divergence in logits/gradients.
+    with (
+        ds.runtime.zero.GatheredParameters(
+            sim_deepspeed.quantizer_parameters(),
+            modifier_rank=0,
+        ),
+        torch.no_grad(),
+    ):
+        model.load_state_dict(sim_baseline.quantizer_state_dict(), strict=False)
 
     with torch.no_grad():
         for data in unlabeled_data_loader:
