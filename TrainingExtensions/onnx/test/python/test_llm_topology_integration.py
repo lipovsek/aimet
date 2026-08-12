@@ -1,6 +1,15 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""Integration tests for ``aimet_onnx.experimental.llm_topology`` on real models.
+
+Exports real HuggingFace decoder / VLM architectures through the actual
+transformers -> ONNX pipeline (both torchscript and dynamo backends) and asserts
+block-boundary detection and role-map construction across the architecture
+matrix. Unit-level logic tests on tiny hand-built decoders live in
+``test_llm_topology.py``.
+"""
+
 import contextlib
 import io
 import re

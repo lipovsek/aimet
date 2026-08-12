@@ -37,7 +37,7 @@ from aimet_onnx.experimental.adascale.model_converter import (
 from .utils import add_genai_tests_path
 
 # TODO: Move block definitions to a util file
-from .test_find_transformer_blocks import (
+from .test_llm_topology_integration import (
     _block_topology_params,
     _build_block_topology_model,
     _detect_from_config,
