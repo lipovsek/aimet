@@ -113,7 +113,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Pre-cache torch.hub repos (avoid GitHub API rate limit)
         run: |
@@ -131,7 +131,7 @@ jobs:
 
       - name: Download datasets from S3
         run: |
-          BUCKET="${{ secrets.AWS_REGRESSION_BUCKET_NAME }}"
+          BUCKET="${{ vars.AWS_REGRESSION_BUCKET_NAME }}"
           DATASET_ROOT="$HOME/.qaihm/qai-hub-models/datasets"
 
           CITYSCAPES_DIR="${DATASET_ROOT}/cityscapes/v2/data"

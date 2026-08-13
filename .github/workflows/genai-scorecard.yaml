@@ -205,8 +205,8 @@ jobs:
           huggingface-token: ${{ secrets.HUGGINGFACE_TOKEN }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-          aws-bucket-name: ${{ secrets.AWS_BUCKET_NAME }}
+          aws-region: ${{ vars.AWS_REGION }}
+          aws-bucket-name: ${{ vars.AWS_BUCKET_NAME }}
 
   test-onnx:
     name: Test (onnx)
@@ -233,8 +233,8 @@ jobs:
           huggingface-token: ${{ secrets.HUGGINGFACE_TOKEN }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-          aws-bucket-name: ${{ secrets.AWS_BUCKET_NAME }}
+          aws-region: ${{ vars.AWS_REGION }}
+          aws-bucket-name: ${{ vars.AWS_BUCKET_NAME }}
 
   # ===========================================================================
   # Cleanup ephemeral runners
