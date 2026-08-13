@@ -9,6 +9,8 @@ import operator
 import torch
 import torch.fx.node
 from torch.export import ExportedProgram
+from torch._export.utils import _detect_fake_mode_from_gm
+from torch.export.graph_signature import InputKind, InputSpec, TensorArgument
 from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch._subclasses.fake_tensor import FakeTensorMode
 
@@ -119,17 +121,26 @@ def _remove_dangling_nodes(ep: ExportedProgram):
     # Mark all visited nodes as non-dangling node
     dangling_nodes = set(ep.graph.nodes) - visited
 
-    # Remove dangling nodes from graph
+    node_name_to_input_spec = {
+        spec.arg.name: spec for spec in ep.graph_signature.input_specs
+    }
+
+    def is_user_input(node: torch.fx.Node) -> bool:
+        input_spec = node_name_to_input_spec.get(node.name)
+        return bool(input_spec) and input_spec.kind not in (
+            InputKind.PARAMETER,
+            InputKind.BUFFER,
+            InputKind.CONSTANT_TENSOR,
+        )
+
+    # Remove dangling nodes from graph except for user inputs
     for node in reversed(list(ep.graph.nodes)):
-        if node in dangling_nodes:
+        if node in dangling_nodes and not is_user_input(node):
             ep.graph.erase_node(node)
 
     ep.graph.eliminate_dead_code()
     ep.graph_module.recompile()
 
-    node_name_to_input_spec = {
-        spec.arg.name: spec for spec in ep.graph_signature.input_specs
-    }
     # Clean up graph_signature and state_dict
     ep.graph_signature.input_specs = [
         node_name_to_input_spec[input_node.name]
@@ -153,9 +164,6 @@ def _insert_placeholder(
     tensor_name: str,
     consumers: Iterable[torch.fx.Node],
 ):
-    from torch.export.graph_signature import InputKind, InputSpec, TensorArgument
-    from torch._export.utils import _detect_fake_mode_from_gm
-
     with ExitStack() as stack:
         for consumer in consumers:
             stack.enter_context(ep.graph.inserting_before(consumer))

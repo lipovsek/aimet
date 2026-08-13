@@ -11,6 +11,8 @@ from packaging import version
 import torch
 from torchvision.models import resnet18, mobilenet_v3_large
 from torch.export import ExportedProgram
+from torch._export.utils import _detect_fake_mode_from_gm
+from torch.export.graph_signature import InputKind
 import aimet_torch
 from aimet_torch import QuantizationSimModel
 from aimet_torch.nn import QuantizationMixin
@@ -186,8 +188,6 @@ def test_export(model_factory, compile: bool, tmp_path: Path):
         stack += node.all_input_nodes
     assert visited == set(node.name for node in ep.graph.nodes)
 
-    from torch.export.graph_signature import InputKind
-
     for input_spec in ep.graph_signature.input_specs:
         assert input_spec.arg.name in visited
 
@@ -206,8 +206,6 @@ def test_export(model_factory, compile: bool, tmp_path: Path):
     )
     assert not (ep.state_dict.keys() - all_targets)
     assert not (ep.constants.keys() - all_targets)
-
-    from torch._export.utils import _detect_fake_mode_from_gm
 
     _detect_fake_mode_from_gm(ep.graph_module)  # Shouldn't raise error
 
@@ -240,8 +238,6 @@ def test_shared_weight(tmp_path: Path):
     # Allow off-by-1 error
     atol = sim.model[-1].output_quantizers[0].get_scale().item()
     assert torch.allclose(sim_out, ep_out, atol=atol)
-
-    from torch.export.graph_signature import InputKind
 
     weight_params = [
         input_spec
@@ -566,3 +562,46 @@ def test_dynamic_shape():
     # Should still work with different batch size
     for batch_size in [1, 3, 4]:
         _ = ep.module()(torch.randn(batch_size, 3, 32, 32))
+
+
+def test_preserve_graph_signature():
+    """
+    Given: A model with unused user input
+    When: Export with aimet_torch.export.export
+    Then: The exported ExportedProgram should preserve the forward signature of the custom module
+    """
+
+    class MyModule(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear_1 = torch.nn.Linear(3, 3)
+            self.linear_2 = torch.nn.Linear(3, 3)
+
+        def forward(self, x, _, z):
+            return self.linear_1(x) + self.linear_2(z)
+
+    model = MyModule()
+    x = torch.randn(3, 3)
+    _ = torch.randn(3, 3)
+    z = torch.randn(3, 3)
+    sim = aimet_torch.QuantizationSimModel(model, (x, _, z), config_file="htp_v81")
+    sim.compute_encodings(lambda m: m(x, _, z))
+
+    ep = aimet_torch.experimental.export.export(sim.model, (x, _, z))
+
+    user_inputs = [
+        spec
+        for spec in ep.graph_signature.input_specs
+        if spec.kind == InputKind.USER_INPUT
+    ]
+    assert user_inputs[0].arg.name == "x"
+    assert user_inputs[1].arg.name == "_"
+    assert user_inputs[2].arg.name == "z"
+
+    ep = AimetExportedProgram.from_torch_exported_program(ep)
+    with ep.compute_missing_encodings(param_bw=8, activation_bw=16):
+        _ = ep.module()(x, _, z)
+
+    assert user_inputs[0].arg.name == "x"
+    assert user_inputs[1].arg.name == "_"
+    assert user_inputs[2].arg.name == "z"
