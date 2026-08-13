@@ -43,7 +43,7 @@ env:
 jobs:
   checklist:
     name: Validate release version
-    if: ${{  github.server_url != 'https://github.com' }}
+    if: ${{  github.repository_owner != 'qualcomm' }}
     runs-on: ubuntu-latest
     steps:
       - name: Validate if input version follows semantic versioning

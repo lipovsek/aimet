@@ -10,7 +10,7 @@ on:
 
 jobs:
   notify_new_issue:
-    if: ${{ github.server_url == 'https://github.com' && github.event_name == 'issues' && github.event.action == 'opened' }}
+    if: ${{ github.repository_owner == 'qualcomm' && github.event_name == 'issues' && github.event.action == 'opened' }}
     name: Notify new issue created on public github
     runs-on: ubuntu-latest
     steps:
@@ -22,7 +22,7 @@ jobs:
         SLACK_BOT_TOKEN: ${{ secrets.SLACK_NOTIFIER_TOKEN }}
 
   notify_new_pr:
-    if: ${{ github.server_url == 'https://github.com' && github.event_name == 'pull_request' && github.event.action == 'opened' }}
+    if: ${{ github.repository_owner == 'qualcomm' && github.event_name == 'pull_request' && github.event.action == 'opened' }}
     name: Notify new PR created on public github
     runs-on: ubuntu-latest
     steps:

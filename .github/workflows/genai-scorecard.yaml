@@ -90,7 +90,7 @@ jobs:
   # ===========================================================================
   build-aimet-onnx-gpu:
     name: Build aimet_onnx
-    if: github.server_url != 'https://github.com'
+    if: github.repository_owner != 'qualcomm'
     uses: ./.github/workflows/build-wheels.yml
     with:
       variants: >
@@ -107,7 +107,7 @@ jobs:
   build-aimet-torch-gpu:
     name: Build aimet_torch
     if: |
-      github.server_url != 'https://github.com' &&
+      github.repository_owner != 'qualcomm' &&
       (github.event_name != 'workflow_dispatch' ||
       github.event.inputs.run_mode != 'ad_hoc' ||
       github.event.inputs.ad_hoc_variants != 'onnx')
@@ -132,7 +132,7 @@ jobs:
     name: Start ONNX runner
     if: |
       always() &&
-      github.server_url != 'https://github.com' &&
+      github.repository_owner != 'qualcomm' &&
       (github.event_name != 'workflow_dispatch' ||
       github.event.inputs.run_mode != 'ad_hoc' ||
       github.event.inputs.ad_hoc_variants != 'torch')
@@ -156,7 +156,7 @@ jobs:
     name: Start Torch runner
     if: |
       always() &&
-      github.server_url != 'https://github.com' &&
+      github.repository_owner != 'qualcomm' &&
       (github.event_name != 'workflow_dispatch' ||
       github.event.inputs.run_mode != 'ad_hoc' ||
       github.event.inputs.ad_hoc_variants != 'onnx')
@@ -184,7 +184,7 @@ jobs:
     needs: [build-aimet-torch-gpu, build-aimet-onnx-gpu, start-runner-torch]
     if: |
       !cancelled() &&
-      github.server_url != 'https://github.com' &&
+      github.repository_owner != 'qualcomm' &&
       needs.build-aimet-torch-gpu.result == 'success' &&
       needs.build-aimet-onnx-gpu.result == 'success' &&
       needs.start-runner-torch.result == 'success'
@@ -213,7 +213,7 @@ jobs:
     needs: [build-aimet-onnx-gpu, start-runner-onnx]
     if: |
       !cancelled() &&
-      github.server_url != 'https://github.com' &&
+      github.repository_owner != 'qualcomm' &&
       needs.build-aimet-onnx-gpu.result == 'success' &&
       needs.start-runner-onnx.result == 'success'
     runs-on: ${{ needs.start-runner-onnx.outputs.runner-label }}
@@ -242,7 +242,7 @@ jobs:
   cleanup-runners:
     name: Cleanup runners
     needs: [test-torch, test-onnx, start-runner-torch, start-runner-onnx]
-    if: always() && github.server_url != 'https://github.com'
+    if: always() && github.repository_owner != 'qualcomm'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

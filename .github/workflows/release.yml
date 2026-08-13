@@ -36,7 +36,7 @@ env:
 
 jobs:
   read_aimet_version:
-    if: ${{ github.event_name == 'push' && github.server_url != 'https://github.com' }}
+    if: ${{ github.event_name == 'push' && github.repository_owner != 'qualcomm' }}
     name: Read AIMET version from branch
     runs-on: ubuntu-latest
     outputs:
@@ -58,7 +58,7 @@ jobs:
 
   release_via_push_event:
     name: Release AIMET to public (Automated)
-    if: ${{ github.event_name == 'push' && github.server_url != 'https://github.com' }}
+    if: ${{ github.event_name == 'push' && github.repository_owner != 'qualcomm' }}
     needs: read_aimet_version
     uses: ./.github/workflows/release-workflow.yml
     with:
@@ -71,7 +71,7 @@ jobs:
     secrets: inherit
 
   release_via_manual_workflow:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.server_url != 'https://github.com' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository_owner != 'qualcomm' }}
     name: Release AIMET to public (Manual)
     uses: ./.github/workflows/release-workflow.yml
     with:

@@ -19,7 +19,7 @@ on:
 jobs:
   pre-commit-check:
     name: "Pre-commit check"
-    if: github.server_url != 'https://github.com'
+    if: github.repository_owner != 'qualcomm'
     uses: ./.github/workflows/pre-commit.yml
 
   set_vars:

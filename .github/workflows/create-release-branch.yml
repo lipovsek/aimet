@@ -9,7 +9,7 @@ env:
 jobs:
   create_release_branch:
     name: Create Release Branch
-    if: ${{  github.server_url != 'https://github.com' }}
+    if: ${{  github.repository_owner != 'qualcomm' }}
     runs-on: ubuntu-latest
     outputs:
       release_branch: ${{ steps.create_branch.outputs.RELEASE_BRANCH_NAME }}
