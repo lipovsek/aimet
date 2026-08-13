@@ -60,6 +60,7 @@ def test_llm_quantization(
     recipe_cache,
     export_dir,
     results_dir,
+    truncation_aware,
 ):
     if test_config is None:
         pytest.skip("No GenAI test parameters provided.")
@@ -282,6 +283,17 @@ def test_llm_quantization(
                 sim_collection.embedding.state_dict(),
                 os.path.join(export_dir, "embedding.pth"),
             )
+
+    if truncation_aware:
+        from aimet_onnx.experimental._truncation_aware import (
+            create_truncation_aware_session,
+        )
+
+        for sim in (sim_collection.backbone, sim_collection.visual):
+            if sim is None:
+                continue
+            del sim.session
+            sim.session = create_truncation_aware_session(sim, truncation_bits=8)
 
     evaluation_results = []
     with torch.no_grad():

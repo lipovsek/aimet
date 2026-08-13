@@ -41,8 +41,15 @@ from GenAILab.qai_hub_lm.backends.torch.generator_utils import generator_factory
 
 
 def test_llm_quantization(
-    test_config, fp_cache: DiskBackedFPCache, recipe_cache, export_dir, results_dir
+    test_config,
+    fp_cache: DiskBackedFPCache,
+    recipe_cache,
+    export_dir,
+    results_dir,
+    truncation_aware,
 ):
+    if truncation_aware:
+        raise ValueError("--truncation-aware is not supported with torch framework")
     if test_config is None:
         pytest.skip("No GenAI test parameters provided.")
     set_seed(42)

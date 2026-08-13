@@ -60,6 +60,12 @@ def pytest_addoption(parser):
         default=False,
         help="Clear the recipe cache before running",
     )
+    parser.addoption(
+        "--truncation-aware",
+        action="store_true",
+        default=False,
+        help="Simulate int32 accumulator truncation error during eval",
+    )
 
 
 @pytest.fixture(scope="session")
@@ -105,6 +111,12 @@ def recipe_cache(request):
     if request.config.getoption("--clear-recipe-cache"):
         cache.clear()
     return cache
+
+
+@pytest.fixture(scope="session")
+def truncation_aware(request):
+    """Whether to simulate int32 accumulator truncation error during eval."""
+    return request.config.getoption("--truncation-aware")
 
 
 @pytest.fixture(scope="session")
