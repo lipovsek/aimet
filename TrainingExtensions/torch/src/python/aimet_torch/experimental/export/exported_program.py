@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 # pylint: disable=protected-access
+import operator
 from contextlib import contextmanager
 from typing import Optional, Callable
 import re
@@ -162,6 +163,22 @@ class ExportedProgram(torch.export.ExportedProgram):
             return _fx_map_arg(args, lambda arg: new if arg is old else arg)
 
         for node in graph.nodes:
+            # Exclude multi-output ops which returns tuple of tensors.
+            # QDQ for each output will be attached to the the succeeding getitem node
+            #
+            #                                      ┌─ getitem -> y0 -> QDQ
+            # ... -> QDQ -> split -> (y0, y1, y2) ─┼─ getitem -> y1 -> QDQ
+            #                                      └─ getitem -> y2 -> QDQ
+            if _is_multi_output_op(node):
+                continue
+
+            # getitem output will inherit the previous node's input encoding
+            # if the previous node is a grid-preserving op (aka data movement op)
+            if node.target is operator.getitem and _is_grid_preserving_op(
+                node.all_input_nodes[0]
+            ):
+                continue
+
             # Exclude grid-preserving ops (aka data movement ops) if its input is already quantized.
             # This is to avoid redundant quantize-dequantize pairs around data movement ops.
             if _is_grid_preserving_op(node) and node.target.overloadpacket not in (
@@ -177,14 +194,6 @@ class ExportedProgram(torch.export.ExportedProgram):
                 in (torch.ops.aten.relu, torch.ops.aten.relu_)
                 for user in node.users
             ):
-                continue
-
-            # Exclude multi-output ops such as torch.split.
-            # Each output of multi-output ops will be quantized separately after the following getitem node
-            #                             ┌─ getitem -> x0 -> QDQ
-            # x -> split -> (x0, x1, x2) ─┼─ getitem -> x1 -> QDQ
-            #                             └─ getitem -> x2 -> QDQ
-            if _is_multi_output_op(node):
                 continue
 
             tensor_meta = node.meta.get("tensor_meta", None)

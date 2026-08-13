@@ -381,9 +381,9 @@ def test_compute_missing_encodings(device: str):
 @pytest.mark.parametrize(
     "op",
     [
-        partial(torch.ops.aten.split.Tensor, split_size=5, dim=-1),
-        partial(torch.ops.aten.split.sizes, split_size=[5, 5], dim=-1),
-        partial(torch.ops.aten.split.sizes, split_size=[5, 5], dim=-1),
+        partial(torch.ops.aten.split, split_size=5, dim=-1),
+        partial(torch.ops.aten.split, split_size=[5, 5], dim=-1),
+        partial(torch.ops.aten.split, split_size=[5, 5], dim=-1),
         partial(torch.ops.aten.min, dim=-1),
         partial(torch.ops.aten.max, dim=-1),
         partial(torch.ops.aten.max_pool2d_with_indices, kernel_size=(2, 2)),
@@ -416,19 +416,56 @@ def test_multi_output_grid_preserving_ops(op: Callable[[torch.Tensor], Any]):
 
     ep = aimet_torch.experimental.export.export(sim.model, (x,))
 
-    for producer in ep.graph.output_node().all_input_nodes[:-1]:
+    input_dq = next(
+        dq
+        for dq in ep.graph.nodes
+        if dq.target == torch.ops.quantized_decomposed.dequantize_per_tensor.default
+    )
+
+    output_producers = (
+        list(ep.graph.output_node().all_input_nodes)
+        if op.func == torch.ops.aten.split
+        else list(ep.graph.output_node().all_input_nodes[:-1])
+    )
+
+    for output_dq in output_producers:
         assert (
-            producer.target.overloadpacket
+            output_dq.target.overloadpacket
             == torch.ops.quantized_decomposed.dequantize_per_tensor
         )
+        assert output_dq.args[1:] == input_dq.args[1:]
 
-    last_producer = list(ep.graph.output_node().all_input_nodes)[-1]
+    """
+    Given: Grid-preserving operator with multiple outputs with no input quantizer
+    When: Export quantsim with aimet_torch.export.export
+    Then: All output encodings should be derived from the input encoding
+    """
 
-    if last_producer.meta["tensor_meta"].dtype.is_floating_point:
+    model = MyModule()
+    ep = aimet_torch.experimental.export.export(model, (x,))
+    ep = AimetExportedProgram.from_torch_exported_program(ep)
+
+    with ep.compute_missing_encodings(param_bw=8, activation_bw=16):
+        _ = ep.module()(x)
+
+    input_dq = next(
+        dq
+        for dq in ep.graph.nodes
+        if dq.target == torch.ops.quantized_decomposed.dequantize_per_tensor.default
+    )
+
+    output_producers = (
+        list(ep.graph.output_node().all_input_nodes)
+        if op.func == torch.ops.aten.split
+        else list(ep.graph.output_node().all_input_nodes[:-1])
+    )
+
+    for output_dq in output_producers:
         assert (
-            last_producer.target.overloadpacket
+            output_dq.target.overloadpacket
             == torch.ops.quantized_decomposed.dequantize_per_tensor
         )
+        assert output_dq.args[1:] == input_dq.args[1:]
 
 
 def test_compute_missing_encodings_with_constant():

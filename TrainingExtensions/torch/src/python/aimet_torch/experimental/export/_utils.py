@@ -97,9 +97,6 @@ _GRID_PRESERVING_OPS = (
 
 
 def _is_grid_preserving_op(node: torch.fx.Node) -> bool:
-    if node.target is operator.getitem:
-        return True
-
     if not isinstance(node.target, torch._ops.OpOverload):
         return False
 
