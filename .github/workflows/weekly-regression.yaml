@@ -84,30 +84,14 @@ jobs:
   #=============================================================================
   # ONNX Weekly Regression (GPU Runner 1)
   #=============================================================================
-  start-runner-onnx:
-    name: Start runner (onnx-gpu weekly)
-    needs: build-aimet-onnx-gpu
-    if: ${{ github.event.inputs.framework != 'torch' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/start-gpu-runner
-        with:
-          runner-id: onnx-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
-          gpu-request: "1"
-          cpu-request: "16"
-          memory-request: "160Gi"
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
-
   onnx-weekly:
     name: Run ONNX Weekly (GPU)
-    needs: start-runner-onnx
+    needs: build-aimet-onnx-gpu
     if: ${{ github.event.inputs.framework != 'torch' }}
     uses: ./.github/workflows/regression-gpu-job.yml
     with:
       framework: onnx
-      runner-id: onnx-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
+      runner-id: mlops-ci-gpu-small
       suite: weekly-onnx
       workflow-file: weekly-regression.yaml
       artifact-prefix: onnx-weekly
@@ -117,46 +101,17 @@ jobs:
       baseline-source: ${{ github.event.inputs.baseline_source == 'custom' && github.event.inputs.baseline_source_custom || github.event.inputs.baseline_source || 'own' }}
     secrets: inherit
 
-  cleanup-runner-onnx:
-    name: Cleanup runner (onnx-gpu weekly)
-    if: always() && github.event.inputs.framework != 'torch'
-    needs: [ start-runner-onnx, onnx-weekly ]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/stop-gpu-runner
-        with:
-          runner-ids: onnx-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
-
   #=============================================================================
   # Torch Weekly Regression (GPU Runner 2, runs in PARALLEL)
   #=============================================================================
-  start-runner-torch:
-    name: Start runner (torch-gpu weekly)
-    needs: build-aimet-torch-gpu
-    if: ${{ github.event.inputs.framework != 'onnx' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/start-gpu-runner
-        with:
-          runner-id: torch-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
-          gpu-request: "1"
-          cpu-request: "16"
-          memory-request: "160Gi"
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
-
   torch-weekly:
     name: Run Torch Weekly (GPU)
-    needs: start-runner-torch
+    needs: build-aimet-torch-gpu
     if: ${{ github.event.inputs.framework != 'onnx' }}
     uses: ./.github/workflows/regression-gpu-job.yml
     with:
       framework: torch
-      runner-id: torch-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
+      runner-id: mlops-ci-gpu-small
       suite: weekly-torch
       workflow-file: weekly-regression.yaml
       artifact-prefix: torch-weekly
@@ -166,19 +121,6 @@ jobs:
       baseline-source: ${{ github.event.inputs.baseline_source == 'custom' && github.event.inputs.baseline_source_custom || github.event.inputs.baseline_source || 'own' }}
     secrets: inherit
 
-  cleanup-runner-torch:
-    name: Cleanup runner (torch-gpu weekly)
-    if: always() && github.event.inputs.framework != 'onnx'
-    needs: [ start-runner-torch, torch-weekly ]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/stop-gpu-runner
-        with:
-          runner-ids: torch-gpu-weekly-${{ github.run_id }}-${{ github.run_attempt }}
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
-
   #=============================================================================
   # Results
   #=============================================================================
@@ -187,8 +129,6 @@ jobs:
     needs:
       - build-aimet-onnx-gpu
       - build-aimet-torch-gpu
-      - start-runner-onnx
-      - start-runner-torch
       - onnx-weekly
       - torch-weekly
     if: always()
@@ -205,7 +145,7 @@ jobs:
       - name: Download ONNX comparison summary
         if: ${{ needs.onnx-weekly.result != 'skipped' }}
         continue-on-error: true
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: onnx-weekly-comparison-summary
           path: summaries/onnx
@@ -213,7 +153,7 @@ jobs:
       - name: Download Torch comparison summary
         if: ${{ needs.torch-weekly.result != 'skipped' }}
         continue-on-error: true
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: torch-weekly-comparison-summary
           path: summaries/torch
@@ -234,8 +174,6 @@ jobs:
         env:
           BUILD_ONNX_RESULT: ${{ needs.build-aimet-onnx-gpu.result }}
           BUILD_TORCH_RESULT: ${{ needs.build-aimet-torch-gpu.result }}
-          RUNNER_ONNX_RESULT: ${{ needs.start-runner-onnx.result }}
-          RUNNER_TORCH_RESULT: ${{ needs.start-runner-torch.result }}
           ONNX_RESULT: ${{ needs.onnx-weekly.result }}
           TORCH_RESULT: ${{ needs.torch-weekly.result }}
         run: |
@@ -250,10 +188,6 @@ jobs:
             FAILED_STAGE="AIMET build (ONNX)"
           elif [ "$BUILD_TORCH_RESULT" = "failure" ]; then
             FAILED_STAGE="AIMET build (Torch)"
-          elif [ "$RUNNER_ONNX_RESULT" = "failure" ]; then
-            FAILED_STAGE="runner startup (ONNX)"
-          elif [ "$RUNNER_TORCH_RESULT" = "failure" ]; then
-            FAILED_STAGE="runner startup (Torch)"
           fi
           echo "failed_stage=$FAILED_STAGE" >> "$GITHUB_OUTPUT"
 

@@ -60,10 +60,10 @@ runs:
     # Setup
     # -------------------------------------------------------------------
     - name: Download wheel artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         path: downloads
-      # download-artifact@v3 with just `path` downloads ALL artifacts into
+      # download-artifact@v4 with just `path` downloads ALL artifacts into
       # subdirectories. We then flatten only the ones we need.
 
     - name: Collect requested wheels
@@ -184,7 +184,7 @@ runs:
 
     - name: Upload reports
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: test-data-${{ inputs.variant }}-${{ github.run_id }}
         path: GenAILab/artifacts/results/

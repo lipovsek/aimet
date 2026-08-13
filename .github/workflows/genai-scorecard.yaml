@@ -126,69 +126,17 @@ jobs:
     secrets: inherit
 
   # ===========================================================================
-  # Start ephemeral runners (independent)
-  # ===========================================================================
-  start-runner-onnx:
-    name: Start ONNX runner
-    if: |
-      always() &&
-      github.repository_owner != 'qualcomm' &&
-      (github.event_name != 'workflow_dispatch' ||
-      github.event.inputs.run_mode != 'ad_hoc' ||
-      github.event.inputs.ad_hoc_variants != 'torch')
-    runs-on: ubuntu-latest
-    outputs:
-      runner-label: ${{ steps.start.outputs.runner-label }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: start
-        uses: ./.github/actions/start-gpu-runner
-        with:
-          runner-id: genai-onnx-${{ github.run_id }}-${{ github.run_attempt }}
-          gpu-request: "1"
-          cpu-request: "32"
-          memory-request: "512Gi"
-          argo-namespace: "aihub"
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
-
-  start-runner-torch:
-    name: Start Torch runner
-    if: |
-      always() &&
-      github.repository_owner != 'qualcomm' &&
-      (github.event_name != 'workflow_dispatch' ||
-      github.event.inputs.run_mode != 'ad_hoc' ||
-      github.event.inputs.ad_hoc_variants != 'onnx')
-    runs-on: ubuntu-latest
-    outputs:
-      runner-label: ${{ steps.start.outputs.runner-label }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: start
-        uses: ./.github/actions/start-gpu-runner
-        with:
-          runner-id: genai-torch-${{ github.run_id }}-${{ github.run_attempt }}
-          gpu-request: "1"
-          cpu-request: "32"
-          memory-request: "512Gi"
-          argo-namespace: "aihub"
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
-
-  # ===========================================================================
   # Run tests (independent — torch doesn't wait for ONNX or vice versa)
   # ===========================================================================
   test-torch:
     name: Test (torch)
-    needs: [build-aimet-torch-gpu, build-aimet-onnx-gpu, start-runner-torch]
+    needs: [build-aimet-torch-gpu, build-aimet-onnx-gpu]
     if: |
       !cancelled() &&
       github.repository_owner != 'qualcomm' &&
       needs.build-aimet-torch-gpu.result == 'success' &&
-      needs.build-aimet-onnx-gpu.result == 'success' &&
-      needs.start-runner-torch.result == 'success'
-    runs-on: ${{ needs.start-runner-torch.outputs.runner-label }}
+      needs.build-aimet-onnx-gpu.result == 'success'
+    runs-on: mlops-gpu-xlarge
     timeout-minutes: 10080     # 7 days
     steps:
       - uses: actions/checkout@v4
@@ -210,13 +158,12 @@ jobs:
 
   test-onnx:
     name: Test (onnx)
-    needs: [build-aimet-onnx-gpu, start-runner-onnx]
+    needs: [build-aimet-onnx-gpu]
     if: |
       !cancelled() &&
       github.repository_owner != 'qualcomm' &&
-      needs.build-aimet-onnx-gpu.result == 'success' &&
-      needs.start-runner-onnx.result == 'success'
-    runs-on: ${{ needs.start-runner-onnx.outputs.runner-label }}
+      needs.build-aimet-onnx-gpu.result == 'success'
+    runs-on: mlops-gpu-xlarge
     timeout-minutes: 10080     # 7 days
     steps:
       - uses: actions/checkout@v4
@@ -235,22 +182,3 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
           aws-bucket-name: ${{ vars.AWS_BUCKET_NAME }}
-
-  # ===========================================================================
-  # Cleanup ephemeral runners
-  # ===========================================================================
-  cleanup-runners:
-    name: Cleanup runners
-    needs: [test-torch, test-onnx, start-runner-torch, start-runner-onnx]
-    if: always() && github.repository_owner != 'qualcomm'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/stop-gpu-runner
-        with:
-          runner-ids: >-
-            ${{ needs.start-runner-torch.outputs.runner-label }},
-            ${{ needs.start-runner-onnx.outputs.runner-label }}
-          argo-namespace: "aihub"
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
