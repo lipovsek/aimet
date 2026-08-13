@@ -90,7 +90,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download AIMET wheel
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.framework }}-gpu-wheel
           path: downloads
@@ -307,7 +307,7 @@ jobs:
           echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
 
       - name: Upload baseline artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.artifact_name.outputs.name }}
           path: AIMETRegression/baselines/latest.json
@@ -316,7 +316,7 @@ jobs:
 
       - name: Upload comparison summary
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact-prefix }}-comparison-summary
           path: AIMETRegression/reports/comparison_summary.json
@@ -325,7 +325,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact-prefix }}-reports-${{ steps.timestamp.outputs.datetime }}-${{ github.run_id }}
           path: AIMETRegression/reports/**/*
