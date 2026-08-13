@@ -25,7 +25,10 @@ env:
 jobs:
 
   repo-sync:
-    if: github.server_url != 'https://github.com'
+    # The internal repo and the public mirror (qualcomm/aimet) both live on
+    # github.com, so gate on the owner rather than the host: sync runs from the
+    # internal repo only, and never from the mirror back onto itself.
+    if: github.repository_owner != 'qualcomm'
     runs-on: ubuntu-latest
     env:
       INTERNAL_REPO_DIR: "aimet-repo"

@@ -44,7 +44,7 @@ on:
 jobs:
   parse_python_versions:
     name: Parse Python versions
-    runs-on: ubuntu-latest
+    runs-on: tetra-ubuntu-2204
     outputs:
       python_versions: ${{ steps.set-matrix.outputs.python_versions }}
     steps:
@@ -56,29 +56,11 @@ jobs:
           json_array=$(echo "$versions" | tr ',' '\n' | jq -R . | jq -sc .)
           echo "python_versions={\"ver_python\":$json_array}" >> $GITHUB_OUTPUT
 
-  start-runner:
-    if: ${{ inputs.run_unit_tests || inputs.run_acceptance_tests }}
-    name: Start runner (${{ inputs.env_name }}, Python ${{ matrix.ver_python }})
-    needs: [parse_python_versions]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.parse_python_versions.outputs.python_versions) }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/start-gpu-runner
-        with:
-          runner-id: ${{ inputs.env_name }}-py${{ matrix.ver_python }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
-          gpu-request: ${{ inputs.ver_cuda != '' && '1' || '0' }}
-          cpu-request: "16"
-          docker-image: ${{ inputs.ver_cuda != '' && format('docker-registry.qualcomm.com/library/nvidia/cuda:{0}-cudnn-devel-ubuntu22.04', inputs.ver_cuda) || 'docker-registry.qualcomm.com/library/ubuntu:22.04' }}
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
-
   test_on_linux:
     name: Run AIMET unit and acceptance tests on Ubuntu (Python ${{ matrix.ver_python }})
-    needs: [parse_python_versions, start-runner]
-    runs-on: ${{ inputs.env_name }}-py${{ matrix.ver_python }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
+    needs: [parse_python_versions]
+    # CUDA variants need a real GPU; CPU-only variants stay on the CPU pool.
+    runs-on: ${{ inputs.ver_cuda != '' && 'mlops-ci-gpu-large' || 'mlops-ci-cpu' }}
     if: ${{ inputs.run_unit_tests || inputs.run_acceptance_tests }}
     strategy:
       fail-fast: false
@@ -98,23 +80,23 @@ jobs:
           # Set CUDA_HOME for deepspeed and other CUDA-dependent packages
           echo "CUDA_HOME=/usr/local/cuda" >> $GITHUB_ENV
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: "${{ inputs.env_name }}-wheel"
           path: "downloads"
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         if: inputs.ver_onnxruntime != ''
         with:
           name: "${{ inputs.env_name }}-tests"
           path: "downloads"
       # Download both aimet-torch and aimet-onnx wheels for acceptance tests
       # for joint testing of torch and onnx packages in the same environment
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         if: inputs.run_acceptance_tests
         with:
           name: "torch-${{ inputs.ver_cuda == '' && 'cpu' || 'gpu' }}-wheel"
           path: "downloads"
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         if: inputs.run_acceptance_tests
         with:
           name: "onnx-${{ inputs.ver_cuda == '' && 'cpu' || 'gpu' }}-wheel"
@@ -226,22 +208,6 @@ jobs:
           fi
           python -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS
 
-  cleanup-runner:
-    if: ${{ always() && (inputs.run_unit_tests || inputs.run_acceptance_tests) }}
-    name: Cleanup runner (${{ inputs.env_name }}, Python ${{ matrix.ver_python }})
-    needs: [parse_python_versions, start-runner, test_on_linux]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.parse_python_versions.outputs.python_versions) }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/stop-gpu-runner
-        with:
-          runner-ids: ${{ inputs.env_name }}-py${{ matrix.ver_python }}-tests-${{ github.run_id }}-${{ github.run_attempt }}
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
-
   test_on_windows:
     name: Run AIMET unit and acceptance tests on Windows (${{ matrix.arch }})
     runs-on: [self-hosted, Windows, "${{ matrix.arch }}"]
@@ -265,7 +231,7 @@ jobs:
           $env:TMP = "$env:GITHUB_WORKSPACE\temp"
 
       - name: Download built wheels
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: "onnx-cpu-win-${{ matrix.wheel-arch }}-wheel"
           path: "downloads"

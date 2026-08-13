@@ -12,28 +12,14 @@ on:
         default: false
 
 jobs:
-  start-runner:
-    name: Start runner (${{ matrix.id }})
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(inputs.variants) }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/start-gpu-runner
-        with:
-          runner-id: ${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
-          gpu-request: "0"
-          docker-image: ${{ matrix.VER_CUDA != '' && format('docker-registry.qualcomm.com/library/nvidia/cuda:{0}-cudnn-devel-ubuntu22.04', matrix.VER_CUDA) || 'docker-registry.qualcomm.com/library/ubuntu:22.04' }}
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
-
   build-linux:
-    needs: [start-runner]
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.variants) }}
-    runs-on: ${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+    # Wheel builds never request a GPU (they only need the CUDA toolkit to
+    # compile against), but they are too heavy for the lightweight
+    # tetra-ubuntu-2204 pool, so every variant builds on mlops-ci-cpu.
+    runs-on: mlops-ci-cpu
     defaults:
       run:
         shell: bash
@@ -54,22 +40,6 @@ jobs:
           pip-index: ${{ matrix.PIP_INDEX }}
           build-targets: ${{ matrix.BUILD_TARGETS }}
           build-tests: ${{ (matrix.id == 'onnx-cpu' || matrix.id == 'onnx-gpu') && 'ON' || 'OFF' }}
-
-  cleanup-runner:
-    if: always()
-    name: Cleanup runner (${{ matrix.id }})
-    needs: [start-runner, build-linux]
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(inputs.variants) }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/stop-gpu-runner
-        with:
-          runner-ids: ${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
-          kubeconfig: ${{ secrets.KUBECONFIG }}
-          pat-token: ${{ secrets.SOURCE_REPO_PAT }}
 
   build-windows:
     runs-on: [self-hosted, Windows, X64]
@@ -184,10 +154,10 @@ jobs:
           Get-ChildItem dist\
 
       - name: Upload AIMET Windows wheel file
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: "onnx-cpu-win-${{ matrix.arch }}-wheel"
           path: |
             dist/aimet*.whl
           if-no-files-found: error
-          retention-days: 30d
+          retention-days: 30

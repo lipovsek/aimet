@@ -12,14 +12,18 @@ concurrency:
   group: ${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
+# The internal repo and the public mirror (qualcomm/aimet) both live on
+# github.com, so these jobs gate on the owner rather than the host: CI runs
+# internally, where the self-hosted runners and secrets exist, and is skipped
+# on the public mirror.
 jobs:
 
   dco:
-    if: github.server_url != 'https://github.com'
+    if: github.repository_owner != 'qualcomm'
     uses: ./.github/workflows/dco.yml
 
   pipeline:
-    if: github.server_url != 'https://github.com'
+    if: github.repository_owner != 'qualcomm'
     needs: dco
     uses: ./.github/workflows/pipeline.yml
     secrets: inherit

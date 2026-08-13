@@ -11,7 +11,7 @@ jobs:
 
   variants:
     name: Define supported AIMET variants
-    runs-on: ubuntu-latest
+    runs-on: tetra-ubuntu-2204
     needs: pre-commit-check
     outputs:
       matrix: ${{ steps.final.outputs.value }}
@@ -186,14 +186,17 @@ jobs:
     secrets: inherit
 
   # ---------------------------------------------------------------------------
-  # GenAI unit tests — lightweight, CPU-only, no model weights required
-  # Uses freshly built AIMET wheels from the same pipeline run.
+  # GenAI unit + integration tests, using freshly built AIMET wheels from the
+  # same pipeline run.
   # ---------------------------------------------------------------------------
   genai-unit-tests:
     name: GenAI unit tests
     needs: [pre-commit-check, variants, call-build-wheels]
     if: needs.variants.outputs.test_genai_unit == 'true' || github.ref_name == github.event.repository.default_branch
-    runs-on: ubuntu-latest
+    # Tests are CPU/fp32, but the integration suite needs more than 64Gi because
+    # the module-level ORT session caches are never evicted. mlops-ci-cpu now
+    # requests 128Gi, so no GPU class is needed.
+    runs-on: mlops-ci-cpu
     steps:
       - uses: actions/checkout@v4
 
@@ -203,13 +206,13 @@ jobs:
           python-version: "3.10"
 
       - name: Download aimet-torch wheel
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: "torch-cpu-wheel"
           path: "downloads"
 
       - name: Download aimet-onnx wheel
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: "onnx-cpu-wheel"
           path: "downloads"
