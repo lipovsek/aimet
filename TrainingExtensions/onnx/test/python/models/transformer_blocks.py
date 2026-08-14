@@ -555,6 +555,7 @@ def qwen3_causal_lm(
     seq_len: int = 8,
     past_seq_len: int = 4,
     with_lm_head: bool = True,
+    with_embedding: bool = True,
     # Dimension defaults are the real Qwen/Qwen3-0.6B config values.
     hidden_size: int = 1024,
     num_attention_heads: int = 16,
@@ -568,6 +569,9 @@ def qwen3_causal_lm(
 
     Dimensions default to the real Qwen/Qwen3-0.6B config; override any of them
     (e.g. a smaller vocab_size) for a cheaper export.
+
+    ``with_embedding=False`` drops embed_tokens and takes ``inputs_embeds`` as the
+    graph input instead of ``input_ids``.
     """
     from transformers.models.qwen3.modeling_qwen3 import (
         Qwen3Config,
@@ -603,13 +607,18 @@ def qwen3_causal_lm(
             super().__init__()
             self.model = model
 
-        def forward(self, input_ids, attention_mask, *past_kv):
+        def forward(self, tokens_or_embeds, attention_mask, *past_kv):
             cache = DynamicCache()
             for i in range(num_hidden_layers):
                 cache.update(past_kv[2 * i], past_kv[2 * i + 1], i)
             backbone = self.model if with_lm_head else self.model.model
+            embed_kwarg = (
+                {"input_ids": tokens_or_embeds}
+                if with_embedding
+                else {"inputs_embeds": tokens_or_embeds}
+            )
             out = backbone(
-                input_ids=input_ids,
+                **embed_kwarg,
                 attention_mask={"full_attention": attention_mask},
                 past_key_values=cache,
                 use_cache=True,
@@ -620,7 +629,10 @@ def qwen3_causal_lm(
                 present += [cache.layers[i].keys, cache.layers[i].values]
             return (head_out, *present)
 
-    token_ids = torch.randint(0, cfg.vocab_size, (batch, seq_len))
+    if with_embedding:
+        embed_input = torch.randint(0, cfg.vocab_size, (batch, seq_len))
+    else:
+        embed_input = torch.randn(batch, seq_len, cfg.hidden_size)
     attention_mask = torch.full((seq_len, past_seq_len + seq_len), -1000.0).triu(
         1 + past_seq_len
     )[None, None]
@@ -629,7 +641,7 @@ def qwen3_causal_lm(
         for _ in range(2 * num_hidden_layers)
     ]
 
-    input_names = ["input_ids", "attention_mask"]
+    input_names = ["input_ids" if with_embedding else "inputs_embeds", "attention_mask"]
     output_names = ["logits" if with_lm_head else "hidden_states"]
     for i in range(num_hidden_layers):
         input_names += [f"past_key_{i}_in", f"past_value_{i}_in"]
@@ -638,7 +650,7 @@ def qwen3_causal_lm(
     buf = io.BytesIO()
     torch.onnx.export(
         _Wrapper(model).eval(),
-        (token_ids, attention_mask, *past_kv),
+        (embed_input, attention_mask, *past_kv),
         buf,
         input_names=input_names,
         output_names=output_names,

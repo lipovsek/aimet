@@ -1731,6 +1731,47 @@ class TestApplySpinquant:
         y_after = _build_session(model).run([output_name], dummy_input)[0]
         assert np.allclose(y_before, y_after, atol=1e-4)
 
+    @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+    @pytest.mark.parametrize("with_lm_head", [True, False])
+    def test_r1_rotates_external_embedding(self, with_lm_head):
+        """
+        R1 on a backbone taking inputs_embeds must rotate the externally supplied
+        embedding so backbone_rotated(embedding_rotated) matches the original output.
+        """
+        torch.manual_seed(0)
+        np.random.seed(0)
+        hidden_size, seq_len = 1024, 8
+        model = qwen3_causal_lm(
+            num_hidden_layers=4,
+            seq_len=seq_len,
+            with_lm_head=with_lm_head,
+            with_embedding=False,
+            vocab_size=_VOCAB,
+            hidden_size=hidden_size,
+        )
+        output_name = model.graph.output[0].name
+
+        # Simulate torch.load("embedding.pth") → raw tensor [vocab, hidden]
+        embedding = torch.randn(_VOCAB, hidden_size)
+        rows_before = (
+            embedding.numpy().copy()[:seq_len].reshape(1, seq_len, hidden_size)
+        )
+
+        y_before = _build_session(model).run(
+            [output_name], _pad_dummy_input(model, inputs_embeds=rows_before)
+        )[0]
+
+        apply_spinquant(model, enable_r1=True, embedding=embedding)
+
+        # Rotation lands on the caller's tensor, not in the graph.
+        rows_after = embedding.numpy()[:seq_len].reshape(1, seq_len, hidden_size)
+        assert not np.array_equal(rows_before, rows_after)
+
+        y_after = _build_session(model).run(
+            [output_name], _pad_dummy_input(model, inputs_embeds=rows_after)
+        )[0]
+        assert np.allclose(y_before, y_after, atol=1e-4)
+
     @pytest.mark.parametrize("dynamo", [True, False])
     def test_spinquant_r2_sha_gqa(self, dynamo):
         """R2 on a SHA + GQA decoder must preserve output (rotated-cache)"""

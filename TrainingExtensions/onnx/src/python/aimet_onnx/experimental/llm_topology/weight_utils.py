@@ -80,11 +80,11 @@ def get_bias_product(op: Op) -> Optional[Product]:
 
 
 def infer_hidden_size(model: ModelProto, role_map) -> int:
-    """Infer the model hidden size from embed_tokens or lm_head weights in ``role_map``.
+    """Infer the model hidden size from embed_tokens, lm_head, or q/k/v_proj weights.
 
     Tries ``embed_tokens`` first (Gather weight ``[vocab, hidden]``, last dim = hidden).
-    Falls back to ``lm_head`` for VLM backbones exported with ``use_inputs_embeds=True``
-    that have no Gather op: reading-layer weight has hidden on the input axis.
+    Falls back to ``lm_head``, then to each block's ``qkv`` group, for backbones
+    exported with ``use_inputs_embeds=True`` that have no Gather op.
 
     :param model: ONNX ModelProto.
     :param role_map: LlmTopology produced by ``get_llm_topology``.
@@ -103,11 +103,10 @@ def infer_hidden_size(model: ModelProto, role_map) -> int:
             if len(shape) >= 2:
                 return shape[-1]
 
-    # Fallback: lm_head reading layer.
     # Gemm transB=1 stores W [vocab, hidden] -> hidden = shape[-1].
     # MatMul stores W [hidden, vocab]        -> hidden = shape[0].
     # Conv 1x1 stores W [vocab, hidden, 1, 1] -> hidden = shape[1].
-    for op in role_map.lm_head:
+    for op in [*role_map.lm_head, *(op for b in role_map.blocks for op in b.qkv.ops)]:
         weight_inp, is_transposed = get_weight_product(op)
         if weight_inp is not None:
             tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
@@ -118,7 +117,7 @@ def infer_hidden_size(model: ModelProto, role_map) -> int:
                 return W.shape[-1] if is_transposed else W.shape[0]
 
     raise ValueError(
-        "Cannot infer hidden_size: no embed_tokens or lm_head initializer weight found in role_map."
+        "Cannot infer hidden_size: no embed_tokens, lm_head or qkv_proj static weight found in role_map"
     )
 
 
