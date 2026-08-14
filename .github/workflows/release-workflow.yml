@@ -154,7 +154,7 @@ jobs:
           git push public-origin ${{ github.ref_name }}:${{ github.ref_name }}
 
       - name: Download artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           # Only include (torch|onnx)-(cpu|gpu)-wheel; exclude onnx-cpu-win-wheel
           pattern: "*pu-wheel"
