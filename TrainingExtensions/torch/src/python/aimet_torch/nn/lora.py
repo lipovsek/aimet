@@ -16,7 +16,6 @@ __all__ = [
 try:
     import peft.tuners.lora.layer as lora
 except ImportError:
-    lora = None
     QuantizedLora = None
     QuantizedLinear = None
     QuantizedConv = None
