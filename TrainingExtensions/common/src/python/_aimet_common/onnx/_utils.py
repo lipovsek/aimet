@@ -603,16 +603,13 @@ def _is_float(
 
 def _is_grid_preserving_op(op_type: str, domain: str = "") -> bool:
     """
-    Returns True if op_type can be considered a grid-preserving op.
-    Data movement op is defined as a reshape or indexing operator
-    whose output strictly preserves the quantization grid of the input
+    Returns True if op_type is a grid-preserving op.
 
-    Formally put,
-    function `f` is a grid-preserving op if and only if y == y'
-    where
-        * x_q = quantize(x, scale_x, zp_x)
-        * y  = f(x_q)
-        * y' = requantize(y, scale_x, zp_x)
+    Unary function `f(x1, x2, ..., xn)` is grid-preserving
+    if and only if `q(f(x)) == f(q(x))` for arbitrary quantization function `q`.
+
+    Note that grid-preserving ops is a subset of grid-equivariant ops
+    defined in `_is_grid_equivariant_op`
     """
     return (domain, op_type) in (
         ("", "Col2Im"),
@@ -643,6 +640,21 @@ def _is_grid_preserving_op(op_type: str, domain: str = "") -> bool:
         ("", "Unsqueeze"),
         ("qti_aisw", "BatchToSpace"),
         ("qti_aisw", "SpaceToBatch"),
+    )
+
+
+def _is_grid_equivariant_op(op_type: str, domain: str = "") -> bool:
+    """
+    Returns True if op_type is a grid-equivariant op.
+
+    N-ary function `f(x1, x2, ..., xn)` is grid-equivariant
+    if and only if `q(f(x1, x2, ..., xn)) == f(q(x1), q(x2), ..., q(xn))`
+    for arbitrary quantization function `q`.
+    """
+    return _is_grid_preserving_op(op_type, domain) or (domain, op_type) in (
+        ("", "Concat"),
+        ("", "Scatter"),
+        ("", "Where"),
     )
 
 
