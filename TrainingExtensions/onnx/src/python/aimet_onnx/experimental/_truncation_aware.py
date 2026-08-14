@@ -166,7 +166,8 @@ def create_truncation_aware_session(
             continue
 
         if weight_qtzr._encoding_type() == EncodingType.LPBQ:
-            weight_scale = weight_qtzr._get_per_channel_scale()
+            scale_encoding = weight_qtzr._scale_encoding_dict()
+            weight_scale = scale_encoding["x_scale"] if scale_encoding else None
         else:
             weight_scale = weight_qtzr._get_scale()
 

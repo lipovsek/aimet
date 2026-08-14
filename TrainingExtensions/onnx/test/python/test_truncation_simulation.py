@@ -192,7 +192,8 @@ def test_truncation_error_matches_integer_reference(lpbq):
     input_scale = input_quantizer._get_scale()
     # LPBQ weights are quantized on the finer per-channel int8 grid.
     if lpbq:
-        weight_scale = weight_quantizer._get_per_channel_scale().reshape(-1)
+        scale_encoding = weight_quantizer._scale_encoding_dict()
+        weight_scale = scale_encoding["x_scale"] if scale_encoding else None
     else:
         weight_scale = weight_quantizer._get_scale().reshape(-1)
     # int32 accumulator scale = input_scale * weight_scale, per output channel.
