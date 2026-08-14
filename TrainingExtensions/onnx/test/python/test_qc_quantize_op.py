@@ -26,12 +26,14 @@ from aimet_onnx.qc_quantize_op import (
     OpMode,
     TensorQuantizerParams,
     GroupedBlockQuantizeDequantize,
+    LPBQScaleQuantizer,
 )
 from aimet_onnx.common import libquant_info
 from aimet_onnx.common.quantsim import calculate_delta_offset, _get_minimum_scale
 from aimet_onnx import qtype
 from aimet_onnx.utils import numpy_from_TfEncoding, numpy_to_TfEncoding
 from aimet_onnx._encoding import AffineEncoding
+from aimet_onnx.defs import QSpec, LPBQ, Blockwise, PerChannel, PerTensor
 import aimet_onnx
 
 
@@ -3031,3 +3033,229 @@ def test_set_invalid_precision_raises(qtype: str):
     )
     with pytest.raises(ValueError):
         qc_op.set_precision(qtype)
+
+
+def _assert_is_qspec(quantizer: QcQuantizeOp, spec: QSpec):
+    assert quantizer.precision() == spec.dtype
+    assert quantizer.use_symmetric_encodings == spec.symmetric
+    zp_shift = 0.5 if spec.shift_zero_point else 0.0
+    assert quantizer.get_zero_point_shift() == zp_shift
+
+    if isinstance(spec.granularity, aimet_onnx.defs.PerTensor):
+        assert quantizer._encoding_type() == EncodingType.PER_TENSOR
+    if isinstance(spec.granularity, aimet_onnx.defs.PerChannel):
+        assert quantizer._encoding_type() == EncodingType.PER_CHANNEL
+    if isinstance(spec.granularity, aimet_onnx.defs.LPBQ):
+        assert quantizer._encoding_type() == EncodingType.LPBQ
+        assert quantizer.quant_info.blockSize == spec.granularity.block_size
+        assert quantizer._scale_quantizer.scale_bits == spec.granularity.scale_bits
+    elif isinstance(spec.granularity, aimet_onnx.defs.Blockwise):
+        assert quantizer._encoding_type() == EncodingType.PER_BLOCK
+        assert quantizer.quant_info.blockSize == spec.granularity.block_size
+
+    if not isinstance(spec.granularity, aimet_onnx.defs.LPBQ):
+        assert quantizer._scale_quantizer is None
+
+
+@pytest.mark.parametrize(
+    "qspec",
+    [
+        QSpec.lpbq("int4", 64, 4),
+        QSpec.blockwise("int2", 128, symmetric=True, shift_zero_point=True),
+        QSpec.per_channel("int8"),
+    ],
+)
+def test_set_retain_qspec_on_error(qspec):
+    original_spec = QSpec.per_tensor("int8", symmetric=False, shift_zero_point=False)
+    quant_info = libquant_info.QcQuantizeInfo()
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=original_spec.dtype.bits,
+        use_symmetric_encodings=original_spec.symmetric,
+        tensor_quantizer_params=None,
+    )
+
+    with pytest.raises(RuntimeError):
+        qc_op.set_qspec(qspec)
+
+    # Original quantizer state should be kept
+    _assert_is_qspec(qc_op, original_spec)
+
+
+@pytest.mark.parametrize(
+    "qspec",
+    [
+        QSpec.lpbq("int4", 16, 4),
+        QSpec.blockwise("int2", 8, symmetric=True, shift_zero_point=True),
+        QSpec.blockwise("int8", 8, symmetric=True, shift_zero_point=False),
+        QSpec.per_channel("int16", symmetric=False),
+        QSpec.per_tensor("int4", symmetric=True),
+        QSpec.per_tensor("int8", symmetric=False),
+        QSpec.per_tensor("float16", symmetric=False),
+    ],
+)
+def test_set_qspec(qspec):
+    input_shape = (32, 32)
+    orig = QSpec.per_tensor("int8", symmetric=False, shift_zero_point=False)
+    quant_info = libquant_info.QcQuantizeInfo()
+    tensor_quantizer_params = TensorQuantizerParams(input_shape, 0, 1)
+    quantizer = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.updateStats,
+        bitwidth=orig.dtype.bits,
+        use_symmetric_encodings=orig.symmetric,
+        tensor_quantizer_params=tensor_quantizer_params,
+    )
+
+    quantizer.set_qspec(qspec)
+    _assert_is_qspec(quantizer, qspec)
+    quantizer.set_qspec(orig)
+    _assert_is_qspec(quantizer, orig)
+
+    # When: Set partial QSpec
+    # Then: Only specified parameters should be changed
+
+    partial_qspec = QSpec(qspec.dtype, None, None)
+    quantizer.set_qspec(partial_qspec)
+    _assert_is_qspec(quantizer, QSpec(qspec.dtype, orig.granularity, orig.symmetric))
+    quantizer.set_qspec(orig)
+
+    # LPBQ requires dtype and symmetry to be specified
+    if not isinstance(qspec.granularity, aimet_onnx.defs.LPBQ):
+        partial_qspec = QSpec(None, qspec.granularity, None)
+        quantizer.set_qspec(partial_qspec)
+        _assert_is_qspec(
+            quantizer, QSpec(orig.dtype, qspec.granularity, orig.symmetric)
+        )
+        quantizer.set_qspec(orig)
+
+    partial_qspec = QSpec(None, None, qspec.symmetric)
+    quantizer.set_qspec(partial_qspec)
+    _assert_is_qspec(quantizer, QSpec(orig.dtype, orig.granularity, qspec.symmetric))
+
+
+def _calibrate_and_qdq(quantizer: QcQuantizeOp, tensor: np.ndarray) -> np.ndarray:
+    quantizer.op_mode = OpMode.updateStats
+    quantizer.update_encoding_stats(tensor)
+    quantizer.compute_encodings()
+    quantizer.op_mode = OpMode.quantizeDequantize
+    return quantizer.quantize_dequantize(tensor)
+
+
+def _new_quantizer(input_shape, **kwargs) -> QcQuantizeOp:
+    return QcQuantizeOp(
+        quant_info=libquant_info.QcQuantizeInfo(),
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.updateStats,
+        tensor_quantizer_params=TensorQuantizerParams(input_shape, 0, 1),
+        **kwargs,
+    )
+
+
+def test_set_qspec_per_tensor_matches_reference():
+    """
+    set_qspec should produce identical QDQ output to a quantizer configured
+    directly through the pre-existing API.
+    """
+    input_shape = (32, 32)
+    input_tensor = np.random.randn(*input_shape).astype(np.float32)
+
+    configured = _new_quantizer(input_shape, bitwidth=8, use_symmetric_encodings=True)
+    configured.set_qspec(QSpec.per_tensor("int8", symmetric=False))
+
+    reference = _new_quantizer(input_shape, bitwidth=8, use_symmetric_encodings=False)
+
+    actual = _calibrate_and_qdq(configured, input_tensor)
+    expected = _calibrate_and_qdq(reference, input_tensor)
+
+    assert np.array_equal(actual, expected)
+
+
+def test_set_qspec_per_channel_output():
+    input_shape = (32, 32)
+    input_tensor = np.random.randn(*input_shape).astype(np.float32)
+
+    configured = _new_quantizer(input_shape, bitwidth=8, use_symmetric_encodings=False)
+    configured.set_qspec(QSpec.per_channel("int8", symmetric=True))
+
+    reference = _new_quantizer(input_shape, bitwidth=8, use_symmetric_encodings=True)
+    reference.enable_per_channel_quantization(True)
+
+    actual = _calibrate_and_qdq(configured, input_tensor)
+    expected = _calibrate_and_qdq(reference, input_tensor)
+
+    assert np.array_equal(actual, expected)
+
+
+def test_set_qspec_blockwise_output():
+    input_shape = (32, 32)
+    input_tensor = np.random.randn(*input_shape).astype(np.float32)
+
+    configured = _new_quantizer(input_shape, bitwidth=8, use_symmetric_encodings=False)
+    configured.set_qspec(QSpec.blockwise("int8", 8, symmetric=True))
+
+    reference = _new_quantizer(input_shape, bitwidth=8, use_symmetric_encodings=True)
+    reference.enable_per_channel_quantization(True)
+    reference._enable_blockwise_quantization(8)
+
+    actual = _calibrate_and_qdq(configured, input_tensor)
+    expected = _calibrate_and_qdq(reference, input_tensor)
+
+    assert np.array_equal(actual, expected)
+
+
+def test_set_qspec_lpbq_output():
+    input_shape = (32, 32)
+    input_tensor = np.random.randn(*input_shape).astype(np.float32)
+
+    configured = _new_quantizer(input_shape, bitwidth=8, use_symmetric_encodings=True)
+    configured.set_qspec(QSpec.lpbq("int4", 16, 4))
+
+    # Pre-existing LPBQ constructor: decompressed_bw = bitwidth + scale_bits
+    reference = GroupedBlockQuantizeDequantize(
+        quant_info=libquant_info.QcQuantizeInfo(),
+        bitwidth=4,
+        decompressed_bw=8,
+        block_size=16,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.updateStats,
+        tensor_quantizer_params=TensorQuantizerParams(input_shape, 0, 1),
+    )
+
+    actual = _calibrate_and_qdq(configured, input_tensor)
+    expected = _calibrate_and_qdq(reference, input_tensor)
+
+    assert np.array_equal(actual, expected)
+
+
+def test_set_granularity():
+    quantizer = _new_quantizer((32, 32), use_symmetric_encodings=True)
+    assert not quantizer.quant_info.usePerChannelMode
+
+    quantizer._set_granularity(PerChannel())
+    assert quantizer.quant_info.usePerChannelMode
+
+    quantizer._set_granularity(PerTensor())
+    assert not quantizer.quant_info.usePerChannelMode
+
+    quantizer._set_granularity(Blockwise(8))
+    assert quantizer.quant_info.usePerChannelMode
+    assert quantizer.quant_info.blockSize == 8
+    assert quantizer.quant_info.blockAxis == 1
+
+    quantizer._set_granularity(PerChannel())
+    assert quantizer.quant_info.usePerChannelMode
+    assert quantizer.quant_info.blockSize == 0
+
+    quantizer._set_granularity(LPBQ(8, 4))
+    assert quantizer.quant_info.usePerChannelMode
+    assert quantizer.quant_info.blockSize == 8
+    assert quantizer.quant_info.blockAxis == 1
+    assert quantizer._scale_quantizer == LPBQScaleQuantizer(4)
+
+    quantizer._set_granularity(Blockwise(16))
+    assert quantizer._scale_quantizer is None
+    assert quantizer.quant_info.blockSize == 16

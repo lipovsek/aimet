@@ -26,6 +26,7 @@ from aimet_onnx.common.quantsim import (
     calculate_delta_offset,
     create_encoding_from_min_max,
 )
+from aimet_onnx.defs import QSpec, Granularity, LPBQ, Blockwise, PerChannel, PerTensor
 from aimet_onnx.utils import numpy_from_TfEncoding, numpy_to_TfEncoding
 from aimet_onnx import lpbq_utils
 from ._encoding import EncodingBase, LPBQEncoding
@@ -127,38 +128,51 @@ class QcQuantizeOp:
         if self.quant_info.usePerChannelMode == enable:
             return
 
-        self.quant_info.usePerChannelMode = enable
-
         if enable:
-            assert self.tensor_quantizer_params is not None
-            assert self.tensor_quantizer_params.channel_axis is not None
+            if self.tensor_quantizer_params is None:
+                raise RuntimeError(
+                    "Cannot enable PCQ for quantizer with unknown parameter shape"
+                )
+            if self.tensor_quantizer_params.channel_axis is None:
+                raise RuntimeError("Cannot determine correct channel axis for PCQ")
+            self.quant_info.usePerChannelMode = enable
             channel_axis = self.tensor_quantizer_params.channel_axis
             self.quant_info.channelAxis = (
                 channel_axis
                 if channel_axis >= 0
                 else channel_axis + len(self.tensor_quantizer_params.tensor_shape)
             )
+        else:
+            self.quant_info.usePerChannelMode = False
 
         self._tensor_quantizer = self._build_tensor_quantizer()
 
-    def _enable_blockwise_quantization(self, block_size):
-        assert self.tensor_quantizer_params is not None
+    def _enable_blockwise_quantization(self, block_size: int | None):
+        block_size = block_size or 0
+        if block_size == self.quant_info.blockSize:
+            return
+        # Disable block quantization
+        if block_size == 0:
+            self.quant_info.blockSize = block_size
+            self._tensor_quantizer = self._build_tensor_quantizer()
+            return
+
+        if self.tensor_quantizer_params is None:
+            raise RuntimeError(
+                "Cannot enable BQ for quantizer with unknown parameter shape"
+            )
         tensor_shape = self.tensor_quantizer_params.tensor_shape
         block_axis = self.tensor_quantizer_params.block_axis
         channel_axis = self.tensor_quantizer_params.channel_axis
+        if channel_axis is None or block_axis is None or channel_axis == block_axis:
+            raise RuntimeError(
+                "Cannot determine correct quantization axes for quantizer"
+            )
 
-        if block_size == self.quant_info.blockSize:
-            return
-
-        assert channel_axis is not None
-        assert block_axis is not None
-        assert block_axis != channel_axis
-
-        if block_size != 0:
-            if tensor_shape[block_axis] % block_size != 0:
-                raise ValueError(
-                    f"Input shape {tensor_shape} not divisible by block size {block_size} at axis {block_axis}"
-                )
+        if tensor_shape[block_axis] % block_size != 0:
+            raise ValueError(
+                f"Input shape {tensor_shape} not divisible by block size {block_size} at axis {block_axis}"
+            )
 
         self.quant_info.usePerChannelMode = True
         self.quant_info.channelAxis = (
@@ -560,6 +574,75 @@ class QcQuantizeOp:
         self.data_type = dtype
         self.set_bitwidth(bitwidth)
         self._reset_encodings()
+
+    def set_qspec(self, spec: QSpec):
+        """
+        Configures the quantizer to the settings specified in spec
+
+        Any fields which are None in QSpec are left unchanged.
+
+        Args:
+            spec: QSpec containing the desired configuration of the quantizer
+
+        """
+        if self.is_encoding_frozen():
+            return
+
+        # Preserve the full config so a partial failure can be rolled back.
+        orig_state = (
+            self._tensor_quantizer,
+            self._scale_quantizer,
+            self.bitwidth,
+            self.quant_info.usePerChannelMode,
+            self.quant_info.channelAxis,
+            self.quant_info.blockAxis,
+            self.quant_info.blockSize,
+            self.quant_info.isIntDataType,
+            self.quant_info.useSymmetricEncoding,
+        )
+
+        try:
+            self._set_qspec(spec)
+        except (RuntimeError, ValueError):
+            (
+                self._tensor_quantizer,
+                self._scale_quantizer,
+                self.bitwidth,
+                self.quant_info.usePerChannelMode,
+                self.quant_info.channelAxis,
+                self.quant_info.blockAxis,
+                self.quant_info.blockSize,
+                self.quant_info.isIntDataType,
+                self.quant_info.useSymmetricEncoding,
+            ) = orig_state
+            raise
+
+    def _set_qspec(self, spec: QSpec):
+        if spec.dtype is not None:
+            self.set_precision(spec.dtype)
+
+        if spec.granularity is not None:
+            self._set_granularity(spec.granularity)
+
+        if spec.shift_zero_point is not None:
+            shift = 0.5 if spec.shift_zero_point else 0.0
+            self.set_zero_point_shift(shift)
+
+        if spec.symmetric is not None:
+            self.use_symmetric_encodings = spec.symmetric
+
+    def _set_granularity(self, granularity: Granularity):
+        self._scale_quantizer = None
+        if isinstance(granularity, PerTensor):
+            self.enable_per_channel_quantization(False)
+        if isinstance(granularity, PerChannel):
+            self.enable_per_channel_quantization(True)
+        if isinstance(granularity, Blockwise):
+            self._enable_blockwise_quantization(granularity.block_size)
+        else:
+            self._enable_blockwise_quantization(None)
+        if isinstance(granularity, LPBQ):
+            self._scale_quantizer = LPBQScaleQuantizer(granularity.scale_bits)
 
     def set_quant_scheme(self, quant_scheme: QuantScheme):
         """
