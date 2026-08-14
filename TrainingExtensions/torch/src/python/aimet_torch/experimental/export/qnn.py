@@ -181,7 +181,8 @@ def _qnn_decompositions() -> dict[torch._ops.OperatorBase, Callable]:
     for op in skiplist:
         _ = decomp_table.pop(op, None)
 
-    return decomp_table | _additional_decomposition_registry
+    decomp_table.update(_additional_decomposition_registry)
+    return decomp_table
 
 
 _additional_decomposition_registry: dict[torch._ops.OperatorBase, Callable] = {}

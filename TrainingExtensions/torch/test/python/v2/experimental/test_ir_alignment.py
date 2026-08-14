@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Callable, Any
 import onnx
 import torch
+from torch.utils._pytree import tree_iter
+import pytest
+import onnx_ir
+
 import aimet_torch
 from aimet_torch.experimental.export.exported_program import (
     ExportedProgram as AimetExportedProgram,
@@ -15,8 +19,6 @@ from aimet_torch.common.onnx._utils import (
     _onnx_to_qnn_ir,
 )
 from aimet_torch.experimental.export.qnn import _qnn_friendly_aten_ops
-from torch.utils._pytree import tree_iter
-import pytest
 
 sample_inputs_factory: dict[torch._ops.OpOverloadPacket, Callable[[], Any]] = {
     torch.ops.aten._adaptive_avg_pool2d: lambda: (torch.randn(1, 3, 8, 8), [4, 4]),
@@ -60,10 +62,22 @@ sample_inputs_factory: dict[torch._ops.OpOverloadPacket, Callable[[], Any]] = {
     torch.ops.aten.avg_pool1d: lambda: (torch.randn(1, 3, 10), [3]),
     torch.ops.aten.avg_pool2d: lambda: (torch.randn(1, 3, 8, 8), [2, 2]),
     torch.ops.aten.avg_pool3d: lambda: (torch.randn(1, 3, 4, 4, 4), [2, 2, 2]),
+    torch.ops.aten.batch_norm: lambda: (
+        torch.randn(2, 3, 4, 4),
+        torch.ones(3),
+        torch.zeros(3),
+        torch.ones(3),
+        torch.zeros(3),
+        False,
+        0.1,
+        1e-5,
+        False,
+    ),
     torch.ops.aten.bmm: lambda: (torch.randn(5, 3, 4), torch.randn(5, 4, 2)),
     torch.ops.aten.cat: lambda: ([torch.randn(2, 3), torch.randn(2, 3)], 0),
     torch.ops.aten.channel_shuffle: lambda: (torch.randn(1, 4, 8, 8), 2),
     torch.ops.aten.clamp: lambda: (torch.randn(2, 3), -1.0, 1.0),
+    torch.ops.aten.clip: lambda: (torch.randn(2, 3), -1.0, 1.0),
     torch.ops.aten.col2im: lambda: (
         torch.randn(1, 27, 4),
         [4, 4],
@@ -185,6 +199,13 @@ sample_inputs_factory: dict[torch._ops.OpOverloadPacket, Callable[[], Any]] = {
         0,
         0,
         True,
+    ),
+    torch.ops.aten.group_norm: lambda: (
+        torch.randn(2, 4, 5),
+        2,
+        torch.ones(4),
+        torch.zeros(4),
+        1e-5,
     ),
     torch.ops.aten.gt: lambda: (torch.randn(2, 3), torch.randn(2, 3)),
     torch.ops.aten.hardswish: lambda: (torch.randn(2, 3),),
@@ -375,6 +396,35 @@ sample_inputs_factory: dict[torch._ops.OpOverloadPacket, Callable[[], Any]] = {
 assert sample_inputs_factory.keys() >= set(_qnn_friendly_aten_ops())
 
 
+# Operators that don't exist in ONNX but should be treated as supergroup in QNN IR
+supergroups = {
+    torch.ops.aten.rsqrt,
+    torch.ops.aten.rms_norm,
+}
+
+# Expected failures
+# TODO: Fix these failures and remove them from the xfail list
+xfail = {
+    torch.ops.aten._native_batch_norm_legit: "ONNX export error",
+    torch.ops.aten._native_batch_norm_legit_no_training: "ONNX export error",
+    torch.ops.aten._safe_softmax: "Where's inputs is missing encoding",
+    torch.ops.aten.clamp: "Clip min/max are missing encoding",
+    torch.ops.aten.clip: "Clip min/max are missing encoding",
+    torch.ops.aten.constant_pad_nd: "Padding value is missing encoding",
+    torch.ops.aten.copy: "ONNX export error",
+    torch.ops.aten.detach: "ONNX export error",
+    torch.ops.aten.group_norm: "Missing intermediate encoding",
+    torch.ops.aten.hardtanh: "Clip min/max are missing encoding",
+    torch.ops.aten.index_fill: "ScatterND input is missing encoding",
+    torch.ops.aten.masked_fill: "Where's scalar input is missing encoding",
+    torch.ops.aten.native_batch_norm: "ONNX export error",
+    torch.ops.aten.native_group_norm: "Missing intermediate encoding",
+    torch.ops.aten.pow: "Exponent is missing encoding",
+    torch.ops.aten.relu6: "Clip min/max are missing encoding",
+    torch.ops.aten.upsample_bicubic2d: "Missing intermediate encoding",
+}
+
+
 @pytest.mark.parametrize("op", sample_inputs_factory.keys())
 def test_qnn_ir_alignment(tmp_path: Path, op: torch._ops.OpOverloadPacket):
     """
@@ -384,6 +434,9 @@ def test_qnn_ir_alignment(tmp_path: Path, op: torch._ops.OpOverloadPacket):
          that are known to be 1-to-1 mappable to QNN IR operators.
       2. "QNN-friendly" ATen operators should be converted to a single ONNX operator.
     """
+    if op in xfail:
+        reason = xfail[op]
+        pytest.xfail(f"Expected failure for {op.__name__}: {reason}")
 
     class Model(torch.nn.Module):
         def forward(self, *args):
@@ -404,20 +457,67 @@ def test_qnn_ir_alignment(tmp_path: Path, op: torch._ops.OpOverloadPacket):
     for out_, expected_ in zip(tree_iter(out), tree_iter(expected)):
         assert torch.allclose(out_, expected_, rtol=1e-3)
 
-    torch.onnx.export(
+    with ep.compute_missing_encodings(param_bw=8, activation_bw=8):
+        _ = ep.module()(*sample_inputs)
+
+    torch.export.save(ep, tmp_path / f"{op.__name__}.pt2")
+
+    aimet_torch.onnx.export(
         ep.module(),
         sample_inputs,
         tmp_path / f"{op.__name__}.onnx",
         opset_version=21,
     )
+
     onnx_model = onnx.load(tmp_path / f"{op.__name__}.onnx")
     op_types = [node.op_type for node in onnx_model.graph.node]
 
     non_grid_preserving_ops = []
     for op_type in op_types:
         assert op_type in _onnx_to_qnn_ir or _is_grid_preserving_op(op_type)
-        if not _is_grid_preserving_op(op_type) and not _is_metadata_op(op_type):
+        if (
+            not _is_grid_preserving_op(op_type)
+            and not _is_metadata_op(op_type)
+            and op_type not in ("QuantizeLinear", "DequantizeLinear")
+        ):
             non_grid_preserving_ops.append(op_type)
 
     if op in _qnn_friendly_aten_ops():
         assert len(non_grid_preserving_ops) <= 1
+
+    onnx_model = onnx.shape_inference.infer_shapes(onnx_model)
+    model = onnx_ir.from_proto(onnx_model)
+
+    quantizable_graph_inputs = [
+        t for t in model.graph.inputs if t and t.dtype == onnx.TensorProto.FLOAT
+    ]
+    quantizable_graph_outputs = [
+        t for t in model.graph.outputs if t and t.dtype == onnx.TensorProto.FLOAT
+    ]
+
+    # All quantizable graph inputs/outputs should be quantized
+    for inp in quantizable_graph_inputs:
+        for consumer in inp.consumers():
+            assert consumer.op_type == "QuantizeLinear"
+    for out in quantizable_graph_outputs:
+        producer = out.producer()
+        assert producer
+        assert producer.op_type == "DequantizeLinear"
+
+    # If op is a supergroup, intermediate tensors aren't quantized
+    if op in supergroups:
+        return
+
+    # All quantizable intermediate tensors should be quantized
+    for node in model.graph.all_nodes():
+        if node.op_type in ("QuantizeLinear", "DequantizeLinear"):
+            continue
+
+        for inp in node.inputs:
+            if inp and inp.dtype == onnx.TensorProto.FLOAT:
+                assert inp.producer().op_type == "DequantizeLinear"
+
+        for out in node.outputs:
+            if out.dtype == onnx.TensorProto.FLOAT:
+                for consumer in out.consumers():
+                    assert consumer.op_type == "QuantizeLinear"
