@@ -41,7 +41,7 @@ from aimet_onnx.experimental.llm_topology.topology import get_llm_topology
 from aimet_onnx.experimental.llm_topology.weight_utils import get_weight_product
 from aimet_onnx.utils import ParamUtils
 from onnx import numpy_helper
-from .utils import add_genai_tests_path
+from .utils import add_genai_tests_path, force_random_weight_init
 
 _NUM_LAYERS = 2
 _BOTH = ("torchscript", "dynamo")
@@ -683,7 +683,8 @@ def test_get_decoder_blocks(add_genai_tests_path):
     model_id = "Qwen/Qwen2-0.5B"
     cache_dir = get_model_checkpoint_path(model_id)
     try:
-        entry = LLM_ONNX.instantiate_float_model(model_id, 32, 16, small_model=True)
+        with force_random_weight_init(vocab_size=1024):
+            entry = LLM_ONNX.instantiate_float_model(model_id, 32, 16, small_model=True)
         collection = LLM_ONNX.instantiate_quantsim(entry)
         verify_find_blocks(collection.backbone)
     finally:
@@ -699,7 +700,8 @@ def test_get_decoder_blocks_qwen3(add_genai_tests_path):
     model_id = "Qwen/Qwen3-0.6B"
     cache_dir = get_model_checkpoint_path(model_id)
     try:
-        entry = LLM_ONNX.instantiate_float_model(model_id, 32, 16, small_model=True)
+        with force_random_weight_init(vocab_size=1024):
+            entry = LLM_ONNX.instantiate_float_model(model_id, 32, 16, small_model=True)
         collection = LLM_ONNX.instantiate_quantsim(entry)
         verify_find_blocks(collection.backbone)
     finally:
@@ -722,7 +724,10 @@ def test_get_decoder_blocks_qwen3_5(add_genai_tests_path):
         model_cls = YAMLConfigParser.get_model_class(
             "qwen3_5", ["ExportableLinearAttention"]
         )
-        entry = model_cls.instantiate_float_model(model_id, 32, 16, small_model=True)
+        with force_random_weight_init(vocab_size=1024):
+            entry = model_cls.instantiate_float_model(
+                model_id, 32, 16, small_model=True
+            )
         collection = model_cls.instantiate_quantsim(entry)
 
         connected_graph = collection.backbone.connected_graph

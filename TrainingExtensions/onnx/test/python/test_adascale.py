@@ -34,7 +34,7 @@ from aimet_onnx.experimental.adascale.model_converter import (
     resolve_block_residual_name,
     required_extra_block_inputs,
 )
-from .utils import add_genai_tests_path
+from .utils import add_genai_tests_path, force_random_weight_init
 
 # TODO: Move block definitions to a util file
 from .test_llm_topology_integration import (
@@ -994,13 +994,14 @@ def test_adascale_e2e(add_genai_tests_path, dtype, small_model: bool = True):
 
     cache_dir = get_model_checkpoint_path(model_id)
     try:
-        entry = model_cls.instantiate_float_model(
-            model_id,
-            context_length,
-            sequence_length,
-            small_model=small_model,
-            dtype=dtype,
-        )
+        with force_random_weight_init(vocab_size=1024):
+            entry = model_cls.instantiate_float_model(
+                model_id,
+                context_length,
+                sequence_length,
+                small_model=small_model,
+                dtype=dtype,
+            )
         collection = model_cls.instantiate_quantsim(entry)
         sim = collection.backbone
 

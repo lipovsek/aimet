@@ -25,7 +25,12 @@ from aimet_onnx.experimental.llm_topology.block_boundaries import (
 from aimet_onnx.common.utils import AimetLogger
 import onnx
 from .models.models_for_tests import weight_gemm_model
-from .utils import add_genai_tests_path, tmp_dir
+from .utils import (
+    add_genai_tests_path,
+    tmp_dir,
+    force_random_weight_init,
+    random_chunked_dataset,
+)
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
@@ -74,17 +79,20 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
         TorchONNXInterface,
     )
     from GenAILab.bench.onnx.quant_recipes import _prefill_inputs
-    from GenAILab.bench.datasets import Wikitext
     from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
     from transformers import AutoConfig
 
+    torch.manual_seed(0)
     small_model = True
     context_length = 32
     sequence_length = 16
     model_id = "Qwen/Qwen2.5-0.5B"
-    entry = LLM_ONNX.instantiate_float_model(
-        model_id, context_length, sequence_length, small_model=small_model
-    )
+    vocab_size = 1024
+
+    with force_random_weight_init(vocab_size=vocab_size):
+        entry = LLM_ONNX.instantiate_float_model(
+            model_id, context_length, sequence_length, small_model=small_model
+        )
     collection = LLM_ONNX.instantiate_quantsim(entry)
     sim = collection.backbone
     llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
@@ -93,7 +101,7 @@ def test_model_round_trip_with_qwen(add_genai_tests_path, tmp_dir):
     ################ Input for qwen2.5
     tokenizer = LLM_ONNX.instantiate_tokenizer(model_id)
 
-    train_dataset = Wikitext.load_encoded_dataset(tokenizer, context_length, "train")
+    train_dataset = random_chunked_dataset(vocab_size, context_length)
     quantsim_with_torch_interface = TorchONNXInterface(sim, llm_config)
     generator = Generator(
         quantsim_with_torch_interface, tokenizer, sequence_length, context_length
@@ -196,7 +204,6 @@ def test_model_round_trip_with_qwen_dynamo(
         TorchONNXInterface,
     )
     from GenAILab.bench.onnx.quant_recipes import _prefill_inputs
-    from GenAILab.bench.datasets import Wikitext
     from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
     from transformers import AutoConfig
 
@@ -204,6 +211,7 @@ def test_model_round_trip_with_qwen_dynamo(
     context_length = 32
     sequence_length = 16
     model_id = "Qwen/Qwen2.5-0.5B"
+    vocab_size = 1024
 
     _real_export = torch.onnx.export
 
@@ -221,6 +229,7 @@ def test_model_round_trip_with_qwen_dynamo(
             "GenAILab.qai_hub_lm.backends.onnx.export_utils.torch.onnx.export",
             side_effect=_patched_export,
         ),
+        force_random_weight_init(vocab_size=vocab_size),
     ):
         entry = LLM_ONNX.instantiate_float_model(
             model_id, context_length, sequence_length, small_model=small_model
@@ -233,7 +242,8 @@ def test_model_round_trip_with_qwen_dynamo(
         llm_config.num_hidden_layers = 2
 
     tokenizer = LLM_ONNX.instantiate_tokenizer(model_id)
-    train_dataset = Wikitext.load_encoded_dataset(tokenizer, context_length, "train")
+    torch.manual_seed(0)
+    train_dataset = random_chunked_dataset(vocab_size, context_length)
     quantsim_with_torch_interface = TorchONNXInterface(sim, llm_config)
     generator = Generator(
         quantsim_with_torch_interface, tokenizer, sequence_length, context_length
