@@ -3752,3 +3752,66 @@ def test_rotary_embedding_export_encodings(tmp_path: pathlib.Path, dynamo: bool)
 
     assert len(tensor_to_encoding_map.keys()) == 6
     assert ("concat_1" if dynamo else "/rope/Concat_output_0") in tensor_to_encoding_map
+
+
+def test_export_aten_quantize_dequantize(tmp_path: pathlib.Path):
+    """
+    Given: Model with torch built-in (de-)quantize_per_* ops
+    When: Export
+    Then: The exported onnx model should have QDQ where torch built-in (de-)quantize_per_* ops were
+    """
+
+    @aimet_torch.nn.QuantizationMixin.ignore
+    class Model(torch.nn.Module):
+        def forward(self, x):
+            x = torch.ops.quantized_decomposed.quantize_per_tensor(
+                x,
+                scale=0.1,
+                zero_point=0,
+                quant_min=0,
+                quant_max=255,
+                dtype=torch.uint8,
+            )
+            x = torch.ops.quantized_decomposed.dequantize_per_tensor(
+                x,
+                scale=0.1,
+                zero_point=0,
+                quant_min=0,
+                quant_max=255,
+                dtype=torch.uint8,
+            )
+            return x.T
+
+    model = Model()
+    dummy_input = torch.randn(10, 10)
+    aimet_torch.onnx.export(
+        model,
+        dummy_input,
+        str(tmp_path / "model.onnx"),
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+    )
+    model = onnx.load(str(tmp_path / "model.onnx"))
+    producers = {out: node for node in model.graph.node for out in node.output}
+    consumers = {}
+    for node in model.graph.node:
+        for inp in node.input:
+            consumers.setdefault(inp, []).append(node)
+
+    assert producers["output"].op_type == "DequantizeLinear"
+    (q,) = consumers["input"]
+    assert q.op_type == "QuantizeLinear"
+
+    sim = QuantizationSimModel(Model(), dummy_input).onnx.export(
+        dummy_input,
+        str(tmp_path / "model.onnx"),
+        input_names=["input"],
+        output_names=["output"],
+        encoding_version="2.0.0",
+    )
+
+    with open(tmp_path / "model.encodings") as f:
+        encodings = json.load(f)["encodings"]
+
+    assert {e["name"] for e in encodings} == {"input", "output"}

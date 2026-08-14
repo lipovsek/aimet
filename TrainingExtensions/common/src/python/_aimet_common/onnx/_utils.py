@@ -1145,8 +1145,11 @@ def _to_encoding(
             "per_block_int_scale": to_array(constants[scale_dq.input[0]]),
             "per_channel_float_scale": to_array(constants[scale_dq.input[1]]),
         }
+        per_tensor = False
     else:
-        scale = {"y_scale": to_array(constants[dq.input[1]])}
+        scale_arr = to_array(constants[dq.input[1]])
+        per_tensor = scale_arr.ndim == 0
+        scale = {"y_scale": scale_arr}
 
     if len(dq.input) > 2:
         zp_name = dq.input[2]
@@ -1207,6 +1210,12 @@ def _to_encoding(
                     "is inconsistent with "
                     f"the dtype of zero_point {encoding['output_dtype']} "
                 )
+
+    # ONNX QuantizeLinear's axis and block_size attributes are set to 1 and 0
+    # respectively, sometimes even for per-tensor QDQ. Pop them to avoid confusion.
+    if per_tensor:
+        encoding.pop("axis", None)
+        encoding.pop("block_size", None)
 
     return encoding
 

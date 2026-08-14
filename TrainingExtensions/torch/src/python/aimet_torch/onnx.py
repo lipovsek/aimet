@@ -28,6 +28,7 @@ from aimet_torch.common.onnx._utils import (
     _derive_data_movement_op_encodings,
     _derive_const_rescale_op_output_encodings,
     contains_tensor_type,
+    _remove_onnx_qdq_nodes,
 )
 
 from .nn import QuantizationMixin
@@ -1096,6 +1097,7 @@ def _to_onnx(
     f: Union[str, io.BytesIO],
     **kwargs,
 ) -> Tuple[onnx.ModelProto, dict]:
+    # pylint: disable=protected-access
     base_dir = str(Path(str(f)).absolute().parent)
     _onnx.export(model, args, f, **kwargs)
     onnx_model = onnx.load(f, load_external_data=False)
@@ -1113,14 +1115,23 @@ def _to_onnx(
         if quantizer
     }
 
-    tensor_to_encoding_map: Mapping[str, Tuple[EncodingBase, bool]]
-    tensor_to_encoding_map = {
-        name: (encoding, name in param_names or aliases.get(name) in param_names)
-        for name, encoding in _onnx.remove_quantization_nodes_from_onnx_graph(
-            onnx_model,
-            base_dir=base_dir,
-        ).items()
-    }
+    tensor_to_encoding_map: Mapping[str, Tuple[EncodingBase, bool]] = {}
+
+    for name, encoding in _onnx.remove_quantization_nodes_from_onnx_graph(
+        onnx_model,
+        base_dir=base_dir,
+    ).items():
+        is_param = name in param_names or aliases.get(name) in param_names
+        tensor_to_encoding_map[name] = (encoding, is_param)
+
+    for encoding in _remove_onnx_qdq_nodes(onnx_model):
+        name = encoding.pop("name")
+        is_param = name in param_names or aliases.get(name) in param_names
+        tensor_to_encoding_map[name] = (
+            AffineEncoding._from_qnn_encoding_dict(encoding, version="2.0.0"),
+            is_param,
+        )
+
     encoding_dict = {
         name: enc.to_qnn_encoding_dict("2.0.0")
         for name, (enc, _) in tensor_to_encoding_map.items()
@@ -1131,7 +1142,6 @@ def _to_onnx(
     derived_encodings |= _derive_data_movement_op_encodings(
         onnx_model, encoding_dict | derived_encodings
     )
-    # pylint: disable=protected-access
     tensor_to_encoding_map |= {
         name: (AffineEncoding._from_qnn_encoding_dict(encoding, version="2.0.0"), False)
         for name, encoding in derived_encodings.items()
