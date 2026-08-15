@@ -8552,3 +8552,99 @@ def test_quantsim_with_large_split_length_input(tmp_path):
     sim.session.run(None, aimet_onnx.utils.make_dummy_input(model))
     sim.export(tmp_path, "model_quantized")
     qdq_model = sim.to_onnx_qdq()
+
+
+@pytest.mark.parametrize("op", [torch.cat, torch.where])
+def test_multi_input_grid_equivariant_op_encoding_propagation(tmp_path, op):
+    """
+    Given: Multi-input grid-equivariant module (e.g. Concat, Where)
+    """
+
+    class Model(torch.nn.Module):
+        def forward(self, *inputs):
+            return op(*inputs)
+
+    if op == torch.cat:
+        x = torch.randn(5, 5)
+        y = torch.randn(5, 5)
+        inputs = ((x, y),)
+        input_names = ["x", "y"]
+        float_input_names = ["x", "y"]
+    elif op is torch.where:
+        x = torch.randn(5, 5) > 0
+        y = torch.randn(5, 5)
+        z = torch.randn(5, 5)
+        inputs = (x, y, z)
+        input_names = ["x", "y", "z"]
+        float_input_names = ["y", "z"]
+    else:
+        raise ValueError(f"Unsupported op type: {op}")
+
+    torch.onnx.export(
+        Model(),
+        inputs,
+        tmp_path / "model.onnx",
+        input_names=input_names,
+        output_names=["output"],
+        opset_version=21,
+    )
+
+    with _apply_constraints(False):
+        sim = aimet_onnx.QuantizationSimModel(onnx.load(tmp_path / "model.onnx"))
+        sim.compute_encodings([make_dummy_input(sim.model.model)])
+
+    def _export_and_get_encoding(sim):
+        sim.export(
+            str(tmp_path),
+            "model",
+            encoding_version="2.0.0",
+        )
+        with open(tmp_path / "model.encodings") as f:
+            encodings = json.load(f)["encodings"]
+        return encodings
+
+    """
+    When: Export without input quantizer
+    Then: Output encoding should be propagated to inputs
+    """
+    try:
+        for name in float_input_names:
+            sim.qc_quantize_op_dict[name].enabled = False
+
+        encodings = _export_and_get_encoding(sim)
+        assert {e.pop("name") for e in encodings} == {*float_input_names, "output"}
+        assert len(set(tuple(e.items()) for e in encodings)) == 1
+    finally:
+        for name in float_input_names:
+            sim.qc_quantize_op_dict[name].enabled = True
+
+    """
+    When: Export without output quantizer
+    Then: Input encodings should NOT be propagated to output
+    """
+    try:
+        sim.qc_quantize_op_dict["output"].enabled = False
+        encodings = _export_and_get_encoding(sim)
+        assert {e.pop("name") for e in encodings} == {*float_input_names}
+        assert len(set(tuple(e.items()) for e in encodings)) == len(float_input_names)
+    finally:
+        sim.qc_quantize_op_dict["output"].enabled = True
+
+    """
+    When: Export without output quantizer and with same encoding across all inputs
+    Then: Input encodings should be propagated to output
+    """
+    try:
+        sim.qc_quantize_op_dict["output"].enabled = False
+
+        # Manually tie all input quantizers
+        for name in float_input_names:
+            sim.qc_quantize_op_dict[name] = sim.qc_quantize_op_dict[
+                float_input_names[0]
+            ]
+
+        encodings = _export_and_get_encoding(sim)
+        assert {e.pop("name") for e in encodings} == {*float_input_names, "output"}
+        assert len(set(tuple(e.items()) for e in encodings)) == 1
+    finally:
+        sim.qc_quantize_op_dict["output"].enabled = True

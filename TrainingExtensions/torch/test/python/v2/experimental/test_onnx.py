@@ -3815,3 +3815,79 @@ def test_export_aten_quantize_dequantize(tmp_path: pathlib.Path):
         encodings = json.load(f)["encodings"]
 
     assert {e["name"] for e in encodings} == {"input", "output"}
+
+
+@pytest.mark.parametrize("module_cls", [aimet_ops.Concat, aimet_ops.Where])
+def test_multi_input_grid_equivariant_op_encoding_propagation(
+    tmp_path: pathlib.Path, module_cls
+):
+    """
+    Given: Multi-input grid-equivariant module (e.g. Concat, Where)
+    """
+    module = module_cls()
+
+    if module_cls is aimet_ops.Concat:
+        x = torch.randn(5, 5)
+        y = torch.randn(5, 5)
+        inputs = {"x": x, "y": y}
+    elif module_cls is aimet_ops.Where:
+        x = torch.randn(5, 5) > 0
+        y = torch.randn(5, 5)
+        z = torch.randn(5, 5)
+        inputs = {"x": x, "y": y, "z": z}
+    else:
+        raise ValueError(f"Unsupported module class: {module_cls}")
+
+    input_names = list(inputs.keys())
+    float_input_names = [
+        name for name, inp in inputs.items() if inp.is_floating_point()
+    ]
+    inputs = tuple(inputs.values())
+    sim = aimet_torch.QuantizationSimModel(module, inputs)
+    sim.compute_encodings(lambda m: m(*inputs))
+
+    def _export_and_get_encoding(sim):
+        sim.onnx.export(
+            inputs,
+            tmp_path / "model.onnx",
+            input_names=input_names,
+            output_names=["output"],
+            opset_version=21,
+            encoding_version="2.0.0",
+        )
+
+        with open(tmp_path / "model.encodings") as f:
+            encodings = json.load(f)["encodings"]
+        return encodings
+
+    """
+    When: Export without input quantizer
+    Then: Output encoding should be propagated to inputs
+    """
+    with aimet_torch.utils.remove_input_quantizers(sim.model):
+        encodings = _export_and_get_encoding(sim)
+        assert {e.pop("name") for e in encodings} == {*float_input_names, "output"}
+        assert len(set(tuple(e.items()) for e in encodings)) == 1
+
+    """
+    When: Export without output quantizer
+    Then: Input encodings should NOT be propagated to output
+    """
+    with aimet_torch.utils.remove_output_quantizers(sim.model):
+        encodings = _export_and_get_encoding(sim)
+        assert {e.pop("name") for e in encodings} == {*float_input_names}
+        assert len(set(tuple(e.items()) for e in encodings)) == len(float_input_names)
+
+    """
+    When: Export without output quantizer and with same encoding across all inputs
+    Then: Input encodings should be propagated to output
+    """
+    with aimet_torch.utils.remove_output_quantizers(sim.model):
+        # Manually tie all input quantizers
+        for i in range(len(sim.model.input_quantizers)):
+            if sim.model.input_quantizers[i] is not None:
+                sim.model.input_quantizers[i] = sim.model.input_quantizers[-1]
+
+        encodings = _export_and_get_encoding(sim)
+        assert {e.pop("name") for e in encodings} == {*float_input_names, "output"}
+        assert len(set(tuple(e.items()) for e in encodings)) == 1

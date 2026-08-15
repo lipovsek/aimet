@@ -415,7 +415,6 @@ xfail = {
     torch.ops.aten.detach: "ONNX export error",
     torch.ops.aten.hardtanh: "Clip min/max are missing encoding",
     torch.ops.aten.index_fill: "ScatterND input is missing encoding",
-    torch.ops.aten.masked_fill: "Where's scalar input is missing encoding",
     torch.ops.aten.native_batch_norm: "ONNX export error",
     torch.ops.aten.native_group_norm: "Missing intermediate encoding",
     torch.ops.aten.pow: "Exponent is missing encoding",

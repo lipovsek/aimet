@@ -24,6 +24,7 @@ from onnx.external_data_helper import (
     uses_external_data,
     _get_all_tensors,
 )
+from onnx.defs import OpSchema
 
 from . import opset10, opset13, opset19, opset21, opset23, opset25
 from ..utils import AimetLogger
@@ -568,18 +569,43 @@ class _ParamUtils:
 _all_op_schemas = {schema.name: schema for schema in onnx.defs.get_all_schemas()}
 
 
-def _is_float_output(op_type: str) -> bool:
+def _is_float_input(op_type: str, i: int) -> bool:
+    schema = _all_op_schemas[op_type]
+
+    if (
+        len(schema.inputs) > 0
+        and schema.inputs[-1].option == OpSchema.FormalParameterOption.Variadic
+    ):
+        i = min(i, len(schema.inputs) - 1)
+
+    if i >= len(schema.inputs):
+        raise ValueError(
+            f"Input index {i} is out of range for operator {op_type} with {len(schema.inputs)} inputs"
+        )
+
+    input = schema.inputs[i]
+    return _is_float(schema, input)
+
+
+def _is_float_output(op_type: str, i: int) -> bool:
     """
     Returns True if op_type can return float output
     """
     schema = _all_op_schemas[op_type]
-    output = schema.outputs[0]
+
+    if schema.outputs[-1].option == OpSchema.FormalParameterOption.Variadic:
+        i = min(i, len(schema.outputs) - 1)
+
+    if i >= len(schema.outputs):
+        raise ValueError(
+            f"Output index {i} is out of range for operator {op_type} with {len(schema.outputs)} outputs"
+        )
+
+    output = schema.outputs[i]
     return _is_float(schema, output)
 
 
-def _is_float(
-    schema: onnx.defs.OpSchema, tensor_spec: onnx.defs.OpSchema.FormalParameter
-) -> bool:
+def _is_float(schema: OpSchema, tensor_spec: OpSchema.FormalParameter) -> bool:
     type_str = tensor_spec.type_str
     try:
         type_constraint = next(
@@ -1538,8 +1564,7 @@ def _derive_data_movement_op_encodings(
     data_movement_ops = [
         node
         for node in model.graph.node
-        if _is_grid_preserving_op(node.op_type, domain=node.domain)
-        or node.op_type == "Concat"
+        if _is_grid_equivariant_op(node.op_type, domain=node.domain)
     ]
 
     new_encodings = {}
@@ -1565,8 +1590,16 @@ def _derive_data_movement_op_encodings(
         if _is_htp_masked_softmax_reducemin(node, consumers, constants):
             return derived_encodings
 
-        input_names = node.input[:] if node.op_type == "Concat" else [node.input[0]]
-        output_names = node.output[:] if node.op_type == "Split" else [node.output[0]]
+        input_names = [
+            name
+            for i, name in enumerate(node.input)
+            if _is_float_input(node.op_type, i)
+        ]
+        output_names = [
+            name
+            for i, name in enumerate(node.output)
+            if _is_float_output(node.op_type, i)
+        ]
 
         can_propagate_forward = all(
             _encoding_equal(encodings.get(inp), encodings.get(input_names[0]))
