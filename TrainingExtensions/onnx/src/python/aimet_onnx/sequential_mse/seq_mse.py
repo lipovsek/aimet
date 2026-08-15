@@ -22,7 +22,6 @@ from onnxruntime.quantization.onnx_quantizer import ONNXModel
 from aimet_onnx.common.libpymo import TensorQuantizerOpMode
 from aimet_onnx.common.defs import QuantScheme
 from aimet_onnx.common.utils import AimetLogger, deprecated
-from aimet_onnx.qc_quantize_op import GroupedBlockQuantizeDequantize
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.utils import (
     disable_quantizers,
@@ -953,7 +952,7 @@ def _temporarily_disable_block_grouping(sim: QuantizationSimModel):
         sim.qc_quantize_op_dict[name]
         for name in sim.param_names
         if sim.qc_quantize_op_dict[name].enabled
-        and isinstance(sim.qc_quantize_op_dict[name], GroupedBlockQuantizeDequantize)
+        and sim.qc_quantize_op_dict[name]._scale_quantizer is not None
     ]
 
     original_scale_quantizers = {

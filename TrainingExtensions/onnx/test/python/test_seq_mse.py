@@ -52,7 +52,6 @@ from aimet_onnx.qc_quantize_op import (
     QcQuantizeOp,
     OpMode,
     TensorQuantizerParams,
-    GroupedBlockQuantizeDequantize,
 )
 
 from .models.test_models import single_linear_layer_model
@@ -980,7 +979,7 @@ def test_temporarily_disable_grouped_block_quantizers():
         sim.qc_quantize_op_dict[name]
         for name in sim.param_names
         if sim.qc_quantize_op_dict[name].enabled
-        and isinstance(sim.qc_quantize_op_dict[name], GroupedBlockQuantizeDequantize)
+        and sim.qc_quantize_op_dict[name]._scale_quantizer is not None
     ]
     assert len(quantizers) == 3
 

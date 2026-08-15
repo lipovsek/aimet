@@ -95,7 +95,6 @@ from aimet_onnx.qc_quantize_op import (
     QcQuantizeOp,
     OpMode,
     TensorQuantizerParams,
-    GroupedBlockQuantizeDequantize,
     _EncodingMismatchInfo,
 )
 from aimet_onnx.quantsim_config.quantsim_config import QuantSimConfigurator
@@ -113,7 +112,8 @@ from aimet_onnx.graph_passes.fusions import (
 )
 from aimet_onnx.batch_norm_fold import _has_unfolded_batchnorms
 import aimet_onnx
-from ._encoding import EncodingBase, LPBQEncoding
+from ._encoding import EncodingBase
+from .defs import QSpec
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
 
@@ -3614,36 +3614,6 @@ def load_encodings_to_sim(
     if encoding_version == "2.0.0":
         _remove_delegatable_excess_encodings(quant_sim_model, all_encodings)
 
-    if not strict:
-        # Only convert regular quantizers to LPBQ quantizers in non-strict mode
-        lpbq_encodings: dict[str, LPBQEncoding] = {
-            name: LPBQEncoding.from_qnn_encoding_dict(enc)
-            for name, enc in all_encodings.items()
-            if EncodingBase.get_subclass(enc) == LPBQEncoding
-        }
-
-        def get_lpbq_params(op: Op):
-            for product, _ in op.parameters.values():
-                enc = lpbq_encodings.get(product.name)
-                qtzr = quant_sim_model.qc_quantize_op_dict.get(product.name)
-                if enc and not isinstance(qtzr, GroupedBlockQuantizeDequantize):
-                    return enc.bitwidth, enc.decompressed_bitwidth(), enc.block_size
-            return None, None, None
-
-        if lpbq_encodings:
-            _set_grouped_blockwise_quantization_for_weights(
-                quant_sim_model,
-                get_lpbq_params,
-                strict=True,
-            )
-            all_quantizers.update(
-                {
-                    name: qtzr
-                    for name, qtzr in quant_sim_model.qc_quantize_op_dict.items()
-                    if name in lpbq_encodings and all_quantizers.get(name) != qtzr
-                }
-            )
-
     # First pass through quantizers to check for mismatched encodings
     missing_quantizers = all_encodings.keys() - all_quantizers.keys()
 
@@ -3993,6 +3963,10 @@ def set_blockwise_quantization_for_weights(
     if not nodes_to_exclude:
         nodes_to_exclude = []
 
+    qspec = QSpec.blockwise(
+        qtype.int(bitwidth), block_size=block_size, symmetric=symmetric
+    )
+
     for op in sim.connected_graph.ordered_ops:
         if op.type not in op_types:
             continue
@@ -4009,7 +3983,7 @@ def set_blockwise_quantization_for_weights(
             continue
 
         try:
-            weight_quantizer._enable_blockwise_quantization(block_size)  # pylint:disable = protected-access
+            weight_quantizer.set_qspec(qspec)
         except ValueError as e:
             if strict:
                 raise e
@@ -4080,8 +4054,10 @@ def set_grouped_blockwise_quantization_for_weights(
 
     def get_lpbq_params(op: Op):
         if op.type in op_types and op.name not in nodes_to_exclude:
-            return bitwidth, decompressed_bw, block_size
-        return None, None, None
+            return QSpec.lpbq(
+                qtype.int(bitwidth), block_size, decompressed_bw - bitwidth
+            )
+        return None
 
     return _set_grouped_blockwise_quantization_for_weights(sim, get_lpbq_params, strict)
 
@@ -4187,21 +4163,21 @@ def set_lpbq_for_params(
 
     def get_lpbq_params(op: Op):
         if op.name in nodes_to_include:
-            return bitwidth, bitwidth * 2, block_size
-        return None, None, None
+            return QSpec.lpbq(qtype.int(bitwidth), block_size, scale_bits=bitwidth)
+        return None
 
     return _set_grouped_blockwise_quantization_for_weights(sim, get_lpbq_params, strict)
 
 
 def _set_grouped_blockwise_quantization_for_weights(
     sim: QuantizationSimModel,
-    get_lpbq_params: Callable[[Op], Tuple[Optional[int], Optional[int], Optional[int]]],
+    get_lpbq_params: Callable[[Op], QSpec],
     strict: bool = False,
 ):
     for op in sim.connected_graph.ordered_ops:
-        bitwidth, decompressed_bw, block_size = get_lpbq_params(op)
+        qspec = get_lpbq_params(op)
 
-        if None in (bitwidth, decompressed_bw, block_size):
+        if qspec is None:
             continue
 
         _, _, param_quantizers = sim.get_op_quantizers(op)
@@ -4213,15 +4189,7 @@ def _set_grouped_blockwise_quantization_for_weights(
             continue
 
         try:
-            grouped_quantizer = GroupedBlockQuantizeDequantize(
-                weight_quantizer.quant_info,
-                bitwidth,
-                decompressed_bw,
-                block_size,
-                weight_quantizer.quant_scheme,
-                weight_quantizer.op_mode,
-                weight_quantizer.tensor_quantizer_params,
-            )
+            weight_quantizer.set_qspec(qspec)
         except ValueError as e:
             if strict:
                 raise e
@@ -4234,10 +4202,6 @@ def _set_grouped_blockwise_quantization_for_weights(
                 bias_quantizer.enable_per_channel_quantization()
                 bias_quantizer.use_symmetric_encodings = True
                 bias_quantizer.data_type = QuantizationDataType.int
-
-            for name, quantizer in sim.qc_quantize_op_dict.items():
-                if quantizer is weight_quantizer:
-                    sim.qc_quantize_op_dict[name] = grouped_quantizer
 
 
 @overload

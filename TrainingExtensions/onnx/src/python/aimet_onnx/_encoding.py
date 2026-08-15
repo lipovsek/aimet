@@ -13,7 +13,7 @@ from aimet_onnx.common.defs import EncodingType, QuantizationDataType
 from aimet_onnx.common import libpymo
 
 if TYPE_CHECKING:
-    from aimet_onnx.qc_quantize_op import QcQuantizeOp, GroupedBlockQuantizeDequantize
+    from aimet_onnx.qc_quantize_op import QcQuantizeOp
 
 
 T = TypeVar("T", bound="EncodingBase")
@@ -1141,9 +1141,7 @@ class LPBQEncoding(AffineEncoding):
         )
 
     @classmethod
-    def from_quantizer(
-        cls, qtzr: GroupedBlockQuantizeDequantize
-    ) -> LPBQEncoding | None:
+    def from_quantizer(cls, qtzr: QcQuantizeOp) -> LPBQEncoding | None:
         # pylint: disable=protected-access
         if not qtzr.enabled:
             return None
@@ -1190,22 +1188,11 @@ class LPBQEncoding(AffineEncoding):
         # pylint:disable = protected-access
         from aimet_onnx.qc_quantize_op import LPBQScaleQuantizer
 
-        # TODO: Remove check and tests for this path
-        if qtzr._encoding_type() != EncodingType.LPBQ:
-            raise RuntimeError(
-                "LPBQEncoding can only be loaded to a quantizer with LPBQ enabled."
-            )
-
-        if qtzr.tensor_quantizer_params is None:
-            raise RuntimeError(
-                "QcQuantizeOp.tensor_quantizer_params is None; cannot set "
-                "channel/block quantization."
-            )
+        super().load_to(qtzr)
 
         qtzr._scale_quantizer = LPBQScaleQuantizer(
             self.decompressed_bitwidth() - self.bitwidth
         )
-        return super().load_to(qtzr)
 
     @property
     def scale(self) -> np.ndarray:

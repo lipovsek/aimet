@@ -61,7 +61,7 @@ from aimet_onnx.quantsim import (
 import aimet_onnx
 from aimet_onnx.qc_quantize_op import (
     OpMode,
-    GroupedBlockQuantizeDequantize,
+    LPBQScaleQuantizer,
     QcQuantizeOp,
 )
 from aimet_onnx.utils import (
@@ -3116,7 +3116,7 @@ class TestQuantSim:
             if not quantizer.enabled:
                 continue
             if name in bq_weights:
-                assert isinstance(quantizer, GroupedBlockQuantizeDequantize)
+                assert isinstance(quantizer._scale_quantizer, LPBQScaleQuantizer)
                 assert quantizer.quant_info.usePerChannelMode
                 assert quantizer.quant_info.blockSize == block_size
                 assert len(quantizer.encodings) > 1
@@ -3176,7 +3176,7 @@ class TestQuantSim:
             if not quantizer.enabled:
                 continue
             if name in bq_weights:
-                assert isinstance(quantizer, GroupedBlockQuantizeDequantize)
+                assert isinstance(quantizer._scale_quantizer, LPBQScaleQuantizer)
                 assert quantizer.quant_info.usePerChannelMode
                 assert quantizer.quant_info.blockSize == block_size
                 assert len(quantizer.encodings) > 1
@@ -3246,12 +3246,6 @@ class TestQuantSim:
             param_type="int8",
             activation_type="int16",
         )
-
-        # Todo: Support configuring quantizers to LPBQ as necessary during load_encodings_to_sim
-        if lpbq:
-            set_grouped_blockwise_quantization_for_weights(
-                sim_loaded, bq_layers, 4, 8, block_size=4, strict=False
-            )
 
         load_encodings_to_sim(
             sim_loaded, os.path.join(export_dir, "tmp_model.encodings"), strict=False
@@ -6887,8 +6881,8 @@ def test_to_onnx_qdq_lpbq(seed: int, prequantize_constants: bool):
         ]
     )
     expected_num_dq = sum(
-        # GroupedBlockQuantizeDequantize is mapped to two DequantizeLinears when exported
-        2 if isinstance(qtzr, GroupedBlockQuantizeDequantize) else 1
+        # LPBQ quantizer is mapped to two DequantizeLinears when exported
+        2 if isinstance(qtzr._scale_quantizer, LPBQScaleQuantizer) else 1
         for qtzr in sim.qc_quantize_op_dict.values()
         if qtzr.enabled
         and (qtzr.data_type == QuantizationDataType.int or qtzr.bitwidth < 16)
@@ -8134,7 +8128,9 @@ def test_set_lpbq_for_params(op_types):
         # First conv weight is not divisible by block_size
         if op.type in op_types and op.name != first_conv.name:
             param_qtzr = sim.qc_quantize_op_dict[op.inputs[1].name]
-            assert isinstance(param_qtzr, GroupedBlockQuantizeDequantize), f"{op.name}"
+            assert isinstance(param_qtzr._scale_quantizer, LPBQScaleQuantizer), (
+                f"{op.name}"
+            )
             assert param_qtzr.bitwidth == 4
             assert param_qtzr.quant_info.blockSize == 8
             assert param_qtzr._scale_quantizer.scale_bits == 4
@@ -8142,7 +8138,7 @@ def test_set_lpbq_for_params(op_types):
             for inp in op.inputs:
                 qtzr = sim.qc_quantize_op_dict.get(inp.name)
                 if qtzr and qtzr.enabled:
-                    assert not isinstance(qtzr, GroupedBlockQuantizeDequantize)
+                    assert qtzr._scale_quantizer is None
                     assert qtzr.bitwidth == 8
                     assert qtzr.quant_info.blockSize == 0
 

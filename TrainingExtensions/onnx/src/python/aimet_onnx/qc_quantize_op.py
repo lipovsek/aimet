@@ -29,7 +29,7 @@ from aimet_onnx.common.quantsim import (
 from aimet_onnx.defs import QSpec, Granularity, LPBQ, Blockwise, PerChannel, PerTensor
 from aimet_onnx.utils import numpy_from_TfEncoding, numpy_to_TfEncoding
 from aimet_onnx import lpbq_utils
-from ._encoding import EncodingBase, LPBQEncoding
+from ._encoding import EncodingBase
 
 
 OpMode = libpymo.TensorQuantizerOpMode
@@ -446,23 +446,6 @@ class QcQuantizeOp:
             default_channel_axis=default_channel_axis,
             default_block_axis=default_block_axis,
         )
-
-        if isinstance(e, LPBQEncoding) and not isinstance(
-            self, GroupedBlockQuantizeDequantize
-        ):
-            name = encoding_dict.get("name", None)
-            if name:
-                msg = (
-                    f"Loading LPBQ encodings for tensor name {name} "
-                    "into a non-LPBQ quantizer is not supported"
-                )
-            else:
-                msg = "Loading LPBQ encodings into a non-LPBQ quantizer"
-
-            raise AssertionError(
-                msg
-                + " Ensure QuantizationSimModel is set with proper quantizers before loading."
-            )
 
         e.load_to(self)
 
@@ -1024,6 +1007,7 @@ class QcQuantizeOp:
         )
 
 
+@deprecated("Use `QcQuantizeOp.set_qspec(QSpec.lpbq(...))` instead to enable LPBQ.")
 class GroupedBlockQuantizeDequantize(QcQuantizeOp):
     """LPBQ QcQuantizeOp constructor for backward compatibility"""
 

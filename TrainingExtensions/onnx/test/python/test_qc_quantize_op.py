@@ -2011,14 +2011,16 @@ class TestLPBQOp:
         tensor_quantizer_params = TensorQuantizerParams(
             input_shape, channel_axis=0, block_axis=1
         )
-        lpbq_op = GroupedBlockQuantizeDequantize(
+        lpbq_op = QcQuantizeOp(
             quant_info,
-            bitwidth,
-            decompressed_bw,
-            block_size=3,
             quant_scheme=QuantScheme.post_training_tf,
             op_mode=OpMode.quantizeDequantize,
             tensor_quantizer_params=tensor_quantizer_params,
+        )
+        lpbq_op.set_qspec(
+            QSpec.lpbq(
+                qtype.int(bitwidth), block_size=3, scale_bits=decompressed_bw - bitwidth
+            )
         )
 
         encodings = numpy_to_TfEncoding(scale, offset, qtype.int(bitwidth))
@@ -2137,14 +2139,18 @@ class TestLPBQOp:
         tensor_quantizer_params = TensorQuantizerParams(
             input_shape, channel_axis=1, block_axis=0
         )
-        lpbq_op = GroupedBlockQuantizeDequantize(
+        lpbq_op = QcQuantizeOp(
             quant_info,
-            bitwidth,
-            decompressed_bw,
-            block_size=block_size,
             quant_scheme=QuantScheme.post_training_tf,
             op_mode=OpMode.updateStats,
             tensor_quantizer_params=tensor_quantizer_params,
+        )
+        lpbq_op.set_qspec(
+            QSpec.lpbq(
+                qtype.int(bitwidth),
+                block_size=block_size,
+                scale_bits=decompressed_bw - bitwidth,
+            )
         )
 
         # Note: computed delta = abs_max / num_positive_steps = abs_max / 7
@@ -2175,14 +2181,18 @@ class TestLPBQOp:
         tensor_quantizer_params = TensorQuantizerParams(
             input_shape, channel_axis=1, block_axis=0
         )
-        lpbq_op = GroupedBlockQuantizeDequantize(
+        lpbq_op = QcQuantizeOp(
             quant_info,
-            bitwidth,
-            decompressed_bw,
-            block_size=block_size,
             quant_scheme=QuantScheme.post_training_tf,
             op_mode=OpMode.updateStats,
             tensor_quantizer_params=tensor_quantizer_params,
+        )
+        lpbq_op.set_qspec(
+            QSpec.lpbq(
+                qtype.int(bitwidth),
+                block_size=block_size,
+                scale_bits=decompressed_bw - bitwidth,
+            )
         )
         lpbq_op.enable_per_channel_quantization()
 
@@ -2584,14 +2594,18 @@ def test_lpbq_encoding_schema_2_0_0(
     )
     model = create_model_from_node(quant_node, input.shape)
     session = build_session(model, available_providers)
-    qtzr = GroupedBlockQuantizeDequantize(
+    qtzr = QcQuantizeOp(
         quant_info,
-        compressed_bw,
-        decompressed_bw,
-        block_size=block_size,
         quant_scheme=QuantScheme.post_training_tf,
         op_mode=OpMode.oneShotQuantizeDequantize,
         tensor_quantizer_params=quant_params,
+    )
+    qtzr.set_qspec(
+        QSpec.lpbq(
+            qtype.int(compressed_bw),
+            block_size=block_size,
+            scale_bits=decompressed_bw - compressed_bw,
+        )
     )
 
     (_,) = session.run(None, {"input": input})
@@ -2911,15 +2925,13 @@ def test_import_1_0_0_LPBQ_encodings_with_zero_point_shift():
     input_shape = (2, 4)
     quant_info = libquant_info.QcQuantizeInfo()
     tensor_quantizer_params = TensorQuantizerParams(input_shape, 0, 1)
-    qc_op = GroupedBlockQuantizeDequantize(
+    qc_op = QcQuantizeOp(
         quant_info=quant_info,
         quant_scheme=QuantScheme.post_training_tf,
         op_mode=OpMode.oneShotQuantizeDequantize,
-        bitwidth=4,
-        decompressed_bw=8,
         tensor_quantizer_params=tensor_quantizer_params,
-        block_size=0,
     )
+    qc_op.set_qspec(QSpec.lpbq(qtype.int(4), block_size=0, scale_bits=4))
     """
     When: Loading LPBQ encodings with zero_point_shift
     Then: 1) Stored encodings contain shifted offset
@@ -3214,16 +3226,10 @@ def test_set_qspec_lpbq_output():
     configured = _new_quantizer(input_shape, bitwidth=8, use_symmetric_encodings=True)
     configured.set_qspec(QSpec.lpbq("int4", 16, 4))
 
-    # Pre-existing LPBQ constructor: decompressed_bw = bitwidth + scale_bits
-    reference = GroupedBlockQuantizeDequantize(
-        quant_info=libquant_info.QcQuantizeInfo(),
-        bitwidth=4,
-        decompressed_bw=8,
-        block_size=16,
-        quant_scheme=QuantScheme.post_training_tf,
-        op_mode=OpMode.updateStats,
-        tensor_quantizer_params=TensorQuantizerParams(input_shape, 0, 1),
-    )
+    reference = _new_quantizer(input_shape, bitwidth=4, use_symmetric_encodings=True)
+    reference._enable_blockwise_quantization(16)
+    reference._scale_quantizer = LPBQScaleQuantizer(4)
+    reference.data_type = QuantizationDataType.int
 
     actual = _calibrate_and_qdq(configured, input_tensor)
     expected = _calibrate_and_qdq(reference, input_tensor)
