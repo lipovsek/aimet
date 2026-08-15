@@ -413,7 +413,6 @@ xfail = {
     torch.ops.aten.constant_pad_nd: "Padding value is missing encoding",
     torch.ops.aten.copy: "ONNX export error",
     torch.ops.aten.detach: "ONNX export error",
-    torch.ops.aten.group_norm: "Missing intermediate encoding",
     torch.ops.aten.hardtanh: "Clip min/max are missing encoding",
     torch.ops.aten.index_fill: "ScatterND input is missing encoding",
     torch.ops.aten.masked_fill: "Where's scalar input is missing encoding",

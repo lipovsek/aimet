@@ -61,6 +61,7 @@ def _qnn_friendly_aten_ops() -> tuple[torch._ops.OpOverloadPacket, ...]:
         torch.ops.aten.gelu,
         torch.ops.aten.greater,
         torch.ops.aten.greater_equal,
+        torch.ops.aten.group_norm,
         torch.ops.aten.grid_sampler_2d,
         torch.ops.aten.gt,
         torch.ops.aten.hardswish,
