@@ -55,6 +55,7 @@ from aimet_onnx.common.onnx._utils import (
     _add_onnx_qdq_nodes,
     _remove_onnx_qdq_nodes,
     _is_grid_preserving_op,
+    _is_grid_equivariant_op,
     _derive_data_movement_op_encodings,
     _is_htp_interpolation_op,
     _get_all_constants,
@@ -525,7 +526,11 @@ class QuantizationSimModel:
         if _tie_qtzrs:
             op_types = {node.op_type for node in self.model.nodes()}
             op_types_to_tie = op_types_to_tie_qtzrs + [
-                t for t in op_types if _is_htp_interpolation_op(t)
+                t
+                for t in op_types
+                if _is_htp_interpolation_op(t)
+                # Multi-input grid-equivariant ops are safe to tie encodings
+                or _is_grid_equivariant_op(t, include_unary=False)
             ]
             self._tie_quantizers_for_op_types(op_types_to_tie)
 
@@ -2317,14 +2322,17 @@ class QuantizationSimModel:
                 node_input_map[input_name] = node
 
         # Ops that combine data from multiple inputs to single output
-        data_aggregation_ops = {"Concat", "ScatterElements", "ScatterND"}
-        self._propagate_output_encodings(
-            op_types_to_tie & data_aggregation_ops, node_input_map
-        )
+        data_aggregation_ops = {"ScatterElements", "ScatterND"}
+        op_types_to_propagate_backward = {
+            op_type
+            for op_type in op_types_to_tie
+            if op_type in data_aggregation_ops
+            or _is_grid_equivariant_op(op_type, include_unary=False)
+        }
+        op_types_to_propagate_forward = op_types_to_tie - op_types_to_propagate_backward
 
-        self._propagate_input_encodings(
-            op_types_to_tie - data_aggregation_ops, node_input_map
-        )
+        self._propagate_output_encodings(op_types_to_propagate_backward, node_input_map)
+        self._propagate_input_encodings(op_types_to_propagate_forward, node_input_map)
 
     def _propagate_output_encodings(
         self, op_types_to_tie: Set[str], node_input_map: Dict

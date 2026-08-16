@@ -669,7 +669,9 @@ def _is_grid_preserving_op(op_type: str, domain: str = "") -> bool:
     )
 
 
-def _is_grid_equivariant_op(op_type: str, domain: str = "") -> bool:
+def _is_grid_equivariant_op(
+    op_type: str, domain: str = "", include_unary: bool = True
+) -> bool:
     """
     Returns True if op_type is a grid-equivariant op.
 
@@ -677,7 +679,8 @@ def _is_grid_equivariant_op(op_type: str, domain: str = "") -> bool:
     if and only if `q(f(x1, x2, ..., xn)) == f(q(x1), q(x2), ..., q(xn))`
     for arbitrary quantization function `q`.
     """
-    return _is_grid_preserving_op(op_type, domain) or (domain, op_type) in (
+    is_grid_preserving_op = include_unary and _is_grid_preserving_op(op_type, domain)
+    return is_grid_preserving_op or (domain, op_type) in (
         ("", "Concat"),
         ("", "Scatter"),
         ("", "Where"),

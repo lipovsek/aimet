@@ -8556,10 +8556,6 @@ def test_quantsim_with_large_split_length_input(tmp_path):
 
 @pytest.mark.parametrize("op", [torch.cat, torch.where])
 def test_multi_input_grid_equivariant_op_encoding_propagation(tmp_path, op):
-    """
-    Given: Multi-input grid-equivariant module (e.g. Concat, Where)
-    """
-
     class Model(torch.nn.Module):
         def forward(self, *inputs):
             return op(*inputs)
@@ -8589,6 +8585,21 @@ def test_multi_input_grid_equivariant_op_encoding_propagation(tmp_path, op):
         opset_version=21,
     )
 
+    """
+    When: Create quantsim with multi-input grid-equivariant op (e.g. Concat, Where)
+           with tie_encodings enabled
+    Then: All input/output quantizers should be tied
+    """
+    with _apply_constraints(True):
+        sim = aimet_onnx.QuantizationSimModel(onnx.load(tmp_path / "model.onnx"))
+        sim.compute_encodings([make_dummy_input(sim.model.model)])
+
+    assert len(set(sim.qc_quantize_op_dict.values())) == 1
+
+    """
+    Given: Create quantsim with multi-input grid-equivariant op (e.g. Concat, Where)
+           with tie_encodings disabled
+    """
     with _apply_constraints(False):
         sim = aimet_onnx.QuantizationSimModel(onnx.load(tmp_path / "model.onnx"))
         sim.compute_encodings([make_dummy_input(sim.model.model)])
