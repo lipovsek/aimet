@@ -70,10 +70,10 @@ class QSpec:
     Specifies how a tensor should be quantized (precision and granularity).
 
     Args:
-        dtype: Quantized data type
-        granularity: How quantization parameters are shared across the tensor
-        symmetric: If specified, determines whether encodings will be symmetric
-        shift_zero_point: Whether to shift quantizer's 0 point by a half-step.
+        dtype (qtype): Quantized data type
+        granularity (Granularity | None): How quantization parameters are shared across the tensor
+        symmetric (bool | None): If specified, determines whether encodings will be symmetric
+        shift_zero_point (bool): Whether to shift quantizer's 0 point by a half-step.
             Only supported for int2 param quantizers
     """
 

@@ -4215,7 +4215,7 @@ def _set_grouped_blockwise_quantization_for_weights(
 @overload
 def set_param_type(
     sim: QuantizationSimModel,
-    param_type: qtype | str,
+    param_type: QSpec | qtype | str,
     *,
     op_types: Optional[Tuple[str] | str] = None,
     nodes_to_exclude: Optional[Set[str]] = None,
@@ -4226,7 +4226,7 @@ def set_param_type(
 @overload
 def set_param_type(
     sim: QuantizationSimModel,
-    param_type: qtype | str,
+    param_type: QSpec | qtype | str,
     *,
     nodes_to_include: Optional[Set[str]] = None,
     shift_zero_point: bool = False,
@@ -4235,9 +4235,7 @@ def set_param_type(
 
 def set_param_type(
     sim: QuantizationSimModel,
-    param_type: qtype | str,
-    *,
-    shift_zero_point: bool = False,
+    param_type: QSpec | qtype | str,
     **kwargs,
 ):
     """
@@ -4249,32 +4247,42 @@ def set_param_type(
         :noindex:
 
         :param QuantizationSimModel sim: Quantsim to set param type for
-        :param qtype | str param_type: Quantization data type to set for the parameters
+        :param QSpec | qtype | str param_type: Quantization data type to set for the parameters
         :param Set[str] nodes_to_include: Set of onnx node names for which to set parameter quantization data type. If None, all nodes are included
-        :param bool shift_zero_point: Whether to shift the quantizer's zero point (only for int2 param type).
+        :param bool shift_zero_point: (Deprecated) Whether to shift the quantizer's zero point (only for int2 param type).
 
     .. function:: set_param_type(sim, param_type, *, nodes_to_include=None, shift_zero_point=False)
         :noindex:
 
         :param QuantizationSimModel sim: Quantsim to set param type for
-        :param qtype | str param_type: Quantization data type to set for the parameters
+        :param QSpec | qtype | str param_type: Quantization data type to set for the parameters
         :param Set[str] op_types: Set of onnx op types for which to set parameter quantization data type. If None, all types are included
         :param Set[str] nodes_to_exclude: Set of onnx node names to exclude for setting parameter quantization data type
-        :param bool shift_zero_point: Whether to shift the quantizer's zero point (only for int2 param type).
+        :param bool shift_zero_point: (Deprecated) Whether to shift the quantizer's zero point (only for int2 param type).
 
     Examples:
 
         >>> sim = QuantizationSimModel(...)
+
         >>> # Set all parameter quantizers to int8 data type
         >>> set_param_type(sim, aimet_onnx.int8)
+
         >>> # Set parameter quantizers of Conv, MatMul, and Gemm layers to int4 data type
         >>> set_param_type(sim, aimet_onnx.int4, op_types={"Conv", "MatMul", "Gemm"})
+
         >>> # Set parameter quantizers of "/lm_head/MatMul" to int2 with shifted zero point
-        >>> set_param_type(sim, aimet_onnx.int2, nodes_to_include={"/lm_head/MatMul"}, shift_zero_point=True)
+        >>> spec = aimet_onnx.QSpec.blockwise(int2, block_size=64, symmetric=True, shift_zero_point=True)
+        >>> set_param_type(sim, spec, nodes_to_include={"/lm_head/MatMul"})
+
+        >>> # Set parameter quantizers of "/lm_head/MatMul" to LPBQ
+        >>> spec = aimet_onnx.QSpec.lpbq(int4, block_size=64)
+        >>> set_param_type(sim, spec, nodes_to_include={"/lm_head/MatMul"})
+
     """
     nodes_to_exclude = kwargs.pop("nodes_to_exclude", None)
     nodes_to_include = kwargs.pop("nodes_to_include", None)
     op_types = kwargs.pop("op_types", None)
+    shift_zero_point = kwargs.pop("shift_zero_point", False)
 
     if kwargs:
         raise TypeError(
@@ -4284,11 +4292,33 @@ def set_param_type(
     if isinstance(op_types, str):
         op_types = (op_types,)
 
+    if not isinstance(param_type, (str, qtype, QSpec)):
+        raise TypeError(
+            f"param_type must be QSpec, qtype, or string, got {type(param_type)}"
+        )
+
     if isinstance(param_type, str):
         param_type = qtype.from_string(param_type)
 
-    if shift_zero_point and param_type != int2:
-        raise ValueError("shift_zero_point is only supported for int2 param type.")
+    if shift_zero_point:
+        if isinstance(param_type, QSpec):
+            raise ValueError(
+                "shift_zero_point should only be specified during construction of QSpec"
+            )
+        if param_type != int2:
+            raise ValueError("shift_zero_point is only supported for int2 param type.")
+        logger.warning(
+            "shift_zero_point is a deprecated argument. Specify via QSpec.blockwise(..., shift_zero_point=True) instead."
+        )
+
+    if isinstance(param_type, qtype):
+        symmetric = True if shift_zero_point else None
+        param_type = QSpec(
+            param_type,
+            granularity=None,
+            symmetric=symmetric,
+            shift_zero_point=shift_zero_point,
+        )
 
     if nodes_to_exclude and nodes_to_include:
         raise ValueError(
@@ -4309,8 +4339,6 @@ def set_param_type(
             and (op_types is None or op.type in op_types)
         }
 
-    zero_point_shift = 0.5 if shift_zero_point else 0.0
-
     for op in sim.connected_graph.ordered_ops:
         if op.name not in nodes_to_include:
             continue
@@ -4320,8 +4348,7 @@ def set_param_type(
 
         for quantizer in param_quantizers.values():
             if quantizer and quantizer.enabled:
-                quantizer.set_precision(param_type)
-                quantizer.set_zero_point_shift(zero_point_shift)
+                quantizer.set_qspec(param_type)
 
 
 # pylint: disable=protected-access

@@ -17,6 +17,11 @@ aimet_onnx.quantsim
 
 .. autofunction:: aimet_onnx.quantsim.set_param_type
 
+**Quantization Spec**
+
+.. autoclass:: aimet_onnx.QSpec
+    :members:
+
 **Quant Scheme Enum**
 
 .. autoclass:: aimet_onnx.common.defs.QuantScheme

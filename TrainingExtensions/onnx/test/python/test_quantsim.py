@@ -71,6 +71,7 @@ from aimet_onnx.utils import (
 )
 from aimet_onnx import int8
 from aimet_onnx._encoding import EncodingBase, AffineEncoding
+from aimet_onnx.defs import QSpec, PerChannel, PerTensor, Blockwise, LPBQ
 from .models import models_for_tests, test_models
 from .models.models_for_tests import (
     batchnorm_model,
@@ -8311,18 +8312,121 @@ def test_set_param_type_by_op():
     assert sim.qc_quantize_op_dict["conv1_weight"].bitwidth == 2
     assert sim.qc_quantize_op_dict["conv2_weight"].bitwidth == 4
 
+    # Raise for invalid argument combination
     with pytest.raises(ValueError):
         set_param_type(
             sim, aimet_onnx.int8, op_types=["MatMul"], nodes_to_include=["conv1"]
         )
 
+    # Raise for invalid argument combination
     with pytest.raises(ValueError):
         set_param_type(
             sim, aimet_onnx.int8, nodes_to_include=["conv1"], nodes_to_exclude=["conv2"]
         )
 
+    # Raise for unsupported arg
     with pytest.raises(TypeError):
         set_param_type(sim, aimet_onnx.int8, unsupported_arg=True)
+
+    # Raise for unsupported param_type
+    with pytest.raises(TypeError):
+        set_param_type(sim, 8)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        aimet_onnx.QSpec.lpbq("int4", 4, 4),
+        aimet_onnx.QSpec.blockwise("int2", 4, symmetric=True, shift_zero_point=True),
+        aimet_onnx.QSpec.per_channel("int2"),
+        aimet_onnx.QSpec.per_tensor("int16"),
+        aimet_onnx.QSpec(aimet_onnx.int4),
+        aimet_onnx.QSpec(None, Blockwise(4)),
+    ],
+)
+def test_set_param_type_with_qspec(spec):
+    model = models_for_tests.conv_matmul_model()
+    sim = QuantizationSimModel(
+        model,
+        param_type=aimet_onnx.int8,
+        activation_type=aimet_onnx.int8,
+    )
+    node_to_weight_dict = {
+        "matmul": "matmul_weight",
+        "conv1": "conv1_weight",
+        "conv2": "conv2_weight",
+    }
+
+    granularity_to_encoding_type = {
+        LPBQ: EncodingType.LPBQ,
+        Blockwise: EncodingType.PER_BLOCK,
+        PerChannel: EncodingType.PER_CHANNEL,
+        PerTensor: EncodingType.PER_TENSOR,
+    }
+
+    """
+    When: Call set_param_type with QSpec input
+    Then: 1) All non-None attributes of QSpec are applied to the quantizer configuration
+          2) All None attributes of QSpec are left as-is
+    """
+    expected_enc_type = granularity_to_encoding_type.get(
+        type(spec.granularity), EncodingType.PER_CHANNEL
+    )
+    expected_precision = spec.dtype if spec.dtype else int8
+    expected_symmetry = spec.symmetric if spec.symmetric is not None else True
+    expected_zp_shift = 0.5 if spec.shift_zero_point else 0.0
+    expected_scale_quantizer = (
+        None
+        if not isinstance(spec.granularity, LPBQ)
+        else LPBQScaleQuantizer(spec.granularity.scale_bits)
+    )
+    expected_block_size = (
+        0
+        if not isinstance(spec.granularity, Blockwise)
+        else spec.granularity.block_size
+    )
+
+    set_param_type(
+        sim,
+        param_type=spec,
+        nodes_to_include=node_to_weight_dict.keys(),
+    )
+
+    for weight_name in node_to_weight_dict.values():
+        quantizer: QcQuantizeOp = sim.qc_quantize_op_dict[weight_name]
+        assert quantizer.precision() == expected_precision
+        assert quantizer._encoding_type() == expected_enc_type
+        assert quantizer.use_symmetric_encodings == expected_symmetry
+        assert quantizer.get_zero_point_shift() == expected_zp_shift
+        assert quantizer._scale_quantizer == expected_scale_quantizer
+        assert quantizer.quant_info.blockSize == expected_block_size
+
+    """
+    When: Call set_param_type with per-channel symmetric int8
+    Then: (precision, granularity, symmetry, zero_point_shift) are configured
+        correctly regardless of initial state
+    """
+    set_param_type(
+        sim,
+        param_type=QSpec.per_channel(int8, symmetric=True),
+        nodes_to_include=node_to_weight_dict.keys(),
+    )
+
+    for weight_name in node_to_weight_dict.values():
+        quantizer: QcQuantizeOp = sim.qc_quantize_op_dict[weight_name]
+        assert quantizer.precision() == int8
+        assert quantizer._encoding_type() == EncodingType.PER_CHANNEL
+        assert quantizer.use_symmetric_encodings
+        assert quantizer.get_zero_point_shift() == 0.0
+        assert quantizer._scale_quantizer is None
+        assert quantizer.quant_info.blockSize == 0
+
+    """
+    When: call set_param_type with QSpec and zero_point_shift
+    Then: Error out
+    """
+    with pytest.raises(ValueError):
+        set_param_type(sim, spec, shift_zero_point=True)
 
 
 @pytest.mark.parametrize("force_activation_as", ["unsigned", "signed", None])
