@@ -234,6 +234,9 @@ def optional_dependencies() -> dict[str, list[str]]:
             "scikit-build-core[wheels]==0.11.1",
             "build",
             "auditwheel; sys_platform == 'linux'",  # Linux only (ELF-based)
+            # auditwheel>=6.8.1 requires patchelf>=0.14.5, but ubuntu jammy only
+            # ships 0.14.3, so take patchelf from pypi instead of apt.
+            "patchelf==0.19.1.0; sys_platform == 'linux'",
             "cython>=3.0",
             # and the rest
         ],
