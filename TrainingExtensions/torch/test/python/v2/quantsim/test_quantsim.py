@@ -1466,6 +1466,12 @@ class TestQuantsim:
             # (lambda: nn.AvgPool2d(3), lambda: randn(1, 3, 5, 5, 5)),
             # (lambda: nn.AvgPool2d(3), lambda: randn(1, 3, 5, 5, 5)),
         ],
+        ids=[
+            "Upsample",
+            "UpsamplingBilinear2d",
+            "UpsamplingNearest2d",
+            "ReLU",
+        ],
     )
     def test_htp_interpolation_tie_encodings(self, module_factory, input_factory):
         """
@@ -1505,6 +1511,32 @@ class TestQuantsim:
         inp_enc.pop("name")
         out_enc.pop("name")
         assert inp_enc == out_enc
+
+    @pytest.mark.parametrize("module_cls", [custom.Concat, custom.Where])
+    def test_multi_input_grid_equivariant_op_encoding_propagation(
+        self, tmp_path: pathlib.Path, module_cls
+    ):
+        """
+        Given: Multi-input grid-equivariant module (e.g. Concat, Where)
+        When: Create quantsim with HTP V81 config
+        Then: Input/output quantizers should be tied
+        """
+        module = module_cls()
+
+        if module_cls is custom.Concat:
+            x = torch.randn(5, 5)
+            y = torch.randn(5, 5)
+            inputs = (x, y)
+        elif module_cls is custom.Where:
+            x = torch.randn(5, 5) > 0
+            y = torch.randn(5, 5)
+            z = torch.randn(5, 5)
+            inputs = (x, y, z)
+        else:
+            raise ValueError(f"Unsupported module class: {module_cls}")
+
+        sim = aimet_torch.QuantizationSimModel(module, inputs, config_file="htp_v81")
+        assert len(set(sim.quantizers())) == 1
 
     def test_tie_encodings_functional_add(self):
         """
@@ -2741,10 +2773,16 @@ def test_model_with_constant_concat_inputs():
     linear_output_max = sim.model.linear.output_quantizers[0].get_max()
     linear_output_min = sim.model.linear.output_quantizers[0].get_min()
     # Linear output quantizer max should be the same as concat output quantizer max (concatted with 0)
-    assert linear_output_max == sim.model.concat.output_quantizers[0].get_max()
-    assert linear_output_min == sim.model.concat.output_quantizers[0].get_min()
-    assert linear_output_max != sim.model.concat.input_quantizers[0].get_max()
-    assert linear_output_min != sim.model.concat.input_quantizers[0].get_min()
+    assert (
+        linear_output_max
+        == sim.model.concat.output_quantizers[0].get_max()
+        == sim.model.concat.input_quantizers[0].get_max()
+    )
+    assert (
+        linear_output_min
+        == sim.model.concat.output_quantizers[0].get_min()
+        == sim.model.concat.input_quantizers[0].get_min()
+    )
 
     propagate_output_encodings(sim, custom.Concat)
     assert sim.model.concat.output_quantizers[0] is sim.model.concat.input_quantizers[0]

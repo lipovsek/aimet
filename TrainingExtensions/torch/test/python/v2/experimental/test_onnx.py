@@ -3846,6 +3846,9 @@ def test_multi_input_grid_equivariant_op_encoding_propagation(
     sim = aimet_torch.QuantizationSimModel(module, inputs)
     sim.compute_encodings(lambda m: m(*inputs))
 
+    # All input quantizers should be tied automatically
+    assert len(set(sim.model.input_quantizers)) == 1
+
     def _export_and_get_encoding(sim):
         sim.onnx.export(
             inputs,
@@ -3870,24 +3873,23 @@ def test_multi_input_grid_equivariant_op_encoding_propagation(
         assert len(set(tuple(e.items()) for e in encodings)) == 1
 
     """
-    When: Export without output quantizer
-    Then: Input encodings should NOT be propagated to output
-    """
-    with aimet_torch.utils.remove_output_quantizers(sim.model):
-        encodings = _export_and_get_encoding(sim)
-        assert {e.pop("name") for e in encodings} == {*float_input_names}
-        assert len(set(tuple(e.items()) for e in encodings)) == len(float_input_names)
-
-    """
     When: Export without output quantizer and with same encoding across all inputs
     Then: Input encodings should be propagated to output
     """
     with aimet_torch.utils.remove_output_quantizers(sim.model):
-        # Manually tie all input quantizers
-        for i in range(len(sim.model.input_quantizers)):
-            if sim.model.input_quantizers[i] is not None:
-                sim.model.input_quantizers[i] = sim.model.input_quantizers[-1]
-
         encodings = _export_and_get_encoding(sim)
         assert {e.pop("name") for e in encodings} == {*float_input_names, "output"}
         assert len(set(tuple(e.items()) for e in encodings)) == 1
+
+    """
+    When: Export without output quantizer with different input encodings
+    Then: Input encodings should NOT be propagated to output
+    """
+    with aimet_torch.utils.remove_output_quantizers(sim.model):
+        # Manually untie input quantizers
+        sim.model.input_quantizers[-1] = copy.deepcopy(sim.model.input_quantizers[-1])
+        sim.model.input_quantizers[-1].set_range(-10, 10)
+
+        encodings = _export_and_get_encoding(sim)
+        assert {e.pop("name") for e in encodings} == {*float_input_names}
+        assert len(set(tuple(e.items()) for e in encodings)) == len(float_input_names)

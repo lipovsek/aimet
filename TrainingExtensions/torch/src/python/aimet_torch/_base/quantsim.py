@@ -841,6 +841,10 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
         if not orig_module:
             return None
 
+        # edge case: orig_module is a root module with no name
+        if orig_module is self.model:
+            return orig_module
+
         full_name = self.connected_graph._module_to_name[orig_module]  # pylint: disable=protected-access
         _, *module_names = full_name.split(".")
 

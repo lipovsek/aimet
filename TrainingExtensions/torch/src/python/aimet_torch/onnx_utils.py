@@ -134,6 +134,7 @@ map_torch_types_to_onnx = {
     aimet_modules.Mean: ["ReduceMean"],
     aimet_modules.NonMaxSuppression: ["NonMaxSuppression"],
     aimet_modules.RmsNorm: ["RMSNormalization"],
+    aimet_modules.Where: ["Where"],
 }
 
 if version.parse(torch.__version__) >= version.parse("2.1.0"):

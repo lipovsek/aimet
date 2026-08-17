@@ -37,6 +37,7 @@ from aimet_torch.common import quantsim
 from aimet_torch.common.defs import QuantScheme, QuantizationDataType
 from aimet_torch.common.onnx._utils import (
     _is_htp_interpolation_op,
+    _is_grid_equivariant_op,
     _get_all_constants,
     _derive_const_rescale_op_output_encodings,
 )
@@ -350,9 +351,7 @@ class QuantizationSimModel(_QuantizationSimModelBase):  # pylint: disable=missin
 
         self._disable_quantizers_for_reused_modules()
 
-        if self._hw_version is not None:
-            # Let input/output of HTP resize ops to share same encoding
-            self._propagate_encodings()
+        self._propagate_encodings()
 
     @property
     def onnx(self) -> "QuantizationSimModelOnnxExporter":
@@ -978,6 +977,7 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
         )
 
         htp_interpolation_ops = set()
+        grid_equivariant_ops = set()
 
         for qmodule in self.qmodules():
             orig_module_type = type(qmodule.get_original_module())
@@ -995,11 +995,22 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
 
             if all(_is_htp_interpolation_op(op_type) for op_type in onnx_op_types):
                 htp_interpolation_ops.add(qmodule)
+            # Multi-input grid-equivariant ops are safe to tie encodings
+            elif all(
+                _is_grid_equivariant_op(op_type, include_unary=False)
+                for op_type in onnx_op_types
+            ):
+                grid_equivariant_ops.add(qmodule)
+
+        ops_to_tie = grid_equivariant_ops
+
+        if self._hw_version is not None:
+            ops_to_tie |= htp_interpolation_ops
 
         propagate_output_encodings(
             self,
             lambda module: (
-                module in htp_interpolation_ops
+                module in ops_to_tie
                 or (isinstance(module, QuantizedReLU) and module.output_quantizers[0])
             ),
         )
