@@ -10,3 +10,5 @@ tests:
     activation_type: int8
     config_file: htp_v79
     apply_experimental_static_aten_calibration: true
+    max_accuracy_drop_onnx: 2.5
+    max_accuracy_drop_torch: 2.1
