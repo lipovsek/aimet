@@ -2852,6 +2852,30 @@ def test_load_encodings_with_zero_point_shift():
     assert np.all(qdq_tensor == exp_qdq_tensor)
 
 
+@pytest.mark.parametrize("freeze", [False, True])
+def test_load_encodings_with_frozen_encodings(freeze: bool):
+    input_shape = (3, 20)
+    bitwidth = 8
+    qc_op = _new_quantizer(
+        input_shape, bitwidth=bitwidth, use_symmetric_encodings=False
+    )
+    _calibrate_and_qdq(qc_op, np.random.randn(*input_shape).astype(np.float32))
+    if freeze:
+        qc_op.freeze_encodings()
+
+    """
+    When: Loading encodings into a quantizer
+    Then: Encodings should only be overwritten if they are not frozen
+    """
+    scale_before = qc_op._get_scale()
+    qc_op.load_encodings(create_encoding(-1e4, 1e4, bitwidth, False))
+
+    if freeze:
+        assert np.array_equal(qc_op._get_scale(), scale_before)
+    else:
+        assert not np.array_equal(qc_op._get_scale(), scale_before)
+
+
 @pytest.mark.parametrize("encoding_version", ["1.0.0", "2.0.0"])
 def test_encoding_dict_with_zero_point_shift(encoding_version: str):
     encoding = AffineEncoding(

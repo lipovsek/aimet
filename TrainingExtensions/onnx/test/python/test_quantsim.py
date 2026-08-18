@@ -1015,6 +1015,24 @@ class TestQuantSim:
                     "scale": [0.023529411764705882] * 10,
                 },
             ),
+            (
+                {
+                    "bw": 16,
+                    "dtype": "INT",
+                    "enc_type": "PER_TENSOR",
+                    "is_sym": False,
+                    "offset": [0.0],
+                    "scale": [1e-6],
+                },
+                {
+                    "bw": 8,
+                    "dtype": "INT",
+                    "enc_type": "PER_CHANNEL",
+                    "is_sym": True,
+                    "offset": [-128.0] * 10,
+                    "scale": [1e-6] * 10,
+                },
+            ),
         ],
     )
     @pytest.mark.parametrize("allow_overwrite", [True, False])

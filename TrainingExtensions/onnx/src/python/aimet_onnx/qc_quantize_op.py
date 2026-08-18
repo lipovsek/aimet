@@ -460,6 +460,9 @@ class QcQuantizeOp:
 
         :param encoding: The list of libpymo.TfEncoding objects to be used by the C++ op
         """
+        if self.is_encoding_frozen():
+            return
+
         if self.data_type == QuantizationDataType.float:
             raise RuntimeError(
                 f"{type(self).load_encodings.__qualname__} is not supported for floating-point quantizers."

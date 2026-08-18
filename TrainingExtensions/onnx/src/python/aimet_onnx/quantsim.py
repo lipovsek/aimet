@@ -1713,6 +1713,14 @@ class QuantizationSimModel:
                 adjusted_weight_scale, adjusted_min, adjusted_max, encodings
             ):
                 enc.min, enc.max, enc.delta = new_min, new_max, new_scale
+            if weight_qtzr.is_encoding_frozen():
+                if not np.array_equal(weight_scale.flatten(), adjusted_weight_scale):
+                    logger.warning(
+                        "Bias/scale overflow-underflow expected for %s but could not adjust "
+                        "scale for frozen weight quantizer.",
+                        op.name,
+                    )
+                continue
             weight_qtzr.load_encodings(encodings)
             logger.info(
                 "Adjusted weight scale for %s to prevent bias/scale overflow-underflow.",
