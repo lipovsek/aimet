@@ -651,7 +651,6 @@ def _is_grid_preserving_op(op_type: str, domain: str = "") -> bool:
         ("", "MaxPool"),
         ("", "MaxRoiPool"),
         ("", "NonZero"),
-        ("", "Pad"),
         ("", "ReduceMax"),
         ("", "ReduceMin"),
         ("", "Reshape"),
@@ -682,7 +681,10 @@ def _is_grid_equivariant_op(
     is_grid_preserving_op = include_unary and _is_grid_preserving_op(op_type, domain)
     return is_grid_preserving_op or (domain, op_type) in (
         ("", "Concat"),
+        ("", "Pad"),
         ("", "Scatter"),
+        ("", "ScatterElements"),
+        ("", "ScatterND"),
         ("", "Where"),
     )
 
@@ -697,8 +699,6 @@ def _is_htp_interpolation_op(op_type: str, domain: str = "") -> bool:
     # TODO: Absorb this function into redesigned config file
     return (domain, op_type) in (
         ("", "Resize"),
-        ("", "ScatterElements"),
-        ("", "ScatterND"),
         ("", "Upsample"),
         ("qti_aisw", "CropAndResize"),
     )

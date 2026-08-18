@@ -124,6 +124,7 @@ map_torch_types_to_onnx = {
     aimet_modules.Reshape: ["Reshape"],
     aimet_modules.RoiAlign: ["RoiAlign"],
     aimet_modules.ScatterElements: ["ScatterElements"],
+    aimet_modules.ScatterND: ["ScatterND"],
     aimet_modules.Select: ["Gather"],
     aimet_modules.Sin: ["Sin"],
     aimet_modules.Split: ["Split"],

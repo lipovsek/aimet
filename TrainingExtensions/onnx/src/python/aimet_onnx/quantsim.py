@@ -2321,13 +2321,10 @@ class QuantizationSimModel:
             for input_name in node.input:
                 node_input_map[input_name] = node
 
-        # Ops that combine data from multiple inputs to single output
-        data_aggregation_ops = {"ScatterElements", "ScatterND"}
         op_types_to_propagate_backward = {
             op_type
             for op_type in op_types_to_tie
-            if op_type in data_aggregation_ops
-            or _is_grid_equivariant_op(op_type, include_unary=False)
+            if _is_grid_equivariant_op(op_type, include_unary=False)
         }
         op_types_to_propagate_forward = op_types_to_tie - op_types_to_propagate_backward
 

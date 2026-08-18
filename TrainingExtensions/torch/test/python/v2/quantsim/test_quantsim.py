@@ -1512,7 +1512,16 @@ class TestQuantsim:
         out_enc.pop("name")
         assert inp_enc == out_enc
 
-    @pytest.mark.parametrize("module_cls", [custom.Concat, custom.Where])
+    @pytest.mark.parametrize(
+        "module_cls",
+        [
+            custom.Concat,
+            custom.Where,
+            custom.Pad,
+            custom.ScatterElements,
+            custom.ScatterND,
+        ],
+    )
     def test_multi_input_grid_equivariant_op_encoding_propagation(
         self, tmp_path: pathlib.Path, module_cls
     ):
@@ -1521,17 +1530,42 @@ class TestQuantsim:
         When: Create quantsim with HTP V81 config
         Then: Input/output quantizers should be tied
         """
-        module = module_cls()
-
         if module_cls is custom.Concat:
+            module = module_cls()
             x = torch.randn(5, 5)
             y = torch.randn(5, 5)
             inputs = (x, y)
         elif module_cls is custom.Where:
+            module = module_cls()
             x = torch.randn(5, 5) > 0
             y = torch.randn(5, 5)
             z = torch.randn(5, 5)
             inputs = (x, y, z)
+        elif module_cls is custom.Pad:
+
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.pad = module_cls()
+
+                def forward(self, input):
+                    return self.pad(input, pad=(1, 1, 1, 1), mode="constant", value=0.1)
+
+            module = Model()
+            input = torch.randn(5, 5)
+            inputs = (input,)
+        elif module_cls is custom.ScatterElements:
+            module = module_cls(dim=1)
+            data = torch.randn(5, 5)
+            indices = torch.randint(0, 5, (5, 5))
+            updates = torch.randn(5, 5)
+            inputs = (data, indices, updates)
+        elif module_cls is custom.ScatterND:
+            module = module_cls()
+            data = torch.randn(8)
+            indices = torch.tensor([[4], [3], [1], [7]])
+            updates = torch.randn(4)
+            inputs = (data, indices, updates)
         else:
             raise ValueError(f"Unsupported module class: {module_cls}")
 

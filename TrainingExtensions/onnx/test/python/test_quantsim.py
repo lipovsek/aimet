@@ -8658,7 +8658,15 @@ def test_quantsim_with_large_split_length_input(tmp_path):
     qdq_model = sim.to_onnx_qdq()
 
 
-@pytest.mark.parametrize("op", [torch.cat, torch.where])
+@pytest.mark.parametrize(
+    "op",
+    [
+        torch.cat,
+        torch.where,
+        torch.index_fill,
+        F.pad,
+    ],
+)
 def test_multi_input_grid_equivariant_op_encoding_propagation(tmp_path, op):
     class Model(torch.nn.Module):
         def forward(self, *inputs):
@@ -8677,6 +8685,19 @@ def test_multi_input_grid_equivariant_op_encoding_propagation(tmp_path, op):
         inputs = (x, y, z)
         input_names = ["x", "y", "z"]
         float_input_names = ["y", "z"]
+    elif op is torch.index_fill:
+        x = torch.randn(5, 5)
+        dim = 0
+        index = torch.tensor([1, 3])
+        value = 0.0
+        inputs = (x, dim, index, value)
+        input_names = ["x", "dim", "index", "value"]
+        float_input_names = ["x", "val_15"]
+    elif op is F.pad:
+        x = torch.randn(5, 5)
+        inputs = (x, (1, 1, 1, 1), "constant", 0.0)
+        input_names = ["x"]
+        float_input_names = ["x", "val_1"]
     else:
         raise ValueError(f"Unsupported op type: {op}")
 
