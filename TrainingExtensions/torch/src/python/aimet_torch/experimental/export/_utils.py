@@ -24,8 +24,12 @@ _GRID_PRESERVING_OPS = (
     torch.ops.aten.amin,
     torch.ops.aten.clone,
     torch.ops.aten.contiguous,
-    torch.ops.aten.copy,
-    torch.ops.aten.copy_,
+    # torch.ops.aten.copy(input, src) returns src, not input. In other words,
+    # aten.copy is grid-preserving with respect to 2nd input, not 1st.
+    # Temporarily exclude aten.copy since aimet_torch.export can currently only
+    # handle grid-preserving ops w.r.t 1st input
+    # torch.ops.aten.copy,
+    # torch.ops.aten.copy_,
     torch.ops.aten.detach,
     torch.ops.aten.diag,
     torch.ops.aten.diag_embed,
