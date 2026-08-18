@@ -51,7 +51,7 @@ jobs:
   #=============================================================================
   build-aimet-onnx-gpu:
     name: Build AIMET (ONNX + GPU)
-    if: ${{ github.event.inputs.framework != 'torch' }}
+    if: ${{ github.repository_owner != 'qualcomm' && github.event.inputs.framework != 'torch' }}
     uses: ./.github/workflows/build-wheels.yml
     with:
       variants: >
@@ -67,7 +67,7 @@ jobs:
 
   build-aimet-torch-gpu:
     name: Build AIMET (Torch + GPU)
-    if: ${{ github.event.inputs.framework != 'onnx' }}
+    if: ${{ github.repository_owner != 'qualcomm' && github.event.inputs.framework != 'onnx' }}
     uses: ./.github/workflows/build-wheels.yml
     with:
       variants: >
@@ -87,7 +87,7 @@ jobs:
   onnx-weekly:
     name: Run ONNX Weekly (GPU)
     needs: build-aimet-onnx-gpu
-    if: ${{ github.event.inputs.framework != 'torch' }}
+    if: ${{ github.repository_owner != 'qualcomm' && github.event.inputs.framework != 'torch' }}
     uses: ./.github/workflows/regression-gpu-job.yml
     with:
       framework: onnx
@@ -107,7 +107,7 @@ jobs:
   torch-weekly:
     name: Run Torch Weekly (GPU)
     needs: build-aimet-torch-gpu
-    if: ${{ github.event.inputs.framework != 'onnx' }}
+    if: ${{ github.repository_owner != 'qualcomm' && github.event.inputs.framework != 'onnx' }}
     uses: ./.github/workflows/regression-gpu-job.yml
     with:
       framework: torch
@@ -131,7 +131,7 @@ jobs:
       - build-aimet-torch-gpu
       - onnx-weekly
       - torch-weekly
-    if: always()
+    if: ${{ always() && github.repository_owner != 'qualcomm' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
