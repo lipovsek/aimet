@@ -174,6 +174,28 @@ TEST(TestFp8QcQuantizeRuntime, Fp8QuantizeDequantizeMatchesReferenceForProvidedE
     }
 }
 
+// Per-tensor FP8 QDQ for the e5m2 grid
+//
+// e5m2 has a wider exponent range and fewer mantissa bits than e4m3, so it pins the
+// exponent/step derivation in the fake-cast against the reference implementation.
+TEST(TestFp8QcQuantizeRuntime, Fp8E5M2QuantizeDequantizeMatchesReference)
+{
+    const QuantizationType qtype = QuantizationType::Fp8E5M2();
+    BlockTensorQuantizer tensorQuantizer(TensorDims {}, qtype, QUANTIZATION_TF);
+    tensorQuantizer.setEncodings({makeFp8Encoding(/*scale=*/0.5, qtype.floatSpec())});
+
+    std::vector<float> input {-60000.0f, -3.2f, -0.1f, 0.0f, 0.1f, 3.2f, 60000.0f};
+    std::vector<float> output(input.size());
+
+    tensorQuantizer.quantizeDequantize(input.data(), output.data(), TensorDims {static_cast<int64_t>(input.size())},
+                                       false);
+
+    for (size_t idx = 0; idx < input.size(); ++idx)
+    {
+        EXPECT_FLOAT_EQ(output[idx], fp8QdqReference(input[idx], /*scale=*/0.5, qtype.floatSpec()));
+    }
+}
+
 // Per-tensor one-shot runtime flow
 //
 // This exercises the same high-level state machine used by QcQuantizeOp in one-shot mode:
