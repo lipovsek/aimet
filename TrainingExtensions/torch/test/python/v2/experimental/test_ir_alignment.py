@@ -408,15 +408,11 @@ xfail = {
     torch.ops.aten._native_batch_norm_legit: "ONNX export error",
     torch.ops.aten._native_batch_norm_legit_no_training: "ONNX export error",
     torch.ops.aten._safe_softmax: "Onnxscript bug. See https://github.com/microsoft/onnxscript/issues/2993",
-    torch.ops.aten.clamp: "Clip min/max are missing encoding",
-    torch.ops.aten.clip: "Clip min/max are missing encoding",
     torch.ops.aten.copy: "ONNX export error",
     torch.ops.aten.detach: "ONNX export error",
-    torch.ops.aten.hardtanh: "Clip min/max are missing encoding",
     torch.ops.aten.native_batch_norm: "ONNX export error",
     torch.ops.aten.native_group_norm: "Missing intermediate encoding",
     torch.ops.aten.pow: "Exponent is missing encoding",
-    torch.ops.aten.relu6: "Clip min/max are missing encoding",
     torch.ops.aten.upsample_bicubic2d: "Missing intermediate encoding",
 }
 

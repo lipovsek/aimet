@@ -668,6 +668,14 @@ def _is_grid_preserving_op(op_type: str, domain: str = "") -> bool:
     )
 
 
+_CLIPPING_OPS = (
+    # domain, op_type
+    ("", "Clip"),
+    ("", "Max"),
+    ("", "Min"),
+)
+
+
 def _is_grid_equivariant_op(
     op_type: str, domain: str = "", include_unary: bool = True
 ) -> bool:
@@ -679,7 +687,15 @@ def _is_grid_equivariant_op(
     for arbitrary quantization function `q`.
     """
     is_grid_preserving_op = include_unary and _is_grid_preserving_op(op_type, domain)
+
+    # Clip, Max, and Min are deliberately excluded, although they are technically
+    # grid-equivariant. This is because Clipping operators can suffer severe
+    # accuracy loss when naively tying encodings.
+    # For example, given y = Clip(x, -0.1) and x ∈ (-inf, 0.1],
+    # tying the encodings of x, y, and -0.1 will severely miscalibrate
+    # y's dynamic range as y ∈ (-inf, 0.1] instead of the correct range y ∈ [-0.1, 0.1].
     return is_grid_preserving_op or (domain, op_type) in (
+        # *_CLIPPING_OPS,
         ("", "Concat"),
         ("", "Pad"),
         ("", "Scatter"),
@@ -1568,6 +1584,8 @@ def _derive_data_movement_op_encodings(
         node
         for node in model.graph.node
         if _is_grid_equivariant_op(node.op_type, domain=node.domain)
+        # Export-time encoding propagation of clipping ops is safe
+        or (node.domain, node.op_type) in _CLIPPING_OPS
     ]
 
     new_encodings = {}
