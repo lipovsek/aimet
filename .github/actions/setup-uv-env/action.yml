@@ -18,13 +18,45 @@ runs:
       shell: powershell
       id: windows_init
       run: |
-        irm https://astral.sh/uv/install.ps1 | iex
+        # On the Qualcomm ARM64 runner the GHA service runs as x64 under
+        # Prism emulation and every standard arch API reports x64; only
+        # PROCESSOR_IDENTIFIER preserves the real CPU string
+        # ("ARMv8 (64-bit) ... Qualcomm ..."). Match on that and pull the
+        # aarch64 uv release asset directly — astral's install.ps1 would
+        # otherwise fetch the x86_64 build.
+        $isArm64 = $env:PROCESSOR_IDENTIFIER -match 'ARM|Qualcomm'
+        if ($isArm64) {
+          $uvZip = Join-Path $env:GITHUB_WORKSPACE "uv-arm64.zip"
+          $uvDir = Join-Path $env:GITHUB_WORKSPACE "uv-arm64"
+          Invoke-WebRequest -Uri "https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-pc-windows-msvc.zip" -OutFile $uvZip
+          New-Item -ItemType Directory -Force -Path $uvDir | Out-Null
+          Expand-Archive -Path $uvZip -DestinationPath $uvDir -Force
+          echo "$uvDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        } else {
+          irm https://astral.sh/uv/install.ps1 | iex
+        }
 
     - name: Create uv environment (Windows)
       shell: powershell
       if: runner.os == 'Windows'
       run: |
-        uv venv --python "${{ inputs.VER_PYTHON }}" "${{ inputs.ENV_NAME }}"
+        # `uv python install <ver>` on aarch64 Windows still fetches the
+        # x86_64 CPython build (as of uv 0.12.5), producing a win_amd64
+        # venv. Use the pythonarm64 nuget package (same source used by
+        # build-wheels.yml for cross-compile) as the venv interpreter so
+        # the resulting environment is genuinely aarch64.
+        $isArm64 = $env:PROCESSOR_IDENTIFIER -match 'ARM|Qualcomm'
+        if ($isArm64) {
+          $pyZip = Join-Path $env:GITHUB_WORKSPACE "python-arm64.zip"
+          $pyDir = Join-Path $env:GITHUB_WORKSPACE "python-arm64"
+          Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/pythonarm64/${{ inputs.VER_PYTHON }}" -OutFile $pyZip
+          New-Item -ItemType Directory -Force -Path $pyDir | Out-Null
+          Expand-Archive -Path $pyZip -DestinationPath $pyDir -Force
+          $pyExe = Join-Path $pyDir "tools\python.exe"
+          uv venv --python "$pyExe" "${{ inputs.ENV_NAME }}"
+        } else {
+          uv venv --python "${{ inputs.VER_PYTHON }}" "${{ inputs.ENV_NAME }}"
+        }
         .\"${{ inputs.ENV_NAME }}"\Scripts\Activate.ps1
     - name: Install uv (Linux)
       if: runner.os != 'Windows'
@@ -40,4 +72,3 @@ runs:
       run: |
         uv venv --python "${{ inputs.VER_PYTHON }}" "${{ inputs.ENV_NAME }}"
         . "./${{ inputs.ENV_NAME }}/bin/activate"
-
