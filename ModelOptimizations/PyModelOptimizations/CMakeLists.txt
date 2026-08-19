@@ -5,6 +5,7 @@
 
 set(LIBPYMO_PYX "${CMAKE_CURRENT_SOURCE_DIR}/_libpymo.pyx")
 set(LIBPYMO_PXD "${CMAKE_CURRENT_SOURCE_DIR}/_libpymo.pxd")
+set(QUANT_TYPES_PXD "${CMAKE_CURRENT_SOURCE_DIR}/../DlQuantization/include/DlQuantization/_quant_types.pxd")
 set(LIBPYMO_CPP "${CMAKE_CURRENT_BINARY_DIR}/_libpymo.cpp")
 
 # Generate C++ from Cython using Python module
@@ -14,7 +15,7 @@ add_custom_command(
             -I${CMAKE_CURRENT_SOURCE_DIR}/../DlQuantization/include
             -o ${LIBPYMO_CPP}
             ${LIBPYMO_PYX}
-    DEPENDS ${LIBPYMO_PYX} ${LIBPYMO_PXD}
+    DEPENDS ${LIBPYMO_PYX} ${LIBPYMO_PXD} ${QUANT_TYPES_PXD}
     COMMENT "Generating C++ from Cython: libpymo.pyx"
     VERBATIM
 )

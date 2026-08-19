@@ -97,6 +97,55 @@ cdef class BlockTensorQuantizer:
             cpp_shape, bitwidth, <cpp.CppQuantizationMode>qs)
 
     @staticmethod
+    def createFloat(shape, int exponent_bits, int mantissa_bits, bint finite=False,
+                    bint unsigned_zero=False, quant_scheme=1):
+        """Create a BlockTensorQuantizer for an arbitrary floating-point format.
+
+        Bitwidth, minimum exponent, and maximum representable value are derived by
+        DlQuantization::QuantizationType::Float, so this works for any float format the
+        C++ runtime supports without adding a binding per format.
+
+        Args:
+            shape: List or tuple of encoding dimensions
+            exponent_bits: Number of exponent bits
+            mantissa_bits: Number of mantissa bits
+            finite: If True, the format cannot represent infinities
+            unsigned_zero: If True, the format has no negative zero (fnuz formats)
+            quant_scheme: QuantizationMode enum value (default: QUANTIZATION_TF_ENHANCED)
+        """
+        cdef vector[int64_t] cpp_shape
+        cdef int qs = int(quant_scheme)
+        cdef BlockTensorQuantizer obj = BlockTensorQuantizer.__new__(BlockTensorQuantizer)
+        for dim in shape:
+            cpp_shape.push_back(<int64_t>dim)
+        obj._ptr = make_shared[cpp.CppBlockTensorQuantizer](
+            cpp_shape,
+            cpp.CppQuantizationType.Float(exponent_bits, mantissa_bits, finite, unsigned_zero),
+            <cpp.CppQuantizationMode>qs)
+        return obj
+
+    def getFloatSpec(self):
+        """Return this quantizer's float format description, or None if it is integer.
+
+        Returns:
+            Dict with keys bitwidth, exponent_bits, mantissa_bits, exponent_min,
+            max_value, finite, unsigned_zero.
+        """
+        cdef cpp.CppQuantizationType qtype = deref(self._ptr).getQuantizationType()
+        if not qtype.isFloat():
+            return None
+        cdef const cpp.CppFloatQuantizationSpec* spec = &qtype.floatSpec()
+        return {
+            "bitwidth": spec.bitwidth,
+            "exponent_bits": spec.exponentBits,
+            "mantissa_bits": spec.mantissaBits,
+            "exponent_min": spec.exponentMin,
+            "max_value": spec.maxValue,
+            "finite": spec.finite,
+            "unsigned_zero": spec.unsignedZero,
+        }
+
+    @staticmethod
     cdef BlockTensorQuantizer _from_shared_ptr(shared_ptr[cpp.CppBlockTensorQuantizer] ptr):
         cdef BlockTensorQuantizer obj = BlockTensorQuantizer.__new__(BlockTensorQuantizer)
         obj._ptr = ptr
@@ -241,5 +290,3 @@ def PtrToInt64(obj) -> int:
     if hasattr(obj, '_get_ptr_as_int64'):
         return obj._get_ptr_as_int64()
     raise TypeError(f"Cannot convert {type(obj)} to int64 pointer")
-
-

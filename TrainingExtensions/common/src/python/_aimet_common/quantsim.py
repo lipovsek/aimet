@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import ml_dtypes
 
-from .defs import QuantScheme, QuantizationDataType
+from .defs import QuantScheme, QuantizationDataType, qtype, Float
 from .quantsim_config.quantsim_config import QuantSimConfigurator
 from . import libpymo
 
@@ -111,6 +111,98 @@ def create_encoding_from_min_max(
     return recompute_grid_params(
         encoding, bitwidth, use_symmetric_encodings, use_strict_symmetric
     )
+
+
+def create_encoding_from_min_max_for_precision(
+    min_val: float,
+    max_val: float,
+    precision: qtype,
+    use_symmetric_encodings: bool,
+    use_strict_symmetric: bool = False,
+) -> libpymo.TfEncoding:
+    """
+    Returns a TfEncoding object spanning [min_val, max_val] at the given precision.
+
+    Unlike :func:`create_encoding_from_min_max`, which takes a bitwidth and always builds
+    an affine encoding, this takes a qtype and so can also build the single-scale
+    encodings used by low-precision float formats. The two are kept separate for now so
+    that existing bitwidth-based callers are unaffected; they can be merged once every
+    caller speaks qtype.
+
+    :param min_val: Min value of the encoding
+    :param max_val: Max value of the encoding
+    :param precision: qtype to quantize to
+    :param use_symmetric_encodings: If True, results in encoding with min = -max - delta.
+        Ignored for floating-point precisions, which are always symmetric.
+    :param use_strict_symmetric: If True, results in encoding with min = -max.
+        Ignored for floating-point precisions.
+    :return: libpymo.TfEncoding object
+    """
+    dtype, bitwidth = precision.to_legacy_repr()
+
+    if dtype == QuantizationDataType.float:
+        return _create_float_encoding_from_min_max(min_val, max_val, precision)
+
+    return create_encoding_from_min_max(
+        min_val, max_val, bitwidth, use_symmetric_encodings, use_strict_symmetric
+    )
+
+
+def _max_representable_value(precision: "Float") -> float:
+    """
+    Returns the largest finite value representable by a floating-point qtype.
+
+    Mirrors DlQuantization::QuantizationType::Float, which performs the same derivation
+    for the quantization runtime. The two must agree, which
+    test_python_max_representable_value_matches_runtime checks for every supported format.
+    """
+    exponent_bits = precision.exponent_bits
+    mantissa_bits = precision.mantissa_bits
+    mantissa_unit = 2.0**-mantissa_bits
+    exponent_bias = 2 ** (exponent_bits - 1) - 1 + (1 if precision.unsigned_zero else 0)
+
+    if precision.unsigned_zero:
+        # fnuz formats spend no encoding on infinities or negative zero
+        max_exponent = 2**exponent_bits - 1 - exponent_bias
+        max_mantissa = 2.0 - mantissa_unit
+    elif precision.finite:
+        # Top exponent is usable except for the all-ones mantissa, which is NaN
+        max_exponent = 2**exponent_bits - 1 - exponent_bias
+        max_mantissa = 2.0 - 2.0 * mantissa_unit
+    else:
+        # IEEE-style: top exponent is reserved for inf/NaN
+        max_exponent = 2**exponent_bits - 2 - exponent_bias
+        max_mantissa = 2.0 - mantissa_unit
+
+    return max_mantissa * 2.0**max_exponent
+
+
+def _create_float_encoding_from_min_max(
+    min_val: float,
+    max_val: float,
+    precision: qtype,
+) -> libpymo.TfEncoding:
+    """
+    Builds a floating-point encoding covering [min_val, max_val].
+
+    Unlike affine encodings, float encodings store a single symmetric scale in ``delta``
+    and leave ``offset`` at zero; ``min``/``max`` describe the representable range that
+    results from that scale.
+    """
+    max_representable_value = _max_representable_value(precision)
+
+    amax = max(abs(min_val), abs(max_val))
+    # The quantization kernels require a strictly positive scale, so degenerate ranges
+    # fall back to the smallest representable step rather than 0.
+    scale = max(amax / max_representable_value, float(np.finfo(np.float32).tiny))
+
+    encoding = libpymo.TfEncoding()
+    encoding.bw = precision.to_legacy_repr()[1]
+    encoding.delta = scale
+    encoding.offset = 0.0
+    encoding.min = -scale * max_representable_value
+    encoding.max = scale * max_representable_value
+    return encoding
 
 
 def calculate_delta_offset(

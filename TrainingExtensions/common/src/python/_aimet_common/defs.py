@@ -484,10 +484,8 @@ class qtype(abc.ABC):
         if bitwidth == 32:
             return QTYPE_ALIASES["float32"]
         if bitwidth == 8:
-            # Default to float8e4m3
-            return qtype.float(
-                exponent_bits=4, mantissa_bits=3, finite=False, unsigned_zero=False
-            )
+            # Default to float8e4m3fn, the OCP E4M3 format (finite, no infinities)
+            return QTYPE_ALIASES["float8e4m3fn"]
         raise ValueError(
             "float data type is only supported with bitwidth of 8, 16, or 32, got {bitwidth}"
         )
@@ -610,6 +608,12 @@ float16 = qtype.float(
 float32 = qtype.float(
     exponent_bits=8, mantissa_bits=23, finite=False, unsigned_zero=False
 )
+float8e4m3fn = qtype.float(
+    exponent_bits=4, mantissa_bits=3, finite=True, unsigned_zero=False
+)
+float8e5m2 = qtype.float(
+    exponent_bits=5, mantissa_bits=2, finite=False, unsigned_zero=False
+)
 
 QTYPE_ALIASES = {
     "int2": int2,
@@ -618,4 +622,6 @@ QTYPE_ALIASES = {
     "int16": int16,
     "float16": float16,
     "float32": float32,
+    "float8e4m3fn": float8e4m3fn,
+    "float8e5m2": float8e5m2,
 }

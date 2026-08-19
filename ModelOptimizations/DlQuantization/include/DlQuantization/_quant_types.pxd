@@ -37,6 +37,25 @@ cdef extern from "DlQuantization/Quantization.hpp" namespace "DlQuantization":
     ctypedef vector[CppTfEncoding] Encodings
 
 
+cdef extern from "DlQuantization/QuantizationType.hpp" namespace "DlQuantization":
+    cdef cppclass CppFloatQuantizationSpec "DlQuantization::FloatQuantizationSpec":
+        int bitwidth
+        int exponentBits
+        int mantissaBits
+        int exponentMin
+        double maxValue
+        cbool finite
+        cbool unsignedZero
+
+    cdef cppclass CppQuantizationType "DlQuantization::QuantizationType":
+        @staticmethod
+        CppQuantizationType Float(int exponentBits, int mantissaBits, cbool finite, cbool unsignedZero) except +
+        cbool isInt()
+        cbool isFloat()
+        int bitwidth()
+        const CppFloatQuantizationSpec& floatSpec() except +
+
+
 cdef extern from "DlQuantization/TensorQuantizer.h" namespace "DlQuantization":
     cdef enum CppTensorQuantizerOpMode "DlQuantization::TensorQuantizerOpMode":
         cpp_updateStats "DlQuantization::TensorQuantizerOpMode::updateStats"

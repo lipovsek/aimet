@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import numpy as np
+import pytest
 
 import aimet_onnx.common._libpymo as libpymo
 import aimet_onnx.common.py_libpymo as py_libpymo
+from aimet_onnx.common.defs import qtype
+from aimet_onnx.common.quantsim import _max_representable_value
 
 
 class TestLibpymoApiParity:
@@ -101,6 +104,105 @@ class TestBlockTensorQuantizer:
         encodings = quantizer.computeEncodings(False)
         assert len(encodings) == 1  # scalar shape -> 1 encoding
         assert encodings[0].bw == 8
+
+    @pytest.mark.parametrize(
+        "exponent_bits, mantissa_bits, finite, unsigned_zero, expected_max",
+        [
+            (4, 3, True, False, 448.0),  # float8e4m3fn
+            (5, 2, False, False, 57344.0),  # float8e5m2
+            (4, 3, True, True, 240.0),  # float8e4m3fnuz
+        ],
+    )
+    def test_create_float_quantizer_derives_format(
+        self, exponent_bits, mantissa_bits, finite, unsigned_zero, expected_max
+    ):
+        """
+        createFloat must derive bitwidth and the maximum representable value from the
+        format description alone, so no per-format binding is needed. getFloatSpec then
+        reports those values back, making C++ the single owner of the derivation.
+        """
+        quantizer = libpymo.BlockTensorQuantizer.createFloat(
+            [],
+            exponent_bits,
+            mantissa_bits,
+            finite,
+            unsigned_zero,
+            libpymo.QuantizationMode.QUANTIZATION_TF,
+        )
+        assert quantizer.bitwidth == 1 + exponent_bits + mantissa_bits
+
+        spec = quantizer.getFloatSpec()
+        assert spec["exponent_bits"] == exponent_bits
+        assert spec["mantissa_bits"] == mantissa_bits
+        assert spec["max_value"] == expected_max
+
+    @pytest.mark.parametrize(
+        "exponent_bits, mantissa_bits, finite, unsigned_zero",
+        [
+            (4, 3, True, False),  # float8e4m3fn
+            (5, 2, False, False),  # float8e5m2
+            (4, 3, True, True),  # float8e4m3fnuz
+            (5, 10, False, False),  # float16
+            (8, 23, False, False),  # float32
+        ],
+    )
+    def test_python_max_representable_value_matches_runtime(
+        self, exponent_bits, mantissa_bits, finite, unsigned_zero
+    ):
+        """
+        The max representable value is derived independently in Python (to build float
+        encodings) and in C++ (to drive the kernel). Both derive it from the format alone
+        rather than passing it between layers, so the two must agree exactly.
+        """
+        precision = qtype.float(
+            exponent_bits=exponent_bits,
+            mantissa_bits=mantissa_bits,
+            finite=finite,
+            unsigned_zero=unsigned_zero,
+        )
+        quantizer = libpymo.BlockTensorQuantizer.createFloat(
+            [],
+            exponent_bits,
+            mantissa_bits,
+            finite,
+            unsigned_zero,
+            libpymo.QuantizationMode.QUANTIZATION_TF,
+        )
+
+        assert (
+            _max_representable_value(precision)
+            == (quantizer.getFloatSpec()["max_value"])
+        )
+
+    def test_integer_quantizer_has_no_float_spec(self):
+        """getFloatSpec must return None for integer quantizers."""
+        quantizer = libpymo.BlockTensorQuantizer(
+            [], 8, libpymo.QuantizationMode.QUANTIZATION_TF
+        )
+        assert quantizer.getFloatSpec() is None
+
+    def test_create_fp8_e4m3fn_quantizer_and_compute_encodings(self):
+        """
+        A float-backed quantizer must compute encodings in float form: a positive scale
+        in delta, no offset, and a range spanning +/- 448 (the largest finite E4M3 value).
+        """
+        quantizer = libpymo.BlockTensorQuantizer.createFloat(
+            [], 4, 3, True, False, libpymo.QuantizationMode.QUANTIZATION_TF
+        )
+        assert quantizer.bitwidth == 8
+
+        data = np.array([-7.25, -1.5, 0.0, 1.5, 7.25], dtype=np.float32)
+        quantizer.updateStats(data)
+
+        encodings = quantizer.computeEncodings(False)
+        assert len(encodings) == 1
+
+        encoding = encodings[0]
+        assert encoding.bw == 8
+        assert encoding.delta > 0.0
+        assert encoding.offset == 0.0
+        assert np.isclose(encoding.min, -encoding.delta * 448.0)
+        assert np.isclose(encoding.max, encoding.delta * 448.0)
 
     def test_set_get_encodings(self):
         """Test setEncodings and getEncodings."""

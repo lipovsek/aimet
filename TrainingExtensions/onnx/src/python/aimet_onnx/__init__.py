@@ -4,7 +4,16 @@
 
 # pylint: disable=missing-module-docstring
 
-from aimet_onnx.common.defs import qtype, int2, int4, int8, int16, float16
+from aimet_onnx.common.defs import (
+    qtype,
+    int2,
+    int4,
+    int8,
+    int16,
+    float16,
+    float8e4m3fn,
+    float8e5m2,
+)
 from aimet_onnx.common.utils import _get_version_string
 
 __version__ = _get_version_string()

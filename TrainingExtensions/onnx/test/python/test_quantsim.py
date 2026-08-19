@@ -7,6 +7,7 @@ import contextlib
 import copy
 import itertools
 import json
+import logging
 import os
 import tempfile
 import tracemalloc
@@ -22,6 +23,7 @@ from onnx.external_data_helper import uses_external_data, _get_all_tensors
 import onnx.numpy_helper
 import torch
 import torch.nn.functional as F
+import ml_dtypes
 import numpy as np
 from onnx import load_model
 import onnx
@@ -57,7 +59,9 @@ from aimet_onnx.quantsim import (
     _INT32_MINIMUM_SCALE,
     set_lpbq_for_params,
     set_param_type,
+    _DOCUMENTED_QTYPE_ALIASES,
 )
+from aimet_onnx.common.defs import QTYPE_ALIASES
 import aimet_onnx
 from aimet_onnx.qc_quantize_op import (
     OpMode,
@@ -117,6 +121,15 @@ from aimet_onnx.graph_passes.fusions import fuse_supergroups, is_fused_supergrou
 
 CPU_PROVIDERS = ["CPUExecutionProvider"]
 CUDA_PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+# FP8 formats simulated by quantize-dequantize, paired with the largest finite value each
+# can represent. The max representable value sets the scale, so it is what tells the two
+# formats apart at the encoding level.
+FP8_PRECISIONS_AND_MAX_REPRESENTABLE = [
+    ("float8e4m3fn", 448.0),
+    ("float8e5m2", 57344.0),
+]
+FP8_PRECISIONS = [precision for precision, _ in FP8_PRECISIONS_AND_MAX_REPRESENTABLE]
 
 
 def _compare_encodings(dst, src):
@@ -3636,6 +3649,229 @@ class TestQuantSim:
         for name in sim.param_names:
             assert sim.qc_quantize_op_dict[name].data_type == QuantizationDataType.float
             assert sim.qc_quantize_op_dict[name].bitwidth == 16
+
+    @pytest.mark.parametrize(
+        "precision, max_representable", FP8_PRECISIONS_AND_MAX_REPRESENTABLE
+    )
+    def test_quantsim_fp8_cpu_smoke(self, precision, max_representable):
+        """
+        A whole sim built at an FP8 precision must configure every enabled quantizer as
+        that precision and produce a valid symmetric scale (offset 0) for each after
+        calibration. The grid must span the format's own max representable value, which
+        is what distinguishes e4m3fn (448) from e5m2 (57344).
+        """
+        model = single_residual_model().model
+        dummy_input = make_dummy_input(model)
+        sim = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type=precision,
+            activation_type=precision,
+            providers=CPU_PROVIDERS,
+        )
+        quantizer_names = set(sim.param_names) | set(sim.activation_names)
+
+        for name in quantizer_names:
+            quantizer = sim.qc_quantize_op_dict[name]
+            if not quantizer.enabled:
+                continue
+
+            assert quantizer.precision() == aimet_onnx.qtype.from_string(precision)
+            assert quantizer.data_type == QuantizationDataType.float
+            assert quantizer.bitwidth == 8
+            assert not quantizer.quant_info.isIntDataType
+
+        sim.compute_encodings([dummy_input])
+        outputs = sim.session.run(None, dummy_input)
+
+        assert outputs
+        for name in quantizer_names:
+            quantizer = sim.qc_quantize_op_dict[name]
+            if not quantizer.enabled:
+                continue
+
+            encodings = quantizer.get_encodings()
+            assert quantizer.is_initialized()
+            assert encodings
+            assert all(encoding.bw == 8 for encoding in encodings)
+            assert all(encoding.delta > 0.0 for encoding in encodings)
+            assert all(encoding.offset == 0.0 for encoding in encodings)
+            # Scale is amax / max_representable, so max/delta recovers the format's
+            # own max representable value rather than another FP8 format's.
+            assert all(
+                np.isclose(encoding.max / encoding.delta, max_representable)
+                for encoding in encodings
+            )
+
+    @pytest.mark.parametrize(
+        "precision, max_representable", FP8_PRECISIONS_AND_MAX_REPRESENTABLE
+    )
+    def test_quantsim_fp8_quantizes_on_own_grid(self, precision, max_representable):
+        """
+        A sim built at an FP8 precision must quantize-dequantize onto that format's grid
+        and no other. Checking the encoding alone is not enough: it only pins down the
+        max representable value, while the formats also differ in mantissa width (e4m3fn
+        has 3 mantissa bits, e5m2 has 2), which shows up only in the rounded values.
+
+        ml_dtypes is used as an independent reference for each grid.
+        """
+        reference_dtypes = {
+            "float8e4m3fn": ml_dtypes.float8_e4m3fn,
+            "float8e5m2": ml_dtypes.float8_e5m2,
+        }
+        model = single_residual_model().model
+        dummy_input = make_dummy_input(model)
+        sim = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type=precision,
+            activation_type=precision,
+            providers=CPU_PROVIDERS,
+        )
+        sim.compute_encodings([dummy_input])
+
+        # Activation quantizers are per-tensor, so a single scale governs the whole grid
+        act_name = next(
+            name
+            for name in sim.activation_names
+            if sim.qc_quantize_op_dict[name].enabled
+            and not sim.qc_quantize_op_dict[name].quant_info.usePerChannelMode
+        )
+        quantizer = sim.qc_quantize_op_dict[act_name]
+        (encoding,) = quantizer.get_encodings()
+        assert np.isclose(encoding.max / encoding.delta, max_representable)
+
+        scale = np.float32(encoding.delta)
+        # Multiples of the scale that round differently on the two grids. Kept well
+        # inside the representable range so saturation cannot mask the rounding.
+        tensor = (
+            np.array([-3.7, -1.2, -1.1, 0.0, 1.1, 1.2, 3.7], dtype=np.float32) * scale
+        )
+        qdq_output = quantizer.quantize_dequantize(tensor)
+
+        def on_grid(dtype):
+            return (tensor / scale).astype(dtype).astype(np.float32) * scale
+
+        assert np.array_equal(qdq_output, on_grid(reference_dtypes[precision]))
+
+        # ...and demonstrably not on the other FP8 format's grid
+        (other_precision,) = set(reference_dtypes) - {precision}
+        assert not np.array_equal(
+            qdq_output, on_grid(reference_dtypes[other_precision])
+        )
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    def test_quantsim_fp8_per_channel(self, precision):
+        """FP8 must also work through the broadcast (per-channel) C++ QDQ path."""
+        model = single_residual_model().model
+        dummy_input = make_dummy_input(model)
+        sim = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type=precision,
+            activation_type=precision,
+            config_file="htp_v81",
+            providers=CPU_PROVIDERS,
+        )
+
+        per_channel_quantizers = [
+            qtzr
+            for qtzr in sim.qc_quantize_op_dict.values()
+            if qtzr.enabled and qtzr.quant_info.usePerChannelMode
+        ]
+        assert per_channel_quantizers, "Expected htp_v81 to enable per-channel params"
+
+        sim.compute_encodings([dummy_input])
+        (output,) = sim.session.run(None, dummy_input)
+        assert np.all(np.isfinite(output))
+
+        for qtzr in per_channel_quantizers:
+            encodings = qtzr.get_encodings()
+            # One encoding per channel, each a positive FP8 scale with no offset
+            assert len(encodings) > 1
+            assert all(e.delta > 0.0 and e.offset == 0.0 for e in encodings)
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    def test_quantsim_fp8_warns_that_export_is_unsupported(self, precision, caplog):
+        """
+        FP8 is simulation-only, so warn at construction. Otherwise the limitation only
+        surfaces from export() after the user has already paid for calibration.
+        """
+        model = single_residual_model().model
+        with caplog.at_level(logging.WARNING):
+            QuantizationSimModel(
+                copy.deepcopy(model),
+                param_type=precision,
+                activation_type=precision,
+                providers=CPU_PROVIDERS,
+            )
+
+        assert any(
+            precision in record.message and "not yet exportable" in record.message
+            for record in caplog.records
+        )
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    def test_quantsim_fp8_is_accepted_but_undocumented(self, precision):
+        """
+        FP8 is not advertised in the public docstring while export is unsupported, but it
+        must still be accepted, so that the docstring and the accepted aliases can drift
+        apart deliberately rather than by accident.
+        """
+        assert precision in QTYPE_ALIASES
+        assert precision not in QuantizationSimModel.__doc__
+
+        model = single_residual_model().model
+        sim = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type=precision,
+            activation_type=precision,
+            providers=CPU_PROVIDERS,
+        )
+        quantizer = sim.qc_quantize_op_dict[sim.param_names[0]]
+        assert quantizer.precision() == aimet_onnx.qtype.from_string(precision)
+
+    def test_documented_qtype_aliases_are_exportable(self):
+        """Every alias we do document must be one that export supports."""
+        for name in _DOCUMENTED_QTYPE_ALIASES:
+            assert name in QuantizationSimModel.__doc__
+            assert name not in ("float8e4m3fn", "float8e5m2")
+
+    def test_quantsim_int8_does_not_warn_about_export(self, caplog):
+        """The FP8 export warning must not fire for precisions that do export."""
+        model = single_residual_model().model
+        with caplog.at_level(logging.WARNING):
+            QuantizationSimModel(copy.deepcopy(model), providers=CPU_PROVIDERS)
+
+        assert not any(
+            "not yet exportable" in record.message for record in caplog.records
+        )
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    def test_quantsim_fp8_rejects_cuda_provider(self, precision):
+        """FP8 QDQ is CPU-only today, so the sim must fail fast rather than at runtime."""
+        model = single_residual_model().model
+        with pytest.raises(RuntimeError, match="CPU only"):
+            QuantizationSimModel(
+                copy.deepcopy(model),
+                param_type=precision,
+                activation_type=precision,
+                providers=["CUDAExecutionProvider"],
+            )
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    def test_quantsim_fp8_export_raises_not_implemented(self, precision):
+        """FP8 is simulation-only, so export must fail rather than emit bogus encodings."""
+        model = single_residual_model().model
+        dummy_input = make_dummy_input(model)
+        sim = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type=precision,
+            activation_type=precision,
+            providers=CPU_PROVIDERS,
+        )
+        sim.compute_encodings([dummy_input])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with pytest.raises(NotImplementedError, match="only supports float16"):
+                sim.export(tmp_dir, "fp8_model")
 
     def test_compute_param_encodings(self):
         model = single_residual_model().model

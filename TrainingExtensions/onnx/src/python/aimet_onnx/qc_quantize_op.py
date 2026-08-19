@@ -19,12 +19,14 @@ from aimet_onnx.common.defs import (
     QuantizationDataType,
     EncodingType,
     qtype,
+    float8e4m3fn,
+    float8e5m2,
 )
 from aimet_onnx.common import libquant_info
 from aimet_onnx.common.utils import deprecated
 from aimet_onnx.common.quantsim import (
     calculate_delta_offset,
-    create_encoding_from_min_max,
+    create_encoding_from_min_max_for_precision,
 )
 from aimet_onnx.defs import QSpec, Granularity, LPBQ, Blockwise, PerChannel, PerTensor
 from aimet_onnx.utils import numpy_from_TfEncoding, numpy_to_TfEncoding
@@ -33,6 +35,10 @@ from ._encoding import EncodingBase
 
 
 OpMode = libpymo.TensorQuantizerOpMode
+
+# Float precisions which are simulated by quantize-dequantize through a calibrated scale.
+# Higher-precision floats (fp16, fp32) are simulated by a plain cast and need no encodings.
+_QDQ_FLOAT_TYPES = (float8e4m3fn, float8e5m2)
 
 
 @dataclass
@@ -208,7 +214,18 @@ class QcQuantizeOp:
         if not self._is_encoding_frozen:
             self.quant_info.isIntDataType = data_type == QuantizationDataType.int
 
-    def _build_tensor_quantizer(self):
+    def _build_tensor_quantizer(self, precision: Optional[qtype] = None):
+        """
+        Constructs a new C++ tensor quantizer matching the current configuration.
+
+        Args:
+            precision: Precision to construct for. Defaults to the current precision.
+                Callers changing precision must pass the target explicitly, since the
+                current precision is read back from the quantizer being replaced.
+        """
+        if precision is None:
+            precision = self.precision()
+
         shape = ()
         if self.quant_info.usePerChannelMode:
             assert self.tensor_quantizer_params is not None
@@ -227,9 +244,21 @@ class QcQuantizeOp:
                 for axis, input_dim in enumerate(input_shape)
             )
 
-        quantizer = libpymo.BlockTensorQuantizer(
-            shape, self.bitwidth, MAP_QUANT_SCHEME_TO_PYMO[self.quant_scheme]
-        )
+        quant_scheme = MAP_QUANT_SCHEME_TO_PYMO[self.quant_scheme]
+        if precision in _QDQ_FLOAT_TYPES:
+            # The C++ runtime derives bitwidth, exponent range, and max representable
+            # value from the format description, so no per-format factory is needed.
+            quantizer = libpymo.BlockTensorQuantizer.createFloat(
+                shape,
+                precision.exponent_bits,
+                precision.mantissa_bits,
+                precision.finite,
+                precision.unsigned_zero,
+                quant_scheme,
+            )
+        else:
+            _, bitwidth = precision.to_legacy_repr()
+            quantizer = libpymo.BlockTensorQuantizer(shape, bitwidth, quant_scheme)
         quantizer.setUnsignedSymmetric(self.use_unsigned_symmetric)
         quantizer.setStrictSymmetric(self.use_strict_symmetric)
         quantizer.setZeroPointShift(self._tensor_quantizer.getZeroPointShift())
@@ -326,7 +355,9 @@ class QcQuantizeOp:
 
         :return: The libpymo.TfEncoding object used to store the node's quantization encoding
         """
-        if not self.is_initialized() or self.data_type == QuantizationDataType.float:
+        if not self.is_initialized() or (
+            self.data_type == QuantizationDataType.float and self.bitwidth >= 16
+        ):
             return None
         return self._tensor_quantizer.getEncodings()
 
@@ -463,7 +494,7 @@ class QcQuantizeOp:
         if self.is_encoding_frozen():
             return
 
-        if self.data_type == QuantizationDataType.float:
+        if self.data_type == QuantizationDataType.float and self.bitwidth >= 16:
             raise RuntimeError(
                 f"{type(self).load_encodings.__qualname__} is not supported for floating-point quantizers."
             )
@@ -534,7 +565,18 @@ class QcQuantizeOp:
         """
         Returns the quantization precision of the quantizer
         """
-        # Note: (float, 8) defaults to float8e4m3
+        if self.data_type == QuantizationDataType.float:
+            # (float, bitwidth) cannot distinguish between float formats of the same
+            # width, so read the exact format back from the underlying quantizer.
+            float_spec = self._tensor_quantizer.getFloatSpec()
+            if float_spec:
+                return qtype.float(
+                    exponent_bits=float_spec["exponent_bits"],
+                    mantissa_bits=float_spec["mantissa_bits"],
+                    finite=float_spec["finite"],
+                    unsigned_zero=float_spec["unsigned_zero"],
+                )
+
         return qtype.from_legacy_repr(self.data_type, self.bitwidth)
 
     def set_precision(self, precision: Union[qtype, str]):
@@ -552,13 +594,21 @@ class QcQuantizeOp:
             precision = qtype.from_string(precision)
 
         dtype, bitwidth = precision.to_legacy_repr()
-        if dtype == QuantizationDataType.float and bitwidth < 16:
+        if (
+            dtype == QuantizationDataType.float
+            and bitwidth < 16
+            and precision not in _QDQ_FLOAT_TYPES
+        ):
             raise NotImplementedError(
                 f"Quantizing to precision {precision} is not supported"
             )
 
+        if precision == self.precision():
+            return
+
         self.data_type = dtype
-        self.set_bitwidth(bitwidth)
+        self.bitwidth = bitwidth
+        self._tensor_quantizer = self._build_tensor_quantizer(precision)
         self._reset_encodings()
 
     def set_qspec(self, spec: QSpec):
@@ -650,10 +700,12 @@ class QcQuantizeOp:
 
         if self.data_type == QuantizationDataType.float:
             if self.bitwidth >= 16:
+                # Simulated by a plain cast, so there is no scale to calibrate
                 return None
-            raise NotImplementedError(
-                f"Computing encodings for float quantizers with bitwidth {self.bitwidth} is not supported"
-            )
+            if self.precision() not in _QDQ_FLOAT_TYPES:
+                raise NotImplementedError(
+                    f"Computing encodings for float quantizers with bitwidth {self.bitwidth} is not supported"
+                )
 
         encodings = self._tensor_quantizer.computeEncodings(
             self.use_symmetric_encodings
@@ -661,12 +713,11 @@ class QcQuantizeOp:
 
         if self._encoding_min_max_fixed_vals:
             min_val, max_val = self._encoding_min_max_fixed_vals
-
             encodings = [
-                create_encoding_from_min_max(
+                create_encoding_from_min_max_for_precision(
                     e.min if min_val is None else min_val,
                     e.max if max_val is None else max_val,
-                    self.bitwidth,
+                    self.precision(),
                     self.use_symmetric_encodings,
                     self.use_strict_symmetric,
                 )
@@ -703,7 +754,7 @@ class QcQuantizeOp:
         """
         Returns True if all quantizers have been initialized, False otherwise
         """
-        if self.data_type == QuantizationDataType.float:
+        if self.data_type == QuantizationDataType.float and self.bitwidth >= 16:
             # Fp16 quantizers do not need to be initialized
             return True
 

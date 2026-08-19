@@ -3057,6 +3057,246 @@ def test_set_precision(qtype: aimet_onnx.qtype | str):
     assert qc_op.data_type == dtype
 
 
+def test_set_fp8_e4m3fn_precision_computes_encodings():
+    """
+    set_precision("float8e4m3fn") must build an FP8-backed C++ quantizer which, unlike
+    fp16, requires calibration before it can quantize-dequantize.
+    """
+    quant_info = libquant_info.QcQuantizeInfo()
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=8,
+        use_symmetric_encodings=True,
+    )
+
+    qc_op.set_precision("float8e4m3fn")
+
+    assert qc_op.precision() == aimet_onnx.float8e4m3fn
+    assert qc_op.data_type == QuantizationDataType.float
+    assert qc_op.bitwidth == 8
+    assert not qc_op.quant_info.isIntDataType
+    assert not qc_op.is_initialized()
+
+    data = np.array([-7.25, -1.5, 0.0, 1.5, 7.25], dtype=np.float32)
+    qc_op.update_encoding_stats(data)
+    encodings = qc_op.compute_encodings()
+
+    assert qc_op.is_initialized()
+    assert qc_op.get_encodings()
+    assert len(encodings) == 1
+    assert encodings[0].bw == 8
+    assert encodings[0].delta > 0.0
+    assert encodings[0].offset == 0.0
+    assert np.isclose(encodings[0].min, -encodings[0].delta * 448.0)
+    assert np.isclose(encodings[0].max, encodings[0].delta * 448.0)
+
+    # The FP8 grid must cover the observed amax. It may slightly exceed it, since the
+    # scale is currently derived from the analyzer's range rather than raw amax stats.
+    assert encodings[0].max >= 7.25
+    assert np.isclose(encodings[0].max, 7.25, rtol=0.05)
+
+    qdq_output = qc_op.quantize_dequantize(data)
+    assert qdq_output.shape == data.shape
+    assert qdq_output.dtype == data.dtype
+
+
+def test_fp8_e4m3fn_precision_roundtrips_through_legacy_repr():
+    """(float, 8) must resolve to float8e4m3fn so precision() needs no shadow state."""
+    quant_info = libquant_info.QcQuantizeInfo()
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=8,
+    )
+
+    qc_op.set_precision(aimet_onnx.float8e4m3fn)
+    assert qc_op.precision() == aimet_onnx.float8e4m3fn
+
+    # Round tripping through the legacy (dtype, bitwidth) repr must be lossless
+    dtype, bitwidth = aimet_onnx.float8e4m3fn.to_legacy_repr()
+    assert aimet_onnx.qtype.from_legacy_repr(dtype, bitwidth) == aimet_onnx.float8e4m3fn
+
+    # Switching away from and back to FP8 must land on an FP8-backed C++ quantizer
+    qc_op.set_precision(aimet_onnx.int8)
+    assert qc_op.precision() == aimet_onnx.int8
+    qc_op.set_precision(aimet_onnx.float8e4m3fn)
+
+    qc_op.update_encoding_stats(np.array([-1.0, 1.0], dtype=np.float32))
+    (encoding,) = qc_op.compute_encodings()
+    assert np.isclose(encoding.max / encoding.delta, 448.0)
+
+
+def test_set_precision_does_not_rebuild_quantizer_when_unchanged():
+    """Redundant set_precision calls must not discard calibration state."""
+    quant_info = libquant_info.QcQuantizeInfo()
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=8,
+    )
+    qc_op.set_precision(aimet_onnx.int8)
+
+    qc_op.update_encoding_stats(np.random.randn(64).astype(np.float32))
+    qc_op.compute_encodings()
+    assert qc_op.is_initialized()
+
+    quantizer_before = qc_op._tensor_quantizer
+    qc_op.set_precision(aimet_onnx.int8)
+
+    assert qc_op._tensor_quantizer is quantizer_before
+    assert qc_op.is_initialized()
+
+
+@pytest.mark.parametrize(
+    "precision, expected_max_representable",
+    [("float8e4m3fn", 448.0), ("float8e5m2", 57344.0), ("int8", None)],
+)
+def test_encoding_constraints_are_honored_for_precision(
+    precision, expected_max_representable
+):
+    """
+    An encoding_constraints range must be reproduced exactly. For float precisions that
+    means re-deriving the symmetric scale from the format's max representable value,
+    rather than computing an affine integer delta (which the kernel reads as a scale).
+    """
+    quant_info = libquant_info.QcQuantizeInfo()
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.updateStats,
+        bitwidth=8,
+    )
+    qc_op.set_precision(precision)
+    qc_op._encoding_min_max_fixed_vals = (0.0, 1.0)
+
+    qc_op.update_encoding_stats(np.random.rand(256).astype(np.float32))
+    (encoding,) = qc_op.compute_encodings()
+
+    if expected_max_representable is not None:
+        # Grid must span exactly [-1, 1], i.e. scale == 1 / max_representable_value
+        assert np.isclose(encoding.delta, 1.0 / expected_max_representable)
+        assert np.isclose(encoding.max, 1.0)
+    else:
+        assert np.isclose(encoding.max, 1.0, atol=encoding.delta)
+
+
+@pytest.mark.parametrize("precision", ["float8e4m3fn", "float8e5m2"])
+def test_float_precision_is_read_back_from_quantizer(precision):
+    """
+    Float formats of equal width are indistinguishable via (data_type, bitwidth), so
+    precision() must recover the exact format from the underlying C++ quantizer.
+    """
+    quant_info = libquant_info.QcQuantizeInfo()
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=8,
+    )
+    qc_op.set_precision(precision)
+
+    assert qc_op.precision() == aimet_onnx.qtype.from_string(precision)
+    assert str(qc_op.precision()) == precision
+    assert qc_op.bitwidth == 8
+    assert qc_op.data_type == QuantizationDataType.float
+
+    qc_op.update_encoding_stats(np.array([-7.25, 7.25], dtype=np.float32))
+    (encoding,) = qc_op.compute_encodings()
+    assert encoding.offset == 0.0
+    assert encoding.delta > 0.0
+
+
+@pytest.mark.parametrize(
+    "precision, reference_dtype, other_reference_dtype",
+    [
+        ("float8e4m3fn", ml_dtypes.float8_e4m3fn, ml_dtypes.float8_e5m2),
+        ("float8e5m2", ml_dtypes.float8_e5m2, ml_dtypes.float8_e4m3fn),
+    ],
+)
+def test_fp8_quantize_dequantize_lands_on_own_grid(
+    precision, reference_dtype, other_reference_dtype
+):
+    """
+    Quantize-dequantize must round onto the requested format's grid, bit for bit.
+
+    The two FP8 formats differ in mantissa width (e4m3fn has 3 mantissa bits, e5m2 has
+    2), so they round the same input differently. Encoding-level checks cannot catch a
+    mix-up in the rounding itself, only in the max representable value, hence this
+    comparison against ml_dtypes as an independent reference for each grid.
+    """
+    quant_info = libquant_info.QcQuantizeInfo()
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=8,
+        use_symmetric_encodings=True,
+    )
+    qc_op.set_precision(precision)
+
+    # Calibrate so that the scale is known, then quantize multiples of that scale. Values
+    # are kept well inside the representable range so that saturation, which AIMET applies
+    # but ml_dtypes does not, cannot influence the comparison.
+    qc_op.update_encoding_stats(np.array([-8.0, 8.0], dtype=np.float32))
+    (encoding,) = qc_op.compute_encodings()
+    scale = np.float32(encoding.delta)
+
+    grid_steps = np.array(
+        [-3.7, -1.2, -1.1, -0.5, 0.0, 0.5, 1.1, 1.2, 3.7, 100.0], dtype=np.float32
+    )
+    data = grid_steps * scale
+    qdq_output = qc_op.quantize_dequantize(data)
+
+    expected = grid_steps.astype(reference_dtype).astype(np.float32) * scale
+    assert np.array_equal(qdq_output, expected)
+
+    # The other FP8 format rounds at least one of these values differently, so this
+    # would fail if the requested format were ignored
+    other = grid_steps.astype(other_reference_dtype).astype(np.float32) * scale
+    assert not np.array_equal(qdq_output, other)
+
+
+def test_one_shot_fp8_e4m3fn_quantize_dequantize_cpu():
+    """
+    End-to-end check that the ORT custom op routes FP8 through the C++ tensor quantizer:
+    oneShotQuantizeDequantize must calibrate, advance the op mode, and alter the tensor.
+    """
+    input_arr = np.array([-7.25, -1.5, 0.0, 1.5, 7.25], dtype=np.float32)
+    quant_info = libquant_info.QcQuantizeInfo()
+    quant_node = helper.make_node(
+        op_name,
+        inputs=["input"],
+        outputs=["output"],
+        domain="aimet.customop.cpu",
+        quant_info=libpymo.PtrToInt64(quant_info),
+    )
+    model = create_model_from_node(quant_node, input_arr.shape)
+    session = build_session(model, ["CPUExecutionProvider"])
+    qc_op = QcQuantizeOp(
+        quant_info=quant_info,
+        quant_scheme=QuantScheme.post_training_tf,
+        op_mode=OpMode.oneShotQuantizeDequantize,
+        bitwidth=8,
+        use_symmetric_encodings=True,
+    )
+    qc_op.set_precision("float8e4m3fn")
+
+    output = session.run(None, {"input": input_arr})[0]
+
+    assert output.shape == input_arr.shape
+    assert output.dtype == input_arr.dtype
+    assert qc_op.op_mode == OpMode.quantizeDequantize
+    assert qc_op.is_initialized()
+    assert qc_op.get_encodings()
+    assert qc_op.get_encodings()[0].offset == 0.0
+    assert qc_op.get_encodings()[0].bw == 8
+    assert not np.array_equal(output, input_arr)
+
+
 @pytest.mark.parametrize("qtype", ["int0", "uint8", "float8e5m2fnuz", "float8"])
 def test_set_invalid_precision_raises(qtype: str):
     quant_info = libquant_info.QcQuantizeInfo()

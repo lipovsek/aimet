@@ -13,6 +13,8 @@ from libcpp.vector cimport vector
 # Import shared declarations from common pxd file
 from DlQuantization._quant_types cimport (
     CppQuantizationMode,
+    CppQuantizationType,
+    CppFloatQuantizationSpec,
     QUANTIZATION_TF,
     QUANTIZATION_TF_ENHANCED,
     QUANTIZATION_RANGE_LEARNING,
@@ -51,6 +53,7 @@ cdef extern from "DlQuantization/Quantization.hpp" namespace "DlQuantization":
 cdef extern from "DlQuantization/TensorQuantizer.h" namespace "DlQuantization":
     cdef cppclass CppBlockTensorQuantizer "DlQuantization::BlockTensorQuantizer":
         CppBlockTensorQuantizer(TensorDims shape, int bitwidth, CppQuantizationMode quantScheme) except +
+        CppBlockTensorQuantizer(TensorDims shape, CppQuantizationType qtype, CppQuantizationMode quantScheme) except +
         void resetEncodingStats()
         Encodings computeEncodings(cbool useSymmetricEncodings) except +
         void setEncodings(const Encodings& encodings) except +
@@ -60,6 +63,7 @@ cdef extern from "DlQuantization/TensorQuantizer.h" namespace "DlQuantization":
                                 const TensorDims& tensorShape, cbool useCuda) except +
         void setQuantScheme(CppQuantizationMode quantScheme)
         CppQuantizationMode getQuantScheme()
+        CppQuantizationType getQuantizationType()
         cbool getStrictSymmetric()
         void setStrictSymmetric(cbool useStrictSymmetric)
         cbool getUnsignedSymmetric()
@@ -73,4 +77,3 @@ cdef extern from "DlQuantization/TensorQuantizer.h" namespace "DlQuantization":
         cbool hasValidStats()
         cbool isEncodingValid
         int bitwidth
-

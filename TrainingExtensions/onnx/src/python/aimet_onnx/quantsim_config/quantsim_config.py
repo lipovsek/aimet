@@ -144,12 +144,11 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         # Disable all quantizers
         self._disable_all_quantizers()
         self._set_quantsim_configs()
-        self._override_param_bw_dtype(
-            self._param_names, *self._param_type.to_legacy_repr()
-        )
-        self._override_act_bw_dtype(
-            self._activation_names, *self._activation_type.to_legacy_repr()
-        )
+        # Apply the requested qtypes directly. Round-tripping them through the legacy
+        # (data_type, bitwidth) repr would be lossy: float formats of equal width, such
+        # as float8e4m3fn and float8e5m2, both collapse to (float, 8).
+        self._override_precision(self._param_names, self._param_type)
+        self._override_precision(self._activation_names, self._activation_type)
         self._generate_and_apply_op_instance_specific_config()
 
         # Run supergroup passes if specified in config
@@ -230,6 +229,16 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         for activation_name in self._activation_names:
             self._quant_ops_dict[activation_name].enabled = False
 
+    def _override_precision(self, quantizer_names, precision: qtype):
+        """
+        Sets the quantization precision of the named quantizers
+        :param quantizer_names: names of the quantizers to override
+        :param precision: qtype to set
+        """
+        for name in quantizer_names:
+            if name in self._quant_ops_dict:
+                self._quant_ops_dict[name].set_precision(precision)
+
     def _override_param_bw_dtype(
         self, quantizer_data, data_type: QuantizationDataType, bitwidth: int
     ):
@@ -240,10 +249,9 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         :param data_type: data type as QuantizationDataType
         :return:
         """
-        for param_name in quantizer_data:
-            if param_name in self._quant_ops_dict:
-                self._quant_ops_dict[param_name].data_type = data_type
-                self._quant_ops_dict[param_name].bitwidth = bitwidth
+        self._override_precision(
+            quantizer_data, qtype.from_legacy_repr(data_type, bitwidth)
+        )
 
     def _override_act_bw_dtype(
         self, quantizer_data, data_type: QuantizationDataType, bitwidth: int
@@ -255,10 +263,9 @@ class QuantSimConfigurator(AimetCommonQuantSimConfigurator):
         :param data_type: data type as QuantizationDataType
         :return:
         """
-        for act_name in quantizer_data:
-            if act_name in self._quant_ops_dict:
-                self._quant_ops_dict[act_name].data_type = data_type
-                self._quant_ops_dict[act_name].bitwidth = bitwidth
+        self._override_precision(
+            quantizer_data, qtype.from_legacy_repr(data_type, bitwidth)
+        )
 
     def _override_default_act_bw_dtype(
         self, data_type: QuantizationDataType, bitwidth: int

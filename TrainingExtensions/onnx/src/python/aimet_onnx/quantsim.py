@@ -48,6 +48,8 @@ from aimet_onnx.common.defs import (
     Float,
     int2,
     int8,
+    float8e4m3fn,
+    float8e5m2,
     EncodingType,
     _quant_scheme_aliases,
 )
@@ -117,6 +119,14 @@ from ._encoding import EncodingBase
 from .defs import QSpec
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
+
+# Aliases which are accepted but deliberately left out of the public docstrings, because
+# they cannot be exported yet. Remove entries here once export support lands, and they
+# become documented automatically.
+_UNDOCUMENTED_QTYPE_ALIASES = ("float8e4m3fn", "float8e5m2")
+_DOCUMENTED_QTYPE_ALIASES = [
+    name for name in QTYPE_ALIASES if name not in _UNDOCUMENTED_QTYPE_ALIASES
+]
 
 # pylint: disable=no-name-in-module, ungrouped-imports, too-many-lines
 if version.parse(onnx.__version__) >= version.parse("1.14.0"):
@@ -360,9 +370,9 @@ class QuantizationSimModel:
     Args:
         model (onnx.ModelProto): ONNX ModelProto to quantize
         param_type (qtype | str): quantized type to use for parameter tensors.
-            Can be {{ {", ".join(QTYPE_ALIASES.keys())} }} or :class:`aimet_onnx.qtype`
+            Can be {{ {", ".join(_DOCUMENTED_QTYPE_ALIASES)} }} or :class:`aimet_onnx.qtype`
         activation_type (qtype | str): quantized type to use for activation tensors.
-            Can be {{ {", ".join(QTYPE_ALIASES.keys())} }} or :class:`aimet_onnx.qtype`
+            Can be {{ {", ".join(_DOCUMENTED_QTYPE_ALIASES)} }} or :class:`aimet_onnx.qtype`
         quant_scheme (QuantScheme | str): Quantization scheme to use for calibration.
             Can be {{ {", ".join(_quant_scheme_aliases.keys() - {"tf", "percentile"})} }} or :class:`QuantScheme`
         config_file (str, optional): File path or alias of the configuration file.
@@ -427,6 +437,17 @@ class QuantizationSimModel:
                 "Exporting {dtype} quantization to onnx graph is not supported"
             )
 
+        # FP8 is simulation-only for now, so say so up front rather than letting the user
+        # discover it after calibrating, when export() raises.
+        fp8_types = {float8e4m3fn, float8e5m2} & {param_type, activation_type}
+        if fp8_types:
+            # pylint: disable=logging-fstring-interpolation
+            logger.warning(
+                f"{', '.join(sorted(str(dtype) for dtype in fp8_types))} simulation is "
+                "not yet exportable. The sim can be calibrated and evaluated in place, "
+                "but export() will raise NotImplementedError."
+            )
+
         if providers is None:
             providers = ["CPUExecutionProvider"]
 
@@ -436,6 +457,12 @@ class QuantizationSimModel:
                 provider == "CUDAExecutionProvider"
                 or provider[0] == "CUDAExecutionProvider"
             ):
+                if fp8_types:
+                    names = ", ".join(sorted(str(dtype) for dtype in fp8_types))
+                    raise RuntimeError(
+                        f"{names} simulation is currently implemented for CPU only. "
+                        'Create the sim with providers=["CPUExecutionProvider"].'
+                    )
                 op_domain = "aimet.customop.cuda"
 
         # Note: bfloat16 I/O is not supported via session.run and will fail during calibration

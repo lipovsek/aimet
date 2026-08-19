@@ -13,6 +13,7 @@ except ImportError:
 def test_qtypes():
     assert str(qtype.float(5, 10, False, False)) == "float16"
     assert str(qtype.float(2, 1, False, False)) == "float4e2m1"
+    assert str(qtype.float(4, 3, True, False)) == "float8e4m3fn"
     assert str(qtype.float(4, 3, True, True)) == "float8e4m3fnuz"
     assert str(qtype.float(5, 2, False, False)) == "float8e5m2"
 
@@ -23,6 +24,8 @@ def test_qtypes():
     assert qtype.float(5, 10, False, False) == QTYPE_ALIASES["float16"]
     assert QTYPE_ALIASES["float16"].mantissa_bits == 10
     assert QTYPE_ALIASES["float16"].exponent_bits == 5
+    assert qtype.from_string("float8e4m3fn") == QTYPE_ALIASES["float8e4m3fn"]
+    assert qtype.from_string("float8e5m2") == QTYPE_ALIASES["float8e5m2"]
 
 
 def test_invalid_qtypes():

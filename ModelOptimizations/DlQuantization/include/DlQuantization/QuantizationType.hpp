@@ -4,6 +4,7 @@
 #ifndef DLQUANTIZATION_QUANTIZATION_TYPE_HPP
 #define DLQUANTIZATION_QUANTIZATION_TYPE_HPP
 
+#include <cmath>
 #include <stdexcept>
 
 namespace DlQuantization
@@ -74,16 +75,69 @@ public:
         return type;
     }
 
+    /**
+     * Constructs a floating-point type from its format description alone, deriving
+     * bitwidth, minimum normal exponent, and maximum representable value.
+     *
+     * This is the entry point for callers (such as the Python/Cython layer) which only
+     * know a format's exponent/mantissa layout, so that the derived quantities have a
+     * single definition here rather than being duplicated per caller.
+     */
+    static QuantizationType Float(int exponentBits, int mantissaBits, bool finite, bool unsignedZero)
+    {
+        if (exponentBits <= 0)
+        {
+            throw std::invalid_argument("Floating-point quantization exponent bits must be positive");
+        }
+        if (mantissaBits < 0)
+        {
+            throw std::invalid_argument("Floating-point quantization mantissa bits must be non-negative");
+        }
+
+        // Sign bit + exponent + mantissa.
+        const int bitwidth = 1 + exponentBits + mantissaBits;
+
+        // fnuz formats shift the exponent bias by one, since they spend no encoding on
+        // negative zero or infinities.
+        const int exponentBias = (1 << (exponentBits - 1)) - 1 + (unsignedZero ? 1 : 0);
+        const int exponentMin  = 1 - exponentBias;
+
+        // Largest representable value = maxMantissa * 2**maxExponent, where the available
+        // top exponent depends on how many encodings the format reserves for inf/NaN:
+        //   - fnuz: nothing reserved in the exponent range (NaN is the sign-bit pattern)
+        //   - fn:   top exponent usable except for the all-ones mantissa (NaN)
+        //   - ieee: top exponent reserved entirely for inf/NaN
+        const double mantissaUnit = std::ldexp(1.0, -mantissaBits);
+        int          maxExponent;
+        double       maxMantissa;
+        if (unsignedZero)
+        {
+            maxExponent = (1 << exponentBits) - 1 - exponentBias;
+            maxMantissa = 2.0 - mantissaUnit;
+        }
+        else if (finite)
+        {
+            maxExponent = (1 << exponentBits) - 1 - exponentBias;
+            maxMantissa = 2.0 - 2.0 * mantissaUnit;
+        }
+        else
+        {
+            maxExponent = (1 << exponentBits) - 2 - exponentBias;
+            maxMantissa = 2.0 - mantissaUnit;
+        }
+
+        return Float(bitwidth, exponentBits, mantissaBits, exponentMin, maxMantissa * std::ldexp(1.0, maxExponent),
+                     finite, unsignedZero);
+    }
+
     static QuantizationType Fp8E4M3FN()
     {
-        return Float(/*bitwidth=*/8, /*exponentBits=*/4, /*mantissaBits=*/3, /*exponentMin=*/-6,
-                     /*maxValue=*/448.0, /*finite=*/true, /*unsignedZero=*/false);
+        return Float(/*exponentBits=*/4, /*mantissaBits=*/3, /*finite=*/true, /*unsignedZero=*/false);
     }
 
     static QuantizationType Fp8E5M2()
     {
-        return Float(/*bitwidth=*/8, /*exponentBits=*/5, /*mantissaBits=*/2, /*exponentMin=*/-14,
-                     /*maxValue=*/57344.0, /*finite=*/false, /*unsignedZero=*/false);
+        return Float(/*exponentBits=*/5, /*mantissaBits=*/2, /*finite=*/false, /*unsignedZero=*/false);
     }
 
     QuantizationTypeKind kind() const
@@ -124,9 +178,13 @@ public:
         return _floatSpec;
     }
 
-private:
+    /**
+     * Defaults to int8. Public so that Cython (which stack-allocates a temporary for
+     * values returned from the static factories) can construct QuantizationType.
+     */
     QuantizationType() = default;
 
+private:
     QuantizationTypeKind   _kind {QuantizationTypeKind::Int};
     IntQuantizationSpec    _intSpec {8};
     FloatQuantizationSpec  _floatSpec {8, 4, 3, -6, 448.0, true, false};
