@@ -210,7 +210,7 @@ jobs:
 
   test_on_windows:
     name: Run AIMET unit and acceptance tests on Windows (${{ matrix.arch }})
-    runs-on: [self-hosted, Windows, "${{ matrix.arch }}"]
+    runs-on: ${{ matrix.runner-label }}
     if: inputs.include_windows_tests && inputs.env_name == 'onnx-cpu' && (inputs.run_unit_tests || inputs.run_acceptance_tests)
     strategy:
       fail-fast: false
@@ -219,9 +219,11 @@ jobs:
           - arch: X64
             python-version: "3.10"
             wheel-arch: x64
+            runner-label: aimet-windows-amd64
           - arch: ARM64
             python-version: "3.12"
             wheel-arch: arm64
+            runner-label: aimet-windows-arm64
     steps:
       - uses: actions/checkout@v4
 

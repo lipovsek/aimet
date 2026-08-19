@@ -42,7 +42,7 @@ jobs:
           build-tests: ${{ (matrix.id == 'onnx-cpu' || matrix.id == 'onnx-gpu') && 'ON' || 'OFF' }}
 
   build-windows:
-    runs-on: [self-hosted, Windows, X64]
+    runs-on: aimet-windows-amd64
     if: inputs.build-windows-wheel == true
     strategy:
       fail-fast: false
