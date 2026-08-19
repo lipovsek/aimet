@@ -29,6 +29,7 @@ import torch
 from onnx import numpy_helper
 
 from aimet_onnx.common.utils import AimetLogger
+from aimet_onnx.common.onnx._utils import _is_grid_preserving_op
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto, ParamUtils
 
@@ -89,12 +90,24 @@ class R1RotationPass(RotationPass):
             "Backbone: Applying R1 Hadamard rotation with backbone_hidden_size=%d.",
             ctx.backbone_hidden_size,
         )
-        _rotate_backbone(ctx.backbone_model, ctx.backbone_topology, R1)
+
+        # Note: If external and internal embeddings are missing, add online rotation
+        rotate_embeddings_online = not (
+            ctx.backbone_topology.embed_tokens or ctx.embedding is not None
+        )
+
+        _rotate_backbone(
+            ctx.backbone_model,
+            ctx.backbone_topology,
+            R1,
+            rotate_embeddings_online=rotate_embeddings_online,
+        )
 
         if ctx.embedding is not None:
             _rotate_external_embedding(ctx.embedding, R1)
 
-        if ctx.visual_model is not None:
+        # If online embedding rotation is already present, don't rotate visual model
+        if ctx.visual_model is not None and not rotate_embeddings_online:
             assert ctx.visual_merger_linear2 is not None
             _logger.info(
                 "Visual: Applying R1 Hadamard rotation to merger_linear2 with backbone_hidden_size=%d.",
@@ -103,10 +116,19 @@ class R1RotationPass(RotationPass):
             _rotate_merger_linear2(ctx.visual_model, ctx.visual_merger_linear2, R1)
 
 
-def _rotate_backbone(model: ModelProto, role_map: LlmTopology, R1: np.ndarray) -> None:
+def _rotate_backbone(
+    model: ModelProto,
+    role_map: LlmTopology,
+    R1: np.ndarray,
+    *,
+    rotate_embeddings_online: bool = False,
+) -> None:
     """Rotate every weight in ``role_map`` with R1 in-place."""
-    for op in role_map.embed_tokens:
-        rotate_gather_weight(model, op, R1)
+    if rotate_embeddings_online:
+        _insert_embedding_hadamard_rotation(model, role_map, R1)
+    else:
+        for op in role_map.embed_tokens:
+            rotate_gather_weight(model, op, R1)
 
     if role_map.lm_head:
         for op in role_map.lm_head:
@@ -125,6 +147,52 @@ def _rotate_backbone(model: ModelProto, role_map: LlmTopology, R1: np.ndarray) -
             rotate_linear_weight(model, op, R1, is_writing=False)
         for op in block.down_proj:
             rotate_linear_weight(model, op, R1, is_writing=True)
+
+
+def _insert_embedding_hadamard_rotation(
+    model: ModelProto, role_map: LlmTopology, R1: np.ndarray
+) -> None:
+    """Place an online Hadamard onto the input embeddings."""
+    embedding_tensor = _find_embedding_tensor(role_map)
+
+    consumer_nodes = [op.get_module() for op in embedding_tensor.consumers]
+    if not consumer_nodes:
+        raise RuntimeError(
+            f"Embedding tensor '{embedding_tensor}' has no consumers to rewire; "
+            f"cannot rotate the residual stream."
+        )
+    _logger.info(
+        "Backbone: Placing online R1 Hadamard rotation at tensor '%s'.",
+        embedding_tensor,
+    )
+    insert_online_hadamard_node(
+        model,
+        target_tensor_name=embedding_tensor.name,
+        consumer_nodes=consumer_nodes,
+        H=R1,
+        name_prefix=f"spinquant_{embedding_tensor.name}_R1",
+    )
+
+
+def _find_embedding_tensor(role_map: LlmTopology) -> str:
+    """
+    Return the input-embedding tensor, skipping the input norm's leading Cast.
+
+    TODO: Move this logic into LLM topology
+    """
+    embedding_tensor = role_map.blocks[0].residual_input
+    if embedding_tensor is None:
+        raise RuntimeError("Failed to find embedding tensor")
+
+    # Propagate through data movement ops and casts
+    while embedding_tensor.producer is not None:
+        if not (
+            _is_grid_preserving_op(embedding_tensor.producer.type)
+            or embedding_tensor.producer.type == "Cast"
+        ):
+            break
+        embedding_tensor = embedding_tensor.producer.inputs[0]
+    return embedding_tensor
 
 
 def _insert_final_hadamard_rotation(

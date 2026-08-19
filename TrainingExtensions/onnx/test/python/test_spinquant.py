@@ -104,6 +104,17 @@ def apply_r1_rotation_merger(model, merger_linear2, backbone_hidden_size):
 
 AimetLogger.set_level_for_all_areas(logging.INFO)
 
+# Keeps the real Qwen3 architecture (GQA, q/k norms, KV cache) and a realistic
+# hidden_size, but shrinks the dimensions R1 does not care about
+_QWEN3_SMALL = dict(
+    num_hidden_layers=2,
+    num_attention_heads=4,
+    num_key_value_heads=2,
+    head_dim=32,
+    intermediate_size=128,
+    vocab_size=_VOCAB,
+)
+
 
 def _export_to_onnx(
     module: nn.Module,
@@ -1702,27 +1713,108 @@ class TestApplySpinquant:
         y_vit_after = _run_model(visual_model, x_vit)
         assert np.allclose(y_vit_after, y_vit_before @ R_L)
 
+    def test_visual_output_rotated_for_in_graph_embedding(self):
+        """
+        An internal embed_tokens absorbs R1 offline, so the visual encoder must
+        be rotated offline too rather than online.
+        """
+        torch.manual_seed(0)
+        np.random.seed(0)
+
+        model = _export_decoder_with_ids(LlamaStyleDecoder())
+        visual_model = _export_vit(ViTEncoder())
+
+        x_vit = np.random.randn(_VIT_N, _VIT_D).astype(np.float32)
+        token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
+
+        y_vit_before = _run_model(visual_model, x_vit)
+        y_before = _run_model(model, token_ids)
+
+        """
+        When: apply_spinquant is called with a visual model and in-graph embed_tokens.
+        Then: merger_linear2 is rotated offline and the backbone inserts no online
+              rotation; backbone output is preserved.
+        """
+        apply_spinquant(model, visual_model=visual_model)
+
+        R_L = (get_hadamard_matrix(_VIT_D_L) / np.sqrt(_VIT_D_L)).astype(np.float32)
+        assert np.allclose(_run_model(visual_model, x_vit), y_vit_before @ R_L)
+        assert not any(
+            is_online_rotation_op(op) for op in ConnectedGraph(model).ordered_ops
+        )
+        assert np.allclose(_run_model(model, token_ids), y_before, atol=1e-5)
+
+    @pytest.mark.parametrize("pass_embedding", [True, False])
+    def test_vlm_end_to_end_preserved(self, pass_embedding):
+        """
+        R1 must preserve the output of a VLM prompt: token embeddings read from the
+        embedding table concatenated with the visual encoder's projected output,
+        the way the host builds inputs_embeds.
+        """
+        torch.manual_seed(0)
+        np.random.seed(0)
+
+        backbone_model = _export_vlm_backbone(VLMBackbone())
+        visual_model = _export_vit(ViTEncoder())
+        embedding = torch.randn(_VOCAB, _H)
+        x_vit = np.random.randn(_VIT_N, _VIT_D).astype(np.float32)
+
+        def run_prompt():
+            visual_embeds = _run_model(visual_model, x_vit)
+            token_embeds = embedding.numpy()[: _SEQ - len(visual_embeds)]
+            inputs_embeds = np.concatenate([token_embeds, visual_embeds])
+            return _run_model(backbone_model, inputs_embeds.reshape(1, _SEQ, _H))
+
+        y_before = run_prompt()
+
+        """
+        When: apply_spinquant is called with a visual model, with or without an
+              external embedding.
+        Then: the prompt reproduces its pre-rotation output, and R1 is absorbed
+              offline whenever an embedding was there to absorb it.
+        """
+        kwargs = {"embedding": embedding} if pass_embedding else {}
+        apply_spinquant(backbone_model, visual_model=visual_model, **kwargs)
+
+        assert np.allclose(run_prompt(), y_before, atol=1e-5)
+        online = any(
+            is_online_rotation_op(op)
+            for op in ConnectedGraph(backbone_model).ordered_ops
+        )
+        assert online == (not pass_embedding)
+
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     @pytest.mark.parametrize(
         "with_lm_head",
         [True, False],
     )
     @pytest.mark.parametrize("hidden_size", [1024, 1536])
-    def test_r1_preserves_output_for_headless_model(self, with_lm_head, hidden_size):
+    @pytest.mark.parametrize("with_embedding", [True, False])
+    def test_r1_preserves_output_for_headless_model(
+        self, with_lm_head, with_embedding, hidden_size
+    ):
         """
-        R1 must preserve the output of a real 4-layer Qwen3 export with or without lm_head.
+        R1 must preserve the output of a real Qwen3 export with or without
+        lm_head / embed_tokens.
         """
         torch.manual_seed(0)
         np.random.seed(0)
         model = qwen3_causal_lm(
-            num_hidden_layers=4,
             with_lm_head=with_lm_head,
-            vocab_size=_VOCAB,
+            with_embedding=with_embedding,
             hidden_size=hidden_size,
+            **_QWEN3_SMALL,
         )
         output_name = model.graph.output[0].name
 
-        dummy_input = _pad_dummy_input(model)
+        named_inputs = {}
+        if not with_embedding:
+            # Zero-filled embeddings would flow through the graph as zeros, making the
+            # comparison vacuous.
+            named_inputs["inputs_embeds"] = np.random.randn(1, 8, hidden_size).astype(
+                np.float32
+            )
+        dummy_input = _pad_dummy_input(model, **named_inputs)
 
         y_before = _build_session(model).run([output_name], dummy_input)[0]
 
@@ -1730,6 +1822,15 @@ class TestApplySpinquant:
 
         y_after = _build_session(model).run([output_name], dummy_input)[0]
         assert np.allclose(y_before, y_after, atol=1e-4)
+
+        # No embed_tokens weight to absorb R1 -> embeddings rotated online.
+        # Matched by name: a headless export also rotates the final residual.
+        embedding_rotations = [
+            op
+            for op in ConnectedGraph(model).ordered_ops
+            if is_online_rotation_op(op) and "inputs_embeds" in op.name
+        ]
+        assert bool(embedding_rotations) == (not with_embedding)
 
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     @pytest.mark.parametrize("with_lm_head", [True, False])
@@ -1742,12 +1843,11 @@ class TestApplySpinquant:
         np.random.seed(0)
         hidden_size, seq_len = 1024, 8
         model = qwen3_causal_lm(
-            num_hidden_layers=4,
             seq_len=seq_len,
             with_lm_head=with_lm_head,
             with_embedding=False,
-            vocab_size=_VOCAB,
             hidden_size=hidden_size,
+            **_QWEN3_SMALL,
         )
         output_name = model.graph.output[0].name
 

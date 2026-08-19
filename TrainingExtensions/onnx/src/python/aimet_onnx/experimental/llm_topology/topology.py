@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Pattern, Tuple
 
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
+from aimet_onnx.meta.connectedgraph import ConnectedGraph, Product
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto
 
@@ -149,6 +149,8 @@ class BlockTopology:
     :param qk_matmul: The dynamic (non-weighted) Q·Kᵀ attention MatMul op(s) —
         one per query head in SHA exports.
     :param attn_v_matmul: The dynamic (non-weighted) softmax·V MatMul op(s).
+    :param residual_input: Residual-stream tensor entering the block's input norm.
+    :param residual_output: Residual-stream tensor leaving the block.
     """
 
     qkv: LinearGroup = field(default_factory=LinearGroup)
@@ -158,6 +160,9 @@ class BlockTopology:
 
     qk_matmul: List[Op] = field(default_factory=list)
     attn_v_matmul: List[Op] = field(default_factory=list)
+
+    residual_input: Optional[Product] = None
+    residual_output: Optional[Product] = None
 
     @property
     def q_proj(self) -> List[Op]:
@@ -336,6 +341,8 @@ def get_llm_topology(
                 down_proj=down_proj_candidates,
                 qk_matmul=qk_matmul,
                 attn_v_matmul=attn_v_matmul,
+                residual_input=connected_graph.get_product(start_tensor),
+                residual_output=connected_graph.get_product(end_tensor),
             )
         )
         _logger.debug(

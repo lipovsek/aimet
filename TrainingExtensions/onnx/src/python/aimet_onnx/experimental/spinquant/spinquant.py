@@ -153,20 +153,12 @@ def _build_context(
 def _check_embedding_consistency(topology, embedding: Optional[torch.Tensor]) -> None:
     """Reject inconsistent (embedding, embed_tokens) combinations.
 
-    A backbone exported with ``use_inputs_embeds=True`` has no Gather op for
-    token embeddings; the caller must pass the external embedding tensor so it
-    gets rotated alongside the backbone. Conversely, a backbone with embed_tokens
-    must NOT receive an external embedding (it would be rotated twice).
+    A backbone with embed_tokens must not receive an external embedding: R1 is
+    already absorbed by the Gather weight, so the tensor would be rotated twice.
     """
     if embedding is not None and topology.embed_tokens:
         raise ValueError(
             "embedding was provided but backbone contains embed_tokens op(s). "
             "Pass embedding only for VLM backbones exported with use_inputs_embeds=True "
             "(i.e. backbone has no Gather op for token embeddings)."
-        )
-    if embedding is None and not topology.embed_tokens:
-        raise ValueError(
-            "Backbone has no embed_tokens op but no external embedding was provided. "
-            "Pass embedding=torch.load('embedding.pth') for VLM backbones exported with "
-            "use_inputs_embeds=True so the embedding weight is rotated alongside the backbone."
         )
