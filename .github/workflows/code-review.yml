@@ -25,5 +25,6 @@ on:
       - '**.otf'
 jobs:
   review:
+    if: false  # Disabled: breeze-code-action resolution failing, blocking PRs. Re-enable once fixed upstream.
     uses: qcom-eng-Nimbus/custom-templates/.github/workflows/breeze-pr-review-agent.yaml@main
     secrets: inherit
