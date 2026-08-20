@@ -128,12 +128,13 @@ void quantizeDequantize(const DTYPE* in, uint64_t cnt, const TfEncoding& encodin
 }
 
 void quantizeDequantizeFp8(const float* in, uint64_t cnt, const TfEncoding& encoding, float* out,
-                           const FloatQuantizationSpec& fp8Spec, ComputationMode modeCpuGpu, void* stream)
+                           const FloatQuantizationSpec& fp8Spec, ComputationMode modeCpuGpu, void* stream,
+                           IForLoopRunner* runner)
 {
     switch (modeCpuGpu)
     {
     case COMP_MODE_CPU:
-        quantizeDequantizeFp8Cpu(in, cnt, encoding, out, fp8Spec);
+        quantizeDequantizeFp8Cpu(in, cnt, encoding, out, fp8Spec, runner);
         break;
     case COMP_MODE_GPU:
         (void) stream;
@@ -235,21 +236,35 @@ void quantizeDequantizeCpu(const DTYPE* in, uint64_t cnt, const TfEncoding& enco
 }
 
 void quantizeDequantizeFp8Cpu(const float* in, uint64_t cnt, const TfEncoding& encoding, float* out,
-                              const FloatQuantizationSpec& fp8Spec)
+                              const FloatQuantizationSpec& fp8Spec, IForLoopRunner* runner)
 {
-    RoundToNearestEvenGuard guard;
-
     const float scale = static_cast<float>(encoding.delta);
-    if (!(scale > 0))
+
+    // Note: the rounding-mode guard is constructed inside the loop body rather than once
+    // up front, because the floating-point rounding mode is thread-local and the body may
+    // run on a worker thread.
+    auto qdqLoop = [&](size_t start, size_t end) {
+        RoundToNearestEvenGuard guard;
+        for (size_t i = start; i < end; ++i)
+        {
+            const float scaled = in[i] / scale;
+            out[i]             = fakeCastToFp8(scaled, fp8Spec) * scale;
+        }
+    };
+
+    if (runner && cnt > MIN_ELEMENTS_PER_CHUNK)
     {
-        throw std::invalid_argument("FP8 quantize-dequantize scale must be positive");
+        size_t numChunks = std::max<size_t>(1, cnt / MIN_ELEMENTS_PER_CHUNK);
+        size_t chunkSize = (cnt + numChunks - 1) / numChunks;
+        runner->run([&, chunkSize](size_t chunkId) {
+            size_t start = chunkId * chunkSize;
+            size_t end   = std::min(start + chunkSize, static_cast<size_t>(cnt));
+            qdqLoop(start, end);
+        }, numChunks);
+        return;
     }
 
-    for (uint64_t i = 0; i < cnt; ++i)
-    {
-        const float scaled = in[i] / scale;
-        out[i]            = fakeCastToFp8(scaled, fp8Spec) * scale;
-    }
+    qdqLoop(0, static_cast<size_t>(cnt));
 }
 
 
@@ -771,43 +786,69 @@ void quantizeDequantizeBroadcastCpu(const DTYPE* in, DTYPE* out, const Encodings
 void quantizeDequantizeFp8BroadcastCpu(const float* in, float* out, const Encodings& encodings,
                                        const FloatQuantizationSpec& fp8Spec, int64_t numElement,
                                        const TensorDims& inputStrides, const TensorDims& encodingStrides,
-                                       const TensorDims& inputShape)
+                                       const TensorDims& inputShape, IForLoopRunner* runner)
 {
-    RoundToNearestEvenGuard guard;
-
     auto ndim = inputStrides.size();
 
-    int64_t    encodingIdx = 0;
-    TensorDims coords(ndim);
-    for (int64_t i = 0; i < numElement; ++i)
-    {
-        const float scale = static_cast<float>(encodings[encodingIdx].delta);
-        if (!(scale > 0))
+    // Note: the rounding-mode guard is constructed inside the loop body rather than once
+    // up front, because the floating-point rounding mode is thread-local and the body may
+    // run on a worker thread.
+    auto qdqLoop = [&](size_t start, size_t end) {
+        RoundToNearestEvenGuard guard;
+
+        // Recover the encoding index for an arbitrary starting offset, so each chunk can
+        // be processed independently.
+        int64_t    encodingIdx = 0;
+        TensorDims coords(ndim);
+        size_t     remainder = start;
+        for (size_t d = 0; d < ndim; d++)
         {
-            throw std::invalid_argument("FP8 quantize-dequantize scale must be positive");
+            coords[d] = remainder / inputStrides[d];
+            remainder -= coords[d] * inputStrides[d];
+            encodingIdx += encodingStrides[d] * coords[d];
         }
 
-        const float scaled = in[i] / scale;
-        out[i]            = fakeCastToFp8(scaled, fp8Spec) * scale;
-
-        for (int d = ndim - 1; d >= 0; d--)
+        for (size_t i = start; i < end; ++i)
         {
-            coords[d]++;
-            if (coords[d] < inputShape[d])
+            const float scale  = static_cast<float>(encodings[encodingIdx].delta);
+            const float scaled = in[i] / scale;
+            out[i]             = fakeCastToFp8(scaled, fp8Spec) * scale;
+
+            for (int d = ndim - 1; d >= 0; d--)
             {
-                encodingIdx += encodingStrides[d];
-                break;
-            }
+                coords[d]++;
+                if (coords[d] < inputShape[d])
+                {
+                    encodingIdx += encodingStrides[d];
+                    break;
+                }
 
-            coords[d] = 0;
-            encodingIdx -= encodingStrides[d] * (inputShape[d] - 1);
+                coords[d] = 0;
+                encodingIdx -= encodingStrides[d] * (inputShape[d] - 1);
+            }
         }
+    };
+
+    if (runner && numElement > static_cast<int64_t>(MIN_ELEMENTS_PER_CHUNK))
+    {
+        const size_t total     = static_cast<size_t>(numElement);
+        const size_t numChunks = std::max<size_t>(1, total / MIN_ELEMENTS_PER_CHUNK);
+        const size_t chunkSize = (total + numChunks - 1) / numChunks;
+        runner->run([&, chunkSize](size_t chunkId) {
+            const size_t start = chunkId * chunkSize;
+            const size_t end   = std::min(start + chunkSize, total);
+            qdqLoop(start, end);
+        }, numChunks);
+        return;
     }
+
+    qdqLoop(0, static_cast<size_t>(numElement));
 }
 
 void quantizeDequantizeFp8Broadcast(const float* inTensor, float* outTensor, const Encodings& encodings,
                                     const FloatQuantizationSpec& fp8Spec, const TensorDims& inputShape,
-                                    const TensorDims& encodingShape, ComputationMode mode, void* stream)
+                                    const TensorDims& encodingShape, ComputationMode mode, void* stream,
+                                    IForLoopRunner* runner)
 {
     auto numElements = getNumel(inputShape);
 
@@ -829,7 +870,7 @@ void quantizeDequantizeFp8Broadcast(const float* inTensor, float* outTensor, con
     {
     case COMP_MODE_CPU:
         quantizeDequantizeFp8BroadcastCpu(inTensor, outTensor, encodings, fp8Spec, numElements, inputStrides,
-                                          encodingStrides, bcTensorShape);
+                                          encodingStrides, bcTensorShape, runner);
         break;
     case COMP_MODE_GPU:
         (void) stream;

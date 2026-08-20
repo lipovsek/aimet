@@ -88,12 +88,12 @@ void BlockTensorQuantizer::quantizeDequantize(const T* input, T* output, const T
             if (getNumel(_shape) == 1)
             {
                 quantizeDequantizeFp8(input, getNumel(tensorShape), _encodings[0], output, _qtype.floatSpec(), mode,
-                                      stream);
+                                      stream, runner);
             }
             else
             {
                 quantizeDequantizeFp8Broadcast(input, output, _encodings, _qtype.floatSpec(), tensorShape, _shape,
-                                                mode, stream);
+                                                mode, stream, runner);
             }
         }
         else

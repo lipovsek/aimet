@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -76,6 +77,30 @@ TfEncoding makeFp8Encoding(double scale, const FloatQuantizationSpec& fp8Spec)
     encoding.max    = scale * fp8Spec.maxValue;
     return encoding;
 }
+
+// Runs chunks in reverse order on the calling thread. Reverse order proves each chunk
+// recovers its own starting state rather than relying on the previous chunk having run,
+// and recording numChunks proves the kernel actually dispatched through the runner.
+class ReverseForLoopRunner : public IForLoopRunner
+{
+public:
+    void run(std::function<void(size_t)> fn, size_t numChunks) const override
+    {
+        _numChunks = numChunks;
+        for (size_t chunkId = numChunks; chunkId > 0; --chunkId)
+        {
+            fn(chunkId - 1);
+        }
+    }
+
+    size_t numChunks() const
+    {
+        return _numChunks;
+    }
+
+private:
+    mutable size_t _numChunks = 0;
+};
 
 size_t getEncodingIndexForShape(const TensorDims& inputShape, const TensorDims& encodingShape, size_t flatIndex)
 {
@@ -278,6 +303,77 @@ TEST(TestFp8QcQuantizeRuntime, BroadcastFp8QuantizeDequantizeMatchesReferenceFor
     modeSpecificActionTensorQuantizer(input.data(), output.data(), inputShape, &tensorQuantizer,
                                       TensorQuantizerOpMode::quantizeDequantize, false, nullptr, false, nullptr);
 
+    for (size_t idx = 0; idx < input.size(); ++idx)
+    {
+        const size_t encodingIdx = getEncodingIndexForShape(inputShape, quantizerShape, idx);
+        EXPECT_FLOAT_EQ(output[idx], fp8QdqReference(input[idx], scales[encodingIdx], qtype.floatSpec()));
+    }
+}
+
+// Per-tensor FP8 QDQ dispatched through a for-loop runner
+//
+// Uses a tensor larger than MIN_ELEMENTS_PER_CHUNK with a deliberately non-chunk-aligned
+// size, so results must match the reference regardless of how the range is split.
+TEST(TestFp8QcQuantizeRuntime, Fp8PerTensorQdqUsesForLoopRunner)
+{
+    const QuantizationType qtype = QuantizationType::Fp8E4M3FN();
+    BlockTensorQuantizer tensorQuantizer(TensorDims {}, qtype, QUANTIZATION_TF);
+    tensorQuantizer.setEncodings({makeFp8Encoding(/*scale=*/0.25, qtype.floatSpec())});
+
+    std::vector<float> input(4097);
+    std::vector<float> output(input.size());
+    for (size_t idx = 0; idx < input.size(); ++idx)
+    {
+        input[idx] = static_cast<float>(static_cast<int>(idx % 257) - 128) / 7.0f;
+    }
+
+    ReverseForLoopRunner runner;
+    tensorQuantizer.quantizeDequantize(input.data(), output.data(), TensorDims {static_cast<int64_t>(input.size())},
+                                       false, nullptr, &runner);
+
+    EXPECT_GT(runner.numChunks(), 1);
+    for (size_t idx = 0; idx < input.size(); ++idx)
+    {
+        EXPECT_FLOAT_EQ(output[idx], fp8QdqReference(input[idx], /*scale=*/0.25, qtype.floatSpec()));
+    }
+}
+
+// Broadcast FP8 QDQ dispatched through a for-loop runner
+//
+// The broadcast kernel walks a coordinate counter to track which encoding applies to each
+// element. Under chunking each chunk must reconstruct that counter from its own starting
+// offset, so this checks per-element encoding selection against the reference while chunks
+// run out of order.
+TEST(TestFp8QcQuantizeRuntime, BroadcastFp8QdqUsesForLoopRunner)
+{
+    const QuantizationType qtype         = QuantizationType::Fp8E4M3FN();
+    const TensorDims      inputShape     = {4, 3, 257};
+    const TensorDims      quantizerShape = {4, 1, 1};
+
+    BlockTensorQuantizer tensorQuantizer(quantizerShape, qtype, QUANTIZATION_TF);
+    // Deliberately not powers of two. The FP8 grid is self-similar under power-of-two
+    // scaling, so scales like {0.125, 0.25, 0.5} produce identical output and would hide
+    // a chunk that selected the wrong encoding.
+    const std::vector<double> scales {0.1, 0.35, 0.7, 1.3};
+    Encodings encodings;
+    for (double scale: scales)
+    {
+        encodings.push_back(makeFp8Encoding(scale, qtype.floatSpec()));
+    }
+    tensorQuantizer.setEncodings(encodings);
+
+    const size_t numElements = 4 * 3 * 257;
+    std::vector<float> input(numElements);
+    std::vector<float> output(numElements);
+    for (size_t idx = 0; idx < input.size(); ++idx)
+    {
+        input[idx] = static_cast<float>(static_cast<int>(idx % 389) - 194) / 9.0f;
+    }
+
+    ReverseForLoopRunner runner;
+    tensorQuantizer.quantizeDequantize(input.data(), output.data(), inputShape, false, nullptr, &runner);
+
+    EXPECT_GT(runner.numChunks(), 1);
     for (size_t idx = 0; idx < input.size(); ++idx)
     {
         const size_t encodingIdx = getEncodingIndexForShape(inputShape, quantizerShape, idx);
