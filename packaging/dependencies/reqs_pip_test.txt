@@ -6,6 +6,7 @@ protobuf<7
 pydantic
 pylint<3
 pytest
+pytest-extra-durations
 pytest-xdist
 pytorch-ignite
 torchvision
