@@ -681,10 +681,10 @@ class TestQuantSim:
                         "input", onnx.TensorProto.FLOAT, [1, 1, 3]
                     ),
                     onnx.helper.make_tensor_value_info(
-                        "W", onnx.TensorProto.FLOAT, [1, 12, 4]
+                        "W", onnx.TensorProto.FLOAT, [1, 16, 3]
                     ),
                     onnx.helper.make_tensor_value_info(
-                        "R", onnx.TensorProto.FLOAT, [1, 12, 4]
+                        "R", onnx.TensorProto.FLOAT, [1, 16, 4]
                     ),
                     onnx.helper.make_tensor_value_info(
                         "B", onnx.TensorProto.FLOAT, [1, 32]
