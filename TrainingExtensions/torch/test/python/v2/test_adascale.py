@@ -58,6 +58,7 @@ VOCAB_SIZE = 128
 HIDDEN_SIZE = 16
 NUM_HIDDEN_LAYERS = 4
 NUM_ATTN_HEADS = 2
+NUM_ITERATIONS = 10
 
 MODEL_CONFIGS = {
     "llama": {
@@ -377,17 +378,16 @@ class TestAdascaleQuantizer:
 
 class TestAdascale:
     @pytest.mark.parametrize(
-        "model_and_shape",
+        "model_cls, shape",
         [
-            (test_models.ModelWithConsecutiveLinearBlocks(), (1, 3, 32, 64)),
-            (test_models.ModelWithConsecutiveConv2dBlocks(), (1, 64, 4, 4)),
+            (test_models.ModelWithConsecutiveLinearBlocks, (1, 3, 32, 64)),
+            (test_models.ModelWithConsecutiveConv2dBlocks, (1, 64, 4, 4)),
         ],
     )
-    def test_adascale_1(self, model_and_shape: tuple):
+    def test_adascale_1(self, model_cls, shape):
         """Test basic flow"""
-        model, shape = model_and_shape
+        model = model_cls()
         batch_size = 1
-        num_iterations = 1
 
         torch.manual_seed(0)
         dummy_input = torch.rand(shape)
@@ -409,7 +409,7 @@ class TestAdascale:
                 ),
             },
         ):
-            apply_adascale(sim, data_loader, None, num_iterations)
+            apply_adascale(sim, data_loader, None, NUM_ITERATIONS)
 
         for block in sim.model.blocks:
             for module in block.modules():
@@ -418,15 +418,15 @@ class TestAdascale:
                     assert type(module.param_quantizers["weight"]) == QuantizeDequantize
 
     @pytest.mark.parametrize(
-        "model_and_shape",
+        "model_cls, shape",
         [
-            (test_models.ModelWithConsecutiveLinearBlocks(), (1, 3, 32, 64)),
-            (test_models.ModelWithConsecutiveConv2dBlocks(), (1, 64, 4, 4)),
+            (test_models.ModelWithConsecutiveLinearBlocks, (1, 3, 32, 64)),
+            (test_models.ModelWithConsecutiveConv2dBlocks, (1, 64, 4, 4)),
         ],
     )
-    def test_adascale_2(self, model_and_shape):
+    def test_adascale_2(self, model_cls, shape):
         """validate QDQ is replaced correctly with AdascaleQDQ"""
-        model, shape = model_and_shape
+        model = model_cls()
         dummy_input = torch.rand(shape)
 
         sim = QuantizationSimModel(model, dummy_input)
@@ -483,15 +483,15 @@ class TestAdascale:
                         )
 
     @pytest.mark.parametrize(
-        "model_and_shape",
+        "model_cls, shape",
         [
-            (test_models.ModelWithConsecutiveLinearBlocks(), (1, 3, 32, 64)),
-            (test_models.ModelWithConsecutiveConv2dBlocks(), (1, 64, 4, 4)),
+            (test_models.ModelWithConsecutiveLinearBlocks, (1, 3, 32, 64)),
+            (test_models.ModelWithConsecutiveConv2dBlocks, (1, 64, 4, 4)),
         ],
     )
-    def test_adascale_3(self, model_and_shape):
+    def test_adascale_3(self, model_cls, shape):
         """test removing quantizers"""
-        model, shape = model_and_shape
+        model = model_cls()
         dummy_input = torch.rand(shape)
 
         sim = QuantizationSimModel(model, dummy_input)
@@ -545,28 +545,26 @@ class TestAdascale:
 
     @pytest.mark.cuda()
     @pytest.mark.parametrize(
-        "model_and_shape",
+        "model_cls, shape",
         [
-            (test_models.ModelWithConsecutiveLinearBlocks(), (200, 3, 32, 64)),
-            (test_models.ModelWithConsecutiveConv2dBlocks(), (200, 64, 4, 4)),
+            (test_models.ModelWithConsecutiveLinearBlocks, (200, 3, 32, 64)),
+            (test_models.ModelWithConsecutiveConv2dBlocks, (200, 64, 4, 4)),
         ],
     )
     @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-    def test_adascale_4(self, model_and_shape, dtype):
+    def test_adascale_4(self, model_cls, shape, dtype):
         """test training of adascale weights"""
-        model, shape = model_and_shape
+        set_seed(0)
+        num_iterations = NUM_ITERATIONS * 2
+        model = model_cls()
         model = model.to(dtype=dtype, device=torch.device("cuda"))
-
-        batch_size = 16
-        num_iterations = 130
-
-        torch.manual_seed(0)
         dummy_input = torch.rand(shape, dtype=dtype, device=torch.device("cuda"))
         data_set = CustomDataset(dummy_input)
+        batch_size = dummy_input.shape[0] // num_iterations
         data_loader = DataLoader(data_set, batch_size=batch_size, shuffle=True)
 
-        sim = QuantizationSimModel(model, dummy_input)
-        sim.compute_encodings(lambda m, _: m(dummy_input), None)
+        sim = QuantizationSimModel(model, dummy_input, default_param_bw=4)
+        sim.compute_encodings(lambda m: m(dummy_input))
 
         fp_output = model(dummy_input)
         quantized_output = sim.model(dummy_input)
@@ -576,10 +574,10 @@ class TestAdascale:
             adascale_model_config_dict,
             {
                 test_models.ModelWithConsecutiveLinearBlocks: AdaScaleModelConfig(
-                    test_models.ModelWithLinears
+                    test_models.ModelWithLinears,
                 ),
                 test_models.ModelWithConsecutiveConv2dBlocks: AdaScaleModelConfig(
-                    test_models.ModelWithConvs
+                    test_models.ModelWithConvs,
                 ),
             },
         ):
@@ -587,7 +585,7 @@ class TestAdascale:
 
         adascale_output = sim.model(dummy_input)
         loss_after_opt = torch.nn.functional.mse_loss(fp_output, adascale_output)
-        assert (loss_before_opt - loss_after_opt) > 0
+        assert loss_before_opt > loss_after_opt
 
     def test_adascale_5(self):
         dummy_input = torch.rand(1, 3, 32, 64)
@@ -634,7 +632,6 @@ class TestAdascale:
         sim.model.cuda()
 
         batch_size = 16
-        num_iterations = 130
 
         data_set = CustomDataset(dummy_input)
         data_loader = DataLoader(data_set, batch_size=batch_size, shuffle=True)
@@ -648,7 +645,7 @@ class TestAdascale:
                 )
             },
         ):
-            apply_adascale(sim, data_loader, None, num_iterations)
+            apply_adascale(sim, data_loader, None, NUM_ITERATIONS)
 
     def test_adascale_zero_point_shift(self):
         torch.manual_seed(0)
@@ -664,7 +661,6 @@ class TestAdascale:
         sim_copy.compute_encodings(lambda m: m(dummy_input))
 
         batch_size = 16
-        num_iterations = 130
 
         data_set = CustomDataset(dummy_input)
         data_loader = DataLoader(data_set, batch_size=batch_size, shuffle=True)
@@ -680,7 +676,7 @@ class TestAdascale:
                 )
             },
         ):
-            apply_adascale(sim, data_loader, None, num_iterations)
+            apply_adascale(sim, data_loader, None, NUM_ITERATIONS)
 
         sim.compute_encodings(lambda m, _: m(dummy_input), None)
         adascale_output = sim.model(dummy_input)
@@ -708,7 +704,7 @@ class TestAdascale:
         qt_inputs = fp_inputs
         for block in sim.model.blocks:
             AdaScale.adascale_block(
-                block, fp_inputs, qt_inputs=qt_inputs, num_iterations=10
+                block, fp_inputs, qt_inputs=qt_inputs, num_iterations=NUM_ITERATIONS
             )
 
             with remove_all_quantizers(block), torch.no_grad():
@@ -741,13 +737,11 @@ class TestAdascale:
     @pytest.mark.parametrize("seq_len", [8, 32, 2048])
     def test_mse_loss_fn(self, seq_len):
         """For p=2, the default loss equals plain MSE times dim 1's size."""
-        from aimet_torch.experimental.adascale import adascale_optimizer as opt
-
         torch.manual_seed(0)
         fp_out = torch.rand(4, seq_len, 16)  # [B, S, H]
         qt_out = torch.rand(4, seq_len, 16)
 
-        lp = opt._mse_loss_fn(fp_out, qt_out)
+        lp = _mse_loss_fn(fp_out, qt_out)
 
         mse = torch.nn.functional.mse_loss(fp_out, qt_out)
         assert torch.allclose(lp, mse * seq_len)
@@ -771,28 +765,25 @@ class TestAdascale:
         num_inputs = 3
         fp_inputs = [((torch.rand(1, 3, 32, 64),), {}) for _ in range(num_inputs)]
         qt_inputs = fp_inputs
-        num_iterations = 10
 
         block = sim.model.blocks[0]
         AdaScale.adascale_block(
             block,
             fp_inputs,
             qt_inputs=qt_inputs,
-            num_iterations=num_iterations,
+            num_iterations=NUM_ITERATIONS,
             loss_fn=custom_loss_fn,
         )
 
-        assert call_count == num_iterations
+        assert call_count == NUM_ITERATIONS
         # data_idx cycles 0..num_inputs-1 across epochs
-        assert seen_indices == [i % num_inputs for i in range(num_iterations)]
+        assert seen_indices == [i % num_inputs for i in range(NUM_ITERATIONS)]
 
     def test_block_level_adascale_early_stopping(self):
         """Integration test for the _EARLY_STOPPING flag using the real factory and
         _EarlyStopping."""
         from aimet_torch.experimental.adascale import adascale_optimizer as opt
         from aimet_torch.common.early_stopping import _EarlyStoppingConfig
-
-        num_iterations = 20
 
         def make_block():
             torch.manual_seed(0)
@@ -818,10 +809,10 @@ class TestAdascale:
                 make_block(),
                 fp_inputs,
                 qt_inputs=fp_inputs,
-                num_iterations=num_iterations,
+                num_iterations=NUM_ITERATIONS,
                 loss_fn=make_counting_loss_fn(on_count),
             )
-        assert 0 < on_count[0] < num_iterations
+        assert 0 < on_count[0] < NUM_ITERATIONS
 
         # Early stopping OFF (default): the loop runs the full schedule.
         assert opt._EARLY_STOPPING is None
@@ -830,10 +821,10 @@ class TestAdascale:
             make_block(),
             fp_inputs,
             qt_inputs=fp_inputs,
-            num_iterations=num_iterations,
+            num_iterations=NUM_ITERATIONS,
             loss_fn=make_counting_loss_fn(off_count),
         )
-        assert off_count[0] == num_iterations
+        assert off_count[0] == NUM_ITERATIONS
 
 
 class TestAdaScaleBasicFunctionality:
@@ -1105,7 +1096,7 @@ class TestAdaScaleResumability:
                     AdaScale.apply_adascale(
                         fxt_quantsim_ready_model,
                         fxt_dataloader,
-                        num_iterations=10,
+                        num_iterations=NUM_ITERATIONS,
                         checkpoint_dir=fxt_checkpoint_dir,
                     )
             else:
@@ -1113,7 +1104,7 @@ class TestAdaScaleResumability:
                 AdaScale.apply_adascale(
                     fxt_quantsim_ready_model,
                     fxt_dataloader,
-                    num_iterations=10,
+                    num_iterations=NUM_ITERATIONS,
                     checkpoint_dir=fxt_checkpoint_dir,
                 )
 
@@ -1149,7 +1140,6 @@ class TestAdaScaleResumability:
         1. Same seed produces same optimization results (determinism)
         2. Interrupted + resumed optimization produces same final weights as uninterrupted run
         """
-        num_iter = 500
 
         # Set the same seed before adascale_block() to ensure determinism (gradient, initilization,...)
         def _set_seed_hook(func: callable):
@@ -1176,7 +1166,7 @@ class TestAdaScaleResumability:
             AdaScale.apply_adascale(
                 qsim1,
                 fxt_dataloader,
-                num_iterations=num_iter,
+                num_iterations=NUM_ITERATIONS,
                 checkpoint_dir=None,
             )
 
@@ -1197,7 +1187,7 @@ class TestAdaScaleResumability:
         model2.eval()
         qsim2 = get_quantsim_ready_model(model2, fxt_dummy_input)
 
-        n_times = int(num_iter * 1.5)  # first block is completed
+        n_times = int(NUM_ITERATIONS * 1.5)  # first block is completed
         with patch.object(
             AdaScale,
             "adascale_block",
@@ -1214,7 +1204,7 @@ class TestAdaScaleResumability:
                     AdaScale.apply_adascale(
                         qsim2,
                         fxt_dataloader,
-                        num_iterations=num_iter,
+                        num_iterations=NUM_ITERATIONS,
                         checkpoint_dir=fxt_checkpoint_dir,
                     )
 
@@ -1233,7 +1223,7 @@ class TestAdaScaleResumability:
             AdaScale.apply_adascale(
                 qsim2,
                 fxt_dataloader,
-                num_iterations=num_iter,
+                num_iterations=NUM_ITERATIONS,
                 checkpoint_dir=fxt_checkpoint_dir,
             )
 
@@ -1284,7 +1274,6 @@ class TestAdaScaleResumability:
         non-cached prefix (``enable_caching_after_block > 0``) and a cached tail. This pins correctness of both the
         new non-cached start_block skip and the cached-region re-propagation fallback.
         """
-        num_iter = 200
 
         def _set_seed_hook(func):
             def f(*args, **kwargs):
@@ -1317,7 +1306,10 @@ class TestAdaScaleResumability:
                 wraps=_set_seed_hook(AdaScale.adascale_block),
             ):
                 AdaScale.apply_adascale(
-                    qsim1, fxt_dataloader, num_iterations=num_iter, checkpoint_dir=None
+                    qsim1,
+                    fxt_dataloader,
+                    num_iterations=NUM_ITERATIONS,
+                    checkpoint_dir=None,
                 )
 
             baseline_weights = {}
@@ -1357,7 +1349,7 @@ class TestAdaScaleResumability:
                     AdaScale.apply_adascale(
                         qsim2,
                         fxt_dataloader,
-                        num_iterations=num_iter,
+                        num_iterations=NUM_ITERATIONS,
                         checkpoint_dir=fxt_checkpoint_dir,
                     )
 
@@ -1374,7 +1366,7 @@ class TestAdaScaleResumability:
                 AdaScale.apply_adascale(
                     qsim2,
                     fxt_dataloader,
-                    num_iterations=num_iter,
+                    num_iterations=NUM_ITERATIONS,
                     checkpoint_dir=fxt_checkpoint_dir,
                 )
 
