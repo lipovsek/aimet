@@ -408,7 +408,6 @@ xfail = {
     torch.ops.aten._native_batch_norm_legit: "ONNX export error",
     torch.ops.aten._native_batch_norm_legit_no_training: "ONNX export error",
     torch.ops.aten._safe_softmax: "Onnxscript bug. See https://github.com/microsoft/onnxscript/issues/2993",
-    torch.ops.aten.constant_pad_nd: "Padding value is missing encoding",
     torch.ops.aten.copy: "ONNX export error",
     torch.ops.aten.detach: "ONNX export error",
     torch.ops.aten.native_batch_norm: "ONNX export error",

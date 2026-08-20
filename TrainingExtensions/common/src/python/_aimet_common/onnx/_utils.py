@@ -1624,29 +1624,29 @@ def _derive_data_movement_op_encodings(
         if _is_htp_masked_softmax_reducemin(node, consumers, constants):
             return derived_encodings
 
-        if node.op_type == "Pad":
-            # Some models containing ``y = Pad(x, -inf)`` rely their accuracy on
-            # the fact that y always inherits x's encoding. Although technically
-            # this is a bug, we keep this as a temporary workaround for those models.
-            # TODO: Remove this once Pad is properly treated as grid-equivariant
-            input_names = [node.input[0]]
-        else:
-            input_names = [
-                name
-                for i, name in enumerate(node.input)
-                if _is_float_input(node.op_type, i)
-            ]
-
+        input_names = [
+            name
+            for i, name in enumerate(node.input)
+            if _is_float_input(node.op_type, i)
+        ]
         output_names = [
             name
             for i, name in enumerate(node.output)
             if _is_float_output(node.op_type, i)
         ]
 
-        can_propagate_forward = all(
-            _encoding_equal(encodings.get(inp), encodings.get(input_names[0]))
-            for inp in input_names[1:]
-        )
+        if node.op_type == "Pad":
+            # Some models containing ``y = Pad(x, -inf)`` rely their accuracy on
+            # the fact that y always inherits x's encoding. Although technically
+            # this is a bug, we keep this as a temporary workaround for those models.
+            # TODO: Remove this once Pad is properly treated as grid-equivariant
+            can_propagate_forward = node.input[0] in encodings
+        else:
+            can_propagate_forward = all(
+                _encoding_equal(encodings.get(inp), encodings.get(input_names[0]))
+                for inp in input_names[1:]
+            )
+
         can_propagate_backward = all(
             _encoding_equal(encodings.get(out), encodings.get(output_names[0]))
             for out in output_names[1:]
