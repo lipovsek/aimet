@@ -8916,9 +8916,9 @@ def test_quantsim_with_large_split_length_input(tmp_path):
     "op",
     [
         torch.cat,
-        torch.where,
-        torch.index_fill,
-        F.pad,
+        # torch.where,
+        # torch.index_fill,
+        # F.pad,
     ],
 )
 def test_multi_input_grid_equivariant_op_encoding_propagation(tmp_path, op):

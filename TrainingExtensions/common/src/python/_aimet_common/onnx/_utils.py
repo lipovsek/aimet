@@ -651,6 +651,7 @@ def _is_grid_preserving_op(op_type: str, domain: str = "") -> bool:
         ("", "MaxPool"),
         ("", "MaxRoiPool"),
         ("", "NonZero"),
+        ("", "Pad"),
         ("", "ReduceMax"),
         ("", "ReduceMin"),
         ("", "Reshape"),
@@ -675,6 +676,16 @@ _CLIPPING_OPS = (
     ("", "Min"),
 )
 
+_PADDING_OPS = (
+    # domain, op_type
+    ("", "Pad"),
+)
+
+_SELECTOR_OPS = (
+    # domain, op_type
+    ("", "Where"),
+)
+
 
 def _is_grid_equivariant_op(
     op_type: str, domain: str = "", include_unary: bool = True
@@ -688,20 +699,20 @@ def _is_grid_equivariant_op(
     """
     is_grid_preserving_op = include_unary and _is_grid_preserving_op(op_type, domain)
 
-    # Clip, Max, and Min are deliberately excluded, although they are technically
-    # grid-equivariant. This is because Clipping operators can suffer severe
-    # accuracy loss when naively tying encodings.
+    # Clipping (Clip, Max, and Min) and padding (Pad) ops are deliberately excluded,
+    # although they are technically grid-equivariant. This is because these
+    # operators can suffer severe accuracy loss when naively tying encodings.
     # For example, given y = Clip(x, -0.1) and x ∈ (-inf, 0.1],
     # tying the encodings of x, y, and -0.1 will severely miscalibrate
     # y's dynamic range as y ∈ (-inf, 0.1] instead of the correct range y ∈ [-0.1, 0.1].
     return is_grid_preserving_op or (domain, op_type) in (
         # *_CLIPPING_OPS,
+        # *_PADDING_OPS,
+        # *_SELECTOR_OPS,
         ("", "Concat"),
-        ("", "Pad"),
         ("", "Scatter"),
         ("", "ScatterElements"),
         ("", "ScatterND"),
-        ("", "Where"),
     )
 
 
@@ -1584,8 +1595,10 @@ def _derive_data_movement_op_encodings(
         node
         for node in model.graph.node
         if _is_grid_equivariant_op(node.op_type, domain=node.domain)
-        # Export-time encoding propagation of clipping ops is safe
+        # Export-time encoding propagation is safe
         or (node.domain, node.op_type) in _CLIPPING_OPS
+        or (node.domain, node.op_type) in _PADDING_OPS
+        or (node.domain, node.op_type) in _SELECTOR_OPS
     ]
 
     new_encodings = {}
@@ -1611,11 +1624,19 @@ def _derive_data_movement_op_encodings(
         if _is_htp_masked_softmax_reducemin(node, consumers, constants):
             return derived_encodings
 
-        input_names = [
-            name
-            for i, name in enumerate(node.input)
-            if _is_float_input(node.op_type, i)
-        ]
+        if node.op_type == "Pad":
+            # Some models containing ``y = Pad(x, -inf)`` rely their accuracy on
+            # the fact that y always inherits x's encoding. Although technically
+            # this is a bug, we keep this as a temporary workaround for those models.
+            # TODO: Remove this once Pad is properly treated as grid-equivariant
+            input_names = [node.input[0]]
+        else:
+            input_names = [
+                name
+                for i, name in enumerate(node.input)
+                if _is_float_input(node.op_type, i)
+            ]
+
         output_names = [
             name
             for i, name in enumerate(node.output)

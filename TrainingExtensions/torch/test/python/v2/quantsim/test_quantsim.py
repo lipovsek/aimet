@@ -1516,8 +1516,8 @@ class TestQuantsim:
         "module_cls",
         [
             custom.Concat,
-            custom.Where,
-            custom.Pad,
+            # custom.Where,
+            # custom.Pad,
             custom.ScatterElements,
             custom.ScatterND,
         ],
