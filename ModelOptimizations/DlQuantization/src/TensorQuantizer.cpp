@@ -189,10 +189,27 @@ Encodings BlockTensorQuantizer::computeEncodings(bool useSymmetricEncodings) con
         Encodings encodings = _encodingAnalyzer->computeEncoding(bitwidth, useSymmetricEncodings, _useStrictSymmetric,
                                                                  _useUnsignedSymmetric, _zeroPointShift);
 
-        for (TfEncoding& encoding: encodings)
+        // Prefer the raw observed range where the analyzer exposes it. computeEncoding
+        // snaps min/max to an integer quantization grid, which would otherwise inflate the
+        // FP8 scale slightly (e.g. amax 7.307 instead of the observed 7.25).
+        const auto observedMinMax = _encodingAnalyzer->getObservedMinMax();
+        const bool useObserved    = observedMinMax.size() == encodings.size();
+
+        for (size_t idx = 0; idx < encodings.size(); idx++)
         {
-            // Interim FP8 path: derive scale from the analyzer-produced range until raw amax stats are exposed.
-            const double amax  = std::max(std::abs(encoding.min), std::abs(encoding.max));
+            TfEncoding& encoding = encodings[idx];
+
+            double amax = std::max(std::abs(encoding.min), std::abs(encoding.max));
+            if (useObserved)
+            {
+                const auto& [observedMin, observedMax] = observedMinMax[idx];
+                const double observedAmax = std::max(std::abs(observedMin), std::abs(observedMax));
+                if (observedAmax > 0.0)
+                {
+                    amax = observedAmax;
+                }
+            }
+
             const double scale = computeFp8Scale(amax, _qtype.floatSpec());
 
             // For FP8, delta stores scale and offset is unused; min/max describe the scaled FP8 range.

@@ -156,6 +156,18 @@ public:
                                                     bool useUnsignedSymmetric, double zeroPointShift) const = 0;
 
     /**
+     * @brief Returns the raw observed min/max stats for each block, when available.
+     *
+     * Some quantization types need the observed tensor range directly rather than an
+     * integer quantization grid derived from that range. Returns an empty vector for
+     * analyzers which do not track raw min/max.
+     */
+    virtual std::vector<std::tuple<double, double>> getObservedMinMax() const
+    {
+        return {};
+    }
+
+    /**
      * @brief Returns a list of histograms that each represents a PDF of tensor values seen by this encoding analyzer for
      * its associated block
      *

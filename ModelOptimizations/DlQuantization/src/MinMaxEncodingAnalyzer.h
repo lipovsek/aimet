@@ -32,6 +32,8 @@ public:
 
     static constexpr DTYPE MIN_RANGE = 0.01;
 
+    std::vector<std::tuple<double, double>> getObservedMinMax() const override;
+
     std::vector<std::vector<std::tuple<double, double>>> getStatsHistogram() const override;
 
 private:

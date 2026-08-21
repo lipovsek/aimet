@@ -118,6 +118,17 @@ Encodings MinMaxEncodingAnalyzer<DTYPE>::computeEncoding(uint8_t bw, bool useSym
 }
 
 template <typename DTYPE>
+std::vector<std::tuple<double, double>> MinMaxEncodingAnalyzer<DTYPE>::getObservedMinMax() const
+{
+    std::vector<std::tuple<double, double>> stats(_minStats.size());
+    for (size_t idx = 0; idx < _minStats.size(); idx++)
+    {
+        stats[idx] = std::make_tuple(static_cast<double>(_minStats[idx]), static_cast<double>(_maxStats[idx]));
+    }
+    return stats;
+}
+
+template <typename DTYPE>
 std::vector<std::vector<std::tuple<double, double>>> MinMaxEncodingAnalyzer<DTYPE>::getStatsHistogram() const
 {
     throw std::runtime_error("MinMaxEncodingAnalyzer does not have histogram stats");

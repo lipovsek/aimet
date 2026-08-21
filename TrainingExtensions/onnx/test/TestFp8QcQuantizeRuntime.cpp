@@ -256,9 +256,9 @@ TEST(TestFp8QcQuantizeRuntime, OneShotFp8RunsThroughTensorQuantizerStateMachine)
     EXPECT_FLOAT_EQ(output[3], static_cast<float>(encodings[0].min));
     EXPECT_FLOAT_EQ(output[4], 0.0f);
 
-    // Current calibration uses analyzer-adjusted ranges, so compare to raw-amax reference with tolerance.
     const double rawAmax  = 7.25;
     const double rawScale = rawAmax / QuantizationType::Fp8E4M3FN().floatSpec().maxValue;
+    EXPECT_DOUBLE_EQ(encodings[0].delta, rawScale);
     float maxAbsError = 0.0f;
     float maxRelError = 0.0f;
     for (size_t idx = 0; idx < input.size(); ++idx)
@@ -428,7 +428,7 @@ TEST(TestFp8QcQuantizeRuntime, OneShotBroadcastFp8RunsThroughComputeEncodingsAnd
     for (size_t encodingIdx = 0; encodingIdx < encodings.size(); ++encodingIdx)
     {
         const double rawScale = rawAmaxByEncoding[encodingIdx] / qtype.floatSpec().maxValue;
-        EXPECT_NEAR(encodings[encodingIdx].delta, rawScale, rawScale * 0.05);
+        EXPECT_DOUBLE_EQ(encodings[encodingIdx].delta, rawScale);
     }
 
     float maxAbsError = 0.0f;
