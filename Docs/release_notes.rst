@@ -6,6 +6,54 @@
 Release notes
 #############
 
+2.38.0
+======
+
+* New Features
+    * ONNX
+        * Add ``QSpec`` and ``QcQuantizeOp.set_qspec`` to configure a quantizer's precision, granularity, and symmetry in a single call (`495702e`_)
+        * Accept ``QSpec`` in ``set_param_type`` to configure blockwise/LPBQ param quantization (`e29e8d9`_)
+        * Add experimental ``create_truncation_aware_session`` to simulate int32 accumulator truncation for MatMul/Conv (`cc65cdc`_)
+        * Support SpinQuant R1 with online embedding rotation, including models with no LM head (`8960f1b`_, `9a7726e`_)
+    * Torch
+        * Preserve the graph signature of user inputs throughout ``aimet_torch.export`` (`443f638`_)
+    * Common
+        * Propagate encodings of grid-equivariant ops at export time (`89bf3b7`_)
+
+* Bug fixes and Improvements
+    * ONNX
+        * Skip overwriting encodings of frozen quantizers when loading encodings (`1feeb61`_)
+        * Consolidate LPBQ encoding loading directly onto ``QcQuantizeOp`` in support of the new ``QSpec`` API (`354a33e`_)
+
+    * Torch
+        * Permanently remove the deprecated ``enable_recompute`` API; use ``torch.utils.checkpoint`` instead (`006db48`_)
+        * Fix sequential MSE failure with deepspeed 0.19.4 (`cee185a`_)
+        * Export transposed linear weight as a param encoding in v1.0.0 format (`2411e7f`_)
+        * Recognize ``quantize_per_tensor``/``dequantize_per_tensor`` as quantization encodings during ONNX QDQ export (`d76bb1e`_)
+        * Suppress encoding propagation across RotaryEmbedding boundary during export (`0d653dc`_)
+
+    * Common
+        * Fix sin/cos output range to -1..1 in default quantsim configs (`2c95329`_)
+
+.. _495702e: https://github.com/qualcomm/aimet/commit/495702ee67f3766a7392906ab6593e49156ee0db
+.. _e29e8d9: https://github.com/qualcomm/aimet/commit/e29e8d996b94f5a4c46b9925f5e3fb39bfaed0f2
+.. _cc65cdc: https://github.com/qualcomm/aimet/commit/cc65cdcac0288ff460d2893af769b16e41d25e97
+.. _8960f1b: https://github.com/qualcomm/aimet/commit/8960f1b80c5888e2e06a33ca064c11cb7de55e05
+.. _9a7726e: https://github.com/qualcomm/aimet/commit/9a7726ef95f44e2a0402cdc91f035475e8812068
+.. _443f638: https://github.com/qualcomm/aimet/commit/443f638066c0f32c3bcea33826af6a29c1ed63b0
+.. _89bf3b7: https://github.com/qualcomm/aimet/commit/89bf3b74bf89884d4ad43e9fcb486359c7ae0bde
+.. _1feeb61: https://github.com/qualcomm/aimet/commit/1feeb61672c6aed5a68f551ca330ba7ce863b975
+.. _354a33e: https://github.com/qualcomm/aimet/commit/354a33ebbbfc254ccd1dcfb0c6dbfeab4143d991
+.. _006db48: https://github.com/qualcomm/aimet/commit/006db48c91ba8dc8a81e35acd3aceefb387321c0
+.. _cee185a: https://github.com/qualcomm/aimet/commit/cee185a950710084b4a827b5dce4e571c711427e
+.. _2411e7f: https://github.com/qualcomm/aimet/commit/2411e7f0e036335c91981b482643bb71cf54af55
+.. _d76bb1e: https://github.com/qualcomm/aimet/commit/d76bb1e5279ad325944728302b1b6bc992592a2b
+.. _0d653dc: https://github.com/qualcomm/aimet/commit/0d653dc98f9ea81da4f390f2f2d0f908441cf33a
+.. _2c95329: https://github.com/qualcomm/aimet/commit/2c95329c57f45070c08015f8e570156ab778a88f
+
+
+
+
 2.37.0
 ======
 
