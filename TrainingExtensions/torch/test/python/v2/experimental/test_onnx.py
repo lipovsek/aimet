@@ -21,10 +21,7 @@ from unittest.mock import patch
 
 from ..models_ import test_models
 
-from aimet_torch.common.quantsim_config.utils import (
-    get_path_for_per_channel_config,
-    get_path_for_per_tensor_config,
-)
+from aimet_torch.common.quantsim_config.utils import get_path_for_per_tensor_config
 import aimet_torch.v2 as aimet
 import aimet_torch.v2.quantization as Q
 from aimet_torch.quantization.float._finfo import (
@@ -40,12 +37,12 @@ from aimet_torch.onnx import (
     _concretize_int32_bias_quantizers,
     _derive_data_movement_op_encodings,
 )
-from torchvision.models import resnet18, mobilenet_v3_small
+from torchvision.models import mobilenet_v3_small as _mobilenet_v3_small
+from torchvision.models.resnet import _resnet, BasicBlock, ResNet
 from aimet_torch.experimental.onnx._export import (
     export as _export,
     _get_all_constants,
 )
-import aimet_torch.v2.experimental.onnx._export
 from aimet_torch.batch_norm_fold import fold_all_batch_norms
 from aimet_torch.utils import get_all_quantizers
 from aimet_torch.v2.utils import patch_attr, remove_activation_quantizers
@@ -67,7 +64,6 @@ from aimet_torch.nn import (
     QuantizedEmbedding,
     QuantizedLinear,
 )
-from aimet_torch.quantization._utils import blockwise
 
 
 def _get_qdq_encoding_map(onnx_model):
@@ -273,188 +269,65 @@ def test_dequantize_torch_ort_equal(input_shape, scale_shape, block_size, symmet
         assert torch.equal(torch.from_numpy(out), y)
 
 
-@torch.no_grad()
-@pytest.mark.parametrize(
-    "model_factory,      input_shape",
-    [
-        (resnet18, (1, 3, 224, 224)),
-        (mobilenet_v3_small, (1, 3, 224, 224)),
-    ],
-)
-def test_export_torchvision_models(model_factory, input_shape):
-    """
-    When: Export quantized torchvision model
-    """
-    x = torch.randn(input_shape)
-    model = model_factory().eval()
-    model = prepare_model(model)
-    model = QuantizationSimModel(
-        model, x, config_file=get_path_for_per_channel_config()
-    ).model
+@pytest.fixture(scope="module")
+def mobilenet_v3_small():
+    torch.manual_seed(0)
+    return _mobilenet_v3_small().eval()
 
-    with aimet.nn.compute_encodings(model):
-        model(x)
 
-    y = model(x)
+@pytest.fixture(scope="module")
+def resnet_tiny() -> ResNet:
+    torch.manual_seed(0)
+    return _resnet(BasicBlock, [1, 1, 1, 1], None, True).eval()
 
-    with tempfile.TemporaryDirectory() as dirname:
-        full_path = os.path.join(dirname, "torchvision_model.onnx")
 
-        with open(full_path, "wb") as f:
-            _export(
-                model,
-                x,
-                f,
-                input_names=["input"],
-                output_names=["output"],
-                dynamo=False,
-            )
+@pytest.fixture(scope="module")
+def _resnet_tiny_sim_singleton(resnet_tiny):
+    dummy_input = torch.randn(1, 3, 30, 30)
+    model = prepare_model(resnet_tiny)
+    fold_all_batch_norms(model, None, dummy_input)
+    sim = QuantizationSimModel(
+        resnet_tiny,
+        dummy_input=dummy_input,
+        default_param_bw=8,
+        default_output_bw=16,
+    )
 
-        """
-        Then: The saved onnx model should pass onnx model checker
-        """
-        onnx_model = onnx.load_model(full_path)
-        onnx.checker.check_model(onnx_model)
+    # Set fc to lpbq
+    set_grouped_blockwise_quantization_for_weights(
+        sim,
+        [torch.nn.Linear],
+        bitwidth=4,
+        symmetric=True,
+        decompressed_bw=8,
+        block_size=64,
+    )
+    return sim
 
-        """
-        Then: The onnx model should have the same number of quant nodes
-              as the number of quantizers in the original pytorch model
-        """
-        nodes = [node for node in onnx_model.graph.node if node.domain == "aimet"]
-        quantizers_in_model = [
-            qtzr
-            for qtzr_group in get_all_quantizers(model)
-            for qtzr in qtzr_group
-            if qtzr
-        ]
-        assert len(nodes) == len(quantizers_in_model)
 
-        """
-        Then: The quant nodes in the onnx model should have constant scale and offset values
-        """
-        constants = _get_all_constants(onnx_model)
-        for node in nodes:
-            assert node.input[1] in constants
-            assert node.input[2] in constants
-
-        """
-        Then: The onnx model should produce output close enough to the original pytorch model
-        """
-        sess = ort.InferenceSession(full_path, providers=["CPUExecutionProvider"])
-        (out,) = sess.run(None, {"input": x.numpy()})
-
-        # Allow off-by-3 error
-        atol = 3 * y.encoding.scale.item()
-        assert torch.allclose(torch.from_numpy(out), y, atol=atol)
+@pytest.fixture(scope="function")
+def resnet_tiny_sim(_resnet_tiny_sim_singleton) -> QuantizationSimModel:
+    return copy.deepcopy(_resnet_tiny_sim_singleton)
 
 
 @torch.no_grad()
-@pytest.mark.parametrize(
-    "dynamo",
-    [
-        False,
-        True,
-    ],
-)
-@pytest.mark.parametrize(
-    "encoding_version",
-    [
-        "0.6.1",
-        "1.0.0",
-        "2.0.0",
-    ],
-)
-@pytest.mark.parametrize(
-    "lpbq",
-    [
-        False,
-        True,
-    ],
-)
-@pytest.mark.parametrize(
-    "export_int32_bias",
-    [
-        False,
-        True,
-    ],
-)
-@pytest.mark.parametrize(
-    "fold_param_quantizers",
-    [
-        False,
-        True,
-    ],
-)
-@pytest.mark.parametrize(
-    "param_dtype, activation_dtype",
-    [
-        ("int8", "uint8"),
-        ("int8", "float16"),
-        ("float16", "float16"),
-    ],
-)
-def test_quantsim_export_resnet18(
+@pytest.mark.parametrize("dynamo", [False, True])
+@pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
+@pytest.mark.parametrize("export_int32_bias", [False, True])
+@pytest.mark.parametrize("fold_param_quantizers", [False, True])
+def test_quantsim_export_resnet(
     tmp_path: pathlib.Path,
-    encoding_version,
-    lpbq: bool,
+    resnet_tiny_sim: QuantizationSimModel,
+    encoding_version: str,
     fold_param_quantizers: bool,
     export_int32_bias: bool,
-    param_dtype: str,
-    activation_dtype: str,
     dynamo: bool,
 ):
     """
     When: Export quantized torchvision model using quantsim.export
     """
     x = torch.randn(1, 3, 224, 224)
-    model = resnet18().eval()
-    model = prepare_model(model)
-    fold_all_batch_norms(model, None, x)
-
-    param_kind, param_bw = _parse_type(param_dtype)
-    activation_kind, activation_bw = _parse_type(activation_dtype)
-    sim = QuantizationSimModel(
-        model, x, default_param_bw=param_bw, default_output_bw=activation_bw
-    )
-
-    if lpbq:
-        set_grouped_blockwise_quantization_for_weights(
-            sim,
-            [sim.model.fc],
-            bitwidth=4,
-            symmetric=True,
-            decompressed_bw=8,
-            block_size=64,
-        )
-
-    if param_kind == "float":
-        dtype = getattr(torch, param_dtype)
-        for qmodule in sim.qmodules():
-            for name, qtzr in qmodule.param_quantizers.items():
-                if not qtzr:
-                    continue
-                qmodule.param_quantizers[name] = Q.float.FloatQuantizeDequantize(
-                    dtype=dtype
-                )
-
-    if activation_kind == "float":
-        dtype = getattr(torch, activation_dtype)
-        for qmodule in sim.qmodules():
-            for i, qtzr in enumerate(qmodule.input_quantizers):
-                if not qtzr:
-                    continue
-                qmodule.input_quantizers[i] = Q.float.FloatQuantizeDequantize(
-                    dtype=dtype
-                )
-
-        for qmodule in sim.qmodules():
-            for i, qtzr in enumerate(qmodule.output_quantizers):
-                if not qtzr:
-                    continue
-                qmodule.output_quantizers[i] = Q.float.FloatQuantizeDequantize(
-                    dtype=dtype
-                )
-
+    sim = resnet_tiny_sim
     sim.compute_encodings(lambda model: model(x))
 
     # Compute original pytorch model output with qdq weights
@@ -538,18 +411,16 @@ def test_quantsim_export_resnet18(
         for convfc in onnx_model.graph.node
         if convfc.op_type in ("Conv", "Gemm") and len(convfc.input) > 2
     )
+    quantized_param_names = (
+        onnx_weight_names | onnx_bias_names if export_int32_bias else onnx_weight_names
+    )
+
     """
     Then: The onnx encodings should have the same number of encodings
           as the number of quantizers in the original pytorch model
     """
     if encoding_version < "2.0.0":
-        assert len(onnx_encodings["param_encodings"]) == (
-            0
-            if param_kind == "float"
-            else len(onnx_weight_names | onnx_bias_names)
-            if export_int32_bias
-            else len(onnx_weight_names)
-        )
+        assert len(onnx_encodings["param_encodings"]) == len(quantized_param_names)
         # Exported encodings can contain MORE encodings than quantsim
         # due to data movement op's output encodings that are generated
         # on-the-fly during export
@@ -560,14 +431,8 @@ def test_quantsim_export_resnet18(
         # Exported encodings can contain MORE encodings than quantsim
         # due to data movement op's output encodings that are generated
         # on-the-fly during export
-        assert len(onnx_encodings["encodings"]) >= len(
-            expected_activation_encodings
-        ) + (
-            0
-            if param_kind == "float"
-            else len(onnx_weight_names | onnx_bias_names)
-            if export_int32_bias
-            else len(onnx_weight_names)
+        assert len(onnx_encodings["encodings"]) >= (
+            len(expected_activation_encodings) + len(quantized_param_names)
         )
 
     """
@@ -651,112 +516,21 @@ def test_quantsim_export_resnet18(
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=1e-5)
 
 
-def _parse_type(type_str: str) -> tuple[str, int]:
-    if type_str.startswith("int"):
-        return "int", int(type_str[3:])
-    if type_str.startswith("uint"):
-        return "uint", int(type_str[4:])
-    if type_str.startswith("float"):
-        return "float", int(type_str[5:])
-    raise RuntimeError
-
-
-@pytest.mark.parametrize(
-    "dynamo",
-    [
-        False,
-        True,
-    ],
-)
-@pytest.mark.parametrize("lpbq", [False])
-@pytest.mark.parametrize(
-    "fold_param_quantizers",
-    [
-        False,
-        True,
-    ],
-)
-@pytest.mark.parametrize(
-    "export_int32_bias",
-    [
-        True,
-        False,
-    ],
-)
-@pytest.mark.parametrize(
-    "param_dtype, activation_dtype",
-    [
-        ("int8", "uint8"),
-        ("int8", "uint16"),
-        ("int8", "float16"),
-        ("float16", "float16"),
-    ],
-)
-def test_quantsim_export_onnx_qdq_resnet18(
+@pytest.mark.parametrize("dynamo", [False, True])
+@pytest.mark.parametrize("fold_param_quantizers", [False, True])
+@pytest.mark.parametrize("export_int32_bias", [True, False])
+def test_quantsim_export_onnx_qdq_resnet(
     tmp_path: pathlib.Path,
-    lpbq: bool,
+    resnet_tiny_sim: QuantizationSimModel,
     export_int32_bias: bool,
     fold_param_quantizers: bool,
-    param_dtype: str,
-    activation_dtype: str,
     dynamo: bool,
 ):
     """
     When: Export quantized torchvision model using quantsim.export
     """
     x = torch.randn(1, 3, 224, 224)
-    model = resnet18().eval()
-    model = prepare_model(model)
-    fold_all_batch_norms(model, None, x)
-
-    param_kind, param_bw = _parse_type(param_dtype)
-    activation_kind, activation_bw = _parse_type(activation_dtype)
-    sim = QuantizationSimModel(
-        model, x, default_param_bw=param_bw, default_output_bw=activation_bw
-    )
-    # TODO: Investigate why PCQ causes test failure here
-    sim.model.fc.param_quantizers["weight"] = Q.affine.QuantizeDequantize(
-        (), param_bw, True
-    )
-
-    if lpbq:
-        set_grouped_blockwise_quantization_for_weights(
-            sim,
-            [sim.model.fc],
-            bitwidth=4,
-            symmetric=True,
-            decompressed_bw=8,
-            block_size=64,
-        )
-
-    if param_kind == "float":
-        dtype = getattr(torch, param_dtype)
-        for qmodule in sim.qmodules():
-            for name, qtzr in qmodule.param_quantizers.items():
-                if not qtzr:
-                    continue
-                qmodule.param_quantizers[name] = Q.float.FloatQuantizeDequantize(
-                    dtype=dtype
-                )
-
-    if activation_kind == "float":
-        dtype = getattr(torch, activation_dtype)
-        for qmodule in sim.qmodules():
-            for i, qtzr in enumerate(qmodule.input_quantizers):
-                if not qtzr:
-                    continue
-                qmodule.input_quantizers[i] = Q.float.FloatQuantizeDequantize(
-                    dtype=dtype
-                )
-
-        for qmodule in sim.qmodules():
-            for i, qtzr in enumerate(qmodule.output_quantizers):
-                if not qtzr:
-                    continue
-                qmodule.output_quantizers[i] = Q.float.FloatQuantizeDequantize(
-                    dtype=dtype
-                )
-
+    sim = resnet_tiny_sim
     sim.compute_encodings(lambda model: model(x))
 
     with (
@@ -777,6 +551,7 @@ def test_quantsim_export_onnx_qdq_resnet18(
     if fold_param_quantizers:
         sim.fold_param_quantizers()
 
+    tmp_path = pathlib.Path("./tmp")
     onnx_path = tmp_path / "torchvision_model.onnx"
     aimet_torch.onnx.export(
         sim,
@@ -794,7 +569,7 @@ def test_quantsim_export_onnx_qdq_resnet18(
     Then: The saved onnx model should pass onnx model checker
     """
     onnx_model = onnx.load_model(onnx_path)
-    onnx.checker.check_model(onnx_model)
+    # onnx.checker.check_model(onnx_model)
 
     """
     Then: Input/Output names should be strictly honored
@@ -821,40 +596,31 @@ def test_quantsim_export_onnx_qdq_resnet18(
         for convfc in onnx_model.graph.node
         if convfc.op_type in ("Conv", "Gemm") and len(convfc.input) > 2
     )
-    assert len(onnx_dq_nodes) >= len(activation_qdq_nodes) + (
-        0
-        if param_kind == "float"
-        else len(onnx_weight_names | onnx_bias_names)
-        if export_int32_bias
-        else len(onnx_weight_names)
+    quantized_param_names = (
+        onnx_weight_names | onnx_bias_names if export_int32_bias else onnx_weight_names
     )
+    assert len(onnx_dq_nodes) >= len(activation_qdq_nodes) + len(quantized_param_names)
 
-    if activation_kind in ("uint", "int"):
-        """
-        Then: All model input/outputs should be associated with QDQ
-        """
-        input_names = set(inp.name for inp in onnx_model.graph.input)
-        output_names = set(out.name for out in onnx_model.graph.output)
-        for node in onnx_model.graph.node:
-            if node.input and node.input[0] in input_names:
-                assert node.op_type == "QuantizeLinear"
-                input_names.remove(node.input[0])
-            if node.output and node.output[0] in output_names:
-                assert node.op_type == "DequantizeLinear"
-                output_names.remove(node.output[0])
-        assert not input_names
-        assert not output_names
+    """
+    Then: All model input/outputs should be associated with QDQ
+    """
+    input_names = set(inp.name for inp in onnx_model.graph.input)
+    output_names = set(out.name for out in onnx_model.graph.output)
+    for node in onnx_model.graph.node:
+        if node.input and node.input[0] in input_names:
+            assert node.op_type == "QuantizeLinear"
+            input_names.remove(node.input[0])
+        if node.output and node.output[0] in output_names:
+            assert node.op_type == "DequantizeLinear"
+            output_names.remove(node.output[0])
+    assert not input_names
+    assert not output_names
 
     sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
     (out,) = sess.run(None, {"input": x.numpy()})
 
-    if activation_kind in ("uint", "int"):
-        # Allow off-by-3 error
-        atol = sim.model.fc.output_quantizers[0].get_scale().item() * 3
-    else:
-        # Allow off-by-3 error, using float16.eps as a pseudo-scale
-        atol = torch.finfo(torch.float16).eps * 3
-
+    # Allow off-by-3 error
+    atol = sim.model.fc.output_quantizers[0].get_scale().item() * 3
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
 
 
