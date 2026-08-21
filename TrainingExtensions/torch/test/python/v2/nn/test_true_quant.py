@@ -6,6 +6,7 @@ import ast
 import itertools
 import copy
 import functools
+import warnings
 from packaging import version
 from typing import Optional
 
@@ -2520,3 +2521,112 @@ def test_htp_overflow_protection(module_factory):
 
     # Weight scales should remain unchanged if they already satisfy both conditions
     assert torch.all(weight_scale.flatten()[0:2] == 1.0)
+
+
+@torch.no_grad()
+@pytest.mark.parametrize(
+    "module_factory",
+    [
+        functools.partial(torch.nn.Conv2d, 10, 10, 3, bias=True),
+        functools.partial(torch.nn.Linear, 10, 10, bias=True),
+    ],
+)
+@pytest.mark.parametrize(
+    "freeze_kwargs",
+    [
+        # Fully frozen
+        {"min": False, "max": False},
+        # Partially frozen, as set for ops with a one-sided encoding constraint.
+        # Adjusting the scale moves both ends of the range, so these must be
+        # skipped too even though is_overwrite_allowed() reports True.
+        {"min": False, "max": True},
+        {"min": True, "max": False},
+    ],
+)
+def test_htp_overflow_protection_respects_frozen_weight_quantizer(
+    module_factory, freeze_kwargs
+):
+    """
+    Given: A quantsim whose weight quantizer holds a scale that requires overflow
+           protection, but whose encoding range is fully or partially frozen
+    """
+    dummy_input = torch.ones(1, 10, 10, 10)
+    module = module_factory()
+
+    # Same weight layout as test_htp_overflow_protection: channels 0 and 1 are
+    # already safe, channels 2+ have a tiny scale whose requantization scale
+    # falls below the 2**-24 floor.
+    weight = module.weight
+    weight[0].copy_(-(2**7))
+    weight[0, 0] += 1
+    weight[1].copy_(2**7 - 1)
+    weight[1, 0] -= 1
+    weight[2:].copy_(1e-6)
+    module.bias.zero_()
+
+    sim = aimet_torch.QuantizationSimModel(module, dummy_input)
+    weight_qtzr = sim.model.param_quantizers["weight"]
+
+    # Compute the param encodings only, so the weight scale still sits on the raw
+    # min/max grid that overflow protection would want to raise, then freeze it.
+    sim.model.compute_param_encodings()
+    weight_qtzr.allow_overwrite(**freeze_kwargs)
+    frozen_min = weight_qtzr.min.clone()
+    frozen_max = weight_qtzr.max.clone()
+    frozen_weight_scale = weight_qtzr.get_scale().clone()
+
+    """
+    When: Run compute_encodings
+    Then: 1. A warning must inform that overflow could not be avoided
+          2. The frozen encoding range must be left untouched
+    """
+    with pytest.warns(UserWarning, match="frozen weight quantizer"):
+        sim.compute_encodings(lambda model: model(dummy_input))
+
+    assert torch.equal(weight_qtzr.min, frozen_min)
+    assert torch.equal(weight_qtzr.max, frozen_max)
+    assert torch.equal(weight_qtzr.get_scale(), frozen_weight_scale)
+
+    # Sanity check: without protection the tiny scale would have been raised, i.e.
+    # its requantization scale genuinely violates the 2**-24 floor.
+    input_scale = sim.model.input_quantizers[0].get_scale()
+    output_scale = sim.model.output_quantizers[0].get_scale()
+    requant_scale = input_scale * frozen_weight_scale.flatten()[-1] / output_scale
+    assert requant_scale < 2**-24
+
+
+@torch.no_grad()
+@pytest.mark.parametrize(
+    "module_factory",
+    [
+        functools.partial(torch.nn.Conv2d, 10, 10, 3, bias=True),
+        functools.partial(torch.nn.Linear, 10, 10, bias=True),
+    ],
+)
+def test_htp_overflow_protection_frozen_no_adjustment_needed(module_factory):
+    """
+    Given: A quantsim whose frozen weight quantizer already satisfies all
+           overflow/underflow conditions
+    """
+    dummy_input = torch.ones(1, 10, 10, 10)
+    module = module_factory()
+    module.weight.copy_(torch.full_like(module.weight, 2**7 - 1))
+    module.bias.zero_()
+
+    sim = aimet_torch.QuantizationSimModel(module, dummy_input)
+    sim.compute_encodings(lambda model: model(dummy_input))
+
+    weight_qtzr = sim.model.param_quantizers["weight"]
+    weight_qtzr.allow_overwrite(False)
+    frozen_weight_scale = weight_qtzr.get_scale().clone()
+
+    """
+    When: Re-run compute_encodings
+    Then: No overflow warning is raised, and the frozen scale stays the same
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sim.compute_encodings(lambda model: model(dummy_input))
+
+    assert not [w for w in caught if "frozen weight quantizer" in str(w.message)]
+    assert torch.equal(weight_qtzr.get_scale(), frozen_weight_scale)

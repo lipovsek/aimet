@@ -1123,6 +1123,26 @@ def _compute_encodings_with_overflow_protection(self):
         num_steps=2**31 - 2**15,
     )
 
+    # Adjusting the scale necessarily moves both ends of the encoding range, so a
+    # partially-frozen quantizer (e.g. allow_overwrite(min=False, max=True), as set
+    # for ops with a one-sided encoding constraint) can't be adjusted either.
+    # NOTE: is_overwrite_allowed() without an argument takes ``any`` of the
+    #       quantizer's parameters, hence the explicit per-parameter check.
+    if not (
+        weight_qtzr.is_overwrite_allowed("min")
+        and weight_qtzr.is_overwrite_allowed("max")
+    ):
+        if not torch.equal(
+            weight_scale.flatten(), adjusted_weight_scale.flatten().to(weight_scale)
+        ):
+            warnings.warn(
+                "Bias/scale overflow-underflow expected for "
+                f"{type(self).__name__} but could not adjust scale for frozen "
+                "weight quantizer.",
+                stacklevel=2,
+            )
+        return
+
     if isinstance(weight_encoding, GroupedBlockEncoding):
         new_weight_encoding = GroupedBlockEncoding(
             scale=weight_encoding.per_block_int_scale * adjusted_weight_scale,
