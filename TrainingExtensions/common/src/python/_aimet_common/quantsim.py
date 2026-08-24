@@ -26,7 +26,12 @@ from . import libpymo
 # The patching version shall be updated to indicate minor updates to quantization simulation e.g. bug fix etc.
 encoding_version = os.getenv("AIMET_ENCODING_VERSION", "1.0.0")
 ALLOW_EXPERIMENTAL = False
-VALID_ENCODING_VERSIONS = {"0.6.1", "1.0.0", "2.0.0"}
+VALID_ENCODING_VERSIONS = (
+    "0.6.1",
+    "1.0.0",
+    "2.0.0",
+    "2.1.0",
+)
 
 if encoding_version not in VALID_ENCODING_VERSIONS:
     raise RuntimeError(

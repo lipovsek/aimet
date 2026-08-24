@@ -2823,7 +2823,7 @@ def test_encoding_metadata(tmp_path: pathlib.Path):
     sim = aimet_torch.QuantizationSimModel(model, x)
     sim.compute_encodings(lambda model: model(x))
 
-    for encoding_version in ["0.6.1", "1.0.0", "2.0.0"]:
+    for encoding_version in ["0.6.1", "1.0.0", "2.0.0", "2.1.0"]:
         sim.onnx.export(
             (x,),
             tmp_path / "model.onnx",
@@ -3665,3 +3665,54 @@ def test_multi_input_grid_equivariant_op_encoding_propagation(
         encodings = _export_and_get_encoding(sim)
         assert {e.pop("name") for e in encodings} == {*float_input_names}
         assert len(set(tuple(e.items()) for e in encodings)) == len(float_input_names)
+
+
+def test_encoding_version_2_1_0(tmp_path: pathlib.Path):
+    """
+    Given: A quantized model with LPBQ weights
+    When: Export to onnx QDQ with encoding version 2.1.0
+    Then: The exported encodings should contain LPBQ encoding in 2.1.0 format
+    """
+    dummy_input = torch.randn(1, 10)
+    sim = QuantizationSimModel(torch.nn.Linear(10, 10), dummy_input)
+
+    set_grouped_blockwise_quantization_for_weights(
+        sim,
+        [torch.nn.Linear],
+        bitwidth=4,
+        symmetric=True,
+        decompressed_bw=8,
+        block_size=2,
+    )
+    aimet_torch.utils.remove_activation_quantizers(sim.model)
+    sim.model.compute_param_encodings()
+
+    sim.onnx.export(
+        (dummy_input,),
+        tmp_path / "model.onnx",
+        input_names=["input"],
+        output_names=["output"],
+        opset_version=21,
+        encoding_version="2.1.0",
+        export_int32_bias=False,
+    )
+
+    with open(tmp_path / "model.encodings") as f:
+        encodings = json.load(f)["encodings"]
+
+    lpbq_enc = sim.model.param_quantizers["weight"].get_encodings()
+    expected_encoding = [
+        {
+            "name": "weight",
+            "y_scale": {
+                "x": lpbq_enc.per_block_int_scale.to(torch.int32).tolist(),
+                "x_scale": lpbq_enc.per_channel_scale.tolist(),
+                "input_dtype": "uint4",
+            },
+            "axis": 1,
+            "block_size": 2,
+            "output_dtype": "int4",
+        }
+    ]
+
+    assert encodings == expected_encoding

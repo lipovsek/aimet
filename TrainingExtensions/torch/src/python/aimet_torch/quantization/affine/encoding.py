@@ -401,7 +401,7 @@ class AffineEncoding(EncodingBase, _GridMixin):
                     )
             return encoding_dict
 
-        if encoding_version == "2.0.0":
+        if encoding_version in ("2.0.0", "2.1.0"):
             output_dtype = self._get_export_dtype()
 
             y_scale = self.scale
@@ -627,11 +627,7 @@ class GroupedBlockEncoding(AffineEncoding):
             encoding_dict["per_block_int_scale"] = (
                 self.per_block_int_scale.to(torch.int32).flatten().tolist()
             )
-        elif encoding_version == "2.0.0":
-            del encoding_dict["y_scale"]
-            del encoding_dict["output_dtype"]
-
-            compressed_bw = self.bitwidth
+        elif encoding_version in ("2.0.0", "2.1.0"):
             y_zero_point = encoding_dict.pop("y_zero_point", None)
 
             if y_zero_point is not None and torch.any(torch.tensor(y_zero_point) != 0):
@@ -639,16 +635,36 @@ class GroupedBlockEncoding(AffineEncoding):
                     f"LPBQ only supports symmetric quantization; got non-zero y_zero_point {y_zero_point}"
                 )
 
-            encoding_dict = {
-                "per_block_int_scale": self.per_block_int_scale.to(
-                    torch.int32
-                ).tolist(),
-                "per_channel_float_scale": self.per_channel_scale.tolist(),
-                **encoding_dict,
-                "output_dtype": f"int{compressed_bw}"
-                if self.signed
-                else f"uint{compressed_bw}",
-            }
+            compressed_bw = self.bitwidth
+            output_dtype = (
+                f"int{compressed_bw}" if self.signed else f"uint{compressed_bw}"
+            )
+            quantized_scale_dtype = f"uint{self.decompressed_bw - compressed_bw}"
+            quantized_scale = self.per_block_int_scale.to(torch.int32).tolist()
+            meta_scale = self.per_channel_scale.tolist()
+
+            if encoding_version == "2.0.0":
+                del encoding_dict["y_scale"]
+                del encoding_dict["output_dtype"]
+
+                encoding_dict.update(
+                    {
+                        "per_block_int_scale": quantized_scale,
+                        "per_channel_float_scale": meta_scale,
+                        "output_dtype": output_dtype,
+                    }
+                )
+            else:
+                encoding_dict.update(
+                    {
+                        "y_scale": {
+                            "x": quantized_scale,
+                            "x_scale": meta_scale,
+                            "input_dtype": quantized_scale_dtype,
+                        },
+                        "output_dtype": output_dtype,
+                    }
+                )
 
         return encoding_dict
 
