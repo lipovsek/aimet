@@ -11,7 +11,7 @@ on:
         description: "Comma-separated Python versions to test, e.g. '3.10,3.11,3.12'"
         required: false
         type: string
-        default: "3.10"
+        default: "3.12"
       ver_cuda:
         required: false
         type: string
@@ -132,9 +132,20 @@ jobs:
                 --extra-index-url="https://download.pytorch.org/whl/${cu}" \
                 --index-strategy unsafe-best-match
           done
+
+          # TODO(temporary): cap onnxruntime(-gpu) at <=1.26 so onnx-cpu and
+          # onnx-gpu test against comparable ORT versions. Needed because
+          # onnxruntime-gpu>=1.27 requires CUDA 13/cuDNN 9, but our GPU runners'
+          # driver (575.57.08, CUDA 12.9 API) only supports CUDA 12.x.
+          # Remove once the fleet's driver is r580+.
+          if [[ "$WHEEL_PATHS" == *aimet_onnx* ]]; then
+            if [[ "${{ inputs.ver_cuda }}" != "" ]]; then
+              python3 -m uv pip install --reinstall --no-deps "onnxruntime-gpu<=1.26"
+            else
+              python3 -m uv pip install --reinstall --no-deps "onnxruntime<=1.26"
+            fi
+          fi
       - name: Run pylint
-        # TODO: #6789: Enable pylint for python 3.11 and 3.12
-        if: matrix.ver_python == '3.10'
         run: |
           . ./${{ inputs.env_name }}/bin/activate
           UV_PYTHONPATH="./${{ inputs.env_name }}/lib/python${{ matrix.ver_python }}/site-packages"
@@ -253,8 +264,11 @@ jobs:
           python -m pip install uv
 
           # Install aimet-onnx
+          # TODO(temporary): cap onnxruntime at <=1.26, matching the Linux
+          # onnx-cpu/onnx-gpu legs, so all three test against comparable ORT
+          # versions. See the "Install test dependencies" step in test_on_linux.
           $wheel = Get-ChildItem -Path downloads -Filter "aimet_onnx*.whl" | Select-Object -First 1 -ExpandProperty FullName
-          python -m uv pip install "$wheel[test]" --extra-index-url="https://download.pytorch.org/whl/cpu" --index-strategy unsafe-best-match --native-tls
+          python -m uv pip install "$wheel[test]" "onnxruntime<=1.26" --extra-index-url="https://download.pytorch.org/whl/cpu" --index-strategy unsafe-best-match --native-tls
 
       - name: Run Unit tests
         if: inputs.run_unit_tests

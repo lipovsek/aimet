@@ -43,7 +43,7 @@ class QuantizerBase(abc.ABC, torch.nn.Module):
         self._initial_parameters = OrderedDict()
         self._is_overwrite_allowed: dict[str, bool] = OrderedDict()
 
-    def forward(self, input: torch.Tensor) -> "QuantizedTensorBase":  # pylint: disable=redefined-builtin
+    def forward(self, input: torch.Tensor) -> "QuantizedTensorBase":  # pylint: disable=redefined-builtin, useless-parent-delegation
         """
         Quantize the input tensor
 

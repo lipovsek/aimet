@@ -23,9 +23,7 @@ ignore=CVS,
 
 # Add files or directories matching the regex patterns to the blacklist. The
 # regex matches against base names, not paths.
-# Note: meta module excluded due to astroid crash on Python 3.12 (circular imports)
-ignore-patterns=.+\.pyi,
-                ^meta$
+ignore-patterns=.+\.pyi
 
 # Python code to execute, usually for sys.path manipulation such as
 # pygtk.require().
@@ -159,8 +157,7 @@ ignored-classes=optparse.Values,thread._local,_thread._local
 # (useful for modules/projects where namespaces are manipulated during runtime
 # and thus existing member attributes cannot be deduced by static analysis. It
 # supports qualified module names, as well as Unix pattern matching.
-# Note: aimet_torch.meta added due to astroid crash on Python 3.12 (circular imports)
-ignored-modules=torch,transformers,aimet_torch.meta,aimet_torch.meta.*
+ignored-modules=torch,transformers
 
 # Show a hint with possible names when a member name was not found. The aspect
 # of finding the hint is based on edit distance.

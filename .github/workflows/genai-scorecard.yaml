@@ -80,6 +80,9 @@ env:
       github.event.schedule == '0 1 * * 6' && 'weekly' ||
       'acceptance'
     }}
+  # Used by the genai-test step below so the test venv's Python version
+  # always matches the wheel build.
+  VER_PYTHON: "3.12"
 
 ################################################################################
 # JOBS
@@ -96,7 +99,7 @@ jobs:
       variants: >
         {"include":[{
           "id":"onnx-gpu",
-          "VER_PYTHON":"3.10",
+          "VER_PYTHON":"3.12",
           "VER_ONNXRUNTIME":"1.19.2",
           "VER_CUDA":"12.6.3",
           "ENABLE_TESTS":"OFF",
@@ -116,7 +119,7 @@ jobs:
       variants: >
         {"include":[{
           "id":"torch-gpu",
-          "VER_PYTHON":"3.10",
+          "VER_PYTHON":"3.12",
           "VER_TORCH":"2.*",
           "VER_ONNXRUNTIME": "",
           "VER_CUDA": "12.6.3",
@@ -150,6 +153,7 @@ jobs:
           variant: torch
           config: ${{ steps.config.outputs.path }}
           wheel-artifacts: torch-gpu-wheel, onnx-gpu-wheel
+          python-version: ${{ env.VER_PYTHON }}
           huggingface-token: ${{ secrets.HUGGINGFACE_TOKEN }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -177,6 +181,7 @@ jobs:
           variant: onnx
           config: ${{ steps.config.outputs.path }}
           wheel-artifacts: onnx-gpu-wheel
+          python-version: ${{ env.VER_PYTHON }}
           huggingface-token: ${{ secrets.HUGGINGFACE_TOKEN }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

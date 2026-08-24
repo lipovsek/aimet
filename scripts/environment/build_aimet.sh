@@ -166,6 +166,15 @@ if [ "$ENABLE_TORCH" = "ON" ]; then
   pip install -r "$DEPS_DIR/reqs_pip_test_torch.txt"
 fi
 
+if [ "$ENABLE_ONNX" = "ON" ]; then
+  # TODO(temporary): onnxruntime-gpu>=1.27 requires CUDA 13/cuDNN 9, but
+  # these GPU pods run an older driver that only supports CUDA 12.x. If
+  # left unbounded, the CUDA EP fails to load and onnxruntime silently
+  # falls back to CPUExecutionProvider (a stderr warning, not an error),
+  # Remove this cap once the pod driver is upgraded to r580+.
+  pip install --force-reinstall --no-deps "onnxruntime-gpu<=1.26"
+fi
+
 # -----------------------------------------------------------------------
 # Verify
 # -----------------------------------------------------------------------

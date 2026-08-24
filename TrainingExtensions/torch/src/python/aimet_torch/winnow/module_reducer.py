@@ -261,6 +261,7 @@ class ModuleReducer(AimetCommonModuleReducer):
         )
 
         named_module = an_op.get_module()
+        reduced_module = named_module
 
         if named_module.groups > 1:
             op_input_product.impacts_groups = True

@@ -52,7 +52,7 @@ on:
       python-version:
         description: "Python version for the uv environment"
         required: false
-        default: "3.10"
+        default: "3.12"
         type: string
       torch-version:
         description: "Torch version pin"
@@ -155,13 +155,11 @@ jobs:
       - name: Setup Python environment
         run: |
           set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y python${{ env.VER_PYTHON }} python${{ env.VER_PYTHON }}-venv python${{ env.VER_PYTHON }}-dev
-
           curl -LsSf https://astral.sh/uv/install.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
 
-          uv venv .venv --python python${{ env.VER_PYTHON }}
+          # uv downloads and manages the requested interpreter itself
+          uv venv .venv --python "${{ env.VER_PYTHON }}" --seed
           . .venv/bin/activate
 
           # Torch is needed by both frameworks (qai-hub-models pulls it for model export).

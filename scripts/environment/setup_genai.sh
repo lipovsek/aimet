@@ -11,16 +11,20 @@
 #   bash setup_genai.sh --skip-aimet                     # Skip AIMET install (use with build_aimet.sh)
 #   bash setup_genai.sh --wheels-dir /path/to/wheels     # Use pre-built wheels
 #   bash setup_genai.sh --repo-dir /path/to/aimet        # Override repo location
+#   bash setup_genai.sh --python-version 3.12            # Override venv Python version
 #
 # Options:
-#   --with-aws          Install AWS CLI v2 (for CI uploads to S3)
-#   --skip-aimet        Skip AIMET pip/wheel install. Use this when you plan to
-#                       build AIMET from source with build_aimet.sh afterwards.
-#                       Typical workflow:
-#                         1. bash setup_genai.sh --skip-aimet
-#                         2. bash build_aimet.sh --cuda-arch 80 --clean
-#   --wheels-dir <dir>  Install AIMET from pre-built wheels in <dir>
-#   --repo-dir <dir>    Override repo location (default: /scratch/aimet)
+#   --with-aws            Install AWS CLI v2 (for CI uploads to S3)
+#   --skip-aimet          Skip AIMET pip/wheel install. Use this when you plan to
+#                         build AIMET from source with build_aimet.sh afterwards.
+#                         Typical workflow:
+#                           1. bash setup_genai.sh --skip-aimet
+#                           2. bash build_aimet.sh --cuda-arch 80 --clean
+#   --wheels-dir <dir>    Install AIMET from pre-built wheels in <dir>
+#   --repo-dir <dir>      Override repo location (default: /scratch/aimet)
+#   --python-version <v>  Python version for the venv (default: 3.12). uv
+#                         downloads this interpreter itself, independent of
+#                         whatever python3 the base image ships.
 #
 # Assumes:
 #   - Running inside a CUDA-enabled container
@@ -35,13 +39,15 @@ INSTALL_AWS=false
 SKIP_AIMET=false
 WHEELS_DIR=""
 REPO_DIR="${REPO_DIR:-/scratch/aimet}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --with-aws)     INSTALL_AWS=true; shift ;;
-    --skip-aimet)   SKIP_AIMET=true; shift ;;
-    --wheels-dir)   WHEELS_DIR="$2"; shift 2 ;;
-    --repo-dir)     REPO_DIR="$2"; shift 2 ;;
+    --with-aws)        INSTALL_AWS=true; shift ;;
+    --skip-aimet)       SKIP_AIMET=true; shift ;;
+    --wheels-dir)       WHEELS_DIR="$2"; shift 2 ;;
+    --repo-dir)         REPO_DIR="$2"; shift 2 ;;
+    --python-version)   PYTHON_VERSION="$2"; shift 2 ;;
     -h|--help)
       sed -n '/^# Sets up/,/^[^#]/{ /^#/s/^# \?//p }' "$0"
       exit 0
@@ -58,9 +64,10 @@ fi
 VENV_DIR="${REPO_DIR}/.venv"
 
 echo "=== GenAI Dev Setup ==="
-echo "Repo:   $REPO_DIR"
-echo "Venv:   $VENV_DIR"
-echo "Wheels: $WHEELS_DIR"
+echo "Repo:    $REPO_DIR"
+echo "Venv:    $VENV_DIR"
+echo "Wheels:  $WHEELS_DIR"
+echo "Python:  $PYTHON_VERSION"
 
 # -----------------------------------------------------------------------
 # System dependencies
@@ -78,9 +85,6 @@ sudo apt-get install -y -qq \
   libxext6 \
   libxrender-dev \
   lsb-release \
-  python3 \
-  python3-pip \
-  python3-venv \
   unzip \
   zip \
   zstd
@@ -109,8 +113,14 @@ git config --global --add safe.directory '*'
 # -----------------------------------------------------------------------
 # Python virtual environment
 # -----------------------------------------------------------------------
-echo "Setting up Python venv at $VENV_DIR..."
-python3 -m venv "$VENV_DIR"
+echo "Installing uv..."
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+
+# uv downloads and manages the requested interpreter itself, so the venv's
+# Python version doesn't depend on whatever python3 the base image ships.
+echo "Setting up Python $PYTHON_VERSION venv at $VENV_DIR..."
+uv venv "$VENV_DIR" --python "$PYTHON_VERSION" --seed
 . "$VENV_DIR/bin/activate"
 pip install --upgrade pip wheel setuptools
 
@@ -135,7 +145,16 @@ else
   # local code always takes priority over the PyPI packages.
   if ls "$WHEELS_DIR"/*.whl 1>/dev/null 2>&1; then
     echo "Installing AIMET from pre-built wheels..."
-    pip install "$WHEELS_DIR"/*.whl
+    ORT_PIN=""
+    if ls "$WHEELS_DIR"/aimet_onnx*.whl 1>/dev/null 2>&1; then
+      # TODO(temporary): onnxruntime-gpu>=1.27 requires CUDA 13/cuDNN 9, but
+      # these GPU pods run an older driver that only supports CUDA 12.x. If
+      # left unbounded, the CUDA EP fails to load and onnxruntime silently
+      # falls back to CPUExecutionProvider (a stderr warning, not an error),
+      # Remove this cap once the pod driver is upgraded to r580+.
+      ORT_PIN="onnxruntime-gpu<=1.26"
+    fi
+    pip install "$WHEELS_DIR"/*.whl $ORT_PIN
   else
     echo "No pre-built wheels found. Installing from PyPI (for dependencies)..."
     pip install aimet-torch aimet-onnx

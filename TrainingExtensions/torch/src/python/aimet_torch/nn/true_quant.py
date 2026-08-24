@@ -2195,8 +2195,10 @@ class QuantizedMultiheadAttention(QuantizationMixin, nn.MultiheadAttention):
         if v_proj_bias is not None:
             self.v_proj.bias = torch.nn.Parameter(v_proj_bias)
 
-        out_proj_weight = self.out_proj.weight
-        out_proj_bias = self.out_proj.bias
+        # self.out_proj is already set by nn.MultiheadAttention.__init__; pylint can't see
+        # past this method's own reassignment below.
+        out_proj_weight = self.out_proj.weight  # pylint: disable=access-member-before-definition
+        out_proj_bias = self.out_proj.bias  # pylint: disable=access-member-before-definition
         self.out_proj = nn.Linear(
             in_features=out_proj_weight.shape[1],
             out_features=out_proj_weight.shape[0],

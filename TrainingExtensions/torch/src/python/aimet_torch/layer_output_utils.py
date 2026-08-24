@@ -366,7 +366,7 @@ class LayerOutput:
             )
 
         # Delete onnx/torchscript models
-        shutil.rmtree(exported_model_dir, ignore_errors=False, onerror=None)
+        shutil.rmtree(exported_model_dir)
 
         return layer_name_to_layer_output_name_map
 

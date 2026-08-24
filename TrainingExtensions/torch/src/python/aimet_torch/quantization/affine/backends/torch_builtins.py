@@ -624,7 +624,9 @@ class QuantizeFunc(torch.autograd.Function):
             or ctx.offset_requires_grad
         ):
             masked_grad = grad * mask
-        tensor_grad = masked_grad / scale if ctx.tensor_requires_grad else None
+        # masked_grad is always set when any of the *_requires_grad below is True, since
+        # they're all covered by the "or" in the assignment's guard above.
+        tensor_grad = masked_grad / scale if ctx.tensor_requires_grad else None  # pylint: disable=possibly-used-before-assignment
         scale_grad = (
             -(masked_grad / scale) * (tensor / scale)
             if ctx.scale_requires_grad
@@ -672,7 +674,9 @@ class DequantizeFunc(torch.autograd.Function):
         tensor, scale, offset = ctx.saved_tensors
         if ctx.tensor_requires_grad or ctx.offset_requires_grad:
             tensor_and_offset_grad = grad * scale
-        tensor_grad = tensor_and_offset_grad if ctx.tensor_requires_grad else None
+        # tensor_and_offset_grad is always set when tensor_requires_grad or offset_requires_grad
+        # is True, since both are covered by the "or" in the assignment's guard above.
+        tensor_grad = tensor_and_offset_grad if ctx.tensor_requires_grad else None  # pylint: disable=possibly-used-before-assignment
         scale_grad = grad * (tensor + offset) if ctx.scale_requires_grad else None
         offset_grad = tensor_and_offset_grad if ctx.offset_requires_grad else None
         return tensor_grad, scale_grad, offset_grad

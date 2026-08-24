@@ -5,7 +5,7 @@ inputs:
   ver-python:
     description: 'Python version for the build virtualenv'
     required: false
-    default: '3.10'
+    default: '3.12'
   ver-torch:
     description: 'Torch version pin (empty for non-torch builds)'
     required: false

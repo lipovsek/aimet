@@ -25,7 +25,7 @@ class RoundManual(torch.autograd.Function):  # pylint: disable=abstract-method
         return torch.round(x)
 
     @staticmethod
-    def backward(ctx, grad_output):  # pylint: disable=arguments-differ
+    def backward(ctx, grad_output):  # pylint: disable=arguments-differ, unused-argument
         return grad_output
 
 

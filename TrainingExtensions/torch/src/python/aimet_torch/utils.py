@@ -1205,7 +1205,7 @@ class _StraightThroughEstimator(torch.autograd.Function):  # pylint: disable=abs
         return op(*args, **kwargs)
 
     @staticmethod
-    def backward(ctx, *grad):
+    def backward(ctx, *grad):  # pylint: disable=unused-argument
         return (None, *grad)
 
 

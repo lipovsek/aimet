@@ -99,7 +99,7 @@ class ExportedProgram(torch.export.ExportedProgram):
         if type(ep) == cls:
             return ep
 
-        new_ep = cls.__new__(cls)
+        new_ep = cls.__new__(cls)  # pylint: disable=no-value-for-parameter
         new_ep.__dict__ = ep.__dict__
         return new_ep
 

@@ -34,6 +34,10 @@ inputs:
   wheel-artifacts:
     description: 'Comma-separated list of wheel artifact names to download and install'
     required: true
+  python-version:
+    description: 'Python version for the test venv (passed to setup_genai.sh)'
+    required: false
+    default: '3.12'
   config:
     description: 'Path to test config YAML file (caller resolves this before invoking the action)'
     required: true
@@ -88,7 +92,8 @@ runs:
         bash scripts/environment/setup_genai.sh \
           --with-aws \
           --wheels-dir "${{ github.workspace }}/wheels" \
-          --repo-dir "${{ github.workspace }}"
+          --repo-dir "${{ github.workspace }}" \
+          --python-version "${{ inputs.python-version }}"
 
     # -------------------------------------------------------------------
     # Run tests

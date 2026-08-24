@@ -4,7 +4,7 @@ matplotlib
 onnx
 protobuf<7
 pydantic
-pylint<3
+pylint<4
 pytest
 pytest-extra-durations
 pytest-xdist

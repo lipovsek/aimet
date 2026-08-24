@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
-          ver-python: ${{ matrix.VER_PYTHON_BUILD || matrix.VER_PYTHON || '3.10' }}
+          ver-python: ${{ matrix.VER_PYTHON_BUILD || matrix.VER_PYTHON || '3.12' }}
           ver-torch: ${{ matrix.VER_TORCH }}
           ver-onnxruntime: ${{ matrix.VER_ONNXRUNTIME }}
           ver-cuda: ${{ matrix.VER_CUDA }}
@@ -51,7 +51,7 @@ jobs:
           - arch: x64
             vcpkg-triplet: x64-windows
             python-arch: amd64
-            python-version: "3.10"
+            python-version: "3.12"
           - arch: arm64
             vcpkg-triplet: arm64-windows
             python-arch: arm64

@@ -78,8 +78,8 @@ jobs:
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
               {
                  "id":              "torch-cpu",
-                 "VER_PYTHON_BUILD": "3.10",
-                 "VER_PYTHON_TEST":  "3.10",
+                 "VER_PYTHON_BUILD": "3.12",
+                 "VER_PYTHON_TEST":  "3.12",
                  "VER_TORCH":       "2.*",
                  "VER_ONNXRUNTIME": "",
                  "VER_CUDA":        "",
@@ -90,8 +90,8 @@ jobs:
               },
               {
                  "id":              "torch-gpu",
-                 "VER_PYTHON_BUILD": "3.10",
-                 "VER_PYTHON_TEST":  "3.10",
+                 "VER_PYTHON_BUILD": "3.12",
+                 "VER_PYTHON_TEST":  "3.12",
                  "VER_TORCH":       "2.*",
                  "VER_ONNXRUNTIME": "",
                  "VER_CUDA":        "12.6.3",
@@ -109,8 +109,8 @@ jobs:
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
               {
                  "id":              "onnx-cpu",
-                 "VER_PYTHON_BUILD": "3.10",
-                 "VER_PYTHON_TEST":  "3.10",
+                 "VER_PYTHON_BUILD": "3.12",
+                 "VER_PYTHON_TEST":  "3.12",
                  "VER_TORCH":       "",
                  "VER_ONNXRUNTIME": "1.19.2",
                  "VER_CUDA":        "",
@@ -121,8 +121,8 @@ jobs:
               },
               {
                  "id":              "onnx-gpu",
-                 "VER_PYTHON_BUILD": "3.10",
-                 "VER_PYTHON_TEST":  "3.10",
+                 "VER_PYTHON_BUILD": "3.12",
+                 "VER_PYTHON_TEST":  "3.12",
                  "VER_TORCH":       "",
                  "VER_ONNXRUNTIME": "1.19.2",
                  "VER_CUDA":        "12.6.3",
@@ -139,8 +139,8 @@ jobs:
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
               {
                  "id":              "onnx-torch-cpu",
-                 "VER_PYTHON_BUILD": "3.10",
-                 "VER_PYTHON_TEST":  "3.10",
+                 "VER_PYTHON_BUILD": "3.12",
+                 "VER_PYTHON_TEST":  "3.12",
                  "VER_TORCH":       "2.*",
                  "VER_ONNXRUNTIME": "1.19.2",
                  "VER_CUDA":        "",
@@ -203,7 +203,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
 
       - name: Download aimet-torch wheel
         uses: actions/download-artifact@v4

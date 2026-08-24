@@ -57,12 +57,14 @@ def find_bit_ops_reduction(
         for module_name in quantizer_group_dict["weight"]:
             if module_name in mac_dict:
                 if param_bw_max is not None and param_bw is not None:
+                    # param_effective_bw/_max are always set here, since this guard implies
+                    # the "if param_bw is not None"/"if param_bw_max is not None" above ran.
                     bit_ops_reduction = (
                         bit_ops_reduction
-                        - mac_dict[module_name] * act_effective_bw * param_effective_bw
+                        - mac_dict[module_name] * act_effective_bw * param_effective_bw  # pylint: disable=possibly-used-before-assignment
                         + mac_dict[module_name]
                         * act_effective_bw_max
-                        * param_effective_bw_max
+                        * param_effective_bw_max  # pylint: disable=possibly-used-before-assignment
                     )
                 else:
                     bit_ops_reduction = (

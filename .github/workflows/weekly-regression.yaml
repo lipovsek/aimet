@@ -57,7 +57,7 @@ jobs:
       variants: >
         {"include":[{
           "id":"onnx-gpu",
-          "VER_PYTHON":"3.10",
+          "VER_PYTHON":"3.12",
           "VER_ONNXRUNTIME":"1.19.2",
           "VER_CUDA":"12.6.3",
           "ENABLE_TESTS":"ON",
@@ -73,7 +73,7 @@ jobs:
       variants: >
         {"include":[{
           "id":"torch-gpu",
-          "VER_PYTHON":"3.10",
+          "VER_PYTHON":"3.12",
           "VER_TORCH":"2.*",
           "VER_CUDA":"12.6.3",
           "ENABLE_TESTS":"OFF",
