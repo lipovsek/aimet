@@ -411,6 +411,32 @@ class TestDuplicateSharedInitializers:
         for orig, dup in zip(original_output, duplicated_output):
             np.testing.assert_array_equal(orig, dup)
 
+    def test_duplicate_shared_initializers_copy_is_independent(self):
+        """
+        The duplicated initializer added via graph.initializer.add().CopyFrom()
+        must be a real, independent copy.
+        """
+        original = self._make_shared_weight_model()
+        duplicated = copy.deepcopy(original)
+
+        n_duplicates = duplicate_shared_initializers(duplicated.graph)
+        assert n_duplicates == 1
+
+        graph = duplicated.graph
+        orig_init = next(
+            init for init in graph.initializer if init.name == "shared.weight"
+        )
+        dup_init = next(
+            init for init in graph.initializer if init.name != "shared.weight"
+        )
+
+        orig_array_before = numpy_helper.to_array(orig_init).copy()
+        assert np.array_equal(numpy_helper.to_array(dup_init), orig_array_before)
+
+        # Mutate the original in place; the duplicate must be unaffected.
+        orig_init.raw_data = numpy_helper.from_array(orig_array_before + 1).raw_data
+        assert np.array_equal(numpy_helper.to_array(dup_init), orig_array_before)
+
     def test_duplicate_shared_initializers_no_shared_params_after_duplication(self):
         """
         After calling duplicate_shared_initializers, find_shared_param_names must

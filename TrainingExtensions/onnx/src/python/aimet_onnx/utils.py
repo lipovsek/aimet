@@ -1039,7 +1039,6 @@ def duplicate_shared_initializers(graph: GraphProto) -> int:
                 else:
                     usage_map.setdefault(init_name, []).append((consumer, idx))
 
-    new_initializers: List[TensorProto] = []
     duplicate_count = 0
     existing_names = (
         {init.name for init in graph.initializer}
@@ -1070,14 +1069,13 @@ def duplicate_shared_initializers(graph: GraphProto) -> int:
                 new_name = f"{tensor_name}_copy_{counter}"
             existing_names.add(new_name)
 
-            new_init = TensorProto()
+            # add() + CopyFrom() merges fields directly into an already-parented slot.
+            new_init = graph.initializer.add()
             new_init.CopyFrom(original)
             new_init.name = new_name
-            new_initializers.append(new_init)
             node.input[input_idx] = new_name
             duplicate_count += 1
 
-    graph.initializer.extend(new_initializers)
     logger.info(
         "duplicate_shared_initializers: created %d duplicate initializer(s) for %d shared tensor(s)",
         duplicate_count,
