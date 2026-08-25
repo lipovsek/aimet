@@ -3444,6 +3444,50 @@ def test_encoding_metadata(tmp_path: pathlib.Path, encoding_version: str):
     }
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_int_to_float_cast_op(nested):
+    """
+    Given: Model with a Cast op which casts an int input to float
+    When: Create QuantizationSimModel
+    Then: 1) QuantizationSimModel should be created without error
+          2) Sim model should run without error
+          3) Cast should hold no quantizers, and the consumer op should be quantized
+    """
+
+    class IntToFloatCastModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.cast = custom.Cast(torch.float32)
+            self.linear = nn.Linear(16, 16)
+
+        def forward(self, x):
+            return self.linear(self.cast(x))
+
+    class Wrapper(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.submodule = IntToFloatCastModel()
+
+        def forward(self, x):
+            return self.submodule(x)
+
+    model = Wrapper() if nested else IntToFloatCastModel()
+    dummy_input = torch.randint(0, 100, (1, 16), dtype=torch.int64)
+
+    sim = QuantizationSimModel(model, dummy_input)
+    sim.compute_encodings(lambda m: m(dummy_input))
+    sim.model(dummy_input)
+    parent = sim.model.submodule if nested else sim.model
+
+    # Cast is excluded from quantization, so it holds no quantizers at all
+    assert not hasattr(parent.cast, "input_quantizers")
+    assert not hasattr(parent.cast, "output_quantizers")
+
+    assert isinstance(parent.linear.input_quantizers[0], AffineQuantizerBase)
+    assert isinstance(parent.linear.output_quantizers[0], AffineQuantizerBase)
+    assert isinstance(parent.linear.param_quantizers["weight"], AffineQuantizerBase)
+
+
 def test_root_qmodule():
     """
     Given: Root module is registered as quantized module

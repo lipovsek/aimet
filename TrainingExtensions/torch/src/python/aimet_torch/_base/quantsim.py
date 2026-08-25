@@ -67,7 +67,7 @@ from aimet_torch import torchscript_utils, utils, onnx_utils
 from aimet_torch.meta.connectedgraph import ConnectedGraph, Op, _UnsafeGraphError
 from aimet_torch._base.nn.modules.custom import Outer
 from aimet_torch.quantsim_config.quantsim_config import QuantSimConfigurator
-from aimet_torch._base.nn.modules.custom import MatMul, Cast, RotaryEmbedding
+from aimet_torch._base.nn.modules.custom import MatMul, RotaryEmbedding
 from aimet_torch.onnx_utils import OnnxSaver, OnnxExportApiArgs, CustomMarker
 from aimet_torch.experimental.quantsim._export_utils import _export_to_1_0_0
 
@@ -336,7 +336,6 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
 
         inout_tensor_shapes = {}
         num_inout_tensors = {}
-        inout_tensors_dtypes_for_cast_ops = {}
 
         def record_metadata(module, inputs, outputs):
             input_shapes = tree_map(
@@ -351,11 +350,6 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
 
             inout_tensor_shapes[module] = (input_shapes, output_shapes)
             num_inout_tensors[module] = (len(input_shapes), len(output_shapes))
-
-            if isinstance(module, Cast):
-                (inp,) = inputs
-                out = outputs
-                inout_tensors_dtypes_for_cast_ops[module] = (inp.dtype, out.dtype)
 
         handles = []
         try:
@@ -381,10 +375,6 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
 
         self.quant_args = extract_global_quantizer_args(
             quant_scheme, quantsim_configurator
-        )
-
-        self._enable_output_quantizers_for_specific_cast_ops(
-            inout_tensors_dtypes_for_cast_ops
         )
 
         # pylint: disable=protected-access
@@ -459,44 +449,6 @@ class _QuantizationSimModelBase(_QuantizationSimModelInterface):
             default_param_bw,
             default_data_type,
         )
-
-    def _enable_output_quantizers_for_specific_cast_ops(
-        self,
-        inout_tensors_dtypes: Dict[torch.nn.Module, Tuple[torch.dtype, torch.dtype]],
-    ):
-        """
-        Enable output quantizer for Cast Ops where datatype of input tensor is int/bool
-        and data type of output tensor is float.
-        """
-        # pylint: disable=protected-access
-        model_prefix = self.connected_graph._model_name + "."
-        torch_int_dtypes = {
-            torch.int8,
-            torch.int16,
-            torch.int32,
-            torch.int64,
-            torch.bool,
-            torch.uint8,
-        }
-        torch_float_dtypes = {torch.float16, torch.float32, torch.float64}
-
-        for module, inout_dtypes in inout_tensors_dtypes.items():
-            input_tensor_dtype = inout_dtypes[0]
-            output_tensor_dtype = inout_dtypes[1]
-            # pylint: disable=protected-access
-            module_name = self.connected_graph._module_to_name[module].split(
-                model_prefix
-            )[-1]
-
-            if (
-                input_tensor_dtype != output_tensor_dtype
-                and input_tensor_dtype in torch_int_dtypes
-                and output_tensor_dtype in torch_float_dtypes
-            ):
-                logger.info("Enabling output quantizer for module %s", module_name)
-                wrapped_module = getattr(self.model, module_name)
-                for output_quantizer in wrapped_module.output_quantizers:
-                    setattr(output_quantizer, "enabled", True)
 
     def _validate_supported_kernels_for_quantizers(
         self, action: SupportedKernelsAction
