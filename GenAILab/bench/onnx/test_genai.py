@@ -20,6 +20,7 @@ from GenAILab.bench.profiler import (
     MetricResult,
     ComponentRecipeStats,
     RecipeStepStats,
+    ScoredResult,
     write_stats_to_disk,
 )
 from GenAILab.bench.determinism import set_seed
@@ -319,6 +320,11 @@ def test_llm_quantization(
                     **extra_metric_kwargs,
                     **metric.metric_kwargs,
                 )
+                # Unwrap so the log line and the stats row read the same
+                # whether or not the metric reported a breakdown.
+                details = None
+                if isinstance(result, ScoredResult):
+                    result, details = result.result, result.details
                 print(f"{metric_cls.__name__} result: {result}")
 
             evaluation_results.append(
@@ -329,6 +335,7 @@ def test_llm_quantization(
                     if config.profiler.capture_intermediate_data
                     else None,
                     scoring_version=metric_cls.SCORING_VERSION,
+                    details=details,
                 )
             )
 

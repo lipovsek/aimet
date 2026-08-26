@@ -3,7 +3,10 @@
 
 """Metrics for GenAI testing"""
 
+import contextlib
 import gc
+import json
+import os
 import re
 import time
 import warnings
@@ -14,7 +17,12 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-from transformers import PreTrainedTokenizer, GenerationConfig, TextStreamer
+from transformers import (
+    PreTrainedTokenizer,
+    GenerationConfig,
+    TextStreamer,
+    set_seed,
+)
 from transformers.processing_utils import ProcessorMixin
 from transformers.generation.stopping_criteria import StoppingCriteriaList
 
@@ -26,6 +34,20 @@ from GenAILab.bench.utils.generation_utils import (
     ContextLengthStoppingCriteria,
 )
 from GenAILab.qai_hub_lm.models.generator import Generator, VLM_Generator
+from GenAILab.bench.profiler import ScoredResult
+from GenAILab.qai_hub_lm.scoring.grace.grace import (
+    GRACE_VERSION,
+    load_eval_prompts,
+    select_balanced,
+)
+from GenAILab.qai_hub_lm.scoring.grace.grader import (
+    MAX_POINTS,
+    ResponseGrader,
+)
+from GenAILab.qai_hub_lm.scoring.grace.report import (
+    build_summary,
+    detail_items,
+)
 from .datasets import (
     Wikitext,
     TinyMMLU as TinyMMLUDataset,
@@ -1479,3 +1501,342 @@ class AutogradedMultimodalPrompts(EvaluationMetric):
             torch.cuda.empty_cache()
 
         return 100.0 * total_points / (max_points * len(prompts))
+
+
+@contextlib.contextmanager
+def _deterministic_decode(enabled: bool = True):
+    """Make a greedy decode reproducible across hosts, then restore the flag.
+
+    Greedy decoding argmaxes over logits, so cuBLAS/cuDNN nondeterminism can
+    flip a near-tie and diverge the whole generation. The torch flag is restored
+    on exit so a later metric is not held to deterministic kernels it may not
+    have (quantsim custom ops in particular).
+
+    ``CUBLAS_WORKSPACE_CONFIG`` only takes effect if read before the CUDA
+    context is created, so if CUDA is already initialized
+    ``use_deterministic_algorithms(True)`` may raise on the first matmul; pass
+    ``deterministic=False`` to fall back to nondeterministic kernels (aggregate
+    scores stay comparable, individual responses may not).
+    """
+    if not enabled:
+        yield
+        return
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    previous = torch.are_deterministic_algorithms_enabled()
+    torch.use_deterministic_algorithms(True)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(previous)
+
+
+def _format_grader_summary(summary: dict, items: list[dict]) -> str:
+    """Render the grader summary dict as the human-readable report.
+
+    ``items`` is the joined per-prompt record from
+    :func:`~GenAILab.qai_hub_lm.scoring.grace.report.detail_items`;
+    the prompt and the response it produced are printed for every item that lost
+    points, so a regression can be read off the log alone. Perfect items are
+    listed only in the score, and ``num_forced`` is recorded in the stats file
+    but not printed.
+    """
+    lines = [
+        "=" * 60,
+        f"Grader: {summary.get('grader_model', 'unknown')}",
+        f"Responses graded: {summary.get('num_items', 0)}",
+        "=" * 60,
+        "",
+    ]
+    lines.append(
+        f"Overall score: {summary.get('score_pct', 0.0):.1f}%  "
+        f"({summary.get('total_points', 0)}/{summary.get('max_points', 0)} pts)"
+    )
+    if summary.get("num_unparsed"):
+        lines.append(
+            f"GRADER FAILURE: {summary['num_unparsed']} item(s) produced no "
+            f"readable rating and were scored 0. The score above is a floor, not "
+            f"a measurement — fix the grader and re-run before trusting it."
+        )
+    category_scores = summary.get("category_scores") or {}
+    if category_scores:
+        lines.append("")
+        lines.append("By category:")
+        lines.extend(
+            f"  {name:15s} {entry['score_pct']:5.1f}%  (n={entry['num_scored']})"
+            for name, entry in sorted(
+                category_scores.items(), key=lambda kv: kv[1]["score_pct"]
+            )
+        )
+    # What the model actually said, and why it was marked down, for every
+    # non-perfect grade: enough to triage a regression from the log alone.
+    penalized = sorted(
+        (item for item in items if item.get("points", MAX_POINTS) < MAX_POINTS),
+        key=lambda item: item["points"],
+    )
+    if penalized:
+        lines.append("")
+        lines.append("Deductions:")
+        for item in penalized:
+            lines += [
+                "",
+                f"  idx={item['idx']} [{item.get('category', '?')}] "
+                f"{item['points']}/{MAX_POINTS} pts",
+                f"  Prompt:   {item['prompt']}",
+                f"  Response: {item['output']}",
+                f"  Grade:    {item['rationale'] or '(no rationale)'}",
+            ]
+    summary_items = summary.get("summary_items") or []
+    if summary_items:
+        lines.append("")
+        lines.append("Summary:")
+        lines.extend(
+            f"  {number}. {text}" for number, text in enumerate(summary_items, start=1)
+        )
+    return "\n".join(lines)
+
+
+@YAMLConfigParser.register_metric
+class Grace(TextEvaluationMetric):
+    """Grace: free-form responses graded by an LLM on a 0-10 rubric.
+
+    Grace is "Grading Response Accuracy Evaluation". One response is generated
+    per prompt in the built-in 10-categories-x-10-prompts set, then a grader LLM
+    writes a one-line rationale and a ``Rating: [[N]]`` for each. A closing pass
+    distils the rationales into the recurring failure modes. The reported score
+    is total points as a percentage of ``MAX_POINTS`` x items; an item the
+    grader failed to rate scores 0 and *stays in the denominator*, so a broken
+    grader shows up as a low score rather than an inflated one.
+
+    Scores only compare across runs if the prompt set, the rubric and the
+    generation path all match, so this deliberately does not reuse
+    :class:`Prompts` / :class:`Interactive`: those prepend a system prompt, leave
+    thinking enabled, add special tokens on top of the chat template, and decode
+    the prompt back along with the response.
+
+    Every response and its rationale ride in the result's ``details``, so a score
+    can be explained from the stats file alone.
+
+    The name is unversioned: ``GRACE_VERSION`` rides in ``SCORING_VERSION``, so
+    a bump shows up as data instead of renaming the results key.
+    """
+
+    SCORING_VERSION: int = GRACE_VERSION
+
+    DEFAULT_GRADER_MODEL_ID = "Qwen/Qwen3.6-35B-A3B"
+    DEFAULT_GRADER_DTYPE = "bfloat16"
+    DEFAULT_MAX_NEW_TOKENS = 2048
+    DEFAULT_SEED = 42
+    DTYPES = {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }
+
+    @classmethod
+    def get_collection_name(cls, num_samples: int = 0) -> str:
+        """Cache key for the generated responses.
+
+        ``num_samples`` is part of the key: a shortened run's responses are not
+        a valid cache hit for a full one.
+        """
+        suffix = f"_n{num_samples}" if num_samples else ""
+        return f"{cls.__name__}_generated_text{suffix}"
+
+    @staticmethod
+    def _format_prompt(tokenizer: PreTrainedTokenizer, prompt: str) -> str:
+        """Apply the model's chat template to a raw user prompt.
+
+        A bare user turn, no system prompt. Thinking is disabled to match the
+        on-device Genie path and the FP baselines: a thinking model otherwise
+        spends its whole token budget on a reasoning trace, so the graded
+        response is the trace rather than an answer. Non-thinking templates
+        ignore the unused variable.
+        """
+        formatted = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        assert isinstance(formatted, str)
+        return formatted
+
+    @classmethod
+    @torch.no_grad()
+    def _generate_all(
+        cls,
+        model: Generator,
+        tokenizer: PreTrainedTokenizer,
+        context_length: int,
+        num_samples: int = 0,
+        max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+        seed: int = DEFAULT_SEED,
+        deterministic: bool = True,
+    ) -> list[dict]:
+        """One ``{idx, category, prompt, output}`` record per prompt."""
+        prompts = load_eval_prompts()
+        if num_samples and num_samples > 0:
+            # Records are grouped by category, so a prefix slice would leave a
+            # short smoke run reporting only the first category or two.
+            prompts = select_balanced(prompts, num_samples)
+
+        set_seed(seed)
+        generation_config = build_generation_config(
+            model,
+            tokenizer,
+            do_sample=False,
+            max_new_tokens=max_new_tokens,
+        )
+        model.generation_config = generation_config
+        stopping_criteria = Interactive._build_stopping_criteria(model)
+
+        items: list[dict] = []
+        with _deterministic_decode(deterministic):
+            for entry in tqdm(prompts, desc="Generating responses"):
+                formatted = cls._format_prompt(tokenizer, entry.prompt)
+                tokenized = tokenizer(
+                    formatted,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                    return_token_type_ids=False,
+                )
+                input_ids = tokenized["input_ids"][:, -context_length:].to(model.device)
+                attention_mask = tokenized["attention_mask"][:, -context_length:].to(
+                    model.device
+                )
+                outputs = model.generate(
+                    inputs=input_ids,
+                    attention_mask=attention_mask,
+                    generation_config=generation_config,
+                    stopping_criteria=stopping_criteria,
+                )
+                output_ids = (
+                    outputs[0] if isinstance(outputs, (list, tuple)) else outputs
+                )
+                # New tokens only: the prompt is not part of the graded response.
+                new_tokens = output_ids[0][input_ids.shape[1] :]
+                response = tokenizer.decode(new_tokens, skip_special_tokens=True)
+                items.append(
+                    {
+                        # The prompt's own idx, not its position in a subset, so
+                        # a shortened run still joins against the full set.
+                        "idx": entry.idx,
+                        "category": entry.category,
+                        "prompt": entry.prompt,
+                        "output": response.strip(),
+                    }
+                )
+        return items
+
+    @classmethod
+    @torch.no_grad()
+    def evaluate(
+        cls,
+        model: Generator,
+        tokenizer: PreTrainedTokenizer,
+        context_length: int,
+        *,
+        eval_ctx: EvaluationContext = None,
+        num_samples: int = 0,
+        max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+        seed: int = DEFAULT_SEED,
+        deterministic: bool = True,
+        grader_model_id: str = DEFAULT_GRADER_MODEL_ID,
+        grader_dtype: str = DEFAULT_GRADER_DTYPE,
+        grader_device_map: str = "auto",
+        allow_cpu: bool = False,
+        summary: bool = True,
+        output_dir: str | Path | None = None,
+        **kwargs,
+    ) -> ScoredResult:
+        # Before generating, not at the point of use: a bad value should not cost
+        # a full generation pass to surface.
+        if grader_dtype not in cls.DTYPES:
+            raise ValueError(
+                f"Unsupported grader_dtype {grader_dtype!r}; "
+                f"expected one of {sorted(cls.DTYPES)}."
+            )
+
+        def collect():
+            return cls._generate_all(
+                model,
+                tokenizer,
+                context_length,
+                num_samples=num_samples,
+                max_new_tokens=max_new_tokens,
+                seed=seed,
+                deterministic=deterministic,
+            )
+
+        if eval_ctx is not None:
+            items = eval_ctx.get_or_compute_quant(
+                cls.get_collection_name(num_samples), collect
+            )
+        else:
+            items = collect()
+
+        if not items:
+            raise ValueError("Grace generated no responses to grade.")
+
+        out_dir = Path(output_dir) if output_dir is not None else None
+        responses_path = None
+        if out_dir is not None:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            responses_path = out_dir / "responses.json"
+            responses_path.write_text(
+                json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            print(f"Wrote {len(items)} responses to {responses_path}")
+
+        # Evict the model under test to CPU: the grader is a 35B MoE, and the two
+        # do not fit on one GPU together.
+        with model.on_device(torch.device("cpu")):
+            grader = ResponseGrader(
+                model_id=grader_model_id,
+                dtype=cls.DTYPES[grader_dtype],
+                allow_cpu=allow_cpu,
+                device_map=grader_device_map,
+            )
+            try:
+                graded = grader.grade(items, summary=summary)
+            finally:
+                del grader
+                gc.collect()
+                torch.cuda.empty_cache()
+
+        grader_summary = build_summary(
+            items,
+            graded,
+            # Also the results key, so label and key cannot drift.
+            metric_name=cls.__name__,
+            grader_model=grader_model_id,
+            input_file=str(responses_path) if responses_path else "<in-memory>",
+        )
+        if out_dir is not None:
+            summary_path = out_dir / "grader_summary.json"
+            summary_path.write_text(
+                json.dumps(grader_summary, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            print(f"Wrote grading summary to {summary_path}")
+
+        # Responses and rationales ride along in the stats file, which is the
+        # copy that leaves the machine. Without them a dropped score can only
+        # be explained by re-running, and generation is the expensive half.
+        graded_with_text = detail_items(items, grader_summary["items"])
+        print(_format_grader_summary(grader_summary, graded_with_text))
+        details = {
+            key: grader_summary[key]
+            for key in (
+                "grader_model",
+                "num_items",
+                "total_points",
+                "max_points",
+                "num_unparsed",
+                "num_forced",
+                "summary_items",
+                "category_scores",
+            )
+        }
+        details["items"] = graded_with_text
+        return ScoredResult(result=grader_summary["score_pct"], details=details)

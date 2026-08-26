@@ -98,6 +98,7 @@ WITH tagged AS (
         WHEN {{rank_by}} = 'MMLU'    THEN (accuracy_results->'MMLU'->>'scoring_version')::int
         WHEN {{rank_by}} = 'MMMU'    THEN (accuracy_results->'MMMU'->>'scoring_version')::int
         WHEN {{rank_by}} = 'AutogradedPrompts' THEN (accuracy_results->'AutogradedPrompts'->>'scoring_version')::int
+        WHEN {{rank_by}} = 'Grace'  THEN (accuracy_results->'Grace'->>'scoring_version')::int
         WHEN {{rank_by}} = 'AutogradedMultimodalPrompts' THEN (accuracy_results->'AutogradedMultimodalPrompts'->>'scoring_version')::int
         WHEN {{rank_by}} = 'PPL'     THEN (accuracy_results->'PPL'->>'scoring_version')::int
       END,
@@ -152,6 +153,7 @@ ranked AS (
           WHEN {{rank_by}} = 'MMLU'    THEN (accuracy_results->'MMLU'->>'result')::numeric
           WHEN {{rank_by}} = 'MMMU'    THEN (accuracy_results->'MMMU'->>'result')::numeric
           WHEN {{rank_by}} = 'AutogradedPrompts' THEN (accuracy_results->'AutogradedPrompts'->>'result')::numeric
+          WHEN {{rank_by}} = 'Grace'  THEN (accuracy_results->'Grace'->>'result')::numeric
           WHEN {{rank_by}} = 'AutogradedMultimodalPrompts' THEN (accuracy_results->'AutogradedMultimodalPrompts'->>'result')::numeric
           WHEN {{rank_by}} = 'PPL'     THEN -(accuracy_results->'PPL'->>'result')::numeric
         END DESC NULLS LAST,
@@ -290,6 +292,7 @@ SELECT
      ROUND((accuracy_results->'MMLU'->>'result')::numeric, 4)     AS "MMLU",
      ROUND((accuracy_results->'MMLU1000'->>'result')::numeric, 4) AS "MMLU1000",
      ROUND((accuracy_results->'AutogradedPrompts'->>'result')::numeric, 4) AS "AutogradedPrompts",
+     ROUND((accuracy_results->'Grace'->>'result')::numeric, 4) AS "Grace",
      ROUND((accuracy_results->'MMMU'->>'result')::numeric, 4)     AS "MMMU",
      ROUND((accuracy_results->'AutogradedMultimodalPrompts'->>'result')::numeric, 4) AS "AutogradedMultimodalPrompts",
 

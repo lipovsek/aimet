@@ -396,6 +396,42 @@ Defined in [bench/metrics.py](bench/metrics.py).
 | `TrickyPrompts`               | none.                                |
 | `AutogradedPrompts`           | `harness_version` (str, default `v1`). |
 | `AutogradedMultimodalPrompts` | `harness_version` (str, default `v1`). |
+| `Grace`                       | `num_samples` (int, default `0` = all 100); `max_new_tokens` (int, default `2048`); `seed` (int, default `42`); `deterministic` (bool, default `true`); `grader_model_id` (str, default `Qwen/Qwen3.6-35B-A3B`); `grader_dtype` (`bfloat16`\|`float16`\|`float32`, default `bfloat16`); `grader_device_map` (str, default `auto`); `allow_cpu` (bool, default `false`); `summary` (bool, default `true`); `output_dir` (str, default unset). |
+
+#### Grace
+
+Grace ("Grading Response Accuracy Evaluation") generates one free-form response
+per prompt over a built-in set of 10 categories x 10 prompts, then has a grader
+LLM rate each on a 0-10 rubric with a one-line rationale, and finishes with a
+pass that distils those rationales into the recurring failure modes. The
+reported score is total points as a percentage of the maximum.
+
+The result's `details` carries the per-category breakdown, the defect summary
+(the dashboard's `Grace` and `Grace Defects` columns), and an `items` array
+holding every prompt, its response, and the grade with the grader's reason. So a
+score that moved can be explained from `profiling_data.json` alone, without
+re-running generation. It is written to its own `accuracy_details` column rather
+than inside `accuracy_results`, so queries over the scores do not pay to read
+the breakdown. `output_dir` writes the same two halves as local
+`responses.json` and `grader_summary.json` files, which diff more readably.
+
+Scores only compare across runs while the prompt set, the rubric and the
+generation path stay identical; a change to any of them needs a `GRACE_VERSION`
+bump. The reported name stays `Grace` across versions -- `GRACE_VERSION` is
+surfaced as the metric's `scoring_version` instead, so a bump shows up as data
+rather than silently renaming the results key out from under existing queries.
+
+Two caveats worth knowing before enabling it:
+
+* The default grader is a 35B MoE. The model under test is evicted to CPU while
+  the grader is loaded, but the grader still needs the GPU (or `grader_device_map`
+  across several). It refuses to run on CPU unless `allow_cpu` is set, because a
+  silent CPU fallback turns seconds into minutes per file while still exiting 0.
+* `deterministic` sets `torch.use_deterministic_algorithms(True)` for the
+  generation loop, so a greedy decode does not diverge across hosts. If an op in
+  the model under test has no deterministic kernel, generation raises; set it to
+  `false` to fall back (aggregate scores stay comparable, individual responses
+  may not).
 
 ### Models
 

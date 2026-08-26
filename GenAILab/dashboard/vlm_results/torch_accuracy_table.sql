@@ -118,6 +118,16 @@ SELECT
        ROUND((accuracy_results->'MMLU1000'->>'result')::numeric, 4) AS "MMLU1000",
 	   accuracy_results->'AutogradedPrompts'->>'result' AS "AutogradedPrompts",
 	   accuracy_results->'AutogradedMultimodalPrompts'->>'result' AS "AutogradedMultimodalPrompts",
+	   ROUND((accuracy_results->'Grace'->>'result')::numeric, 4) AS "Grace",
+	   -- Grace's recurring failure modes, so a regression is triageable from the
+	   -- table without opening the run log.
+	   NULLIF(
+	     (SELECT string_agg(item, '; ' ORDER BY ord)
+	      FROM jsonb_array_elements_text(
+	             COALESCE(accuracy_details->'Grace'->'summary_items', '[]'::jsonb)
+	           ) WITH ORDINALITY AS s(item, ord)),
+	     ''
+	   ) AS "Grace Defects",
 
        -- Flags metrics computed under a non-default scoring version (SCORING_VERSION)
        NULLIF(
@@ -233,7 +243,11 @@ SELECT
        environment->>'branch'                           AS "branch",
        environment->'commit_sha'                        AS "commit SHA",
 
-	   export											AS "export"
+	   export											AS "export",
+
+	   -- Row identity for a per-run report link. NULL on pre-cutover rows, so a
+	   -- link built from it renders inert instead of matching every legacy row.
+	   NULLIF(run_group, '')                            AS "run_group"
 
     FROM genai_laboratory
     WHERE model_id = {{model_id}}

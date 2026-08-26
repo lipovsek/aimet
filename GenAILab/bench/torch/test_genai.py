@@ -24,6 +24,7 @@ from GenAILab.bench.profiler import (
     MetricResult,
     ComponentRecipeStats,
     RecipeStepStats,
+    ScoredResult,
     write_stats_to_disk,
 )
 from GenAILab.bench.determinism import set_seed
@@ -207,7 +208,10 @@ def test_llm_quantization(
         gc.collect()
         torch.cuda.empty_cache()
 
-    run_group = None
+    # Every row needs an identity, not just those with an ONNX re-eval: a shared
+    # empty string would merge unrelated runs. The exported config carries this
+    # value so a following ONNX row joins on it.
+    run_group = uuid.uuid4().hex[:16]
     export_dir = config.export
     # TODO: remove skip exports for models that require Dynamo export
     if export_dir and not model_cls.use_dynamo_export():
@@ -294,8 +298,6 @@ def test_llm_quantization(
                     )
 
         if config.eval_in_onnx:
-            run_group = uuid.uuid4().hex[:16]
-
             # Use the last Calibration step's dataset for ONNX re-calibration
             def _last_calibration_for_onnx(steps):
                 for s in reversed(steps):
@@ -362,6 +364,11 @@ def test_llm_quantization(
                         **extra_metric_kwargs,
                         **metric.metric_kwargs,
                     )
+                    # Unwrap so the log line and the stats row read the same
+                    # whether or not the metric reported a breakdown.
+                    details = None
+                    if isinstance(result, ScoredResult):
+                        result, details = result.result, result.details
                     print(f"{metric_cls.__name__} result: {result}")
 
                 evaluation_results.append(
@@ -372,6 +379,7 @@ def test_llm_quantization(
                         if config.profiler.capture_intermediate_data
                         else None,
                         scoring_version=metric_cls.SCORING_VERSION,
+                        details=details,
                     )
                 )
 
