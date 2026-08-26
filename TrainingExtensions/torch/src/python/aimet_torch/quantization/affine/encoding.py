@@ -641,7 +641,7 @@ class GroupedBlockEncoding(AffineEncoding):
             )
             quantized_scale_dtype = f"uint{self.decompressed_bw - compressed_bw}"
             quantized_scale = self.per_block_int_scale.to(torch.int32).tolist()
-            meta_scale = self.per_channel_scale.tolist()
+            meta_scale = self.per_channel_scale
 
             if encoding_version == "2.0.0":
                 del encoding_dict["y_scale"]
@@ -650,7 +650,7 @@ class GroupedBlockEncoding(AffineEncoding):
                 encoding_dict.update(
                     {
                         "per_block_int_scale": quantized_scale,
-                        "per_channel_float_scale": meta_scale,
+                        "per_channel_float_scale": meta_scale.tolist(),
                         "output_dtype": output_dtype,
                     }
                 )
@@ -659,8 +659,9 @@ class GroupedBlockEncoding(AffineEncoding):
                     {
                         "y_scale": {
                             "x": quantized_scale,
-                            "x_scale": meta_scale,
+                            "x_scale": meta_scale.flatten().tolist(),
                             "input_dtype": quantized_scale_dtype,
+                            "axis": self._get_channel_axis(),
                         },
                         "output_dtype": output_dtype,
                     }

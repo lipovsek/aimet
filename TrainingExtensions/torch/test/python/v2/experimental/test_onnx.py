@@ -3706,8 +3706,9 @@ def test_encoding_version_2_1_0(tmp_path: pathlib.Path):
             "name": "weight",
             "y_scale": {
                 "x": lpbq_enc.per_block_int_scale.to(torch.int32).tolist(),
-                "x_scale": lpbq_enc.per_channel_scale.tolist(),
+                "x_scale": lpbq_enc.per_channel_scale.flatten().tolist(),
                 "input_dtype": "uint4",
+                "axis": -2,
             },
             "axis": 1,
             "block_size": 2,
