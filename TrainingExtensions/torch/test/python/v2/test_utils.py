@@ -11,7 +11,6 @@ from unittest import mock
 
 from .models_.test_models import ModelWithMatMul2, BasicConv2d
 from aimet_torch.common.defs import QuantScheme
-import aimet_torch.utils
 from aimet_torch.v2.experimental import (
     set_matmul_second_input_producer_to_8bit_symmetric,
 )
@@ -32,7 +31,8 @@ from aimet_torch.v2.utils import (
     remove_output_quantizers,
     remove_param_quantizers,
 )
-from aimet_torch.quantization.affine import dequantize
+from aimet_torch.quantization.affine import dequantize, QuantizeDequantize
+import aimet_torch
 
 
 @pytest.mark.parametrize(
@@ -611,36 +611,12 @@ def test_decomposition_early_exit_skips_divisor_search():
         "aimet_torch.utils._select_divisor",
         side_effect=AssertionError("divisor search must not run after early exit"),
     ) as select_divisor:
-        with pytest.raises(_DecompositionError, match="early exit"):
+        with pytest.raises(
+            _DecompositionError,
+            match=r"One or more blocks exceed \d+ distinct values",
+        ):
             _decompose_prequantized_tensor(unquantized, -8, 8, scale_shape=(8, 1))
     select_divisor.assert_not_called()
-
-
-def test_decomposition_early_exit_gate_respects_block_size_threshold():
-    """
-    When: A continuous tensor whose block_numel is at/below
-          _EARLY_EXIT_LEVEL_SLACK * num_levels is passed
-    Then: The early-exit gate is skipped (too few elements for the distinct-count
-          bound to be meaningful) and the divisor search is still consulted before
-          any rejection
-    """
-    qmin, qmax = -8, 8
-    num_levels = qmax - qmin + 1
-    # block_numel == cap, so `x.shape[1] > slack * num_levels` is False.
-    block_numel = aimet_torch.utils._EARLY_EXIT_LEVEL_SLACK * num_levels
-    torch.manual_seed(0)
-    unquantized = torch.randn(8, block_numel)
-    with mock.patch(
-        "aimet_torch.utils._select_divisor",
-        wraps=aimet_torch.utils._select_divisor,
-    ) as select_divisor:
-        # Whether it ultimately decomposes or rejects, the point is that the gate
-        # did not short-circuit: the divisor search was reached.
-        try:
-            _decompose_prequantized_tensor(unquantized, qmin, qmax, scale_shape=(8, 1))
-        except _DecompositionError as e:
-            assert "early exit" not in str(e)
-    select_divisor.assert_called_once()
 
 
 @pytest.mark.parametrize("absmax", [127, 100])
@@ -701,3 +677,44 @@ def test_decomposition_single_element_blocks():
     # Nonzero single-element blocks map to code +/-1 with scale == their magnitude.
     assert torch.allclose(scale.flatten()[:3], torch.tensor([5.0, 3.0, 100.0]))
     assert torch.allclose(input_q.flatten()[:3].abs(), torch.ones(3))
+
+
+@pytest.mark.cuda
+@torch.no_grad()
+def test_decomposition_early_exit_memory_overhead():
+    """
+    Early-exiting decomposition shouldn't increase memory footprint
+    """
+    torch.cuda.empty_cache()
+
+    qlinear = aimet_torch.nn.QuantizedLinear(256, 256, device="cuda")
+    qlinear.param_quantizers["weight"] = QuantizeDequantize(
+        shape=(256, 1),
+        qmin=-128,
+        qmax=127,
+        symmetric=True,
+    ).cuda()
+
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    with pytest.raises(
+        _DecompositionError,
+        match=r"One or more blocks exceed \d+ distinct values",
+    ):
+        _decompose_prequantized_tensor(
+            qlinear.weight,
+            -128,
+            127,
+            scale_shape=(256, 1),
+        )
+
+    torch.cuda.empty_cache()
+    peak_memory_after_early_exit = torch.cuda.max_memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+
+    # Fall back to regular calibration
+    qlinear.compute_param_encodings()
+    torch.cuda.empty_cache()
+    peak_memory_after_regular_calib = torch.cuda.max_memory_allocated()
+
+    assert peak_memory_after_early_exit <= peak_memory_after_regular_calib

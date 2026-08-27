@@ -1691,16 +1691,6 @@ _RECON_RELRMS_FLOOR = 1e-3
 # Number of least-squares scale-refinement iterations (see _refine_scale_ls).
 _DECOMPOSE_LS_ITERS = 4
 
-# Early-exit gate.  A block that lies on a uniform grid has at most
-# (qmax - qmin + 1) distinct magnitudes (its codes are integers in that range and
-# share one scale), regardless of which divisor recovers the step.  A continuous
-# (non-quantized) block instead has close to one distinct magnitude per element.
-# If most blocks show far more distinct magnitudes than the grid could produce,
-# the tensor cannot be QDQ, so the divisor search is skipped.  The slack factor
-# leaves margin for storage rounding splitting a level into a few nearby values.
-_EARLY_EXIT_LEVEL_SLACK = 4
-_EARLY_EXIT_MIN_OVER_FRAC = 0.90
-
 
 @torch.no_grad()
 def _storage_ulp_rel(x: torch.Tensor) -> float:
@@ -2003,23 +1993,27 @@ def _decompose_prequantized_tensor(
     # (num_blocks, block_numel); compute in fp32 for a stable divisor search.
     x = permuted.reshape(num_blocks, -1).float()
 
-    ulp_rel = _storage_ulp_rel(x)
+    # Early exit: a block that lies on a uniform [qmin, qmax] affine grid has
+    # at most (max(abs(qmin), abs(qmax)) + 1) distinct magnitudes (including 0).
+    # If a small sample from any block exceeds that cap, the tensor cannot be QDQ,
+    # so skip the expensive divisor search and fall back to min/max calibration.
+    # The sampling below keeps the check constant-memory w.r.t. tensor size.
 
-    # Early exit: if most blocks carry far more distinct magnitudes than a grid of
-    # (qmax - qmin + 1) levels could ever produce, the tensor is not pre-quantized.
-    # This bound holds for any divisor, so it is a safe reject that skips the
-    # expensive divisor search and falls back to min/max calibration.  Only worth
-    # the sort for blocks large enough for the search to dominate runtime.
-    num_levels = qmax - qmin + 1
-    if x.shape[1] > _EARLY_EXIT_LEVEL_SLACK * num_levels:
-        xs, _ = x.abs().sort(dim=1)
-        distinct = (xs[:, 1:] != xs[:, :-1]).sum(dim=1) + 1
-        over_cap = distinct > _EARLY_EXIT_LEVEL_SLACK * num_levels
-        if over_cap.float().mean().item() >= _EARLY_EXIT_MIN_OVER_FRAC:
+    num_levels = max(abs(qmax), abs(qmin)) + 1
+    if x.shape[1] > num_levels:
+        # Check K small chunks of 2 * num_levels elements.
+        # If the chunk contains more than num_levels distinct values,
+        # it's guaranteed the whole block doesn't fit into [qmin, qmax] grid.
+        K = 64
+        xs = x[:K, : num_levels * 2].abs()
+        xs = xs.sort(dim=1).values
+        num_distinct_elems = (xs[:, 1:] != xs[:, :-1]).sum(dim=1) + 1
+        if torch.any(num_distinct_elems > num_levels):
             raise _DecompositionError(
-                f"not QDQ-like (early exit): {over_cap.float().mean().item():.3f} of "
-                f"blocks exceed {_EARLY_EXIT_LEVEL_SLACK * num_levels} distinct magnitudes"
+                f"One or more blocks exceed {num_levels} distinct values"
             )
+        else:
+            del xs, num_distinct_elems
 
     x_abs = x.abs()
     absmax = x_abs.amax(dim=1)
@@ -2027,6 +2021,7 @@ def _decompose_prequantized_tensor(
         dim=1
     )
     active = torch.isfinite(min_nonzero) & (absmax > 0)
+    ulp_rel = _storage_ulp_rel(x)
 
     k_chosen, accepted = _select_divisor(
         x, absmax, min_nonzero, zero_point_shift, max_level, ulp_rel
