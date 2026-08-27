@@ -8,7 +8,7 @@ import onnxruntime
 from aimet_onnx.common.defs import QuantizationDataType
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx import analyze_per_layer_sensitivity
-from aimet_onnx import int8, int16, float16
+from aimet_onnx import int8, int16, float16, int4, qtype
 from aimet_onnx.utils import make_dummy_input, make_psnr_eval_fn
 from aimet_onnx.lite_mp import flip_layers_to_higher_precision
 from .models import models_for_tests
@@ -86,6 +86,58 @@ class TestLiteMp:
         assert int16_count >= percent_flip / 100 * int8_count
 
         sim.compute_encodings(inputs=[make_dummy_input(model)])
+
+    @pytest.mark.parametrize(
+        "param_type, act_type", [(int8, int16), ("int8", "int16"), (float16, float16)]
+    )
+    def test_flip_to_precision_tuple(self, param_type, act_type):
+        model = models_for_tests.single_residual_model().model
+
+        sim = QuantizationSimModel(model, param_type=int4, activation_type=int8)
+        enabled_quantizers = {
+            name for name, q in sim.qc_quantize_op_dict.items() if q.enabled
+        }
+
+        layer_sensitivity_dict = {
+            op.name: 1.0 for op in sim.connected_graph.ordered_ops
+        }
+
+        # Flip 100% of layers to override precision
+        flip_layers_to_higher_precision(
+            sim, layer_sensitivity_dict, 100, override_precision=(param_type, act_type)
+        )
+
+        for param_name in sim.param_names:
+            quantizer = sim.qc_quantize_op_dict[param_name]
+            if quantizer.enabled:
+                assert quantizer.precision() == qtype.as_qtype(param_type)
+
+        for activation_name in sim.activation_names:
+            quantizer = sim.qc_quantize_op_dict[activation_name]
+            if quantizer.enabled:
+                assert quantizer.precision() == qtype.as_qtype(act_type)
+
+        # Lite MP does not disable quantizers
+        assert enabled_quantizers == {
+            name for name, q in sim.qc_quantize_op_dict.items() if q.enabled
+        }
+
+    @pytest.mark.parametrize(
+        "precision", [(int8, int8, int16), (int8, int4), ("unsupported", int16)]
+    )
+    def test_flip_layers_rejects_invalid_precisions(self, precision):
+        model = models_for_tests.single_residual_model().model
+
+        sim = QuantizationSimModel(model, param_type=int4, activation_type=int8)
+
+        layer_sensitivity_dict = {
+            op.name: 1.0 for op in sim.connected_graph.ordered_ops
+        }
+
+        with pytest.raises(ValueError):
+            flip_layers_to_higher_precision(
+                sim, layer_sensitivity_dict, override_precision=precision
+            )
 
 
 def test_multi_output_psnr_eval_fn():
