@@ -2876,6 +2876,94 @@ def test_load_encodings_with_frozen_encodings(freeze: bool):
         assert not np.array_equal(qc_op._get_scale(), scale_before)
 
 
+def _quantizer_state(qc_op: QcQuantizeOp):
+    """Returns the full observable configuration and encodings of a quantizer"""
+    scale, offset = qc_op._get_scale(), qc_op._get_offset()
+    return (
+        qc_op.precision(),
+        qc_op.bitwidth,
+        qc_op.data_type,
+        qc_op.use_symmetric_encodings,
+        qc_op.use_strict_symmetric,
+        qc_op.use_unsigned_symmetric,
+        qc_op.get_zero_point_shift(),
+        qc_op.is_initialized(),
+        qc_op.quant_info.usePerChannelMode,
+        qc_op.quant_info.blockSize,
+        None if scale is None else scale.tolist(),
+        None if offset is None else offset.tolist(),
+    )
+
+
+def _new_frozen_quantizer(input_shape=(3, 20)) -> QcQuantizeOp:
+    qc_op = _new_quantizer(input_shape, bitwidth=8, use_symmetric_encodings=False)
+    _calibrate_and_qdq(qc_op, np.random.randn(*input_shape).astype(np.float32))
+    qc_op.freeze_encodings()
+    return qc_op
+
+
+_FROZEN_NO_OPS = {
+    "data_type": lambda q: setattr(q, "data_type", QuantizationDataType.float),
+    "use_symmetric_encodings": lambda q: setattr(q, "use_symmetric_encodings", True),
+    "load_encodings": lambda q: q.load_encodings(create_encoding(-1e4, 1e4, 16, False)),
+    "update_quantizer_and_load_encodings": lambda q: q.update_quantizer_and_load_encodings(
+        create_encoding(-1e4, 1e4, 16, False),
+        True,
+        True,
+        True,
+        QuantizationDataType.int,
+    ),
+    "_load_encodings_dict": lambda q: q._load_encodings_dict(
+        AffineEncoding(
+            scale=np.array([1e4]), offset=np.array([-32768]), dtype="int16"
+        ).to_qnn_encoding_dict("1.0.0")
+    ),
+    "reset_encoding_stats": lambda q: q.reset_encoding_stats(),
+    "_reset_encodings": lambda q: q._reset_encodings(),
+    "set_bitwidth": lambda q: q.set_bitwidth(16),
+    "set_precision": lambda q: q.set_precision(aimet_onnx.float16),
+    "set_qspec": lambda q: q.set_qspec(QSpec.per_channel("int16", symmetric=True)),
+    "set_zero_point_shift": lambda q: q.set_zero_point_shift(0.5),
+    # update_encoding_stats is not frozen-guarded, so new stats are observed but must
+    # not make it into the frozen encodings
+    "compute_encodings": lambda q: (
+        q.update_encoding_stats(np.full((3, 20), 1e4, dtype=np.float32)),
+        q.compute_encodings(),
+    ),
+    "clip_and_recompute_encodings": lambda q: q.clip_and_recompute_encodings(1e-3),
+}
+
+
+@pytest.mark.parametrize(
+    "operation", _FROZEN_NO_OPS.values(), ids=_FROZEN_NO_OPS.keys()
+)
+def test_frozen_quantizer_ignores_reconfiguration(operation):
+    """
+    Given: A quantizer with frozen encodings
+    When: Applying an operation which would reconfigure or recalibrate the quantizer
+    Then: The quantizer is left untouched
+    """
+    qc_op = _new_frozen_quantizer()
+
+    state_before = _quantizer_state(qc_op)
+    operation(qc_op)
+    assert _quantizer_state(qc_op) == state_before
+
+
+def test_frozen_quantizer_rejects_bitwidth_assignment():
+    """
+    Given: A quantizer with frozen encodings
+    When: Assigning to bitwidth directly
+    Then: Raise, since the assignment cannot be honored without invalidating the encodings
+    """
+    qc_op = _new_frozen_quantizer()
+
+    state_before = _quantizer_state(qc_op)
+    with pytest.raises(RuntimeError):
+        qc_op.bitwidth = 16
+    assert _quantizer_state(qc_op) == state_before
+
+
 @pytest.mark.parametrize("encoding_version", ["1.0.0", "2.0.0"])
 def test_encoding_dict_with_zero_point_shift(encoding_version: str):
     encoding = AffineEncoding(
