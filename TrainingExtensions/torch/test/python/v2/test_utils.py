@@ -681,9 +681,12 @@ def test_decomposition_single_element_blocks():
 
 @pytest.mark.cuda
 @torch.no_grad()
-def test_decomposition_early_exit_memory_overhead():
+def test_decomposition_memory_overhead():
     """
-    Early-exiting decomposition shouldn't increase memory footprint
+    Given: Regular model weight (not prequantized)
+    When: Run _decompose_prequantized_tensor
+    Then: _decompose_prequantized_tensor should early-exit
+          without increasing memory footprint relative to regular calibration
     """
     torch.cuda.empty_cache()
 
@@ -712,9 +715,39 @@ def test_decomposition_early_exit_memory_overhead():
     peak_memory_after_early_exit = torch.cuda.max_memory_allocated()
     torch.cuda.reset_peak_memory_stats()
 
-    # Fall back to regular calibration
-    qlinear.compute_param_encodings()
+    # Force fall back to regular calibration
+    with mock.patch(
+        "aimet_torch.nn.base._decompose_prequantized_tensor",
+        side_effect=_DecompositionError,
+    ):
+        qlinear.compute_param_encodings()
+
     torch.cuda.empty_cache()
     peak_memory_after_regular_calib = torch.cuda.max_memory_allocated()
 
     assert peak_memory_after_early_exit <= peak_memory_after_regular_calib
+
+    """
+    Given: Pre-quantzied model weight
+    When: Run _decompose_prequantized_tensor
+    Then: _decompose_prequantized_tensor should run grid-search
+          with <=2x memory footprint relative to regular calibration
+    """
+    qlinear.weight.copy_(qlinear.param_quantizers["weight"](qlinear.weight))
+
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+
+    # shouldn't raise decomposition error
+    _decompose_prequantized_tensor(
+        qlinear.weight,
+        -128,
+        127,
+        scale_shape=(256, 1),
+    )
+
+    torch.cuda.empty_cache()
+    peak_memory_after_full_grid_search = torch.cuda.max_memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+
+    assert peak_memory_after_full_grid_search <= peak_memory_after_regular_calib * 2

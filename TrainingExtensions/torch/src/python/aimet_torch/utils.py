@@ -1719,10 +1719,11 @@ def _storage_ulp_rel(x: torch.Tensor) -> float:
         return _ULP_REL_BF16
 
     flat = x.reshape(-1)
-    nz = flat != 0
-    if not bool(nz.any()):
+    if bool((flat == 0).all()):
         return _ULP_REL_FP32
-    bits = flat[nz].view(torch.int32)
+
+    bits = flat.view(torch.int32)
+    del flat
     if bool(((bits & 0xFFFF) == 0).all()):
         return _ULP_REL_BF16
     if bool(((bits & 0x1FFF) == 0).all()):
@@ -1762,6 +1763,37 @@ def _candidate_divisors(k_ests, active, max_k, odd_only, device):
     return cand
 
 
+def _memory_efficient_inplace_sort(x: torch.Tensor, *args, **kwargs):
+    """
+    Sort ``x`` in-place in chunks along the first dimension, to avoid OOM on
+    large tensors. The output values are guaranteed to match
+    ``torch.sort(x, *args, **kwargs).values``.
+    """
+    chunks = x.chunk(chunks=4, dim=0)
+
+    if not chunks:
+        return x
+
+    # Output buffer for int64 indices
+    _ = None
+
+    for chunk in chunks:
+        if chunk.numel() == 0:
+            continue
+
+        if _ is None or _.shape != chunk.shape:
+            _ = torch.empty_like(chunk, dtype=torch.long)
+
+        torch.sort(
+            chunk,
+            *args,
+            **kwargs,
+            out=(chunk, _),
+        )
+
+    return x
+
+
 @torch.no_grad()
 def _select_divisor(
     x, absmax, min_nonzero, zero_point_shift, max_level, ulp_rel, eps=1e-12
@@ -1783,7 +1815,7 @@ def _select_divisor(
     B, _ = x.shape
     device = x.device
     nonzero = x.abs() > eps
-    nnz = nonzero.sum(dim=1).clamp(min=1).to(x.dtype)
+    nnz = nonzero.sum(dim=1, dtype=x.dtype).clamp(min=1)
     active = torch.isfinite(min_nonzero) & (absmax > 0)
 
     # The shifted grid (zero_point_shift == 0.5) places codes at the half
@@ -1804,20 +1836,24 @@ def _select_divisor(
     #     fine grid of near-constant channels the min-nonzero anchor collapses.
     # Both windows are searched; the on-grid fit below picks whichever k fits.
     k_est_min = absmax / min_nonzero.clamp(min=eps)
-    xs, _ = x.abs().sort(dim=1)
+    xs = _memory_efficient_inplace_sort(x.abs(), dim=1)
     gaps = xs[:, 1:] - xs[:, :-1]
+    del xs
     if gaps.shape[1] == 0:
         # Single-element blocks have no gap; fall back to the anchor (one step).
         min_gap = anchor.clamp(min=eps)
     else:
-        gaps = torch.where(gaps > eps, gaps, gaps.new_full((), float("inf")))
+        gaps.masked_fill_(gaps <= eps, float("inf"))
         min_gap = gaps.min(dim=1).values
         # All magnitudes equal (no positive gap): fall back to a single-step block.
         min_gap = torch.where(torch.isfinite(min_gap), min_gap, anchor.clamp(min=eps))
+    del gaps
     k_est_gap = anchor / min_gap.clamp(min=eps)
+    del min_gap
     cand = _candidate_divisors(
         [k_est_min, k_est_gap], active, max_k, odd_only=shifted_grid, device=device
     )
+    del k_est_min, k_est_gap
     num_cand = cand.numel()
 
     rel_noise = _ULP_SAFETY * ulp_rel
@@ -1832,14 +1868,17 @@ def _select_divisor(
         # zero-code element (whose value is 0.5 * scale, not 0, so it is never
         # masked out by `nonzero`) would get a zero tolerance and be judged
         # off-grid on nothing but bf16/fp16 rounding noise.
-        thr = r.abs().mul_(rel_noise)
-        r = r - zero_point_shift
         # dev = |r - round(r)|, the distance from the nearest integer code.
-        dev = r.round().sub_(r).abs_()
-        bad = dev > thr
-        bad &= nonzero
-        offgrid[:, j] = bad.sum(dim=1).float() / nnz
+        dev = r.sub_(zero_point_shift).round().sub_(r).abs_()
+        del r
+        r = x / s_k.unsqueeze(1)
+        thr = r.abs_().mul_(rel_noise)
+        bad = thr.lt_(dev).logical_and_(nonzero)
+        del thr
+        offgrid[:, j] = bad.sum(dim=1, dtype=torch.float) / nnz
+        del bad
         meandev[:, j] = dev.mul_(nonzero).sum(dim=1) / nnz
+        del dev
 
     min_off = offgrid.min(dim=1, keepdim=True).values
     valid = offgrid <= min_off + _VALID_MARGIN
@@ -1878,7 +1917,7 @@ def _refine_scale(
     only if it strictly lowers that block's reconstruction error, so the result is
     never worse than the seed.
 
-    Returns ``(scale [B], codes [B, N])``.
+    Returns scale
     """
     absmax = x.abs().amax(dim=1)
     anchor = (2.0 if zero_point_shift == 0.5 else 1.0) * absmax
@@ -1886,23 +1925,28 @@ def _refine_scale(
 
     def _codes(s):
         r = x / s.unsqueeze(1)
-        r = r - zero_point_shift
-        return r.round().clamp(qmin, qmax)
+        r -= zero_point_shift
+        return r.round_().clamp_(qmin, qmax)
 
     def _sse(s):
         code = _codes(s)
-        denom = code + zero_point_shift
-        return ((denom * s.unsqueeze(1) - x) ** 2).sum(dim=1)
+        denom = code.add_(zero_point_shift)
+        return denom.mul_(s.unsqueeze(1)).sub_(x).square_().sum(dim=1)
 
     # Stage 1: robust median seed.
     code = _codes(s_anchor)
-    denom = code + zero_point_shift
-    nonzero = x.abs() > eps
-    valid = nonzero & (denom.abs() > eps)
-    safe_denom = torch.where(denom.abs() > eps, denom, torch.ones_like(denom))
-    ratio = (x / safe_denom).abs()
-    ratio = torch.where(valid, ratio, ratio.new_full((), float("nan")))
+    denom = code.add_(zero_point_shift)
+    del code
+    valid = denom.abs() > eps
+    safe_denom = denom.masked_fill_(~valid, 1.0)
+    del denom
+    ratio = (x / safe_denom).abs_()
+    del safe_denom
+    valid = valid.logical_and_(x.abs().gt_(eps))
+    ratio.masked_fill_(valid.logical_not_(), float("nan"))
+    del valid
     s_med = torch.nanmedian(ratio, dim=1).values
+    del ratio
     s_med = torch.where(torch.isfinite(s_med) & (s_med > 0), s_med, s_anchor)
 
     # Stage 2: Lloyd refinement, monotone via per-block keep-best.
@@ -1911,18 +1955,22 @@ def _refine_scale(
     s = s_med
     for _ in range(iters):
         code = _codes(s)
-        denom = code + zero_point_shift
+        denom = code.add_(zero_point_shift)
+        del code
         num = (x * denom).sum(dim=1)
-        den = (denom * denom).sum(dim=1).clamp(min=eps)
-        s_new = num / den
+        den = denom.square_().sum(dim=1).clamp(min=eps)
+        del denom
+        s_new = num.div_(den)
+        del num, den
         s_new = torch.where(s_new > eps, s_new, s)
         sse_new = _sse(s_new)
         improve = sse_new < best_sse
         best_s = torch.where(improve, s_new, best_s)
         best_sse = torch.where(improve, sse_new, best_sse)
         s = s_new
+        del improve, sse_new, s_new
 
-    return best_s, _codes(best_s)
+    return best_s
 
 
 @torch.no_grad()
@@ -2017,35 +2065,36 @@ def _decompose_prequantized_tensor(
 
     x_abs = x.abs()
     absmax = x_abs.amax(dim=1)
-    min_nonzero = torch.where(x_abs > 0, x_abs, x.new_full((), float("inf"))).amin(
-        dim=1
-    )
+    x_abs.masked_fill_(x_abs <= 0, float("inf"))
+    min_nonzero = x_abs.amin(dim=1)
+    del x_abs
     active = torch.isfinite(min_nonzero) & (absmax > 0)
     ulp_rel = _storage_ulp_rel(x)
 
     k_chosen, accepted = _select_divisor(
         x, absmax, min_nonzero, zero_point_shift, max_level, ulp_rel
     )
-    scale, _ = _refine_scale(x, k_chosen, zero_point_shift, qmin, qmax)
+    del absmax, min_nonzero
+    scale = _refine_scale(x, k_chosen, zero_point_shift, qmin, qmax)
+    del k_chosen
     # Inactive (all-zero) blocks have no grid to recover; give them the minimum
     # representable scale.  Active blocks keep their recovered scale, clamped to
     # the same floor since AIMET never produces a scale below min_scale in
     # practice -- a smaller scale would trigger a known HTP underflow bug.
-    scale = torch.where(
-        active, scale.clamp_min(min_scale), x.new_full(scale.shape, min_scale)
-    )
+    scale.clamp_min_(min_scale).masked_fill_(~active, min_scale)
 
     # Tensor-level verification, gates scaled to the measured noise floor.
     s_col = scale.unsqueeze(1)
-    codes = (x / s_col - zero_point_shift).round().clamp(qmin, qmax)
-    recon = (codes + zero_point_shift) * s_col
+    codes = (x / s_col).sub_(zero_point_shift).round_().clamp_(qmin, qmax)
+    recon = (codes + zero_point_shift).mul_(s_col)
 
-    code_absmax = int(codes.abs().max().item()) if codes.numel() else 0
     # All-zero blocks reconstruct exactly (0 == 0) and count as matched.
     matched = (accepted & active) | ~active
     matched_frac = matched.float().mean().item() if num_blocks > 0 else 0.0
-    recon_relrms = (recon - x).norm() / x.norm().clamp(min=1e-12)
+    recon_relrms = recon.sub_(x).norm() / x.norm().clamp(min=1e-12)
+    del recon
     recon_gate = max(_RECON_RELRMS_MULT * ulp_rel, _RECON_RELRMS_FLOOR)
+    code_absmax = int(codes.abs().amax().item()) if codes.numel() else 0
 
     if not (
         code_absmax > 0
