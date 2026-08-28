@@ -48,6 +48,7 @@ from aimet_onnx.common.defs import (
     Float,
     int2,
     int8,
+    int16,
     float8e4m3fn,
     float8e5m2,
     EncodingType,
@@ -1173,30 +1174,23 @@ class QuantizationSimModel:
                 # If version is lesser than V73: {input0->8, input1->8 symmetric} {input0->16, input1->8 symmetric}
                 if self._hw_version is None:
                     continue
+                # Exception rules do not apply for float matmuls
+                if (
+                    target_quantizer_for_first_input is None
+                    or target_quantizer_for_second_input is None
+                ):
+                    continue
+                if QuantizationDataType.float in (
+                    target_quantizer_for_first_input.data_type,
+                    target_quantizer_for_second_input.data_type,
+                ):
+                    continue
                 if self._hw_version in {"V66", "V68", "V69"}:
-                    if target_quantizer_for_second_input is None:
-                        logger.warning(
-                            "The target quantizer for second input could not be found. MatMul exception rule does not apply for op: %s.",
-                            op.name,
-                        )
-                    elif (
-                        target_quantizer_for_second_input.data_type
-                        == QuantizationDataType.int
-                    ):
-                        target_quantizer_for_second_input.use_symmetric_encodings = True
-                        target_quantizer_for_second_input.set_bitwidth(8)
-                else:
-                    if (
-                        target_quantizer_for_first_input is None
-                        or target_quantizer_for_second_input is None
-                    ):
-                        logger.warning(
-                            "The target quantizers could not be found. MatMul exception rule does not apply for op: %s.",
-                            op.name,
-                        )
-                    elif target_quantizer_for_second_input.bitwidth == 16:
-                        target_quantizer_for_second_input.use_symmetric_encodings = True
-                        target_quantizer_for_first_input.set_bitwidth(16)
+                    target_quantizer_for_second_input.use_symmetric_encodings = True
+                    target_quantizer_for_second_input.set_precision(int8)
+                elif target_quantizer_for_second_input.precision() == int16:
+                    target_quantizer_for_second_input.use_symmetric_encodings = True
+                    target_quantizer_for_first_input.set_precision(int16)
 
             elif op.type == "ConvTranspose":
                 groups = utils.get_node_attribute(op.get_module(), "group")

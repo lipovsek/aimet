@@ -2743,6 +2743,34 @@ class TestQuantSim:
             # if matmul's second input is 16bw then first input should also be 16bw
             assert matmul_second_input["is_sym"] is True
 
+    @pytest.mark.parametrize("config_file", ["htp_v68", "htp_v81"])
+    def test_matmul_exception_rule_float_second_input(self, config_file):
+        """
+        Given: Dynamic MatMul whose second input is quantized to float16
+        When: Apply exception rules
+        Then: Precision of both inputs is unchanged
+        """
+        sim = QuantizationSimModel(
+            models_for_tests.dynamic_matmul_model(1), config_file=config_file
+        )
+        matmul = next(
+            op
+            for op in sim.connected_graph.get_all_ops().values()
+            if op.type == "MatMul"
+        )
+        first_input, second_input = matmul.inputs[0].name, matmul.inputs[1].name
+        sim.set_tensor_precision(second_input, aimet_onnx.float16)
+        first_input_precision = sim._get_enabled_quantizer(first_input).precision()
+
+        sim._apply_exception_rules()
+
+        assert (
+            sim._get_enabled_quantizer(first_input).precision() == first_input_precision
+        )
+        assert (
+            sim._get_enabled_quantizer(second_input).precision() == aimet_onnx.float16
+        )
+
     def test_matmul_v73_exception_rule_matmul_branch(self, tmp_dir):
         model = models_for_tests.add_matmul_model()
         quantsim_config = {
