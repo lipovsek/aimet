@@ -3622,18 +3622,6 @@ def load_encodings_to_sim(
             f"got {encoding_version}"
         )
 
-    if encoding_version in ("0.6.1", "1.0.0"):
-        all_quantizers = quant_sim_model.qc_quantize_op_dict.copy()
-    else:
-        # 2.0.0 doesn't have float16 encoding
-        all_quantizers = {
-            name: qtzr
-            for name, qtzr in quant_sim_model.qc_quantize_op_dict.items()
-            if not (
-                qtzr.data_type == QuantizationDataType.float and qtzr.bitwidth >= 16
-            )
-        }
-
     if encoding_version == "0.6.1":
         param_encodings = encodings["param_encodings"].copy()
         activation_encodings = encodings["activation_encodings"].copy()
@@ -3648,6 +3636,20 @@ def load_encodings_to_sim(
         all_encodings = param_encodings | activation_encodings
     else:
         all_encodings = {e["name"]: e for e in encodings["encodings"]}
+
+    if encoding_version in ("0.6.1", "1.0.0"):
+        all_quantizers = quant_sim_model.qc_quantize_op_dict.copy()
+    else:
+        # 2.0.0 doesn't have float16 encoding, ignore float quantizers
+        # unless they appear in encodings
+        all_quantizers = {
+            name: qtzr
+            for name, qtzr in quant_sim_model.qc_quantize_op_dict.items()
+            if name in all_encodings
+            or not (
+                qtzr.data_type == QuantizationDataType.float and qtzr.bitwidth >= 16
+            )
+        }
 
     _validate_encodings_to_load(quant_sim_model, all_encodings.keys())
 

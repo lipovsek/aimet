@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import math
 import numpy as np
 from typing import Any, Literal, TypeVar, Type, TYPE_CHECKING
-from aimet_onnx.common.defs import EncodingType, QuantizationDataType
+from aimet_onnx.common.defs import EncodingType, QuantizationDataType, qtype, float16
 from aimet_onnx.common import libpymo
 
 if TYPE_CHECKING:
@@ -771,7 +771,7 @@ class AffineEncoding(EncodingBase):
                 "Value of zero-point-shift must be the same for all encodings"
             )
 
-        qtzr.bitwidth = self.bitwidth
+        qtzr.set_precision(qtype.int(self.bitwidth))
         qtzr.use_symmetric_encodings = self.signed
         qtzr.use_strict_symmetric = self.signed and bool(np.all(self.offset == 1))
         qtzr.use_unsigned_symmetric = self.signed and bool(
@@ -1338,8 +1338,7 @@ class FloatEncoding(EncodingBase):
         Load encoding to QcQuantizeOp object
         """
         if self == _float16:
-            qtzr.data_type = QuantizationDataType.float
-            qtzr.bitwidth = 16
+            qtzr.set_precision(float16)
             qtzr.enabled = True
             return
 

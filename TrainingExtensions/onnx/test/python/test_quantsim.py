@@ -1049,14 +1049,17 @@ class TestQuantSim:
         ],
     )
     @pytest.mark.parametrize("allow_overwrite", [True, False])
+    @pytest.mark.parametrize("sim_type", [aimet_onnx.int8, aimet_onnx.float16])
     def test_load_encodings_to_sim_with_allow_overwrite(
-        self, allow_overwrite, act_enc, param_enc
+        self, allow_overwrite, act_enc, param_enc, sim_type: qtype
     ):
         model = test_models.model_with_split().model
 
         sim = QuantizationSimModel(
             model,
             providers=CPU_PROVIDERS,
+            param_type=sim_type,
+            activation_type=sim_type,
         )
 
         encodings = {
@@ -1696,7 +1699,10 @@ class TestQuantSim:
                 )  # Bit flip is possible from recomputing min/max during load
 
     @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
-    def test_load_encodings_per_channel_matmul(self, tmp_dir, encoding_version: str):
+    @pytest.mark.parametrize("target_sim_type", [aimet_onnx.int8, aimet_onnx.float16])
+    def test_load_encodings_per_channel_matmul(
+        self, tmp_dir, encoding_version: str, target_sim_type: qtype
+    ):
         model = models_for_tests.weight_matmul_model()
         sim = QuantizationSimModel(
             copy.deepcopy(model),
@@ -1709,9 +1715,14 @@ class TestQuantSim:
         sim_2 = QuantizationSimModel(
             copy.deepcopy(model),
             config_file="htp_v81",
+            param_type=target_sim_type,
+            activation_type=target_sim_type,
         )
+
         load_encodings_to_sim(
-            sim_2, os.path.join(tmp_dir, "export.encodings"), strict=True
+            sim_2,
+            os.path.join(tmp_dir, "export.encodings"),
+            strict=target_sim_type == aimet_onnx.int8,
         )
         out2 = sim_2.session.run(None, dummy_input)
         assert np.allclose(out1, out2)

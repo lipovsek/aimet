@@ -280,6 +280,11 @@ class QcQuantizeOp:
 
     @bitwidth.setter
     def bitwidth(self, bitwidth):
+        if self.is_encoding_frozen():
+            raise RuntimeError(
+                "Cannot set bitwidth of frozen quantizer, use ``set_bitwidth`` or ``set_precision`` "
+                "to avoid this error."
+            )
         self._tensor_quantizer.bitwidth = bitwidth
 
     @property
@@ -441,9 +446,11 @@ class QcQuantizeOp:
         :param is_unsigned_symmetric: True if encoding is unsigned symmetric, False otherwise
         :param data_type: Data type of encoding
         """
+        if self.is_encoding_frozen():
+            return
+
         self.enabled = True
-        self.bitwidth = encoding[0].bw
-        self.data_type = data_type
+        self.set_precision(qtype.from_legacy_repr(data_type, encoding[0].bw))
         if self.data_type == QuantizationDataType.int:
             assert self.use_symmetric_encodings is not None
             assert self.use_strict_symmetric is not None
@@ -462,6 +469,9 @@ class QcQuantizeOp:
             self.load_encodings(encoding)
 
     def _load_encodings_dict(self, encoding_dict: dict, allow_overwrite: bool = True):
+        if self.is_encoding_frozen():
+            return
+
         if self.tensor_quantizer_params:
             input_shape = self.tensor_quantizer_params.tensor_shape
             default_channel_axis = self.tensor_quantizer_params.channel_axis
