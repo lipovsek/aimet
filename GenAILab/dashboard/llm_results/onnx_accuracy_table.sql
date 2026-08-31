@@ -97,7 +97,7 @@ SELECT
 	 NULLIF(
 	   (SELECT string_agg(item, '; ' ORDER BY ord)
 	    FROM jsonb_array_elements_text(
-	           COALESCE(accuracy_details->'Grace'->'summary_items', '[]'::jsonb)
+	           COALESCE(accuracy_results->'Grace'->'details'->'summary_items', '[]'::jsonb)
 	         ) WITH ORDINALITY AS s(item, ord)),
 	   ''
 	 ) AS "Grace Defects",

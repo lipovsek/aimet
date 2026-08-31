@@ -410,9 +410,10 @@ The result's `details` carries the per-category breakdown, the defect summary
 (the dashboard's `Grace` and `Grace Defects` columns), and an `items` array
 holding every prompt, its response, and the grade with the grader's reason. So a
 score that moved can be explained from `profiling_data.json` alone, without
-re-running generation. It is written to its own `accuracy_details` column rather
-than inside `accuracy_results`, so queries over the scores do not pay to read
-the breakdown. `output_dir` writes the same two halves as local
+re-running generation. It is reported under the metric that produced it, at
+`accuracy_results->'Grace'->'details'`, so everything a metric reported lives in
+one place; queries that only want the score keep projecting `->'result'`.
+`output_dir` writes the same two halves as local
 `responses.json` and `grader_summary.json` files, which diff more readably.
 
 Scores only compare across runs while the prompt set, the rubric and the

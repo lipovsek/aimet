@@ -15,7 +15,6 @@ from GenAILab.bench.profiler import (
     merge_csv_results,
     convert_gpu_meter_to_dict,
     convert_metric_result_to_dict,
-    collect_metric_details,
     _collect_environment,
     ComponentRecipeStats,
     RecipeStepStats,
@@ -136,7 +135,6 @@ class TestWriteStats:
             "precision",
             "components",
             "accuracy_results",
-            "accuracy_details",
             "export",
             "environment",
             "run_group",
@@ -223,40 +221,27 @@ class TestHelpers:
 
 
 class TestMetricDetails:
-    """``details`` travels in its own column, never inside the metric's row."""
+    """``details`` is reported under the metric that produced it."""
 
-    def test_metric_row_never_carries_details(self):
+    def test_metric_row_carries_details(self):
         details = {"category_scores": {"math": {"score_pct": 70.0}}}
         row = convert_metric_result_to_dict(
             MetricResult(
                 metric_name="Grace", result=87.5, profiler=None, details=details
             )
         )
-        assert row == {"result": 87.5, "scoring_version": 1}
+        assert row == {"result": 87.5, "scoring_version": 1, "details": details}
 
-    def test_row_shape_matches_a_metric_without_details(self):
-        with_details = convert_metric_result_to_dict(
-            MetricResult(
-                metric_name="Grace", result=87.5, profiler=None, details={"a": 1}
-            )
-        )
+    def test_key_omitted_for_a_metric_without_details(self):
         without = convert_metric_result_to_dict(
             MetricResult(metric_name="Grace", result=87.5, profiler=None)
         )
-        assert with_details == without
+        empty = convert_metric_result_to_dict(
+            MetricResult(metric_name="Grace", result=87.5, profiler=None, details={})
+        )
+        assert without == empty == {"result": 87.5, "scoring_version": 1}
 
-    def test_collect_keys_by_metric_name_and_drops_empty(self):
-        assert collect_metric_details(
-            [
-                MetricResult(
-                    metric_name="Grace", result=87.5, profiler=None, details={"a": 1}
-                ),
-                MetricResult(metric_name="PPL", result=12.5, profiler=None),
-                MetricResult(metric_name="MMLU", result=0.5, profiler=None, details={}),
-            ]
-        ) == {"Grace": {"a": 1}}
-
-    def test_written_to_json_as_a_sibling_key(self, results_dir):
+    def test_written_to_json_under_the_metric(self, results_dir):
         details = {"summary_items": ["repeated words (3 items)"], "num_unparsed": 0}
         write_stats_to_disk(
             output_folder=results_dir,
@@ -275,16 +260,11 @@ class TestMetricDetails:
         with open(os.path.join(results_dir, "profiling_data.json")) as f:
             entry = json.load(f)["llama"][0]
         assert entry["Grace"]["result"] == 87.5
-        assert "details" not in entry["Grace"]
-        assert entry["accuracy_details"] == {"Grace": details}
-
-    def test_json_omits_the_key_when_no_metric_has_details(self, results_dir):
-        _write_sample(results_dir)
-        with open(os.path.join(results_dir, "profiling_data.json")) as f:
-            entry = json.load(f)["llama"][0]
+        assert entry["Grace"]["details"] == details
+        assert "details" not in entry["PPL"]
         assert "accuracy_details" not in entry
 
-    def test_written_to_csv_as_its_own_column(self, results_dir):
+    def test_written_to_csv_under_the_metric(self, results_dir):
         details = {"summary_items": ["repeated words (3 items)"]}
         write_stats_to_disk(
             output_folder=results_dir,
@@ -302,10 +282,9 @@ class TestMetricDetails:
         with open(os.path.join(results_dir, "profiling_data.csv")) as f:
             header, row = list(csv.reader(f))
         cells = dict(zip(header, row, strict=True))
-        assert _unwrap_postgres_json(cells["accuracy_details"]) == {"Grace": details}
-        assert (
-            "details" not in _unwrap_postgres_json(cells["accuracy_results"])["Grace"]
-        )
+        assert "accuracy_details" not in cells
+        accuracy = _unwrap_postgres_json(cells["accuracy_results"])
+        assert accuracy["Grace"]["details"] == details
 
     def test_scored_result_defaults_to_no_details(self):
         assert ScoredResult(result=1.0).details is None

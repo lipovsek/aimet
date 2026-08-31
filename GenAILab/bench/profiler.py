@@ -77,36 +77,28 @@ class MetricResult:
     result: float | list[str]
     profiler: GPUMeter
     scoring_version: int = 1  # EvaluationMetric.SCORING_VERSION; absent == 1
-    # Breakdown; goes to the sibling accuracy_details column, omitted if empty.
+    # Breakdown; reported as the metric's own ``details`` key, omitted if empty.
     details: dict | None = None
 
 
 def convert_metric_result_to_dict(
     result: MetricResult, remove_finegrained: bool = False
 ) -> dict:
-    """Flatten one metric's result and profiling numbers into a stats row.
+    """Flatten one metric's result, profiling numbers and breakdown into a row.
 
-    ``details`` stays out: it can run to hundreds of kilobytes, and every query
-    touching this object would have to read all of it. See
-    :func:`collect_metric_details`.
+    ``details`` is nested under the metric it belongs to, so everything a metric
+    reported lives under ``accuracy_results-><metric>``. It is omitted when
+    empty, keeping the shape of metrics that never report one. It can run to
+    hundreds of kilobytes, so queries that only want scores should still project
+    ``->'result'`` rather than the whole object.
     """
-    return {
+    row = {
         "result": result.result,
         "scoring_version": result.scoring_version,
     } | convert_gpu_meter_to_dict(result.profiler, remove_finegrained)
-
-
-def collect_metric_details(accuracy_results: list[MetricResult]) -> dict:
-    """Per-metric ``details`` payloads for the ``accuracy_details`` column.
-
-    Kept apart from ``accuracy_results`` because scores are queried constantly
-    and breakdowns almost never. Metrics without one are omitted.
-    """
-    return {
-        result.metric_name: result.details
-        for result in accuracy_results
-        if result.details
-    }
+    if result.details:
+        row["details"] = result.details
+    return row
 
 
 @dataclass
@@ -320,7 +312,6 @@ def _write_stats_to_csv(
         dict_to_postgres_csv_json_field(precision or {}),
         dict_to_postgres_csv_json_field(components_dict),
         dict_to_postgres_csv_json_field(accuracy_table),
-        dict_to_postgres_csv_json_field(collect_metric_details(accuracy_results)),
         export_location if export_location is not None else "",
         dict_to_postgres_csv_json_field(_collect_environment()),
         run_group or "",
@@ -339,7 +330,6 @@ def _write_stats_to_csv(
                         "precision",
                         "components",
                         "accuracy_results",
-                        "accuracy_details",
                         "export",
                         "environment",
                         "run_group",
@@ -380,11 +370,6 @@ def _write_stats_to_json(
         result.metric_name: convert_metric_result_to_dict(result)
         for result in accuracy_results
     }
-
-    # Mirrors the CSV column; omitted so runs without a breakdown keep shape.
-    accuracy_details = collect_metric_details(accuracy_results)
-    if accuracy_details:
-        stats["accuracy_details"] = accuracy_details
 
     if export_location is not None:
         stats["export"] = export_location
