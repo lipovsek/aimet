@@ -24,14 +24,12 @@ class EncodingBase(abc.ABC):
     """
 
     scale: torch.Tensor
+    block_size: Optional[tuple[int, ...]]
     producer: Optional["QuantizerBase"]
+    _input_shape_hint: Optional[tuple[int, ...]]
 
-    @property
-    @abc.abstractmethod
-    def block_size(self) -> tuple[int, ...] | None:
-        """
-        Returns quantization block size
-        """
+    def __init__(self):
+        self._input_shape_hint = None
 
     @property
     @abc.abstractmethod
@@ -129,29 +127,78 @@ class EncodingBase(abc.ABC):
             return "perchannel"
         return "unknown"
 
-    def _get_channel_axis(self) -> int | None:
-        try:
-            channel_axis = next(
-                iter(axis for axis, dim in enumerate(self.scale.shape) if dim > 1)
+    def _hint_input_shape(self, input_shape: tuple[int, ...]) -> "EncodingBase":
+        """
+        Hint shape of the input tensor to be quantized
+        to concretize the scale shape and block size of the encoding
+        This is internal API only for ONNX export
+
+        Args:
+            input_shape (tuple[int, ...]): Shape of the input tensor to be quantized
+        """
+        self._input_shape_hint = input_shape
+        return self
+
+    def _safe_get_channel_and_block_axis(self) -> tuple[int | None, int | None]:
+        """
+        Returns the channel axis and block axis based on the input tensor shape.
+        This is internal API only for ONNX export
+        """
+        if self._input_shape_hint is None:
+            raise RuntimeError(
+                "Could not safely infer channel and block axes "
+                "because input shape hint is not provided. "
+                "Call `_hint_input_shape` before calling this function."
             )
-        except StopIteration:
-            # Per-channel encoding that happens to have only one output channel
-            # In this case, fall back to per-tensor encoding since we aren't fully
-            # sure about the channel axis
-            return None
 
-        return channel_axis - self.scale.dim()  # Convert to negative axis
+        from aimet_torch.quantization._utils import concretize_block_size
 
-    def _get_block_axis(self) -> int | None:
-        # NOTE: DO NOT USE THIS FUNCTION except for QNN encoding export.
-        #       This function assumes block axis can only be either axis 0 or axis 1.
-        #       This assumption holds in practical cases, but does not cover all theoretically
-        #       possible cases.
-        if self.block_size is None:
-            raise RuntimeError
+        concrete_block_size = concretize_block_size(
+            self._input_shape_hint,
+            self.scale.shape,
+            self.block_size or (),
+        )
 
-        for axis, blk in enumerate(self.block_size[:2]):
-            if blk != 1:
-                return axis - self.scale.dim()  # Convert to negative axis
+        channel_axis_candidates = []
+        block_axis_candidates = []
 
-        return None
+        for axis, (n_blocks, blk_size) in enumerate(
+            zip(self.scale.shape, concrete_block_size)
+        ):
+            if n_blocks > 1:
+                if blk_size > 1:
+                    block_axis_candidates.append(axis)
+                else:
+                    channel_axis_candidates.append(axis)
+
+        if len(block_axis_candidates) > 1:
+            raise RuntimeError(
+                f"Multiple non-trivial block axes found: {block_axis_candidates}. "
+                f"Cannot determine a unique block axis."
+            )
+
+        (block_axis,) = block_axis_candidates or (None,)
+
+        if len(channel_axis_candidates) > 1:
+            raise RuntimeError(
+                f"Multiple non-trivial channel axes found: {channel_axis_candidates}. "
+                f"Cannot determine a unique channel axis."
+            )
+
+        (channel_axis,) = channel_axis_candidates or (None,)
+
+        if channel_axis is None and block_axis is not None:
+            raise RuntimeError(
+                f"Block axis {block_axis} found without a corresponding channel axis. "
+                f"Cannot determine a unique channel axis."
+            )
+
+        if channel_axis is not None:
+            # Convert to negative axis
+            channel_axis = channel_axis - self.scale.dim()
+
+        if block_axis is not None:
+            # Convert to negative axis
+            block_axis = block_axis - self.scale.dim()
+
+        return channel_axis, block_axis

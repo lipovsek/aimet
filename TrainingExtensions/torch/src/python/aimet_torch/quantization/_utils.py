@@ -28,14 +28,32 @@ def interleave(
 
 
 def concretize_block_size(
-    input_shape: Sequence[int], scale_shape: Sequence[int], block_size: Sequence[int]
+    input_shape: Sequence[int],
+    scale_shape: Sequence[int],
+    block_size: Sequence[int],
 ) -> tuple[int, ...]:
+    if len(input_shape) < len(scale_shape):
+        raise ValueError(
+            f"Input shape {input_shape} must have at least "
+            f"as many dimensions as scale shape {scale_shape}."
+        )
+
+    if len(scale_shape) < len(block_size):
+        raise ValueError(
+            f"Scale shape {scale_shape} must have at least "
+            f"as many dimensions as block size {block_size}."
+        )
+
     # Truncate input_shape to match scale_shape length
     input_shape = input_shape[-len(scale_shape) :]
 
     # Expand block_size to match scale_shape length
+    # If scale ndim is greater than block_size ndim,
+    # it means the first K scale dimensions with no block size
+    # should be broadcasted to input following numpy-style broadcasting rules
+    K = len(scale_shape) - len(block_size)
     block_size = [
-        *(1 for _ in range(len(scale_shape) - len(block_size))),
+        *(1 if scale_dim > 1 else -1 for scale_dim in scale_shape[:K]),
         *block_size,
     ]
 

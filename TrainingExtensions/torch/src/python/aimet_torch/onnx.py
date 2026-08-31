@@ -1127,10 +1127,17 @@ def _to_onnx(
     for encoding in _remove_onnx_qdq_nodes(onnx_model):
         name = encoding.pop("name")
         is_param = name in param_names or aliases.get(name) in param_names
-        tensor_to_encoding_map[name] = (
-            AffineEncoding._from_qnn_encoding_dict(encoding, version="2.0.0"),
-            is_param,
-        )
+        encoding = AffineEncoding._from_qnn_encoding_dict(encoding, version="2.0.0")
+        tensor_to_encoding_map[name] = (encoding, is_param)
+
+    static_input_shapes = {
+        name: tuple(const.dims)
+        for name, const in _get_all_constants(onnx_model).items()
+    }
+    for name, (enc, _) in tensor_to_encoding_map.items():
+        input_shape = static_input_shapes.get(name, None)
+        if input_shape is not None:
+            enc._hint_input_shape(input_shape)
 
     encoding_dict = {
         name: enc.to_qnn_encoding_dict("2.0.0")

@@ -590,12 +590,21 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
         :param excluded_layer_names: List of names of layers that have been excluded from quantization
         :param quantizer_args: Arguments to top leve quantsim
         """
+        # pylint: disable=protected-access
         if onnx_model is not None:
             tensor_to_encoding_map = {
                 name: quantizer.get_encodings()
                 for name, quantizer in tensor_to_quantizer_map.items()
                 if quantizer
             }
+            static_input_shapes = {
+                name: tuple(const.dims)
+                for name, const in _get_all_constants(onnx_model).items()
+            }
+            for name, enc in tensor_to_encoding_map.items():
+                if name in static_input_shapes:
+                    enc._hint_input_shape(static_input_shapes[name])
+
             tensor_to_encoding_dict_map = {
                 name: encoding.to_qnn_encoding_dict("2.0.0")
                 for name, encoding in tensor_to_encoding_map.items()
@@ -604,7 +613,6 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
             derived_encodings = _derive_const_rescale_op_output_encodings(
                 onnx_model, tensor_to_encoding_dict_map
             )
-            # pylint: disable=protected-access
             derived_encodings = {
                 name: AffineEncoding._from_qnn_encoding_dict(
                     encoding_dict

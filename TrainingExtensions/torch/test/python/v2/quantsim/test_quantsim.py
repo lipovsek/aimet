@@ -906,6 +906,7 @@ class TestQuantsim:
         )
         qsim.compute_encodings(lambda m, _: m(dummy_input), None)
         out1 = qsim.model(dummy_input)
+
         with tempfile.TemporaryDirectory() as temp_dir:
             qsim.save_encodings_to_json(temp_dir, "saved_encodings")
             qsim.export(temp_dir, "exported_encodings", dummy_input=dummy_input)
@@ -950,6 +951,10 @@ class TestQuantsim:
 
             out4 = qsim.model(dummy_input)
             assert torch.allclose(out1, out4)
+
+            # Should be able to export after folding param quantizers
+            qsim.fold_param_quantizers()
+            qsim.export(temp_dir, "_", dummy_input=dummy_input)
 
     def test_quantsim_with_unused_modules(self):
         """

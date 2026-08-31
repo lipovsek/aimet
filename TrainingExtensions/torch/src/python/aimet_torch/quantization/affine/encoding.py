@@ -68,6 +68,7 @@ class AffineEncoding(EncodingBase, _GridMixin):
     ): ...
 
     def __init__(self, scale: torch.Tensor, offset: torch.Tensor, *args, **kwargs):  # pylint: disable=too-many-locals
+        super().__init__()
         self.scale = scale
         self.offset = offset
         full_args = (scale, offset, *args)
@@ -113,7 +114,7 @@ class AffineEncoding(EncodingBase, _GridMixin):
         self.qmin = qmin
         self.qmax = qmax
         self._symmetry = symmetry
-        self._block_size = block_size
+        self.block_size = block_size
         self._zero_point_shift = zero_point_shift or 0.0
 
         if self._zero_point_shift not in [0.0, 0.5]:
@@ -200,13 +201,6 @@ class AffineEncoding(EncodingBase, _GridMixin):
             dtype_str = f"uint{nbits}"
 
         return dtype_str
-
-    @property
-    def block_size(self) -> Optional[Tuple[int, ...]]:
-        """
-        Returns the block sizes of the quantizer encoding
-        """
-        return self._block_size
 
     @property
     def zero_point_shift(self) -> float:
@@ -392,8 +386,9 @@ class AffineEncoding(EncodingBase, _GridMixin):
             elif self.granularity == "perchannel":
                 encoding_dict["enc_type"] = EncodingType.PER_CHANNEL.name
             else:
+                _, block_axis = self._safe_get_channel_and_block_axis()
                 encoding_dict["enc_type"] = EncodingType.PER_BLOCK.name
-                encoding_dict["block_size"] = self.block_size[self._get_block_axis()]
+                encoding_dict["block_size"] = self.block_size[block_axis]
                 if encoding_dict["block_size"] == -1:
                     raise NotImplementedError(
                         "Exporting encodings to 1.0.0 format with block size -1 is not "
@@ -418,15 +413,8 @@ class AffineEncoding(EncodingBase, _GridMixin):
             block_axis = None
             block_size = None
 
-            if self.granularity == "pertensor":
-                pass
-            elif self.granularity == "perchannel":
-                channel_axis = self._get_channel_axis()
-            elif self.granularity == "blockwise":
-                # NOTE: This sometimes fail
-                block_axis = self._get_block_axis()
-            else:
-                raise NotImplementedError
+            if self.granularity != "pertensor":
+                channel_axis, block_axis = self._safe_get_channel_and_block_axis()
 
             if block_axis is not None:
                 axis = block_axis
@@ -654,12 +642,13 @@ class GroupedBlockEncoding(AffineEncoding):
                     }
                 )
             else:
+                channel_axis, _ = self._safe_get_channel_and_block_axis()
                 encoding_dict.update(
                     {
                         "y_scale": {
                             "x": quantized_scale,
                             "x_scale": meta_scale.flatten().tolist(),
-                            "axis": self._get_channel_axis(),
+                            "axis": channel_axis,
                         },
                         "output_dtype": output_dtype,
                     }
@@ -693,7 +682,7 @@ class GroupedBlockEncoding(AffineEncoding):
                 "asymmetric encodings are not supported"
             )
 
-        block_axis = encoding._get_block_axis()
+        _, block_axis = encoding._safe_get_channel_and_block_axis()
         block_grouping = tuple(
             s_dim if block_axis in (axis, axis - encoding.scale.dim()) else 1
             for axis, s_dim in enumerate(encoding.scale.shape)
@@ -710,10 +699,10 @@ class GroupedBlockEncoding(AffineEncoding):
             qtzr.min.copy_(encoding.min)
             qtzr.max.copy_(encoding.max)
 
-        lpbq_scale = qtzr.get_scale()
+        lpbq_encoding = qtzr.get_encodings()
 
         # If encoding.scale is equal to LPBQ scale, we can interpret it as LPBQ
-        if torch.allclose(encoding.scale, lpbq_scale):
-            return qtzr.get_encodings()
+        if torch.allclose(encoding.scale, lpbq_encoding.scale):
+            return lpbq_encoding._hint_input_shape(encoding._input_shape_hint)
 
         raise ValueError("Failed to interpret encoding as GroupedBlockEncoding.")

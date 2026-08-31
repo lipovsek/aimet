@@ -337,13 +337,16 @@ def test_quantsim_export_resnet(
         else contextlib.nullcontext()
     ):
         expected_param_encodings = {
-            f"{module_name}.{param_name}": qtzr.get_encodings().to_qnn_encoding_dict(
-                encoding_version
+            f"{module_name}.{param_name}": (
+                qtzr.get_encodings()
+                ._hint_input_shape(qmodule.get_parameter(param_name).shape)
+                .to_qnn_encoding_dict(encoding_version)
             )
             for module_name, qmodule in sim.named_qmodules()
             for param_name, qtzr in qmodule.param_quantizers.items()
             if isinstance(qtzr, Q.affine.AffineQuantizerBase)
         }
+
         expected_activation_encodings = {}
         expected_activation_encodings.update(
             {
@@ -3667,13 +3670,14 @@ def test_multi_input_grid_equivariant_op_encoding_propagation(
         assert len(set(tuple(e.items()) for e in encodings)) == len(float_input_names)
 
 
-def test_encoding_version_2_1_0(tmp_path: pathlib.Path):
+@pytest.mark.parametrize("input_ndim", [2, 3])
+def test_encoding_version_2_1_0(tmp_path: pathlib.Path, input_ndim: int):
     """
     Given: A quantized model with LPBQ weights
     When: Export to onnx QDQ with encoding version 2.1.0
     Then: The exported encodings should contain LPBQ encoding in 2.1.0 format
     """
-    dummy_input = torch.randn(1, 10)
+    dummy_input = torch.randn(1, 10) if input_ndim == 2 else torch.randn(1, 1, 10)
     sim = QuantizationSimModel(torch.nn.Linear(10, 10), dummy_input)
 
     set_grouped_blockwise_quantization_for_weights(
@@ -3701,18 +3705,104 @@ def test_encoding_version_2_1_0(tmp_path: pathlib.Path):
         encodings = json.load(f)["encodings"]
 
     lpbq_enc = sim.model.param_quantizers["weight"].get_encodings()
+    expected_meta_scale = lpbq_enc.per_channel_scale.flatten()
+
+    if input_ndim == 2:
+        input_name = "weight"
+        expected_channel_axis = -2
+        expected_block_axis = 1
+        expected_scale_q = lpbq_enc.per_block_int_scale.int()
+    else:
+        # If input_dim > 2, Linear is exported as MatMul + Add with transposed weight
+        # Check LPBQ encoding axes were also transposed accordingly
+        input_name = "weight_0"
+        expected_channel_axis = -1
+        expected_block_axis = 0
+        expected_scale_q = lpbq_enc.per_block_int_scale.T.int()
+
     expected_encoding = [
         {
-            "name": "weight",
+            "name": input_name,
             "y_scale": {
-                "x": lpbq_enc.per_block_int_scale.to(torch.int32).tolist(),
-                "x_scale": lpbq_enc.per_channel_scale.flatten().tolist(),
-                "axis": -2,
+                "x": expected_scale_q.tolist(),
+                "x_scale": expected_meta_scale.tolist(),
+                "axis": expected_channel_axis,
             },
-            "axis": 1,
+            "axis": expected_block_axis,
             "block_size": 2,
             "output_dtype": "int4",
         }
     ]
 
     assert encodings == expected_encoding
+
+
+def test_export_with_abnormal_axes(tmp_path: pathlib.Path):
+    """
+    Given: Weight quantized with multiple non-trivial block axes
+    When: Export to onnx QDQ
+    Then: Should raise error
+    """
+    dummy_input = torch.randn(1, 10)
+    sim = QuantizationSimModel(torch.nn.Linear(10, 10), dummy_input)
+    aimet_torch.utils.remove_activation_quantizers(sim.model)
+    sim.model.param_quantizers["weight"] = Q.affine.QuantizeDequantize(
+        shape=(2, 2),
+        qmin=-8,
+        qmax=7,
+        symmetric=True,
+        block_size=(-1, -1),
+    )
+    sim.model.compute_param_encodings()
+
+    with pytest.raises(RuntimeError, match="Multiple non-trivial block axes found"):
+        sim.onnx.export(
+            (dummy_input,),
+            tmp_path / "model.onnx",
+            opset_version=21,
+            encoding_version="2.1.0",
+        )
+
+    with pytest.raises(RuntimeError, match="Multiple non-trivial block axes found"):
+        aimet_torch.onnx.export(
+            sim.model,
+            (dummy_input,),
+            tmp_path / "model.onnx",
+            opset_version=21,
+        )
+
+    """
+    Given: Weight quantized with no channel axis and one non-trivial block axis
+    When: Export to onnx QDQ
+    Then: Should raise error
+    """
+    sim.model.param_quantizers["weight"] = Q.affine.QuantizeDequantize(
+        shape=(1, 2),
+        qmin=-8,
+        qmax=7,
+        symmetric=True,
+        block_size=(-1, -1),
+    )
+    sim.model.compute_param_encodings()
+
+    with pytest.raises(
+        RuntimeError,
+        match="Block axis 1 found without a corresponding channel axis",
+    ):
+        sim.onnx.export(
+            (dummy_input,),
+            tmp_path / "model.onnx",
+            opset_version=21,
+            encoding_version="2.1.0",
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Block axis 1 found without a corresponding channel axis",
+    ):
+        aimet_torch.onnx.export(
+            sim.model,
+            (dummy_input,),
+            tmp_path / "model.onnx",
+            opset_version=21,
+        )

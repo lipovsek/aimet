@@ -601,11 +601,16 @@ class BaseQuantizationMixin(abc.ABC):
         """
         Returns a dict of {param name: param encodings}, with each encoding represented as a List of Dicts
         """
+        # pylint: disable=protected-access
         encodings = {}
         for param_name, quantizer in self.param_quantizers.items():
+            param = getattr(self, param_name)
+
             if isinstance(quantizer, QuantizerBase) and quantizer.is_initialized():
-                encodings[param_name] = quantizer.get_encodings().to_qnn_encoding_dict(
-                    encoding_version
+                encodings[param_name] = (
+                    quantizer.get_encodings()
+                    ._hint_input_shape(param.shape)
+                    .to_qnn_encoding_dict(encoding_version)
                 )
             else:
                 encodings[param_name] = None
@@ -618,7 +623,9 @@ class BaseQuantizationMixin(abc.ABC):
             if isinstance(param, QuantizedTensorBase) and param.encoding is not None:
                 # If parameter itself is an already-quantized tensor,
                 # export the encoding held by the parameter
-                e = param.encoding.to_qnn_encoding_dict(encoding_version)  # pylint: disable=protected-access
+                e = param.encoding._hint_input_shape(param.shape).to_qnn_encoding_dict(
+                    encoding_version
+                )
             else:
                 e = None
             encodings[param_name] = e

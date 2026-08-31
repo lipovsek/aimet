@@ -37,6 +37,8 @@ class FloatEncoding(EncodingBase):
         *,
         producer: Optional["FloatQuantizeDequantize"] = None,
     ):
+        super().__init__()
+
         if scale is None:
             raise ValueError("scale cannot be None for FloatEncoding")
 
@@ -46,7 +48,7 @@ class FloatEncoding(EncodingBase):
             block_size = tuple(block_size)
 
         self.scale = scale
-        self._block_size = block_size or None
+        self.block_size = block_size or None
         self.producer = producer
 
     @property
@@ -92,13 +94,6 @@ class FloatEncoding(EncodingBase):
         return self.scale * self._finfo.max
 
     @property
-    def block_size(self) -> tuple[int, ...] | None:
-        """
-        Returns the block size for block floating point quantization
-        """
-        return self._block_size
-
-    @property
     def bitwidth(self) -> int:
         """
         Returns the bitwidth of the quantizer encoding
@@ -139,7 +134,7 @@ class FloatEncoding(EncodingBase):
             self.finite,
             self.unsigned_zero,
             scale,
-            block_size=self._block_size,
+            block_size=self.block_size,
         )
 
     def quantize(self, input: torch.Tensor) -> torch.Tensor:
@@ -225,15 +220,8 @@ class FloatEncoding(EncodingBase):
             block_axis = None
             block_size = None
 
-            if self.granularity == "pertensor":
-                pass
-            elif self.granularity == "perchannel":
-                channel_axis = self._get_channel_axis()
-            elif self.granularity == "blockwise":
-                # NOTE: This sometimes fail
-                block_axis = self._get_block_axis()
-            else:
-                raise NotImplementedError
+            if self.granularity != "pertensor":
+                channel_axis, block_axis = self._safe_get_channel_and_block_axis()
 
             if block_axis is not None:
                 axis = block_axis

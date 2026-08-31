@@ -1019,6 +1019,7 @@ def _get_float_encoding_from_onnx_node(
     quant_node: onnx.NodeProto,
     base_dir: Optional[str] = None,
 ) -> FloatEncoding:
+    # pylint: disable=protected-access
     from aimet_torch.quantization.float import FloatEncoding
     from aimet_torch.quantization.float._finfo import _finfo
 
@@ -1045,7 +1046,10 @@ def _get_float_encoding_from_onnx_node(
     else:
         raise RuntimeError(f"Cannot find constant with name {scale_name} in onnx model")
 
-    return FloatEncoding(
+    if scale.numel() == 1:
+        scale = scale.squeeze()
+
+    encoding = FloatEncoding(
         finfo.mantissa_bits,
         finfo.exponent_bits,
         finfo.finite,
@@ -1053,6 +1057,13 @@ def _get_float_encoding_from_onnx_node(
         scale=scale,
         block_size=block_size,
     )
+
+    input_name = quant_node.input[0]
+    if input_name in constants:
+        input_shape = tuple(constants[input_name].dims)
+        encoding._hint_input_shape(input_shape)
+
+    return encoding
 
 
 def _get_affine_encoding_from_onnx_node(
@@ -1112,6 +1123,11 @@ def _get_affine_encoding_from_onnx_node(
         block_size=block_size,
         zero_point_shift=zero_point_shift,
     )
+
+    input_name = quant_node.input[0]
+    if input_name in constants:
+        input_shape = tuple(constants[input_name].dims)
+        encoding._hint_input_shape(input_shape)
 
     if block_size and symmetry:
         try:

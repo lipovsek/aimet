@@ -392,7 +392,16 @@ def test_onnx_export(
     if maxval is not None:
         qdq.maxval = torch.full(shape, maxval)
 
-    model = torch.nn.Sequential(torch.nn.Sigmoid(), qdq)
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.x = torch.nn.Parameter(x)
+            self.qdq = qdq
+
+        def forward(self, x):
+            return x + self.qdq(self.x)
+
+    model = Model()
     torch.onnx.export(
         model,
         (x,),
@@ -425,10 +434,10 @@ def test_onnx_export(
     (out,) = sess.run(None, {"input": x.detach().numpy()})
 
     if dtype == torch.float8_e5m2:
-        expected_out = qdq(torch.sigmoid(x))
+        expected_out = x + qdq(x)
     else:
         # float16 quantizer won't be actually exported to onnx QDQ.
-        expected_out = torch.sigmoid(x)
+        expected_out = x + x
 
     assert torch.allclose(torch.from_numpy(out), expected_out)
 
