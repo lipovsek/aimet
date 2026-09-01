@@ -1300,7 +1300,7 @@ def _to_onnx_qdq(
     base_dir: str,
 ) -> onnx.ModelProto:
     qnn_encodings = {
-        name: encoding.to_qnn_encoding_dict("2.0.0")
+        name: encoding.to_qnn_encoding_dict("2.1.0")
         for name, (encoding, _) in tensor_to_encoding_map.items()
     }
     qnn_encodings = {

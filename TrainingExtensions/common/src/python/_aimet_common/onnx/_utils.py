@@ -129,29 +129,74 @@ def _add_onnx_qdq_nodes(
 
         if input_name in constants:
             input_shape = constants[input_name].dims
-
-            # Convert to positive index. Not strictly necessary; just for convenience
-            if axis is not None:
-                axis = (axis + len(input_shape)) % len(input_shape)
         else:
             input_shape = None
 
+        encoding = _convert_200_to_210(encoding, input_shape)
+
+        if input_shape is not None:
+            # Convert to positive index. Not strictly necessary; just for convenience
+            if axis is not None:
+                axis = (axis + len(input_shape)) % len(input_shape)
+
         block_size = encoding.get("block_size", None)
         y_zero_point = encoding.get("y_zero_point", None)
+        y_scale = encoding.get("y_scale", None)
 
-        y_scale = np.array(
-            encoding.get("y_scale") or encoding.get("per_channel_float_scale")
-        ).astype(float_type)
-        per_block_int_scale = (
-            np.array(encoding["per_block_int_scale"])
-            if "per_block_int_scale" in encoding
-            else None
-        )
+        if isinstance(y_scale, (list, float)):
+            # Regular quantization encoding
+            y_scale = np.array(y_scale).astype(float_type)
+            tensors_to_add.append(from_array(y_scale, name=f"{input_name}_scale"))
+        else:
+            # Double quantization encoding (e.g. LPBQ, NVFP4)
+            #
+            #     weight -----> Q -> DQ -> ...
+            #    scale_q -> DQ -^----^
+            # meta_scale ---^
+            (
+                scale_q,
+                meta_scale,
+                meta_zero_point,
+                meta_axis,
+                meta_block_size,
+            ) = _parse_meta_encoding(y_scale, float_type=float_type)
+
+            tensors_to_add.extend(
+                [
+                    from_array(scale_q, name=f"{input_name}_scale_q"),
+                    from_array(meta_scale, name=f"{input_name}_meta_scale"),
+                    from_array(meta_zero_point, name=f"{input_name}_meta_zero_point"),
+                ]
+            )
+            nodes_to_add.append(
+                opset.DequantizeLinear.make_node(
+                    name=f"{node_name_prefix}_scale_dq",
+                    inputs=[
+                        f"{input_name}_scale_q",
+                        f"{input_name}_meta_scale",
+                        f"{input_name}_meta_zero_point",
+                    ],
+                    output=f"{input_name}_scale",
+                    dtype=_np_dtype_to_str(scale_q.dtype),
+                    axis=meta_axis,
+                    block_size=meta_block_size,
+                )
+            )
+            y_scale = to_array(
+                _dequantize_const(
+                    from_array(scale_q),
+                    "",
+                    meta_scale,
+                    meta_zero_point,
+                    axis=meta_axis,
+                    block_size=meta_block_size,
+                    output_dtype="float32",
+                    per_block_int_scale=None,
+                )
+            )
 
         if y_zero_point is not None:
-            y_zero_point = np.array(encoding["y_zero_point"], dtype=np.int64)
-        elif per_block_int_scale is not None:
-            y_zero_point = np.zeros(per_block_int_scale.shape, dtype=np.int64)
+            y_zero_point = np.array(y_zero_point, dtype=np.int64)
         else:
             y_zero_point = np.zeros(y_scale.shape, dtype=np.int64)
 
@@ -160,77 +205,6 @@ def _add_onnx_qdq_nodes(
                 y_zero_point, dtype=output_dtype, name=f"{input_name}_zero_point"
             )
         )
-
-        if per_block_int_scale is None:
-            tensors_to_add.append(from_array(y_scale, name=f"{input_name}_scale"))
-        else:
-            # Export LPBQ.
-            #
-            # Strategy: Derive y_scale from per_channel_float_scale and per_block_uint_scale
-            #
-            #           (FLOAT)
-            # per_channel_float_scale -----+
-            #                              +--> DequantizeLinear -----+ (blockwise scale)
-            #    per_block_uint_scale -----+                          |
-            #           (UINT8)                               +-------+---------+
-            #                                                 V                 V
-            #                              weight ---> QuantizeLinear -> DequantizeLinear -> ...
-            if output_dtype != "int4":
-                raise RuntimeError(
-                    f"LPBQ can be only exported with int4; got {output_dtype}"
-                )
-
-            channel_axis = axis - 1  # Assume channel_axis = block_axis - 1 by default
-
-            if input_shape is not None:
-                # Convert to positive index
-                channel_axis = (channel_axis + len(input_shape)) % len(input_shape)
-
-                non_singleton_axes = tuple(
-                    i for i, dim in enumerate(input_shape) if dim != 1
-                )
-
-                if len(non_singleton_axes) > 2 or (
-                    len(non_singleton_axes) == 2 and axis not in non_singleton_axes
-                ):
-                    raise RuntimeError(
-                        "When exported to onnx QDQ, LPBQ can be only applied to tensors with "
-                        "at most two non-singleton dimensions, "
-                        "each representing channel and block axes. "
-                        f'Got "{input_name}" with shape {input_shape} and block axis {axis}'
-                    )
-
-                try:
-                    # The non-singleton axis which isn't block axis (if any) is channel axis
-                    channel_axis = next(i for i in non_singleton_axes if i != axis)
-                except StopIteration:
-                    pass
-
-            tensors_to_add.extend(
-                [
-                    from_array(
-                        y_scale.flatten(), name=f"{input_name}_per_channel_float_scale"
-                    ),
-                    from_array(
-                        per_block_int_scale.astype(np.uint8),
-                        name=f"{input_name}_per_block_uint_scale",
-                    ),
-                ]
-            )
-            nodes_to_add.extend(
-                [
-                    opset.DequantizeLinear.make_node(
-                        name=f"{node_name_prefix}_scale_dq",
-                        inputs=[
-                            f"{input_name}_per_block_uint_scale",
-                            f"{input_name}_per_channel_float_scale",
-                        ],
-                        output=f"{input_name}_scale",
-                        dtype="uint8",
-                        axis=channel_axis,
-                    )
-                ]
-            )
 
         input_q = None
         if prequantize_constants or output_dtype in ("int32", "uint32"):
@@ -244,7 +218,7 @@ def _add_onnx_qdq_nodes(
                     axis,
                     block_size,
                     output_dtype,
-                    per_block_int_scale=per_block_int_scale,
+                    per_block_int_scale=None,
                     opset=opset,
                     base_dir=base_dir,
                 )
@@ -299,6 +273,173 @@ def _add_onnx_qdq_nodes(
 
     _finalize_graph_changes(
         model, nodes_to_add, inputs_to_rename, tensors_to_add, tensors_to_remove
+    )
+
+
+def _convert_200_to_210(encoding: dict, input_shape: Sequence[int] | None):
+    """
+    Convert v2.0.0 LPBQ encoding to v2.1.0
+    """
+    if "per_block_int_scale" not in encoding:
+        return encoding
+
+    scale_q = encoding.pop("per_block_int_scale")
+    meta_scale = encoding.pop("per_channel_float_scale")
+    block_axis = encoding["axis"]
+
+    channel_axis = block_axis - 1  # Assume channel_axis = block_axis - 1 by default
+
+    if input_shape is not None:
+        # Convert to positive index
+        channel_axis = (channel_axis + len(input_shape)) % len(input_shape)
+
+        non_singleton_axes = tuple(i for i, dim in enumerate(input_shape) if dim != 1)
+
+        if len(non_singleton_axes) > 2 or (
+            len(non_singleton_axes) == 2 and block_axis not in non_singleton_axes
+        ):
+            raise RuntimeError(
+                "When exported to onnx QDQ, LPBQ can be only applied to tensors with "
+                "at most two non-singleton dimensions, "
+                "each representing channel and block axes. "
+                f"Got input with shape {input_shape} and block axis {block_axis}"
+            )
+
+        try:
+            # The non-singleton axis which isn't block axis (if any) is channel axis
+            channel_axis = next(i for i in non_singleton_axes if i != block_axis)
+        except StopIteration:
+            pass
+
+    return {
+        **encoding,
+        "y_scale": {
+            "x": scale_q,
+            "x_scale": np.array(meta_scale).flatten().tolist(),
+            "axis": channel_axis,
+        },
+    }
+
+
+def _str_to_np_dtype(dtype_str: str) -> np.dtype:
+    """
+    Convert dtype string to np.dtype
+    """
+    supported_dtypes: Mapping[str, onnx.TensorProto.DataType]
+    supported_dtypes = opset25.DequantizeLinear.SUPPORTED_DTYPES
+
+    try:
+        tensor_dtype = supported_dtypes[dtype_str]
+    except KeyError as e:
+        raise ValueError(
+            f"Unsupported dtype: {dtype_str}. "
+            f"Supported dtypes: {list(supported_dtypes.keys())}"
+        ) from e
+    return onnx.helper.tensor_dtype_to_np_dtype(tensor_dtype)
+
+
+def _np_dtype_to_str(np_dtype: np.dtype) -> str:
+    """
+    Convert np.dtype to dtype string
+    """
+    tensor_dtype: onnx.TensorProto.DataType = onnx.helper.np_dtype_to_tensor_dtype(
+        np_dtype
+    )
+    _, dtype_str = onnx.helper.tensor_dtype_to_string(tensor_dtype).split(".")
+    return dtype_str.lower()
+
+
+def _parse_meta_encoding(
+    meta_encoding: dict,
+    float_type: np.dtype = np.float32,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, Optional[int], Optional[int]]:
+    """
+    Parse double quantization meta encoding.
+
+    |     key      |               description              | mandatory |
+    |--------------|----------------------------------------|-----------|
+    | x            | quantized scale                        | true      |
+    | x_scale      | float scale for quantized scale        | true      |
+    | x_zero_point | zero point for quantized scale         | false     |
+    | input_dtype  | dtype of x. mandatory if x is float4/8 | false     |
+    | axis         | axis for quantized scale               | false     |
+    | block_size   | block size for quantized scale         | false     |
+
+
+    Returns:
+        y_scale (np.ndarray): quantized scale dequantized to float32
+        scale_q (np.ndarray): quantized scale
+        meta_scale (np.ndarray): float scale for quantized scale
+        meta_zero_point (np.ndarray): zero point for quantized scale
+        meta_axis (Optional[int]): axis for quantized scale
+        meta_block_size (Optional[int]): block size for quantized scale
+    """
+    scale_q = np.array(meta_encoding["x"])
+    meta_scale = np.array(meta_encoding["x_scale"], dtype=float_type)
+
+    if scale_q.dtype.kind in ("u", "i"):
+        scale_q_min = np.min(scale_q)
+        scale_q_max = np.max(scale_q)
+
+        if 0 <= scale_q_min <= scale_q_max < 4:
+            dtype = "uint2"
+        elif 0 <= scale_q_min <= scale_q_max < 16:
+            dtype = "uint4"
+        elif 0 <= scale_q_min <= scale_q_max < 256:
+            dtype = "uint8"
+        elif 0 <= scale_q_min <= scale_q_max < 65536:
+            dtype = "uint16"
+        elif -2 <= scale_q_min <= scale_q_max < 2:
+            dtype = "int2"
+        elif -8 <= scale_q_min <= scale_q_max < 8:
+            dtype = "int4"
+        elif -128 <= scale_q_min <= scale_q_max < 128:
+            dtype = "int8"
+        elif -32768 <= scale_q_min <= scale_q_max < 32768:
+            dtype = "int16"
+        else:
+            raise RuntimeError(
+                f"Invalid quantized scale range: [{scale_q_min}, {scale_q_max}]. "
+                "Could not be represented by any of the supported integer types "
+                "(int2, int4, int8, int16, uint2, uint4, uint8, uint16)"
+            )
+
+        if "input_dtype" in meta_encoding:
+            # Super edge case: if the user explicitly specified input_dtype,
+            # only honor it as long as the quantized scale can be represented by that dtype.
+            target_dtype = meta_encoding["input_dtype"]
+            if np.can_cast(dtype, target_dtype):
+                dtype = target_dtype
+            else:
+                raise RuntimeError(
+                    f"Quantized scale range [{scale_q_min}, {scale_q_max}] cannot be represented by "
+                    f"the specified input_dtype {target_dtype}. "
+                    "Please check the provided input for calibration or increase precision of the model."
+                )
+    else:
+        dtype = meta_encoding["input_dtype"]
+
+    scale_q = scale_q.astype(_str_to_np_dtype(dtype))
+
+    if "x_zero_point" in meta_encoding:
+        meta_zero_point = np.array(meta_encoding["x_zero_point"], dtype=scale_q.dtype)
+    else:
+        meta_zero_point = np.zeros(meta_scale.shape, dtype=scale_q.dtype)
+
+    meta_axis = meta_encoding.get("axis", None)
+    meta_block_size = meta_encoding.get("block_size", None)
+
+    # Convert to positive index. Not strictly necessary; just for convenience
+    if meta_axis is not None:
+        if meta_axis < 0:
+            meta_axis = (meta_axis + scale_q.ndim) % scale_q.ndim
+
+    return (
+        scale_q,
+        meta_scale,
+        meta_zero_point,
+        meta_axis,
+        meta_block_size,
     )
 
 

@@ -278,19 +278,13 @@ class _NVFP4Encoding(FloatEncoding):
         )
 
     def to_qnn_encoding_dict(self, encoding_version=None) -> Dict:
-        from .quantizer import _float_quantize
-
         if encoding_version != "2.1.0":
             raise RuntimeError(
                 f"NVFP4 encoding is only supported in 2.1.0 encoding; got {encoding_version}"
             )
 
         encoding_dict = super().to_qnn_encoding_dict(encoding_version)
-        quantized_scale = _float_quantize(
-            self.scale,
-            _float8_e4m3fn,
-            self.meta_scale,
-        )
+        quantized_scale = self._get_quantized_scale()
         encoding_dict.update(
             {
                 "y_scale": {
@@ -301,6 +295,15 @@ class _NVFP4Encoding(FloatEncoding):
             }
         )
         return encoding_dict
+
+    def _get_quantized_scale(self) -> torch.Tensor:
+        from .quantizer import _float_quantize
+
+        return _float_quantize(
+            self.scale,
+            _float8_e4m3fn,
+            self.meta_scale,
+        )
 
     @classmethod
     def _from_float_encoding(
