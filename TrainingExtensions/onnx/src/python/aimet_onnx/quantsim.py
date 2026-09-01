@@ -116,7 +116,7 @@ from aimet_onnx.graph_passes.fusions import (
 )
 from aimet_onnx.batch_norm_fold import _has_unfolded_batchnorms
 import aimet_onnx
-from ._encoding import EncodingBase
+from ._encoding import EncodingBase, FloatEncoding, _QDQ_FLOAT_TYPES
 from .defs import QSpec
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Quant)
@@ -438,16 +438,8 @@ class QuantizationSimModel:
                 "Exporting {dtype} quantization to onnx graph is not supported"
             )
 
-        # FP8 is simulation-only for now, so say so up front rather than letting the user
-        # discover it after calibrating, when export() raises.
+        # FP8 is exportable to onnx QDQ, but simulation is CPU-only
         fp8_types = {float8e4m3fn, float8e5m2} & {param_type, activation_type}
-        if fp8_types:
-            # pylint: disable=logging-fstring-interpolation
-            logger.warning(
-                f"{', '.join(sorted(str(dtype) for dtype in fp8_types))} simulation is "
-                "not yet exportable. The sim can be calibrated and evaluated in place, "
-                "but export() will raise NotImplementedError."
-            )
 
         if providers is None:
             providers = ["CPUExecutionProvider"]
@@ -2590,6 +2582,17 @@ class QuantizationSimModel:
             force_activation_as (str, optional):
                 Force representing quantized activations as signed or unsigned integers (default: `"unsigned"`)
 
+        .. note::
+            FP8 (``float8e4m3fn``/``float8e5m2``) quantizers are exported as
+            onnx::QuantizeLinear/DequantizeLinear with a float8 ``y_zero_point`` of 0,
+            which requires opset >= 19.  The opset is raised automatically when needed.
+
+            Such a model must be run with an onnxruntime graph optimization level of
+            at most ``ORT_ENABLE_BASIC``.  From ``ORT_ENABLE_EXTENDED`` upward,
+            onnxruntime fuses QDQ pairs into integer kernels such as ``QLinearConv``,
+            which do not accept float8 inputs and cause session creation to fail with
+            "Type 'tensor(float8e4m3fn)' ... is invalid".
+
         .. image:: ../../images/conv_qdq.onnx.svg
             :align: center
         """
@@ -2686,6 +2689,17 @@ class QuantizationSimModel:
             desired_onnx_opset_version = 21
             logger.info(
                 "onnx::QuantizeLinear and DequantizeLinear with INT4/INT16 are only supported in opset >= 21;"
+                " got opset=%d",
+                onnx_opset_version,
+            )
+
+        if onnx_opset_version < 19 and any(
+            qtzr.precision() in _QDQ_FLOAT_TYPES
+            for qtzr in self.qc_quantize_op_dict.values()
+        ):
+            desired_onnx_opset_version = max(desired_onnx_opset_version, 19)
+            logger.info(
+                "onnx::QuantizeLinear and DequantizeLinear with FP8 are only supported in opset >= 19;"
                 " got opset=%d",
                 onnx_opset_version,
             )
@@ -2888,10 +2902,11 @@ class QuantizationSimModel:
 
             param_value = to_array(constants[param_name])
 
-            if quantizer.data_type == QuantizationDataType.float:
-                # Float (fp16) quantizers don't carry int encodings; QcQuantizeOp simulates
-                # them by round-tripping through float16 (modeSpecificActionFloat). Mirror
-                # that here, preserving the parameter's storage dtype.
+            if (
+                quantizer.data_type == QuantizationDataType.float
+                and quantizer.precision() not in _QDQ_FLOAT_TYPES
+            ):
+                # Plain-cast floats have no encoding, so mirror QcQuantizeOp and round-trip through float16
                 qdq_parameters[param_name] = param_value.astype(np.float16).astype(
                     param_value.dtype
                 )
@@ -3669,7 +3684,40 @@ def load_encodings_to_sim(
                 mismatched_encodings.append(mismatched_info)
             continue
 
-        e = EncodingBase.from_qnn_encoding_dict(e).to_qnn_encoding_dict("1.0.0")
+        encoding = EncodingBase.from_qnn_encoding_dict(e)
+
+        if isinstance(encoding, FloatEncoding) and encoding.is_scaled:
+            # The generic mismatch check operates on 1.0.0 dicts, which describe integer
+            # affine grids only and cannot represent a scaled float8 grid.
+            if not quantizer.enabled:
+                # Encoding provided for a disabled quantizer. As in the generic path,
+                # other mismatches are not reported once the enabled state disagrees.
+                mismatched_encodings.append(
+                    _EncodingMismatchInfo(
+                        quantizer_name, enabled_mismatch=(quantizer.enabled, True)
+                    )
+                )
+                continue
+
+            loaded_precision = qtype.from_string(encoding.dtype)
+            mismatch_info = _EncodingMismatchInfo(quantizer_name)
+            if quantizer.precision() != loaded_precision:
+                mismatch_info.dtype_mismatch = (
+                    str(quantizer.precision()),
+                    str(loaded_precision),
+                )
+
+            if quantizer._encoding_type() != encoding._encoding_type():
+                mismatch_info.enc_type_mismatch = (
+                    quantizer._encoding_type(),
+                    encoding._encoding_type().name,
+                )
+
+            if mismatch_info.has_mismatch():
+                mismatched_encodings.append(mismatch_info)
+            continue
+
+        e = encoding.to_qnn_encoding_dict("1.0.0")
 
         mismatched_info = get_encoding_mismatch_info(quantizer_name, quantizer, e)
         if mismatched_info.has_mismatch():

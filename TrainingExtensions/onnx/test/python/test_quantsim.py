@@ -132,6 +132,23 @@ FP8_PRECISIONS_AND_MAX_REPRESENTABLE = [
 FP8_PRECISIONS = [precision for precision, _ in FP8_PRECISIONS_AND_MAX_REPRESENTABLE]
 
 
+@contextlib.contextmanager
+def _seeded_rng(seed=0):
+    """Make randomized test setup deterministic without leaking RNG state."""
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.random.get_rng_state()
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    try:
+        yield
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+        torch.random.set_rng_state(torch_state)
+
+
 def _compare_encodings(dst, src):
     return (
         dst.min == src.min
@@ -3828,31 +3845,11 @@ class TestQuantSim:
             assert all(e.delta > 0.0 and e.offset == 0.0 for e in encodings)
 
     @pytest.mark.parametrize("precision", FP8_PRECISIONS)
-    def test_quantsim_fp8_warns_that_export_is_unsupported(self, precision, caplog):
-        """
-        FP8 is simulation-only, so warn at construction. Otherwise the limitation only
-        surfaces from export() after the user has already paid for calibration.
-        """
-        model = single_residual_model().model
-        with caplog.at_level(logging.WARNING):
-            QuantizationSimModel(
-                copy.deepcopy(model),
-                param_type=precision,
-                activation_type=precision,
-                providers=CPU_PROVIDERS,
-            )
-
-        assert any(
-            precision in record.message and "not yet exportable" in record.message
-            for record in caplog.records
-        )
-
-    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
     def test_quantsim_fp8_is_accepted_but_undocumented(self, precision):
         """
-        FP8 is not advertised in the public docstring while export is unsupported, but it
-        must still be accepted, so that the docstring and the accepted aliases can drift
-        apart deliberately rather than by accident.
+        FP8 is not advertised in the public docstring while simulation is CPU-only, but
+        it must still be accepted, so that the docstring and the accepted aliases can
+        drift apart deliberately rather than by accident.
         """
         assert precision in QTYPE_ALIASES
         assert precision not in QuantizationSimModel.__doc__
@@ -3867,21 +3864,15 @@ class TestQuantSim:
         quantizer = sim.qc_quantize_op_dict[sim.param_names[0]]
         assert quantizer.precision() == aimet_onnx.qtype.from_string(precision)
 
-    def test_documented_qtype_aliases_are_exportable(self):
-        """Every alias we do document must be one that export supports."""
+    def test_fp8_aliases_stay_undocumented(self):
+        """
+        FP8 exports to onnx QDQ but simulation is still CPU-only, so it stays out of the
+        public docstring. Asserted explicitly so that documenting it becomes a deliberate
+        change rather than an accident.
+        """
         for name in _DOCUMENTED_QTYPE_ALIASES:
             assert name in QuantizationSimModel.__doc__
             assert name not in ("float8e4m3fn", "float8e5m2")
-
-    def test_quantsim_int8_does_not_warn_about_export(self, caplog):
-        """The FP8 export warning must not fire for precisions that do export."""
-        model = single_residual_model().model
-        with caplog.at_level(logging.WARNING):
-            QuantizationSimModel(copy.deepcopy(model), providers=CPU_PROVIDERS)
-
-        assert not any(
-            "not yet exportable" in record.message for record in caplog.records
-        )
 
     @pytest.mark.parametrize("precision", FP8_PRECISIONS)
     def test_quantsim_fp8_rejects_cuda_provider(self, precision):
@@ -3896,10 +3887,14 @@ class TestQuantSim:
             )
 
     @pytest.mark.parametrize("precision", FP8_PRECISIONS)
-    def test_quantsim_fp8_export_raises_not_implemented(self, precision):
-        """FP8 is simulation-only, so export must fail rather than emit bogus encodings."""
-        model = single_residual_model().model
-        dummy_input = make_dummy_input(model)
+    def test_quantsim_fp8_exports_2_0_0_encodings(self, precision):
+        """
+        When: Export an FP8 sim in the 2.0.0 encoding format
+        Then: Each encoding carries the float8 output_dtype and a scale, and no offset
+        """
+        with _seeded_rng():
+            model = single_residual_model().model
+            dummy_input = make_dummy_input(model)
         sim = QuantizationSimModel(
             copy.deepcopy(model),
             param_type=precision,
@@ -3909,8 +3904,160 @@ class TestQuantSim:
         sim.compute_encodings([dummy_input])
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            with pytest.raises(NotImplementedError, match="only supports float16"):
-                sim.export(tmp_dir, "fp8_model")
+            sim.export(tmp_dir, "fp8_model", encoding_version="2.0.0")
+
+            with open(os.path.join(tmp_dir, "fp8_model.encodings")) as f:
+                encodings = json.load(f)["encodings"]
+
+        assert encodings
+        for encoding in encodings:
+            assert encoding["output_dtype"] == precision
+            assert np.all(np.array(encoding["y_scale"]) > 0)
+            # FP8 quantize-dequantize is scale-only, so there is no zero point
+            assert "offset" not in encoding
+            assert encoding.get("y_zero_point", 0) == 0
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    def test_quantsim_fp8_export_rejects_legacy_encoding_versions(self, precision):
+        """
+        The QNN 0.6.1/1.0.0 schemas describe integer affine grids and cannot represent a
+        scaled float8 grid, so export must say so rather than emit a bogus integer
+        encoding. 2.0.0 and onnx QDQ are the supported routes.
+        """
+        with _seeded_rng():
+            model = single_residual_model().model
+            dummy_input = make_dummy_input(model)
+        sim = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type=precision,
+            activation_type=precision,
+            providers=CPU_PROVIDERS,
+        )
+        sim.compute_encodings([dummy_input])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with pytest.raises(RuntimeError, match="cannot be exported to 1.0.0"):
+                sim.export(tmp_dir, "fp8_model", encoding_version="1.0.0")
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    def test_quantsim_fp8_encodings_round_trip(self, precision):
+        """
+        When: Export FP8 encodings and load them back into a fresh sim
+        Then: The reloaded sim reproduces the original's output exactly
+        """
+        with _seeded_rng():
+            model = single_residual_model().model
+            dummy_input = make_dummy_input(model)
+        sim = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type=precision,
+            activation_type=precision,
+            quant_scheme="min_max",
+            providers=CPU_PROVIDERS,
+        )
+        sim.compute_encodings([dummy_input])
+        (expected,) = sim.session.run(None, dummy_input)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim.export(tmp_dir, "fp8_model", encoding_version="2.0.0")
+            reloaded = QuantizationSimModel(
+                copy.deepcopy(model),
+                param_type=precision,
+                activation_type=precision,
+                providers=CPU_PROVIDERS,
+            )
+            load_encodings_to_sim(
+                reloaded, os.path.join(tmp_dir, "fp8_model.encodings")
+            )
+
+        (actual,) = reloaded.session.run(None, dummy_input)
+        # FP8 quantize-dequantize is deterministic, so the reload must match exactly
+        assert np.array_equal(actual, expected)
+
+    def test_quantsim_fp8_load_reports_format_mismatch(self):
+        """
+        Loading e5m2 encodings into an e4m3fn sim must be reported rather than silently
+        accepted. The 1.0.0 mismatch check cannot see this, since both formats are
+        (float, 8), so the float8 load path compares precisions directly.
+        """
+        with _seeded_rng():
+            model = single_residual_model().model
+            dummy_input = make_dummy_input(model)
+        sim = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type="float8e5m2",
+            activation_type="float8e5m2",
+            quant_scheme="min_max",
+            providers=CPU_PROVIDERS,
+        )
+        sim.compute_encodings([dummy_input])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim.export(tmp_dir, "fp8_model", encoding_version="2.0.0")
+            encoding_path = os.path.join(tmp_dir, "fp8_model.encodings")
+
+            mismatched_sim = QuantizationSimModel(
+                copy.deepcopy(model),
+                param_type="float8e4m3fn",
+                activation_type="float8e4m3fn",
+                providers=CPU_PROVIDERS,
+            )
+            mismatches = load_encodings_to_sim(
+                mismatched_sim, encoding_path, strict=False
+            )
+
+        assert mismatches
+        assert all(
+            info.dtype_mismatch == ("float8e4m3fn", "float8e5m2") for info in mismatches
+        )
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    def test_quantsim_fp8_load_reports_disabled_quantizer(self, precision):
+        """
+        An encoding provided for a disabled quantizer must be reported, matching what the
+        generic (integer) path does. The float8 branch of the mismatch check bypasses the
+        generic 1.0.0-based comparison, so it has to reproduce this case itself.
+        """
+        with _seeded_rng():
+            model = single_residual_model().model
+            dummy_input = make_dummy_input(model)
+        sim = QuantizationSimModel(
+            copy.deepcopy(model),
+            param_type=precision,
+            activation_type=precision,
+            quant_scheme="min_max",
+            providers=CPU_PROVIDERS,
+        )
+        sim.compute_encodings([dummy_input])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim.export(tmp_dir, "fp8_model", encoding_version="2.0.0")
+            encoding_path = os.path.join(tmp_dir, "fp8_model.encodings")
+
+            with open(encoding_path) as f:
+                # Preserve file order so the choice below is deterministic
+                encoded_names = [e["name"] for e in json.load(f)["encodings"]]
+
+            reloaded = QuantizationSimModel(
+                copy.deepcopy(model),
+                param_type=precision,
+                activation_type=precision,
+                providers=CPU_PROVIDERS,
+            )
+            # Must currently be enabled, so that disabling it creates the mismatch
+            disabled = next(
+                name
+                for name in encoded_names
+                if name in reloaded.qc_quantize_op_dict
+                and reloaded.qc_quantize_op_dict[name].enabled
+            )
+            reloaded.qc_quantize_op_dict[disabled].enabled = False
+
+            mismatches = load_encodings_to_sim(reloaded, encoding_path, strict=False)
+
+        reported = [info for info in mismatches if info.quantizer_name == disabled]
+        assert reported
+        assert reported[0].enabled_mismatch == (False, True)
 
     def test_compute_param_encodings(self):
         model = single_residual_model().model
@@ -9077,3 +9224,287 @@ def test_multi_input_grid_equivariant_op_encoding_propagation(tmp_path, op):
         assert len(set(tuple(e.items()) for e in encodings)) == 1
     finally:
         sim.qc_quantize_op_dict["output"].enabled = True
+
+
+class TestFp8OnnxQdqExport:
+    """FP8 is exported as onnx::QuantizeLinear/DequantizeLinear with a float8 zero point."""
+
+    @staticmethod
+    def _session(qdq_model, optimization_level=None):
+        # As in the int path (see test_to_onnx_qdq), disable graph optimization when
+        # comparing against sim.session. FP8 needs it for a second reason: from
+        # ORT_ENABLE_EXTENDED upward onnxruntime fuses QDQ pairs into integer kernels
+        # such as QLinearConv, which reject float8 inputs.
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = (
+            optimization_level or ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        )
+        return ort.InferenceSession(
+            qdq_model.SerializeToString(),
+            providers=["CPUExecutionProvider"],
+            sess_options=sess_options,
+        )
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    def test_fp8_export_runs_at_basic_graph_optimization(self, precision):
+        """
+        When: An exported FP8 graph is loaded at ORT_ENABLE_BASIC
+        Then: It loads and still reproduces the sim exactly
+
+        to_onnx_qdq() documents ORT_ENABLE_BASIC as the highest safe optimization level
+        for FP8, so hold that promise to the level rather than only to DISABLE_ALL.
+        """
+        with _seeded_rng():
+            model = build_dummy_model()
+            dummy_input = make_dummy_input(model)
+        sim = QuantizationSimModel(
+            model,
+            param_type=precision,
+            activation_type=precision,
+            quant_scheme="min_max",
+            providers=CPU_PROVIDERS,
+        )
+        sim.compute_encodings([dummy_input])
+        (expected,) = sim.session.run(None, dummy_input)
+
+        sess = self._session(
+            sim.to_onnx_qdq(),
+            optimization_level=ort.GraphOptimizationLevel.ORT_ENABLE_BASIC,
+        )
+        (actual,) = sess.run(None, dummy_input)
+        assert np.array_equal(actual, expected)
+
+    @pytest.mark.parametrize("prequantize_constants", [False, True])
+    @pytest.mark.parametrize(
+        "precision, expected_elem_type",
+        [
+            ("float8e4m3fn", onnx.TensorProto.FLOAT8E4M3FN),
+            ("float8e5m2", onnx.TensorProto.FLOAT8E5M2),
+        ],
+    )
+    def test_fp8_export_matches_sim(
+        self, precision, expected_elem_type, prequantize_constants
+    ):
+        """
+        When: Export an FP8 sim to onnx QDQ
+        Then: The exported graph runs and reproduces the sim's output exactly
+        """
+        with _seeded_rng():
+            model = build_dummy_model()
+            inputs = [make_dummy_input(model)]
+        source_opset = next(
+            opset.version for opset in model.opset_import if opset.domain == ""
+        )
+        assert source_opset < 19
+        sim = QuantizationSimModel(
+            model,
+            param_type=precision,
+            activation_type=precision,
+            quant_scheme="min_max",
+            providers=["CPUExecutionProvider"],
+        )
+        sim.compute_encodings(inputs)
+
+        qdq_model = sim.to_onnx_qdq(prequantize_constants=prequantize_constants)
+        onnx.checker.check_model(qdq_model)
+
+        # FP8 QuantizeLinear/DequantizeLinear require opset >= 19
+        onnx_opset = next(
+            opset.version for opset in qdq_model.opset_import if opset.domain == ""
+        )
+        assert onnx_opset >= 19
+
+        zero_points = [
+            tensor
+            for tensor in qdq_model.graph.initializer
+            if tensor.name.endswith("_zero_point")
+        ]
+        assert zero_points
+        assert all(tensor.data_type == expected_elem_type for tensor in zero_points)
+
+        # Prequantized weights are stored as float8 tensors, not as float32 followed by
+        # QuantizeLinear
+        prequantized = [
+            tensor
+            for tensor in qdq_model.graph.initializer
+            if tensor.name.endswith("_q")
+        ]
+        if prequantize_constants:
+            assert prequantized
+            assert all(
+                tensor.data_type == expected_elem_type for tensor in prequantized
+            )
+        else:
+            assert not prequantized
+
+        sess = self._session(qdq_model)
+        (expected,) = sim.session.run(None, inputs[0])
+        (actual,) = sess.run(None, inputs[0])
+        # FP8 quantize-dequantize is deterministic, so the graphs must match exactly
+        assert np.array_equal(actual, expected)
+
+    def test_fp8_export_preserves_format(self):
+        """
+        When: A sim is built with float8e5m2
+        Then: Quantizers and the exported graph stay e5m2 rather than defaulting to e4m3fn
+
+        (float, 8) cannot distinguish the two float8 formats, so a lossy round-trip
+        through (data_type, bitwidth) would silently rewrite e5m2 as e4m3fn.
+        """
+        with _seeded_rng():
+            model = build_dummy_model()
+            dummy_input = make_dummy_input(model)
+        sim = QuantizationSimModel(
+            model,
+            param_type="float8e5m2",
+            activation_type="float8e5m2",
+            quant_scheme="min_max",
+            providers=["CPUExecutionProvider"],
+        )
+        assert {str(qtzr.precision()) for qtzr in sim.qc_quantize_op_dict.values()} == {
+            "float8e5m2"
+        }
+
+        sim.compute_encodings([dummy_input])
+        qdq_model = sim.to_onnx_qdq()
+        zero_points = [
+            tensor
+            for tensor in qdq_model.graph.initializer
+            if tensor.name.endswith("_zero_point")
+        ]
+        assert zero_points
+        assert all(
+            tensor.data_type == onnx.TensorProto.FLOAT8E5M2 for tensor in zero_points
+        )
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    @pytest.mark.parametrize("granularity", ["per_tensor", "per_channel", "blockwise"])
+    def test_fp8_export_granularities_match_int(self, precision, granularity):
+        """
+        When: Export an FP8 sim whose weight quantizer is per-tensor, per-channel, or
+              blockwise
+        Then: The emitted encoding describes the same grid as the equivalent int8 sim,
+              and the exported graph reproduces the sim exactly
+
+        Blockwise is the case that regressed: the scale must stay multi-dimensional and
+        block_size must be emitted, otherwise the encoding claims N per-channel scales
+        along an axis of the wrong length.
+        """
+        # Export the source model at the highest opset this parameterization can require
+        # (21 for blockwise QDQ). This test isolates encoding layout; automatic opset
+        # conversion is covered by test_fp8_export_matches_sim.
+        with _seeded_rng():
+            model = onnx.version_converter.convert_version(
+                single_residual_model().model, 21
+            )
+            dummy_input = make_dummy_input(model)
+        # A 2-D weight: blockwise QDQ export requires the scale to broadcast against the
+        # weight on every non-quantized axis, which a 4-D conv weight does not satisfy
+        # (this holds for int8 too).
+        param_name = "fc.weight"
+
+        def build(param_type):
+            sim = QuantizationSimModel(
+                copy.deepcopy(model),
+                param_type=param_type,
+                activation_type=param_type,
+                quant_scheme="min_max",
+                providers=CPU_PROVIDERS,
+            )
+            qtzr = sim.qc_quantize_op_dict[param_name]
+            if granularity == "per_tensor":
+                qtzr.enable_per_channel_quantization(False)
+            else:
+                qtzr.enable_per_channel_quantization(True)
+                qtzr._enable_blockwise_quantization(  # pylint: disable=protected-access
+                    block_size=2 if granularity == "blockwise" else 0
+                )
+            expected_type = {
+                "per_tensor": EncodingType.PER_TENSOR,
+                "per_channel": EncodingType.PER_CHANNEL,
+                "blockwise": EncodingType.PER_BLOCK,
+            }[granularity]
+            assert qtzr._encoding_type() == expected_type  # pylint: disable=protected-access
+            sim.compute_encodings([dummy_input])
+            return sim
+
+        fp8_sim = build(precision)
+        int_sim = build("int8")
+
+        fp8_enc = EncodingBase.from_quantizer(
+            fp8_sim.qc_quantize_op_dict[param_name]
+        ).to_qnn_encoding_dict("2.0.0")
+        int_enc = EncodingBase.from_quantizer(
+            int_sim.qc_quantize_op_dict[param_name]
+        ).to_qnn_encoding_dict("2.0.0")
+
+        # Same grid layout as the integer path; only the dtype and values differ
+        assert fp8_enc["output_dtype"] == precision
+        assert fp8_enc.get("axis") == int_enc.get("axis")
+        assert fp8_enc.get("block_size") == int_enc.get("block_size")
+        assert np.array(fp8_enc["y_scale"]).shape == np.array(int_enc["y_scale"]).shape
+        # Scaled floats never carry a zero point
+        assert "y_zero_point" not in fp8_enc
+
+        (expected,) = fp8_sim.session.run(None, dummy_input)
+        qdq_model = fp8_sim.to_onnx_qdq()
+        onnx.checker.check_model(qdq_model)
+        (actual,) = self._session(qdq_model).run(None, dummy_input)
+        assert np.array_equal(actual, expected)
+
+    @pytest.mark.parametrize("precision", FP8_PRECISIONS)
+    def test_fp8_blockwise_encodings_round_trip(self, precision):
+        """
+        When: Export blockwise FP8 encodings and load them back
+        Then: The reloaded sim reproduces the original exactly
+
+        Guards the load direction of the blockwise fix: from_qnn_encoding_dict must read
+        block_size, and load_to must re-apply blockwise quantization.
+        """
+        with _seeded_rng():
+            model = onnx.version_converter.convert_version(
+                single_residual_model().model, 21
+            )
+            dummy_input = make_dummy_input(model)
+        param_name = "fc.weight"
+
+        def build(*, blockwise: bool):
+            sim = QuantizationSimModel(
+                copy.deepcopy(model),
+                param_type=precision,
+                activation_type=precision,
+                quant_scheme="min_max",
+                providers=CPU_PROVIDERS,
+            )
+            if blockwise:
+                qtzr = sim.qc_quantize_op_dict[param_name]
+                qtzr.enable_per_channel_quantization(True)
+                qtzr._enable_blockwise_quantization(block_size=2)  # pylint: disable=protected-access
+            return sim
+
+        sim = build(blockwise=True)
+        sim.compute_encodings([dummy_input])
+        (expected,) = sim.session.run(None, dummy_input)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim.export(tmp_dir, "fp8_blockwise", encoding_version="2.0.0")
+            encoding_path = os.path.join(tmp_dir, "fp8_blockwise.encodings")
+
+            with open(encoding_path) as f:
+                encodings = {e["name"]: e for e in json.load(f)["encodings"]}
+            assert encodings[param_name]["block_size"] == 2
+
+            reloaded = build(blockwise=False)
+            reloaded_qtzr = reloaded.qc_quantize_op_dict[param_name]
+            assert reloaded_qtzr.quant_info.blockSize == 0
+            mismatches = load_encodings_to_sim(reloaded, encoding_path, strict=False)
+
+        (mismatch,) = [info for info in mismatches if info.quantizer_name == param_name]
+        assert mismatch.enc_type_mismatch == (
+            EncodingType.PER_CHANNEL,
+            EncodingType.PER_BLOCK.name,
+        )
+        assert reloaded_qtzr.quant_info.blockSize == 2
+
+        (actual,) = reloaded.session.run(None, dummy_input)
+        assert np.array_equal(actual, expected)

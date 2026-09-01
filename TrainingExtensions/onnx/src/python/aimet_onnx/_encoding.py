@@ -8,9 +8,18 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import math
 import numpy as np
+import onnx
 from typing import Any, Literal, TypeVar, Type, TYPE_CHECKING
-from aimet_onnx.common.defs import EncodingType, QuantizationDataType, qtype, float16
+from aimet_onnx.common.defs import (
+    EncodingType,
+    QuantizationDataType,
+    float8e4m3fn,
+    float8e5m2,
+    float16,
+    qtype,
+)
 from aimet_onnx.common import libpymo
+from aimet_onnx.common.quantsim import _max_representable_value
 
 if TYPE_CHECKING:
     from aimet_onnx.qc_quantize_op import QcQuantizeOp
@@ -1243,12 +1252,246 @@ class LPBQEncoding(AffineEncoding):
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class FloatEncoding(EncodingBase):
+    """
+    Encoding object for float quantization.
+
+    Covers two kinds of float quantization, distinguished by whether a scale is present:
+
+    * **Plain cast** (fp16, bf16): ``scale`` is None. The tensor is simulated by rounding
+      to the nearest representable value of the target format. There is no calibrated
+      state, so 2.0.0 export emits no encoding for these.
+    * **Scaled** (float8e4m3fn, float8e5m2): ``scale`` is set. The tensor is simulated as
+      ``fake_cast_to_float(x / scale) * scale``, which is ``onnx::QuantizeLinear`` with a
+      float8 ``y_zero_point`` of 0. Float8's dynamic range is too narrow to use unscaled,
+      so a calibrated scale is required.
+
+    Structured after ``aimet_torch.quantization.float.FloatEncoding``, which likewise
+    holds a format description plus a scale in a single class.
+    """
+
     exponent_bits: int
     mantissa_bits: int
     finite: bool = False
     unsigned_zero: bool = False
+    scale: np.ndarray | None = None
+    channel_axis: int | Literal["auto"] | None = None
+    block_axis: int | Literal["auto"] | None = None
+    block_size: int | None = None
+
+    def __post_init__(self):
+        if self.scale is None:
+            if self.channel_axis is not None or self.block_axis is not None:
+                raise ValueError(
+                    "channel_axis and block_axis require a scale; a plain-cast float "
+                    "encoding has no scale to lay out."
+                )
+            return
+
+        if not isinstance(self.scale, np.ndarray):
+            self._set("scale", np.array(self.scale, dtype=np.float64))
+
+        self._validate_granularity()
+
+    def _set(self, name: str, value: Any) -> None:
+        """Assign to a field of this frozen encoding during construction."""
+        object.__setattr__(self, name, value)
+
+    def _validate_granularity(self):
+        """
+        Mirrors the shape/axis validation in :class:`AffineEncoding`, so a scaled float
+        encoding rejects the same malformed inputs an affine one does.
+        """
+        if self.channel_axis is not None and self.scale.ndim == 0:
+            raise ValueError("Channel axis must be None for 0-dimensional scale")
+
+        if self.channel_axis is None and self.scale.ndim != 0:
+            if self.scale.shape == (1,):
+                self._set("scale", self.scale.squeeze())
+            else:
+                raise ValueError(
+                    f"channel_axis must be specified for {self.scale.ndim}-dimensional scale"
+                )
+
+        if (self.block_axis is None) != (self.block_size is None):
+            raise ValueError(
+                "block_axis and block_size must be both specified or both None."
+            )
+
+        if isinstance(self.block_axis, int) and self.scale.ndim < 2:
+            choices = " or ".join(
+                ["None"] if self.scale.ndim == 0 else ["None", "'auto'"]
+            )
+            raise ValueError(
+                f"block_axis must be {choices} for {self.scale.ndim}-dimensional scale."
+            )
+
+    @property
+    def _format(self) -> tuple[int, int, bool, bool]:
+        return (
+            self.exponent_bits,
+            self.mantissa_bits,
+            self.finite,
+            self.unsigned_zero,
+        )
+
+    def __repr__(self) -> str:
+        if self.scale is None:
+            return (
+                f"{type(self).__name__}(exponent_bits={self.exponent_bits}, "
+                f"mantissa_bits={self.mantissa_bits}, finite={self.finite}, "
+                f"unsigned_zero={self.unsigned_zero})"
+            )
+
+        attributes = [f"  dtype={self.dtype},"]
+        if self.channel_axis is not None:
+            attributes.append(f"  channel_axis={self.channel_axis},")
+        if self.block_axis is not None:
+            attributes.append(f"  block_axis={self.block_axis},")
+            attributes.append(f"  block_size={self.block_size},")
+        if self.scale is not None:
+            attributes.append(f"  scale={self.scale},")
+        return "\n".join([f"{type(self).__name__}(", *attributes, ")"])
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not type(self):
+            return False
+        return self.is_equal(other, allow_auto_axis=False)
+
+    def is_equal(self, other: FloatEncoding, allow_auto_axis: bool = False) -> bool:
+        return self._allclose(
+            other, rtol=0.0, atol=0.0, allow_auto_axis=allow_auto_axis
+        )
+
+    def allclose(
+        self,
+        other: FloatEncoding,
+        rtol: float = 1e-05,
+        atol: float = 1e-08,
+        allow_auto_axis: bool = False,
+    ) -> bool:
+        return self._allclose(
+            other, rtol=rtol, atol=atol, allow_auto_axis=allow_auto_axis
+        )
+
+    def _allclose(
+        self,
+        other: FloatEncoding,
+        rtol: float,
+        atol: float,
+        allow_auto_axis: bool = False,
+    ) -> bool:
+        if not isinstance(other, FloatEncoding) or self._format != other._format:  # pylint: disable=protected-access
+            return False
+        if (self.scale is None) != (other.scale is None):
+            return False
+        if self.scale is None:
+            return True
+        if self.block_size != other.block_size or self.scale.size != other.scale.size:
+            return False
+
+        channel_axis = other.channel_axis
+        block_axis = other.block_axis
+        scale = other.scale
+
+        if allow_auto_axis:
+            if "auto" in (self.channel_axis, other.channel_axis):
+                channel_axis = self.channel_axis
+            if "auto" in (self.block_axis, other.block_axis):
+                block_axis = self.block_axis
+            scale = other.scale.reshape(self.scale.shape)
+
+        return bool(
+            self.channel_axis == channel_axis
+            and self.block_axis == block_axis
+            and np.allclose(self.scale, scale, rtol=rtol, atol=atol)
+        )
+
+    def __hash__(self) -> int:
+        # Hash the format only. The fields are frozen, but a scale array's contents can
+        # still be mutated in place, so hashing them would let an encoding go missing from
+        # a set it was added to. Equal encodings still hash equally, and for a plain-cast
+        # encoding this is the same tuple hash the frozen dataclass generated before.
+        return hash(self._format)
+
+    @property
+    def onnx_dtype(self) -> int:
+        """ONNX TensorProto data type for this float format."""
+        try:
+            return _FLOAT_FORMAT_TO_ONNX_DTYPE[self._format]
+        except KeyError as e:
+            raise RuntimeError(
+                f"No ONNX data type for float format with {self.exponent_bits} exponent "
+                f"bits, {self.mantissa_bits} mantissa bits, finite={self.finite}, "
+                f"unsigned_zero={self.unsigned_zero}"
+            ) from e
+
+    @property
+    def dtype(self) -> str:
+        """Name of the float format, e.g. ``"float8e4m3fn"``."""
+        return onnx.TensorProto.DataType.Name(self.onnx_dtype).lower()
+
+    @property
+    def bitwidth(self) -> int:
+        """Total width of the format, including the sign bit."""
+        return self.exponent_bits + self.mantissa_bits + 1
+
+    @property
+    def max_representable(self) -> float:
+        """
+        Largest finite magnitude the format can represent.
+
+        Reuse the common Python helper that is kept in parity with the C++ runtime.
+        """
+        return _max_representable_value(
+            qtype.float(
+                self.exponent_bits,
+                self.mantissa_bits,
+                self.finite,
+                self.unsigned_zero,
+            )
+        )
+
+    @property
+    def is_scaled(self) -> bool:
+        """True if this format is simulated through a calibrated scale."""
+        return self.scale is not None
+
+    def _encoding_type(self) -> EncodingType:
+        if self.channel_axis is None:
+            return EncodingType.PER_TENSOR
+        if self.block_axis is None:
+            return EncodingType.PER_CHANNEL
+        return EncodingType.PER_BLOCK
+
+    def to_TfEncoding(self) -> list[libpymo.TfEncoding]:
+        """
+        Convert to a list of TfEncoding objects.
+
+        Only scaled formats have a grid to describe. The C++ float kernel reads only
+        ``delta``; ``min``/``max`` are populated with the representable range of the
+        format so that consumers which inspect them see the true bounds.
+        """
+        if self.scale is None:
+            raise RuntimeError(
+                f"{self.dtype} is simulated by a plain cast and has no encoding to "
+                "convert to TfEncoding."
+            )
+
+        max_representable = self.max_representable
+
+        tf_encodings = []
+        for scale in np.asarray(self.scale, dtype=np.float64).flatten():
+            tf_encoding = libpymo.TfEncoding()
+            tf_encoding.delta = scale
+            tf_encoding.offset = 0
+            tf_encoding.min = -max_representable * scale
+            tf_encoding.max = max_representable * scale
+            tf_encoding.bw = self.bitwidth
+            tf_encodings.append(tf_encoding)
+
+        return tf_encodings
 
     def to_qnn_encoding_dict(
         self, encoding_version: str | None = None
@@ -1264,43 +1507,95 @@ class FloatEncoding(EncodingBase):
 
         raise ValueError(
             f"Unsupported encoding version: {encoding_version}. "
-            "Supported versions are: 0.6.1, 1.0.0"
+            "Supported versions are: 0.6.1, 1.0.0, 2.0.0"
         )
 
+    def _assert_legacy_representable(self, encoding_version: str):
+        """
+        The 0.6.1 and 1.0.0 QNN schemas describe integer affine grids (bitwidth, is_sym,
+        offset) and carry no scale for float types, so float16 is the only float encoding
+        they can represent.
+        """
+        if self != _float16:
+            raise RuntimeError(
+                f"{self.dtype} cannot be exported to {encoding_version} encoding "
+                "format; use the 2.0.0 format or onnx QDQ export instead."
+            )
+
     def _to_0_6_1(self) -> list[dict[str, Any]]:
-        if self == _float16:
-            return [{"bitwidth": 16, "dtype": "float"}]
-        raise RuntimeError
+        self._assert_legacy_representable("0.6.1")
+        return [{"bitwidth": 16, "dtype": "float"}]
 
     def _to_1_0_0(self) -> dict[str, Any]:
-        if self == _float16:
-            return {
-                "dtype": "FLOAT",
-                "bw": 16,
-                "enc_type": EncodingType.PER_TENSOR.name,
-            }
-        raise RuntimeError
+        self._assert_legacy_representable("1.0.0")
+        return {
+            "dtype": "FLOAT",
+            "bw": 16,
+            "enc_type": EncodingType.PER_TENSOR.name,
+        }
 
     def _to_2_0_0(self) -> dict[str, Any]:
-        if self in (_float16, _bfloat16):
-            return {}
+        if self.scale is None:
+            # v2.0.0 doesn't treat plain-cast floats as quantized dtypes
+            if self._format in (
+                _float16._format,  # pylint: disable=protected-access
+                _bfloat16._format,  # pylint: disable=protected-access
+            ):
+                return {}
+            raise RuntimeError(
+                f"{self.dtype} cannot be exported to 2.0.0 encoding format without a scale."
+            )
 
-        raise RuntimeError("FloatEncoding cannot be exported to 2.0.0 encoding format.")
+        y_scale = self.scale
+
+        # Mirrors AffineEncoding._to_2_0_0: the blockwise case keeps the scale
+        # multi-dimensional and emits block_size, while per-channel flattens it.
+        if self.block_axis is not None:
+            axis = self.block_axis
+            block_size = self.block_size
+        elif self.channel_axis is not None:
+            axis = self.channel_axis
+            block_size = None
+            y_scale = y_scale.flatten()
+        else:
+            axis = None
+            block_size = None
+            y_scale = y_scale.squeeze()
+
+        if axis == "auto":
+            raise RuntimeError(
+                f"{type(self).__name__} with axis='auto' cannot be "
+                f"exported to 2.0.0 encoding format; got\n{self}"
+            )
+
+        ret = {
+            "output_dtype": self.dtype,
+            "y_scale": y_scale.tolist(),
+        }
+        # y_zero_point is omitted: it is always zero for scaled floats, and
+        # _add_onnx_qdq_nodes creates a correctly typed zero tensor itself
+        if axis is not None:
+            ret["axis"] = axis
+        if block_size is not None:
+            ret["block_size"] = block_size
+
+        return ret
 
     @classmethod
     def from_qnn_encoding_dict(
         cls,
         encoding_dict: list | dict[str, Any],
-        input_shape: tuple[int, ...] | None = None,
+        input_shape: tuple[int, ...] | None = None,  # pylint: disable=unused-argument
         default_channel_axis: int | None = None,
-        default_block_axis: int | None = None,
+        default_block_axis: int | None = None,  # pylint: disable=unused-argument
     ) -> FloatEncoding:
         version = cls._infer_encoding_version(encoding_dict)
 
         if version == "0.6.1":
             return cls._from_0_6_1(encoding_dict)
-        else:
+        if version == "1.0.0":
             return cls._from_1_0_0(encoding_dict)
+        return cls._from_2_0_0(encoding_dict, default_channel_axis=default_channel_axis)
 
     @classmethod
     def _from_0_6_1(cls, encoding_dict) -> FloatEncoding:
@@ -1317,7 +1612,47 @@ class FloatEncoding(EncodingBase):
         raise RuntimeError
 
     @classmethod
+    def _from_2_0_0(
+        cls, encoding_dict, default_channel_axis: int | None = None
+    ) -> FloatEncoding:
+        dtype = encoding_dict["output_dtype"]
+
+        try:
+            onnx_dtype = getattr(onnx.TensorProto, dtype.upper())
+            fmt = _ONNX_DTYPE_TO_FLOAT_FORMAT[onnx_dtype]
+        except (AttributeError, KeyError) as e:
+            raise RuntimeError(
+                f"Unrecognized float output_dtype {dtype!r} in 2.0.0 encoding"
+            ) from e
+
+        scale = np.array(encoding_dict["y_scale"], dtype=np.float64)
+
+        if "block_size" in encoding_dict:
+            channel_axis = (
+                "auto" if default_channel_axis is None else default_channel_axis
+            )
+            block_axis = encoding_dict["axis"]
+            block_size = encoding_dict["block_size"]
+        else:
+            channel_axis = encoding_dict.get("axis", None)
+            block_axis = None
+            block_size = None
+
+        exponent_bits, mantissa_bits, finite, unsigned_zero = fmt
+        return cls(
+            exponent_bits=exponent_bits,
+            mantissa_bits=mantissa_bits,
+            finite=finite,
+            unsigned_zero=unsigned_zero,
+            scale=scale,
+            channel_axis=channel_axis,
+            block_axis=block_axis,
+            block_size=block_size,
+        )
+
+    @classmethod
     def from_quantizer(cls, qtzr: QcQuantizeOp) -> FloatEncoding | None:
+        # pylint: disable=protected-access
         if qtzr.data_type != QuantizationDataType.float:
             raise RuntimeError(
                 f"Can't create FloatEncoding from QcQuantizeOp with data_type={qtzr.data_type}"
@@ -1326,28 +1661,101 @@ class FloatEncoding(EncodingBase):
         if not qtzr.enabled:
             return None
 
-        if qtzr.bitwidth == 16:
-            return _float16
+        precision = qtzr.precision()
 
-        raise NotImplementedError(
-            f"FloatEncoding.from_quantizer only supports float16; got bitwidth={qtzr.bitwidth}."
+        if precision not in _QDQ_FLOAT_TYPES:
+            # Plain-cast formats carry no calibrated state
+            if qtzr.bitwidth == 16:
+                return _float16
+            raise NotImplementedError(
+                f"FloatEncoding.from_quantizer supports float16 and "
+                f"{', '.join(str(dtype) for dtype in _QDQ_FLOAT_TYPES)}; "
+                f"got {precision}."
+            )
+
+        encodings = qtzr.get_encodings()
+        if not encodings:
+            return None
+
+        # Source granularity from quant_info -- the same fields _encoding_shape() uses to
+        # shape the scale -- exactly as AffineEncoding.from_quantizer does.
+        if qtzr.quant_info.usePerChannelMode:
+            channel_axis = qtzr.quant_info.channelAxis
+            block_size = qtzr.quant_info.blockSize or None
+            block_axis = None if block_size is None else qtzr.quant_info.blockAxis
+        else:
+            channel_axis = None
+            block_size = None
+            block_axis = None
+
+        scale = np.array([e.delta for e in encodings], dtype=np.float64).reshape(
+            qtzr._encoding_shape()
+        )
+
+        return cls(
+            exponent_bits=precision.exponent_bits,
+            mantissa_bits=precision.mantissa_bits,
+            finite=precision.finite,
+            unsigned_zero=precision.unsigned_zero,
+            scale=scale,
+            channel_axis=channel_axis,
+            block_axis=block_axis,
+            block_size=block_size,
         )
 
     def load_to(self, qtzr: QcQuantizeOp) -> None:
         """
         Load encoding to QcQuantizeOp object
         """
-        if self == _float16:
-            qtzr.set_precision(float16)
-            qtzr.enabled = True
-            return
+        # pylint: disable=protected-access
+        if self.scale is None:
+            if self == _float16:
+                qtzr.set_precision(float16)
+                qtzr.enabled = True
+                return
 
-        raise NotImplementedError(
-            f"FloatEncoding.load_to only supports float16; got\n{self}"
-        )
+            raise NotImplementedError(
+                f"FloatEncoding.load_to only supports float16 among the plain-cast "
+                f"formats; got\n{self}"
+            )
+
+        if (
+            self.channel_axis is not None or self.block_axis is not None
+        ) and qtzr.tensor_quantizer_params is None:
+            raise RuntimeError(
+                "QcQuantizeOp.tensor_quantizer_params is None; cannot set "
+                "channel/block quantization."
+            )
+
+        qtzr.set_precision(qtype.from_string(self.dtype))
+
+        if isinstance(self.channel_axis, int):
+            qtzr.tensor_quantizer_params.channel_axis = self.channel_axis
+
+        if isinstance(self.block_axis, int):
+            qtzr.tensor_quantizer_params.block_axis = self.block_axis
+
+        if self.channel_axis is None:
+            qtzr.enable_per_channel_quantization(False)
+        else:
+            qtzr.enable_per_channel_quantization(True)
+
+            if self.block_axis is None:
+                # block_size=0 indicates no block quantization
+                qtzr._enable_blockwise_quantization(block_size=0)
+            else:
+                if not isinstance(self.block_size, int):
+                    raise RuntimeError(
+                        f"Cannot load encoding with block_size={self.block_size} to QcQuantizeOp."
+                    )
+                qtzr._enable_blockwise_quantization(block_size=self.block_size)
+
+        qtzr.quant_info.tensorQuantizerRef.setEncodings(self.to_TfEncoding())
+        qtzr.op_mode = libpymo.TensorQuantizerOpMode.quantizeDequantize
 
 
-# ONNX floating point data types
+# ONNX floating point data types. These describe a format only; a scaled encoding pairs
+# one of these formats with a calibrated scale.
 _float16 = FloatEncoding(
     exponent_bits=5, mantissa_bits=10, finite=False, unsigned_zero=False
 )
@@ -1366,6 +1774,18 @@ _float8e5m2 = FloatEncoding(
 _float8e5m2fnuz = FloatEncoding(
     exponent_bits=5, mantissa_bits=2, finite=True, unsigned_zero=True
 )
-_float4_e2m1fn = FloatEncoding(
-    exponent_bits=2, mantissa_bits=1, finite=True, unsigned_zero=False
-)
+
+_FLOAT_FORMAT_TO_ONNX_DTYPE = {
+    (5, 10, False, False): onnx.TensorProto.FLOAT16,
+    (8, 7, False, False): onnx.TensorProto.BFLOAT16,
+    (4, 3, True, False): onnx.TensorProto.FLOAT8E4M3FN,
+    (4, 3, True, True): onnx.TensorProto.FLOAT8E4M3FNUZ,
+    (5, 2, False, False): onnx.TensorProto.FLOAT8E5M2,
+    (5, 2, True, True): onnx.TensorProto.FLOAT8E5M2FNUZ,
+}
+_ONNX_DTYPE_TO_FLOAT_FORMAT = {v: k for k, v in _FLOAT_FORMAT_TO_ONNX_DTYPE.items()}
+
+# Float precisions which are simulated by quantize-dequantize through a calibrated scale,
+# and which therefore carry an exportable encoding. Higher-precision floats (fp16, bf16)
+# are simulated by a plain cast and have no scale.
+_QDQ_FLOAT_TYPES = (float8e4m3fn, float8e5m2)

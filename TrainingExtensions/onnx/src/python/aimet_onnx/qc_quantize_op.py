@@ -19,8 +19,6 @@ from aimet_onnx.common.defs import (
     QuantizationDataType,
     EncodingType,
     qtype,
-    float8e4m3fn,
-    float8e5m2,
 )
 from aimet_onnx.common import libquant_info
 from aimet_onnx.common.utils import deprecated
@@ -31,14 +29,10 @@ from aimet_onnx.common.quantsim import (
 from aimet_onnx.defs import QSpec, Granularity, LPBQ, Blockwise, PerChannel, PerTensor
 from aimet_onnx.utils import numpy_from_TfEncoding, numpy_to_TfEncoding
 from aimet_onnx import lpbq_utils
-from ._encoding import EncodingBase
+from ._encoding import EncodingBase, _QDQ_FLOAT_TYPES
 
 
 OpMode = libpymo.TensorQuantizerOpMode
-
-# Float precisions which are simulated by quantize-dequantize through a calibrated scale.
-# Higher-precision floats (fp16, fp32) are simulated by a plain cast and need no encodings.
-_QDQ_FLOAT_TYPES = (float8e4m3fn, float8e5m2)
 
 
 @dataclass
@@ -784,9 +778,9 @@ class QcQuantizeOp:
         return None
 
     def _encoding_type(self):
-        if (
-            not self.quant_info.usePerChannelMode
-            or self.data_type == QuantizationDataType.float
+        if not self.quant_info.usePerChannelMode or (
+            self.data_type == QuantizationDataType.float
+            and self.precision() not in _QDQ_FLOAT_TYPES
         ):
             return EncodingType.PER_TENSOR
         if not self.quant_info.blockSize:
