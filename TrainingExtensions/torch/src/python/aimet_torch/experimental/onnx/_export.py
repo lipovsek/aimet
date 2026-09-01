@@ -151,6 +151,12 @@ onnx.defs.register_schema(
                 type_str="T",
                 description="Scale tensor for quantization",
             ),
+            onnx.defs.OpSchema.FormalParameter(
+                name="meta_scale",
+                type_str="T",
+                description="Meta scale for quantizing scale tensor",
+                param_option=onnx.defs.OpSchema.FormalParameterOption.Optional,
+            ),
         ],
         outputs=[
             onnx.defs.OpSchema.FormalParameter(
@@ -250,10 +256,12 @@ def _float_quantize_dequantize_placeholder(
     dtype: int,
     scale: onnxscript.FLOAT,
     block_size: Sequence[int] = (),
+    meta_scale: Optional[onnxscript.FLOAT] = None,
 ) -> onnxscript.FLOAT:
     return aimet_opset.FloatQuantizeDequantize(
         tensor,
         scale,
+        meta_scale,
         dtype=dtype,
         block_size=block_size,
     )
@@ -592,7 +600,7 @@ def quantize_dequantize_symbolic(
 
 
 def float_quantize_dequantize_symbolic(
-    g, tensor, finfo: _finfo, scale, block_size=None
+    g, tensor, finfo: _finfo, scale, block_size=None, meta_scale=None
 ):
     """Onnx symbolic function definition for affine quantize-dequantize"""
     onnx_float_dtype = finfo.to_onnx_dtype()
@@ -612,11 +620,16 @@ def float_quantize_dequantize_symbolic(
         )
 
     scale = _unsqueeze_scalar(g, scale)
+    args = [tensor, scale]
 
     if block_size is not None:
         from aimet_torch.quantization._utils import concretize_block_size
 
         block_size = concretize_block_size(_shape(tensor), _shape(scale), block_size)
+
+    if meta_scale is not None:
+        meta_scale = _unsqueeze_scalar(g, meta_scale)
+        args.append(meta_scale)
 
     if not _is_torch_2:
         # For torch <2, insert dummy placeholder node instead of
@@ -624,16 +637,14 @@ def float_quantize_dequantize_symbolic(
         # torch 1.x doesn't support adding onnxscript function to onnx graph
         return g.op(
             "aimet::FloatQuantizeDequantize",
-            tensor,
-            scale,
+            *args,
             block_size_i=block_size,
             dtype_i=onnx_float_dtype,
         ).setType(tensor.type())
 
     return g.onnxscript_op(
         aimet_opset.FloatQuantizeDequantize,
-        tensor,
-        scale,
+        *args,
         dtype_i=onnx_float_dtype,
         block_size_i=block_size,
     ).setType(tensor.type())
@@ -714,12 +725,14 @@ def export(
         finfo: tuple[int, int, bool, bool],
         scale: torch.Tensor,
         block_size: Optional[tuple[int, ...]] = None,
+        meta_scale: Optional[torch.Tensor] = None,
     ):
         return _float_quantize_dequantize_placeholder(
             tensor,
             _finfo(*finfo).to_onnx_dtype(),
             scale,
             block_size or (),
+            meta_scale,
         )
 
     # pylint: disable=protected-access
@@ -1020,8 +1033,13 @@ def _get_float_encoding_from_onnx_node(
     base_dir: Optional[str] = None,
 ) -> FloatEncoding:
     # pylint: disable=protected-access
-    from aimet_torch.quantization.float import FloatEncoding
-    from aimet_torch.quantization.float._finfo import _finfo
+    from aimet_torch.quantization.float.encoding import FloatEncoding, _NVFP4Encoding
+    from aimet_torch.quantization.float._finfo import (
+        _finfo,
+        _float4_e2m1fn,
+        _float8_e4m3fn,
+        _float8_e5m2fnuz,
+    )
 
     finfo = None
     block_size = None
@@ -1038,6 +1056,11 @@ def _get_float_encoding_from_onnx_node(
         )
 
     scale_name = quant_node.input[1]
+
+    if len(quant_node.input) > 2:
+        meta_scale_name = quant_node.input[2]
+    else:
+        meta_scale_name = None
 
     if scale_name in constants:
         scale = torch.tensor(
@@ -1063,7 +1086,29 @@ def _get_float_encoding_from_onnx_node(
         input_shape = tuple(constants[input_name].dims)
         encoding._hint_input_shape(input_shape)
 
-    return encoding
+    if not meta_scale_name:
+        return encoding
+
+    meta_scale = torch.tensor(
+        onnx.numpy_helper.to_array(constants[meta_scale_name], base_dir=base_dir)
+    )
+
+    if not (finfo == _float4_e2m1fn and meta_scale.numel() == 1):
+        raise NotImplementedError(
+            "Exporting double quantization encoding is only implemented for NVFP4 "
+            f"Got input: {finfo.to_str()}, meta_scale.shape: {meta_scale.shape}"
+        )
+
+    meta_scale = meta_scale.squeeze()
+
+    # pylint: disable=protected-access
+    try:
+        return _NVFP4Encoding._from_float_encoding(encoding, meta_scale=meta_scale)
+    except ValueError as e:
+        raise NotImplementedError(
+            "Exporting double quantization encoding is only implemented for NVFP4 "
+            f"Got input: {finfo.to_str()}"
+        ) from e
 
 
 def _get_affine_encoding_from_onnx_node(

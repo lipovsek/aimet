@@ -18,7 +18,7 @@ from aimet_torch.quantization.encoding_analyzer import (
     _flag_extreme_min_max,
 )
 from aimet_torch.quantization.base import QuantizerBase
-from aimet_torch.quantization.float import FloatEncoding
+from aimet_torch.quantization.float.encoding import FloatEncoding, _NVFP4Encoding
 from aimet_torch.quantization.tensor import DequantizedTensor
 from aimet_torch.utils import (
     StatisticsNotFoundError,
@@ -316,7 +316,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
     def get_scale(self) -> torch.Tensor:
         log2_scale = self._get_log2_scale()
 
-        if self._finfo == _float4_e2m1fn:
+        if self._finfo == _float4_e2m1fn and type(self) != _NVFP4QuantizeDequantize:
             # For float4_e2m1fn, the scale is restricted to powers of 2, so we round the log2_scale to nearest integer
             log2_scale = torch.round(log2_scale)
 
@@ -446,6 +446,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
                 self._finfo,
                 encoding.scale,
                 encoding.block_size,
+                getattr(self, "meta_scale", None),
             )
         else:
             output = _float_quantize_dequantize(
@@ -453,6 +454,7 @@ class FloatQuantizeDequantize(QuantizerBase):  # pylint: disable=abstract-method
                 self._finfo,
                 encoding.scale,
                 encoding.block_size,
+                getattr(self, "meta_scale", None),
             )
 
         if (
@@ -520,12 +522,64 @@ class QuantizeDequantize(FloatQuantizeDequantize):
     """
 
 
+class _NVFP4QuantizeDequantize(FloatQuantizeDequantize):
+    """
+    Temporary placeholder class for exporting NVFP4 encoding to ONNX
+    """
+
+    meta_scale: torch.Tensor
+
+    def __init__(
+        self,
+        shape: tuple[int, ...],
+        block_size: tuple[int, ...],
+    ):
+        super().__init__(
+            *_float4_e2m1fn,
+            shape=shape,
+            block_size=block_size,
+        )
+        self.register_buffer("meta_scale", torch.ones(()))
+
+    def forward(self, input: torch.Tensor):
+        output = super().forward(input)
+
+        if not isinstance(output, DequantizedTensor):
+            return output
+
+        encoding = output.encoding
+        output.encoding = _NVFP4Encoding(
+            encoding.scale,
+            self.meta_scale,
+            encoding.block_size,
+            producer=encoding.producer,
+        )
+        return output
+
+    @classmethod
+    def from_encodings(cls, encodings: _NVFP4Encoding) -> "_NVFP4QuantizeDequantize":
+        if not isinstance(encodings, _NVFP4Encoding):
+            raise TypeError(f"Expected {_NVFP4Encoding}; got {type(encodings)}")
+
+        qtzr = _NVFP4QuantizeDequantize(
+            shape=encodings.scale.shape,
+            block_size=encodings.block_size,
+        )
+
+        with torch.no_grad():
+            qtzr.maxval.copy_(encodings.maxval)
+            qtzr.meta_scale.copy_(encodings.meta_scale)
+
+        return qtzr
+
+
 @_onnx.register_symbolic(_onnx.float_quantize_dequantize_symbolic)
 def _float_quantize_dequantize(
     input: torch.Tensor,
     finfo: _finfo,
     scale: torch.Tensor,
     block_size: Optional[tuple[int, ...]] = None,
+    meta_scale: Optional[torch.Tensor] = None,  # pylint: disable=unused-argument
 ) -> torch.Tensor:
     """
     Fake-cast input to target float dtype.
@@ -547,7 +601,7 @@ def _float_quantize_dequantize(
 if parse(torch.__version__) >= parse("2.4.0"):
     torch.library.define(
         "aimet::float_quantize_dequantize",
-        "(Tensor input, int[] finfo, Tensor scale, int[]? block_size) -> Tensor",
+        "(Tensor input, int[] finfo, Tensor scale, int[]? block_size, Tensor? meta_scale) -> Tensor",
     )
 
     @torch.library.register_fake("aimet::float_quantize_dequantize")
@@ -556,6 +610,7 @@ if parse(torch.__version__) >= parse("2.4.0"):
         finfo: tuple[int, int, bool, bool],
         scale: torch.Tensor,
         block_size: Optional[tuple[int, ...]] = None,
+        meta_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         return torch.empty_like(tensor)
 
@@ -565,8 +620,11 @@ if parse(torch.__version__) >= parse("2.4.0"):
         finfo: tuple[int, int, bool, bool],
         scale: torch.Tensor,
         block_size: Optional[tuple[int, ...]] = None,
+        meta_scale: Optional[torch.Tensor] = None,
     ):
-        return _float_quantize_dequantize(tensor, _finfo(*finfo), scale, block_size)
+        return _float_quantize_dequantize(
+            tensor, _finfo(*finfo), scale, block_size, meta_scale
+        )
 
 
 def _float_quantize(

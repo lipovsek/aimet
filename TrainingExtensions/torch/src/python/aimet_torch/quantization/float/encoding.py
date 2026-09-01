@@ -12,7 +12,7 @@ import onnx
 
 from aimet_torch.common.defs import EncodingType
 from aimet_torch.quantization.base import EncodingBase
-from ._finfo import _finfo, _float16, _bfloat16
+from ._finfo import _finfo, _float16, _bfloat16, _float4_e2m1fn, _float8_e4m3fn
 
 if TYPE_CHECKING:
     from aimet_torch.quantization.float import FloatQuantizeDequantize
@@ -174,13 +174,14 @@ class FloatEncoding(EncodingBase):
             self._finfo,
             self.scale,
             self.block_size,
+            getattr(self, "meta_scale", None),
         )
 
     def to_qnn_encoding_dict(self, encoding_version=None) -> Union[List, Dict]:
         """
         Converts encoding object into QNN encoding
         """
-        if encoding_version != "2.0.0" and not (
+        if encoding_version not in ("2.0.0", "2.1.0") and not (
             torch.all(self.scale == 1) and self._finfo in (_float16, _bfloat16)
         ):
             if self._finfo not in (_float16, _bfloat16):
@@ -202,7 +203,7 @@ class FloatEncoding(EncodingBase):
                 "enc_type": EncodingType.PER_TENSOR.name,
             }
 
-        if encoding_version == "2.0.0":
+        if encoding_version in ("2.0.0", "2.1.0"):
             if self._finfo in (_float16, _bfloat16):
                 # v2 encoding doesn't treat float16/bfloat16 as quantized dtypes
                 return {}
@@ -248,4 +249,99 @@ class FloatEncoding(EncodingBase):
 
         raise AssertionError(
             f"Export encoding version {encoding_version} not supported."
+        )
+
+
+class _NVFP4Encoding(FloatEncoding):
+    """
+    Encoding object for NVidia FP4 quantization
+    """
+
+    def __init__(
+        self,
+        scale: torch.Tensor,
+        meta_scale: torch.Tensor,
+        block_size: tuple[int, ...],
+        *,
+        producer: Optional["FloatQuantizeDequantize"] = None,
+    ):
+        self.meta_scale = meta_scale
+
+        super().__init__(
+            mantissa_bits=_float4_e2m1fn.mantissa_bits,
+            exponent_bits=_float4_e2m1fn.exponent_bits,
+            finite=_float4_e2m1fn.finite,
+            unsigned_zero=_float4_e2m1fn.unsigned_zero,
+            scale=scale,
+            block_size=block_size,
+            producer=producer,
+        )
+
+    def to_qnn_encoding_dict(self, encoding_version=None) -> Dict:
+        from .quantizer import _float_quantize
+
+        if encoding_version != "2.1.0":
+            raise RuntimeError(
+                f"NVFP4 encoding is only supported in 2.1.0 encoding; got {encoding_version}"
+            )
+
+        encoding_dict = super().to_qnn_encoding_dict(encoding_version)
+        quantized_scale = _float_quantize(
+            self.scale,
+            _float8_e4m3fn,
+            self.meta_scale,
+        )
+        encoding_dict.update(
+            {
+                "y_scale": {
+                    "x": quantized_scale.tolist(),
+                    "x_scale": self.meta_scale.tolist(),
+                    "input_dtype": "float8e4m3fn",
+                }
+            }
+        )
+        return encoding_dict
+
+    @classmethod
+    def _from_float_encoding(
+        cls, encoding: FloatEncoding, meta_scale: torch.Tensor
+    ) -> "_NVFP4Encoding":
+        """
+        Create an NVFP4 encoding from a FloatEncoding and a meta scale
+        """
+        # pylint: disable=protected-access
+        if not isinstance(encoding, FloatEncoding) or isinstance(
+            encoding, _NVFP4Encoding
+        ):
+            raise TypeError("Cannot create NVFP4 encoding from another NVFP4 encoding")
+
+        if encoding.block_size is None:
+            raise ValueError(
+                "Cannot create NVFP4 encoding from a FloatEncoding with no block size"
+            )
+
+        if encoding._finfo != _float4_e2m1fn:
+            raise ValueError(
+                f"Cannot create NVFP4 encoding from {encoding._finfo.to_str()} encoding"
+            )
+
+        from .quantizer import _float_quantize_dequantize
+
+        qdq_scale = _float_quantize_dequantize(
+            encoding.scale,
+            _float8_e4m3fn,
+            meta_scale,
+        )
+
+        if not torch.allclose(encoding.scale, qdq_scale):
+            raise ValueError(
+                "Cannot create NVFP4 encoding from a FloatEncoding with a scale "
+                "that cannot be represented in float8e4m3fn"
+            )
+
+        return cls(
+            scale=encoding.scale,
+            meta_scale=meta_scale,
+            block_size=encoding.block_size,
+            producer=encoding.producer,
         )

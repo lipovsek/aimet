@@ -460,9 +460,9 @@ class AffineEncoding(EncodingBase, _GridMixin):
                 else "unknown"
             )
 
-        if version != "2.0.0":
+        if version not in ("2.0.0", "2.1.0"):
             raise NotImplementedError(
-                f"Only 2.0.0 encodings are supported; got {version}"
+                f"Only 2.0.0 and 2.1.0 encodings are supported; got {version}"
             )
 
         if "per_block_int_scale" in encoding_dict or "axis" in encoding_dict:

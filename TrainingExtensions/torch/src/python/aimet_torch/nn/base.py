@@ -27,7 +27,11 @@ from aimet_torch.quantization.affine import (
     GroupedBlockQuantizeDequantize,
     QuantizeDequantize,
 )
-from aimet_torch.quantization.float import FloatEncoding, FloatQuantizeDequantize
+from aimet_torch.quantization.float.quantizer import (
+    FloatQuantizeDequantize,
+    _NVFP4QuantizeDequantize,
+)
+from aimet_torch.quantization.float.encoding import FloatEncoding, _NVFP4Encoding
 
 from aimet_torch.quantization.tensor import QuantizedTensorBase, DequantizedTensor
 from aimet_torch.quantization.base import QuantizerBase
@@ -1030,18 +1034,17 @@ class BaseQuantizationMixin(abc.ABC):
                     continue
 
                 if isinstance(qdq_param.encoding, GroupedBlockEncoding):
-                    param_qtzr = GroupedBlockQuantizeDequantize.from_encodings(
-                        qdq_param.encoding
-                    )
+                    target_cls = GroupedBlockQuantizeDequantize
                 elif isinstance(qdq_param.encoding, AffineEncoding):
-                    param_qtzr = QuantizeDequantize.from_encodings(qdq_param.encoding)
+                    target_cls = QuantizeDequantize
+                elif isinstance(qdq_param.encoding, _NVFP4Encoding):
+                    target_cls = _NVFP4QuantizeDequantize
                 elif isinstance(qdq_param.encoding, FloatEncoding):
-                    param_qtzr = FloatQuantizeDequantize.from_encodings(
-                        qdq_param.encoding
-                    )
+                    target_cls = FloatQuantizeDequantize
                 else:
                     raise ValueError
 
+                param_qtzr = target_cls.from_encodings(qdq_param.encoding)
                 unfolded_param_encodings[param_name] = qdq_param.encoding
                 param = qdq_param.as_subclass(torch.Tensor)
                 setattr(
