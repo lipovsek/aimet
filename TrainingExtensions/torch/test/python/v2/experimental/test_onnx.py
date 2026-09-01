@@ -575,7 +575,7 @@ def test_quantsim_export_onnx_qdq_resnet(
     Then: The saved onnx model should pass onnx model checker
     """
     onnx_model = onnx.load_model(onnx_path)
-    # onnx.checker.check_model(onnx_model)
+    onnx.checker.check_model(onnx_model)
 
     """
     Then: Input/Output names should be strictly honored
@@ -2129,7 +2129,7 @@ def test_export_fp4_int8(tmp_path: pathlib.Path, qtzr_cls, dynamo: bool):
         dynamo=dynamo,
     )
     onnx_qdq_model = onnx.load_model(tmp_path / "float4_int8_qdq.onnx")
-    # onnx.checker.check_model(onnx_qdq_model)
+    onnx.checker.check_model(onnx_qdq_model)
     producers = {
         output: node for node in onnx_qdq_model.graph.node for output in node.output
     }

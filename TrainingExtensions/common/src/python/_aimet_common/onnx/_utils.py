@@ -25,6 +25,7 @@ from onnx.external_data_helper import (
     _get_all_tensors,
 )
 from onnx.defs import OpSchema
+from onnx_ir import from_proto, to_proto
 
 from . import opset10, opset13, opset19, opset21, opset23, opset25
 from ..utils import AimetLogger
@@ -602,43 +603,12 @@ def _finalize_graph_changes(
     for t in tensors_to_add:
         model.graph.initializer.append(t)
 
-    # Insert new nodes in a topologically order
-    original_nodes = deque(list(model.graph.node))
-    new_nodes = {node.input[0]: node for node in nodes_to_add if node.input}
-    queue = deque([node for node in nodes_to_add if not node.input])
-
-    queue.extend(
-        [new_nodes.pop(inp.name) for inp in model.graph.input if inp.name in new_nodes]
-    )
-    queue.extend(
-        [
-            new_nodes.pop(init.name)
-            for init in model.graph.initializer
-            if init.name in new_nodes
-        ]
-    )
-
-    if not queue and original_nodes:
-        queue.append(original_nodes.popleft())
-
-    model.graph.ClearField("node")
-
-    while queue:
-        node = queue.popleft()
-        model.graph.node.append(node)
-
-        qdq_nodes = [
-            new_nodes.pop(output_name)
-            for output_name in node.output
-            if output_name in new_nodes
-        ]
-        if qdq_nodes:
-            queue.extend(qdq_nodes)
-
-        if not queue and original_nodes:
-            queue.append(original_nodes.popleft())
-
-    model.graph.node.extend(new_nodes.values())
+    # Insert new nodes in a topologically order without duplicates
+    nodes_to_add = list({node.name: node for node in nodes_to_add}.values())
+    model.graph.node.extend(nodes_to_add)
+    new_graph = from_proto(model.graph)
+    new_graph.sort()
+    model.graph.CopyFrom(to_proto(new_graph))
 
 
 class _ParamUtils:

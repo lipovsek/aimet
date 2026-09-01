@@ -8,6 +8,7 @@ matplotlib>=3
 networkx
 numpy
 onnx
+onnx_ir>=0.1.16
 onnxscript>=0.2.0
 osqp
 pandas
