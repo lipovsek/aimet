@@ -49,6 +49,23 @@ def pytest_configure(config):
     )
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    _serialize_non_parallelizable_test_cases(items)
+
+
+def _serialize_non_parallelizable_test_cases(items):
+    """
+    Assign collected tests to the same xdist_groups unless marked as parallelizable.
+    Test cases in the same xdist group will be executed serially one after another
+    """
+    for item in items:
+        if not any(
+            mark.name in ("parallel", "xdist_group") for mark in item.iter_markers()
+        ):
+            item.add_marker(pytest.mark.xdist_group(name="serial"))
+
+
 @pytest.fixture(autouse=True)
 def skip_on_macos(request):
     marker = request.node.get_closest_marker("skip_on_macos")

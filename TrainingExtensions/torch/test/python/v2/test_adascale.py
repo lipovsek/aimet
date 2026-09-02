@@ -377,6 +377,7 @@ class TestAdascaleQuantizer:
 
 
 class TestAdascale:
+    @pytest.mark.parallel
     @pytest.mark.parametrize(
         "model_cls, shape",
         [
@@ -417,6 +418,7 @@ class TestAdascale:
                     assert type(module.param_quantizers["weight"]) == QuantizeDequantize
                     assert type(module.param_quantizers["weight"]) == QuantizeDequantize
 
+    @pytest.mark.parallel
     @pytest.mark.parametrize(
         "model_cls, shape",
         [
@@ -482,6 +484,7 @@ class TestAdascale:
                             "Only adascale params are trainable"
                         )
 
+    @pytest.mark.parallel
     @pytest.mark.parametrize(
         "model_cls, shape",
         [
@@ -587,6 +590,7 @@ class TestAdascale:
         loss_after_opt = torch.nn.functional.mse_loss(fp_output, adascale_output)
         assert loss_before_opt > loss_after_opt
 
+    @pytest.mark.parallel
     def test_adascale_5(self):
         dummy_input = torch.rand(1, 3, 32, 64)
         model = test_models.ModelWithConsecutiveLinearBlocks()
@@ -647,6 +651,7 @@ class TestAdascale:
         ):
             apply_adascale(sim, data_loader, None, NUM_ITERATIONS)
 
+    @pytest.mark.parallel
     def test_adascale_zero_point_shift(self):
         torch.manual_seed(0)
         dummy_input = torch.rand(200, 3, 32, 64)
@@ -695,6 +700,7 @@ class TestAdascale:
                 )
         assert found_linear
 
+    @pytest.mark.parallel
     def test_block_level_adascale(self):
         dummy_input = torch.rand(1, 3, 32, 64)
         model = test_models.ModelWithConsecutiveLinearBlocks()
@@ -734,6 +740,7 @@ class TestAdascale:
 
         assert len(adascale_quantizers) == 0
 
+    @pytest.mark.parallel
     @pytest.mark.parametrize("seq_len", [8, 32, 2048])
     def test_mse_loss_fn(self, seq_len):
         """For p=2, the default loss equals plain MSE times dim 1's size."""
@@ -746,6 +753,7 @@ class TestAdascale:
         mse = torch.nn.functional.mse_loss(fp_out, qt_out)
         assert torch.allclose(lp, mse * seq_len)
 
+    @pytest.mark.parallel
     def test_block_level_adascale_custom_loss_fn(self):
         """Test that adascale_block accepts and uses a custom loss function and
         passes the calibration input index (data_idx) cycling over the inputs."""
@@ -779,6 +787,7 @@ class TestAdascale:
         # data_idx cycles 0..num_inputs-1 across epochs
         assert seen_indices == [i % num_inputs for i in range(NUM_ITERATIONS)]
 
+    @pytest.mark.parallel
     def test_block_level_adascale_early_stopping(self):
         """Integration test for the _EARLY_STOPPING flag using the real factory and
         _EarlyStopping."""
@@ -827,6 +836,7 @@ class TestAdascale:
         assert off_count[0] == NUM_ITERATIONS
 
 
+@pytest.mark.parallel
 class TestAdaScaleBasicFunctionality:
     """Test basic AdaScale functionality across all supported models"""
 
@@ -942,6 +952,7 @@ class TestAdaScaleBasicFunctionality:
                 break
 
 
+@pytest.mark.parallel
 class TestCheckpointManagerFunctionality:
     def test_checkpoint_manager_initialization(self, fxt_checkpoint_dir):
         """Test checkpoint manager can be created"""
@@ -1074,6 +1085,7 @@ class TestCheckpointManagerFunctionality:
         assert block_idx == 2
 
 
+@pytest.mark.parallel
 class TestAdaScaleResumability:
     """Test AdaScale resumability features"""
 

@@ -6633,6 +6633,7 @@ def _parse_type(type_str: str) -> tuple[str, int]:
     raise RuntimeError
 
 
+@pytest.mark.parallel
 @pytest.mark.skip_on_windows_arm64(
     "Test flaky on Windows ARM64 - debug and fix the root cause before re-enabling on this platform"
 )
@@ -6781,6 +6782,7 @@ def test_to_onnx_qdq(
     assert np.allclose(out_sim, out_onnx_qdq, atol=atol, rtol=rtol)
 
 
+@pytest.mark.parallel
 @pytest.mark.skipif(
     "CUDAExecutionProvider" not in ort.get_available_providers(),
     reason="Not stable with CPUExecutionProvider",
@@ -6919,6 +6921,7 @@ def test_fp16_qdq_export(
         )
 
 
+@pytest.mark.parallel
 @pytest.mark.parametrize("prequantize_constants", [False, True])
 @pytest.mark.parametrize("input_model_opset", range(9, 22))
 @pytest.mark.parametrize(
@@ -7273,6 +7276,7 @@ def test_insert_data_movement_op_edge_case(model_factory, fuse_supergroups):
     assert onnx_qdq_before == onnx_qdq_after
 
 
+@pytest.mark.parallel
 @pytest.mark.parametrize("prequantize_constants", [False, True])
 @pytest.mark.parametrize("seed", range(10))
 def test_to_onnx_qdq_lpbq(seed: int, prequantize_constants: bool):
@@ -7753,6 +7757,7 @@ def test_quantsim_init_errors_with_quantized_models(model):
         QuantizationSimModel(qdq_model)
 
 
+@pytest.mark.parallel
 @pytest.mark.parametrize("export_int32_bias_encodings", [False, True])
 @pytest.mark.parametrize("prequantize_constants", [False, True])
 @pytest.mark.parametrize(
@@ -7857,6 +7862,7 @@ def test_from_onnx_qdq(
     assert np.allclose(sess.run(None, inputs), sess_2.run(None, inputs))
 
 
+@pytest.mark.parallel
 @pytest.mark.parametrize("prequantize_constants", [False, True])
 @pytest.mark.parametrize("seed", range(10))
 def test_from_onnx_qdq_lpbq(seed: int, prequantize_constants: bool):
@@ -8087,6 +8093,7 @@ def test_from_onnx_qdq_split_op():
     _assert_sim_equal(sim, sim_2)
 
 
+@pytest.mark.parallel
 @pytest.mark.parametrize(
     "model_factory",
     [
@@ -8223,6 +8230,7 @@ def test_from_onnx_qdq_with_back_to_back_qdq_pairs():
         assert np.allclose(out_original, out_exported, atol=output_scale)
 
 
+@pytest.mark.parallel
 @pytest.mark.parametrize(
     "model_factory",
     [

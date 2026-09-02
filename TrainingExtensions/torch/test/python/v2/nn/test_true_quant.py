@@ -1338,6 +1338,7 @@ _INPUT_FACTORIES = {
 }
 
 
+@pytest.mark.parallel
 @pytest.mark.parametrize("module_type", _MODULE_FACTORIES.keys())
 def test_default_kernels(module_type):
     module_factory = _MODULE_FACTORIES[module_type]
@@ -2073,6 +2074,7 @@ def test_patch_quantized_param_grad():
 
 
 @torch.no_grad()
+@pytest.mark.parallel
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("dropout", [0.0, 0.1])
 @pytest.mark.parametrize("bias", [False, True])
@@ -2209,6 +2211,7 @@ def test_qmha_forward(
 
 
 @torch.no_grad()
+@pytest.mark.parallel
 @pytest.mark.parametrize("bias", [False, True])
 @pytest.mark.parametrize("add_bias_kv", [False, True])
 @pytest.mark.parametrize("add_zero_attn", [False, True])
@@ -2317,6 +2320,7 @@ def test_qmha_error(
 
 
 @torch.no_grad()
+@pytest.mark.parallel
 @pytest.mark.parametrize(
     "lpbq, zero_point_shift",
     [

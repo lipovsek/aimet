@@ -194,7 +194,7 @@ jobs:
           if [ "${{ inputs.ver_cuda }}" = "" ] ; then
               PYTEST_ARGS="not cuda"
           fi
-          python -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS --modules-durations=10
+          python -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS -c pyproject.toml -n 8
       - name: Run Acceptance tests
         if: inputs.run_acceptance_tests
         run: |
@@ -217,7 +217,7 @@ jobs:
           if [ "${{ inputs.ver_cuda }}" = "" ] ; then
               PYTEST_ARGS="not cuda"
           fi
-          python -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS --modules-durations=10
+          python -m pytest -m "$PYTEST_ARGS" $PYTEST_TARGETS -c pyproject.toml
 
   test_on_windows:
     name: Run AIMET unit and acceptance tests on Windows (${{ matrix.arch }})

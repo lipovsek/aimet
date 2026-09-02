@@ -103,6 +103,7 @@ class ModelWithConsecutiveConvBlocks(torch.nn.Module):
 
 
 class TestAdascaleQuantizer:
+    @pytest.mark.parallel
     def test_quantized_conv2d(self):
         x = torch.randn(1, 4, 32, 32)
         module = torch.nn.Conv2d(
@@ -142,6 +143,7 @@ class TestAdascaleQuantizer:
             else:
                 assert val1 == val2
 
+    @pytest.mark.parallel
     def test_quantizer_backprop(self):
         class TwoLayerModel(torch.nn.Module):
             def __init__(self):
@@ -195,6 +197,7 @@ class TestAdascaleQuantizer:
         new_out = model(input_tensor)
         assert not torch.equal(new_out, orig_out)
 
+    @pytest.mark.parallel
     def test_qlinear_layer_replacement(self):
         model = ModelWithConsecutiveLinearBlocks().eval()
         model_copy = copy.deepcopy(model)
@@ -230,6 +233,7 @@ class TestAdascaleQuantizer:
         out_3 = model(copy.deepcopy(dummy_input))
         assert torch.equal(out_3, out_1)
 
+    @pytest.mark.parallel
     def test_single_quantizer_backprop(self):
         """
         Given:
@@ -289,6 +293,7 @@ class TestAdascaleQuantizer:
         modified_out = new_qdq(weight_after_adascale_fold)
         assert torch.equal(modified_out, adascale_out)
 
+    @pytest.mark.parallel
     def test_get_adascale_trainable_params_linear(self):
         model = ModelWithConsecutiveLinearBlocks().eval()
         add_qlinear_layers(model)
@@ -303,6 +308,7 @@ class TestAdascaleQuantizer:
             len(all_scale_parameters) == 8
         )  # 2 blocks * 2 linear layers * 2 params(s2, s3)
 
+    @pytest.mark.parallel
     def test_get_adascale_trainable_params_conv(self):
         model = ModelWithConsecutiveConvBlocks().eval()
         add_qlinear_layers(model)
@@ -317,6 +323,7 @@ class TestAdascaleQuantizer:
             len(all_scale_parameters) == 12
         )  # 2 blocks * 2 conv layers * 3 params(s2, s3, s4)
 
+    @pytest.mark.parallel
     def test_adascale_forward_linear(self):
         weight_shape, qdq_shape = (3, 10), (3, 1)
         out_channels_dim = 0
@@ -419,6 +426,7 @@ class TestAdascaleQuantizer:
         )
         assert torch.allclose(out_1, out_2)
 
+    @pytest.mark.parallel
     def test_adascale_forward_conv(self):
         weight_shape, qdq_shape = (3, 10, 5, 5), (3, 1, 1, 1)
         s4_shape = (1, 10, 1, 1)
@@ -529,6 +537,7 @@ class TestAdascaleQuantizer:
         )
         assert torch.allclose(out_1, out_2)
 
+    @pytest.mark.parallel
     def test_block_level_api(self):
         model = ModelWithConsecutiveLinearBlocks().eval()
         input_shape = (1, 3, 32, 64)
@@ -613,6 +622,7 @@ class TestAdascaleQuantizer:
                 ]
                 assert consolidated_delta_updated_enc != consolidated_delta_orig_enc
 
+    @pytest.mark.parallel
     @pytest.mark.parametrize("seq_len", [8, 32, 2048])
     def test_mse_loss_fn(self, seq_len):
         """lp_loss equals MSE scaled by the sequence length S (dim 1)."""
@@ -627,6 +637,7 @@ class TestAdascaleQuantizer:
         mse = torch.nn.functional.mse_loss(fp_out, qt_out)
         assert torch.allclose(lp, mse * seq_len)
 
+    @pytest.mark.parallel
     def test_block_level_adascale_early_stopping(self):
         """Integration test for the _EARLY_STOPPING flag using the real factory and
         _EarlyStopping."""
@@ -808,6 +819,7 @@ class TestAdascaleQuantizer:
                 assert diff_pct < max_allowed_diff_pct
 
 
+@pytest.mark.parallel
 class TestBlockResidualResolution:
     """Unit tests for the fp16 block-boundary handling that ``apply_adascale``
     relies on: ``resolve_block_residual_name`` (walks past leading ``Cast``

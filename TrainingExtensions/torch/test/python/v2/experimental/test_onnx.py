@@ -315,6 +315,7 @@ def resnet_tiny_sim(_resnet_tiny_sim_singleton) -> QuantizationSimModel:
 
 
 @torch.no_grad()
+@pytest.mark.parallel
 @pytest.mark.parametrize("dynamo", [False, True])
 @pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
 @pytest.mark.parametrize("export_int32_bias", [False, True])
@@ -523,6 +524,7 @@ def test_quantsim_export_resnet(
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=1e-5)
 
 
+@pytest.mark.parallel
 @pytest.mark.parametrize("dynamo", [False, True])
 @pytest.mark.parametrize("fold_param_quantizers", [False, True])
 @pytest.mark.parametrize("export_int32_bias", [True, False])
@@ -1099,12 +1101,6 @@ def test_back_to_back_qdq(tmp_path: pathlib.Path, dynamo: bool):
     assert torch.allclose(torch.from_numpy(out), expected_out, atol=atol)
 
 
-@pytest.fixture
-def tmp_path():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield pathlib.Path(tmpdir).resolve()
-
-
 @torch.no_grad()
 @pytest.mark.parametrize("opset_version", [19, 21])
 @pytest.mark.parametrize("prequantize_constants", [False, True])
@@ -1318,6 +1314,7 @@ def test_output_split(tmp_path, dynamo: bool):
 
 
 @torch.no_grad()
+@pytest.mark.parallel
 @pytest.mark.parametrize("prequantize_constants", [False, True])
 @pytest.mark.parametrize(
     "compile, dynamo",
@@ -1783,6 +1780,7 @@ def test_activation_uint(tmp_path: pathlib.Path, force_activation_as: str | None
 
 
 @torch.no_grad()
+@pytest.mark.parallel
 @pytest.mark.parametrize("dynamo", [False])
 @pytest.mark.parametrize("prequantize_constants", [True, False])
 @pytest.mark.parametrize("fold_param_quantizers", [True, False])
@@ -3349,6 +3347,7 @@ def test_export_with_branch_input_quantizer(tmp_path):
         assert producers[tensor].op_type != "DequantizeLinear"
 
 
+@pytest.mark.parallel
 @pytest.mark.parametrize("dynamo", [True, False])
 def test_export_with_shared_weight(tmp_path, dynamo: bool):
     """
@@ -3378,7 +3377,6 @@ def test_export_with_shared_weight(tmp_path, dynamo: bool):
 
     sim = QuantizationSimModel(Model(), torch.randn(1, 3, 10, 10))
     sim.compute_encodings(lambda model: model(torch.randn(1, 3, 10, 10)))
-    tmp_path = pathlib.Path(".")
     aimet_torch.onnx.export(
         sim.model,
         torch.randn(1, 3, 10, 10),

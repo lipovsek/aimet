@@ -47,7 +47,19 @@ CMAKE_CUDA_FLAGS="--threads=8"
 
 [tool.pytest.ini_options]
 xfail_strict = true
-addopts = ["-ra", "--showlocals", "--strict-markers", "--strict-config", "-m", "not cuda"]
+required_plugins = [
+    "pytest-xdist",
+    "pytest-extra-durations",
+]
+addopts = [
+    "-ra",
+    "--showlocals",
+    "--strict-markers",
+    "--strict-config",
+    "--dist=loadgroup", # Don't parallelize tests within the same xdist_group
+    "--modules-durations=10",
+]
 markers = [
-    "cuda: test that require CUDA to be installed",
+    "cuda: tests that require CUDA.",
+    "parallel: mark test as parallelizable",
 ]

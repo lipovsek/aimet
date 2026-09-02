@@ -43,6 +43,23 @@ def pytest_configure(config):
     )
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    _serialize_non_parallelizable_test_cases(items)
+
+
+def _serialize_non_parallelizable_test_cases(items):
+    """
+    Assign collected tests to the same xdist_groups unless marked as parallelizable.
+    Test cases in the same xdist group will be executed serially one after another
+    """
+    for item in items:
+        if not any(
+            mark.name in ("parallel", "xdist_group") for mark in item.iter_markers()
+        ):
+            item.add_marker(pytest.mark.xdist_group(name="serial"))
+
+
 def _is_windows_arm64():
     return sys.platform == "win32" and platform.machine().lower() in (
         "aarch64",

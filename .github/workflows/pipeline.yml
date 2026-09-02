@@ -227,9 +227,9 @@ jobs:
       - name: Run GenAI unit tests
         run: |
           export PYTHONPATH=$PYTHONPATH:$(pwd)
-          python -m pytest GenAILab/tests/unit/ -v --tb=short --modules-durations=10
+          python -m pytest GenAILab/tests/unit/ -v --tb=short -c pyproject.toml
 
       - name: Run GenAI integration tests
         run: |
           export PYTHONPATH=$PYTHONPATH:$(pwd)
-          python -m pytest GenAILab/tests/integration/ -v --tb=short --modules-durations=10
+          python -m pytest GenAILab/tests/integration/ -v --tb=short -c pyproject.toml
