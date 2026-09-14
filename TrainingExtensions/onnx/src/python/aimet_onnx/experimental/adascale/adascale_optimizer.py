@@ -190,9 +190,7 @@ class AdaScale:
         # pylint: disable=protected-access
         sim._compute_param_encodings(overwrite=False)
 
-        blocks_end_points = get_decoder_block_boundaries(
-            sim.model.model, sim.connected_graph
-        )
+        blocks_end_points = get_decoder_block_boundaries(sim.model.model)
         cls._apply_adascale(
             sim,
             inputs,

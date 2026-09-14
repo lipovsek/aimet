@@ -30,7 +30,7 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 
 def get_decoder_block_boundaries(
     model: ModelProto,
-    connected_graph=None,  # pylint: disable=unused-argument
+    *,
     expected_num_blocks: Optional[int] = None,
     active_norms_per_block: Optional[int] = None,
 ) -> List[Tuple[str, str]]:
@@ -46,8 +46,6 @@ def get_decoder_block_boundaries(
         ``QuantizationSimModel`` graph — quantizer nodes are stripped from the
         private analysis copy, so the returned tensor names are the un-suffixed
         names of the underlying float graph either way. Not mutated.
-    :param connected_graph: Deprecated and ignored. Analysis now runs on onnx_ir;
-        the parameter is retained so existing callers keep working.
     :param expected_num_blocks: If provided, raises ``ValueError`` when the
         detected block count does not match.
     :param active_norms_per_block: Number of **active** norms per decoder block

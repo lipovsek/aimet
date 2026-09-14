@@ -651,9 +651,7 @@ class TestAnalysisIr:
 
         float_boundaries = get_decoder_block_boundaries(float_model)
         sim = QuantizationSimModel(copy.deepcopy(float_model), dummy_input=dummy_input)
-        sim_boundaries = get_decoder_block_boundaries(
-            sim.model.model, sim.connected_graph
-        )
+        sim_boundaries = get_decoder_block_boundaries(sim.model.model)
 
         assert sim_boundaries == float_boundaries
         # And the names are the float graph's, not quantizer outputs.
