@@ -7,12 +7,10 @@ import abc
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+import onnx_ir
 import torch
 
-from aimet_onnx.meta.operations import Op
-from aimet_onnx.utils import ModelProto
-
-from aimet_onnx.experimental.llm_topology.cg_adapter import (
+from aimet_onnx.experimental.llm_topology.ir_adapter import (
     ActiveNorm,
     LlmTopology,
 )
@@ -22,29 +20,45 @@ from aimet_onnx.experimental.llm_topology.cg_adapter import (
 class SpinquantContext:
     """Inputs and pre-computed analysis shared across rotation passes.
 
-    Built once by :func:`apply_spinquant`, then handed to every pass. Passes
-    must not mutate the analysis fields; they may freely mutate the underlying
-    ONNX model via ``backbone_model`` / ``visual_model``.
+    Built once by :func:`apply_spinquant`, then handed to every pass. Passes must
+    not mutate the analysis fields; they rewrite the graph through
+    ``backbone_ir`` / ``visual_ir``, which :func:`apply_spinquant` serializes back
+    onto the caller's ``ModelProto``\\ s once every pass has succeeded.
 
-    :param backbone_model: backbone.onnx ModelProto.
-    :param backbone_topology: LLM topology (blocks + intra-block roles) for the backbone.
-    :param backbone_active_norms: Active norms in topological order.
+    Two IRs describe the backbone, and the distinction matters:
+
+    * ``backbone_ir`` is a faithful copy of the caller's graph and is the *only*
+      thing a pass may mutate. Every node and tensor the topology names is
+      resolved against it.
+    * ``backbone_analysis_ir`` is the detection view from
+      :func:`~.ir_analysis.build_analysis_ir`: quantizer-stripped, with decomposed
+      RMSNorms replaced by fused ``RMSNormalization`` nodes. It is read-only, and
+      must never be serialized back to a caller.
+
+    :param backbone_ir: Faithful IR of backbone.onnx. Mutated by the passes.
+    :param backbone_analysis_ir: Read-only analysis IR of the same backbone, for
+        checks that need the fused norm view (e.g. R1's post-writing-norm check).
+    :param backbone_topology: LLM topology (blocks + intra-block roles) for the
+        backbone, resolved onto ``backbone_ir``.
+    :param backbone_active_norms: Active norms in topological order, resolved onto
+        ``backbone_ir``.
     :param backbone_hidden_size: Hidden dimension of the language backbone residual stream.
     :param backbone_head_dim: Per-head dimension derived from a ``past_value`` graph
         input. ``None`` if the export has no KV-cache inputs; passes that need
         ``head_dim`` (e.g. R2) must error in that case.
-    :param visual_model: Optional visual.onnx ModelProto (VLM only).
-    :param visual_merger_linear2: PatchMerger linear_fc2 ops (VLM only).
+    :param visual_ir: Faithful IR of visual.onnx (VLM only). Mutated by R1.
+    :param visual_merger_linear2: PatchMerger linear_fc2 nodes (VLM only).
     :param embedding: Optional raw embedding tensor (VLM with use_inputs_embeds=True).
     """
 
-    backbone_model: ModelProto
+    backbone_ir: onnx_ir.Model
+    backbone_analysis_ir: onnx_ir.Model
     backbone_topology: LlmTopology
     backbone_active_norms: List[ActiveNorm]
     backbone_hidden_size: int
     backbone_head_dim: Optional[int] = None
-    visual_model: Optional[ModelProto] = None
-    visual_merger_linear2: Optional[List[Op]] = field(default=None)
+    visual_ir: Optional[onnx_ir.Model] = None
+    visual_merger_linear2: Optional[List[onnx_ir.Node]] = field(default=None)
     embedding: Optional[torch.Tensor] = None
 
 
@@ -76,4 +90,4 @@ class RotationPass(abc.ABC):
 
     @abc.abstractmethod
     def apply(self, ctx: SpinquantContext) -> None:
-        """Mutate the ONNX model(s) and any auxiliary tensors in-place."""
+        """Mutate the IR model(s) and any auxiliary tensors in-place."""

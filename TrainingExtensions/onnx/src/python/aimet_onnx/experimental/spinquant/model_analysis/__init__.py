@@ -4,8 +4,8 @@
 """Rotation-specific model analysis for SpinQuant.
 
 Holds the analysis each rotation pass needs beyond the technique-agnostic LLM
-topology: R3 attention anchors (raw ``NodeProto`` insertion edges derived from
-the KV cache), the VLM visual merger, and the R1 post-writing-norm precondition
+topology: R3 attention anchors (the ``onnx_ir`` insertion edges derived from the
+KV cache), the VLM visual merger, and the R1 post-writing-norm precondition
 check. Decoder block detection, role mapping, and fine-grained intra-block
 structure (q/k/v/o, gate/up/down, dynamic MatMuls) live in ``llm_topology``;
 import those directly from there. R2 reads V/O directly off the topology

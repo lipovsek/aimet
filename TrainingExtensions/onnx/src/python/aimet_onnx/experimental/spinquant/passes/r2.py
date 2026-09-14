@@ -18,16 +18,13 @@ R2 is independent of R1: R1 acts on the residual-stream (``hidden``) axis,
 R2 acts on the per-head ``head_dim`` axis. They compose without interaction.
 """
 
-from onnx import numpy_helper
+import onnx_ir
 
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.meta.operations import Op
-from aimet_onnx.utils import ModelProto, ParamUtils
+from aimet_onnx.ir_utils import static_tensor
 
 from aimet_onnx.experimental.llm_topology.layer_roles import LinearRole
-from aimet_onnx.experimental.llm_topology.weight_utils import (
-    get_weight_product,
-)
+from aimet_onnx.experimental.llm_topology.ir_analysis import get_weight_value
 from aimet_onnx.experimental.spinquant.passes.base import (
     RotationPass,
     SpinquantContext,
@@ -59,9 +56,9 @@ class R2RotationPass(RotationPass):
         for block_idx, block in enumerate(ctx.backbone_topology.blocks):
             _require_v_ops(block, block_idx)
             for v_op in block.v_proj:
-                _validate_v_op(ctx.backbone_model, v_op, head_dim)
+                _validate_v_op(v_op, head_dim)
             for o_op in block.o_proj:
-                _validate_o_op(ctx.backbone_model, o_op, head_dim)
+                _validate_o_op(o_op, head_dim)
 
     def apply(self, ctx: SpinquantContext) -> None:
         """Rotate each block's V output channels and O input channels per head."""
@@ -74,11 +71,9 @@ class R2RotationPass(RotationPass):
         for block_idx, block in enumerate(ctx.backbone_topology.blocks):
             _require_v_ops(block, block_idx)
             for v_op in block.v_proj:
-                v_axis_size = _get_rotated_axis_size(
-                    ctx.backbone_model, v_op, is_writing=True
-                )
+                v_axis_size = _get_rotated_axis_size(v_op, is_writing=True)
                 R2_v = block_diag_repeat(R2, v_axis_size // head_dim)
-                rotate_linear_weight(ctx.backbone_model, v_op, R2_v, is_writing=True)
+                rotate_linear_weight(v_op, R2_v, is_writing=True)
                 _logger.debug(
                     "R2 block %d: rotated v='%s' (axis=%d).",
                     block_idx,
@@ -87,11 +82,9 @@ class R2RotationPass(RotationPass):
                 )
 
             for o_op in block.o_proj:
-                o_axis_size = _get_rotated_axis_size(
-                    ctx.backbone_model, o_op, is_writing=False
-                )
+                o_axis_size = _get_rotated_axis_size(o_op, is_writing=False)
                 R2_o = block_diag_repeat(R2, o_axis_size // head_dim)
-                rotate_linear_weight(ctx.backbone_model, o_op, R2_o, is_writing=False)
+                rotate_linear_weight(o_op, R2_o, is_writing=False)
                 _logger.debug(
                     "R2 block %d: rotated o='%s' (axis=%d).",
                     block_idx,
@@ -121,7 +114,7 @@ def _require_v_ops(block, block_idx: int) -> None:
     classifier does not recognize) cannot be rotated.
     """
     if not block.v_proj:
-        qkv_names = [op.name for op in block.qkv.ops]
+        qkv_names = [node.name for node in block.qkv.nodes]
         reason = (
             "fused QKV projection (no separable per-head V path)"
             if block.qkv.role(LinearRole.FUSED_QKV)
@@ -133,27 +126,26 @@ def _require_v_ops(block, block_idx: int) -> None:
         )
 
 
-def _get_rotated_axis_size(model: ModelProto, op: Op, is_writing: bool) -> int:
-    """Return the size of the axis R2 rotates for ``op``.
+def _get_rotated_axis_size(node: onnx_ir.Node, is_writing: bool) -> int:
+    """Return the size of the axis R2 rotates for ``node``.
 
     For writing layers (V output): output dim — ``shape[0]`` for [out, in] /
     Conv storage, ``shape[-1]`` for [in, out] storage.
     For reading layers (O input): input dim — the complementary axis.
     """
-    weight_inp, is_transposed = get_weight_product(op)
-    tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
-    shape = numpy_helper.to_array(tensor).shape
+    weight_value, is_transposed = get_weight_value(node)
+    shape = static_tensor(weight_value).shape
 
-    if op.type == "Conv":
+    if node.op_type == "Conv":
         return shape[0] if is_writing else shape[1]
     if is_transposed:  # [out, in]
-        return shape[0] if is_writing else shape[1]
+        return int(shape[0] if is_writing else shape[1])
     # [in, out]
-    return shape[-1] if is_writing else shape[0]
+    return int(shape[-1] if is_writing else shape[0])
 
 
-def _validate_v_op(model: ModelProto, v_op: Op, head_dim: int) -> None:
-    out_size = _get_rotated_axis_size(model, v_op, is_writing=True)
+def _validate_v_op(v_op: onnx_ir.Node, head_dim: int) -> None:
+    out_size = _get_rotated_axis_size(v_op, is_writing=True)
     if out_size % head_dim != 0:
         raise ValueError(
             f"R2 rotation: V op '{v_op.name}' output size {out_size} not divisible "
@@ -161,8 +153,8 @@ def _validate_v_op(model: ModelProto, v_op: Op, head_dim: int) -> None:
         )
 
 
-def _validate_o_op(model: ModelProto, o_op: Op, head_dim: int) -> None:
-    in_size = _get_rotated_axis_size(model, o_op, is_writing=False)
+def _validate_o_op(o_op: onnx_ir.Node, head_dim: int) -> None:
+    in_size = _get_rotated_axis_size(o_op, is_writing=False)
     if in_size % head_dim != 0:
         raise ValueError(
             f"R2 rotation: O op '{o_op.name}' input size {in_size} not divisible "

@@ -5,23 +5,19 @@
 
 from typing import List
 
-from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
-from aimet_onnx.meta.operations import Op
+import onnx_ir
 
-from aimet_onnx.experimental.llm_topology.weight_utils import (
-    get_weight_product,
-)
+from aimet_onnx.common.utils import AimetLogger
+
+from aimet_onnx.experimental.llm_topology.ir_analysis import is_weighted_linear
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 
-_LINEAR_TYPES = frozenset(("MatMul", "Gemm", "Conv"))
 
+def find_merger_linear2(ir_model: onnx_ir.Model) -> List[onnx_ir.Node]:
+    """Find PatchMerger linear_fc2 nodes in a visual encoder ONNX graph.
 
-def find_merger_linear2(connected_graph: ConnectedGraph) -> List[Op]:
-    """Find PatchMerger linear_fc2 ops in a visual encoder ONNX graph.
-
-    Identifies all weighted linear ops that are leaf nodes in the weighted-linear
+    Identifies all weighted linear nodes that are leaves of the weighted-linear
     subgraph — i.e. have no downstream weighted linear consumers. These are the
     PatchMerger linear_fc2 layers that write into the language backbone residual
     stream and must always be rotated with R_L when the backbone is SpinQuant-rotated.
@@ -32,32 +28,28 @@ def find_merger_linear2(connected_graph: ConnectedGraph) -> List[Op]:
         and Qwen3-VL. Unknown architectures will be misdetected; an
         explicit override will be added as part of the general block-detection fallback.
 
-    :param connected_graph: ConnectedGraph built from visual.onnx.
-    :return: List of merger_linear2 ops in topological order.
-    :raises ValueError: If no merger_linear2 ops are found.
+    :param ir_model: IR model of visual.onnx.
+    :return: List of merger_linear2 nodes in topological order.
+    :raises ValueError: If no merger_linear2 nodes are found.
     """
-    weighted_linears_topo = [
-        op
-        for op in connected_graph.ordered_ops
-        if op.type in _LINEAR_TYPES and get_weight_product(op)[0] is not None
-    ]
-    weighted_linear_ids = {id(op) for op in weighted_linears_topo}
+    weighted_linears = [node for node in ir_model.graph if is_weighted_linear(node)]
+    weighted_linear_set = set(weighted_linears)
 
-    def _has_downstream_weighted_linear(op: Op) -> bool:
+    def _has_downstream_weighted_linear(node: onnx_ir.Node) -> bool:
         visited = set()
-        stack = list(op.output_ops)
+        stack = list(node.successors())
         while stack:
-            cur = stack.pop()
-            if id(cur) in visited:
+            current = stack.pop()
+            if current in visited:
                 continue
-            visited.add(id(cur))
-            if id(cur) in weighted_linear_ids:
+            visited.add(current)
+            if current in weighted_linear_set:
                 return True
-            stack.extend(cur.output_ops)
+            stack.extend(current.successors())
         return False
 
     result = [
-        op for op in weighted_linears_topo if not _has_downstream_weighted_linear(op)
+        node for node in weighted_linears if not _has_downstream_weighted_linear(node)
     ]
 
     if not result:
@@ -67,6 +59,6 @@ def find_merger_linear2(connected_graph: ConnectedGraph) -> List[Op]:
 
     _logger.info(
         "Visual: merger_linear2=%s will be rotated with R_L.",
-        [op.name for op in result],
+        [node.name for node in result],
     )
     return result

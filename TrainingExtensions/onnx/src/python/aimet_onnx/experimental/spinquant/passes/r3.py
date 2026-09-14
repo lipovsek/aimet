@@ -35,9 +35,12 @@ Limitations (this iteration):
   (Transpose / Reshape / Cast / Identity).
 * Prefill-only exports without KV-cache inputs are not supported.
 
-Note on graph staleness: inserting nodes invalidates ``ctx.backbone_topology``.
-R3 is the last pass in the pipeline. Do not run another role-map-dependent pass
-after R3 in the same context.
+Note on ordering: R3 is the last pass in the pipeline. The IR nodes and values in
+``ctx.backbone_topology`` stay valid across R3's insertions — an IR graph is
+mutable, so splicing a MatMul onto an edge does not invalidate the handles either
+side of it — but the *topology* no longer describes the graph exactly: the Q/K
+edges it reported now run through a Hadamard. Passes that reason about those
+edges should run before R3.
 """
 
 from typing import List
@@ -92,7 +95,7 @@ class R3RotationPass(RotationPass):
         """
         head_dim = _require_head_dim(ctx)
         anchors = _get_or_build_anchor_cache(ctx)
-        model = ctx.backbone_model
+        ir_model = ctx.backbone_ir
         _logger.info(
             "Backbone: Applying R3 online Hadamard rotation per attention block "
             "(head_dim=%d, blocks=%d).",
@@ -101,8 +104,8 @@ class R3RotationPass(RotationPass):
         )
 
         for block_idx, anchor in enumerate(anchors):
-            self._rotate_q_side(model, anchor, head_dim, block_idx)
-            self._rotate_k_side(model, anchor, head_dim, block_idx)
+            self._rotate_q_side(ir_model, anchor, head_dim, block_idx)
+            self._rotate_k_side(ir_model, anchor, head_dim, block_idx)
             _logger.debug(
                 "R3 cache %s: inserted Q-side rotation before %s at input %s "
                 "and K-side rotation before %s.",
@@ -113,7 +116,7 @@ class R3RotationPass(RotationPass):
             )
 
     @staticmethod
-    def _rotate_q_side(model, anchor, head_dim, block_idx) -> None:
+    def _rotate_q_side(ir_model, anchor, head_dim, block_idx) -> None:
         """Insert ``... -> R3 -> QK^T`` on the Q path."""
         h_mat = hadamard_rotation_matrix(head_dim)
         for idx, node in enumerate(anchor.qk_matmul_nodes):
@@ -121,15 +124,15 @@ class R3RotationPass(RotationPass):
             if idx:
                 name_prefix += f"_{idx}"
             insert_online_hadamard_node(
-                model,
-                target_tensor_name=anchor.q_input_tensors[idx],
+                ir_model,
+                target_value=anchor.q_input_values[idx],
                 consumer_nodes=[node],
                 H=h_mat,
                 name_prefix=f"{name_prefix}_R3",
             )
 
     @staticmethod
-    def _rotate_k_side(model, anchor, head_dim, block_idx) -> None:
+    def _rotate_k_side(ir_model, anchor, head_dim, block_idx) -> None:
         """Insert ``... -> R3 -> Concat`` on the current-K path.
 
         R3 is spliced on the current-K edge feeding the past-key Concat so K
@@ -137,8 +140,8 @@ class R3RotationPass(RotationPass):
         """
         h_mat = hadamard_rotation_matrix(head_dim)
         insert_online_hadamard_node(
-            model,
-            target_tensor_name=anchor.k_input_tensor,
+            ir_model,
+            target_value=anchor.k_input_value,
             consumer_nodes=anchor.k_consumers,
             H=h_mat,
             name_prefix=f"spinquant_block{block_idx}_k_R3",
@@ -166,6 +169,6 @@ def _get_or_build_anchor_cache(ctx: SpinquantContext) -> List[BlockR3Anchors]:
     cached = getattr(ctx, _ANCHOR_CACHE_KEY, None)
     if cached is not None:
         return cached
-    anchors = find_r3_anchors(ctx.backbone_topology, ctx.backbone_model)
+    anchors = find_r3_anchors(ctx.backbone_topology, ctx.backbone_ir)
     object.__setattr__(ctx, _ANCHOR_CACHE_KEY, anchors)
     return anchors

@@ -24,23 +24,23 @@ expose one per decoder block, in declaration order). For each one:
 R3 in this iteration requires KV-cache-style exports: the model must expose
 one ``past_key_*`` graph input per decoder block. Prefill-only exports
 without KV-cache inputs are not supported.
+
+The whole search runs on ``onnx_ir``, where a ``Value`` already knows its
+producer and its consumers — so there are no name-keyed producer/consumer index
+tables to build, and none to keep in sync with the insertions R3 goes on to make.
 """
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
-import onnx
+import onnx_ir
 
-from aimet_onnx.common.onnx._utils import (
-    _is_grid_preserving_op,
-    _get_all_constants,
-    _is_constant_scalar,
-)
+from aimet_onnx.common.onnx._utils import _is_grid_preserving_op
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.utils import ModelProto
+from aimet_onnx.ir_utils import static_tensor
 
-from aimet_onnx.experimental.llm_topology.topology import (
+from aimet_onnx.experimental.llm_topology.ir_adapter import (
     LlmTopology,
 )
 
@@ -68,14 +68,18 @@ def _is_passthrough(op_type: str, domain: str = "") -> bool:
     return op_type == "Cast" or _is_grid_preserving_op(op_type, domain)
 
 
-def _is_constant_rescale(
-    node: onnx.NodeProto, constants: Dict[str, onnx.TensorProto]
-) -> bool:
+def _is_static_scalar(value: Optional[onnx_ir.Value]) -> bool:
+    """Return True if ``value`` is a constant holding exactly one element."""
+    tensor = static_tensor(value)
+    return tensor is not None and tensor.size == 1
+
+
+def _is_constant_rescale(node: onnx_ir.Node) -> bool:
     """Return True if ``node`` rescales its input by a constant scalar."""
     if node.op_type == "Mul":
-        return any(_is_constant_scalar(tensor, constants) for tensor in node.input)
+        return any(_is_static_scalar(operand) for operand in node.inputs)
     if node.op_type == "Div":
-        return _is_constant_scalar(node.input[1], constants)
+        return len(node.inputs) > 1 and _is_static_scalar(node.inputs[1])
     return False
 
 
@@ -83,39 +87,44 @@ def _is_constant_rescale(
 class BlockR3Anchors:
     """Per-block anchors for inserting R3 online Hadamards.
 
-    Members are raw ONNX ``NodeProto`` objects so the rotation pass can
-    rewire ``node.input[idx]`` directly without going through the
-    ConnectedGraph (which becomes stale once we insert new nodes anyway).
+    Members are ``onnx_ir`` objects, so the rotation pass can splice a node onto
+    an edge and rewire ``node.inputs[idx]`` directly. Unlike the ConnectedGraph
+    these were originally derived from, an IR graph stays valid — and these
+    anchors stay live — across the insertions R3 makes.
 
     :param past_key_input_name: The ``past_key_*`` graph input that pinned this
         block's anchor search.
-    :param k_input_tensor: Tensor name of the post-RoPE current-K tensor that
-        R3 rotates. R3 splices the Hadamard on this edge.
-    :param k_consumers: Nodes consuming ``k_input_tensor``
+    :param k_input_value: The post-RoPE current-K tensor that R3 rotates. R3
+        splices the Hadamard on this edge.
+    :param k_consumers: Nodes consuming ``k_input_value``.
     :param qk_matmul_nodes: The QK^T attention MatMuls reached forward from the
         past-key Concat. R3 rewires the Q-side input of each.
     :param q_input_indices: For each MatMul in ``qk_matmul_nodes``, the index of
         its post-RoPE Q input (the input that does NOT trace back to the
         Concat).
-    :param q_input_tensors: For each MatMul in ``qk_matmul_nodes``, the tensor
-        name at ``qk_matmul_node.input[q_input_indices[i]]``.
+    :param q_input_values: For each MatMul in ``qk_matmul_nodes``, the tensor at
+        ``qk_matmul_node.inputs[q_input_indices[i]]``.
     """
 
     past_key_input_name: str
-    k_input_tensor: str
-    k_consumers: list[onnx.NodeProto]
-    qk_matmul_nodes: list[onnx.NodeProto]
-    q_input_indices: list[int]
-    q_input_tensors: list[str]
+    k_input_value: onnx_ir.Value
+    k_consumers: List[onnx_ir.Node]
+    qk_matmul_nodes: List[onnx_ir.Node]
+    q_input_indices: List[int]
+    q_input_values: List[onnx_ir.Value]
 
 
-def find_r3_anchors(role_map: LlmTopology, model: ModelProto) -> List[BlockR3Anchors]:
+def find_r3_anchors(
+    role_map: LlmTopology, ir_model: onnx_ir.Model
+) -> List[BlockR3Anchors]:
     """Return per-block R3 anchors, pinned by ``past_key_*`` graph inputs.
 
     The number of past_key inputs in the model must equal the number of
     decoder blocks in ``role_map``. The two are paired by graph-input
     declaration order, which matches HF/optimum export conventions.
 
+    :param role_map: Backbone topology, resolved onto ``ir_model``.
+    :param ir_model: The IR model R3 will mutate.
     :raises ValueError: If past_key input count does not match block count;
         if any past_key input is not consumed by exactly one Concat; if the
         forward walk from a Concat to its QK^T MatMul is ambiguous; or if
@@ -130,11 +139,9 @@ def find_r3_anchors(role_map: LlmTopology, model: ModelProto) -> List[BlockR3Anc
             f"{past_key_input_names}. R3 requires a KV-cache-style export."
         )
 
-    consumers_by_tensor = _index_consumers_by_tensor_name(model)
-    producer_by_tensor = _index_producer_by_tensor_name(model)
-    constants = _get_all_constants(model, consumers_by_tensor)
+    past_key_values = _resolve_graph_inputs(ir_model, past_key_input_names)
 
-    seen_matmul_ids: Set[int] = set()
+    seen_matmuls: Set[onnx_ir.Node] = set()
     result: List[BlockR3Anchors] = []
     for block_idx, past_key_name in enumerate(past_key_input_names):
         _logger.debug(
@@ -142,55 +149,53 @@ def find_r3_anchors(role_map: LlmTopology, model: ModelProto) -> List[BlockR3Anc
             block_idx,
             past_key_name,
         )
+        past_key_value = past_key_values[past_key_name]
         # Find the Concats that combine past_key_in into the present key
         # (one per KV head in SHA).
-        key_concats = _find_concat_consumers(consumers_by_tensor, past_key_name)
+        key_concats = _find_concat_consumers(past_key_value)
         for concat_node in key_concats:
-            current_key_tensor = _find_current_k_input_of_concat(
-                concat_node, past_key_name, producer_by_tensor, constants
+            current_key_value = _find_current_k_input_of_concat(
+                concat_node, past_key_value
             )
 
             # K transpose can occur before or after concat, R3 logic assumes rotation before Transpose
-            producer = producer_by_tensor.get(current_key_tensor)
-            if producer and producer.op_type == "Transpose":
-                current_key_tensor = producer.input[0]
+            producer = current_key_value.producer()
+            if producer is not None and producer.op_type == "Transpose":
+                current_key_value = producer.inputs[0]
 
-            # Note: Must map all consumers now to avoid reconstructing consumer dict later
-            current_key_consumers = consumers_by_tensor.get(current_key_tensor)
+            current_key_consumers = list(current_key_value.consumers())
             if not current_key_consumers:
                 raise ValueError(
-                    f"R3 rotation: current-K tensor '{current_key_tensor}' has "
+                    f"R3 rotation: current-K tensor '{current_key_value.name}' has "
                     f"no consumers."
                 )
 
-            qk_matmul_nodes = _walk_forward_to_matmuls(
-                concat_node, consumers_by_tensor, constants
-            )
+            qk_matmul_nodes = _walk_forward_to_matmuls(concat_node)
             q_input_indices = []
-            q_input_tensors = []
+            q_input_values = []
             for node in qk_matmul_nodes:
-                if id(node) in seen_matmul_ids:
+                if node in seen_matmuls:
                     raise ValueError(
                         f"R3 rotation: past_key input '{past_key_name}': QK^T MatMul "
                         f"'{node.name}' was already matched by an earlier "
                         f"block. past_key_* graph inputs may be misordered."
                     )
-                seen_matmul_ids.add(id(node))
+                seen_matmuls.add(node)
 
-                q_input_idx, q_input_tensor = _find_q_input_of_qk_matmul(
-                    node, concat_node, producer_by_tensor, constants
+                q_input_idx, q_input_value = _find_q_input_of_qk_matmul(
+                    node, concat_node
                 )
                 q_input_indices.append(q_input_idx)
-                q_input_tensors.append(q_input_tensor)
+                q_input_values.append(q_input_value)
 
             result.append(
                 BlockR3Anchors(
                     past_key_input_name=past_key_name,
-                    k_input_tensor=current_key_tensor,
+                    k_input_value=current_key_value,
                     k_consumers=current_key_consumers,
                     qk_matmul_nodes=qk_matmul_nodes,
                     q_input_indices=q_input_indices,
-                    q_input_tensors=q_input_tensors,
+                    q_input_values=q_input_values,
                 )
             )
 
@@ -198,100 +203,89 @@ def find_r3_anchors(role_map: LlmTopology, model: ModelProto) -> List[BlockR3Anc
     return result
 
 
-def _index_consumers_by_tensor_name(
-    model: ModelProto,
-) -> Dict[str, List[onnx.NodeProto]]:
-    out: Dict[str, List[onnx.NodeProto]] = {}
-    for node in model.graph.node:
-        for inp in node.input:
-            if inp:
-                out.setdefault(inp, []).append(node)
-    return out
+def _resolve_graph_inputs(
+    ir_model: onnx_ir.Model, input_names: List[str]
+) -> Dict[str, onnx_ir.Value]:
+    """Return ``{name: graph input Value}`` for ``input_names``.
+
+    :raises ValueError: If a name is not a graph input of ``ir_model`` — the
+        topology and the IR model were built from different graphs.
+    """
+    by_name = {value.name: value for value in ir_model.graph.inputs if value.name}
+    resolved = {}
+    for name in input_names:
+        value = by_name.get(name)
+        if value is None:
+            raise ValueError(
+                f"R3 rotation: '{name}' is not a graph input of the supplied IR "
+                f"model. The topology and the IR model were built from different "
+                f"graphs."
+            )
+        resolved[name] = value
+    return resolved
 
 
-def _index_producer_by_tensor_name(
-    model: ModelProto,
-) -> Dict[str, onnx.NodeProto]:
-    out: Dict[str, onnx.NodeProto] = {}
-    for node in model.graph.node:
-        for o in node.output:
-            if o:
-                out[o] = node
-    return out
-
-
-def _find_concat_consumers(
-    consumers_by_tensor: Dict[str, List[onnx.NodeProto]],
-    past_key_name: str,
-) -> List[onnx.NodeProto]:
-    """Return the Concats downstream of ``past_key_name`` (one per KV head).
+def _find_concat_consumers(past_key_value: onnx_ir.Value) -> List[onnx_ir.Node]:
+    """Return the Concats downstream of ``past_key_value`` (one per KV head).
 
     Walk through pass-through ops (see :func:`_is_passthrough`) that may sit
     between the graph input and the downstream Concats.
     """
-    concat_ops: List[onnx.NodeProto] = []
-    visited: Set[str] = set()
-    queue: deque = deque([past_key_name])
+    concat_nodes: List[onnx_ir.Node] = []
+    visited: Set[onnx_ir.Value] = set()
+    queue: deque = deque([past_key_value])
     while queue:
-        name = queue.popleft()
-        if name in visited:
+        value = queue.popleft()
+        if value in visited:
             continue
-        visited.add(name)
-        consumers = consumers_by_tensor.get(name, [])
-        for n in consumers:
-            if n.op_type == "Concat":
-                concat_ops.append(n)
-            elif _is_passthrough(n.op_type, n.domain):
-                queue.extend(n.output)
-    if not concat_ops:
-        consumers = consumers_by_tensor.get(past_key_name, [])
-        consumer_summary = [(n.name, n.op_type) for n in consumers]
+        visited.add(value)
+        for consumer in value.consumers():
+            if consumer.op_type == "Concat":
+                concat_nodes.append(consumer)
+            elif _is_passthrough(consumer.op_type, consumer.domain):
+                queue.extend(consumer.outputs)
+    if not concat_nodes:
+        consumer_summary = [
+            (node.name, node.op_type) for node in past_key_value.consumers()
+        ]
         raise ValueError(
             f"R3 rotation: no downstream Concat reachable from past_key input "
-            f"'{past_key_name}' through pass-through ops "
+            f"'{past_key_value.name}' through pass-through ops "
             f"(direct consumers: {consumer_summary})."
         )
-    return concat_ops
+    return concat_nodes
 
 
 def _find_current_k_input_of_concat(
-    concat_node: onnx.NodeProto,
-    past_key_name: str,
-    producer_by_tensor: Dict[str, onnx.NodeProto],
-    constants: Dict[str, onnx.TensorProto],
-) -> str:
-    """Return the tensor name of the current-K input of ``concat_node``.
+    concat_node: onnx_ir.Node,
+    past_key_value: onnx_ir.Value,
+) -> onnx_ir.Value:
+    """Return the current-K input of ``concat_node``.
 
-    The past-key input may not be ``past_key_name`` directly: data-movement
+    The past-key input may not be ``past_key_value`` directly: data-movement
     ops (Cast / Identity) can sit between the graph input and the Concat. We
     identify the past-key-side input by tracing backward through pass-through
-    ops to the graph input ``past_key_name``.
+    ops to the graph input.
     """
     past_indices = []
     cur_indices = []
-    past_key_set = {past_key_name}
-    for i, name in enumerate(concat_node.input):
-        if _input_traces_back_to(name, past_key_set, producer_by_tensor, constants):
-            past_indices.append(i)
+    for index, operand in enumerate(concat_node.inputs):
+        if _input_traces_back_to(operand, {past_key_value}):
+            past_indices.append(index)
         else:
-            cur_indices.append(i)
+            cur_indices.append(index)
     if len(cur_indices) != 1:
         raise ValueError(
-            f"R3 rotation: past_key input '{past_key_name}': Concat "
+            f"R3 rotation: past_key input '{past_key_value.name}': Concat "
             f"'{concat_node.name}' has {len(cur_indices)} non-past_key inputs; "
-            f"expected 1 (inputs={list(concat_node.input)}, "
+            f"expected 1 (inputs="
+            f"{[inp.name if inp is not None else None for inp in concat_node.inputs]}, "
             f"past_indices={past_indices})."
         )
-    idx = cur_indices[0]
-    k_tensor = concat_node.input[idx]
-    return k_tensor
+    return concat_node.inputs[cur_indices[0]]
 
 
-def _walk_forward_to_matmuls(
-    start_node: onnx.NodeProto,
-    consumers_by_tensor: Dict[str, List[onnx.NodeProto]],
-    constants: Dict[str, onnx.TensorProto],
-) -> List[onnx.NodeProto]:
+def _walk_forward_to_matmuls(start_node: onnx_ir.Node) -> List[onnx_ir.Node]:
     """Walk forward from ``start_node`` through pass-through ops until MatMuls.
 
     Steps through passthrough and scalar Mul/Div ops, returning all
@@ -300,16 +294,16 @@ def _walk_forward_to_matmuls(
     MatMul the consumers fan out ambiguously (multiple pass-through consumers,
     or zero consumers), raises.
     """
-    visited: Set[str] = set()
-    cur_outputs = list(start_node.output)
+    visited: Set[onnx_ir.Node] = set()
+    cur_values = list(start_node.outputs)
     while True:
-        consumers: List[onnx.NodeProto] = []
-        seen_ids: Set[int] = set()
-        for out_name in cur_outputs:
-            for n in consumers_by_tensor.get(out_name, []):
-                if id(n) not in seen_ids:
-                    seen_ids.add(id(n))
-                    consumers.append(n)
+        consumers: List[onnx_ir.Node] = []
+        seen: Set[onnx_ir.Node] = set()
+        for value in cur_values:
+            for consumer in value.consumers():
+                if consumer not in seen:
+                    seen.add(consumer)
+                    consumers.append(consumer)
 
         if not consumers:
             raise ValueError(
@@ -317,63 +311,58 @@ def _walk_forward_to_matmuls(
                 f"a dead end with no MatMul."
             )
 
-        matmuls = [n for n in consumers if n.op_type == "MatMul"]
+        matmuls = [node for node in consumers if node.op_type == "MatMul"]
         if matmuls:
             return matmuls
 
         passthrough = [
-            n
-            for n in consumers
-            if _is_passthrough(n.op_type, n.domain)
-            or _is_constant_rescale(n, constants)
+            node
+            for node in consumers
+            if _is_passthrough(node.op_type, node.domain) or _is_constant_rescale(node)
         ]
         if len(passthrough) != 1:
             raise ValueError(
                 f"R3 rotation: forward walk from '{start_node.name}' is "
                 f"ambiguous; expected exactly one pass-through (data-movement) "
-                f"op, found {[(n.name, n.op_type) for n in consumers]}."
+                f"op, found {[(node.name, node.op_type) for node in consumers]}."
             )
-        nxt = passthrough[0]
-        if nxt.name in visited:
+        next_node = passthrough[0]
+        if next_node in visited:
             raise ValueError(
-                f"R3 rotation: cycle detected at '{nxt.name}' while walking "
+                f"R3 rotation: cycle detected at '{next_node.name}' while walking "
                 f"forward from '{start_node.name}'."
             )
-        visited.add(nxt.name)
-        cur_outputs = list(nxt.output)
+        visited.add(next_node)
+        cur_values = list(next_node.outputs)
 
 
 def _find_q_input_of_qk_matmul(
-    qk_matmul_node: onnx.NodeProto,
-    concat_node: onnx.NodeProto,
-    producer_by_tensor: Dict[str, onnx.NodeProto],
-    constants: Dict[str, onnx.TensorProto],
-) -> Tuple[int, str]:
-    """Return ``(input_idx, tensor_name)`` of the Q-side input of ``qk_matmul_node``.
+    qk_matmul_node: onnx_ir.Node,
+    concat_node: onnx_ir.Node,
+) -> Tuple[int, onnx_ir.Value]:
+    """Return ``(input_idx, value)`` of the Q-side input of ``qk_matmul_node``.
 
     The K-side input is whichever traces back (through pass-through ops) to
     ``concat_node``; the Q-side is the other one.
     """
-    if len(qk_matmul_node.input) != 2:
+    if len(qk_matmul_node.inputs) != 2:
         raise ValueError(
             f"R3 rotation: QK^T MatMul '{qk_matmul_node.name}' has "
-            f"{len(qk_matmul_node.input)} inputs; expected 2."
+            f"{len(qk_matmul_node.inputs)} inputs; expected 2."
         )
 
-    concat_outputs = set(concat_node.output)
+    concat_outputs = set(concat_node.outputs)
 
     k_idx = None
-    for i, inp_name in enumerate(qk_matmul_node.input):
-        if _input_traces_back_to(
-            inp_name, concat_outputs, producer_by_tensor, constants
-        ):
+    for index, operand in enumerate(qk_matmul_node.inputs):
+        if _input_traces_back_to(operand, concat_outputs):
             if k_idx is not None:
                 raise ValueError(
                     f"R3 rotation: both inputs of QK^T MatMul "
                     f"'{qk_matmul_node.name}' trace back to Concat "
                     f"'{concat_node.name}'."
                 )
-            k_idx = i
+            k_idx = index
 
     if k_idx is None:
         raise ValueError(
@@ -383,37 +372,35 @@ def _find_q_input_of_qk_matmul(
         )
 
     q_idx = 1 - k_idx
-    return q_idx, qk_matmul_node.input[q_idx]
+    return q_idx, qk_matmul_node.inputs[q_idx]
 
 
 def _input_traces_back_to(
-    start_tensor_name: str,
-    target_outputs: Set[str],
-    producer_by_tensor: Dict[str, onnx.NodeProto],
-    constants: Dict[str, onnx.TensorProto],
+    start_value: Optional[onnx_ir.Value],
+    target_values: Set[onnx_ir.Value],
 ) -> bool:
-    """BFS backward from ``start_tensor_name`` through pass-through producers."""
-    if start_tensor_name in target_outputs:
-        return True
-    visited: Set[str] = set()
-    queue = deque([start_tensor_name])
+    """BFS backward from ``start_value`` through pass-through producers."""
+    if start_value is None:
+        return False
+    visited: Set[onnx_ir.Value] = set()
+    queue = deque([start_value])
     while queue:
-        name = queue.popleft()
-        if name in visited:
+        value = queue.popleft()
+        if value in visited:
             continue
-        visited.add(name)
-        if name in target_outputs:
+        visited.add(value)
+        if value in target_values:
             return True
-        producer = producer_by_tensor.get(name)
+        producer = value.producer()
         if producer is None:
             continue
         if not _is_passthrough(
             producer.op_type, producer.domain
-        ) and not _is_constant_rescale(producer, constants):
+        ) and not _is_constant_rescale(producer):
             continue
-        for inp in producer.input:
-            if inp and inp not in visited:
-                queue.append(inp)
+        for operand in producer.inputs:
+            if operand is not None and operand not in visited:
+                queue.append(operand)
     return False
 
 

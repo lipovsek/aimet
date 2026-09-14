@@ -11,13 +11,15 @@ the caller via boolean flags (``enable_r1`` / ``enable_r2``).
 from typing import List, Optional
 
 import onnx
+import onnx_ir
 import torch
 
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
 
+from aimet_onnx.experimental.llm_topology.ir_adapter import resolve_topology
+from aimet_onnx.experimental.llm_topology.ir_analysis import build_analysis_ir
 from aimet_onnx.experimental.llm_topology.topology import (
-    analyze_llm_topology,
+    analyze_llm_topology_by_name,
 )
 from aimet_onnx.experimental.spinquant.model_analysis import (
     find_merger_linear2,
@@ -51,6 +53,12 @@ def apply_spinquant(
        and the optional visual encoder (PatchMerger output projection).
     2. Validating every selected rotation pass against the analysis.
     3. Applying every selected pass in order (R1 before R2 before R3).
+    4. Serializing the result back onto the caller's ``ModelProto``\\ s.
+
+    The rotations are performed on an ``onnx_ir`` copy of the graph and written
+    back only once every pass has succeeded, so a failure part-way through leaves
+    the caller's model untouched rather than half-rotated. (The ``embedding``
+    tensor is the exception: it is a ``torch.Tensor`` rotated in place.)
 
     Must be called on the float ONNX model BEFORE creating a
     ``QuantizationSimModel``. The rotation modifies float weight initializers
@@ -119,35 +127,70 @@ def apply_spinquant(
         _logger.info("Applying %s rotation pass.", rotation.name)
         rotation.apply(ctx)
 
+    # The passes rewrote the IR; serialize it back onto the caller's proto(s).
+    # Doing this only once every pass has succeeded is what makes a mid-flight
+    # failure leave the caller's model untouched rather than half-rotated.
+    _write_back(model, ctx.backbone_ir)
+    if visual_model is not None:
+        _write_back(visual_model, ctx.visual_ir)
+
 
 def _build_context(
     model: onnx.ModelProto,
     visual_model: Optional[onnx.ModelProto],
     embedding: Optional[torch.Tensor],
 ) -> SpinquantContext:
-    """Run model analysis once and build the context shared across passes."""
-    # analyze_llm_topology derives block boundaries, per-block roles, active
-    # norms, hidden_size, and head_dim in one pass. head_dim is only needed by
-    # R2/R3; it is left None when the export has no KV-cache 'past_value' input,
-    # and those passes raise a targeted error when they actually need it.
-    topology = analyze_llm_topology(model)
+    """Run model analysis once and build the context shared across passes.
 
+    Builds two IRs for the backbone — the faithful one the passes mutate, and the
+    quantizer-stripped / RMSNorm-fused analysis one the detection runs on — and
+    resolves the analyzed topology onto the faithful one. See
+    :class:`SpinquantContext` on why the two cannot be the same object.
+    """
+    # A faithful copy of the caller's graph: not sorted, not stripped, not fused,
+    # so what we hand back differs from what we were given only where a rotation
+    # actually changed something.
+    backbone_ir = onnx_ir.from_proto(model)
+    analysis_ir = build_analysis_ir(model)
+
+    # Derives block boundaries, per-block roles, active norms, hidden_size and
+    # head_dim in one pass. head_dim is only needed by R2/R3; it is left None
+    # when the export has no KV-cache 'past_value' input, and those passes raise
+    # a targeted error when they actually need it.
+    topology_by_name = analyze_llm_topology_by_name(model, ir_model=analysis_ir)
+    topology = resolve_topology(topology_by_name, backbone_ir)
+
+    visual_ir = None
     visual_merger_linear2 = None
     if visual_model is not None:
-        visual_merger_linear2 = find_merger_linear2(ConnectedGraph(visual_model))
+        visual_ir = onnx_ir.from_proto(visual_model)
+        visual_merger_linear2 = find_merger_linear2(visual_ir)
 
     _check_embedding_consistency(topology, embedding)
 
     return SpinquantContext(
-        backbone_model=model,
+        backbone_ir=backbone_ir,
+        backbone_analysis_ir=analysis_ir,
         backbone_topology=topology,
         backbone_active_norms=topology.active_norms,
         backbone_hidden_size=topology.hidden_size,
         backbone_head_dim=topology.head_dim,
-        visual_model=visual_model,
+        visual_ir=visual_ir,
         visual_merger_linear2=visual_merger_linear2,
         embedding=embedding,
     )
+
+
+def _write_back(model: onnx.ModelProto, ir_model: onnx_ir.Model) -> None:
+    """Serialize ``ir_model`` onto ``model`` in place.
+
+    Every model the caller handed us is written back, whether or not the enabled
+    passes touched it. Tracking which IRs were mutated would save a serialization
+    in the rare configuration that passes a visual encoder without enabling R1,
+    at the cost of silently dropping rotations the day a pass forgets to report
+    one — an unnecessary round trip is the cheaper mistake.
+    """
+    model.CopyFrom(onnx_ir.to_proto(ir_model))
 
 
 def _check_embedding_consistency(topology, embedding: Optional[torch.Tensor]) -> None:

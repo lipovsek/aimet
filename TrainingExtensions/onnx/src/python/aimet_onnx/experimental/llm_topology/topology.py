@@ -286,6 +286,7 @@ def analyze_llm_topology_by_name(
     active_norms_per_block: int = 2,
     expected_num_blocks: Optional[int] = None,
     role_patterns: Optional[Dict[LinearRole, Pattern]] = None,
+    ir_model: Optional[onnx_ir.Model] = None,
 ) -> LlmTopologyByName:
     """Analyze ``model`` end-to-end and return a name-based :class:`LlmTopologyByName`.
 
@@ -299,11 +300,17 @@ def analyze_llm_topology_by_name(
     :param expected_num_blocks: If given, validated against the detected count.
     :param role_patterns: Optional module-name → role override (see
         :func:`classify_linear_role`).
+    :param ir_model: Pre-built *analysis* IR for ``model`` — as returned by
+        :func:`~.ir_analysis.build_analysis_ir`, i.e. quantizer-stripped and
+        RMSNorm-fused. Built here when ``None``. Pass one only to avoid a second
+        ``from_proto`` of a large model when the caller already holds it; a
+        faithful (unfused) IR will not detect norms and must not be passed.
     :return: LlmTopologyByName with block/backbone roles, ``active_norms``,
         ``hidden_size`` and ``head_dim`` populated. ``head_dim`` is ``None`` when
         the export exposes no ``past_value`` graph input to derive it from.
     """
-    ir_model = ir_analysis.build_analysis_ir(model)
+    if ir_model is None:
+        ir_model = ir_analysis.build_analysis_ir(model)
     topo_index = ir_analysis.topological_index(ir_model)
 
     active_norms = find_active_norms_in_ir(ir_model, topo_index)

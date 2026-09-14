@@ -22,19 +22,18 @@ Reading vs writing layers:
   (o_proj, down_proj, embed_tokens)
 """
 
-from typing import List
+from typing import List, Optional
 
 import numpy as np
+import onnx_ir
 import torch
-from onnx import numpy_helper
 
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.common.onnx._utils import _is_grid_preserving_op
-from aimet_onnx.meta.operations import Op
-from aimet_onnx.utils import ModelProto, ParamUtils
+from aimet_onnx.ir_utils import static_tensor
 
-from aimet_onnx.experimental.llm_topology.topology import LlmTopology
-from aimet_onnx.experimental.llm_topology.weight_utils import get_weight_product
+from aimet_onnx.experimental.llm_topology.ir_adapter import LlmTopology
+from aimet_onnx.experimental.llm_topology.ir_analysis import get_weight_value
 from aimet_onnx.experimental.spinquant.model_analysis import (
     find_post_writing_norms,
 )
@@ -63,14 +62,13 @@ class R1RotationPass(RotationPass):
     def validate(self, ctx: SpinquantContext) -> None:
         """Verify R1 architectural pre-conditions and that all weights exist with the right shape."""
         _validate_backbone_weights(
-            ctx.backbone_model,
+            ctx.backbone_analysis_ir,
             ctx.backbone_topology,
             ctx.backbone_hidden_size,
         )
-        if ctx.visual_model is not None:
+        if ctx.visual_ir is not None:
             assert ctx.visual_merger_linear2 is not None
             _validate_merger_linear2(
-                ctx.visual_model,
                 ctx.visual_merger_linear2,
                 ctx.backbone_hidden_size,
             )
@@ -81,7 +79,7 @@ class R1RotationPass(RotationPass):
 
         # R1 absorbs RMSNorm scale into the downstream linears it reads from,
         # so norm fusion is part of R1 (not of every rotation).
-        fuse_norm_layers_into_linears(ctx.backbone_model, ctx.backbone_active_norms)
+        fuse_norm_layers_into_linears(ctx.backbone_active_norms)
 
         _logger.info(
             "Backbone: Applying R1 Hadamard rotation with backbone_hidden_size=%d.",
@@ -94,7 +92,7 @@ class R1RotationPass(RotationPass):
         )
 
         _rotate_backbone(
-            ctx.backbone_model,
+            ctx.backbone_ir,
             ctx.backbone_topology,
             R1,
             rotate_embeddings_online=rotate_embeddings_online,
@@ -104,17 +102,17 @@ class R1RotationPass(RotationPass):
             _rotate_external_embedding(ctx.embedding, R1)
 
         # If online embedding rotation is already present, don't rotate visual model
-        if ctx.visual_model is not None and not rotate_embeddings_online:
+        if ctx.visual_ir is not None and not rotate_embeddings_online:
             assert ctx.visual_merger_linear2 is not None
             _logger.info(
                 "Visual: Applying R1 Hadamard rotation to merger_linear2 with backbone_hidden_size=%d.",
                 ctx.backbone_hidden_size,
             )
-            _rotate_merger_linear2(ctx.visual_model, ctx.visual_merger_linear2, R1)
+            _rotate_merger_linear2(ctx.visual_merger_linear2, R1)
 
 
 def _rotate_backbone(
-    model: ModelProto,
+    ir_model: onnx_ir.Model,
     role_map: LlmTopology,
     R1: np.ndarray,
     *,
@@ -122,56 +120,56 @@ def _rotate_backbone(
 ) -> None:
     """Rotate every weight in ``role_map`` with R1 in-place."""
     if rotate_embeddings_online:
-        _insert_embedding_hadamard_rotation(model, role_map, R1)
+        _insert_embedding_hadamard_rotation(ir_model, role_map, R1)
     else:
-        for op in role_map.embed_tokens:
-            rotate_gather_weight(model, op, R1)
+        for node in role_map.embed_tokens:
+            rotate_gather_weight(node, R1)
 
     if role_map.lm_head:
-        for op in role_map.lm_head:
-            rotate_linear_weight(model, op, R1, is_writing=False)
+        for node in role_map.lm_head:
+            rotate_linear_weight(node, R1, is_writing=False)
     else:
         # Headless backbone: no lm_head to absorb R1's inverse.
-        _insert_final_hadamard_rotation(model, role_map, R1)
+        _insert_final_hadamard_rotation(ir_model, role_map, R1)
 
     for block_idx, block in enumerate(role_map.blocks):
         _logger.debug("Applying R1 to block %d.", block_idx)
-        for op in block.qkv.ops:
-            rotate_linear_weight(model, op, R1, is_writing=False)
-        for op in block.o_proj:
-            rotate_linear_weight(model, op, R1, is_writing=True)
-        for op in block.gate_up.ops:
-            rotate_linear_weight(model, op, R1, is_writing=False)
-        for op in block.down_proj:
-            rotate_linear_weight(model, op, R1, is_writing=True)
+        for node in block.qkv.nodes:
+            rotate_linear_weight(node, R1, is_writing=False)
+        for node in block.o_proj:
+            rotate_linear_weight(node, R1, is_writing=True)
+        for node in block.gate_up.nodes:
+            rotate_linear_weight(node, R1, is_writing=False)
+        for node in block.down_proj:
+            rotate_linear_weight(node, R1, is_writing=True)
 
 
 def _insert_embedding_hadamard_rotation(
-    model: ModelProto, role_map: LlmTopology, R1: np.ndarray
+    ir_model: onnx_ir.Model, role_map: LlmTopology, R1: np.ndarray
 ) -> None:
     """Place an online Hadamard onto the input embeddings."""
     embedding_tensor = _find_embedding_tensor(role_map)
 
-    consumer_nodes = [op.get_module() for op in embedding_tensor.consumers]
+    consumer_nodes = list(embedding_tensor.consumers())
     if not consumer_nodes:
         raise RuntimeError(
-            f"Embedding tensor '{embedding_tensor}' has no consumers to rewire; "
+            f"Embedding tensor '{embedding_tensor.name}' has no consumers to rewire; "
             f"cannot rotate the residual stream."
         )
     _logger.info(
         "Backbone: Placing online R1 Hadamard rotation at tensor '%s'.",
-        embedding_tensor,
+        embedding_tensor.name,
     )
     insert_online_hadamard_node(
-        model,
-        target_tensor_name=embedding_tensor.name,
+        ir_model,
+        target_value=embedding_tensor,
         consumer_nodes=consumer_nodes,
         H=R1,
         name_prefix=f"spinquant_{embedding_tensor.name}_R1",
     )
 
 
-def _find_embedding_tensor(role_map: LlmTopology) -> str:
+def _find_embedding_tensor(role_map: LlmTopology) -> onnx_ir.Value:
     """
     Return the input-embedding tensor, skipping the input norm's leading Cast.
 
@@ -182,37 +180,35 @@ def _find_embedding_tensor(role_map: LlmTopology) -> str:
         raise RuntimeError("Failed to find embedding tensor")
 
     # Propagate through data movement ops and casts
-    while embedding_tensor.producer is not None:
-        if not (
-            _is_grid_preserving_op(embedding_tensor.producer.type)
-            or embedding_tensor.producer.type == "Cast"
-        ):
+    while embedding_tensor.producer() is not None:
+        producer = embedding_tensor.producer()
+        if not (_is_grid_preserving_op(producer.op_type) or producer.op_type == "Cast"):
             break
-        embedding_tensor = embedding_tensor.producer.inputs[0]
+        embedding_tensor = producer.inputs[0]
     return embedding_tensor
 
 
 def _insert_final_hadamard_rotation(
-    model: ModelProto, role_map: LlmTopology, R1: np.ndarray
+    ir_model: onnx_ir.Model, role_map: LlmTopology, R1: np.ndarray
 ) -> None:
     """Splice an online Hadamard onto the last residual add to un-rotate the stream.
 
     Used for headless backbones with no lm_head to absorb R1's inverse. All
     consumers of the residual add are rewired through the inserted MatMul.
     """
-    residual_product = role_map.blocks[-1].residual_output
-    consumer_nodes = [op.get_module() for op in residual_product.consumers]
+    residual_value = role_map.blocks[-1].residual_output
+    consumer_nodes = list(residual_value.consumers())
     if not consumer_nodes:
         raise RuntimeError(
-            f"Residual tensor '{residual_product.name}' has no consumers to rewire; "
+            f"Residual tensor '{residual_value.name}' has no consumers to rewire; "
             f"cannot un-rotate the residual stream."
         )
     insert_online_hadamard_node(
-        model,
-        target_tensor_name=residual_product.name,
+        ir_model,
+        target_value=residual_value,
         consumer_nodes=consumer_nodes,
         H=R1.T,
-        name_prefix=f"spinquant_{residual_product.name}_R1",
+        name_prefix=f"spinquant_{residual_value.name}_R1",
     )
 
 
@@ -227,31 +223,33 @@ def _rotate_external_embedding(embedding: torch.Tensor, R1: np.ndarray) -> None:
     )
 
 
-def _rotate_merger_linear2(
-    model: ModelProto, merger_linear2: List[Op], R_L: np.ndarray
-) -> None:
+def _rotate_merger_linear2(merger_linear2: List[onnx_ir.Node], R_L: np.ndarray) -> None:
     """Rotate PatchMerger ``linear_fc2`` weights with R_L in-place."""
-    for op in merger_linear2:
-        rotate_linear_weight(model, op, R_L, is_writing=True)
+    for node in merger_linear2:
+        rotate_linear_weight(node, R_L, is_writing=True)
 
 
 def _validate_backbone_weights(
-    model: ModelProto, role_map: LlmTopology, hidden_size: int
+    analysis_ir: onnx_ir.Model, role_map: LlmTopology, hidden_size: int
 ) -> None:
     """Verify R1 architectural compatibility and that every weight in ``role_map``
     exists with the correct shape.
 
     R1 absorption requires writing layers (o_proj, down_proj) to feed directly
     into the residual add. An affine RMSNorm between the writing layer and the
-    residual add breaks that property.
+    residual add breaks that property. That check reads the *analysis* IR, since
+    it is the view where a decomposed RMSNorm appears as one recognizable node.
+
+    Shapes are read off the static tensors without materializing them: an
+    lm_head or embedding table can be hundreds of megabytes.
     """
     writing_output_tensors = [
-        op.outputs[0].name
+        node.outputs[0].name
         for block in role_map.blocks
-        for op in block.o_proj + block.down_proj
-        if op.outputs
+        for node in block.o_proj + block.down_proj
+        if node.outputs
     ]
-    post_writing_norms = find_post_writing_norms(model, writing_output_tensors)
+    post_writing_norms = find_post_writing_norms(analysis_ir, writing_output_tensors)
     if post_writing_norms:
         raise ValueError(
             f"R1 rotation absorption requires writing layers (o_proj, down_proj) to feed "
@@ -260,82 +258,74 @@ def _validate_backbone_weights(
             f"- R1 absorption is not feasible for this architecture."
         )
 
-    for op in role_map.embed_tokens:
-        found = False
-        for inp in op.inputs:
-            if inp.is_parm or inp.is_const:
-                found = True
-                tensor = ParamUtils.get_param_by_name(model, inp.name)
-                if tensor is None:
-                    raise RuntimeError(
-                        f"embed_tokens op '{op.name}': weight '{inp.name}' not found in "
-                        f"initializers. Cannot apply R1 rotation."
-                    )
-                shape = numpy_helper.to_array(tensor).shape
-                if shape[-1] != hidden_size:
-                    raise RuntimeError(
-                        f"embed_tokens op '{op.name}': weight '{inp.name}' has shape {shape}, "
-                        f"but shape[-1]={shape[-1]} != hidden_size={hidden_size}."
-                    )
-        if not found:
+    for node in role_map.embed_tokens:
+        shape = _static_shape(node.inputs[0] if node.inputs else None)
+        if shape is None:
             raise RuntimeError(
-                f"embed_tokens op '{op.name}': no static weight input found. "
+                f"embed_tokens node '{node.name}': no static embedding table found. "
                 f"Can't apply R1 rotation."
             )
+        if shape[-1] != hidden_size:
+            raise RuntimeError(
+                f"embed_tokens node '{node.name}': table '{node.inputs[0].name}' has "
+                f"shape {shape}, but shape[-1]={shape[-1]} != hidden_size={hidden_size}."
+            )
 
-    linear_ops_with_role = [(op, False) for op in role_map.lm_head]
+    linear_nodes_with_role = [(node, False) for node in role_map.lm_head]
     for block in role_map.blocks:
-        linear_ops_with_role += [(op, False) for op in block.qkv.ops]
-        linear_ops_with_role += [(op, True) for op in block.o_proj]
-        linear_ops_with_role += [(op, False) for op in block.gate_up.ops]
-        linear_ops_with_role += [(op, True) for op in block.down_proj]
+        linear_nodes_with_role += [(node, False) for node in block.qkv.nodes]
+        linear_nodes_with_role += [(node, True) for node in block.o_proj]
+        linear_nodes_with_role += [(node, False) for node in block.gate_up.nodes]
+        linear_nodes_with_role += [(node, True) for node in block.down_proj]
 
-    for op, is_writing in linear_ops_with_role:
-        weight_inp, is_transposed = get_weight_product(op)
-        if weight_inp is None:
+    for node, is_writing in linear_nodes_with_role:
+        weight_value, is_transposed = get_weight_value(node)
+        shape = _static_shape(weight_value)
+        if shape is None:
             raise RuntimeError(
-                f"Op '{op.name}': no static weight found. Can't apply R1 rotation."
+                f"Node '{node.name}': no static weight found. Can't apply R1 rotation."
             )
-        tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
-        if tensor is None:
-            raise RuntimeError(
-                f"Op '{op.name}': weight '{weight_inp.name}' not found in initilizers. "
-                f"Can't apply R1 rotation."
-            )
-        shape = numpy_helper.to_array(tensor).shape
 
-        if op.type == "Conv" or is_transposed:  # [out, in]
+        if node.op_type == "Conv" or is_transposed:  # [out, in]
             rotated_axis = 0 if is_writing else 1
         else:  # [in, out]
             rotated_axis = -1 if is_writing else 0
         if shape[rotated_axis] != hidden_size:
             raise RuntimeError(
-                f"Op '{op.name}': weight shape {shape}, axis {rotated_axis} "
+                f"Node '{node.name}': weight shape {shape}, axis {rotated_axis} "
                 f"= {shape[rotated_axis]}, expected hidden_size={hidden_size}."
             )
 
 
 def _validate_merger_linear2(
-    model: ModelProto, merger_linear2: List[Op], backbone_hidden_size: int
+    merger_linear2: List[onnx_ir.Node], backbone_hidden_size: int
 ) -> None:
     """Verify that every merger_linear2 weight exists and writes into ``backbone_hidden_size``."""
-    for op in merger_linear2:
-        weight_inp, is_transposed = get_weight_product(op)
-        if weight_inp is None:
+    for node in merger_linear2:
+        weight_value, is_transposed = get_weight_value(node)
+        shape = _static_shape(weight_value)
+        if shape is None:
             raise RuntimeError(
-                f"merger_linear2 op '{op.name}': no static weight found. Cannot apply R_L rotation."
+                f"merger_linear2 node '{node.name}': no static weight found. "
+                f"Cannot apply R_L rotation."
             )
-        tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
-        if tensor is None:
-            raise RuntimeError(
-                f"merger_linear2 op '{op.name}': weight '{weight_inp.name}' not found in initializers."
-            )
-        shape = numpy_helper.to_array(tensor).shape
         # writing layer: output axis = backbone_hidden_size
         # Conv/transposed [out, in]: axis 0; MatMul [in, out]: axis -1
-        rotated_axis = 0 if (op.type == "Conv" or is_transposed) else -1
+        rotated_axis = 0 if (node.op_type == "Conv" or is_transposed) else -1
         if shape[rotated_axis] != backbone_hidden_size:
             raise RuntimeError(
-                f"merger_linear2 op '{op.name}': weight shape {shape}, axis {rotated_axis} "
-                f"= {shape[rotated_axis]}, expected backbone_hidden_size={backbone_hidden_size}."
+                f"merger_linear2 node '{node.name}': weight shape {shape}, axis "
+                f"{rotated_axis} = {shape[rotated_axis]}, expected "
+                f"backbone_hidden_size={backbone_hidden_size}."
             )
+
+
+def _static_shape(value: Optional[onnx_ir.Value]) -> Optional[tuple]:
+    """Return the shape of the static tensor behind ``value``, or None if dynamic.
+
+    Reads the shape off the tensor without materializing its data.
+    """
+    tensor = static_tensor(value)
+    if tensor is None:
+        return None
+    return tuple(int(dim) for dim in tensor.shape)

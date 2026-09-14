@@ -13,6 +13,7 @@ import pytest
 import torch
 import torch.nn as nn
 import onnx
+import onnx_ir
 from onnx import load_model, numpy_helper
 from onnxruntime import GraphOptimizationLevel, InferenceSession, SessionOptions
 
@@ -46,20 +47,23 @@ from .models.style_decoders import (
 from .utils import add_genai_tests_path
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.common.hadamard import get_hadamard_matrix
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
+from aimet_onnx.ir_utils import static_tensor
 from aimet_onnx.utils import ParamUtils, make_dummy_input
 
 from aimet_onnx.experimental.llm_topology.topology import (
-    LlmTopology,
-    analyze_llm_topology,
+    analyze_llm_topology_by_name,
 )
-from aimet_onnx.experimental.llm_topology.cg_adapter import resolve_active_norms
+from aimet_onnx.experimental.llm_topology.ir_adapter import (
+    LlmTopology,
+    resolve_active_norms as _resolve_active_norms,
+    resolve_topology,
+)
+from aimet_onnx.experimental.llm_topology.ir_analysis import (
+    get_bias_value as _get_bias_value,
+    get_weight_value as _get_weight_value,
+)
 from aimet_onnx.experimental.llm_topology.norm_detection import (
     find_active_norms,
-)
-from aimet_onnx.experimental.llm_topology.weight_utils import (
-    get_bias_product as _get_bias_product,
-    get_weight_product as _get_weight_product,
 )
 from aimet_onnx.experimental.spinquant.model_analysis import (
     find_merger_linear2,
@@ -87,16 +91,41 @@ from aimet_onnx.prepare_passes.fix_node_names_in_dynamo_exported_onnx import (
 )
 
 
-def apply_r1_rotation(model, role_map, backbone_hidden_size):
+def apply_r1_rotation(ir_model, role_map, backbone_hidden_size):
     """Test shim for the legacy ``apply_r1_rotation`` API."""
-    _rotate_backbone(model, role_map, hadamard_rotation_matrix(backbone_hidden_size))
+    _rotate_backbone(ir_model, role_map, hadamard_rotation_matrix(backbone_hidden_size))
 
 
-def apply_r1_rotation_merger(model, merger_linear2, backbone_hidden_size):
+def apply_r1_rotation_merger(merger_linear2, backbone_hidden_size):
     """Test shim for the legacy ``apply_r1_rotation_merger`` API."""
     _rotate_merger_linear2(
-        model, merger_linear2, hadamard_rotation_matrix(backbone_hidden_size)
+        merger_linear2, hadamard_rotation_matrix(backbone_hidden_size)
     )
+
+
+def to_ir(model: onnx.ModelProto) -> onnx_ir.Model:
+    """Faithful IR of ``model`` — the view SpinQuant mutates."""
+    return onnx_ir.from_proto(model)
+
+
+def write_back(model: onnx.ModelProto, ir_model: onnx_ir.Model) -> None:
+    """Serialize a mutated IR back onto ``model``, as ``apply_spinquant`` does."""
+    model.CopyFrom(onnx_ir.to_proto(ir_model))
+
+
+def resolve_active_norms(model: onnx.ModelProto, ir_model: onnx_ir.Model):
+    """Active norms of ``model``, resolved onto ``ir_model``."""
+    return _resolve_active_norms(find_active_norms(model), ir_model)
+
+
+def analyze_on_ir(model: onnx.ModelProto, ir_model: onnx_ir.Model) -> LlmTopology:
+    """Topology of ``model``, resolved onto ``ir_model``."""
+    return resolve_topology(analyze_llm_topology_by_name(model), ir_model)
+
+
+def weight_array(value) -> np.ndarray:
+    """Materialize the static tensor behind an IR ``Value``."""
+    return static_tensor(value).numpy()
 
 
 AimetLogger.set_level_for_all_areas(logging.INFO)
@@ -171,35 +200,34 @@ def _run_model(model: onnx.ModelProto, inp: np.ndarray) -> np.ndarray:
     return session.run(None, _pad_dummy_input(model, input=inp))[0]
 
 
-def _collect_pre_fusion_state(model: onnx.ModelProto, active_norms: list) -> dict:
+def _collect_pre_fusion_state(active_norms: list) -> dict:
     pre_fusion_state = {}
     for active_norm in active_norms:
-        scale_name = active_norm.scale_name
-        scale = numpy_helper.to_array(
-            ParamUtils.get_param_by_name(model, scale_name)
-        ).copy()
+        scale = weight_array(active_norm.scale).copy()
 
         downstream = {}
-        for linear_op in active_norm.downstream_linears:
-            weight_inp, is_transposed = _get_weight_product(linear_op)
-            if weight_inp is None:
+        for linear_node in active_norm.downstream_linears:
+            weight_value, is_transposed = _get_weight_value(linear_node)
+            if weight_value is None or static_tensor(weight_value) is None:
                 continue
-            weight_tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
-            if weight_tensor is None:
-                continue
-            downstream[weight_inp.name] = (
-                numpy_helper.to_array(weight_tensor).copy(),
-                linear_op,
+            downstream[weight_value.name] = (
+                weight_array(weight_value).copy(),
+                linear_node,
                 is_transposed,
+                weight_value,
             )
 
         if downstream:
-            pre_fusion_state[scale_name] = (scale, downstream)
+            pre_fusion_state[active_norm.scale_name] = (
+                scale,
+                downstream,
+                active_norm.scale,
+            )
 
     return pre_fusion_state
 
 
-def _verify_fusion(model: onnx.ModelProto, pre_state: dict):
+def _verify_fusion(pre_state: dict):
     """
     When: fuse_norm_layers_into_linears has been called on the model.
     Then: every RMSNorm gamma initializer is reset to ones, and every downstream
@@ -207,17 +235,20 @@ def _verify_fusion(model: onnx.ModelProto, pre_state: dict):
     """
     assert pre_state
 
-    for scale_name, (scale_before, weights_before) in pre_state.items():
-        scale_after = numpy_helper.to_array(
-            ParamUtils.get_param_by_name(model, scale_name)
-        )
+    for _, (scale_before, weights_before, scale_value) in pre_state.items():
+        scale_after = weight_array(scale_value)
         assert np.array_equal(scale_after, np.ones_like(scale_after))
 
-        for wname, (w_before, linear_op, is_transposed) in weights_before.items():
-            w_after = numpy_helper.to_array(ParamUtils.get_param_by_name(model, wname))
+        for _, (
+            w_before,
+            linear_node,
+            is_transposed,
+            weight_value,
+        ) in weights_before.items():
+            w_after = weight_array(weight_value)
             scale_f64 = scale_before.astype(np.float64)
 
-            if linear_op.type == "Conv":
+            if linear_node.op_type == "Conv":
                 # W[out, in, *kernel]: absorb gamma along axis 1 (in_channels)
                 bc = scale_f64.reshape(1, -1, *([1] * (w_before.ndim - 2)))
             elif is_transposed:
@@ -234,36 +265,27 @@ def _verify_fusion(model: onnx.ModelProto, pre_state: dict):
             )
 
 
-def _collect_all_weights(model: onnx.ModelProto, role_map: LlmTopology) -> dict:
+def _collect_all_weights(role_map: LlmTopology) -> dict:
+    """Snapshot every weight/bias the R1 rotation touches, keyed by tensor name."""
     weights = {}
 
-    def _store_linear(op):
-        weight_inp, _ = _get_weight_product(op)
-        if weight_inp is not None:
-            tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
-            if tensor is not None:
-                weights[weight_inp.name] = numpy_helper.to_array(tensor).copy()
-        bias_inp = _get_bias_product(op)
-        if bias_inp is not None:
-            tensor = ParamUtils.get_param_by_name(model, bias_inp.name)
-            if tensor is not None:
-                weights[bias_inp.name] = numpy_helper.to_array(tensor).copy()
+    def _store(value):
+        if value is not None and static_tensor(value) is not None:
+            weights[value.name] = weight_array(value).copy()
 
-    def _store_gather(op):
-        for inp in op.inputs:
-            if inp.is_parm or inp.is_const:
-                tensor = ParamUtils.get_param_by_name(model, inp.name)
-                if tensor is not None:
-                    weights[inp.name] = numpy_helper.to_array(tensor).copy()
-                    return
+    def _store_linear(node):
+        _store(_get_weight_value(node)[0])
+        _store(_get_bias_value(node))
 
-    for op in role_map.embed_tokens:
-        _store_gather(op)
-    for op in role_map.lm_head:
-        _store_linear(op)
+    for node in role_map.embed_tokens:
+        _store(node.inputs[0])
+    for node in role_map.lm_head:
+        _store_linear(node)
     for block in role_map.blocks:
-        for op in block.qkv.ops + block.o_proj + block.gate_up.ops + block.down_proj:
-            _store_linear(op)
+        for node in (
+            block.qkv.nodes + block.o_proj + block.gate_up.nodes + block.down_proj
+        ):
+            _store_linear(node)
     return weights
 
 
@@ -392,21 +414,23 @@ class TestFuseNormLayers:
     def test_matmul(self, mul_for_pow, mul_rsqrt_pattern):
         """RMSNorm → MatMul[in_features, out_features]: gamma absorbed along axis 0 (in_features).
 
-        nn.Linear with 3D input and do_constant_folding=True, exports as MatMul[in_features, out_features] , which sets
-        transposed_params=False in ConnectedGraph
+        nn.Linear with 3D input and do_constant_folding=True exports as
+        MatMul[in_features, out_features], for which get_weight_value reports
+        is_transposed=False.
         """
         torch.manual_seed(0)
         np.random.seed(0)
         module = RMSNormMatMul(self.IN, self.OUT, mul_for_pow, mul_rsqrt_pattern)
         x = np.random.randn(self.B, self.SEQ, self.IN).astype(np.float32)
         model = _export_to_onnx(module, torch.from_numpy(x))
-        cg = ConnectedGraph(model)
+        ir_model = to_ir(model)
 
         y_before = _run_model(model, x)
-        active_norms = resolve_active_norms(find_active_norms(model), cg)
-        pre = _collect_pre_fusion_state(model, active_norms)
-        fuse_norm_layers_into_linears(model, active_norms)
-        _verify_fusion(model, pre)
+        active_norms = resolve_active_norms(model, ir_model)
+        pre = _collect_pre_fusion_state(active_norms)
+        fuse_norm_layers_into_linears(active_norms)
+        _verify_fusion(pre)
+        write_back(model, ir_model)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
     @pytest.mark.parametrize("mul_for_pow", [True, False])
@@ -416,8 +440,8 @@ class TestFuseNormLayers:
     def test_gemm_transb(self, mul_for_pow, mul_rsqrt_pattern):
         """RMSNorm → Gemm[out, H] transB=1: gamma absorbed along axis 1.
 
-        nn.Linear with bias and 2D input exports as Gemm(transB=1), which sets
-        transposed_params=True in ConnectedGraph
+        nn.Linear with bias and 2D input exports as Gemm(transB=1), for which
+        get_weight_value reports is_transposed=True.
         """
         torch.manual_seed(0)
         np.random.seed(0)
@@ -426,13 +450,14 @@ class TestFuseNormLayers:
         )
         x = np.random.randn(self.B, self.IN).astype(np.float32)
         model = _export_to_onnx(module, torch.from_numpy(x))
-        cg = ConnectedGraph(model)
+        ir_model = to_ir(model)
 
         y_before = _run_model(model, x)
-        active_norms = resolve_active_norms(find_active_norms(model), cg)
-        pre = _collect_pre_fusion_state(model, active_norms)
-        fuse_norm_layers_into_linears(model, active_norms)
-        _verify_fusion(model, pre)
+        active_norms = resolve_active_norms(model, ir_model)
+        pre = _collect_pre_fusion_state(active_norms)
+        fuse_norm_layers_into_linears(active_norms)
+        _verify_fusion(pre)
+        write_back(model, ir_model)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
     @pytest.mark.parametrize("mul_for_pow", [True, False])
@@ -442,8 +467,9 @@ class TestFuseNormLayers:
     def test_matmul_transb(self, mul_for_pow, mul_rsqrt_pattern):
         """RMSNorm → MatMul[out_features, in_features] transB=1: gamma absorbed along axis 1.
 
-        nn.Linear with 3D input and do_constant_folding=False, exports as MatMul[out_features, in_features] , which sets
-        transposed_params=True in ConnectedGraph
+        nn.Linear with 3D input and do_constant_folding=False exports as
+        MatMul[out_features, in_features], for which get_weight_value reports
+        is_transposed=True.
         """
         torch.manual_seed(0)
         np.random.seed(0)
@@ -452,13 +478,14 @@ class TestFuseNormLayers:
         )
         x = np.random.randn(self.B, self.SEQ, self.IN).astype(np.float32)
         model = _export_to_onnx(module, torch.from_numpy(x), do_constant_folding=False)
-        cg = ConnectedGraph(model)
+        ir_model = to_ir(model)
 
         y_before = _run_model(model, x)
-        active_norms = resolve_active_norms(find_active_norms(model), cg)
-        pre = _collect_pre_fusion_state(model, active_norms)
-        fuse_norm_layers_into_linears(model, active_norms)
-        _verify_fusion(model, pre)
+        active_norms = resolve_active_norms(model, ir_model)
+        pre = _collect_pre_fusion_state(active_norms)
+        fuse_norm_layers_into_linears(active_norms)
+        _verify_fusion(pre)
+        write_back(model, ir_model)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
     @pytest.mark.parametrize("mul_for_pow", [True, False])
@@ -472,14 +499,15 @@ class TestFuseNormLayers:
         module = RMSNormProjectionLayers(self.IN, mul_for_pow, mul_rsqrt_pattern)
         x = np.random.randn(self.B, self.SEQ, self.IN).astype(np.float32)
         model = _export_to_onnx(module, torch.from_numpy(x))
-        cg = ConnectedGraph(model)
+        ir_model = to_ir(model)
 
         y_before = _run_model(model, x)
-        active_norms = resolve_active_norms(find_active_norms(model), cg)
-        pre = _collect_pre_fusion_state(model, active_norms)
+        active_norms = resolve_active_norms(model, ir_model)
+        pre = _collect_pre_fusion_state(active_norms)
         assert len(next(iter(pre.values()))[1]) == 3
-        fuse_norm_layers_into_linears(model, active_norms)
-        _verify_fusion(model, pre)
+        fuse_norm_layers_into_linears(active_norms)
+        _verify_fusion(pre)
+        write_back(model, ir_model)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
     @pytest.mark.parametrize("mul_for_pow", [True, False])
@@ -495,13 +523,14 @@ class TestFuseNormLayers:
         )
         x = np.random.randn(self.B, self.SEQ, self.IN).astype(np.float32)
         model = _export_to_onnx(module, torch.from_numpy(x))
-        cg = ConnectedGraph(model)
+        ir_model = to_ir(model)
 
         y_before = _run_model(model, x)
-        active_norms = resolve_active_norms(find_active_norms(model), cg)
-        pre = _collect_pre_fusion_state(model, active_norms)
-        fuse_norm_layers_into_linears(model, active_norms)
-        _verify_fusion(model, pre)
+        active_norms = resolve_active_norms(model, ir_model)
+        pre = _collect_pre_fusion_state(active_norms)
+        fuse_norm_layers_into_linears(active_norms)
+        _verify_fusion(pre)
+        write_back(model, ir_model)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
     @pytest.mark.parametrize("mul_for_pow", [True, False])
@@ -538,10 +567,8 @@ class TestFuseNormLayers:
         ).copy()
 
         y_before = _run_model(model, x)
-        cg = ConnectedGraph(model)
-        fuse_norm_layers_into_linears(
-            model, resolve_active_norms(find_active_norms(model), cg)
-        )
+        ir_model = to_ir(model)
+        fuse_norm_layers_into_linears(resolve_active_norms(model, ir_model))
 
         w_after = numpy_helper.to_array(ParamUtils.get_param_by_name(model, w_name))
         assert np.array_equal(w_after, w_before)
@@ -560,25 +587,20 @@ class TestFuseNormLayers:
         module = RMSNormReshapeLinear(d_v, s_sq, mul_for_pow, mul_rsqrt_pattern)
         x = np.random.randn(s_sq, d_v).astype(np.float32)
         model = _export_to_onnx(module, torch.from_numpy(x))
-        cg = ConnectedGraph(model)
+        ir_model = to_ir(model)
 
         y_before = _run_model(model, x)
 
         # Collect pre-fusion state manually: gamma is [d_v] but weight in_features is s_sq*d_v
-        active_norms = resolve_active_norms(find_active_norms(model), cg)
+        active_norms = resolve_active_norms(model, ir_model)
         assert len(active_norms) == 1
-        scale_name = active_norms[0].scale_name
-        gamma_before = numpy_helper.to_array(
-            ParamUtils.get_param_by_name(model, scale_name)
-        ).copy()
+        gamma_before = weight_array(active_norms[0].scale).copy()
         assert gamma_before.shape == (d_v,)
 
-        linear_ops = active_norms[0].downstream_linears
-        assert len(linear_ops) == 1
-        weight_inp, is_transposed = _get_weight_product(linear_ops[0])
-        W_before = numpy_helper.to_array(
-            ParamUtils.get_param_by_name(model, weight_inp.name)
-        ).copy()
+        linear_nodes = active_norms[0].downstream_linears
+        assert len(linear_nodes) == 1
+        weight_value, is_transposed = _get_weight_value(linear_nodes[0])
+        W_before = weight_array(weight_value).copy()
         in_features = W_before.shape[1] if is_transposed else W_before.shape[0]
         assert in_features == d_v * s_sq
 
@@ -588,17 +610,13 @@ class TestFuseNormLayers:
          weight must be scaled by gamma tiled s_sq times
         """
 
-        fuse_norm_layers_into_linears(model, active_norms)
+        fuse_norm_layers_into_linears(active_norms)
 
-        gamma_after = numpy_helper.to_array(
-            ParamUtils.get_param_by_name(model, scale_name)
-        )
+        gamma_after = weight_array(active_norms[0].scale)
         assert np.array_equal(gamma_after, np.ones(d_v, dtype=gamma_before.dtype))
 
         gamma_tiled = np.tile(gamma_before.astype(np.float64), s_sq)
-        W_after = numpy_helper.to_array(
-            ParamUtils.get_param_by_name(model, weight_inp.name)
-        )
+        W_after = weight_array(weight_value)
         if is_transposed:
             # Gemm transB=1: stored W[out, in], gamma absorbed along axis 1
             W_expected = (gamma_tiled[None, :] * W_before.astype(np.float64)).astype(
@@ -610,6 +628,7 @@ class TestFuseNormLayers:
                 W_before.dtype
             )
         assert np.allclose(W_after, W_expected)
+        write_back(model, ir_model)
         assert np.allclose(_run_model(model, x), y_before)
 
 
@@ -623,31 +642,31 @@ class TestFindMergerLinear2:
         model = _export_vit(ViTEncoder())
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
-        cg = ConnectedGraph(model)
+        ir_model = to_ir(model)
 
         """
         When: find_merger_linear2 is called on a ViT with a PatchMerger.
         Then: exactly 1 merger_linear2 op (linear_fc2) detected as the leaf weighted linear.
         """
-        merger_linear2 = find_merger_linear2(cg)
+        merger_linear2 = find_merger_linear2(ir_model)
 
         assert len(merger_linear2) == 1
-        assert merger_linear2[0].type in ("MatMul", "Gemm")
+        assert merger_linear2[0].op_type in ("MatMul", "Gemm")
 
     def test_find_merger_linear2_layernorm_vit(self):
         """Qwen3-VL style (LayerNorm): find_merger_linear2 detects the single output projection."""
         torch.manual_seed(0)
         model = _export_vit(LayerNormViTEncoder())
-        cg = ConnectedGraph(model)
+        ir_model = to_ir(model)
 
         """
         When: find_merger_linear2 is called on a ViT with LayerNorm (no active RMSNorms).
         Then: exactly 1 merger_linear2 op detected (leaf linear / graph output).
         """
-        merger_linear2 = find_merger_linear2(cg)
+        merger_linear2 = find_merger_linear2(ir_model)
 
         assert len(merger_linear2) == 1
-        assert merger_linear2[0].type in ("MatMul", "Gemm")
+        assert merger_linear2[0].op_type in ("MatMul", "Gemm")
 
 
 class TestApplyR1Rotation:
@@ -668,16 +687,17 @@ class TestApplyR1Rotation:
         torch.manual_seed(0)
         np.random.seed(0)
         model = _export_decoder_with_ids(decoder_cls())
-        cg = ConnectedGraph(model)
+        ir_model = to_ir(model)
 
-        active_norms = resolve_active_norms(find_active_norms(model), cg)
-        role_map = analyze_llm_topology(model, connected_graph=cg)
+        active_norms = resolve_active_norms(model, ir_model)
+        role_map = analyze_on_ir(model, ir_model)
 
         """
         When: fuse_norm_layers_into_linears is applied
         Then: RMSNorm's scale weight (gamma) is fused into downstream linear layers.
         """
-        fuse_norm_layers_into_linears(model, active_norms)
+        fuse_norm_layers_into_linears(active_norms)
+        write_back(model, ir_model)
 
         token_ids = np.random.randint(0, _VOCAB, (_B, _SEQ)).astype(np.int64)
         y_before = _run_model(model, token_ids)
@@ -686,7 +706,8 @@ class TestApplyR1Rotation:
         When: apply_r1_rotation is applied
         Then: Model output is preserved numerically after rotation (R1 @ R1^T = I).
         """
-        apply_r1_rotation(model, role_map, backbone_hidden_size=_H)
+        apply_r1_rotation(ir_model, role_map, backbone_hidden_size=_H)
+        write_back(model, ir_model)
 
         y_after = _run_model(model, token_ids)
         assert np.allclose(y_after, y_before, atol=1e-5)
@@ -705,21 +726,21 @@ class TestApplyR1Rotation:
         """Applying R1 rotation twice must recover the original weights (R1 @ R1^T = I)."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(decoder_cls())
-        cg = ConnectedGraph(model)
+        ir_model = to_ir(model)
 
-        active_norms = resolve_active_norms(find_active_norms(model), cg)
-        role_map = analyze_llm_topology(model, connected_graph=cg)
-        fuse_norm_layers_into_linears(model, active_norms)
-        weights_original = _collect_all_weights(model, role_map)
+        active_norms = resolve_active_norms(model, ir_model)
+        role_map = analyze_on_ir(model, ir_model)
+        fuse_norm_layers_into_linears(active_norms)
+        weights_original = _collect_all_weights(role_map)
 
         """
         When: apply_r1_rotation is applied twice
         Then: Linear layer weights are recovered.
         """
-        apply_r1_rotation(model, role_map, backbone_hidden_size=_H)
-        apply_r1_rotation(model, role_map, backbone_hidden_size=_H)
+        apply_r1_rotation(ir_model, role_map, backbone_hidden_size=_H)
+        apply_r1_rotation(ir_model, role_map, backbone_hidden_size=_H)
 
-        weights_recovered = _collect_all_weights(model, role_map)
+        weights_recovered = _collect_all_weights(role_map)
         for name, W_orig in weights_original.items():
             W_rec = weights_recovered[name]
             assert np.allclose(W_rec, W_orig, atol=1e-5)
@@ -792,8 +813,8 @@ class TestApplyR1Rotation:
         torch.manual_seed(0)
         np.random.seed(0)
         model = _export_vit(vit_cls())
-        cg = ConnectedGraph(model)
-        merger_linear2 = find_merger_linear2(cg)
+        ir_model = to_ir(model)
+        merger_linear2 = find_merger_linear2(ir_model)
 
         x = np.random.randn(*vit_input_shape).astype(np.float32)
         y_before = _run_model(model, x)
@@ -802,7 +823,8 @@ class TestApplyR1Rotation:
         When: apply_r1_rotation_merger is applied to merger_linear2 with R_L.
         Then: output equals y_before @ R_L (merger_linear2 writes into R_L-rotated language space).
         """
-        apply_r1_rotation_merger(model, merger_linear2, backbone_hidden_size=_VIT_D_L)
+        apply_r1_rotation_merger(merger_linear2, backbone_hidden_size=_VIT_D_L)
+        write_back(model, ir_model)
 
         R_L = (get_hadamard_matrix(_VIT_D_L) / np.sqrt(_VIT_D_L)).astype(np.float32)
         y_after = _run_model(model, x)
@@ -817,8 +839,8 @@ class TestApplyR1Rotation:
         """Applying apply_r1_rotation_merger twice must recover the original merger_linear2 weight."""
         torch.manual_seed(0)
         model = _export_vit(vit_cls())
-        cg = ConnectedGraph(model)
-        merger_linear2 = find_merger_linear2(cg)
+        ir_model = to_ir(model)
+        merger_linear2 = find_merger_linear2(ir_model)
 
         weights_original = {
             t.name: numpy_helper.to_array(t).copy() for t in model.graph.initializer
@@ -828,8 +850,9 @@ class TestApplyR1Rotation:
         When: apply_r1_rotation_merger is applied twice.
         Then: all initializers are recovered (R @ R^T = I).
         """
-        apply_r1_rotation_merger(model, merger_linear2, backbone_hidden_size=_VIT_D_L)
-        apply_r1_rotation_merger(model, merger_linear2, backbone_hidden_size=_VIT_D_L)
+        apply_r1_rotation_merger(merger_linear2, backbone_hidden_size=_VIT_D_L)
+        apply_r1_rotation_merger(merger_linear2, backbone_hidden_size=_VIT_D_L)
+        write_back(model, ir_model)
 
         for name, W_orig in weights_original.items():
             W_rec = numpy_helper.to_array(ParamUtils.get_param_by_name(model, name))
@@ -839,17 +862,15 @@ class TestApplyR1Rotation:
         """_validate_merger_linear2 must raise RuntimeError when backbone_hidden_size doesn't match."""
         torch.manual_seed(0)
         model = _export_vit(ViTEncoder())
-        cg = ConnectedGraph(model)
-        merger_linear2 = find_merger_linear2(cg)
+        ir_model = to_ir(model)
+        merger_linear2 = find_merger_linear2(ir_model)
 
         """
         When: _validate_merger_linear2 is called with wrong backbone_hidden_size.
         Then: RuntimeError is raised.
         """
         with pytest.raises(RuntimeError):
-            _validate_merger_linear2(
-                model, merger_linear2, backbone_hidden_size=_VIT_D_L + 1
-            )
+            _validate_merger_linear2(merger_linear2, backbone_hidden_size=_VIT_D_L + 1)
 
 
 _R2_DECODER_PARAMS = [
@@ -1195,8 +1216,9 @@ class TestApplyR3Rotation:
         np.random.seed(0)
         model = _export_decoder_with_pkv(LlamaStyleDecoder())
 
-        role_map = analyze_llm_topology(model)
-        anchors = find_r3_anchors(role_map, model)
+        ir_model = to_ir(model)
+        role_map = analyze_on_ir(model, ir_model)
+        anchors = find_r3_anchors(role_map, ir_model)
 
         # Pass: exactly one anchor per block, each pinned to that block's
         # past_key input / Concat / QK^T MatMul.
@@ -1491,7 +1513,8 @@ class TestFindR3Anchors:
                 inp.name for inp in model.graph.input if "past_key" in inp.name
             ],
         )
-        anchors = find_r3_anchors(role_map, model)
+        ir_model = to_ir(model)
+        anchors = find_r3_anchors(role_map, ir_model)
 
         # Pass: anchors found for every layer, correctly identifying past_key
         # input, Concat, QK^T MatMul, and distinct Q/K operand positions.
@@ -1503,7 +1526,7 @@ class TestFindR3Anchors:
             assert len(anchor.qk_matmul_nodes) == 1
             assert anchor.qk_matmul_nodes[0].op_type == "MatMul"
             # Q-side and K-side must be distinct inputs of the QK^T MatMul.
-            assert anchor.q_input_tensors[0] != anchor.k_consumers[0].output[0]
+            assert anchor.q_input_values[0] is not anchor.k_consumers[0].outputs[0]
 
     @pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
     def test_find_r3_anchors_gqa(self):
@@ -1531,7 +1554,8 @@ class TestFindR3Anchors:
                 inp.name for inp in model.graph.input if "past_key" in inp.name
             ],
         )
-        anchors = find_r3_anchors(role_map, model)
+        ir_model = to_ir(model)
+        anchors = find_r3_anchors(role_map, ir_model)
 
         assert len(anchors) == _QWEN3_NUM_LAYERS
         for i, anchor in enumerate(anchors):
@@ -1541,7 +1565,7 @@ class TestFindR3Anchors:
             assert len(anchor.qk_matmul_nodes) == 1
             assert anchor.qk_matmul_nodes[0].op_type == "MatMul"
             # Q-side and K-side must be distinct inputs of the QK^T MatMul.
-            assert anchor.q_input_tensors[0] != anchor.k_consumers[0].output[0]
+            assert anchor.q_input_values[0] is not anchor.k_consumers[0].outputs[0]
 
 
 class TestApplySpinquant:
@@ -1749,9 +1773,7 @@ class TestApplySpinquant:
 
         R_L = (get_hadamard_matrix(_VIT_D_L) / np.sqrt(_VIT_D_L)).astype(np.float32)
         assert np.allclose(_run_model(visual_model, x_vit), y_vit_before @ R_L)
-        assert not any(
-            is_online_rotation_op(op) for op in ConnectedGraph(model).ordered_ops
-        )
+        assert not any(is_online_rotation_op(node) for node in to_ir(model).graph)
         assert np.allclose(_run_model(model, token_ids), y_before, atol=1e-5)
 
     @pytest.mark.parametrize("pass_embedding", [True, False])
@@ -1788,8 +1810,7 @@ class TestApplySpinquant:
 
         assert np.allclose(run_prompt(), y_before, atol=1e-5)
         online = any(
-            is_online_rotation_op(op)
-            for op in ConnectedGraph(backbone_model).ordered_ops
+            is_online_rotation_op(node) for node in to_ir(backbone_model).graph
         )
         assert online == (not pass_embedding)
 
@@ -1836,9 +1857,9 @@ class TestApplySpinquant:
         # No embed_tokens weight to absorb R1 -> embeddings rotated online.
         # Matched by name: a headless export also rotates the final residual.
         embedding_rotations = [
-            op
-            for op in ConnectedGraph(model).ordered_ops
-            if is_online_rotation_op(op) and "inputs_embeds" in op.name
+            node
+            for node in to_ir(model).graph
+            if is_online_rotation_op(node) and "inputs_embeds" in node.name
         ]
         assert bool(embedding_rotations) == (not with_embedding)
 
@@ -2022,3 +2043,55 @@ class TestApplySpinquant:
         for name, arr_before in init_before.items():
             arr_after = numpy_helper.to_array(ParamUtils.get_param_by_name(model, name))
             assert np.array_equal(arr_before, arr_after)
+
+
+class TestNoConnectedGraphDependency:
+    """SpinQuant analyzes and rewrites the graph on ``onnx_ir`` alone.
+
+    A ConnectedGraph goes stale the moment a node is inserted, and its ``Op`` /
+    ``Product`` objects need side tables for what an ``onnx_ir.Value`` already
+    knows. Re-introducing an import of either would quietly re-couple the package
+    to that representation, so it is asserted against rather than reviewed for.
+    """
+
+    BANNED_MODULES = {
+        "aimet_onnx.meta.connectedgraph",
+        "aimet_onnx.meta.operations",
+        "aimet_onnx.meta.product",
+        # The ConnectedGraph-flavored topology and the Product-typed weight
+        # helpers: both hand back CG objects.
+        "aimet_onnx.experimental.llm_topology.cg_adapter",
+        "aimet_onnx.experimental.llm_topology.weight_utils",
+    }
+
+    def test_no_connectedgraph_imports(self):
+        """No module under experimental/spinquant may import ConnectedGraph types."""
+        import ast
+        import pathlib
+
+        import aimet_onnx.experimental.spinquant as spinquant_pkg
+
+        package_root = pathlib.Path(spinquant_pkg.__file__).parent
+        sources = sorted(package_root.rglob("*.py"))
+        assert sources, f"no sources found under {package_root}"
+
+        offenders = []
+        for source in sources:
+            tree = ast.parse(source.read_text(), filename=str(source))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    imported = [node.module] if node.module else []
+                else:
+                    continue
+                for name in imported:
+                    if name in self.BANNED_MODULES:
+                        offenders.append(
+                            f"{source.relative_to(package_root)}:{node.lineno} "
+                            f"imports {name}"
+                        )
+
+        assert not offenders, "ConnectedGraph dependency reintroduced:\n" + "\n".join(
+            offenders
+        )

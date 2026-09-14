@@ -11,14 +11,14 @@ residual add.
 
 from typing import Iterable, List
 
-from aimet_onnx.utils import ModelProto
+import onnx_ir
 
 from aimet_onnx.experimental.llm_topology import ir_analysis
 from aimet_onnx.experimental.llm_topology.norm_detection import is_affine_rms_norm
 
 
 def find_post_writing_norms(
-    model: ModelProto, writing_output_tensors: Iterable[str]
+    analysis_ir: onnx_ir.Model, writing_output_tensors: Iterable[str]
 ) -> List[str]:
     """Return names of affine RMSNorms immediately after writing layers.
 
@@ -26,13 +26,14 @@ def find_post_writing_norms(
     layers (o_proj, down_proj) to feed directly into the residual add, with no
     affine RMSNorm in between.
 
-    :param model: ONNX ModelProto.
+    :param analysis_ir: Analysis IR from :func:`~.ir_analysis.build_analysis_ir`.
+        It must be that view rather than a faithful graph: a decomposed RMSNorm
+        is only recognizable as one node once the supergroup fusion has run.
     :param writing_output_tensors: Output tensor names of the writing layers to
         check (a block's o_proj and down_proj).
     :return: List of norm names for detected post-writing norms.
     """
-    ir_model = ir_analysis.build_analysis_ir(model)
-    node_by_output = ir_analysis.node_by_output_tensor(ir_model)
+    node_by_output = ir_analysis.node_by_output_tensor(analysis_ir)
 
     found = []
     for tensor_name in writing_output_tensors:

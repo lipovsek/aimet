@@ -20,21 +20,19 @@ Storage / role conventions:
     Gather        | [vocab, hidden] | W @ R   (axis -1)
 """
 
-from typing import Tuple
+from typing import List, Tuple
 import re
 
 import numpy as np
-import onnx
-from onnx import numpy_helper
+import onnx_ir
 
 from aimet_onnx.common.hadamard import get_hadamard_matrix
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.meta.operations import Op
-from aimet_onnx.utils import ModelProto, ParamUtils
+from aimet_onnx.ir_utils import set_static_tensor, static_tensor
 
-from aimet_onnx.experimental.llm_topology.weight_utils import (
-    get_bias_product,
-    get_weight_product,
+from aimet_onnx.experimental.llm_topology.ir_analysis import (
+    get_bias_value,
+    get_weight_value,
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
@@ -65,74 +63,68 @@ def block_diag_repeat(R: np.ndarray, k: int) -> np.ndarray:
     return out
 
 
-def rotate_gather_weight(model: ModelProto, op: Op, R: np.ndarray):
-    """Apply a right-side rotation ``W @ R`` to the weight of a Gather op (embed_tokens).
+#: Input index of a ``Gather``'s data input — the ``[vocab, hidden]`` embedding table.
+_GATHER_TABLE_INDEX = 0
 
-    :param model: ONNX ModelProto.
-    :param op: The Gather op.
+
+def rotate_gather_weight(node: onnx_ir.Node, R: np.ndarray):
+    """Apply a right-side rotation ``W @ R`` to the table of a Gather (embed_tokens).
+
+    :param node: The Gather node.
     :param R: Normalized rotation matrix [hidden, hidden].
     """
-    for inp in op.inputs:
-        if inp.is_parm or inp.is_const:
-            tensor = ParamUtils.get_param_by_name(model, inp.name)
-            if tensor is None:
-                raise RuntimeError(
-                    f"embed_tokens op '{op.name}': weight '{inp.name}' not found in "
-                    f"initializers."
-                )
-            W = numpy_helper.to_array(tensor)
-            W_new = right_multiply(W, R).astype(W.dtype)
-            tensor.CopyFrom(numpy_helper.from_array(W_new, name=tensor.name))
-            _logger.debug("Rotated embed_tokens '%s' shape %s.", inp.name, W.shape)
-            return
-    raise RuntimeError(f"embed_tokens op '{op.name}': no static weight input found.")
+    table = (
+        node.inputs[_GATHER_TABLE_INDEX]
+        if len(node.inputs) > _GATHER_TABLE_INDEX
+        else None
+    )
+    W = static_tensor(table)
+    if W is None:
+        raise RuntimeError(
+            f"embed_tokens node '{node.name}': input {_GATHER_TABLE_INDEX} is not a "
+            f"static embedding table."
+        )
+
+    W = W.numpy()
+    set_static_tensor(table, right_multiply(W, R).astype(W.dtype))
+    _logger.debug("Rotated embed_tokens '%s' shape %s.", table.name, W.shape)
 
 
-def rotate_linear_weight(model: ModelProto, op: Op, R: np.ndarray, is_writing: bool):
-    """Apply a rotation to the weight (and bias if writing) of a MatMul/Gemm/Conv op.
+def rotate_linear_weight(node: onnx_ir.Node, R: np.ndarray, is_writing: bool):
+    """Apply a rotation to the weight (and bias if writing) of a MatMul/Gemm/Conv node.
 
-    :param model: ONNX ModelProto.
-    :param op: The MatMul, Gemm, or Conv op.
+    :param node: The MatMul, Gemm, or Conv node.
     :param R: Normalized rotation matrix [hidden, hidden].
     :param is_writing: True for layers that write to the residual stream
         (e.g. o_proj, down_proj); False for layers that read from it
         (e.g. qkv, gate_up, lm_head).
     """
-    weight_inp, is_transposed = get_weight_product(op)
-    if weight_inp is None:
-        raise RuntimeError(f"Op '{op.name}': no static weight found.")
+    weight_value, is_transposed = get_weight_value(node)
+    weight = static_tensor(weight_value)
+    if weight is None:
+        raise RuntimeError(f"Node '{node.name}': no static weight found.")
 
-    tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
-    if tensor is None:
-        raise RuntimeError(
-            f"Op '{op.name}': weight '{weight_inp.name}' not found in initializers."
-        )
-
-    W = numpy_helper.to_array(tensor)
-    W_new = apply_transform(W, R, op.type, is_transposed, is_writing).astype(W.dtype)
-    tensor.CopyFrom(numpy_helper.from_array(W_new, name=tensor.name))
+    W = weight.numpy()
+    W_new = apply_transform(W, R, node.op_type, is_transposed, is_writing)
+    set_static_tensor(weight_value, W_new.astype(W.dtype))
     _logger.debug(
-        "Rotated op '%s' (%s, transposed=%s, is_writing=%s) shape %s.",
-        op.name,
-        op.type,
+        "Rotated node '%s' (%s, transposed=%s, is_writing=%s) shape %s.",
+        node.name,
+        node.op_type,
         is_transposed,
         is_writing,
         W.shape,
     )
 
     if is_writing:
-        bias_inp = get_bias_product(op)
-        if bias_inp is not None:
-            bias_tensor = ParamUtils.get_param_by_name(model, bias_inp.name)
-            if bias_tensor is not None:
-                b = numpy_helper.to_array(bias_tensor)
-                b_rot = right_multiply(b, R, axis=-1).astype(b.dtype)
-                bias_tensor.CopyFrom(
-                    numpy_helper.from_array(b_rot, name=bias_tensor.name)
-                )
-                _logger.debug(
-                    "Rotated bias for writing op '%s' shape %s.", op.name, b.shape
-                )
+        bias_value = get_bias_value(node)
+        bias = static_tensor(bias_value)
+        if bias is not None:
+            b = bias.numpy()
+            set_static_tensor(bias_value, right_multiply(b, R, axis=-1).astype(b.dtype))
+            _logger.debug(
+                "Rotated bias for writing node '%s' shape %s.", node.name, b.shape
+            )
 
 
 def apply_transform(
@@ -198,121 +190,116 @@ def left_multiply(W: np.ndarray, R: np.ndarray, axis: int = 0) -> np.ndarray:
 
 
 def insert_online_hadamard_node(
-    model: ModelProto,
-    target_tensor_name: str,
-    consumer_nodes: list[onnx.NodeProto],
+    ir_model: onnx_ir.Model,
+    target_value: onnx_ir.Value,
+    consumer_nodes: List[onnx_ir.Node],
     H: np.ndarray,
     name_prefix: str,
-) -> Tuple[str, onnx.NodeProto]:
-    """Insert ``MatMul(target_tensor, H)`` between a producer and one consumer input.
+) -> Tuple[onnx_ir.Value, onnx_ir.Node]:
+    """Insert ``MatMul(target_value, H)`` between a producer and chosen consumers.
 
-    Used by R3 to add an online Hadamard rotation immediately upstream of a
-    chosen consumer (the QK^T MatMul, or the past-key Concat). The new MatMul
-    reads ``target_tensor_name`` and writes a rotated tensor; only the
-    requested consumer input is rewired, so other consumers of the original
-    tensor (if any) keep seeing the unrotated value.
+    Used by R1 and R3 to add an online Hadamard rotation immediately upstream of
+    a chosen consumer (the QK^T MatMul, the past-key Concat, or the residual
+    stream). The new MatMul reads ``target_value`` and writes a rotated tensor;
+    only the listed consumers are rewired, so any other consumer of the original
+    tensor keeps seeing the unrotated value.
 
-    :param model: ONNX ModelProto to mutate.
-    :param target_tensor_name: Name of the tensor to rotate.
-    :param consumer_nodes: The NodeProtos whose input index we will rewire.
-    :param H: Hadamard rotation matrix to insert
+    :param ir_model: IR model to mutate.
+    :param target_value: The tensor to rotate.
+    :param consumer_nodes: Nodes whose ``target_value`` input gets rewired.
+    :param H: Hadamard rotation matrix to insert.
     :param name_prefix: Prefix used to name the inserted initializer / node /
         output tensor (e.g. ``"block0_q"``).
-    :return: ``(output_name, new_node)`` — the name of the new (rotated) output
-        tensor and the inserted ``MatMul`` NodeProto (so callers can wire a
-        quantizer relative to it).
+    :return: ``(rotated_value, new_node)`` — the new (rotated) tensor and the
+        inserted ``MatMul`` node, so callers can wire a quantizer relative to it.
     """
     for consumer_node in consumer_nodes:
-        if target_tensor_name not in consumer_node.input:
+        if target_value not in consumer_node.inputs:
             raise ValueError(
-                f"insert_online_hadamard_node: consumer_node '{consumer_node.name}' "
-                f"target tensor `{target_tensor_name}` does not appear in consumer node inputs: "
-                f"{consumer_node.input}"
+                f"insert_online_hadamard_node: target tensor "
+                f"'{target_value.name}' does not appear in the inputs of consumer "
+                f"node '{consumer_node.name}': "
+                f"{[inp.name if inp else None for inp in consumer_node.inputs]}"
             )
 
-    elem_type = _infer_tensor_elem_type(model, target_tensor_name)
-    np_dtype = onnx.helper.tensor_dtype_to_np_dtype(elem_type)
-    H = H.astype(np_dtype)
+    dtype = _rotation_dtype(target_value)
+    H = H.astype(dtype.numpy())
 
     initializer_name = f"{name_prefix}_hadamard"
-    output_name = f"{name_prefix}_out"
-    node_name = f"{name_prefix}"
-
-    initializer = numpy_helper.from_array(H, name=initializer_name)
-    model.graph.initializer.append(initializer)
-
-    new_node = onnx.helper.make_node(
-        op_type="MatMul",
-        inputs=[target_tensor_name, initializer_name],
-        outputs=[output_name],
-        name=node_name,
+    hadamard = onnx_ir.Value(
+        name=initializer_name,
+        type=onnx_ir.TensorType(dtype),
+        shape=onnx_ir.Shape(H.shape),
+        const_value=onnx_ir.tensor(H, name=initializer_name),
     )
-    # protobuf ``insert`` copies the message, so use the in-graph reference for
-    # the return value — callers wire quantizers onto this node's edges.
-    new_node = _insert_node_after_producer(model, target_tensor_name, new_node)
+    ir_model.graph.register_initializer(hadamard)
+
+    new_node = onnx_ir.node(
+        "MatMul",
+        inputs=[target_value, hadamard],
+        num_outputs=1,
+        name=name_prefix,
+    )
+    rotated_value = new_node.outputs[0]
+    rotated_value.name = f"{name_prefix}_out"
+    rotated_value.type = onnx_ir.TensorType(dtype)
+    rotated_value.shape = target_value.shape
+
+    _insert_after_producer(ir_model.graph, target_value, new_node)
 
     for consumer_node in consumer_nodes:
-        consumer_input_idx = list(consumer_node.input).index(target_tensor_name)
-        consumer_node.input[consumer_input_idx] = output_name
+        for index, inp in enumerate(consumer_node.inputs):
+            if inp is target_value:
+                consumer_node.replace_input_with(index, rotated_value)
+                _logger.debug(
+                    "Inserted online Hadamard MatMul '%s' on tensor '%s' "
+                    "(dimension=%d, dtype=%s); rewired '%s'.input[%d].",
+                    name_prefix,
+                    target_value.name,
+                    H.shape[0],
+                    dtype,
+                    consumer_node.name,
+                    index,
+                )
 
+    return rotated_value, new_node
+
+
+def _rotation_dtype(target_value: onnx_ir.Value) -> onnx_ir.DataType:
+    """Return the dtype to cast the Hadamard to so it matches ``target_value``.
+
+    Falls back to ``FLOAT`` when the graph carries no type for the tensor — ORT
+    then raises a clear dtype error at session-build time if that guess is wrong,
+    which is preferable to silently casting weights.
+    """
+    if target_value.dtype is not None:
+        return target_value.dtype
     _logger.debug(
-        "Inserted online Hadamard MatMul '%s' on tensor '%s' (dimension=%d, dtype=%s); "
-        "rewired '%s'.input[%d].",
-        node_name,
-        target_tensor_name,
-        H.shape[0],
-        np_dtype,
-        consumer_node.name,
-        consumer_input_idx,
+        "Tensor '%s' carries no dtype; assuming FLOAT for the online Hadamard.",
+        target_value.name,
     )
-    return output_name, new_node
+    return onnx_ir.DataType.FLOAT
 
 
-def _infer_tensor_elem_type(model: ModelProto, tensor_name: str) -> int:
-    """Return the ONNX TensorProto.DataType for ``tensor_name``.
+def _insert_after_producer(
+    graph: onnx_ir.Graph, target_value: onnx_ir.Value, new_node: onnx_ir.Node
+) -> None:
+    """Insert ``new_node`` immediately after the node producing ``target_value``.
 
-    Looks first at graph value_info / inputs / outputs, then at initializers.
-    Defaults to ``FLOAT`` if nothing matches — ORT will raise a clear dtype
-    error at session-build time if that's wrong, which is preferable to
-    silently casting weights.
+    ONNX requires nodes to appear in a topologically valid order. ORT tolerates
+    out-of-order nodes for many graphs, but other tools (and serializers that
+    re-validate) do not. When ``target_value`` has no producer — it is a graph
+    input or an initializer — the new node belongs at the front of the graph.
     """
-    for vi in (
-        list(model.graph.value_info)
-        + list(model.graph.input)
-        + list(model.graph.output)
-    ):
-        if vi.name == tensor_name:
-            elem_type = vi.type.tensor_type.elem_type
-            if elem_type != onnx.TensorProto.UNDEFINED:
-                return elem_type
-    for init in model.graph.initializer:
-        if init.name == tensor_name:
-            return init.data_type
-    return onnx.TensorProto.FLOAT
-
-
-def _insert_node_after_producer(
-    model: ModelProto, producer_output_name: str, new_node: onnx.NodeProto
-) -> onnx.NodeProto:
-    """Insert ``new_node`` immediately after the node producing ``producer_output_name``.
-
-    ONNX requires nodes appear in a topologically valid order. ORT is
-    tolerant of out-of-order nodes for many graphs, but other tools (and
-    serializers that re-validate) are not. Always insert just after the
-    producer. If no producer is found (the tensor is a graph input or
-    initializer), append at the front of the node list.
-
-    :return: The in-graph ``NodeProto`` (a protobuf ``insert`` copies its
-        argument, so callers must use this reference to further mutate the node).
-    """
-    nodes = model.graph.node
-    insert_at = 0
-    for idx, node in enumerate(nodes):
-        if producer_output_name in node.output:
-            insert_at = idx + 1
-            break
-    nodes.insert(insert_at, new_node)
-    return nodes[insert_at]
+    producer = target_value.producer()
+    if producer is not None:
+        graph.insert_after(producer, new_node)
+        return
+    first_node = next(iter(graph), None)
+    if first_node is None:
+        graph.append(new_node)
+    else:
+        graph.insert_before(first_node, new_node)
 
 
 # SpinQuant inserts online Hadamard rotations as ``MatMul`` nodes whose names
@@ -323,11 +310,17 @@ def _insert_node_after_producer(
 _ONLINE_ROTATION_OP_RE = re.compile(r"spinquant_.+_R[13]$")
 
 
-def is_online_rotation_op(cg_op: Op) -> bool:
-    """Return True if ``cg_op`` is a SpinQuant online Hadamard rotation MatMul.
+def is_online_rotation_op(op) -> bool:
+    """Return True if ``op`` is a SpinQuant online Hadamard rotation MatMul.
 
     R1 / R3 online rotations carry a fixed orthonormal Hadamard as their "weight"
     rather than a learnable parameter, so downstream optimizers (e.g.
     sequential MSE) should skip them.
+
+    :param op: Anything that names an op: an ``onnx_ir.Node``, an ``onnx.NodeProto``
+        (both spell the type ``op_type``) or a ConnectedGraph ``Op`` (which spells
+        it ``type``). SpinQuant itself no longer builds a ConnectedGraph, but
+        ``sequential_mse`` still calls this with one.
     """
-    return cg_op.type == "MatMul" and bool(_ONLINE_ROTATION_OP_RE.match(cg_op.name))
+    op_type = getattr(op, "op_type", None) or getattr(op, "type", None)
+    return op_type == "MatMul" and bool(_ONLINE_ROTATION_OP_RE.match(op.name))

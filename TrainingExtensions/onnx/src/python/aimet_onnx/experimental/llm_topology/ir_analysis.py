@@ -67,6 +67,10 @@ RMS_NORM_TYPE = "RMSNormalization"
 #: all three by ONNX convention, and the same value ConnectedGraph uses.
 WEIGHT_INDEX = 1
 
+#: Input index carrying the bias of a ``Gemm`` (``C``) or a ``Conv`` (``B``).
+#: ``MatMul`` has no bias input; its bias is a separate downstream ``Add``.
+BIAS_INDEX = 2
+
 
 def build_analysis_ir(model: ModelProto) -> onnx_ir.Model:
     """Return a private, quantizer-free, RMSNorm-fused onnx_ir view of ``model``.
@@ -175,6 +179,37 @@ def get_weight_value(node: onnx_ir.Node) -> Tuple[Optional[onnx_ir.Value], bool]
             if is_static(transpose_inp):
                 return transpose_inp, True
     return None, False
+
+
+def get_bias_value(node: onnx_ir.Node) -> Optional[onnx_ir.Value]:
+    """Return the static bias Value of a MatMul/Gemm/Conv node, or None.
+
+    Writing layers (o_proj, down_proj, patch_embed) whose output lands in the
+    residual stream must have their bias transformed alongside their weight, so
+    a caller rotating such a layer needs the bias tensor too.
+
+    Handles the two ONNX spellings:
+
+    * ``Gemm`` / ``Conv``: the bias is input :data:`BIAS_INDEX`.
+    * ``MatMul``: no bias input, so the bias is the static operand of a
+      downstream ``Add``.
+
+    :param node: A MatMul, Gemm, or Conv node.
+    :return: The bias Value, or None when the layer has no static bias.
+    """
+    if node.op_type in ("Gemm", "Conv"):
+        if len(node.inputs) > BIAS_INDEX and is_static(node.inputs[BIAS_INDEX]):
+            return node.inputs[BIAS_INDEX]
+        return None
+
+    if node.op_type == "MatMul" and node.outputs:
+        for consumer in node.outputs[0].consumers():
+            if consumer.op_type != "Add":
+                continue
+            for operand in consumer.inputs:
+                if is_static(operand):
+                    return operand
+    return None
 
 
 def _has_transposed_b(node: onnx_ir.Node) -> bool:

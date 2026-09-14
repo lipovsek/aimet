@@ -5,18 +5,17 @@
 
 from typing import List
 import numpy as np
-from onnx import numpy_helper
 
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.utils import ModelProto, ParamUtils
+from aimet_onnx.ir_utils import set_static_tensor, static_tensor
 
-from aimet_onnx.experimental.llm_topology.cg_adapter import ActiveNorm
-from aimet_onnx.experimental.llm_topology.weight_utils import get_weight_product
+from aimet_onnx.experimental.llm_topology.ir_adapter import ActiveNorm
+from aimet_onnx.experimental.llm_topology.ir_analysis import get_weight_value
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 
 
-def fuse_norm_layers_into_linears(model: ModelProto, active_norms: List[ActiveNorm]):
+def fuse_norm_layers_into_linears(active_norms: List[ActiveNorm]):
     """Absorb RMSNorm gamma into downstream linear weights, then reset gamma to ones.
 
     For every affine RMSNorm in ``active_norms``, this function multiplies the
@@ -35,9 +34,10 @@ def fuse_norm_layers_into_linears(model: ModelProto, active_norms: List[ActiveNo
     After fusion, gamma is set to ones, making the norm a pure normalization
     with no learnable scale effect.
 
-    :param model: ONNX ModelProto whose initializers are modified in-place.
-    :param active_norms: Active norms to fuse, as returned by ``find_active_norms``.
-        Each entry carries the gamma initializer name and the downstream linear ops.
+    :param active_norms: Active norms to fuse, resolved onto the IR model being
+        mutated (see :func:`~.ir_adapter.resolve_active_norms`). Each entry
+        carries the gamma tensor and the downstream linear nodes, and the tensors
+        it names are what this function rewrites.
     """
     for active_norm in active_norms:
         scale_name = active_norm.scale_name
@@ -50,26 +50,25 @@ def fuse_norm_layers_into_linears(model: ModelProto, active_norms: List[ActiveNo
             )
             continue
 
-        scale_tensor = ParamUtils.get_param_by_name(model, scale_name)
-        scale = numpy_helper.to_array(scale_tensor)
+        scale = static_tensor(active_norm.scale).numpy()
         scale_dtype = scale.dtype
         scale_f64 = scale.astype(np.float64)  # promote for numerical precision
 
-        for linear_op in downstream_linears:
-            weight_inp, is_transposed = get_weight_product(linear_op)
-            weight_tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
-            if weight_tensor is None:
+        for linear_node in downstream_linears:
+            weight_value, is_transposed = get_weight_value(linear_node)
+            weight = static_tensor(weight_value)
+            if weight is None:
                 _logger.warning(
-                    "RMSNorm scale '%s': weight '%s' not found in initializers, skipping.",
+                    "RMSNorm scale '%s': node '%s' has no static weight, skipping.",
                     scale_name,
-                    weight_inp.name,
+                    linear_node.name,
                 )
                 continue
-            W = numpy_helper.to_array(weight_tensor)
+            W = weight.numpy()
             orig_dtype = W.dtype
 
             # Determine in_features based on storage layout (needed for tiling check below).
-            if linear_op.type == "Conv":
+            if linear_node.op_type == "Conv":
                 in_features = W.shape[1]  # [out, in, *k]
             elif is_transposed:
                 in_features = W.shape[1]  # [out, in]
@@ -82,7 +81,7 @@ def fuse_norm_layers_into_linears(model: ModelProto, active_norms: List[ActiveNo
                 if in_features % len(scale_f64) != 0:
                     raise ValueError(
                         f"RMSNorm scale '{scale_name}' length {len(scale_f64)} does not "
-                        f"divide in_features={in_features} of op '{linear_op.name}'."
+                        f"divide in_features={in_features} of op '{linear_node.name}'."
                     )
                 tile_factor = in_features // len(scale_f64)
                 scale_f64_effective = np.tile(scale_f64, tile_factor)
@@ -91,12 +90,12 @@ def fuse_norm_layers_into_linears(model: ModelProto, active_norms: List[ActiveNo
                     "(gamma dim %d < in_features %d).",
                     scale_name,
                     tile_factor,
-                    linear_op.name,
+                    linear_node.name,
                     len(scale_f64),
                     in_features,
                 )
 
-            if linear_op.type == "Conv":
+            if linear_node.op_type == "Conv":
                 # W shape: [out_channels, in_channels, *kernel]
                 # gamma [in_channels] is absorbed along axis 1
                 scale_broadcast = scale_f64_effective.reshape(
@@ -112,16 +111,13 @@ def fuse_norm_layers_into_linears(model: ModelProto, active_norms: List[ActiveNo
                 scale_broadcast = scale_f64_effective[:, None]
 
             W_fused = (scale_broadcast * W.astype(np.float64)).astype(orig_dtype)
-            weight_tensor.CopyFrom(
-                numpy_helper.from_array(W_fused, name=weight_tensor.name)
-            )
+            set_static_tensor(weight_value, W_fused)
             _logger.debug(
                 "Fused RMSNorm scale '%s' into weight '%s' of op '%s'.",
                 scale_name,
-                weight_inp.name,
-                linear_op.name,
+                weight_value.name,
+                linear_node.name,
             )
 
         # Reset gamma to ones so the norm no longer applies any scaling
-        ones = np.ones(scale.shape, dtype=scale_dtype)
-        scale_tensor.CopyFrom(numpy_helper.from_array(ones, name=scale_tensor.name))
+        set_static_tensor(active_norm.scale, np.ones(scale.shape, dtype=scale_dtype))

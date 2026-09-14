@@ -5,6 +5,7 @@
 
 from typing import Optional
 
+import numpy as np
 import onnx_ir
 from aimet_onnx.graph_passes.fusions.ir_utils import *  # pylint: disable=wildcard-import, unused-wildcard-import
 
@@ -28,6 +29,60 @@ def static_tensor(value: Optional[onnx_ir.Value]) -> Optional[onnx_ir.TensorProt
 def is_static(value: Optional[onnx_ir.Value]) -> bool:
     """Return True if ``value`` is an initializer or a ``Constant`` node output."""
     return static_tensor(value) is not None
+
+
+def set_static_tensor(value: onnx_ir.Value, array: np.ndarray) -> None:
+    """Overwrite the constant tensor behind ``value`` with ``array``, in place.
+
+    The write-side mirror of :func:`static_tensor`: it covers the same two forms,
+    an initializer and the output of a ``Constant`` node, so a caller that read a
+    weight through ``static_tensor`` can write it back without caring which form
+    holds it.
+
+    Shape and dtype must be preserved. A transform that changes either has
+    rewritten the tensor's contract with every consumer (and with the graph's
+    ``value_info``), which cannot be expressed by swapping one tensor.
+
+    :param value: The static Value to overwrite.
+    :param array: Replacement data, same shape and dtype as the current tensor.
+    :raises ValueError: If ``value`` is not static, if shape or dtype differ, or
+        if the producing ``Constant`` node carries its data in an attribute form
+        other than ``value`` (e.g. ``value_floats``).
+    """
+    current = static_tensor(value)
+    if current is None:
+        raise ValueError(
+            f"Value '{value.name}' is not static (no initializer and no Constant "
+            "producer), so it has no constant tensor to overwrite."
+        )
+
+    replacement = onnx_ir.tensor(array, name=current.name)
+    if tuple(replacement.shape) != tuple(current.shape):
+        raise ValueError(
+            f"Value '{value.name}': replacement shape {tuple(replacement.shape)} "
+            f"differs from the current shape {tuple(current.shape)}."
+        )
+    if replacement.dtype != current.dtype:
+        raise ValueError(
+            f"Value '{value.name}': replacement dtype {replacement.dtype} differs "
+            f"from the current dtype {current.dtype}. Cast before writing back."
+        )
+
+    if value.const_value is not None:
+        value.const_value = replacement
+        return
+
+    # Constant node: the data lives in the node's attribute, not on the Value.
+    # get_const_tensor accepts several attribute spellings, but only ``value``
+    # holds a tensor; the others are scalar/list forms that a weight never uses.
+    node = value.producer()
+    attr_name = next(iter(node.attributes))
+    if attr_name != "value":
+        raise ValueError(
+            f"Constant node '{node.name}' holds its data in attribute "
+            f"'{attr_name}'; only the 'value' (tensor) form can be overwritten."
+        )
+    node.attributes["value"] = onnx_ir.AttrTensor("value", replacement)
 
 
 def remove_quantizers(model: onnx_ir.Model) -> None:

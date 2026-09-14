@@ -8,11 +8,20 @@ model — where the blocks are, and what the q/k/v/o, gate/up/down projections
 and dynamic attention MatMuls are inside each block. Technique-agnostic.
 
 Analysis runs on onnx_ir and reports results by ONNX name
-(:class:`LlmTopologyByName`). :func:`analyze_llm_topology` additionally
-re-attaches a ConnectedGraph and returns the ``Op``-bearing
-:class:`LlmTopology`, for consumers that have not migrated yet; that adapter is
-transitional and new code should prefer
+(:class:`LlmTopologyByName`), which is what new code should consume — via
 :func:`analyze_llm_topology_by_name`.
+
+Two adapters re-attach a graph to a name-based topology, for consumers that want
+handles rather than names:
+
+* :mod:`~.ir_adapter` — returns ``onnx_ir.Node`` / ``onnx_ir.Value`` objects. The
+  one to use: an IR value knows its own producer and consumers, and the graph
+  stays valid across node insertions. Import it directly; its dataclasses share
+  their names with the ConnectedGraph ones below, so they are deliberately not
+  re-exported here.
+* :mod:`~.cg_adapter` — returns ConnectedGraph ``Op`` / ``Product`` objects, and
+  is what the names re-exported from this package refer to. Transitional; it is
+  expected to be deleted once its remaining consumers migrate.
 """
 
 from aimet_onnx.experimental.llm_topology.block_boundaries import (
