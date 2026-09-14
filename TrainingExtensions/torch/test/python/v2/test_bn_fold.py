@@ -81,6 +81,7 @@ def quantsim(model, dummy_input, quantsim_config=None):
         return sim
 
 
+@pytest.mark.parallel
 class TestTrainingExtensionBnFoldToScale:
     @pytest.mark.parametrize("config", quantsim_config_map.keys())
     @pytest.mark.parametrize("seed", range(10))

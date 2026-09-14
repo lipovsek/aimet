@@ -2013,7 +2013,7 @@ def test_export_float8_and_float4(
 @pytest.mark.parametrize(
     "qtzr_cls", [Q.float.FloatQuantizeDequantize, _NVFP4QuantizeDequantize]
 )
-@pytest.mark.parametrize("dynamo", [False])
+@pytest.mark.parametrize("dynamo", [True, False])
 def test_export_fp4_int8(tmp_path: pathlib.Path, qtzr_cls, dynamo: bool):
     """
     Given: Model with float4 DequantizedTensor weight
@@ -2073,7 +2073,11 @@ def test_export_fp4_int8(tmp_path: pathlib.Path, qtzr_cls, dynamo: bool):
         "output",
         "weight",
         "bias",
-        "/FloatQuantizeDequantize_output_0_alias",
+        (
+            "float_quantize_dequantize_alias"
+            if dynamo
+            else "/weight/FloatQuantizeDequantize_output_0_alias"
+        ),
     }
 
     fp4_weight_encoding = encodings["weight"]
@@ -2098,7 +2102,11 @@ def test_export_fp4_int8(tmp_path: pathlib.Path, qtzr_cls, dynamo: bool):
     assert fp4_weight_encoding.get("axis") == 1
     assert fp4_weight_encoding.get("block_size") == 10
 
-    int8_weight_encoding = encodings["/FloatQuantizeDequantize_output_0_alias"]
+    int8_weight_encoding = encodings[
+        "float_quantize_dequantize_alias"
+        if dynamo
+        else "/weight/FloatQuantizeDequantize_output_0_alias"
+    ]
     assert int8_weight_encoding["output_dtype"] == "int8"
     assert torch.equal(
         torch.tensor(int8_weight_encoding["y_scale"]).reshape(100, 1),
@@ -2107,15 +2115,6 @@ def test_export_fp4_int8(tmp_path: pathlib.Path, qtzr_cls, dynamo: bool):
     assert "y_zero_point" not in int8_weight_encoding
     assert int8_weight_encoding.get("axis") == 0
     assert "block_size" not in int8_weight_encoding
-
-    if qtzr_cls == _NVFP4QuantizeDequantize:
-        # Currently NVFP4 is exported as plain float4 QDQ in ONNX QDQ.
-        # TODO: Add NVFP4 QDQ graph topology check once NVFP4 ONNX QDQ export is properly implemented
-        # Expected graph:
-        #       weight -----> Q -> DQ ->
-        #      scale_q -> DQ -^----^
-        #   meta_scale ---^
-        pytest.skip("Currently NVFP4 is exported as plain float4 QDQ in ONNX QDQ")
 
     aimet_torch.onnx.export(
         sim.model,

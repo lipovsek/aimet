@@ -34,7 +34,7 @@ from torch._VF import (  # pylint: disable=no-name-in-module
 from torch.utils._pytree import tree_map
 
 from aimet_torch.quantization.base import QuantizerBase
-from aimet_torch.quantization.tensor import QuantizedTensorBase
+from aimet_torch.quantization.tensor import QuantizedTensor, QuantizedTensorBase
 from aimet_torch.quantization.affine import (
     AffineQuantizerBase,
     AffineEncoding,
@@ -289,23 +289,17 @@ class QuantizationMixin(BaseQuantizationMixin, metaclass=QuantizationMixinMeta):
 
     def _patch_dequantized_parameters(
         self, param_names: Optional[Iterable[str]] = None
-    ) -> _ContextManager:
-        # Early exit for stateless modules.
-        # This helps mitigate dynamo tracing problems during torch.export.export
+    ) -> contextlib.AbstractContextManager:
         if param_names is None:
             param_names = self.param_quantizers.keys()
 
-        param_quantizers = {name: self.param_quantizers[name] for name in param_names}
-
-        if not any(param_quantizers.values()):
-            return contextlib.nullcontext()
-
         stack = contextlib.ExitStack()
-        for param_name, _ in param_quantizers.items():
+
+        for param_name in param_names:
             qparam = getattr(self, param_name)
-            dqparam = _dequantize_if_applicable(qparam)
-            ctx = patch_attr(self, param_name, dqparam)
-            stack.enter_context(ctx)
+            if isinstance(qparam, QuantizedTensor):
+                ctx = patch_attr(self, param_name, qparam.dequantize())
+                stack.enter_context(ctx)
 
         return stack
 
@@ -546,9 +540,7 @@ class _DispatchMixin(metaclass=_DispatchMeta):
     @torch.compiler.disable
     def _quantize_if_param(self, args, kwargs):
         params = {
-            param: self.param_quantizers[name]
-            if name in self.param_quantizers and self.param_quantizers[name]
-            else None
+            param: (self.param_quantizers[name], self._param_pre_quantizers[name])
             for name, param in self.named_parameters(recurse=False)
         }
 
@@ -556,17 +548,13 @@ class _DispatchMixin(metaclass=_DispatchMeta):
             if not isinstance(tensor, torch.Tensor):
                 return tensor
 
-            param_qtzr = params.get(tensor, None)
+            param_qtzr, param_pre_qtzr = params.get(tensor, (None, None))
 
-            if (
-                torch.onnx.is_in_onnx_export()
-                and tensor in params
-                and isinstance(tensor, QuantizedTensorBase)
-            ):
+            if param_pre_qtzr:
                 # Quantize-dequantize an already-quantized tensor in a possibly duplicate fashion.
                 # If duplicate, the duplicate back-to-back QDQs will be removed by the graph pass
                 # within aimet_torch.onnx.export
-                tensor = tensor.encoding.quantize_dequantize(tensor)
+                tensor = param_pre_qtzr(tensor)
 
             if param_qtzr:
                 return param_qtzr(tensor)

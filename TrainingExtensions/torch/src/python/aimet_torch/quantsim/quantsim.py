@@ -714,30 +714,35 @@ Use sim.onnx.export() or aimet_torch.onnx.export() instead. For more information
 
         :param model: The PyTorch model whose parameters will be quant-dequantized.
         """
+        # pylint: disable=protected-access
         stack = contextlib.ExitStack()
         try:
             for module in model.modules():
                 if not isinstance(module, BaseQuantizationMixin):
                     continue
 
-                params_without_encoding = [
+                # Parameters with pre-quantizers are DequantizedTensors that are
+                # already on the pre-quantizer's encoding grid. Those parameters
+                # need not be re-adjusted to the post-quantizer's encoding grid.
+                params_without_pre_quantizer = [
                     param_name
-                    for param_name, param in module.named_parameters(recurse=False)
-                    if getattr(param, "encoding", None) is None
+                    for param_name, _ in module.named_parameters(recurse=False)
+                    if module._param_pre_quantizers[param_name] is None
                 ]
 
-                # pylint: disable=protected-access
                 stack.enter_context(
-                    module._patch_quantized_parameters(params_without_encoding)
+                    module._patch_quantized_parameters(params_without_pre_quantizer)
                 )
                 if isinstance(module, QuantizationMixin):
                     stack.enter_context(
-                        module._patch_dequantized_parameters(params_without_encoding)
+                        module._patch_dequantized_parameters(
+                            params_without_pre_quantizer
+                        )
                     )
                 stack.enter_context(cls._update_parameters_by_attr(module))
 
                 # Restore tensor type from DequantizedTensor to plain torch.Tensor
-                for param_name in params_without_encoding:
+                for param_name in params_without_pre_quantizer:
                     qparam = getattr(module, param_name)
                     setattr(
                         module,

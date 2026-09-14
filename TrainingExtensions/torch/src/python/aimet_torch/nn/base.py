@@ -232,6 +232,24 @@ class BaseQuantizationMixin(abc.ABC):
         self.input_quantizers = nn.ModuleList([None])
         self.output_quantizers = nn.ModuleList([None])
 
+        # Dictionary holding temporary pre-quantizers to faithfully export
+        # FP4->INT8 requantization into graph.
+        #
+        #    simulation time:                export time:
+        #
+        #        W (dequantized FP4 tensor)       W (dequantized FP4 tensor)
+        #        |                                |
+        #        |                             pre-QDQ (FP4)  <- temporary pre-quantizer
+        #        |                                |              stored in self._param_pre_quantizers
+        #        |                                |
+        #       QDQ (INT8)                       QDQ (INT8)   <- regular param quantizer
+        #        |                                |              stored in self.param_quantizers
+        #        |                                |
+        #     F.linear                         F.linear
+        self._param_pre_quantizers: dict | torch.nn.ModuleDict = {
+            name: None for name, _ in self.named_parameters(recurse=False)
+        }
+
     def __call__(self, *args, **kwargs):
         if _torch_compiler_is_compiling():
             for qtzr in self.param_quantizers.children():
@@ -253,34 +271,32 @@ class BaseQuantizationMixin(abc.ABC):
 
     def _patch_quantized_parameters(
         self, param_names: Optional[Iterable[str]] = None
-    ) -> _ContextManager:
-        # Early exit for stateless modules.
-        # This helps mitigate dynamo tracing problems during torch.export.export
+    ) -> contextlib.AbstractContextManager:
         if param_names is None:
             param_names = self.param_quantizers.keys()
 
         param_quantizers = {name: self.param_quantizers[name] for name in param_names}
 
-        if not any(param_quantizers.values()):
-            return contextlib.nullcontext()
-
         stack = contextlib.ExitStack()
         for param_name, param_quantizer in param_quantizers.items():
-            orig_param = getattr(self, param_name)
+            param = getattr(self, param_name)
+            param_pre_quantizer = (
+                self._param_pre_quantizers[param_name]
+                if param_name in self._param_pre_quantizers
+                else None
+            )
 
-            if (
-                isinstance(orig_param, QuantizedTensorBase)
-                and torch.onnx.is_in_onnx_export()
-            ):
-                # Quantize-dequantize an already-quantized tensor in a possibly duplicate fashion.
-                # If duplicate, the duplicate back-to-back QDQs will be removed by the graph pass
-                # within aimet_torch.onnx.export
-                orig_param = orig_param.encoding.quantize_dequantize(orig_param)
+            if param_quantizer is None and param_pre_quantizer is None:
+                continue
+
+            if param_pre_quantizer and param_pre_quantizer.is_initialized():
+                param = param_pre_quantizer(param)
 
             if param_quantizer and param_quantizer.is_initialized():
-                quantized_param = param_quantizer(orig_param)
-                ctx = patch_attr(self, param_name, quantized_param)
-                stack.enter_context(ctx)
+                param = param_quantizer(param)
+
+            ctx = patch_attr(self, param_name, param)
+            stack.enter_context(ctx)
 
         return stack
 
@@ -1117,6 +1133,10 @@ class BaseQuantizationMixin(abc.ABC):
         Re-instantiate param quantizers for ease of export
         """
         unfolded_param_encodings = {}
+        orig_param_quantizers = self.param_quantizers
+        new_param_quantizers = dict(orig_param_quantizers)
+        orig_param_pre_quantizers = self._param_pre_quantizers
+        new_param_pre_quantizers = dict(orig_param_pre_quantizers)
 
         try:
             for param_name, qdq_param in self.named_parameters(recurse=False):
@@ -1124,9 +1144,6 @@ class BaseQuantizationMixin(abc.ABC):
                     continue
 
                 if qdq_param.encoding is None:
-                    continue
-
-                if self.param_quantizers[param_name] is not None:
                     continue
 
                 if isinstance(qdq_param.encoding, GroupedBlockEncoding):
@@ -1148,16 +1165,31 @@ class BaseQuantizationMixin(abc.ABC):
                     param_name,
                     torch.nn.Parameter(param, requires_grad=param.requires_grad),
                 )
-                self.param_quantizers[param_name] = param_qtzr
 
+                # If regular param quantizer is missing,
+                # register encoding as regular param quantizer rather than pre-quantizer
+                # since pre-quantizers can't exist alone without a regular param quantizer
+                if new_param_quantizers[param_name] is None:
+                    new_param_quantizers[param_name] = param_qtzr
+                else:
+                    new_param_pre_quantizers[param_name] = param_qtzr
+
+            # Register pre-quantizers as ModuleDict for convenience. This allows
+            # _param_pre_quantizers to be iterated over by module.modules() during export
+            self._param_pre_quantizers = torch.nn.ModuleDict(new_param_pre_quantizers)
+            self.param_quantizers = torch.nn.ModuleDict(new_param_quantizers)
             yield
         finally:
             for param_name, orig_encoding in unfolded_param_encodings.items():
-                self.param_quantizers[param_name] = None
                 param = getattr(self, param_name)
                 param = param.as_subclass(DequantizedTensor)
                 param.encoding = orig_encoding
                 setattr(self, param_name, torch.nn.Parameter(param))
+
+            # Delete attribute to unregister ModuleDict from parent
+            del self._param_pre_quantizers
+            self._param_pre_quantizers = orig_param_pre_quantizers
+            self.param_quantizers = orig_param_quantizers
 
     @classmethod
     def _is_dynamo_traceable(cls) -> Tuple[bool, Optional[str]]:
