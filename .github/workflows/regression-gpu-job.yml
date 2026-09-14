@@ -123,9 +123,20 @@ jobs:
         run: |
           set -euo pipefail
           AIHM_SRC_DIR="${RUNNER_TEMP}/ai-hub-models-internal"
-          git clone --depth=1 --branch main \
-            "https://x-access-token:${GH_TOKEN}@github.com/qcom-ai-hub/ai-hub-models-internal.git" \
-            "$AIHM_SRC_DIR"
+          # A freshly minted app token is intermittently not usable yet; git reports that as "Repository not found".
+          for attempt in 1 2 3; do
+            if git clone --depth=1 --branch main \
+                "https://x-access-token:${GH_TOKEN}@github.com/qcom-ai-hub/ai-hub-models-internal.git" \
+                "$AIHM_SRC_DIR"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::Could not clone ai-hub-models-internal after 3 attempts"
+              exit 1
+            fi
+            rm -rf "$AIHM_SRC_DIR"
+            sleep $((attempt * 10))
+          done
           echo "AIHM_SRC_DIR=$AIHM_SRC_DIR" >> "$GITHUB_ENV"
 
       - name: Authenticate AWS
@@ -211,7 +222,8 @@ jobs:
 
           if [ "${{ inputs.framework }}" = "onnx" ]; then
             # Reinstall last so onnxruntime-gpu's __init__.py wins over plain onnxruntime (transitive of qai-hub-models).
-            uv pip install --reinstall --no-deps onnxruntime-gpu==1.19.2
+            # Off 1.19.2: its cudnn_conv_algo_search=EXHAUSTIVE default is non-deterministic across sessions. Capped at <=1.26.0 since >=1.27 needs CUDA 13.
+            uv pip install --reinstall --no-deps "onnxruntime-gpu<=1.26.0"
           fi
 
           uv pip install mmpose --no-deps --extra-index-url https://download.pytorch.org/whl/${{ env.VER_CUDA_SHORT }} --index-strategy unsafe-best-match  # Required by hrnet_pose (not in qai-hub-models extras)

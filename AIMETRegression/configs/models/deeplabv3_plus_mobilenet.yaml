@@ -19,4 +19,6 @@ tests:
     config_file: htp_v79
     adaround_iters: 500
     max_accuracy_drop_torch: 2.1
+    # Aligned with the torch threshold; observed drop is 1.693% while eval runs on coco_voc_seg instead of pascal_voc.
+    max_accuracy_drop_onnx: 2.1
     skip_torch: true

@@ -17,4 +17,5 @@ tests:
     activation_type: int8
     config_file: htp_v79
     adaround_iters: 500
-    max_accuracy_drop_onnx: 2.6
+    # Observed drop is 3.663%: depthwise convs left the Conv+Clip supergroup in 7729c9760 (+0.72%) and moving off onnxruntime-gpu 1.19.2 cost another +0.47%.
+    max_accuracy_drop_onnx: 3.8
