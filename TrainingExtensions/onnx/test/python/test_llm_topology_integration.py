@@ -28,19 +28,17 @@ import transformers
 from transformers import AutoModelForCausalLM
 import transformers.masking_utils as mu
 
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
+from aimet_onnx.ir_utils import static_tensor
+from aimet_onnx.experimental.llm_topology import ir_analysis
 from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries,
+    get_decoder_block_boundaries_in_ir,
 )
-from aimet_onnx.experimental.llm_topology.norm_detection import find_active_norms
-from aimet_onnx.experimental.llm_topology.block_boundaries import (
-    tensor_to_first_consumer_index,
+from aimet_onnx.experimental.llm_topology.norm_detection import (
+    find_active_norms_in_ir,
 )
 from aimet_onnx.experimental.llm_topology.layer_roles import LinearRole
 from aimet_onnx.experimental.llm_topology.topology import get_llm_topology
-from aimet_onnx.experimental.llm_topology.weight_utils import get_weight_product
-from aimet_onnx.utils import ParamUtils
-from onnx import numpy_helper
 from .utils import add_genai_tests_path, force_random_weight_init
 
 _NUM_LAYERS = 2
@@ -318,10 +316,7 @@ def _detect_from_config(config_attr, backend, detect_kwargs):
     """Build, export, and run block detection for one LLM (model, backend) case."""
     model, cfg = _build_block_topology_model(config_attr)
     onnx_model = _export_onnx(model, _sample_inputs(cfg), backend)
-    connected_graph = ConnectedGraph(onnx_model)
-    blocks = get_decoder_block_boundaries(onnx_model, connected_graph, **detect_kwargs)
-    active_norms = find_active_norms(onnx_model, connected_graph)
-    return blocks, active_norms, connected_graph
+    return _detect_from_onnx(onnx_model, detect_kwargs)
 
 
 def _detect_vlm_backbone(vlm_key, backend, detect_kwargs):
@@ -333,13 +328,25 @@ def _detect_vlm_backbone(vlm_key, backend, detect_kwargs):
         backend,
         input_names=["inputs_embeds", "position_ids", "attention_mask"],
     )
-    connected_graph = ConnectedGraph(onnx_model)
-    blocks = get_decoder_block_boundaries(onnx_model, connected_graph, **detect_kwargs)
-    active_norms = find_active_norms(onnx_model, connected_graph)
-    return blocks, active_norms, connected_graph
+    return _detect_from_onnx(onnx_model, detect_kwargs)
 
 
-def _layer_index(connected_graph, tensor_to_index, boundary_tensor):
+def _detect_from_onnx(onnx_model, detect_kwargs):
+    """Run block/norm detection on an exported model.
+
+    Returns the analysis IR alongside the results so the assertions below can
+    reason about topological position, which the name-based results do not carry.
+    """
+    ir_model = ir_analysis.build_analysis_ir(onnx_model)
+    topo_index = ir_analysis.topological_index(ir_model)
+    active_norms = find_active_norms_in_ir(ir_model, topo_index)
+    blocks = get_decoder_block_boundaries_in_ir(
+        ir_model, active_norms=active_norms, topo_index=topo_index, **detect_kwargs
+    )
+    return blocks, active_norms, ir_model, onnx_model
+
+
+def _layer_index(nodes, tensor_to_index, boundary_tensor):
     """Decoder layer index of the norm op a boundary tensor feeds, or None.
 
     NOTE: For now, this is only meaningful under torchscript.
@@ -348,26 +355,24 @@ def _layer_index(connected_graph, tensor_to_index, boundary_tensor):
     idx = tensor_to_index.get(boundary_tensor)
     if idx is None:
         return None
-    match = re.search(r"layers\.(\d+)\b", connected_graph.ordered_ops[idx].name)
+    match = re.search(r"layers\.(\d+)\b", nodes[idx].name or "")
     return int(match.group(1)) if match else None
 
 
-def _layer_weighted_linear_count(
-    connected_graph, tensor_to_index, start_tensor, end_tensor
-):
+def _layer_weighted_linear_count(nodes, tensor_to_index, start_tensor, end_tensor):
     """Count per-layer weighted linears in the span [start_tensor, end_tensor)."""
     start, end = tensor_to_index[start_tensor], tensor_to_index[end_tensor]
     return sum(
         1
-        for op in connected_graph.ordered_ops[start:end]
-        if op.type in ("MatMul", "Gemm", "Conv") and "layers." in op.name
+        for node in nodes[start:end]
+        if node.op_type in ("MatMul", "Gemm", "Conv") and "layers." in (node.name or "")
     )
 
 
 def _assert_block_detection(
     blocks,
     active_norms,
-    connected_graph,
+    ir_model,
     backend,
     *,
     active_norms_per_block=2,
@@ -389,22 +394,26 @@ def _assert_block_detection(
 
     # Name-based structural checks only for torchscript backend
     if backend == "torchscript":
-        tensor_to_index = tensor_to_first_consumer_index(connected_graph)
+        topo_index = ir_analysis.topological_index(ir_model)
+        tensor_to_index = ir_analysis.tensor_to_first_consumer_index(
+            ir_model, topo_index
+        )
+        nodes = tuple(ir_model.graph)
         start_indices = [
-            _layer_index(connected_graph, tensor_to_index, start) for start, _ in blocks
+            _layer_index(nodes, tensor_to_index, start) for start, _ in blocks
         ]
         assert all(idx is not None for idx in start_indices)
         assert start_indices == sorted(set(start_indices))
         for i, (_, end) in enumerate(blocks):
             if i < len(blocks) - 1:
-                assert _layer_index(connected_graph, tensor_to_index, end) is not None
+                assert _layer_index(nodes, tensor_to_index, end) is not None
             else:
-                assert _layer_index(connected_graph, tensor_to_index, end) is None
+                assert _layer_index(nodes, tensor_to_index, end) is None
 
         # homogeneous stacks: identical per-layer weighted-linear count per block.
         if homogeneous:
             counts = [
-                _layer_weighted_linear_count(connected_graph, tensor_to_index, s, e)
+                _layer_weighted_linear_count(nodes, tensor_to_index, s, e)
                 for s, e in blocks
             ]
             assert len(set(counts)) == 1
@@ -470,16 +479,16 @@ def _role_map_params():
         )
 
 
-def _residual_axis_size(model, op, *, writes):
-    """Size of the op's residual-facing axis."""
-    weight, is_transposed = get_weight_product(op)
+def _residual_axis_size(ir_model, node_name, *, writes):
+    """Size of the linear's residual-facing axis, derived from the analysis IR."""
+    node = ir_analysis.node_by_name(ir_model).get(node_name)
+    if node is None:
+        return None
+    weight, is_transposed = ir_analysis.get_weight_value(node)
     if weight is None:
         return None
-    tensor = ParamUtils.get_param_by_name(model, weight.name)
-    if tensor is None:
-        return None
-    shape = numpy_helper.to_array(tensor).shape
-    transposed = op.type == "Conv" or is_transposed
+    shape = tuple(static_tensor(weight).shape)
+    transposed = node.op_type == "Conv" or is_transposed
     if writes:
         axis = 0 if transposed else -1
     else:
@@ -513,16 +522,16 @@ _ROLE_MODULE_NAMES = {
 }
 
 
-def _module_name(op):
-    """Originating nn.Module name from an op's scoped name (torchscript)."""
+def _module_name(node_name):
+    """Originating nn.Module name from a node's scoped name (torchscript)."""
 
-    parts = op.name.rstrip("/").split("/")
+    parts = node_name.rstrip("/").split("/")
     if len(parts) >= 2 and parts[-1] in ("MatMul", "Gemm", "Conv"):
         return parts[-2]
     return parts[-1]
 
 
-def _assert_role_map(role_map, model, backend, *, expect_embed_tokens=True):
+def _assert_role_map(role_map, ir_model, backend, *, expect_embed_tokens=True):
     """Assert the decoder role map assigns residual reads/writes correctly."""
     assert len(role_map.blocks) == _NUM_LAYERS
 
@@ -531,44 +540,43 @@ def _assert_role_map(role_map, model, backend, *, expect_embed_tokens=True):
     check_names = backend == "torchscript"
     residual_widths = set()
     for block_idx, block in enumerate(role_map.blocks):
-        assert block.qkv.ops
-        assert block.gate_up.ops
+        assert block.qkv.linears
+        assert block.gate_up.linears
         assert len(block.o_proj) == 1
         assert block.down_proj
 
-        reads = block.qkv.ops + block.gate_up.ops
+        reads = block.qkv.linears + block.gate_up.linears
         writes = block.o_proj + block.down_proj
-        assert {id(op) for op in reads}.isdisjoint({id(op) for op in writes})
+        assert set(reads).isdisjoint(set(writes))
 
-        # Fine-grained role split must partition each coarse read group by
-        # identity: every classified op comes from its parent group, and the
-        # attention roles do not overlap. (Some exotic reads — e.g. mamba
-        # in_proj_z — may be left unclassified, so this is a subset, not an
-        # exact-cover, check.)
-        qkv_ids = {id(op) for op in block.qkv.ops}
-        gate_up_ids = {id(op) for op in block.gate_up.ops}
-        q_ids = {id(op) for op in block.q_proj}
-        k_ids = {id(op) for op in block.k_proj}
-        v_ids = {id(op) for op in block.v_proj}
+        # Fine-grained role split must partition each coarse read group: every
+        # classified linear comes from its parent group, and the attention roles
+        # do not overlap. (Some exotic reads — e.g. mamba in_proj_z — may be left
+        # unclassified, so this is a subset, not an exact-cover, check.)
+        qkv_refs = set(block.qkv.linears)
+        gate_up_refs = set(block.gate_up.linears)
+        q_refs = set(block.q_proj)
+        k_refs = set(block.k_proj)
+        v_refs = set(block.v_proj)
         for split in (
             block.q_proj,
             block.k_proj,
             block.v_proj,
             block.qkv.role(LinearRole.FUSED_QKV),
         ):
-            assert {id(op) for op in split} <= qkv_ids
+            assert set(split) <= qkv_refs
         for split in (
             block.gate_proj,
             block.up_proj,
             block.gate_up.role(LinearRole.FUSED_GATE_UP),
         ):
-            assert {id(op) for op in split} <= gate_up_ids
-        assert q_ids.isdisjoint(k_ids)
-        assert q_ids.isdisjoint(v_ids)
-        assert k_ids.isdisjoint(v_ids)
+            assert set(split) <= gate_up_refs
+        assert q_refs.isdisjoint(k_refs)
+        assert q_refs.isdisjoint(v_refs)
+        assert k_refs.isdisjoint(v_refs)
 
-        read_sizes = {_residual_axis_size(model, op, writes=False) for op in reads}
-        write_sizes = {_residual_axis_size(model, op, writes=True) for op in writes}
+        read_sizes = {_residual_axis_size(ir_model, r, writes=False) for r in reads}
+        write_sizes = {_residual_axis_size(ir_model, r, writes=True) for r in writes}
         block_sizes = read_sizes | write_sizes
         assert None not in block_sizes
 
@@ -578,14 +586,14 @@ def _assert_role_map(role_map, model, backend, *, expect_embed_tokens=True):
 
         # Names must match the expected module for each role (torchscript only).
         if check_names:
-            for role, ops in (
-                ("qkv", block.qkv.ops),
-                ("gate_up", block.gate_up.ops),
+            for role, linears in (
+                ("qkv", block.qkv.linears),
+                ("gate_up", block.gate_up.linears),
                 ("o_proj", block.o_proj),
                 ("down_proj", block.down_proj),
             ):
-                for op in ops:
-                    assert _module_name(op) in _ROLE_MODULE_NAMES[role]
+                for linear in linears:
+                    assert _module_name(linear) in _ROLE_MODULE_NAMES[role]
 
     # Every block shares the same residual width (the stream is continuous).
     assert len(residual_widths) == 1
@@ -614,16 +622,18 @@ def _strip_matmul_suffix(name):
 
 
 def verify_find_blocks(sim):
-    end_points = get_decoder_block_boundaries(sim.model.model, sim.connected_graph)
+    end_points = get_decoder_block_boundaries(sim.model.model)
     # Boundaries are residual-stream tensor names (the input to each block's
     # norm op). Map each back to the norm op it feeds to assert on logical
     # block identity.
-    consumer_index = tensor_to_first_consumer_index(sim.connected_graph)
-    ordered_ops = sim.connected_graph.ordered_ops
+    ir_model = ir_analysis.build_analysis_ir(sim.model.model)
+    topo_index = ir_analysis.topological_index(ir_model)
+    consumer_index = ir_analysis.tensor_to_first_consumer_index(ir_model, topo_index)
+    nodes = tuple(ir_model.graph)
     end_points_names = [
         (
-            ordered_ops[consumer_index[start]].name,
-            ordered_ops[consumer_index[end]].name,
+            nodes[consumer_index[start]].name,
+            nodes[consumer_index[end]].name,
         )
         for start, end in end_points
     ]
@@ -634,43 +644,51 @@ def verify_find_blocks(sim):
         ),
         ("/model/model/layers.1/input_layernorm", "/model/model/norm"),
     ]
-    # Per-block weighted linears: slice ordered_ops between boundaries and keep
-    # Conv/MatMul/Gemm ops.
+    # Per-block weighted linears: slice the graph between boundaries and keep
+    # Conv/MatMul/Gemm nodes.
+    #
+    # Compared as sorted sets per block: which linears belong to a block is the
+    # property under test, and the order among independent nodes is an artifact
+    # of the traversal, not of the topology.
     linear_types = ("Conv", "MatMul", "Gemm")
     conv_linear_blocks_names = []
     for start, end in end_points:
-        block_ops = ordered_ops[consumer_index[start] : consumer_index[end]]
+        block_nodes = nodes[consumer_index[start] : consumer_index[end]]
         conv_linear_blocks_names.append(
-            [
-                _strip_matmul_suffix(op.name)
-                for op in block_ops
-                if op.type in linear_types
-            ]
+            sorted(
+                _strip_matmul_suffix(node.name)
+                for node in block_nodes
+                if node.op_type in linear_types
+            )
         )
 
     assert conv_linear_blocks_names == [
-        [
-            "/model/model/layers.0/self_attn/v_proj",
-            "/model/model/layers.0/self_attn/k_proj",
-            "/model/model/layers.0/self_attn/q_proj",
-            "/model/model/layers.0/self_attn/MatMul",
-            "/model/model/layers.0/self_attn/MatMul_1",
-            "/model/model/layers.0/self_attn/o_proj",
-            "/model/model/layers.0/mlp/up_proj",
-            "/model/model/layers.0/mlp/gate_proj",
-            "/model/model/layers.0/mlp/down_proj",
-        ],
-        [
-            "/model/model/layers.1/self_attn/v_proj",
-            "/model/model/layers.1/self_attn/k_proj",
-            "/model/model/layers.1/self_attn/q_proj",
-            "/model/model/layers.1/self_attn/MatMul",
-            "/model/model/layers.1/self_attn/MatMul_1",
-            "/model/model/layers.1/self_attn/o_proj",
-            "/model/model/layers.1/mlp/up_proj",
-            "/model/model/layers.1/mlp/gate_proj",
-            "/model/model/layers.1/mlp/down_proj",
-        ],
+        sorted(
+            [
+                "/model/model/layers.0/self_attn/v_proj",
+                "/model/model/layers.0/self_attn/k_proj",
+                "/model/model/layers.0/self_attn/q_proj",
+                "/model/model/layers.0/self_attn/MatMul",
+                "/model/model/layers.0/self_attn/MatMul_1",
+                "/model/model/layers.0/self_attn/o_proj",
+                "/model/model/layers.0/mlp/up_proj",
+                "/model/model/layers.0/mlp/gate_proj",
+                "/model/model/layers.0/mlp/down_proj",
+            ]
+        ),
+        sorted(
+            [
+                "/model/model/layers.1/self_attn/v_proj",
+                "/model/model/layers.1/self_attn/k_proj",
+                "/model/model/layers.1/self_attn/q_proj",
+                "/model/model/layers.1/self_attn/MatMul",
+                "/model/model/layers.1/self_attn/MatMul_1",
+                "/model/model/layers.1/self_attn/o_proj",
+                "/model/model/layers.1/mlp/up_proj",
+                "/model/model/layers.1/mlp/gate_proj",
+                "/model/model/layers.1/mlp/down_proj",
+            ]
+        ),
     ]
 
 
@@ -730,26 +748,20 @@ def test_get_decoder_blocks_qwen3_5(add_genai_tests_path):
             )
         collection = model_cls.instantiate_quantsim(entry)
 
-        connected_graph = collection.backbone.connected_graph
-        blocks = get_decoder_block_boundaries(
-            collection.backbone.model.model,
-            connected_graph,
-        )
-        active_norms = find_active_norms(
-            collection.backbone.model.model,
-            connected_graph,
+        blocks, active_norms, ir_model, _ = _detect_from_onnx(
+            collection.backbone.model.model, {}
         )
         assert len(blocks) == 2
         assert len(active_norms) == 2 * len(blocks) + 1
         for i in range(len(blocks) - 1):
             assert blocks[i][1] == blocks[i + 1][0]
 
-        role_map = get_llm_topology(connected_graph, blocks, active_norms=active_norms)
+        role_map = get_llm_topology(ir_model, blocks, active_norms=active_norms)
         assert len(role_map.blocks) == len(blocks)
         for block_idx, block in enumerate(role_map.blocks):
             assert len(block.o_proj) == 1
-            assert block.qkv.ops
-            assert block.gate_up.ops
+            assert block.qkv.linears
+            assert block.gate_up.linears
             assert block.down_proj
         assert len(role_map.embed_tokens) == 1
         assert len(role_map.lm_head) == 1
@@ -770,13 +782,13 @@ class TestDecoderBlockBoundaries:
     )
     def test_block_detection(self, config_attr, backend, detect_kwargs, homogeneous):
         """Detect block boundaries on a LLM decoder."""
-        blocks, active_norms, cg = _detect_from_config(
+        blocks, active_norms, ir_model, _ = _detect_from_config(
             config_attr, backend, detect_kwargs
         )
         _assert_block_detection(
             blocks,
             active_norms,
-            cg,
+            ir_model,
             backend,
             active_norms_per_block=detect_kwargs.get("active_norms_per_block", 2),
             homogeneous=homogeneous,
@@ -785,8 +797,10 @@ class TestDecoderBlockBoundaries:
     @pytest.mark.parametrize("vlm_key", _VLM_BACKBONE_MODELS)
     def test_vlm_backbone_block_detection(self, vlm_key):
         """Detect blocks on a VLM language backbone (torchscript export)."""
-        blocks, active_norms, cg = _detect_vlm_backbone(vlm_key, "torchscript", {})
-        _assert_block_detection(blocks, active_norms, cg, "torchscript")
+        blocks, active_norms, ir_model, _ = _detect_vlm_backbone(
+            vlm_key, "torchscript", {}
+        )
+        _assert_block_detection(blocks, active_norms, ir_model, "torchscript")
 
     @pytest.mark.parametrize(
         "config_attr, backend, detect_kwargs, homogeneous",
@@ -794,20 +808,22 @@ class TestDecoderBlockBoundaries:
     )
     def test_role_map(self, config_attr, backend, detect_kwargs, homogeneous):
         """Build and validate the decoder role map on a LLM decoder."""
-        blocks, active_norms, cg = _detect_from_config(
+        blocks, active_norms, ir_model, onnx_model = _detect_from_config(
             config_attr, backend, detect_kwargs
         )
         role_map = get_llm_topology(
-            cg,
+            ir_model,
             blocks,
             active_norms=active_norms,
             active_norms_per_block=detect_kwargs.get("active_norms_per_block", 2),
         )
-        _assert_role_map(role_map, cg.model, backend)
+        _assert_role_map(role_map, ir_model, backend)
 
     @pytest.mark.parametrize("vlm_key", _VLM_BACKBONE_MODELS)
     def test_vlm_backbone_topology(self, vlm_key):
         """Build and validate the role map on a VLM language backbone."""
-        blocks, active_norms, cg = _detect_vlm_backbone(vlm_key, "torchscript", {})
-        role_map = get_llm_topology(cg, blocks, active_norms=active_norms)
-        _assert_role_map(role_map, cg.model, "torchscript", expect_embed_tokens=False)
+        blocks, active_norms, ir_model, onnx_model = _detect_vlm_backbone(
+            vlm_key, "torchscript", {}
+        )
+        role_map = get_llm_topology(ir_model, blocks, active_norms=active_norms)
+        _assert_role_map(role_map, ir_model, "torchscript", expect_embed_tokens=False)

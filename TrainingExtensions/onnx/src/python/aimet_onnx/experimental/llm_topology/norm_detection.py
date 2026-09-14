@@ -3,176 +3,238 @@
 
 """Affine RMSNorm detection for decoder block topology.
 
-An *active norm* is an affine RMSNorm whose gamma-scale Mul has at least one
+An *active norm* is an affine RMSNorm whose scaled output has at least one
 downstream weight MatMul/Gemm/Conv reachable through grid-preserving ops.
 Internal norms (e.g. Qwen3 q_norm/k_norm) whose outputs feed into attention ops
 before reaching any linear weight are excluded automatically.
+
+Detection runs on the analysis IR (see
+:mod:`aimet_onnx.experimental.llm_topology.ir_analysis`), where every decomposed
+RMSNorm has already been fused into a single ``RMSNormalization`` supergroup
+node. Finding norms is therefore a node-type lookup rather than a multi-op
+pattern match, and needs no ConnectedGraph.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional
+
+import onnx_ir
 
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.graph_passes.passes.common_patterns import match_rms_norm_pattern
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
-from aimet_onnx.meta.operations import Op
+from aimet_onnx.ir_utils import is_static
 from aimet_onnx.utils import ModelProto
 
-from aimet_onnx.experimental.llm_topology.weight_utils import (
-    get_weight_product,
-)
+from aimet_onnx.experimental.llm_topology import ir_analysis
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 
 
-# Op types that only reshape/reformat activations without changing the
-# mathematical relationship between gamma and the downstream linear weight.
-_OP_OUTPUTS_TO_IGNORE = [
-    "Unsqueeze",
-    "Squeeze",
-    "Transpose",
-    "Reshape",
-    "Flatten",
-    "Cast",
-]
-
-
 @dataclass
-class ActiveNorm:
+class ActiveNormByName:
     """An affine RMSNorm that has at least one downstream weight linear op.
 
-    :param norm_op: The Pow/Mul starting op of the matched RMSNorm pattern.
+    Described entirely by name: no ConnectedGraph ``Op`` and no ``onnx_ir.Node``
+    is retained, so this outlives the graph object it was derived from.
+    :func:`~.cg_adapter.resolve_active_norms` turns it into the ``Op``-bearing
+    :class:`~.cg_adapter.ActiveNorm` that SpinQuant consumes.
+
+    :param norm: Name of the fused ``RMSNormalization`` node.
+    :param input_tensor: Residual-stream tensor entering the norm (``inputs[0]``).
+        This is the tensor decoder-block boundaries are expressed in.
     :param scale_name: Name of the gamma (scale) initializer in the model.
-    :param downstream_linears: MatMul/Gemm/Conv ops reachable from the scale Mul.
+    :param downstream_linears: Names of the weighted linears reachable from the
+        norm's scaled output.
+    :param topo_index: Position of the norm node in the analysis IR's topological
+        order. Used to assign norms to decoder blocks.
     """
 
-    norm_op: Op
+    norm: str
+    input_tensor: str
     scale_name: str
-    downstream_linears: List[Op] = field(default_factory=list)
+    downstream_linears: List[str] = field(default_factory=list)
+    topo_index: int = -1
 
 
-def find_active_norms(
-    model: ModelProto, connected_graph: ConnectedGraph
-) -> List[ActiveNorm]:
-    """Return all affine RMSNorms with at least one downstream weight linear op.
+def find_active_norms(model: ModelProto) -> List[ActiveNormByName]:
+    """Return all affine RMSNorms in ``model`` with at least one downstream weight linear.
 
-    Iterates ``connected_graph.ordered_ops`` in topological order and collects
-    every op that starts an affine RMSNorm pattern whose gamma-scale Mul has at
-    least one downstream weight MatMul/Gemm/Conv (reachable through reshape-only
-    ops). Norms with no weight consumers are omitted.
-
-    :param model: ONNX ModelProto.
-    :param connected_graph: ConnectedGraph built from ``model``.
-    :return: ``ActiveNorm`` objects in topological order.
+    :param model: ONNX ModelProto. Not mutated — analysis runs on a private
+        onnx_ir copy (see :func:`~.ir_analysis.build_analysis_ir`).
+    :return: ``ActiveNormByName`` objects in topological order.
     """
-    result = []
-    for op in connected_graph.ordered_ops:
-        match = _find_norm_scale_and_consumers(op, model)
-        if match is None:
+    return find_active_norms_in_ir(ir_analysis.build_analysis_ir(model))
+
+
+def find_active_norms_in_ir(
+    ir_model: onnx_ir.Model,
+    topo_index: Optional[Dict[onnx_ir.Node, int]] = None,
+) -> List[ActiveNormByName]:
+    """Return the active norms of an already-built analysis IR model.
+
+    Iterates the graph in topological order and collects every fused
+    ``RMSNormalization`` node that is affine (carries a gamma input) and whose
+    scaled output reaches at least one weighted MatMul/Gemm/Conv through
+    reshape-only ops. Norms with no weight consumers are omitted.
+
+    :param ir_model: Analysis IR model from :func:`~.ir_analysis.build_analysis_ir`.
+    :param topo_index: Precomputed node → topological index map; computed here
+        when omitted.
+    :return: ``ActiveNormByName`` objects in topological order.
+    """
+    if topo_index is None:
+        topo_index = ir_analysis.topological_index(ir_model)
+
+    result: List[ActiveNormByName] = []
+    for node in ir_model.graph:
+        if not ir_analysis.is_rms_norm(node):
             continue
-        scale_name, downstream_linears = match
+
+        scale = _gamma_input(node)
+        if scale is None:
+            _logger.debug(
+                "RMSNorm '%s': non-affine (no gamma input), skipping.",
+                ir_analysis.node_name(node),
+            )
+            continue
+
+        input_tensor = _residual_input(node)
+        if input_tensor is None:
+            _logger.debug(
+                "RMSNorm '%s': inputs[0] is a constant, not a residual activation; skipping.",
+                ir_analysis.node_name(node),
+            )
+            continue
+
+        downstream_linears = _find_downstream_linears(node, topo_index)
         if not downstream_linears:
             _logger.debug(
-                "RMSNorm scale '%s' (op '%s'): no downstream weight linears, skipping.",
-                scale_name,
-                op.name,
+                "RMSNorm scale '%s' (node '%s'): no downstream weight linears, skipping.",
+                scale.name,
+                ir_analysis.node_name(node),
             )
             continue
+
         result.append(
-            ActiveNorm(
-                norm_op=op, scale_name=scale_name, downstream_linears=downstream_linears
+            ActiveNormByName(
+                norm=ir_analysis.node_name(node),
+                input_tensor=input_tensor,
+                scale_name=scale.name or "",
+                downstream_linears=downstream_linears,
+                topo_index=topo_index[node],
             )
         )
+
     _logger.debug("Found %d active norm(s).", len(result))
     return result
 
 
-def get_last_norm_op(connected_graph: ConnectedGraph) -> Op:
-    """Return the op starting the last RMSNorm pattern in topological order."""
-    for op in reversed(connected_graph.ordered_ops):
-        if match_rms_norm_pattern(op, connected_graph.model):
-            return op
+def get_last_norm_input_tensor(model: ModelProto) -> str:
+    """Return the residual tensor entering the last RMSNorm in topological order.
+
+    Unlike :func:`find_active_norms` this ignores whether the norm has downstream
+    weight linears, so it also finds the trailing final norm of a headless
+    backbone (no lm_head) — which is what bounds the last decoder block there.
+
+    :param model: ONNX ModelProto.
+    :return: Name of the tensor entering the last RMSNorm.
+    :raises RuntimeError: If the graph contains no RMSNorm.
+    """
+    return get_last_norm_input_tensor_in_ir(ir_analysis.build_analysis_ir(model))
+
+
+def get_last_norm_input_tensor_in_ir(ir_model: onnx_ir.Model) -> str:
+    """Analysis-IR form of :func:`get_last_norm_input_tensor`."""
+    for node in reversed(tuple(ir_model.graph)):
+        if not ir_analysis.is_rms_norm(node):
+            continue
+        input_tensor = _residual_input(node)
+        if input_tensor is not None:
+            return input_tensor
     raise RuntimeError("No RMSNorm ops found in graph")
 
 
-def _iter_linear_consumers(scale_mul_op: Op) -> List[Op]:
-    """Return all downstream weight MatMul/Gemm/Conv ops reachable from ``scale_mul_op``.
+def is_affine_rms_norm(node: onnx_ir.Node) -> bool:
+    """Return True if ``node`` is a fused RMSNorm that applies a gamma scale.
 
-    MatMul/Gemm/Conv ops can be direct consumers, or reached through a chain of
-    reshape/reformat ops (Unsqueeze, Transpose, Cast, Reshape, ...) that adjust
-    the activation layout into Conv-compatible format.
-
-    :param scale_mul_op: The Mul op that applies the RMSNorm scale (gamma) to the
-                         normalized activations. Its outputs are traversed to collect
-                         downstream weight ops.
-    :return: List of MatMul, Gemm, or Conv ops that consume the scaled activations
-             and have a static weight initializer available for fusion.
+    Unlike :func:`find_active_norms_in_ir` this says nothing about whether the
+    norm has downstream weight linears — it only asks whether there is a scale at
+    all. Used by precondition checks that must reject *any* affine norm in a
+    position (e.g. SpinQuant R1 rejects one between a writing layer and the
+    residual add).
     """
-    result = []
+    return ir_analysis.is_rms_norm(node) and _gamma_input(node) is not None
+
+
+def _gamma_input(norm_node: onnx_ir.Node) -> Optional[onnx_ir.Value]:
+    """Return the gamma (scale) input of an affine RMSNorm node, else None.
+
+    Per the ONNX ``RMSNormalization`` spec gamma is the second input. A
+    non-affine norm has only ``X``, and there is no scale to report.
+    """
+    if len(norm_node.inputs) < 2:
+        return None
+    scale = norm_node.inputs[1]
+    if scale is None or not is_static(scale):
+        return None
+    return scale
+
+
+def _residual_input(norm_node: onnx_ir.Node) -> Optional[str]:
+    """Return the name of the residual activation entering ``norm_node``.
+
+    ``inputs[0]`` of an ``RMSNormalization`` node is the normalized activation by
+    spec. Returns None if it is static (a malformed norm) or unnamed, so the
+    caller can skip it rather than emit a bogus boundary tensor.
+    """
+    if not norm_node.inputs:
+        return None
+    activation = norm_node.inputs[0]
+    if activation is None or not activation.name:
+        return None
+    if is_static(activation):
+        return None
+    return activation.name
+
+
+def _find_downstream_linears(
+    norm_node: onnx_ir.Node,
+    topo_index: Dict[onnx_ir.Node, int],
+) -> List[str]:
+    """Return the weighted linears reachable from ``norm_node``'s scaled output.
+
+    MatMul/Gemm/Conv nodes can be direct consumers, or reached through a chain of
+    reshape/reformat ops (Unsqueeze, Transpose, Cast, Reshape, ...) that adjust
+    the activation layout into Conv-compatible format. The walk stops at the first
+    linear on each path and does not cross an unweighted MatMul.
+
+    :param norm_node: The fused ``RMSNormalization`` node (walk start).
+    :param topo_index: Node → topological index map, used to order the result.
+    :return: The name of each weighted linear consuming the scaled activations,
+        in topological order.
+    """
+    linears: List[onnx_ir.Node] = []
     visited = set()
-    queue = list(scale_mul_op.output_ops)
+    queue = list(norm_node.outputs[0].consumers())
     while queue:
         consumer = queue.pop()
-        if id(consumer) in visited:
+        if consumer in visited:
             continue
-        visited.add(id(consumer))
-        if (
-            consumer.type in ("MatMul", "Gemm")
-            and get_weight_product(consumer)[0] is not None
-        ):
-            result.append(consumer)
-        elif consumer.type in _OP_OUTPUTS_TO_IGNORE:
-            queue.extend(consumer.output_ops)
-        elif consumer.type == "Conv" and get_weight_product(consumer)[0] is not None:
-            result.append(consumer)
-    return result
+        visited.add(consumer)
+        if ir_analysis.is_weighted_linear(consumer):
+            linears.append(consumer)
+        elif consumer.op_type in ir_analysis.GRID_PRESERVING_TYPES:
+            queue.extend(consumer.successors())
+    return [
+        ir_analysis.node_name(node)
+        for node in ir_analysis.sorted_by_topology(linears, topo_index)
+    ]
 
 
-def _find_norm_scale_and_consumers(
-    op: Op, model: ModelProto
-) -> Optional[Tuple[str, List[Op]]]:
-    """If ``op`` starts an affine RMSNorm, return ``(scale_name, downstream_linears)``.
-
-    Returns None if op does not start an affine RMSNorm (non-affine norms have
-    no scale to fuse).
-
-    :param op: The candidate starting op to check for an affine RMSNorm pattern.
-    :param model: ONNX ModelProto used to look up initializer names when matching
-                  the RMSNorm pattern.
-    :return: A tuple (scale_initializer_name, downstream_linear_ops) if op starts
-             an affine RMSNorm, where scale_initializer_name is the name of the gamma
-             initializer and downstream_linear_ops is the list of weight MatMul/Gemm/Conv
-             ops that follow the norm's scale multiply. Returns None if the op does not
-             match an affine RMSNorm pattern.
-    """
-    norm_ops = match_rms_norm_pattern(op, model)
-    if not norm_ops:
-        return None
-
-    # Fused RMSNormalization op: gamma is the second input by ONNX spec.
-    # AIMET's supergroup fuser produces a non-affine call (only 1 input — X);
-    # in that case gamma lives outside as a downstream Mul, so fall through.
-    if len(norm_ops) == 1 and norm_ops[0].type == "RMSNormalization":
-        rms_op = norm_ops[0]
-        if len(rms_op.inputs) >= 2 and rms_op.parameters:
-            downstream_linears = _iter_linear_consumers(rms_op)
-            return rms_op.inputs[1].name, downstream_linears
-
-    # match_rms_norm_pattern stops at the last Mul op. Check for the trailing
-    # scale Mul: RMSNorm(x) * gamma, with an optional Cast in between.
-    last_op = norm_ops[-1]
-    if len(last_op.output_ops) != 1:
-        return None  # non-affine norm, nothing to fuse
-    next_op = last_op.output_ops[0]
-    if next_op.type == "Cast" and len(next_op.output_ops) == 1:
-        next_op = next_op.output_ops[0]
-    if next_op.type != "Mul":
-        return None  # non-affine norm, nothing to fuse
-
-    scale_mul_op = next_op
-    scale_inp = next((inp for inp in scale_mul_op.inputs if inp.is_const), None)
-    if scale_inp is None:
-        return None
-
-    downstream_linears = _iter_linear_consumers(scale_mul_op)
-    return scale_inp.name, downstream_linears
+__all__ = [
+    "ActiveNormByName",
+    "find_active_norms",
+    "find_active_norms_in_ir",
+    "get_last_norm_input_tensor",
+    "get_last_norm_input_tensor_in_ir",
+    "is_affine_rms_norm",
+]

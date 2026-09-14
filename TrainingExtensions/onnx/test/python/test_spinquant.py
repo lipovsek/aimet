@@ -49,16 +49,13 @@ from aimet_onnx.common.hadamard import get_hadamard_matrix
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import ParamUtils, make_dummy_input
 
-from aimet_onnx.experimental.llm_topology.block_boundaries import (
-    get_decoder_block_boundaries,
-)
 from aimet_onnx.experimental.llm_topology.topology import (
     LlmTopology,
-    get_llm_topology,
+    analyze_llm_topology,
 )
+from aimet_onnx.experimental.llm_topology.cg_adapter import resolve_active_norms
 from aimet_onnx.experimental.llm_topology.norm_detection import (
     find_active_norms,
-    _find_norm_scale_and_consumers,
 )
 from aimet_onnx.experimental.llm_topology.weight_utils import (
     get_bias_product as _get_bias_product,
@@ -174,24 +171,16 @@ def _run_model(model: onnx.ModelProto, inp: np.ndarray) -> np.ndarray:
     return session.run(None, _pad_dummy_input(model, input=inp))[0]
 
 
-def _collect_pre_fusion_state(
-    model: onnx.ModelProto, connected_graph: ConnectedGraph
-) -> dict:
+def _collect_pre_fusion_state(model: onnx.ModelProto, active_norms: list) -> dict:
     pre_fusion_state = {}
-    for op in connected_graph.ordered_ops:
-        result = _find_norm_scale_and_consumers(op, model)
-        if result is None:
-            continue
-        scale_name, linear_ops = result
-        if not linear_ops:
-            continue
-
+    for active_norm in active_norms:
+        scale_name = active_norm.scale_name
         scale = numpy_helper.to_array(
             ParamUtils.get_param_by_name(model, scale_name)
         ).copy()
 
         downstream = {}
-        for linear_op in linear_ops:
+        for linear_op in active_norm.downstream_linears:
             weight_inp, is_transposed = _get_weight_product(linear_op)
             if weight_inp is None:
                 continue
@@ -414,8 +403,9 @@ class TestFuseNormLayers:
         cg = ConnectedGraph(model)
 
         y_before = _run_model(model, x)
-        pre = _collect_pre_fusion_state(model, cg)
-        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
+        active_norms = resolve_active_norms(find_active_norms(model), cg)
+        pre = _collect_pre_fusion_state(model, active_norms)
+        fuse_norm_layers_into_linears(model, active_norms)
         _verify_fusion(model, pre)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
@@ -439,8 +429,9 @@ class TestFuseNormLayers:
         cg = ConnectedGraph(model)
 
         y_before = _run_model(model, x)
-        pre = _collect_pre_fusion_state(model, cg)
-        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
+        active_norms = resolve_active_norms(find_active_norms(model), cg)
+        pre = _collect_pre_fusion_state(model, active_norms)
+        fuse_norm_layers_into_linears(model, active_norms)
         _verify_fusion(model, pre)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
@@ -464,8 +455,9 @@ class TestFuseNormLayers:
         cg = ConnectedGraph(model)
 
         y_before = _run_model(model, x)
-        pre = _collect_pre_fusion_state(model, cg)
-        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
+        active_norms = resolve_active_norms(find_active_norms(model), cg)
+        pre = _collect_pre_fusion_state(model, active_norms)
+        fuse_norm_layers_into_linears(model, active_norms)
         _verify_fusion(model, pre)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
@@ -483,9 +475,10 @@ class TestFuseNormLayers:
         cg = ConnectedGraph(model)
 
         y_before = _run_model(model, x)
-        pre = _collect_pre_fusion_state(model, cg)
+        active_norms = resolve_active_norms(find_active_norms(model), cg)
+        pre = _collect_pre_fusion_state(model, active_norms)
         assert len(next(iter(pre.values()))[1]) == 3
-        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
+        fuse_norm_layers_into_linears(model, active_norms)
         _verify_fusion(model, pre)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
@@ -505,8 +498,9 @@ class TestFuseNormLayers:
         cg = ConnectedGraph(model)
 
         y_before = _run_model(model, x)
-        pre = _collect_pre_fusion_state(model, cg)
-        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
+        active_norms = resolve_active_norms(find_active_norms(model), cg)
+        pre = _collect_pre_fusion_state(model, active_norms)
+        fuse_norm_layers_into_linears(model, active_norms)
         _verify_fusion(model, pre)
         assert np.allclose(_run_model(model, x), y_before, atol=1e-6)
 
@@ -545,7 +539,9 @@ class TestFuseNormLayers:
 
         y_before = _run_model(model, x)
         cg = ConnectedGraph(model)
-        fuse_norm_layers_into_linears(model, find_active_norms(model, cg))
+        fuse_norm_layers_into_linears(
+            model, resolve_active_norms(find_active_norms(model), cg)
+        )
 
         w_after = numpy_helper.to_array(ParamUtils.get_param_by_name(model, w_name))
         assert np.array_equal(w_after, w_before)
@@ -569,7 +565,7 @@ class TestFuseNormLayers:
         y_before = _run_model(model, x)
 
         # Collect pre-fusion state manually: gamma is [d_v] but weight in_features is s_sq*d_v
-        active_norms = find_active_norms(model, cg)
+        active_norms = resolve_active_norms(find_active_norms(model), cg)
         assert len(active_norms) == 1
         scale_name = active_norms[0].scale_name
         gamma_before = numpy_helper.to_array(
@@ -674,9 +670,8 @@ class TestApplyR1Rotation:
         model = _export_decoder_with_ids(decoder_cls())
         cg = ConnectedGraph(model)
 
-        blocks = get_decoder_block_boundaries(model, cg)
-        active_norms = find_active_norms(model, cg)
-        role_map = get_llm_topology(cg, blocks)
+        active_norms = resolve_active_norms(find_active_norms(model), cg)
+        role_map = analyze_llm_topology(model, connected_graph=cg)
 
         """
         When: fuse_norm_layers_into_linears is applied
@@ -712,9 +707,8 @@ class TestApplyR1Rotation:
         model = _export_decoder_with_ids(decoder_cls())
         cg = ConnectedGraph(model)
 
-        blocks = get_decoder_block_boundaries(model, cg)
-        active_norms = find_active_norms(model, cg)
-        role_map = get_llm_topology(cg, blocks)
+        active_norms = resolve_active_norms(find_active_norms(model), cg)
+        role_map = analyze_llm_topology(model, connected_graph=cg)
         fuse_norm_layers_into_linears(model, active_norms)
         weights_original = _collect_all_weights(model, role_map)
 
@@ -1193,12 +1187,6 @@ class TestApplyR3Rotation:
             ``past_key_input_name == "past_key_{i}"``, its ``k_concat_node`` is a
             Concat, and its ``qk_matmul_node`` is a MatMul.
         """
-        from aimet_onnx.experimental.llm_topology.block_boundaries import (
-            get_decoder_block_boundaries,
-        )
-        from aimet_onnx.experimental.llm_topology.topology import (
-            get_llm_topology,
-        )
         from aimet_onnx.experimental.spinquant.model_analysis import (
             find_r3_anchors,
         )
@@ -1207,9 +1195,7 @@ class TestApplyR3Rotation:
         np.random.seed(0)
         model = _export_decoder_with_pkv(LlamaStyleDecoder())
 
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
-        role_map = get_llm_topology(cg, blocks)
+        role_map = analyze_llm_topology(model)
         anchors = find_r3_anchors(role_map, model)
 
         # Pass: exactly one anchor per block, each pinned to that block's

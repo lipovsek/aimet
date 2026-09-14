@@ -10,8 +10,8 @@ analyze an individual projection (e.g. R2 rotates only V) each group is split
 into the individual roles ``q_proj`` / ``k_proj`` / ``v_proj`` and
 ``gate_proj`` / ``up_proj``.
 
-The split is done by matching the originating ``nn.Module`` attribute name.
-``Op.name`` from an HF/optimum ONNX export looks like
+The split is done by matching the originating ``nn.Module`` attribute name. A node
+name from an HF/optimum ONNX export looks like
 ``/model/.../self_attn/v_proj/MatMul``; the second-to-last ``/``-segment
 (``v_proj``) is the attribute name. We match it against a small allow-list of
 conventional names per role.
@@ -23,8 +23,6 @@ This module is the single seam for future manual registration: pass a custom
 import re
 from enum import Enum
 from typing import Dict, Optional, Pattern
-
-from aimet_onnx.meta.operations import Op
 
 
 class LinearRole(Enum):
@@ -83,27 +81,27 @@ _ROLE_PRIORITY = (
 )
 
 
-def module_name_of(op: Op) -> Optional[str]:
-    """Return the originating ``nn.Module`` attribute name for ``op``.
+def module_name_of(node_name: str) -> Optional[str]:
+    """Return the originating ``nn.Module`` attribute name for ``node_name``.
 
-    ``Op.name`` from an HF/optimum export looks like
+    A node name from an HF/optimum export looks like
     ``/model/.../self_attn/v_proj/MatMul``; the second-to-last ``/``-segment is
     the module attribute name. Returns ``None`` when the name has too few
     segments to carry a module name.
     """
-    parts = op.name.rsplit("/", 2)
+    parts = node_name.rsplit("/", 2)
     if len(parts) < 2:
         return None
     return parts[-2]
 
 
 def classify_linear_role(
-    op: Op,
+    node_name: str,
     role_patterns: Optional[Dict[LinearRole, Pattern]] = None,
 ) -> LinearRole:
-    """Classify ``op`` into a :class:`LinearRole` by its module name.
+    """Classify a weighted linear into a :class:`LinearRole` by its module name.
 
-    :param op: A weighted linear op (MatMul / Gemm / Conv).
+    :param node_name: Name of a weighted linear node (MatMul / Gemm / Conv).
     :param role_patterns: Optional override of the default role→pattern table.
         Only the roles present in the mapping are tested; roles absent from a
         supplied mapping are skipped. This is the hook for manually registering
@@ -111,7 +109,7 @@ def classify_linear_role(
     :return: The matched :class:`LinearRole`, or :attr:`LinearRole.UNKNOWN`.
     """
     patterns = role_patterns if role_patterns is not None else _DEFAULT_ROLE_PATTERNS
-    module_name = module_name_of(op)
+    module_name = module_name_of(node_name)
     if module_name is None:
         return LinearRole.UNKNOWN
     for role in _ROLE_PRIORITY:

@@ -245,7 +245,13 @@ def _validate_backbone_weights(
     into the residual add. An affine RMSNorm between the writing layer and the
     residual add breaks that property.
     """
-    post_writing_norms = find_post_writing_norms(model, role_map)
+    writing_output_tensors = [
+        op.outputs[0].name
+        for block in role_map.blocks
+        for op in block.o_proj + block.down_proj
+        if op.outputs
+    ]
+    post_writing_norms = find_post_writing_norms(model, writing_output_tensors)
     if post_writing_norms:
         raise ValueError(
             f"R1 rotation absorption requires writing layers (o_proj, down_proj) to feed "

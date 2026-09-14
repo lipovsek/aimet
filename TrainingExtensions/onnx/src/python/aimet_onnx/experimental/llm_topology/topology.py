@@ -13,221 +13,71 @@ Describes the structure of an ONNX decoder-stack model at two levels:
   plus the model-level embed_tokens and lm_head.
 
 Weighted read projections are grouped coarsely by the active norm they read
-from (the ``qkv`` and ``gate_up`` :class:`LinearGroup`\\ s), and each group also
-carries a fine-grained role split (``q_proj`` / ``k_proj`` / ``v_proj`` /
+from (the ``qkv`` and ``gate_up`` :class:`LinearGroupByName`\\ s), and each group
+also carries a fine-grained role split (``q_proj`` / ``k_proj`` / ``v_proj`` /
 ``gate_proj`` / ``up_proj``) derived from module names by :mod:`layer_roles`.
 The dynamic MatMuls are found by pure graph topology.
 
 Technique-agnostic: it describes a decoder stack without knowing about any
-specific quantization technique. Everything here works in ConnectedGraph
-``Op`` space; techniques that must mutate raw ``NodeProto`` edges (e.g.
-SpinQuant R3) derive their insertion anchors from this topology separately.
+specific quantization technique. Everything here works on the analysis IR (see
+:mod:`ir_analysis`) and reports results by ONNX name, so a topology needs no
+graph object to stay meaningful; techniques that must mutate raw ``NodeProto``
+edges (e.g. SpinQuant R3) derive their insertion anchors from this topology
+separately.
+
+:func:`analyze_llm_topology` additionally re-attaches a ConnectedGraph and
+returns the ``Op``-bearing :class:`~.cg_adapter.LlmTopology` that SpinQuant's
+rotation passes still expect. That adapter step is transitional — see
+:mod:`cg_adapter`.
 """
 
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Pattern, Tuple
 
+import onnx_ir
+
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.meta.connectedgraph import ConnectedGraph, Product
-from aimet_onnx.meta.operations import Op
+from aimet_onnx.ir_utils import static_tensor
+from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import ModelProto
 
+from aimet_onnx.experimental.llm_topology import ir_analysis
 from aimet_onnx.experimental.llm_topology.block_boundaries import (
-    get_decoder_block_boundaries,
-    tensor_to_first_consumer_index,
+    get_decoder_block_boundaries_in_ir,
+)
+from aimet_onnx.experimental.llm_topology.cg_adapter import (
+    BlockTopology,
+    LinearGroup,
+    LlmTopology,
+    resolve_topology,
 )
 from aimet_onnx.experimental.llm_topology.layer_roles import (
     LinearRole,
-    classify_linear_role,
 )
 from aimet_onnx.experimental.llm_topology.norm_detection import (
-    ActiveNorm,
-    find_active_norms,
+    ActiveNormByName,
+    find_active_norms_in_ir,
+)
+from aimet_onnx.experimental.llm_topology.topology_by_name import (
+    BlockTopologyByName,
+    LinearGroupByName,
+    LlmTopologyByName,
 )
 from aimet_onnx.experimental.llm_topology.weight_utils import (
-    get_weight_product,
-    infer_head_dim,
-    infer_hidden_size,
+    _infer_hidden_size,
+    _infer_head_dim,
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 
-_LINEAR_TYPES = frozenset(("MatMul", "Gemm", "Conv"))
-_EMBEDDING_TYPES = frozenset(("Gather",))
-
-
-def _collect_past_key_input_names_in_order(model: ModelProto) -> List[str]:
-    """Return ``past_key_*`` graph input names in declaration order.
-
-    HF/optimum LLM exports with a KV-cache expose one such input per decoder
-    block. Prefill-only exports have none.
-    """
-    return [
-        inp.name
-        for inp in model.graph.input
-        if "past_key" in inp.name or "past_k_" in inp.name
-    ]
-
-
-def _is_embedding_table_gather(op: Op) -> bool:
-    """Return True if ``op`` is a token-embedding ``Gather`` (data is a 2-D table).
-
-    A real embedding ``Gather`` has the embedding *table* as its first (data)
-    input — a static rank-2 ``[vocab, hidden]`` initializer. Other Gathers in
-    the prologue (e.g. position-id lookups, ``shape``-derived indexers) hold
-    static scalar or 1-D constants on input 0 and must be excluded.
-
-    :param op: Candidate Gather op.
-    :return: True iff ``op`` looks like a token-embedding lookup.
-    """
-    if not op.inputs:
-        return False
-    data_inp = op.inputs[0]
-    if not (data_inp.is_parm or data_inp.is_const):
-        return False
-    shape = getattr(data_inp, "shape", None)
-    if shape is None:
-        return False
-    return len(shape) >= 2
-
-
-@dataclass
-class LinearGroup:
-    """A norm's downstream weighted linears, together with their role split.
-
-    ``ops`` is the coarse read group (the single source of truth): every
-    weighted linear reading through one active norm. ``by_role`` is a
-    name-based *partition* of ``ops`` produced by :func:`classify_linear_role`
-    — each op appears under exactly one :class:`LinearRole` (unmatched ops fall
-    under :attr:`LinearRole.UNKNOWN`). Because the split is derived from ``ops``
-    at construction, the two can never disagree.
-
-    Consumers that treat the whole group uniformly (e.g. an R1 residual-stream
-    rotation) iterate ``ops``; consumers that touch one projection (e.g. R2
-    rotates only V) read :meth:`role`. A role maps to a *list* because per-head
-    split exports (SHA) emit one op per head, and fused exports (e.g. Phi3
-    ``qkv_proj``) collapse several logical roles into a single op reported under
-    a ``FUSED_*`` role.
-
-    :param ops: All weighted linears reading through one active norm.
-    :param by_role: Partition of ``ops`` keyed by :class:`LinearRole`.
-    """
-
-    ops: List[Op] = field(default_factory=list)
-    by_role: Dict[LinearRole, List[Op]] = field(default_factory=dict)
-
-    @classmethod
-    def classify(
-        cls,
-        ops: List[Op],
-        role_patterns: Optional[Dict[LinearRole, Pattern]] = None,
-    ) -> "LinearGroup":
-        """Build a group from ``ops``, splitting it into roles by module name."""
-        return cls(ops=list(ops), by_role=_split_by_role(ops, role_patterns))
-
-    def role(self, role: LinearRole) -> List[Op]:
-        """Return the ops classified as ``role`` (empty list if none)."""
-        return self.by_role.get(role, [])
-
-
-@dataclass
-class BlockTopology:
-    """Topology of a single decoder block: weighted projections + dynamic MatMuls.
-
-    The two weighted read groups are :class:`LinearGroup` values — each exposes
-    both its coarse ``ops`` list and the fine-grained role split (see
-    :class:`LinearGroup` and the ``q_proj`` / ``k_proj`` / ``v_proj`` /
-    ``gate_proj`` / ``up_proj`` convenience properties below). The two write
-    projections and the dynamic attention MatMuls are plain op lists.
-
-    :param qkv: Attention read group — the Q/K/V (or fused QKV) projections
-        reading through the block's input norm.
-    :param o_proj: Attention-output projection op(s) writing to the residual.
-    :param gate_up: MLP read group — the gate/up (or fused gate-up) projections
-        reading through the post-attention norm.
-    :param down_proj: MLP-output projection op(s) writing to the residual.
-    :param qk_matmul: The dynamic (non-weighted) Q·Kᵀ attention MatMul op(s) —
-        one per query head in SHA exports.
-    :param attn_v_matmul: The dynamic (non-weighted) softmax·V MatMul op(s).
-    :param residual_input: Residual-stream tensor entering the block's input norm.
-    :param residual_output: Residual-stream tensor leaving the block.
-    """
-
-    qkv: LinearGroup = field(default_factory=LinearGroup)
-    o_proj: List[Op] = field(default_factory=list)
-    gate_up: LinearGroup = field(default_factory=LinearGroup)
-    down_proj: List[Op] = field(default_factory=list)
-
-    qk_matmul: List[Op] = field(default_factory=list)
-    attn_v_matmul: List[Op] = field(default_factory=list)
-
-    residual_input: Optional[Product] = None
-    residual_output: Optional[Product] = None
-
-    @property
-    def q_proj(self) -> List[Op]:
-        """Query projection op(s), split from ``qkv`` by module name."""
-        return self.qkv.role(LinearRole.Q_PROJ)
-
-    @property
-    def k_proj(self) -> List[Op]:
-        """Key projection op(s), split from ``qkv`` by module name."""
-        return self.qkv.role(LinearRole.K_PROJ)
-
-    @property
-    def v_proj(self) -> List[Op]:
-        """Value projection op(s), split from ``qkv`` by module name."""
-        return self.qkv.role(LinearRole.V_PROJ)
-
-    @property
-    def gate_proj(self) -> List[Op]:
-        """Gate projection op(s), split from ``gate_up`` by module name."""
-        return self.gate_up.role(LinearRole.GATE_PROJ)
-
-    @property
-    def up_proj(self) -> List[Op]:
-        """Up projection op(s), split from ``gate_up`` by module name."""
-        return self.gate_up.role(LinearRole.UP_PROJ)
-
-
-@dataclass
-class LlmTopology:
-    """Topology of an ONNX decoder-stack model: blocks + backbone-level roles + dims.
-
-    :param embed_tokens: Token-embedding Gather op(s) that produce the initial
-        residual-stream activations.
-    :param lm_head: Vocabulary-projection linear(s) downstream of the final norm.
-    :param blocks: Per-decoder-block topology in topological order.
-    :param past_key_input_names: Raw ``past_key_*`` graph inputs in declaration
-        order, collected tolerantly (empty for prefill-only exports without a
-        KV-cache). Pairing these to ``blocks`` and validating that their count
-        matches the block count are the consumer's responsibility (e.g. R3) —
-        R1-only and prefill-only flows do not require KV-cache inputs.
-    :param active_norms: Active norms in topological order used to build the
-        topology (``None`` when the topology was built from a pre-supplied list
-        that the builder did not retain).
-    :param hidden_size: Residual-stream hidden dimension (``None`` if not
-        inferred; :func:`analyze_llm_topology` fills it).
-    :param head_dim: Per-head dimension (``None`` when it could not be derived,
-        e.g. an export without KV-cache inputs).
-    """
-
-    embed_tokens: List[Op] = field(default_factory=list)
-    lm_head: List[Op] = field(default_factory=list)
-    blocks: List[BlockTopology] = field(default_factory=list)
-    past_key_input_names: List[str] = field(default_factory=list)
-    active_norms: Optional[List[ActiveNorm]] = None
-    hidden_size: Optional[int] = None
-    head_dim: Optional[int] = None
-
 
 def get_llm_topology(
-    connected_graph: ConnectedGraph,
+    ir_model: onnx_ir.Model,
     block_boundaries: List[Tuple[str, str]],
-    active_norms: Optional[List[ActiveNorm]] = None,
+    active_norms: Optional[List[ActiveNormByName]] = None,
     active_norms_per_block: int = 2,
     role_patterns: Optional[Dict[LinearRole, Pattern]] = None,
-) -> LlmTopology:
+    topo_index: Optional[Dict[onnx_ir.Node, int]] = None,
+) -> LlmTopologyByName:
     """Build the LLM topology from pre-computed block boundaries.
 
     Per-block. Read groups are the weighted linears downstream of each active
@@ -237,13 +87,13 @@ def get_llm_topology(
     MatMuls are located by graph topology:
 
     * ``qkv``             — ``downstream_linears`` of the first active norm in
-      the block (input norm), as a :class:`LinearGroup` split into
+      the block (input norm), as a :class:`LinearGroupByName` split into
       ``q_proj`` / ``k_proj`` / ``v_proj`` (or ``FUSED_QKV``) by
       :func:`classify_linear_role`.
     * ``o_proj``          — weighted linear(s) that write the attention residual
       output (the post-attention norm input).
     * ``gate_up``         — ``downstream_linears`` of the second active norm in
-      the block (post-attention norm), as a :class:`LinearGroup` split into
+      the block (post-attention norm), as a :class:`LinearGroupByName` split into
       ``gate_proj`` / ``up_proj`` (or ``FUSED_GATE_UP``).
     * ``down_proj``       — weighted linear(s) that write the block residual
       output (the block-end tensor).
@@ -258,44 +108,43 @@ def get_llm_topology(
     * ``embed_tokens``    — Gather ops with a static-weight input that appear
       before the first block boundary.
 
-    :param connected_graph: ConnectedGraph built from the model.
+    :param ir_model: Analysis IR model from :func:`~.ir_analysis.build_analysis_ir`.
     :param block_boundaries: List of ``(start_tensor, end_tensor)`` residual-stream
         tensor names, as returned by :func:`get_decoder_block_boundaries`.
     :param active_norms: Active norms in topological order. Recomputed via
-        :func:`find_active_norms` when not supplied; pass a precomputed value to
-        avoid a redundant graph scan.
+        :func:`find_active_norms_in_ir` when not supplied; pass a precomputed
+        value to avoid a redundant graph scan.
     :param active_norms_per_block: Expected number of active norms per decoder
         block. Must match the value used in :func:`get_decoder_block_boundaries`.
         Defaults to 2 (Llama/Qwen2/Mistral/Phi family).
     :param role_patterns: Optional override of the default module-name → role
         table used to split the read groups (see :func:`classify_linear_role`).
-    :return: LlmTopology with block and backbone roles populated. ``hidden_size``
-        and ``head_dim`` are left ``None`` — use :func:`analyze_llm_topology`
-        to also infer those.
+    :param topo_index: Precomputed node → topological index map.
+    :return: LlmTopologyByName with block and backbone roles populated.
+        ``hidden_size`` and ``head_dim`` are left ``None`` — use
+        :func:`analyze_llm_topology_by_name` to also infer those.
     """
-    op_topo_idx = {op: i for i, op in enumerate(connected_graph.ordered_ops)}
+    if topo_index is None:
+        topo_index = ir_analysis.topological_index(ir_model)
     if active_norms is None:
-        active_norms = find_active_norms(connected_graph.model, connected_graph)
-    boundary_topo = tensor_to_first_consumer_index(connected_graph)
+        active_norms = find_active_norms_in_ir(ir_model, topo_index)
+    boundary_topo = ir_analysis.tensor_to_first_consumer_index(ir_model, topo_index)
+    node_by_output = ir_analysis.node_by_output_tensor(ir_model)
+    node_by_name = ir_analysis.node_by_name(ir_model)
 
-    # tensor name -> producing Op
-    producer_by_tensor = {
-        out.name: op for op in connected_graph.ordered_ops for out in op.outputs
-    }
-
-    result = LlmTopology(active_norms=active_norms)
+    result = LlmTopologyByName(active_norms=active_norms)
 
     for block_idx, (start_tensor, end_tensor) in enumerate(block_boundaries):
         start_topo = boundary_topo[start_tensor]
         end_topo = boundary_topo[end_tensor]
 
-        # Active norms whose norm_op falls in [start_topo, end_topo).
+        # Active norms whose norm node falls in [start_topo, end_topo).
         # index 0 = input_norm (pre-attention),
         # index 1 = post_attn_norm (pre-MLP).
         block_active_norms = [
             active_norm
             for active_norm in active_norms
-            if start_topo <= op_topo_idx[active_norm.norm_op] < end_topo
+            if start_topo <= active_norm.topo_index < end_topo
         ]
         if len(block_active_norms) != active_norms_per_block:
             raise ValueError(
@@ -309,12 +158,14 @@ def get_llm_topology(
         input_norm = block_active_norms[0]
         post_attn_norm = block_active_norms[1]
 
-        qkv = LinearGroup.classify(input_norm.downstream_linears, role_patterns)
-        gate_up = LinearGroup.classify(post_attn_norm.downstream_linears, role_patterns)
+        qkv = LinearGroupByName.classify(input_norm.downstream_linears, role_patterns)
+        gate_up = LinearGroupByName.classify(
+            post_attn_norm.downstream_linears, role_patterns
+        )
 
-        intermediate_tensor = post_attn_norm.norm_op.inputs[0].name
+        intermediate_tensor = post_attn_norm.input_tensor
         o_proj_candidates = _find_nearest_upstream_linears(
-            intermediate_tensor, start_tensor, producer_by_tensor, op_topo_idx
+            intermediate_tensor, start_tensor, node_by_output, topo_index
         )
         if not o_proj_candidates:
             raise ValueError(
@@ -323,7 +174,7 @@ def get_llm_topology(
             )
 
         down_proj_candidates = _find_nearest_upstream_linears(
-            end_tensor, intermediate_tensor, producer_by_tensor, op_topo_idx
+            end_tensor, intermediate_tensor, node_by_output, topo_index
         )
         if not down_proj_candidates:
             raise ValueError(
@@ -331,42 +182,45 @@ def get_llm_topology(
                 f"for residual output '{end_tensor}'."
             )
 
-        qk_matmul, attn_v_matmul = _find_attention_matmuls(qkv.ops, o_proj_candidates)
-
-        result.blocks.append(
-            BlockTopology(
-                qkv=qkv,
-                o_proj=o_proj_candidates,
-                gate_up=gate_up,
-                down_proj=down_proj_candidates,
-                qk_matmul=qk_matmul,
-                attn_v_matmul=attn_v_matmul,
-                residual_input=connected_graph.get_product(start_tensor),
-                residual_output=connected_graph.get_product(end_tensor),
-            )
+        qk_matmul, attn_v_matmul = _find_attention_matmuls(
+            [node_by_name[name] for name in qkv.linears],
+            o_proj_candidates,
+            topo_index,
         )
+
+        block = BlockTopologyByName(
+            qkv=qkv,
+            o_proj=ir_analysis.node_names(o_proj_candidates),
+            gate_up=gate_up,
+            down_proj=ir_analysis.node_names(down_proj_candidates),
+            qk_matmul=ir_analysis.node_names(qk_matmul),
+            attn_v_matmul=ir_analysis.node_names(attn_v_matmul),
+            residual_input=start_tensor,
+            residual_output=end_tensor,
+        )
+        result.blocks.append(block)
         _logger.debug(
             "Block %d: q=%s k=%s v=%s (fused_qkv=%s) o_proj=%s  gate=%s up=%s "
             "(fused_gate_up=%s) down_proj=%s  qk_matmul=%s attn_v_matmul=%s",
             block_idx,
-            [op.name for op in qkv.role(LinearRole.Q_PROJ)],
-            [op.name for op in qkv.role(LinearRole.K_PROJ)],
-            [op.name for op in qkv.role(LinearRole.V_PROJ)],
-            [op.name for op in qkv.role(LinearRole.FUSED_QKV)],
-            [op.name for op in o_proj_candidates],
-            [op.name for op in gate_up.role(LinearRole.GATE_PROJ)],
-            [op.name for op in gate_up.role(LinearRole.UP_PROJ)],
-            [op.name for op in gate_up.role(LinearRole.FUSED_GATE_UP)],
-            [op.name for op in down_proj_candidates],
-            [op.name for op in qk_matmul],
-            [op.name for op in attn_v_matmul],
+            qkv.role(LinearRole.Q_PROJ),
+            qkv.role(LinearRole.K_PROJ),
+            qkv.role(LinearRole.V_PROJ),
+            qkv.role(LinearRole.FUSED_QKV),
+            block.o_proj,
+            gate_up.role(LinearRole.GATE_PROJ),
+            gate_up.role(LinearRole.UP_PROJ),
+            gate_up.role(LinearRole.FUSED_GATE_UP),
+            block.down_proj,
+            block.qk_matmul,
+            block.attn_v_matmul,
         )
 
     block_role_counts = [
         (
-            len(b.qkv.ops),
+            len(b.qkv.linears),
             len(b.o_proj),
-            len(b.gate_up.ops),
+            len(b.gate_up.linears),
             len(b.down_proj),
         )
         for b in result.blocks
@@ -382,47 +236,103 @@ def get_llm_topology(
 
     last_end_topo = boundary_topo[block_boundaries[-1][1]]
     result.lm_head = [
-        op
-        for an in active_norms
-        if op_topo_idx[an.norm_op] >= last_end_topo
-        for op in an.downstream_linears
+        linear
+        for active_norm in active_norms
+        if active_norm.topo_index >= last_end_topo
+        for linear in active_norm.downstream_linears
     ]
     if not result.lm_head:
         _logger.debug(
             "lm_head not detected: no active norm found after the last block boundary."
         )
     else:
-        _logger.debug("lm_head: %s", [op.name for op in result.lm_head])
+        _logger.debug("lm_head: %s", result.lm_head)
 
     first_start_topo = boundary_topo[block_boundaries[0][0]]
-    result.embed_tokens = [
-        op
-        for op in connected_graph.ordered_ops[:first_start_topo]
-        if op.type in _EMBEDDING_TYPES and _is_embedding_table_gather(op)
-    ]
+    result.embed_tokens = ir_analysis.node_names(
+        [
+            node
+            for node in ir_model.graph
+            if topo_index[node] < first_start_topo
+            and node.op_type in ir_analysis.EMBEDDING_TYPES
+            and _is_embedding_table_gather(node)
+        ]
+    )
     if not result.embed_tokens:
         _logger.info(
             "Backbone: embed_tokens not detected, no Gather op with a static weight found before "
             "the first block boundary. This is expected for VLM backbones exported with "
             "use_inputs_embeds=True. Rotate embedding.pth separately."
         )
-    _logger.debug("embed_tokens: %s", [op.name for op in result.embed_tokens])
+    _logger.debug("embed_tokens: %s", result.embed_tokens)
 
     # Collected tolerantly: prefill-only / R1-only flows leave this empty and
     # never require KV-cache inputs. R3 validates the count against blocks.
-    result.past_key_input_names = _collect_past_key_input_names_in_order(
-        connected_graph.model
-    )
+    result.past_key_input_names = _collect_past_key_input_names_in_order(ir_model)
     _logger.debug("past_key inputs: %s", result.past_key_input_names)
 
     _logger.info(
         "Backbone: %d block(s), embed_tokens=%s, lm_head=%s.",
         len(result.blocks),
-        [op.name for op in result.embed_tokens],
-        [op.name for op in result.lm_head],
+        result.embed_tokens,
+        result.lm_head,
     )
 
     return result
+
+
+def analyze_llm_topology_by_name(
+    model: ModelProto,
+    active_norms_per_block: int = 2,
+    expected_num_blocks: Optional[int] = None,
+    role_patterns: Optional[Dict[LinearRole, Pattern]] = None,
+) -> LlmTopologyByName:
+    """Analyze ``model`` end-to-end and return a name-based :class:`LlmTopologyByName`.
+
+    Runs the whole pipeline on a private onnx_ir copy of ``model``: strip
+    quantizers, fuse RMSNorms, detect active norms and block boundaries, build
+    the per-block topology, and infer ``hidden_size`` / ``head_dim``.
+
+    :param model: ONNX ModelProto to analyze. Not mutated.
+    :param active_norms_per_block: Active norms per decoder block (see
+        :func:`get_decoder_block_boundaries`). Defaults to 2.
+    :param expected_num_blocks: If given, validated against the detected count.
+    :param role_patterns: Optional module-name → role override (see
+        :func:`classify_linear_role`).
+    :return: LlmTopologyByName with block/backbone roles, ``active_norms``,
+        ``hidden_size`` and ``head_dim`` populated. ``head_dim`` is ``None`` when
+        the export exposes no ``past_value`` graph input to derive it from.
+    """
+    ir_model = ir_analysis.build_analysis_ir(model)
+    topo_index = ir_analysis.topological_index(ir_model)
+
+    active_norms = find_active_norms_in_ir(ir_model, topo_index)
+    boundaries = get_decoder_block_boundaries_in_ir(
+        ir_model,
+        active_norms=active_norms,
+        expected_num_blocks=expected_num_blocks,
+        active_norms_per_block=active_norms_per_block,
+        topo_index=topo_index,
+    )
+    topology = get_llm_topology(
+        ir_model,
+        boundaries,
+        active_norms=active_norms,
+        active_norms_per_block=active_norms_per_block,
+        role_patterns=role_patterns,
+        topo_index=topo_index,
+    )
+
+    topology.hidden_size = _infer_hidden_size(ir_model, topology)
+
+    # head_dim requires a KV-cache 'past_value' graph input; tolerate its
+    # absence (prefill-only / R1-only flows do not need it).
+    try:
+        topology.head_dim = _infer_head_dim(model)
+    except ValueError:
+        topology.head_dim = None
+
+    return topology
 
 
 def analyze_llm_topology(
@@ -432,17 +342,17 @@ def analyze_llm_topology(
     expected_num_blocks: Optional[int] = None,
     role_patterns: Optional[Dict[LinearRole, Pattern]] = None,
 ) -> LlmTopology:
-    """Analyze ``model`` end-to-end and return a fully-populated :class:`LlmTopology`.
+    """Analyze ``model`` end-to-end and return a ConnectedGraph-flavored topology.
 
-    Convenience facade that runs the whole pipeline: build the ConnectedGraph
-    (if not supplied), detect active norms and block boundaries, build the
-    per-block topology, and infer ``hidden_size`` / ``head_dim``. Callers that
-    already hold a ConnectedGraph and/or intermediate results can call
-    :func:`get_decoder_block_boundaries` + :func:`get_llm_topology` directly.
+    Convenience facade over :func:`analyze_llm_topology_by_name` that re-attaches
+    a ConnectedGraph, so the returned topology holds ``Op`` objects. The analysis
+    itself no longer uses the ConnectedGraph at all: it is needed only to resolve
+    names back to ops for consumers that have not migrated yet. Prefer
+    :func:`analyze_llm_topology_by_name`, which needs no ConnectedGraph.
 
-    :param model: ONNX ModelProto to analyze.
+    :param model: ONNX ModelProto to analyze. Not mutated.
     :param connected_graph: Pre-built ConnectedGraph for ``model``; built here
-        when ``None``.
+        when ``None``. Used only to resolve names to ``Op`` objects.
     :param active_norms_per_block: Active norms per decoder block (see
         :func:`get_decoder_block_boundaries`). Defaults to 2.
     :param expected_num_blocks: If given, validated against the detected count.
@@ -452,74 +362,55 @@ def analyze_llm_topology(
         ``hidden_size`` and ``head_dim`` populated. ``head_dim`` is ``None`` when
         the export exposes no ``past_value`` graph input to derive it from.
     """
-    if connected_graph is None:
-        connected_graph = ConnectedGraph(model)
-
-    active_norms = find_active_norms(model, connected_graph)
-    boundaries = get_decoder_block_boundaries(
+    topology = analyze_llm_topology_by_name(
         model,
-        connected_graph,
+        active_norms_per_block=active_norms_per_block,
         expected_num_blocks=expected_num_blocks,
-        active_norms_per_block=active_norms_per_block,
-    )
-    topology = get_llm_topology(
-        connected_graph,
-        boundaries,
-        active_norms=active_norms,
-        active_norms_per_block=active_norms_per_block,
         role_patterns=role_patterns,
     )
-
-    topology.hidden_size = infer_hidden_size(model, topology)
-
-    # head_dim requires a KV-cache 'past_value' graph input; tolerate its
-    # absence (prefill-only / R1-only flows do not need it).
-    try:
-        topology.head_dim = infer_head_dim(model)
-    except ValueError:
-        topology.head_dim = None
-
-    return topology
+    if connected_graph is None:
+        connected_graph = ConnectedGraph(model)
+    return resolve_topology(topology, connected_graph)
 
 
-def _split_by_role(
-    linears: List[Op],
-    role_patterns: Optional[Dict[LinearRole, Pattern]],
-) -> Dict[LinearRole, List[Op]]:
-    """Classify each op in ``linears`` by module name into its fine-grained role.
+def _collect_past_key_input_names_in_order(ir_model: onnx_ir.Model) -> List[str]:
+    """Return ``past_key_*`` graph input names in declaration order.
 
-    :param linears: A read group (``qkv_linears`` or ``gate_up_linears``).
-    :param role_patterns: Optional override passed to :func:`classify_linear_role`.
-    :return: A mapping from every :class:`LinearRole` to the (possibly empty)
-        list of ops classified as that role. Ops that do not match any role are
-        logged and dropped from the split (they remain in the coarse group).
+    HF/optimum LLM exports with a KV-cache expose one such input per decoder
+    block. Prefill-only exports have none.
     """
-    out: Dict[LinearRole, List[Op]] = {role: [] for role in LinearRole}
-    for op in linears:
-        role = classify_linear_role(op, role_patterns)
-        out[role].append(op)
-        if role is LinearRole.UNKNOWN:
-            _logger.debug(
-                "Linear '%s' did not match any known role pattern; left "
-                "un-split (still present in its coarse read group).",
-                op.name,
-            )
-    return out
+    return [
+        value.name
+        for value in ir_model.graph.inputs
+        if value.name and ("past_key" in value.name or "past_k_" in value.name)
+    ]
 
 
-_SOFTMAX_TYPES = frozenset(("Softmax",))
+def _is_embedding_table_gather(node: onnx_ir.Node) -> bool:
+    """Return True if ``node`` is a token-embedding ``Gather`` (data is a 2-D table).
 
+    A real embedding ``Gather`` has the embedding *table* as its first (data)
+    input — a static rank-2 ``[vocab, hidden]`` initializer. Other Gathers in
+    the prologue (e.g. position-id lookups, ``shape``-derived indexers) hold
+    static scalar or 1-D constants on input 0 and must be excluded.
 
-def _is_dynamic_matmul(op: Op) -> bool:
-    """Return True if ``op`` is a MatMul with no static weight (both inputs dynamic)."""
-    return op.type == "MatMul" and get_weight_product(op)[0] is None
+    :param node: Candidate Gather node.
+    :return: True iff ``node`` looks like a token-embedding lookup.
+    """
+    if not node.inputs:
+        return False
+    table = static_tensor(node.inputs[0])
+    if table is None:
+        return False
+    return len(table.shape) >= 2
 
 
 def _find_attention_matmuls(
-    qkv_linears: List[Op],
-    o_proj: List[Op],
-) -> Tuple[List[Op], List[Op]]:
-    """Return ``(qk_matmul_ops, attn_v_matmul_ops)`` for a decoder block.
+    qkv_linears: List[onnx_ir.Node],
+    o_proj: List[onnx_ir.Node],
+    topo_index: Dict[onnx_ir.Node, int],
+) -> Tuple[List[onnx_ir.Node], List[onnx_ir.Node]]:
+    """Return ``(qk_matmul_nodes, attn_v_matmul_nodes)`` for a decoder block.
 
     Attention computes ``softmax(Q @ Kᵀ / scale) @ V``. Both MatMuls are
     *dynamic* — both inputs are activations, so neither has a static weight.
@@ -529,106 +420,122 @@ def _find_attention_matmuls(
     *consumes* a Softmax output is softmax·V.
 
     Per-head split (SHA) exports emit one of each per head, so both lists may
-    hold multiple ops. Returns empty lists when the pattern is absent (e.g. an
+    hold multiple nodes. Returns empty lists when the pattern is absent (e.g. an
     export that fuses attention into a single op with no explicit MatMuls) —
     dynamic-MatMul identification is best-effort and not required by every
     consumer.
 
-    :param qkv_linears: The block's Q/K/V projection ops (walk start).
-    :param o_proj: The block's attention-output projection op(s) (walk fence).
-    :return: Two lists of dynamic MatMul ops: Q·Kᵀ and softmax·V.
+    :param qkv_linears: The block's Q/K/V projection nodes (walk start).
+    :param o_proj: The block's attention-output projection node(s) (walk fence).
+    :param topo_index: Node → topological index map, used to order the results.
+    :return: Two lists of dynamic MatMul nodes: Q·Kᵀ and softmax·V.
     """
-    o_proj_set = set(o_proj)
-    dynamic_matmuls: List[Op] = []
-    visited: set = set()
-    queue = [consumer for lin in qkv_linears for consumer in lin.output_ops]
+    o_proj_nodes = set(o_proj)
+    dynamic_matmuls: List[onnx_ir.Node] = []
+    visited = set()
+    queue = [successor for linear in qkv_linears for successor in linear.successors()]
     while queue:
-        op = queue.pop()
-        if op in visited or op in o_proj_set:
+        node = queue.pop()
+        if node in visited or node in o_proj_nodes:
             continue
-        visited.add(op)
+        visited.add(node)
         # Do not cross other weighted linears — the attention path holds only
         # dynamic MatMuls between the QKV projections and O.
-        if op.type in _LINEAR_TYPES and get_weight_product(op)[0] is not None:
+        if ir_analysis.is_weighted_linear(node):
             continue
-        if _is_dynamic_matmul(op):
-            dynamic_matmuls.append(op)
-        queue.extend(op.output_ops)
+        if ir_analysis.is_dynamic_matmul(node):
+            dynamic_matmuls.append(node)
+        queue.extend(node.successors())
 
     qk_matmul = [m for m in dynamic_matmuls if _matmul_touches_softmax(m, forward=True)]
     attn_v_matmul = [
         m for m in dynamic_matmuls if _matmul_touches_softmax(m, forward=False)
     ]
-    return qk_matmul, attn_v_matmul
+    return (
+        ir_analysis.sorted_by_topology(qk_matmul, topo_index),
+        ir_analysis.sorted_by_topology(attn_v_matmul, topo_index),
+    )
 
 
-def _matmul_touches_softmax(matmul: Op, forward: bool) -> bool:
+def _matmul_touches_softmax(matmul: onnx_ir.Node, forward: bool) -> bool:
     """Return True if a Softmax is reachable from ``matmul`` in the given direction.
 
-    Walks ``forward`` (through ``output_ops``) or backward (through
-    ``input_ops``) from ``matmul``, stopping at the next MatMul boundary. A
-    Softmax reached before hitting another MatMul means ``matmul`` feeds
-    (forward) or consumes (backward) that Softmax — i.e. it is Q·Kᵀ or
-    softmax·V respectively.
+    Walks ``forward`` (through consumers) or backward (through input producers)
+    from ``matmul``, stopping at the next MatMul boundary. A Softmax reached
+    before hitting another MatMul means ``matmul`` feeds (forward) or consumes
+    (backward) that Softmax — i.e. it is Q·Kᵀ or softmax·V respectively.
     """
-    visited: set = set()
-    queue = list(matmul.output_ops if forward else matmul.input_ops)
+    visited = set()
+    queue = list(matmul.successors() if forward else matmul.predecessors())
     while queue:
-        op = queue.pop()
-        if op in visited:
+        node = queue.pop()
+        if node in visited:
             continue
-        visited.add(op)
-        if op.type in _SOFTMAX_TYPES:
+        visited.add(node)
+        if node.op_type in ir_analysis.SOFTMAX_TYPES:
             return True
         # Stop at any other MatMul so a head's Q·Kᵀ is not linked to the next
         # head's Softmax through a shared downstream op.
-        if op.type == "MatMul":
+        if node.op_type == "MatMul":
             continue
-        queue.extend(op.output_ops if forward else op.input_ops)
+        queue.extend(node.successors() if forward else node.predecessors())
     return False
 
 
 def _find_nearest_upstream_linears(
     target_tensor: str,
     boundary_tensor: str,
-    producer_by_tensor: dict,
-    op_topo_idx: dict,
-) -> List[Op]:
+    node_by_output: Dict[str, onnx_ir.Node],
+    topo_index: Dict[onnx_ir.Node, int],
+) -> List[onnx_ir.Node]:
     """Nearest weighted linears feeding target_tensor, via a backward walk.
 
-    Walks backward from the op producing target_tensor and collects the first
+    Walks backward from the node producing target_tensor and collects the first
     weighted linear (MatMul/Gemm/Conv with a static weight) on each path,
     stopping there; any other op type is crossed transparently.
 
-    NOTE: The walk is fenced at boundary_tensor's producer: that op and anything
+    NOTE: The walk is fenced at boundary_tensor's producer: that node and anything
     earlier are skipped, so the walk does not cross into the previous block.
 
     :param target_tensor: Tensor whose upstream linears are wanted (walk start).
-    :param boundary_tensor: Upstream edge; its producer and earlier ops are the
+    :param boundary_tensor: Upstream edge; its producer and earlier nodes are the
         lower fence.
-    :param producer_by_tensor: Map of tensor name -> producing Op.
-    :param op_topo_idx: Map of Op -> topological index.
-    :return: The nearest weighted linear op on each backward path.
+    :param node_by_output: Map of output tensor name -> producing node.
+    :param topo_index: Map of node -> topological index.
+    :return: The nearest weighted linear on each backward path, in topological order.
     """
-    start = producer_by_tensor.get(target_tensor)
+    start = node_by_output.get(target_tensor)
     if start is None:
         return []
 
-    fence_op = producer_by_tensor.get(boundary_tensor)
-    lo = op_topo_idx[fence_op] if fence_op is not None else -1
+    fence_node = node_by_output.get(boundary_tensor)
+    lo = topo_index[fence_node] if fence_node is not None else -1
 
     linears = []
     seen = set()
     queue = [start]
     while queue:
-        op = queue.pop()
-        if op in seen:
+        node = queue.pop()
+        if node in seen:
             continue
-        seen.add(op)
-        if op_topo_idx.get(op, -1) <= lo:
+        seen.add(node)
+        if topo_index.get(node, -1) <= lo:
             continue
-        if op.type in _LINEAR_TYPES and get_weight_product(op)[0] is not None:
-            linears.append(op)
+        if ir_analysis.is_weighted_linear(node):
+            linears.append(node)
             continue  # this linear shadows everything upstream of it
-        queue.extend(op.input_ops)
-    return linears
+        queue.extend(node.predecessors())
+    return ir_analysis.sorted_by_topology(linears, topo_index)
+
+
+__all__ = [
+    "BlockTopology",
+    "BlockTopologyByName",
+    "LinearGroup",
+    "LinearGroupByName",
+    "LlmTopology",
+    "LlmTopologyByName",
+    "analyze_llm_topology",
+    "analyze_llm_topology_by_name",
+    "get_llm_topology",
+]

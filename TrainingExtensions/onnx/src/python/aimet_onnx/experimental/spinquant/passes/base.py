@@ -12,10 +12,10 @@ import torch
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.utils import ModelProto
 
-from aimet_onnx.experimental.llm_topology.topology import (
+from aimet_onnx.experimental.llm_topology.cg_adapter import (
+    ActiveNorm,
     LlmTopology,
 )
-from aimet_onnx.experimental.llm_topology.norm_detection import ActiveNorm
 
 
 @dataclass

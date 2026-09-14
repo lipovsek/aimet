@@ -12,15 +12,17 @@ contain exactly ``k`` active norms per block plus one final active norm:
 Most architectures use k=2 (pre-attention norm + pre-FFN norm, e.g. Llama/Qwen).
 """
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+import onnx_ir
 
 from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
-from aimet_onnx.meta.operations import Op, Product
 from aimet_onnx.utils import ModelProto
 
+from aimet_onnx.experimental.llm_topology import ir_analysis
 from aimet_onnx.experimental.llm_topology.norm_detection import (
-    find_active_norms,
+    ActiveNormByName,
+    find_active_norms_in_ir,
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
@@ -28,23 +30,28 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 
 def get_decoder_block_boundaries(
     model: ModelProto,
-    connected_graph: ConnectedGraph,
+    connected_graph=None,  # pylint: disable=unused-argument
     expected_num_blocks: Optional[int] = None,
     active_norms_per_block: Optional[int] = None,
 ) -> List[Tuple[str, str]]:
     """Return the residual-stream boundary tensors for each decoder block.
 
     ``total_active_norms`` is either ``k * N`` or ``k * N + 1`` for ``k`` active
-    norms per block and ``N`` decoder blocks. The last block ends at the trailing
-    final norm when it is active (lm_head present), or at the last RMSNorm in the
-    graph when it is not (headless backbone).
+    norms per block and ``N`` decoder blocks. The last block ends at the residual
+    input of the trailing final norm when that norm is active (lm_head present),
+    or at the output of the final residual ``Add`` when it is not (headless
+    backbone).
 
-    :param model: ONNX ModelProto.
-    :param connected_graph: ConnectedGraph built from model.
+    :param model: ONNX ModelProto. May be a float export or a
+        ``QuantizationSimModel`` graph — quantizer nodes are stripped from the
+        private analysis copy, so the returned tensor names are the un-suffixed
+        names of the underlying float graph either way. Not mutated.
+    :param connected_graph: Deprecated and ignored. Analysis now runs on onnx_ir;
+        the parameter is retained so existing callers keep working.
     :param expected_num_blocks: If provided, raises ``ValueError`` when the
         detected block count does not match.
     :param active_norms_per_block: Number of **active** norms per decoder block
-      (norms whose gamma-scale Mul has at least one downstream weight linear).
+      (norms whose scaled output has at least one downstream weight linear).
       Defaults to 2 (Llama/Qwen2/Mistral/Phi family).
       NOTE: Do NOT count internal norms (e.g. Qwen3 q_norm/k_norm) — these
       are filtered out automatically and must not be included in this count.
@@ -56,38 +63,46 @@ def get_decoder_block_boundaries(
     :raises ValueError: If active norm count is inconsistent with ``k``, or if
         ``expected_num_blocks`` is given and does not match the detected count.
     """
-    active_norms = find_active_norms(model, connected_graph)
+    return get_decoder_block_boundaries_in_ir(
+        ir_analysis.build_analysis_ir(model),
+        expected_num_blocks=expected_num_blocks,
+        active_norms_per_block=active_norms_per_block,
+    )
+
+
+def get_decoder_block_boundaries_in_ir(
+    ir_model: onnx_ir.Model,
+    active_norms: Optional[List[ActiveNormByName]] = None,
+    expected_num_blocks: Optional[int] = None,
+    active_norms_per_block: Optional[int] = None,
+    topo_index: Optional[Dict[onnx_ir.Node, int]] = None,
+) -> List[Tuple[str, str]]:
+    """Analysis-IR form of :func:`get_decoder_block_boundaries`.
+
+    :param ir_model: Analysis IR model from :func:`~.ir_analysis.build_analysis_ir`.
+    :param active_norms: Active norms in topological order. Recomputed via
+        :func:`~.norm_detection.find_active_norms_in_ir` when not supplied; pass a
+        precomputed value to avoid a redundant graph scan.
+    :param expected_num_blocks: See :func:`get_decoder_block_boundaries`.
+    :param active_norms_per_block: See :func:`get_decoder_block_boundaries`.
+    :param topo_index: Precomputed node → topological index map.
+    """
+    if topo_index is None:
+        topo_index = ir_analysis.topological_index(ir_model)
+    if active_norms is None:
+        active_norms = find_active_norms_in_ir(ir_model, topo_index)
     num_active_norms = len(active_norms)
 
     if num_active_norms == 0:
         raise ValueError(
             "No active RMSNorms found. The model may use a normalization pattern "
-            "not covered by match_rms_norm_pattern, or all norms lack downstream "
-            "weight linear layers."
+            "the RMSNormalization supergroup fusion does not cover, or all norms "
+            "lack downstream weight linear layers."
         )
 
-    resolved_norms_per_block: int
-    if active_norms_per_block is not None:
-        resolved_norms_per_block = active_norms_per_block
-    elif expected_num_blocks is not None:
-        # Remainder of 1 allows for a trailing final norm (lm_head present).
-        if num_active_norms <= 0 or num_active_norms % expected_num_blocks not in (
-            0,
-            1,
-        ):
-            raise ValueError(
-                f"Cannot infer active_norms_per_block: {num_active_norms} active norm(s) and "
-                f"expected_num_blocks={expected_num_blocks} are inconsistent "
-                f"(require num_active_norms mod expected_num_blocks in {{0, 1}})."
-            )
-        resolved_norms_per_block = num_active_norms // expected_num_blocks
-    else:
-        resolved_norms_per_block = 2  # default: Llama/Qwen2/Mistral/Phi family
-        _logger.debug(
-            "Neither expected_num_blocks nor active_norms_per_block was provided. "
-            "Defaulting to active_norms_per_block=2 (Llama/Qwen2/Mistral/Phi). "
-            "Pass expected_num_blocks=<N> to validate the detected block count."
-        )
+    resolved_norms_per_block = _resolve_norms_per_block(
+        num_active_norms, expected_num_blocks, active_norms_per_block
+    )
 
     # If lm_head is present, exclude its active norm from calculations
     has_lm_head = (num_active_norms - 1) % resolved_norms_per_block == 0
@@ -115,83 +130,136 @@ def get_decoder_block_boundaries(
     )
     block_boundaries = [
         (
-            _residual_input_tensor_name(
-                active_norms[resolved_norms_per_block * i].norm_op
-            ),
-            _residual_input_tensor_name(
-                active_norms[resolved_norms_per_block * (i + 1)].norm_op
-            ),
+            active_norms[resolved_norms_per_block * i].input_tensor,
+            active_norms[resolved_norms_per_block * (i + 1)].input_tensor,
         )
         for i in range(num_blocks - 1)
     ]
 
-    last_block_start = _residual_input_tensor_name(
-        active_norms[resolved_norms_per_block * (num_blocks - 1)].norm_op
-    )
+    last_block_start = active_norms[
+        resolved_norms_per_block * (num_blocks - 1)
+    ].input_tensor
 
-    # Headless backbone: bound the last block with the trailing final non-active norm
-    if not has_lm_head:
-        prev_residual_output = connected_graph.get_product(last_block_start)
-        residual_stream = _get_downstream_residuals(prev_residual_output)
-        if not residual_stream:
-            raise RuntimeError(
-                "Could not isolate lm_head layer or final residual add operation for graph"
-            )
-        block_boundaries.append((last_block_start, residual_stream[-1].outputs[0].name))
-    else:
+    if has_lm_head:
         block_boundaries.append(
             (
                 last_block_start,
-                _residual_input_tensor_name(
-                    active_norms[resolved_norms_per_block * num_blocks].norm_op
-                ),
+                active_norms[resolved_norms_per_block * num_blocks].input_tensor,
+            )
+        )
+    else:
+        # Headless backbone: bound the last block with the trailing final
+        # (non-active) norm's residual input.
+        block_boundaries.append(
+            (
+                last_block_start,
+                _headless_block_end(ir_model, last_block_start, topo_index),
             )
         )
 
     return block_boundaries
 
 
-def tensor_to_first_consumer_index(connected_graph: ConnectedGraph) -> dict:
-    """Inverse of :func:`get_decoder_block_boundaries`: boundary tensor name -> op topo index.
+def _resolve_norms_per_block(
+    num_active_norms: int,
+    expected_num_blocks: Optional[int],
+    active_norms_per_block: Optional[int],
+) -> int:
+    """Resolve ``k`` from an explicit value, from the expected block count, or default to 2."""
+    if active_norms_per_block is not None:
+        return active_norms_per_block
 
-    NOTE: Assumes the block's norm is the first op consuming the residual edge.
-      That edge also feeds a later residual ``Add``; ``setdefault`` keeps the norm
-      because it precedes the Add in topological order (true for pre-norm decoders).
+    if expected_num_blocks is not None:
+        # Remainder of 1 allows for a trailing final norm (lm_head present).
+        if num_active_norms % expected_num_blocks not in (0, 1):
+            raise ValueError(
+                f"Cannot infer active_norms_per_block: {num_active_norms} active norm(s) and "
+                f"expected_num_blocks={expected_num_blocks} are inconsistent "
+                f"(require num_active_norms mod expected_num_blocks in {{0, 1}})."
+            )
+        return num_active_norms // expected_num_blocks
 
-    :param connected_graph: ConnectedGraph built from the model.
-    :return: ``{tensor_name: topological_index}`` over first ``inputs[0]`` consumers.
-    """
-    tensor_to_index = {}
-    for index, op in enumerate(connected_graph.ordered_ops):
-        if op.inputs:
-            tensor_to_index.setdefault(op.inputs[0].name, index)
-    return tensor_to_index
-
-
-def _residual_input_tensor_name(norm_op: Op) -> str:
-    """Return the residual-stream tensor name entering ``norm_op`` (its ``inputs[0]``).
-
-    NOTE: Assumes ``inputs[0]`` is the normalized activation: true for the norm-start
-      ops match_rms_norm_pattern accepts (Pow(x,2) / Mul(x,x) / RMSNormalization),
-      where the other input is the constant exponent or gamma.
-    """
-    assert not (norm_op.inputs[0].is_const or norm_op.inputs[0].is_parm), (
-        f"norm op '{norm_op.name}' inputs[0] is a constant/param, not the residual activation."
+    _logger.debug(
+        "Neither expected_num_blocks nor active_norms_per_block was provided. "
+        "Defaulting to active_norms_per_block=2 (Llama/Qwen2/Mistral/Phi). "
+        "Pass expected_num_blocks=<N> to validate the detected block count."
     )
-    return norm_op.inputs[0].name
+    return 2  # default: Llama/Qwen2/Mistral/Phi family
 
 
-def _get_downstream_residuals(residual_start: Product):
-    """Collect all directly connected Add ops to residual_start tensor"""
-    consumers = residual_start.consumers
-    residual_stream = []
-    queue = list(consumers)
+def _headless_block_end(
+    ir_model: onnx_ir.Model,
+    last_block_start: str,
+    topo_index: Dict[onnx_ir.Node, int],
+) -> str:
+    """Return the residual tensor that ends the last block of a headless backbone.
+
+    With no active final norm there is no norm input to bound the last block, so
+    walk the residual stream forward from ``last_block_start`` through its chain of
+    ``Add`` ops and end on the output of the last one.
+
+    :raises RuntimeError: If no residual ``Add`` chain is found.
+    """
+    residual_adds = _downstream_residual_adds(ir_model, last_block_start, topo_index)
+    if not residual_adds:
+        raise RuntimeError(
+            "Could not isolate lm_head layer or final residual add operation for graph"
+        )
+    return residual_adds[-1].outputs[0].name
+
+
+def _downstream_residual_adds(
+    ir_model: onnx_ir.Model,
+    residual_start: str,
+    topo_index: Dict[onnx_ir.Node, int],
+) -> List[onnx_ir.Node]:
+    """Collect the ``Add`` ops on the residual stream starting at ``residual_start``.
+
+    Follows only ``Add`` (the residual writes) and ``Cast`` (dtype hops between
+    them); anything else ends that path. Returned in topological order, so the
+    last entry is the final residual write.
+    """
+    start = _find_value(ir_model, residual_start)
+    if start is None:
+        return []
+
+    adds: List[onnx_ir.Node] = []
+    visited = set()
+    queue = list(start.consumers())
     while queue:
-        curr_op = queue.pop(0)
-        if curr_op.type not in ("Add", "Cast"):
+        node = queue.pop(0)
+        if node in visited:
             continue
-        if curr_op.type == "Add":
-            residual_stream.append(curr_op)
-        queue.extend(curr_op.outputs[0].consumers)
+        visited.add(node)
+        if node.op_type not in ("Add", "Cast"):
+            continue
+        if node.op_type == "Add":
+            adds.append(node)
+        queue.extend(node.successors())
 
-    return residual_stream
+    return ir_analysis.sorted_by_topology(adds, topo_index)
+
+
+def _find_value(ir_model: onnx_ir.Model, tensor_name: str) -> Optional[onnx_ir.Value]:
+    """Return the graph value named ``tensor_name``, or None.
+
+    Searches every place a tensor can come from — an initializer, a graph input,
+    or a node output — so the lookup is not silently blind to one of them.
+    """
+    initializer = ir_model.graph.initializers.get(tensor_name)
+    if initializer is not None:
+        return initializer
+    for value in ir_model.graph.inputs:
+        if value.name == tensor_name:
+            return value
+    for node in ir_model.graph:
+        for output in node.outputs:
+            if output.name == tensor_name:
+                return output
+    return None
+
+
+__all__ = [
+    "get_decoder_block_boundaries",
+    "get_decoder_block_boundaries_in_ir",
+]

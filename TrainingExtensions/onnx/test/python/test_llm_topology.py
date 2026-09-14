@@ -18,35 +18,40 @@ Broader coverage across real HuggingFace architectures lives in
 ``test_llm_topology_integration.py``.
 """
 
+import copy
 import re
 
+import numpy as np
 import pytest
 import torch
 import torch.nn as nn
 
 from aimet_onnx.meta.connectedgraph import ConnectedGraph
+from aimet_onnx.quantsim import QuantizationSimModel
 
+from aimet_onnx.experimental.llm_topology import ir_analysis
 from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries,
-    tensor_to_first_consumer_index,
+    get_decoder_block_boundaries_in_ir,
 )
 from aimet_onnx.experimental.llm_topology.layer_roles import (
     LinearRole,
     classify_linear_role,
     module_name_of,
 )
+from aimet_onnx.experimental.llm_topology.cg_adapter import resolve_active_norms
 from aimet_onnx.experimental.llm_topology.norm_detection import (
     find_active_norms,
-    get_last_norm_op,
+    find_active_norms_in_ir,
+    get_last_norm_input_tensor,
 )
 from aimet_onnx.experimental.llm_topology import topology as topology_module
 from aimet_onnx.experimental.llm_topology.topology import (
     analyze_llm_topology,
+    analyze_llm_topology_by_name,
     get_llm_topology,
 )
-from aimet_onnx.experimental.llm_topology.weight_utils import (
-    infer_hidden_size as _infer_hidden_size,
-)
+from aimet_onnx.experimental.llm_topology.weight_utils import _infer_hidden_size
 
 from .models.test_models import RMSNorm
 from .models.style_decoders import (
@@ -77,16 +82,31 @@ _DECODERS = [
 ]
 
 
+def _name_topology(model, **kwargs):
+    """Build the name-based topology for ``model``, the way the facade does.
+
+    Mirrors :func:`analyze_llm_topology_by_name` but stops before dimension
+    inference and exposes ``get_llm_topology``'s knobs, so tests can drive that
+    function directly.
+    """
+    ir_model = ir_analysis.build_analysis_ir(model)
+    topo_index = ir_analysis.topological_index(ir_model)
+    active_norms = find_active_norms_in_ir(ir_model, topo_index)
+    boundaries = get_decoder_block_boundaries_in_ir(
+        ir_model, active_norms=active_norms, topo_index=topo_index
+    )
+    return get_llm_topology(
+        ir_model,
+        boundaries,
+        active_norms=active_norms,
+        topo_index=topo_index,
+        **kwargs,
+    )
+
+
 # ===========================================================================
 # Role classification — direct, table-driven (no ONNX export).
 # ===========================================================================
-class _FakeOp:
-    """Minimal stand-in for a ConnectedGraph ``Op`` with just a ``name``."""
-
-    def __init__(self, name):
-        self.name = name
-
-
 class TestClassifyLinearRole:
     """Direct tests for the name-based role classifier and its helper."""
 
@@ -123,18 +143,16 @@ class TestClassifyLinearRole:
         ],
     )
     def test_canonical_names(self, module_name, expected_role):
-        op = _FakeOp(f"/model/layers.0/self_attn/{module_name}/MatMul")
-        assert classify_linear_role(op) is expected_role
+        node_name = f"/model/layers.0/self_attn/{module_name}/MatMul"
+        assert classify_linear_role(node_name) is expected_role
 
     @pytest.mark.parametrize(
         "role_name", ["q_proj", "v_proj", "gate_proj", "down_proj"]
     )
     def test_per_head_sha_suffix(self, role_name):
         """Per-head split (SHA) names carry a ``_sha`` suffix and optional index."""
-        role = classify_linear_role(_FakeOp(f"/m/attn/{role_name}_sha/MatMul"))
-        role_indexed = classify_linear_role(
-            _FakeOp(f"/m/attn/{role_name}_sha.3/MatMul")
-        )
+        role = classify_linear_role(f"/m/attn/{role_name}_sha/MatMul")
+        role_indexed = classify_linear_role(f"/m/attn/{role_name}_sha.3/MatMul")
         assert role is role_indexed
         assert role is not LinearRole.UNKNOWN
 
@@ -143,16 +161,13 @@ class TestClassifyLinearRole:
         """A fused projection is the opposite of a per-head split, so ``_sha`` on a
         fused name must NOT classify as fused (SHA implies the projection was split)."""
         assert (
-            classify_linear_role(_FakeOp(f"/m/attn/{fused_name}_sha/MatMul"))
+            classify_linear_role(f"/m/attn/{fused_name}_sha/MatMul")
             is LinearRole.UNKNOWN
         )
 
     def test_fused_beats_single_projection(self):
         """``qkv_proj`` must resolve to FUSED_QKV, not Q_PROJ (priority order)."""
-        assert (
-            classify_linear_role(_FakeOp("/m/attn/qkv_proj/MatMul"))
-            is LinearRole.FUSED_QKV
-        )
+        assert classify_linear_role("/m/attn/qkv_proj/MatMul") is LinearRole.FUSED_QKV
 
     def test_custom_role_patterns_override(self):
         """A supplied ``role_patterns`` mapping replaces the default table; only the
@@ -160,25 +175,22 @@ class TestClassifyLinearRole:
         patterns = {LinearRole.V_PROJ: re.compile(r"^value_layer$")}
         # Custom name matches the override.
         assert (
-            classify_linear_role(_FakeOp("/m/attn/value_layer/MatMul"), patterns)
+            classify_linear_role("/m/attn/value_layer/MatMul", patterns)
             is LinearRole.V_PROJ
         )
         # Default names no longer match, since only V_PROJ is in the override.
         assert (
-            classify_linear_role(_FakeOp("/m/attn/q_proj/MatMul"), patterns)
+            classify_linear_role("/m/attn/q_proj/MatMul", patterns)
             is LinearRole.UNKNOWN
         )
 
     def test_module_name_of(self):
-        assert (
-            module_name_of(_FakeOp("/model/layers.0/self_attn/v_proj/MatMul"))
-            == "v_proj"
-        )
+        assert module_name_of("/model/layers.0/self_attn/v_proj/MatMul") == "v_proj"
         # Too few segments to carry a module name.
-        assert module_name_of(_FakeOp("MatMul")) is None
+        assert module_name_of("MatMul") is None
 
     def test_unnamed_op_is_unknown(self):
-        assert classify_linear_role(_FakeOp("MatMul")) is LinearRole.UNKNOWN
+        assert classify_linear_role("MatMul") is LinearRole.UNKNOWN
 
 
 # ===========================================================================
@@ -197,8 +209,7 @@ class TestBlockIdentifier:
         """
         torch.manual_seed(0)
         model = _export_decoder_with_ids(decoder_cls())
-        cg = ConnectedGraph(model)
-        active_norms = find_active_norms(model, cg)
+        active_norms = find_active_norms(model)
         assert len(active_norms) == 5
 
     @pytest.mark.parametrize("decoder_cls", _DECODERS)
@@ -210,8 +221,7 @@ class TestBlockIdentifier:
         """
         torch.manual_seed(0)
         model = _export_decoder_with_ids(decoder_cls())
-        cg = ConnectedGraph(model)
-        for active_norm in find_active_norms(model, cg):
+        for active_norm in find_active_norms(model):
             assert active_norm.downstream_linears
 
     @pytest.mark.parametrize("decoder_cls", _DECODERS)
@@ -219,8 +229,7 @@ class TestBlockIdentifier:
         """A 2-block decoder → 2 boundaries, for every flavor."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(decoder_cls())
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
+        blocks = get_decoder_block_boundaries(model)
         assert len(blocks) == 2
 
     @pytest.mark.parametrize("decoder_cls", _DECODERS)
@@ -228,12 +237,11 @@ class TestBlockIdentifier:
         """Every boundary tensor must be the residual input of an active norm op."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(decoder_cls())
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
-        active_norms = find_active_norms(model, cg)
+        blocks = get_decoder_block_boundaries(model)
+        active_norms = find_active_norms(model)
         # Include the final norm's input — it bounds the last block.
-        norm_input_tensors = {an.norm_op.inputs[0].name for an in active_norms}
-        norm_input_tensors.add(get_last_norm_op(cg).inputs[0].name)
+        norm_input_tensors = {an.input_tensor for an in active_norms}
+        norm_input_tensors.add(get_last_norm_input_tensor(model))
         for start_tensor, end_tensor in blocks:
             assert start_tensor in norm_input_tensors
             assert end_tensor in norm_input_tensors
@@ -243,8 +251,7 @@ class TestBlockIdentifier:
         """end tensor of block i must equal start tensor of block i+1."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(decoder_cls())
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
+        blocks = get_decoder_block_boundaries(model)
         for i in range(len(blocks) - 1):
             assert blocks[i][1] == blocks[i + 1][0]
 
@@ -252,24 +259,30 @@ class TestBlockIdentifier:
     def test_boundary_tensor_resolves_to_norm_op(self, fuse_rmsnorm):
         """A boundary tensor must resolve to its norm op, not the residual Add
         that shares the same edge. Covers decomposed and fused RMSNorm.
+
+        This is the invariant ``tensor_to_first_consumer_index`` documents: the
+        block's norm is the *first* consumer of the residual edge.
         """
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
+        blocks = get_decoder_block_boundaries(model)
 
-        tensor_to_index = tensor_to_first_consumer_index(cg)
-        norm_ops = {an.norm_op for an in find_active_norms(model, cg)}
-        norm_ops.add(get_last_norm_op(cg))
+        ir_model = ir_analysis.build_analysis_ir(model)
+        topo_index = ir_analysis.topological_index(ir_model)
+        tensor_to_index = ir_analysis.tensor_to_first_consumer_index(
+            ir_model, topo_index
+        )
+        nodes = tuple(ir_model.graph)
 
         for start_tensor, end_tensor in blocks:
             for tensor in (start_tensor, end_tensor):
-                resolved_op = cg.ordered_ops[tensor_to_index[tensor]]
-                assert resolved_op in norm_ops, (
-                    f"boundary tensor '{tensor}' resolved to '{resolved_op.name}' "
-                    f"({resolved_op.type}), not a norm op."
+                resolved = nodes[tensor_to_index[tensor]]
+                assert ir_analysis.is_rms_norm(resolved), (
+                    f"boundary tensor '{tensor}' resolved to "
+                    f"'{ir_analysis.node_name(resolved)}' ({resolved.op_type}), "
+                    "not a norm op."
                 )
 
     def test_even_active_norms(self):
@@ -286,8 +299,7 @@ class TestBlockIdentifier:
                 return self.block1(self.block0(x))
 
         model = _export_decoder(_NoFinalNorm())
-        cg = ConnectedGraph(model)
-        boundaries = get_decoder_block_boundaries(model, cg)
+        boundaries = get_decoder_block_boundaries(model)
 
         assert len(boundaries) == 2
         # Boundaries chain, and the last block ends on the graph output.
@@ -317,17 +329,15 @@ class TestDecoderRoleMap:
         model = _export_decoder_with_ids(LlamaStyleDecoder())
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
-        role_map = get_llm_topology(cg, blocks)
+        role_map = _name_topology(model)
 
         assert len(role_map.blocks) == 2
         assert len(role_map.lm_head) == 1
         assert len(role_map.embed_tokens) == 1
         for block in role_map.blocks:
-            assert len(block.qkv.ops) == 3
+            assert len(block.qkv.linears) == 3
             assert len(block.o_proj) == 1
-            assert len(block.gate_up.ops) == 2
+            assert len(block.gate_up.linears) == 2
             assert len(block.down_proj) == 1
 
     @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
@@ -337,11 +347,9 @@ class TestDecoderRoleMap:
         model = _export_decoder_with_ids(Qwen3StyleDecoder())
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
-        role_map = get_llm_topology(cg, blocks)
+        role_map = _name_topology(model)
         for block in role_map.blocks:
-            assert len(block.qkv.ops) == 3
+            assert len(block.qkv.linears) == 3
 
     @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
     def test_missing_embed_tokens_warns(self, fuse_rmsnorm):
@@ -364,10 +372,8 @@ class TestDecoderRoleMap:
         model = _export_decoder(_NoEmbedDecoder())
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
         # Must not raise — VLM backbones exported with use_inputs_embeds=True have no Gather.
-        role_map = get_llm_topology(cg, blocks)
+        role_map = _name_topology(model)
         assert role_map.embed_tokens == []
 
     @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
@@ -378,7 +384,7 @@ class TestDecoderRoleMap:
         Real ONNX exports (e.g. Qwen3-0.6B with rotary preprocessing) produce extra
         ``Gather(constant_table, dynamic_index)`` ops in the prologue whose static
         input is a small 1-D or scalar tensor — not a [vocab, hidden] embedding
-        table. Those must be filtered out so ``infer_hidden_size`` doesn't read
+        table. Those must be filtered out so ``_infer_hidden_size`` doesn't read
         ``shape[-1]`` of a 0-/1-D tensor.
         """
         torch.manual_seed(0)
@@ -418,14 +424,13 @@ class TestDecoderRoleMap:
         model = _export_decoder_with_ids(_DecoderWithPrologueGather())
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
-        role_map = get_llm_topology(cg, blocks)
+        role_map = _name_topology(model)
 
         # Exactly one embed_tokens — the [vocab, hidden] embedding, not the 1-D Gather.
         assert len(role_map.embed_tokens) == 1
-        # And infer_hidden_size doesn't IndexError on a scalar/1-D shape.
-        assert _infer_hidden_size(model, role_map) == _H
+        # And _infer_hidden_size doesn't IndexError on a scalar/1-D shape.
+        ir_model = ir_analysis.build_analysis_ir(model)
+        assert _infer_hidden_size(ir_model, role_map) == _H
 
     @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
     def test_wrong_active_norms_per_block_raises(self, fuse_rmsnorm):
@@ -434,24 +439,20 @@ class TestDecoderRoleMap:
         model = _export_decoder_with_ids(LlamaStyleDecoder())
         if fuse_rmsnorm:
             model = _fuse_rms_norms(model)
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
         with pytest.raises(ValueError):
-            get_llm_topology(cg, blocks, active_norms_per_block=3)
+            _name_topology(model, active_norms_per_block=3)
 
     def test_topology_splits_v_projection(self):
         """Topology must identify the V projection (not Q or K) per block."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
-        topology = get_llm_topology(cg, blocks)
+        topology = _name_topology(model)
 
         for block in topology.blocks:
             assert len(block.v_proj) == 1
-            assert "/v/" in block.v_proj[0].name
+            assert "/v/" in block.v_proj[0]
             # V must be split out of the coarse qkv read group, not duplicated.
-            assert block.v_proj[0] in block.qkv.ops
+            assert block.v_proj[0] in block.qkv.linears
 
     def test_topology_detects_fused_qkv(self):
         """Phi3-style fused QKV must classify as FUSED_QKV with no V split.
@@ -461,9 +462,7 @@ class TestDecoderRoleMap:
         """
         torch.manual_seed(0)
         model = _export_decoder_with_ids(Phi3StyleDecoder())
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
-        topology = get_llm_topology(cg, blocks)
+        topology = _name_topology(model)
 
         for block in topology.blocks:
             assert not block.v_proj
@@ -473,37 +472,39 @@ class TestDecoderRoleMap:
         """Unfused attention must split into distinct q/k/v ops within the qkv group."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
-        topology = get_llm_topology(cg, blocks)
+        topology = _name_topology(model)
 
         for block in topology.blocks:
             assert len(block.q_proj) == 1
             assert len(block.k_proj) == 1
             assert len(block.v_proj) == 1
             assert not block.qkv.role(LinearRole.FUSED_QKV)
-            assert "/q/" in block.q_proj[0].name
-            assert "/k/" in block.k_proj[0].name
-            assert "/v/" in block.v_proj[0].name
+            assert "/q/" in block.q_proj[0]
+            assert "/k/" in block.k_proj[0]
+            assert "/v/" in block.v_proj[0]
             # The three splits together are exactly the coarse qkv read group.
             split = block.q_proj + block.k_proj + block.v_proj
-            assert {op for op in split} == {op for op in block.qkv.ops}
+            assert {op for op in split} == {op for op in block.qkv.linears}
 
     def test_topology_identifies_dynamic_attention_matmuls(self):
         """Each block must expose the two dynamic (non-weighted) attention MatMuls."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(LlamaStyleDecoder())
-        cg = ConnectedGraph(model)
-        blocks = get_decoder_block_boundaries(model, cg)
-        topology = get_llm_topology(cg, blocks)
+        topology = _name_topology(model)
 
         for block in topology.blocks:
             assert block.qk_matmul
             assert block.attn_v_matmul
             # Q·Kᵀ is distinct from softmax·V.
             assert set(block.qk_matmul).isdisjoint(set(block.attn_v_matmul))
-            for m in block.qk_matmul + block.attn_v_matmul:
-                assert m.type == "MatMul"
+            # Reported as plain node names, which must resolve to real MatMuls.
+            matmul_names = {
+                node.name
+                for node in ir_analysis.build_analysis_ir(model).graph
+                if node.op_type == "MatMul"
+            }
+            for name in block.qk_matmul + block.attn_v_matmul:
+                assert name in matmul_names
 
 
 # ===========================================================================
@@ -581,3 +582,128 @@ class TestAnalyzeLlmTopology:
         model = _export_decoder_with_ids(LlamaStyleDecoder())
         with pytest.raises(ValueError):
             analyze_llm_topology(model, expected_num_blocks=3)
+
+    @pytest.mark.parametrize("decoder_cls", _DECODERS)
+    def test_cg_resolution_matches_name_topology(self, decoder_cls):
+        """Resolving to ConnectedGraph ops must not change what the topology says.
+
+        The name-based analysis is the source of truth; ``analyze_llm_topology``
+        only re-attaches a ConnectedGraph. Every role must therefore come back
+        with the same members, in the same order, under both flavors.
+        """
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+
+        by_name = analyze_llm_topology_by_name(model)
+        resolved = analyze_llm_topology(model)
+
+        assert by_name.embed_tokens == [op.name for op in resolved.embed_tokens]
+        assert by_name.lm_head == [op.name for op in resolved.lm_head]
+        assert by_name.hidden_size == resolved.hidden_size
+        assert by_name.head_dim == resolved.head_dim
+        assert len(by_name.blocks) == len(resolved.blocks)
+        for name_block, cg_block in zip(by_name.blocks, resolved.blocks):
+            assert name_block.qkv.linears == [op.name for op in cg_block.qkv.ops]
+            assert name_block.gate_up.linears == [
+                op.name for op in cg_block.gate_up.ops
+            ]
+            assert name_block.o_proj == [op.name for op in cg_block.o_proj]
+            assert name_block.down_proj == [op.name for op in cg_block.down_proj]
+            assert name_block.qk_matmul == [op.name for op in cg_block.qk_matmul]
+            assert name_block.residual_input == cg_block.residual_input.name
+            assert name_block.residual_output == cg_block.residual_output.name
+
+
+# ===========================================================================
+# Analysis IR: the graph the analyzers actually run on.
+# ===========================================================================
+class TestAnalysisIr:
+    """Tests for the private onnx_ir view the analyzers are built on."""
+
+    @pytest.mark.parametrize("decoder_cls", _DECODERS)
+    def test_input_proto_is_not_mutated(self, decoder_cls):
+        """Analysis must leave the caller's ModelProto byte-for-byte untouched.
+
+        ``apply_spinquant`` analyzes the float model and then rewrites *that*
+        proto's weights, so quantizer stripping and RMSNorm fusion must happen
+        only on the private copy.
+        """
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+        before = model.SerializeToString()
+
+        analyze_llm_topology_by_name(model)
+
+        assert model.SerializeToString() == before
+
+    def test_boundaries_match_between_float_and_quantsim(self):
+        """A sim graph must yield the same boundary tensors as the float graph.
+
+        ``sim.model.model`` interleaves ``QcQuantizeOp`` everywhere and renames
+        every consumed tensor ``T`` -> ``T_updated``. Callers (adascale,
+        model_converter) feed the returned names back to the *quantizer-free*
+        float graph, so the analysis has to report the un-suffixed names — which
+        is what stripping quantizers off the private copy buys.
+        """
+        torch.manual_seed(0)
+        float_model = _export_decoder_with_ids(LlamaStyleDecoder())
+        dummy_input = {"input": np.zeros((1, _SEQ), dtype=np.int64)}
+
+        float_boundaries = get_decoder_block_boundaries(float_model)
+        sim = QuantizationSimModel(copy.deepcopy(float_model), dummy_input=dummy_input)
+        sim_boundaries = get_decoder_block_boundaries(
+            sim.model.model, sim.connected_graph
+        )
+
+        assert sim_boundaries == float_boundaries
+        # And the names are the float graph's, not quantizer outputs.
+        float_tensors = {out for node in float_model.graph.node for out in node.output}
+        for start_tensor, end_tensor in sim_boundaries:
+            assert start_tensor in float_tensors or start_tensor in {
+                inp.name for inp in float_model.graph.input
+            }
+            assert end_tensor in float_tensors
+
+    def test_quantsim_active_norms_expose_downstream_linears(self):
+        """Stripping quantizers must restore the norm -> linear edges a sim hides.
+
+        Without it every static weight sits behind a ``QcQuantizeOp``, so no
+        linear looks weighted and every norm is discarded as inactive.
+        """
+        torch.manual_seed(0)
+        float_model = _export_decoder_with_ids(LlamaStyleDecoder())
+        sim = QuantizationSimModel(
+            copy.deepcopy(float_model),
+            dummy_input={"input": np.zeros((1, _SEQ), dtype=np.int64)},
+        )
+
+        float_norms = find_active_norms(float_model)
+        sim_norms = find_active_norms(sim.model.model)
+
+        assert len(sim_norms) == len(float_norms) == 5
+        for float_norm, sim_norm in zip(float_norms, sim_norms):
+            assert sim_norm.input_tensor == float_norm.input_tensor
+            assert sim_norm.scale_name == float_norm.scale_name
+            assert sim_norm.downstream_linears == float_norm.downstream_linears
+
+    @pytest.mark.parametrize("decoder_cls", _DECODERS)
+    def test_prefused_model_analyzes_identically(self, decoder_cls):
+        """Analyzing an already-fused model must match analyzing the decomposed one.
+
+        Re-fusing a fused graph is a no-op, so the two must agree — this is what
+        lets a caller pass either a raw export or a QuantizationSimModel graph.
+        """
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+
+        decomposed = analyze_llm_topology_by_name(model)
+        prefused = analyze_llm_topology_by_name(_fuse_rms_norms(model))
+
+        assert [an.scale_name for an in prefused.active_norms] == [
+            an.scale_name for an in decomposed.active_norms
+        ]
+        assert prefused.lm_head == decomposed.lm_head
+        assert len(prefused.blocks) == len(decomposed.blocks)
+        for fused_block, plain_block in zip(prefused.blocks, decomposed.blocks):
+            assert fused_block.qkv.linears == plain_block.qkv.linears
+            assert fused_block.residual_input == plain_block.residual_input

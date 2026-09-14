@@ -4,12 +4,14 @@
 """Static-weight / bias / hidden-size lookup primitives shared across quantization techniques."""
 
 from typing import Optional, Tuple
-from onnx import numpy_helper
 
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.meta.connectedgraph import Product
 from aimet_onnx.meta.operations import Op
-from aimet_onnx.utils import ModelProto, ParamUtils
+from aimet_onnx.ir_utils import static_tensor
+from aimet_onnx.utils import ModelProto
+
+from aimet_onnx.experimental.llm_topology import ir_analysis
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 
@@ -79,49 +81,57 @@ def get_bias_product(op: Op) -> Optional[Product]:
     return None
 
 
-def infer_hidden_size(model: ModelProto, role_map) -> int:
+def _infer_hidden_size(ir_model, role_map) -> int:
     """Infer the model hidden size from embed_tokens, lm_head, or q/k/v_proj weights.
 
-    Tries ``embed_tokens`` first (Gather weight ``[vocab, hidden]``, last dim = hidden).
+    Tries ``embed_tokens`` first (Gather table ``[vocab, hidden]``, last dim = hidden).
     Falls back to ``lm_head``, then to each block's ``qkv`` group, for backbones
     exported with ``use_inputs_embeds=True`` that have no Gather op.
 
-    :param model: ONNX ModelProto.
-    :param role_map: LlmTopology produced by ``get_llm_topology``.
+    Takes the analysis IR rather than a ``ModelProto`` so the weight layout is
+    derived by the one implementation that already knows it,
+    :func:`~.ir_analysis.get_weight_value` — the topology itself only carries node
+    names. Shapes are read off the static tensor without materializing it; an
+    lm_head table can be hundreds of megabytes.
+
+    :param ir_model: Analysis IR model from :func:`~.ir_analysis.build_analysis_ir`.
+    :param role_map: LlmTopologyByName produced by ``get_llm_topology``.
     :return: The hidden dimension size.
     """
-    for op in role_map.embed_tokens:
-        # Only the data input (a [vocab, hidden] table) yields hidden_size;
-        # other static inputs (e.g. axis attributes, indices) are not embedding tables.
-        for inp in op.inputs:
-            if not (inp.is_parm or inp.is_const):
-                continue
-            tensor = ParamUtils.get_param_by_name(model, inp.name)
-            if tensor is None:
-                continue
-            shape = numpy_helper.to_array(tensor).shape
-            if len(shape) >= 2:
-                return shape[-1]
+    node_by_name = ir_analysis.node_by_name(ir_model)
+
+    for embed_name in role_map.embed_tokens:
+        # Only the data input (a [vocab, hidden] table) yields hidden_size; other
+        # static inputs (e.g. axis attributes, indices) are not embedding tables.
+        node = node_by_name.get(embed_name)
+        table = static_tensor(node.inputs[0]) if node else None
+        if table is not None and len(table.shape) >= 2:
+            return int(table.shape[-1])
 
     # Gemm transB=1 stores W [vocab, hidden] -> hidden = shape[-1].
     # MatMul stores W [hidden, vocab]        -> hidden = shape[0].
     # Conv 1x1 stores W [vocab, hidden, 1, 1] -> hidden = shape[1].
-    for op in [*role_map.lm_head, *(op for b in role_map.blocks for op in b.qkv.ops)]:
-        weight_inp, is_transposed = get_weight_product(op)
-        if weight_inp is not None:
-            tensor = ParamUtils.get_param_by_name(model, weight_inp.name)
-            if tensor is not None:
-                W = numpy_helper.to_array(tensor)
-                if op.type == "Conv":
-                    return W.shape[1]  # [out_ch, in_ch, *k]: in_ch = hidden
-                return W.shape[-1] if is_transposed else W.shape[0]
+    for linear_name in [
+        *role_map.lm_head,
+        *(name for block in role_map.blocks for name in block.qkv.linears),
+    ]:
+        node = node_by_name.get(linear_name)
+        if node is None:
+            continue
+        weight, is_transposed = ir_analysis.get_weight_value(node)
+        if weight is None:
+            continue
+        shape = static_tensor(weight).shape
+        if node.op_type == "Conv":
+            return int(shape[1])  # [out_ch, in_ch, *k]: in_ch = hidden
+        return int(shape[-1] if is_transposed else shape[0])
 
     raise ValueError(
         "Cannot infer hidden_size: no embed_tokens, lm_head or qkv_proj static weight found in role_map"
     )
 
 
-def infer_head_dim(model: ModelProto) -> int:
+def _infer_head_dim(model: ModelProto) -> int:
     """Infer per-head dimension from a ``past_value`` graph input's last axis.
 
     HF/optimum LLM exports include ``past_value_*`` (or ``past_key_values.*.value``)

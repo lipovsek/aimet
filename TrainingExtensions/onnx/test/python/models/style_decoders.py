@@ -84,7 +84,7 @@ def _attach_past_value_input(model: onnx.ModelProto) -> onnx.ModelProto:
     """Attach a dangling ``past_value_0`` graph input whose last dim is ``_HEAD_DIM``.
 
     The input is unused by any node in the graph; it exists solely so that
-    ``infer_head_dim`` can derive ``head_dim`` from a real export-style input,
+    ``_infer_head_dim`` can derive ``head_dim`` from a real export-style input,
     matching the HF/optimum convention where ``past_value_*`` tensors carry the
     KV cache. Static shape ``[1, 1, 1, _HEAD_DIM]`` is the smallest valid
     rank-4 KV-cache layout that gives the helper a static last dim to read.
