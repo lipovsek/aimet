@@ -45,6 +45,7 @@ from aimet_onnx.experimental.adascale.model_converter import (
     copy_pt_encodings_to_sim,
     required_extra_block_inputs,
     resolve_block_residual_name,
+    upcast_fp16_block_to_bf16,
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
@@ -394,8 +395,15 @@ class AdaScale:
         torch_fp_input = [convert_to_torch(inp) for inp in fp_inputs]
         torch_quant_input = [convert_to_torch(inp) for inp in quantized_inputs]
         pytorch_block.to(device)
+
+        pytorch_block, (torch_fp_input, torch_quant_input), _autocast_ctx = (
+            upcast_fp16_block_to_bf16(
+                pytorch_block, device, torch_fp_input, torch_quant_input
+            )
+        )
+
         fp_out = []
-        with torch.no_grad():
+        with torch.no_grad(), _autocast_ctx():
             for input_tensor in torch_fp_input:
                 input_tensor = [
                     inp_t.to(device=device) for inp_t in input_tensor
@@ -463,7 +471,8 @@ class AdaScale:
                 input_tensor = [
                     inp_t.to(device=device) for inp_t in input_tensor
                 ]  # Create a new tensor
-                quant_out = pytorch_block(*input_tensor)
+                with _autocast_ctx():
+                    quant_out = pytorch_block(*input_tensor)
                 batch_fp_out = fp_out[data_idx].to(device)
                 loss = loss_fn(
                     batch_fp_out,

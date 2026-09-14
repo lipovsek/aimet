@@ -1,19 +1,24 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from aimet_onnx.common.utils import AimetLogger
-from aimet_onnx.experimental.adascale.quantizer import QuantizedLinear, QuantizedConv2d
-from aimet_onnx.qc_quantize_op import QcQuantizeOp
+import contextlib
+from typing import Callable, ContextManager, Tuple, List, Dict, Collection
 
-_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
+import torch
+import onnx
 import onnx_ir
 from onnx.utils import Extractor
 from onnx2torch import convert
-from aimet_onnx.experimental.adascale.onnx2torch_ext import *  # pylint: disable=wildcard-import, unused-wildcard-import
-from aimet_onnx import ir_utils
 from onnx2torch.onnx_graph import OnnxGraph
-from typing import Tuple, List, Dict, Collection
+
+from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.common.quantsim import calculate_delta_offset
+from aimet_onnx.experimental.adascale.quantizer import QuantizedLinear, QuantizedConv2d
+from aimet_onnx.experimental.adascale.onnx2torch_ext import *  # pylint: disable=wildcard-import, unused-wildcard-import
+from aimet_onnx.qc_quantize_op import QcQuantizeOp
+from aimet_onnx import ir_utils
+
+_logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
 filter_op = ["MatMul", "Conv", "Gemm"]
 
@@ -130,6 +135,37 @@ def required_extra_block_inputs(
     return [inp.name for inp in graph.inputs if inp.name in extras]
 
 
+@contextlib.contextmanager
+def _retarget_fp16_casts_to_bf16(model: onnx_ir.Model):
+    """
+    Temporarily retarget every ``Cast(to=FLOAT16)`` node in ``model`` to
+    ``BFLOAT16``, then restore it to ``FLOAT16`` on exit.
+
+    onnx2torch bakes each Cast node's target dtype into a fixed attribute
+    on the converted torch module. AdaScale later upcasts fp16 blocks to
+    bf16 for training (fp16 underflows Adam's second moment); if the Cast
+    modules still targeted fp16, that fp16 tensor could leak into
+    downstream plain elementwise ops that ``torch.autocast(bfloat16)``
+    doesn't cover. Retargeting the ONNX nodes before conversion makes
+    onnx2torch bake in bf16 directly, so no fp16 tensor is ever produced.
+    A no-op for models with no FLOAT16 Cast nodes (e.g. fp32 models).
+    """
+    casts = [
+        node
+        for node in model.graph.all_nodes()
+        if node.op_type == "Cast"
+        and node.attributes.get("to") is not None
+        and node.attributes["to"].value == onnx.TensorProto.FLOAT16
+    ]
+    for node in casts:
+        node.attributes["to"] = onnx_ir.AttrInt64("to", onnx.TensorProto.BFLOAT16)
+    try:
+        yield
+    finally:
+        for node in casts:
+            node.attributes["to"] = onnx_ir.AttrInt64("to", onnx.TensorProto.FLOAT16)
+
+
 def get_pt_block(
     model: onnx_ir.Model, block_input_output_names: Tuple[List[str], List[str]]
 ):
@@ -153,7 +189,72 @@ def get_pt_block(
     onnx_ir.passes.common.TopologicalSortPass().call(subgraph_model)
     onnx_ir.external_data.load_to_model(subgraph_model)
     param_map = _get_onnx_block_info(subgraph_model)
-    return convert(onnx_ir.to_proto(subgraph_model)), param_map
+    with _retarget_fp16_casts_to_bf16(subgraph_model):
+        pt_block = convert(onnx_ir.to_proto(subgraph_model))
+    return pt_block, param_map
+
+
+def upcast_fp16_block_to_bf16(
+    pytorch_block: torch.nn.Module,
+    device: torch.device,
+    *input_lists: List[List[torch.Tensor]],
+) -> Tuple[
+    torch.nn.Module, List[List[List[torch.Tensor]]], Callable[[], ContextManager[None]]
+]:
+    """
+    Train fp16 blocks in bf16 instead: fp16 underflows Adam's second moment
+    for tiny per-block gradients (e.g. AdaScale's scale/gamma/beta params).
+
+    If ``pytorch_block`` (as returned by :func:`get_pt_block`) is fp16,
+    upcasts it to bf16 and returns new nested lists with every fp16 tensor
+    in ``input_lists`` likewise upcast (the originals are left untouched --
+    use the returned lists), along with an autocast context-manager factory
+    to wrap forward passes in. ``get_pt_block()`` already retargets the
+    block's ``Cast(FLOAT16)`` ONNX nodes to ``BFLOAT16`` before onnx2torch
+    conversion, so this only needs to upcast the weight/input tensors
+    themselves.
+
+    No-op for non-fp16 blocks: returns ``pytorch_block``/``input_lists``
+    unchanged and a no-op context factory, so callers can use the same
+    ``with autocast_ctx():`` pattern regardless of the block's dtype.
+
+    :param pytorch_block: block to upcast, as returned by ``get_pt_block()``
+    :param device: device the block will run on
+    :param input_lists: any number of ``List[List[torch.Tensor]]`` batches
+        (e.g. fp and quantized calibration inputs) to upcast alongside it
+    :return: ``(pytorch_block, upcasted_input_lists, autocast_ctx)``, where
+        ``autocast_ctx`` is a zero-arg callable returning a fresh context
+        manager each call (safe to enter more than once)
+    """
+    first_param = next((p for p in pytorch_block.parameters()), None)
+    is_fp16 = first_param is not None and first_param.dtype == torch.float16
+
+    if not is_fp16:
+
+        @contextlib.contextmanager
+        def _noop_ctx():
+            yield
+
+        return pytorch_block, list(input_lists), _noop_ctx
+
+    pytorch_block = pytorch_block.to(dtype=torch.bfloat16)
+
+    def _to_bf16(inp_list):
+        return [
+            [t.to(dtype=torch.bfloat16) if t.dtype == torch.float16 else t for t in one]
+            for one in inp_list
+        ]
+
+    upcasted_input_lists = [_to_bf16(inp_list) for inp_list in input_lists]
+
+    device_type = device.type if hasattr(device, "type") else "cuda"
+
+    @contextlib.contextmanager
+    def _autocast_ctx():
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+            yield
+
+    return pytorch_block, upcasted_input_lists, _autocast_ctx
 
 
 def _get_tensor_consumers(tensor: onnx_ir.Value):
@@ -213,15 +314,25 @@ def copy_pt_weights_to_onnx(
         if quantizer_dict is not None and not quantizer_dict[param_map[name]].enabled:
             continue
         if isinstance(module, (QuantizedLinear, QuantizedConv2d)):
-            pytorch_weight = (
+            _folded = (
                 module.param_quantizers["weight"]
                 .get_folded_weight(module.weight)
                 .detach()
                 .cpu()
-                .numpy()
             )
+            # numpy has no native bfloat16, so .numpy() on a bf16 tensor
+            # raises TypeError. When AdaScale ran with a bf16 master (fp16
+            # ONNX model case), the folded weight is bf16 -- promote to
+            # fp32 before numpy; the .astype(onnx_dtype) below then casts
+            # it to the ONNX initializer dtype (fp16) as usual.
+            if _folded.dtype == torch.bfloat16:
+                _folded = _folded.float()
+            pytorch_weight = _folded.numpy()
         else:
-            pytorch_weight = module.weight.detach().cpu().numpy()
+            _raw = module.weight.detach().cpu()
+            if _raw.dtype == torch.bfloat16:
+                _raw = _raw.float()
+            pytorch_weight = _raw.numpy()
 
         onnx_tensor_name = param_map[name]
         onnx_param_tensor = onnx_model.graph.initializers[onnx_tensor_name]

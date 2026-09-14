@@ -33,6 +33,8 @@ from aimet_onnx.experimental.adascale.quantizer import (
 from aimet_onnx.experimental.adascale.model_converter import (
     resolve_block_residual_name,
     required_extra_block_inputs,
+    _retarget_fp16_casts_to_bf16,
+    upcast_fp16_block_to_bf16,
 )
 from .utils import add_genai_tests_path, force_random_weight_init
 
@@ -100,6 +102,131 @@ class ModelWithConsecutiveConvBlocks(torch.nn.Module):
             x = linear_block(x)
         x = self.softmax(x)
         return x
+
+
+class TestRetargetFp16CastsToBf16:
+    """Unit tests for ``_retarget_fp16_casts_to_bf16``, the context manager
+    that fixes the fp16 AdaScale accuracy collapse: it temporarily retargets
+    any ONNX ``Cast(to=FLOAT16)`` node to ``BFLOAT16`` before onnx2torch
+    conversion (so the converted module never produces an fp16 tensor that
+    could leak into elementwise ops autocast doesn't cover), then restores
+    the ONNX node to ``FLOAT16`` on exit.
+    """
+
+    @staticmethod
+    def _make_model(cast_targets):
+        nodes = []
+        graph_inputs = []
+        graph_outputs = []
+        for i, target in enumerate(cast_targets):
+            x = onnx_ir.Value(name=f"x{i}")
+            node = onnx_ir.node("Cast", inputs=[x], attributes={"to": target})
+            nodes.append(node)
+            graph_inputs.append(x)
+            graph_outputs.append(node.outputs[0])
+        graph = onnx_ir.Graph(
+            graph_inputs, graph_outputs, nodes=nodes, opset_imports={"": 18}
+        )
+        return onnx_ir.Model(graph, ir_version=9)
+
+    def test_retargets_fp16_casts_to_bf16_within_context(self):
+        from onnx import TensorProto
+
+        model = self._make_model([TensorProto.FLOAT16, TensorProto.FLOAT])
+        with _retarget_fp16_casts_to_bf16(model):
+            targets = [node.attributes["to"].value for node in model.graph.all_nodes()]
+        assert TensorProto.BFLOAT16 in targets
+        assert TensorProto.FLOAT in targets  # non-fp16 cast left alone
+
+    def test_restores_fp16_targets_on_exit(self):
+        from onnx import TensorProto
+
+        model = self._make_model([TensorProto.FLOAT16])
+        with _retarget_fp16_casts_to_bf16(model):
+            pass
+        cast_node = next(node for node in model.graph.all_nodes())
+        assert cast_node.attributes["to"].value == TensorProto.FLOAT16
+
+    def test_restores_fp16_targets_even_on_exception(self):
+        from onnx import TensorProto
+
+        model = self._make_model([TensorProto.FLOAT16])
+        with pytest.raises(RuntimeError):
+            with _retarget_fp16_casts_to_bf16(model):
+                raise RuntimeError("boom")
+        cast_node = next(node for node in model.graph.all_nodes())
+        assert cast_node.attributes["to"].value == TensorProto.FLOAT16
+
+
+class TestUpcastFp16BlockToBf16:
+    """Unit tests for ``upcast_fp16_block_to_bf16``, the shared helper any
+    per-block training technique (not just AdaScale) can call after
+    ``get_pt_block()`` to train an fp16 block in bf16.
+    """
+
+    @staticmethod
+    def _input_lists(dtype, n_lists=2, n_batches=2):
+        return [
+            [[torch.randn(2, 2).to(dtype=dtype)] for _ in range(n_batches)]
+            for _ in range(n_lists)
+        ]
+
+    def test_fp16_block_and_inputs_are_upcast_to_bf16(self):
+        block = torch.nn.Linear(2, 2).to(dtype=torch.float16)
+        fp_inputs, quant_inputs = self._input_lists(torch.float16)
+
+        new_block, (new_fp, new_quant), _ = upcast_fp16_block_to_bf16(
+            block, torch.device("cpu"), fp_inputs, quant_inputs
+        )
+
+        assert new_block.weight.dtype is torch.bfloat16
+        assert all(t.dtype is torch.bfloat16 for batch in new_fp for t in batch)
+        assert all(t.dtype is torch.bfloat16 for batch in new_quant for t in batch)
+
+    def test_fp32_block_is_left_untouched(self):
+        block = torch.nn.Linear(2, 2)
+        fp_inputs, quant_inputs = self._input_lists(torch.float32)
+
+        new_block, (new_fp, new_quant), _ = upcast_fp16_block_to_bf16(
+            block, torch.device("cpu"), fp_inputs, quant_inputs
+        )
+
+        assert new_block is block
+        assert new_block.weight.dtype is torch.float32
+        assert new_fp is fp_inputs
+        assert new_quant is quant_inputs
+
+    def test_autocast_ctx_is_a_reusable_factory(self):
+        block = torch.nn.Linear(2, 2).to(dtype=torch.float16)
+        fp_inputs, quant_inputs = self._input_lists(torch.float16)
+
+        new_block, _, autocast_ctx = upcast_fp16_block_to_bf16(
+            block, torch.device("cpu"), fp_inputs, quant_inputs
+        )
+
+        for _ in range(2):  # must support being entered more than once
+            with autocast_ctx():
+                out = new_block(torch.randn(2, 2, dtype=torch.bfloat16))
+                assert out.dtype is torch.bfloat16
+
+    def test_autocast_ctx_is_a_noop_for_non_fp16_blocks(self):
+        block = torch.nn.Linear(2, 2)
+
+        _, _, autocast_ctx = upcast_fp16_block_to_bf16(block, torch.device("cpu"))
+
+        with autocast_ctx():
+            out = block(torch.randn(2, 2))
+            assert out.dtype is torch.float32
+
+    def test_non_float16_input_tensors_are_left_untouched(self):
+        block = torch.nn.Linear(2, 2).to(dtype=torch.float16)
+        int_inputs = [[torch.zeros(2, dtype=torch.int64)]]
+
+        _, (new_int_inputs,), _ = upcast_fp16_block_to_bf16(
+            block, torch.device("cpu"), int_inputs
+        )
+
+        assert new_int_inputs[0][0].dtype is torch.int64
 
 
 class TestAdascaleQuantizer:
@@ -1071,6 +1198,155 @@ def test_adascale_e2e(add_genai_tests_path, dtype, small_model: bool = True):
                 assert not np.all(original_weights[initializer.name] == weight_array)
             else:
                 weight_array = numpy_helper.to_array(initializer)
+                assert np.all(original_weights[initializer.name] == weight_array)
+
+        assert len(sim.model.model.graph.output)
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+@pytest.mark.skip_on_windows_arm64("transformers is not available on Windows ARM64")
+@pytest.mark.skip_on_windows_amd64(
+    "insufficient disk for large ONNX export on Windows AMD64 runner"
+)
+def test_adascale_e2e_fp16_qwen3_bf16_upcast(
+    add_genai_tests_path, small_model: bool = True
+):
+    """Regression test for the fp16 AdaScale accuracy-collapse fix.
+
+    Qwen3 places extra RMSNorms (q_norm/k_norm) on Q/K *before* RoPE. At fp16
+    export, their ``.to(input_dtype)`` epilogue traces to a ``Cast(FLOAT16)``
+    node feeding RoPE's plain elementwise multiplies (``q * cos``,
+    ``rotate_half(q) * sin``) -- ops ``torch.autocast(bfloat16)`` does not
+    normalize. Qwen2 (used by ``test_adascale_e2e`` above) lacks q_norm/k_norm
+    and doesn't hit this path, so it can't catch a regression here.
+
+    This asserts that AdaScale's fp16 path on a Qwen3 block actually invokes
+    ``_retarget_fp16_casts_to_bf16``, that doing so leaves no Cast leaf
+    still targeting fp16, and that training completes with finite,
+    non-collapsed weights for the params it touched (guarding against the
+    original bug: fp16 Adam second-moment underflow silently vanishing or
+    diverging the update).
+    """
+    from transformers import AutoConfig
+    from GenAILab.qai_hub_lm.backends.onnx.llm import LLM_ONNX
+    from GenAILab.qai_hub_lm.backends.onnx.export_utils import (
+        get_model_checkpoint_path,
+    )
+    import random
+    from aimet_onnx.experimental.adascale import (
+        adascale_optimizer as adascale_optimizer_module,
+    )
+
+    context_length = 32
+    sequence_length = 16
+    model_id = "Qwen/Qwen3-0.6B"
+    dtype = torch.float16
+    model_cls = LLM_ONNX
+
+    SEED = 20
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(SEED)
+        torch.cuda.manual_seed_all(SEED)
+
+    llm_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    if small_model:
+        llm_config.num_hidden_layers = 2
+
+    cache_dir = get_model_checkpoint_path(model_id)
+    try:
+        with force_random_weight_init(vocab_size=1024):
+            entry = model_cls.instantiate_float_model(
+                model_id,
+                context_length,
+                sequence_length,
+                small_model=small_model,
+                dtype=dtype,
+            )
+        collection = model_cls.instantiate_quantsim(entry)
+        sim = collection.backbone
+        adascale_model_config_dict["qwen3"].model_config = llm_config
+
+        # Qwen3-0.6B: num_key_value_heads=8, head_dim=128 (unlike Qwen2-0.5B's
+        # 2 / 64 above) -- these come from the real HF config, not small_model.
+        float_np_dtype = np.float16
+        inputs = {
+            "input_ids": np.random.randint(0, 100, size=(1, 16), dtype=np.int32),
+            "attention_mask": np.random.randint(0, 100, size=(1, 1, 16, 32)).astype(
+                float_np_dtype
+            ),
+            "position_ids": np.arange(0, 16).reshape(1, 16).astype(np.int32),
+            "past_key_0_in": np.zeros((1, 8, 16, 128)).astype(float_np_dtype),
+            "past_value_0_in": np.zeros((1, 8, 16, 128)).astype(float_np_dtype),
+            "past_key_1_in": np.zeros((1, 8, 16, 128)).astype(float_np_dtype),
+            "past_value_1_in": np.zeros((1, 8, 16, 128)).astype(float_np_dtype),
+        }
+
+        original_weights = {}
+        for initializer in sim.model.model.graph.initializer:
+            weight_array = numpy_helper.to_array(initializer)
+            original_weights[initializer.name] = weight_array.copy()
+
+        # Track every block get_pt_block() converts: confirm the fp16 path
+        # actually converts one, and that no Cast leaf in it still targets
+        # fp16 (get_pt_block retargets the ONNX Cast(FLOAT16) nodes to
+        # BFLOAT16 before onnx2torch conversion, so onnx2torch never bakes
+        # in an fp16 target).
+        converted_blocks = []
+        real_get_pt_block = adascale_optimizer_module.get_pt_block
+
+        def _tracking_get_pt_block(*args, **kwargs):
+            pytorch_block, param_map = real_get_pt_block(*args, **kwargs)
+            converted_blocks.append(pytorch_block)
+            return pytorch_block, param_map
+
+        with patch.object(
+            adascale_optimizer_module,
+            "get_pt_block",
+            side_effect=_tracking_get_pt_block,
+        ):
+            AdaScale.apply_adascale(
+                sim,
+                [inputs],
+                adascale_model_config_dict["qwen3"],
+                num_iterations=2,
+            )
+
+        assert converted_blocks, (
+            "AdaScale's fp16 path did not call get_pt_block; "
+            "no block was converted as expected for an fp16 model."
+        )
+        for module in converted_blocks:
+            for submod in module.modules():
+                if "Cast" in type(submod).__name__:
+                    assert getattr(submod, "torch_dtype", None) is not torch.float16, (
+                        f"Cast leaf {submod} still targets fp16 after conversion; "
+                        "its output can leak into elementwise ops autocast doesn't cover."
+                    )
+
+        linear_list = [
+            key for key in sim.qc_quantize_op_dict.keys() if "onnx::MatMul" in key
+        ]
+        # Dropping the last linear layer since that is always the LM head, which is not modified by adascale
+        param_list = linear_list[:-1]
+
+        for param in param_list:
+            assert sim.qc_quantize_op_dict[param]._is_encoding_frozen
+
+        for initializer in sim.model.model.graph.initializer:
+            weight_array = numpy_helper.to_array(initializer)
+            if initializer.name in param_list:
+                # Regression guard: the original bug had fp16 Adam moments
+                # underflow to zero, silently vanishing or diverging the
+                # update -- so beyond "changed", require the result stays
+                # finite and isn't collapsed to all-zero.
+                assert not np.all(original_weights[initializer.name] == weight_array)
+                assert np.all(np.isfinite(weight_array))
+                assert not np.all(weight_array == 0)
+            else:
                 assert np.all(original_weights[initializer.name] == weight_array)
 
         assert len(sim.model.model.graph.output)

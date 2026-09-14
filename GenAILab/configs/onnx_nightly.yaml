@@ -108,3 +108,23 @@ recipe:
 metrics:
   - name: TinyMMLU
   - name: PPL
+---
+model:
+  model_id: Qwen/Qwen3-1.7B
+  sequence_length: 2048
+  context_length: 4096
+  dtype: float16
+recipe:
+  - name: AdaScale
+    num_batches: 32
+    num_iterations: 64
+    dataset:
+      name: Wikitext
+      split: train
+  - name: Calibration
+    dataset:
+      name: Wikitext
+      split: train
+metrics:
+  - name: TinyMMLU
+  - name: PPL

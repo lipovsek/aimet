@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from onnx import defs
+from onnx import TensorProto
 from onnx2torch.node_converters.registry import add_converter
 from onnx2torch.onnx_graph import OnnxGraph
 from onnx2torch.onnx_node import OnnxNode
@@ -474,6 +475,58 @@ def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:
             inputs=(inputs[0],),
             outputs=node.output_values,
         ),
+    )
+
+
+# Override the existing Cast converters (versions 9/13).
+# Stock impl's TENSOR_TYPE_TO_TORCH_TYPE has no entry for BFLOAT16, so a
+# Cast(to=BFLOAT16) node -- e.g. after AdaScale's fp16->bf16 ONNX Cast
+# retargeting in model_converter._retarget_fp16_casts_to_bf16 -- raises
+# NotImplementedError. Add BFLOAT16 to the dtype map, otherwise identical
+# to the stock converter.
+for _cast_version in (9, 13):
+    _cast_description = OperationDescription(
+        domain=defs.ONNX_DOMAIN,
+        operation_type="Cast",
+        version=_cast_version,
+    )
+    if _cast_description in _CONVERTER_REGISTRY:
+        del _CONVERTER_REGISTRY[_cast_description]
+
+
+from onnx2torch.node_converters.cast import (
+    TENSOR_TYPE_TO_TORCH_TYPE as _BASE_TENSOR_TYPE_TO_TORCH_TYPE,
+)
+
+_TENSOR_TYPE_TO_TORCH_TYPE_WITH_BF16 = {
+    **_BASE_TENSOR_TYPE_TO_TORCH_TYPE,
+    int(TensorProto.BFLOAT16): torch.bfloat16,
+}
+
+
+class OnnxCast(nn.Module, OnnxToTorchModule):  # pylint: disable=missing-class-docstring
+    TENSOR_TYPE_TO_TORCH_TYPE = _TENSOR_TYPE_TO_TORCH_TYPE_WITH_BF16
+
+    def __init__(self, onnx_dtype: int):
+        super().__init__()
+        try:
+            self.torch_dtype = self.TENSOR_TYPE_TO_TORCH_TYPE[onnx_dtype]
+        except KeyError as exc:
+            raise NotImplementedError(
+                f'Conversion to "{onnx_dtype}" is not implemented'
+            ) from exc
+
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:  # pylint: disable=missing-function-docstring
+        return input_tensor.to(self.torch_dtype)
+
+
+@add_converter(operation_type="Cast", version=9)
+@add_converter(operation_type="Cast", version=13)
+def _(node: OnnxNode, graph: OnnxGraph) -> OperationConverterResult:  # pylint: disable=unused-argument
+    onnx_dtype = node.attributes.get("to", None)
+    return OperationConverterResult(
+        torch_module=OnnxCast(onnx_dtype),
+        onnx_mapping=onnx_mapping_from_node(node=node),
     )
 
 
