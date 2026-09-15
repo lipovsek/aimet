@@ -51,10 +51,10 @@ from aimet_onnx.ir_utils import static_tensor
 from aimet_onnx.utils import ParamUtils, make_dummy_input
 
 from aimet_onnx.experimental.llm_topology.topology import (
-    analyze_llm_topology_by_name,
+    analyze_llm_topology,
 )
 from aimet_onnx.experimental.llm_topology.ir_adapter import (
-    LlmTopology,
+    IrLlmTopology,
     resolve_active_norms as _resolve_active_norms,
     resolve_topology,
 )
@@ -118,9 +118,9 @@ def resolve_active_norms(model: onnx.ModelProto, ir_model: onnx_ir.Model):
     return _resolve_active_norms(find_active_norms(model), ir_model)
 
 
-def analyze_on_ir(model: onnx.ModelProto, ir_model: onnx_ir.Model) -> LlmTopology:
+def analyze_on_ir(model: onnx.ModelProto, ir_model: onnx_ir.Model) -> IrLlmTopology:
     """Topology of ``model``, resolved onto ``ir_model``."""
-    return resolve_topology(analyze_llm_topology_by_name(model), ir_model)
+    return resolve_topology(analyze_llm_topology(model), ir_model)
 
 
 def weight_array(value) -> np.ndarray:
@@ -265,7 +265,7 @@ def _verify_fusion(pre_state: dict):
             )
 
 
-def _collect_all_weights(role_map: LlmTopology) -> dict:
+def _collect_all_weights(role_map: IrLlmTopology) -> dict:
     """Snapshot every weight/bias the R1 rotation touches, keyed by tensor name."""
     weights = {}
 
@@ -2046,32 +2046,41 @@ class TestApplySpinquant:
 
 
 class TestNoConnectedGraphDependency:
-    """SpinQuant analyzes and rewrites the graph on ``onnx_ir`` alone.
+    """SpinQuant and llm_topology analyze and rewrite the graph on ``onnx_ir`` alone.
 
     A ConnectedGraph goes stale the moment a node is inserted, and its ``Op`` /
     ``Product`` objects need side tables for what an ``onnx_ir.Value`` already
-    knows. Re-introducing an import of either would quietly re-couple the package
-    to that representation, so it is asserted against rather than reviewed for.
+    knows. Re-introducing an import of either would quietly re-couple these
+    packages to that representation, so it is asserted against rather than
+    reviewed for.
+
+    ``llm_topology`` is in scope alongside ``spinquant`` because the
+    ConnectedGraph-flavored topology (``cg_adapter``) and the ``Product``-typed
+    weight helpers (``weight_utils``) that used to live there are gone: the whole
+    package is now CG-free, and nothing but this test keeps it that way.
     """
 
     BANNED_MODULES = {
         "aimet_onnx.meta.connectedgraph",
         "aimet_onnx.meta.operations",
         "aimet_onnx.meta.product",
-        # The ConnectedGraph-flavored topology and the Product-typed weight
-        # helpers: both hand back CG objects.
-        "aimet_onnx.experimental.llm_topology.cg_adapter",
-        "aimet_onnx.experimental.llm_topology.weight_utils",
     }
 
-    def test_no_connectedgraph_imports(self):
-        """No module under experimental/spinquant may import ConnectedGraph types."""
+    PACKAGES = (
+        "aimet_onnx.experimental.spinquant",
+        "aimet_onnx.experimental.llm_topology",
+    )
+
+    @pytest.mark.parametrize("package_name", PACKAGES)
+    def test_no_connectedgraph_imports(self, package_name):
+        """No module under the package may import ConnectedGraph types."""
         import ast
+        import importlib
         import pathlib
 
-        import aimet_onnx.experimental.spinquant as spinquant_pkg
+        package = importlib.import_module(package_name)
 
-        package_root = pathlib.Path(spinquant_pkg.__file__).parent
+        package_root = pathlib.Path(package.__file__).parent
         sources = sorted(package_root.rglob("*.py"))
         assert sources, f"no sources found under {package_root}"
 

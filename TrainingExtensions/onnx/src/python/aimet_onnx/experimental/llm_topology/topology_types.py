@@ -3,16 +3,15 @@
 
 """Name-based description of an LLM decoder stack.
 
-The dataclasses here are what :func:`~.topology.get_llm_topology` produces: the
-same structure the ConnectedGraph-flavored :class:`~.cg_adapter.LlmTopology`
-describes, but built entirely from ONNX names (see :mod:`~.refs`). Nothing in
-here holds a ConnectedGraph ``Op`` or an ``onnx_ir.Node``, so a topology stays
-valid after the graph object it was derived from is gone, and can be applied
-directly to a ``ModelProto``.
+The dataclasses here are what :func:`~.topology.get_llm_topology` produces,
+built entirely from ONNX names. Nothing in here holds an ``onnx_ir.Node``, so a
+topology stays valid after the graph object it was derived from is gone, and can
+be applied directly to a ``ModelProto``.
 
-The ``*ByName`` suffix is transitional. Once the ConnectedGraph-flavored
-topology in :mod:`~.cg_adapter` is retired, these become *the* topology types
-and the suffix goes away.
+A consumer that needs mutable graph handles rather than names resolves one of
+these onto an :class:`onnx_ir.Model` with
+:func:`~.ir_adapter.resolve_topology`, which returns the ``Ir``-prefixed
+counterparts in :mod:`~.ir_adapter`.
 """
 
 from dataclasses import dataclass, field
@@ -24,13 +23,13 @@ from aimet_onnx.experimental.llm_topology.layer_roles import (
     LinearRole,
     classify_linear_role,
 )
-from aimet_onnx.experimental.llm_topology.norm_detection import ActiveNormByName
+from aimet_onnx.experimental.llm_topology.norm_detection import ActiveNorm
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 
 
 @dataclass
-class LinearGroupByName:
+class LinearGroup:
     """A norm's downstream weighted linears, together with their role split.
 
     ``linears`` is the coarse read group (the single source of truth): every
@@ -59,7 +58,7 @@ class LinearGroupByName:
         cls,
         linears: List[str],
         role_patterns: Optional[Dict[LinearRole, Pattern]] = None,
-    ) -> "LinearGroupByName":
+    ) -> "LinearGroup":
         """Build a group from ``linears``, splitting it into roles by module name."""
         return cls(linears=list(linears), by_role=split_by_role(linears, role_patterns))
 
@@ -69,10 +68,10 @@ class LinearGroupByName:
 
 
 @dataclass
-class BlockTopologyByName:
+class BlockTopology:
     """Topology of a single decoder block: weighted projections + dynamic MatMuls.
 
-    The two weighted read groups are :class:`LinearGroupByName` values — each
+    The two weighted read groups are :class:`LinearGroup` values — each
     exposes both its coarse ``linears`` list and the fine-grained role split (see
     the ``q_proj`` / ``k_proj`` / ``v_proj`` / ``gate_proj`` / ``up_proj``
     convenience properties below). The two write projections and the dynamic
@@ -94,9 +93,9 @@ class BlockTopologyByName:
     :param residual_output: Name of the residual-stream tensor leaving the block.
     """
 
-    qkv: LinearGroupByName = field(default_factory=LinearGroupByName)
+    qkv: LinearGroup = field(default_factory=LinearGroup)
     o_proj: List[str] = field(default_factory=list)
-    gate_up: LinearGroupByName = field(default_factory=LinearGroupByName)
+    gate_up: LinearGroup = field(default_factory=LinearGroup)
     down_proj: List[str] = field(default_factory=list)
 
     qk_matmul: List[str] = field(default_factory=list)
@@ -132,7 +131,7 @@ class BlockTopologyByName:
 
 
 @dataclass
-class LlmTopologyByName:
+class LlmTopology:
     """Topology of an ONNX decoder-stack model: blocks + backbone-level roles + dims.
 
     :param embed_tokens: Names of the token-embedding ``Gather``(s) that produce
@@ -155,9 +154,9 @@ class LlmTopologyByName:
 
     embed_tokens: List[str] = field(default_factory=list)
     lm_head: List[str] = field(default_factory=list)
-    blocks: List[BlockTopologyByName] = field(default_factory=list)
+    blocks: List[BlockTopology] = field(default_factory=list)
     past_key_input_names: List[str] = field(default_factory=list)
-    active_norms: Optional[List[ActiveNormByName]] = None
+    active_norms: Optional[List[ActiveNorm]] = None
     hidden_size: Optional[int] = None
     head_dim: Optional[int] = None
 
@@ -189,8 +188,8 @@ def split_by_role(
 
 
 __all__ = [
-    "BlockTopologyByName",
-    "LinearGroupByName",
-    "LlmTopologyByName",
+    "BlockTopology",
+    "LinearGroup",
+    "LlmTopology",
     "split_by_role",
 ]

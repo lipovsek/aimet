@@ -11,8 +11,8 @@ import onnx_ir
 import torch
 
 from aimet_onnx.experimental.llm_topology.ir_adapter import (
-    ActiveNorm,
-    LlmTopology,
+    IrActiveNorm,
+    IrLlmTopology,
 )
 
 
@@ -53,8 +53,8 @@ class SpinquantContext:
 
     backbone_ir: onnx_ir.Model
     backbone_analysis_ir: onnx_ir.Model
-    backbone_topology: LlmTopology
-    backbone_active_norms: List[ActiveNorm]
+    backbone_topology: IrLlmTopology
+    backbone_active_norms: List[IrActiveNorm]
     backbone_hidden_size: int
     backbone_head_dim: Optional[int] = None
     visual_ir: Optional[onnx_ir.Model] = None

@@ -41,7 +41,7 @@ from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.ir_utils import static_tensor
 
 from aimet_onnx.experimental.llm_topology.ir_adapter import (
-    LlmTopology,
+    IrLlmTopology,
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
@@ -115,7 +115,7 @@ class BlockR3Anchors:
 
 
 def find_r3_anchors(
-    role_map: LlmTopology, ir_model: onnx_ir.Model
+    role_map: IrLlmTopology, ir_model: onnx_ir.Model
 ) -> List[BlockR3Anchors]:
     """Return per-block R3 anchors, pinned by ``past_key_*`` graph inputs.
 

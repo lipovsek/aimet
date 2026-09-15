@@ -19,7 +19,7 @@ from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.experimental.llm_topology.ir_adapter import resolve_topology
 from aimet_onnx.experimental.llm_topology.ir_analysis import build_analysis_ir
 from aimet_onnx.experimental.llm_topology.topology import (
-    analyze_llm_topology_by_name,
+    analyze_llm_topology,
 )
 from aimet_onnx.experimental.spinquant.model_analysis import (
     find_merger_linear2,
@@ -157,8 +157,8 @@ def _build_context(
     # head_dim in one pass. head_dim is only needed by R2/R3; it is left None
     # when the export has no KV-cache 'past_value' input, and those passes raise
     # a targeted error when they actually need it.
-    topology_by_name = analyze_llm_topology_by_name(model, ir_model=analysis_ir)
-    topology = resolve_topology(topology_by_name, backbone_ir)
+    name_topology = analyze_llm_topology(model, ir_model=analysis_ir)
+    topology = resolve_topology(name_topology, backbone_ir)
 
     visual_ir = None
     visual_merger_linear2 = None

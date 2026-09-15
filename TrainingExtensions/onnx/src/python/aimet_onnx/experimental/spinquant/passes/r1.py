@@ -32,7 +32,7 @@ from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.common.onnx._utils import _is_grid_preserving_op
 from aimet_onnx.ir_utils import static_tensor
 
-from aimet_onnx.experimental.llm_topology.ir_adapter import LlmTopology
+from aimet_onnx.experimental.llm_topology.ir_adapter import IrLlmTopology
 from aimet_onnx.experimental.llm_topology.ir_analysis import get_weight_value
 from aimet_onnx.experimental.spinquant.model_analysis import (
     find_post_writing_norms,
@@ -113,7 +113,7 @@ class R1RotationPass(RotationPass):
 
 def _rotate_backbone(
     ir_model: onnx_ir.Model,
-    role_map: LlmTopology,
+    role_map: IrLlmTopology,
     R1: np.ndarray,
     *,
     rotate_embeddings_online: bool = False,
@@ -145,7 +145,7 @@ def _rotate_backbone(
 
 
 def _insert_embedding_hadamard_rotation(
-    ir_model: onnx_ir.Model, role_map: LlmTopology, R1: np.ndarray
+    ir_model: onnx_ir.Model, role_map: IrLlmTopology, R1: np.ndarray
 ) -> None:
     """Place an online Hadamard onto the input embeddings."""
     embedding_tensor = _find_embedding_tensor(role_map)
@@ -169,7 +169,7 @@ def _insert_embedding_hadamard_rotation(
     )
 
 
-def _find_embedding_tensor(role_map: LlmTopology) -> onnx_ir.Value:
+def _find_embedding_tensor(role_map: IrLlmTopology) -> onnx_ir.Value:
     """
     Return the input-embedding tensor, skipping the input norm's leading Cast.
 
@@ -189,7 +189,7 @@ def _find_embedding_tensor(role_map: LlmTopology) -> onnx_ir.Value:
 
 
 def _insert_final_hadamard_rotation(
-    ir_model: onnx_ir.Model, role_map: LlmTopology, R1: np.ndarray
+    ir_model: onnx_ir.Model, role_map: IrLlmTopology, R1: np.ndarray
 ) -> None:
     """Splice an online Hadamard onto the last residual add to un-rotate the stream.
 
@@ -230,7 +230,7 @@ def _rotate_merger_linear2(merger_linear2: List[onnx_ir.Node], R_L: np.ndarray) 
 
 
 def _validate_backbone_weights(
-    analysis_ir: onnx_ir.Model, role_map: LlmTopology, hidden_size: int
+    analysis_ir: onnx_ir.Model, role_map: IrLlmTopology, hidden_size: int
 ) -> None:
     """Verify R1 architectural compatibility and that every weight in ``role_map``
     exists with the correct shape.

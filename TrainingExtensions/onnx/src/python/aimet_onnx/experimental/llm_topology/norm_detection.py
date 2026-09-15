@@ -30,13 +30,13 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 
 
 @dataclass
-class ActiveNormByName:
+class ActiveNorm:
     """An affine RMSNorm that has at least one downstream weight linear op.
 
-    Described entirely by name: no ConnectedGraph ``Op`` and no ``onnx_ir.Node``
-    is retained, so this outlives the graph object it was derived from.
-    :func:`~.cg_adapter.resolve_active_norms` turns it into the ``Op``-bearing
-    :class:`~.cg_adapter.ActiveNorm` that SpinQuant consumes.
+    Described entirely by name: no ``onnx_ir.Node`` is retained, so this outlives
+    the graph object it was derived from.
+    :func:`~.ir_adapter.resolve_active_norms` turns it into the handle-bearing
+    :class:`~.ir_adapter.IrActiveNorm` that SpinQuant consumes.
 
     :param norm: Name of the fused ``RMSNormalization`` node.
     :param input_tensor: Residual-stream tensor entering the norm (``inputs[0]``).
@@ -55,12 +55,12 @@ class ActiveNormByName:
     topo_index: int = -1
 
 
-def find_active_norms(model: ModelProto) -> List[ActiveNormByName]:
+def find_active_norms(model: ModelProto) -> List[ActiveNorm]:
     """Return all affine RMSNorms in ``model`` with at least one downstream weight linear.
 
     :param model: ONNX ModelProto. Not mutated — analysis runs on a private
         onnx_ir copy (see :func:`~.ir_analysis.build_analysis_ir`).
-    :return: ``ActiveNormByName`` objects in topological order.
+    :return: ``ActiveNorm`` objects in topological order.
     """
     return find_active_norms_in_ir(ir_analysis.build_analysis_ir(model))
 
@@ -68,7 +68,7 @@ def find_active_norms(model: ModelProto) -> List[ActiveNormByName]:
 def find_active_norms_in_ir(
     ir_model: onnx_ir.Model,
     topo_index: Optional[Dict[onnx_ir.Node, int]] = None,
-) -> List[ActiveNormByName]:
+) -> List[ActiveNorm]:
     """Return the active norms of an already-built analysis IR model.
 
     Iterates the graph in topological order and collects every fused
@@ -79,12 +79,12 @@ def find_active_norms_in_ir(
     :param ir_model: Analysis IR model from :func:`~.ir_analysis.build_analysis_ir`.
     :param topo_index: Precomputed node → topological index map; computed here
         when omitted.
-    :return: ``ActiveNormByName`` objects in topological order.
+    :return: ``ActiveNorm`` objects in topological order.
     """
     if topo_index is None:
         topo_index = ir_analysis.topological_index(ir_model)
 
-    result: List[ActiveNormByName] = []
+    result: List[ActiveNorm] = []
     for node in ir_model.graph:
         if not ir_analysis.is_rms_norm(node):
             continue
@@ -115,7 +115,7 @@ def find_active_norms_in_ir(
             continue
 
         result.append(
-            ActiveNormByName(
+            ActiveNorm(
                 norm=ir_analysis.node_name(node),
                 input_tensor=input_tensor,
                 scale_name=scale.name or "",
@@ -231,7 +231,7 @@ def _find_downstream_linears(
 
 
 __all__ = [
-    "ActiveNormByName",
+    "ActiveNorm",
     "find_active_norms",
     "find_active_norms_in_ir",
     "get_last_norm_input_tensor",

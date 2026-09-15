@@ -13,22 +13,21 @@ Describes the structure of an ONNX decoder-stack model at two levels:
   plus the model-level embed_tokens and lm_head.
 
 Weighted read projections are grouped coarsely by the active norm they read
-from (the ``qkv`` and ``gate_up`` :class:`LinearGroupByName`\\ s), and each group
-also carries a fine-grained role split (``q_proj`` / ``k_proj`` / ``v_proj`` /
+from (the ``qkv`` and ``gate_up`` :class:`LinearGroup`\\ s), and each group also
+carries a fine-grained role split (``q_proj`` / ``k_proj`` / ``v_proj`` /
 ``gate_proj`` / ``up_proj``) derived from module names by :mod:`layer_roles`.
 The dynamic MatMuls are found by pure graph topology.
 
 Technique-agnostic: it describes a decoder stack without knowing about any
 specific quantization technique. Everything here works on the analysis IR (see
-:mod:`ir_analysis`) and reports results by ONNX name, so a topology needs no
-graph object to stay meaningful; techniques that must mutate raw ``NodeProto``
-edges (e.g. SpinQuant R3) derive their insertion anchors from this topology
-separately.
+:mod:`ir_analysis`) and reports results by ONNX name (see
+:mod:`topology_types`), so a topology needs no graph object to stay meaningful;
+techniques that must mutate raw ``NodeProto`` edges (e.g. SpinQuant R3) derive
+their insertion anchors from this topology separately.
 
-:func:`analyze_llm_topology` additionally re-attaches a ConnectedGraph and
-returns the ``Op``-bearing :class:`~.cg_adapter.LlmTopology` that SpinQuant's
-rotation passes still expect. That adapter step is transitional — see
-:mod:`cg_adapter`.
+A consumer that goes on to *rewrite* the graph re-attaches an
+:class:`onnx_ir.Model` with :func:`~.ir_adapter.resolve_topology`, which hands
+back the same structure carrying ``onnx_ir.Node`` / ``onnx_ir.Value`` handles.
 """
 
 from typing import Dict, List, Optional, Pattern, Tuple
@@ -37,34 +36,23 @@ import onnx_ir
 
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.ir_utils import static_tensor
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.utils import ModelProto
 
 from aimet_onnx.experimental.llm_topology import ir_analysis
 from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries_in_ir,
 )
-from aimet_onnx.experimental.llm_topology.cg_adapter import (
-    BlockTopology,
-    LinearGroup,
-    LlmTopology,
-    resolve_topology,
-)
 from aimet_onnx.experimental.llm_topology.layer_roles import (
     LinearRole,
 )
 from aimet_onnx.experimental.llm_topology.norm_detection import (
-    ActiveNormByName,
+    ActiveNorm,
     find_active_norms_in_ir,
 )
-from aimet_onnx.experimental.llm_topology.topology_by_name import (
-    BlockTopologyByName,
-    LinearGroupByName,
-    LlmTopologyByName,
-)
-from aimet_onnx.experimental.llm_topology.weight_utils import (
-    _infer_hidden_size,
-    _infer_head_dim,
+from aimet_onnx.experimental.llm_topology.topology_types import (
+    BlockTopology,
+    LinearGroup,
+    LlmTopology,
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
@@ -73,11 +61,11 @@ _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
 def get_llm_topology(
     ir_model: onnx_ir.Model,
     block_boundaries: List[Tuple[str, str]],
-    active_norms: Optional[List[ActiveNormByName]] = None,
+    active_norms: Optional[List[ActiveNorm]] = None,
     active_norms_per_block: int = 2,
     role_patterns: Optional[Dict[LinearRole, Pattern]] = None,
     topo_index: Optional[Dict[onnx_ir.Node, int]] = None,
-) -> LlmTopologyByName:
+) -> LlmTopology:
     """Build the LLM topology from pre-computed block boundaries.
 
     Per-block. Read groups are the weighted linears downstream of each active
@@ -87,13 +75,13 @@ def get_llm_topology(
     MatMuls are located by graph topology:
 
     * ``qkv``             — ``downstream_linears`` of the first active norm in
-      the block (input norm), as a :class:`LinearGroupByName` split into
+      the block (input norm), as a :class:`LinearGroup` split into
       ``q_proj`` / ``k_proj`` / ``v_proj`` (or ``FUSED_QKV``) by
       :func:`classify_linear_role`.
     * ``o_proj``          — weighted linear(s) that write the attention residual
       output (the post-attention norm input).
     * ``gate_up``         — ``downstream_linears`` of the second active norm in
-      the block (post-attention norm), as a :class:`LinearGroupByName` split into
+      the block (post-attention norm), as a :class:`LinearGroup` split into
       ``gate_proj`` / ``up_proj`` (or ``FUSED_GATE_UP``).
     * ``down_proj``       — weighted linear(s) that write the block residual
       output (the block-end tensor).
@@ -120,9 +108,9 @@ def get_llm_topology(
     :param role_patterns: Optional override of the default module-name → role
         table used to split the read groups (see :func:`classify_linear_role`).
     :param topo_index: Precomputed node → topological index map.
-    :return: LlmTopologyByName with block and backbone roles populated.
+    :return: LlmTopology with block and backbone roles populated.
         ``hidden_size`` and ``head_dim`` are left ``None`` — use
-        :func:`analyze_llm_topology_by_name` to also infer those.
+        :func:`analyze_llm_topology` to also infer those.
     """
     if topo_index is None:
         topo_index = ir_analysis.topological_index(ir_model)
@@ -132,7 +120,7 @@ def get_llm_topology(
     node_by_output = ir_analysis.node_by_output_tensor(ir_model)
     node_by_name = ir_analysis.node_by_name(ir_model)
 
-    result = LlmTopologyByName(active_norms=active_norms)
+    result = LlmTopology(active_norms=active_norms)
 
     for block_idx, (start_tensor, end_tensor) in enumerate(block_boundaries):
         start_topo = boundary_topo[start_tensor]
@@ -158,10 +146,8 @@ def get_llm_topology(
         input_norm = block_active_norms[0]
         post_attn_norm = block_active_norms[1]
 
-        qkv = LinearGroupByName.classify(input_norm.downstream_linears, role_patterns)
-        gate_up = LinearGroupByName.classify(
-            post_attn_norm.downstream_linears, role_patterns
-        )
+        qkv = LinearGroup.classify(input_norm.downstream_linears, role_patterns)
+        gate_up = LinearGroup.classify(post_attn_norm.downstream_linears, role_patterns)
 
         intermediate_tensor = post_attn_norm.input_tensor
         o_proj_candidates = _find_nearest_upstream_linears(
@@ -188,7 +174,7 @@ def get_llm_topology(
             topo_index,
         )
 
-        block = BlockTopologyByName(
+        block = BlockTopology(
             qkv=qkv,
             o_proj=ir_analysis.node_names(o_proj_candidates),
             gate_up=gate_up,
@@ -281,14 +267,14 @@ def get_llm_topology(
     return result
 
 
-def analyze_llm_topology_by_name(
+def analyze_llm_topology(
     model: ModelProto,
     active_norms_per_block: int = 2,
     expected_num_blocks: Optional[int] = None,
     role_patterns: Optional[Dict[LinearRole, Pattern]] = None,
     ir_model: Optional[onnx_ir.Model] = None,
-) -> LlmTopologyByName:
-    """Analyze ``model`` end-to-end and return a name-based :class:`LlmTopologyByName`.
+) -> LlmTopology:
+    """Analyze ``model`` end-to-end and return a name-based :class:`LlmTopology`.
 
     Runs the whole pipeline on a private onnx_ir copy of ``model``: strip
     quantizers, fuse RMSNorms, detect active norms and block boundaries, build
@@ -305,7 +291,7 @@ def analyze_llm_topology_by_name(
         RMSNorm-fused. Built here when ``None``. Pass one only to avoid a second
         ``from_proto`` of a large model when the caller already holds it; a
         faithful (unfused) IR will not detect norms and must not be passed.
-    :return: LlmTopologyByName with block/backbone roles, ``active_norms``,
+    :return: LlmTopology with block/backbone roles, ``active_norms``,
         ``hidden_size`` and ``head_dim`` populated. ``head_dim`` is ``None`` when
         the export exposes no ``past_value`` graph input to derive it from.
     """
@@ -340,44 +326,6 @@ def analyze_llm_topology_by_name(
         topology.head_dim = None
 
     return topology
-
-
-def analyze_llm_topology(
-    model: ModelProto,
-    connected_graph: Optional[ConnectedGraph] = None,
-    active_norms_per_block: int = 2,
-    expected_num_blocks: Optional[int] = None,
-    role_patterns: Optional[Dict[LinearRole, Pattern]] = None,
-) -> LlmTopology:
-    """Analyze ``model`` end-to-end and return a ConnectedGraph-flavored topology.
-
-    Convenience facade over :func:`analyze_llm_topology_by_name` that re-attaches
-    a ConnectedGraph, so the returned topology holds ``Op`` objects. The analysis
-    itself no longer uses the ConnectedGraph at all: it is needed only to resolve
-    names back to ops for consumers that have not migrated yet. Prefer
-    :func:`analyze_llm_topology_by_name`, which needs no ConnectedGraph.
-
-    :param model: ONNX ModelProto to analyze. Not mutated.
-    :param connected_graph: Pre-built ConnectedGraph for ``model``; built here
-        when ``None``. Used only to resolve names to ``Op`` objects.
-    :param active_norms_per_block: Active norms per decoder block (see
-        :func:`get_decoder_block_boundaries`). Defaults to 2.
-    :param expected_num_blocks: If given, validated against the detected count.
-    :param role_patterns: Optional module-name → role override (see
-        :func:`classify_linear_role`).
-    :return: LlmTopology with block/backbone roles, ``active_norms``,
-        ``hidden_size`` and ``head_dim`` populated. ``head_dim`` is ``None`` when
-        the export exposes no ``past_value`` graph input to derive it from.
-    """
-    topology = analyze_llm_topology_by_name(
-        model,
-        active_norms_per_block=active_norms_per_block,
-        expected_num_blocks=expected_num_blocks,
-        role_patterns=role_patterns,
-    )
-    if connected_graph is None:
-        connected_graph = ConnectedGraph(model)
-    return resolve_topology(topology, connected_graph)
 
 
 def _collect_past_key_input_names_in_order(ir_model: onnx_ir.Model) -> List[str]:
@@ -535,14 +483,98 @@ def _find_nearest_upstream_linears(
     return ir_analysis.sorted_by_topology(linears, topo_index)
 
 
+def _infer_hidden_size(ir_model: onnx_ir.Model, role_map: LlmTopology) -> int:
+    """Infer the model hidden size from embed_tokens, lm_head, or q/k/v_proj weights.
+
+    Tries ``embed_tokens`` first (Gather table ``[vocab, hidden]``, last dim = hidden).
+    Falls back to ``lm_head``, then to each block's ``qkv`` group, for backbones
+    exported with ``use_inputs_embeds=True`` that have no Gather op.
+
+    Takes the analysis IR rather than a ``ModelProto`` so the weight layout is
+    derived by the one implementation that already knows it,
+    :func:`~.ir_analysis.get_weight_value` — the topology itself only carries node
+    names. Shapes are read off the static tensor without materializing it; an
+    lm_head table can be hundreds of megabytes.
+
+    :param ir_model: Analysis IR model from :func:`~.ir_analysis.build_analysis_ir`.
+    :param role_map: Topology produced by :func:`get_llm_topology`.
+    :return: The hidden dimension size.
+    """
+    node_by_name = ir_analysis.node_by_name(ir_model)
+
+    for embed_name in role_map.embed_tokens:
+        # Only the data input (a [vocab, hidden] table) yields hidden_size; other
+        # static inputs (e.g. axis attributes, indices) are not embedding tables.
+        node = node_by_name.get(embed_name)
+        table = static_tensor(node.inputs[0]) if node else None
+        if table is not None and len(table.shape) >= 2:
+            return int(table.shape[-1])
+
+    # Gemm transB=1 stores W [vocab, hidden] -> hidden = shape[-1].
+    # MatMul stores W [hidden, vocab]        -> hidden = shape[0].
+    # Conv 1x1 stores W [vocab, hidden, 1, 1] -> hidden = shape[1].
+    for linear_name in [
+        *role_map.lm_head,
+        *(name for block in role_map.blocks for name in block.qkv.linears),
+    ]:
+        node = node_by_name.get(linear_name)
+        if node is None:
+            continue
+        weight, is_transposed = ir_analysis.get_weight_value(node)
+        if weight is None:
+            continue
+        shape = static_tensor(weight).shape
+        if node.op_type == "Conv":
+            return int(shape[1])  # [out_ch, in_ch, *k]: in_ch = hidden
+        return int(shape[-1] if is_transposed else shape[0])
+
+    raise ValueError(
+        "Cannot infer hidden_size: no embed_tokens, lm_head or qkv_proj static weight found in role_map"
+    )
+
+
+def _infer_head_dim(model: ModelProto) -> int:
+    """Infer per-head dimension from a ``past_value`` graph input's last axis.
+
+    HF/optimum LLM exports include ``past_value_*`` (or ``past_key_values.*.value``)
+    inputs whose final dimension is ``head_dim`` regardless of the surrounding
+    layout (``[B, num_kv_heads, past_seq, head_dim]`` or
+    ``[B, past_seq, num_kv_heads, head_dim]``). This avoids having to derive
+    ``head_dim`` from ``hidden_size / num_heads``, which is wrong for models
+    that decouple the two (e.g. Gemma3 fixes ``head_dim=256`` independent of
+    hidden size).
+
+    :param model: ONNX ModelProto whose graph inputs are scanned.
+    :return: ``head_dim`` read from the last dim of the first matching input.
+    :raises ValueError: If no ``past_value`` input exists, or if its last dim
+        is not a static positive integer.
+    """
+    for inp in model.graph.input:
+        if "past_value" not in inp.name:
+            continue
+        dims = inp.type.tensor_type.shape.dim
+        if len(dims) == 0:
+            continue
+        last = dims[-1]
+        # Must be a statically-known positive int. Symbolic dims (dim_param set,
+        # or dim_value == 0) cannot be used to derive head_dim.
+        if last.HasField("dim_value") and last.dim_value > 0:
+            head_dim = last.dim_value
+            _logger.info(
+                "Derived head_dim=%d from graph input '%s' (last dim of shape %s).",
+                head_dim,
+                inp.name,
+                [d.dim_value if d.HasField("dim_value") else d.dim_param for d in dims],
+            )
+            return head_dim
+
+    raise ValueError(
+        "Cannot infer head_dim: no graph input matching 'past_value' with a "
+        "static positive last dimension was found."
+    )
+
+
 __all__ = [
-    "BlockTopology",
-    "BlockTopologyByName",
-    "LinearGroup",
-    "LinearGroupByName",
-    "LlmTopology",
-    "LlmTopologyByName",
     "analyze_llm_topology",
-    "analyze_llm_topology_by_name",
     "get_llm_topology",
 ]

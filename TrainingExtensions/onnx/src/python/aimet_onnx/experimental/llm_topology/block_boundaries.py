@@ -21,7 +21,7 @@ from aimet_onnx.utils import ModelProto
 
 from aimet_onnx.experimental.llm_topology import ir_analysis
 from aimet_onnx.experimental.llm_topology.norm_detection import (
-    ActiveNormByName,
+    ActiveNorm,
     find_active_norms_in_ir,
 )
 
@@ -70,7 +70,7 @@ def get_decoder_block_boundaries(
 
 def get_decoder_block_boundaries_in_ir(
     ir_model: onnx_ir.Model,
-    active_norms: Optional[List[ActiveNormByName]] = None,
+    active_norms: Optional[List[ActiveNorm]] = None,
     expected_num_blocks: Optional[int] = None,
     active_norms_per_block: Optional[int] = None,
     topo_index: Optional[Dict[onnx_ir.Node, int]] = None,

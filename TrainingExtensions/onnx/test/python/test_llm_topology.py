@@ -12,7 +12,8 @@ Three groups:
   :func:`get_decoder_block_boundaries`, and :func:`get_llm_topology` on tiny
   hand-built decoders (relocated here from ``test_spinquant.py``).
 * **End-to-end facade** — :class:`TestAnalyzeLlmTopology`, covering
-  :func:`analyze_llm_topology`.
+  :func:`analyze_llm_topology` and the ``onnx_ir`` re-attachment in
+  :func:`~.ir_adapter.resolve_topology`.
 
 Broader coverage across real HuggingFace architectures lives in
 ``test_llm_topology_integration.py``.
@@ -22,11 +23,11 @@ import copy
 import re
 
 import numpy as np
+import onnx_ir
 import pytest
 import torch
 import torch.nn as nn
 
-from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.quantsim import QuantizationSimModel
 
 from aimet_onnx.experimental.llm_topology import ir_analysis
@@ -34,24 +35,22 @@ from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries,
     get_decoder_block_boundaries_in_ir,
 )
+from aimet_onnx.experimental.llm_topology.ir_adapter import resolve_topology
 from aimet_onnx.experimental.llm_topology.layer_roles import (
     LinearRole,
     classify_linear_role,
     module_name_of,
 )
-from aimet_onnx.experimental.llm_topology.cg_adapter import resolve_active_norms
 from aimet_onnx.experimental.llm_topology.norm_detection import (
     find_active_norms,
     find_active_norms_in_ir,
     get_last_norm_input_tensor,
 )
-from aimet_onnx.experimental.llm_topology import topology as topology_module
 from aimet_onnx.experimental.llm_topology.topology import (
+    _infer_hidden_size,
     analyze_llm_topology,
-    analyze_llm_topology_by_name,
     get_llm_topology,
 )
-from aimet_onnx.experimental.llm_topology.weight_utils import _infer_hidden_size
 
 from .models.test_models import RMSNorm
 from .models.style_decoders import (
@@ -85,7 +84,7 @@ _DECODERS = [
 def _name_topology(model, **kwargs):
     """Build the name-based topology for ``model``, the way the facade does.
 
-    Mirrors :func:`analyze_llm_topology_by_name` but stops before dimension
+    Mirrors :func:`analyze_llm_topology` but stops before dimension
     inference and exposes ``get_llm_topology``'s knobs, so tests can drive that
     function directly.
     """
@@ -515,7 +514,7 @@ class TestAnalyzeLlmTopology:
 
     @pytest.mark.parametrize("decoder_cls", _DECODERS)
     def test_populates_dims_and_roles(self, decoder_cls):
-        """The facade builds the CG itself and fills hidden_size / head_dim / active_norms."""
+        """The facade fills hidden_size / head_dim / active_norms."""
         torch.manual_seed(0)
         model = _export_decoder_with_ids(decoder_cls())
 
@@ -529,36 +528,6 @@ class TestAnalyzeLlmTopology:
         # active_norms are retained (2 per block + final norm).
         assert topology.active_norms is not None
         assert len(topology.active_norms) == 5
-
-    def test_reuses_supplied_connected_graph(self, monkeypatch):
-        """A caller-supplied ConnectedGraph must be used as-is, never rebuilt.
-
-        Asserting on dims/block counts alone would not catch a rebuild — the
-        rebuilt graph produces the same values. So we (a) make construction fail
-        loudly if attempted, and (b) check the returned ops are the very objects
-        owned by the supplied graph.
-        """
-        torch.manual_seed(0)
-        model = _export_decoder_with_ids(LlamaStyleDecoder())
-        cg = ConnectedGraph(model)
-
-        def _fail(*_args, **_kwargs):
-            raise AssertionError(
-                "analyze_llm_topology rebuilt the ConnectedGraph instead of "
-                "reusing the supplied one."
-            )
-
-        monkeypatch.setattr(topology_module, "ConnectedGraph", _fail)
-        topology = analyze_llm_topology(model, connected_graph=cg)
-
-        supplied_ops = set(cg.ordered_ops)
-        returned_ops = [
-            *topology.embed_tokens,
-            *topology.lm_head,
-            *(op for block in topology.blocks for op in block.o_proj),
-        ]
-        assert returned_ops
-        assert all(op in supplied_ops for op in returned_ops)
 
     def test_head_dim_none_without_past_value_input(self):
         """No ``past_value`` graph input → head_dim tolerated as None (R1-only / prefill)."""
@@ -584,34 +553,45 @@ class TestAnalyzeLlmTopology:
             analyze_llm_topology(model, expected_num_blocks=3)
 
     @pytest.mark.parametrize("decoder_cls", _DECODERS)
-    def test_cg_resolution_matches_name_topology(self, decoder_cls):
-        """Resolving to ConnectedGraph ops must not change what the topology says.
+    def test_ir_resolution_matches_name_topology(self, decoder_cls):
+        """Re-attaching an IR model must not change what the topology says.
 
-        The name-based analysis is the source of truth; ``analyze_llm_topology``
-        only re-attaches a ConnectedGraph. Every role must therefore come back
+        The name-based analysis is the source of truth; ``resolve_topology`` only
+        swaps names for ``onnx_ir`` handles. Every role must therefore come back
         with the same members, in the same order, under both flavors.
+
+        Note the analysis runs on the *fused* analysis IR while resolution targets
+        the *faithful* one built here — that asymmetry is exactly what SpinQuant
+        relies on, so it is what this test exercises.
         """
         torch.manual_seed(0)
         model = _export_decoder_with_ids(decoder_cls())
 
-        by_name = analyze_llm_topology_by_name(model)
-        resolved = analyze_llm_topology(model)
+        by_name = analyze_llm_topology(model)
+        resolved = resolve_topology(by_name, onnx_ir.from_proto(model))
 
-        assert by_name.embed_tokens == [op.name for op in resolved.embed_tokens]
-        assert by_name.lm_head == [op.name for op in resolved.lm_head]
+        assert by_name.embed_tokens == [n.name for n in resolved.embed_tokens]
+        assert by_name.lm_head == [n.name for n in resolved.lm_head]
         assert by_name.hidden_size == resolved.hidden_size
         assert by_name.head_dim == resolved.head_dim
+        assert by_name.past_key_input_names == resolved.past_key_input_names
+        assert [an.scale_name for an in by_name.active_norms] == [
+            an.scale_name for an in resolved.active_norms
+        ]
         assert len(by_name.blocks) == len(resolved.blocks)
-        for name_block, cg_block in zip(by_name.blocks, resolved.blocks):
-            assert name_block.qkv.linears == [op.name for op in cg_block.qkv.ops]
+        for name_block, ir_block in zip(by_name.blocks, resolved.blocks):
+            assert name_block.qkv.linears == [n.name for n in ir_block.qkv.nodes]
             assert name_block.gate_up.linears == [
-                op.name for op in cg_block.gate_up.ops
+                n.name for n in ir_block.gate_up.nodes
             ]
-            assert name_block.o_proj == [op.name for op in cg_block.o_proj]
-            assert name_block.down_proj == [op.name for op in cg_block.down_proj]
-            assert name_block.qk_matmul == [op.name for op in cg_block.qk_matmul]
-            assert name_block.residual_input == cg_block.residual_input.name
-            assert name_block.residual_output == cg_block.residual_output.name
+            assert name_block.o_proj == [n.name for n in ir_block.o_proj]
+            assert name_block.down_proj == [n.name for n in ir_block.down_proj]
+            assert name_block.qk_matmul == [n.name for n in ir_block.qk_matmul]
+            assert name_block.attn_v_matmul == [n.name for n in ir_block.attn_v_matmul]
+            assert name_block.residual_input == ir_block.residual_input.name
+            assert name_block.residual_output == ir_block.residual_output.name
+            # The role split survives resolution as a partition of the coarse group.
+            assert name_block.v_proj == [n.name for n in ir_block.v_proj]
 
 
 # ===========================================================================
@@ -632,7 +612,7 @@ class TestAnalysisIr:
         model = _export_decoder_with_ids(decoder_cls())
         before = model.SerializeToString()
 
-        analyze_llm_topology_by_name(model)
+        analyze_llm_topology(model)
 
         assert model.SerializeToString() == before
 
@@ -694,8 +674,8 @@ class TestAnalysisIr:
         torch.manual_seed(0)
         model = _export_decoder_with_ids(decoder_cls())
 
-        decomposed = analyze_llm_topology_by_name(model)
-        prefused = analyze_llm_topology_by_name(_fuse_rms_norms(model))
+        decomposed = analyze_llm_topology(model)
+        prefused = analyze_llm_topology(_fuse_rms_norms(model))
 
         assert [an.scale_name for an in prefused.active_norms] == [
             an.scale_name for an in decomposed.active_norms

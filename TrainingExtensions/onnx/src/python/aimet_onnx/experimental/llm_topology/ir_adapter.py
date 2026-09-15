@@ -4,15 +4,14 @@
 """onnx_ir-flavored view of an LLM topology.
 
 The analyzers in this package describe a decoder stack by name (see
-:mod:`~.topology_by_name`). A consumer that goes on to *rewrite* the graph needs
+:mod:`~.topology_types`). A consumer that goes on to *rewrite* the graph needs
 handles it can mutate, so :func:`resolve_topology` re-attaches an
-:class:`onnx_ir.Model` to a name-based topology and hands back the same
-dataclasses carrying ``onnx_ir.Node`` and ``onnx_ir.Value`` objects.
+:class:`onnx_ir.Model` to a name-based topology and hands back the same structure
+carrying ``onnx_ir.Node`` and ``onnx_ir.Value`` objects — the ``Ir``-prefixed
+dataclasses below.
 
-This is the IR counterpart of :mod:`~.cg_adapter`, and the one new code should
-use: an ``onnx_ir.Value`` already knows its producer and its consumers, so a
-consumer needs no side tables, and the graph object stays valid across node
-insertions (a ConnectedGraph does not).
+An ``onnx_ir.Value`` already knows its producer and its consumers, so a consumer
+needs no side tables, and the graph object stays valid across node insertions.
 
 Which model to resolve against
 ------------------------------
@@ -37,18 +36,18 @@ from typing import Dict, List, Optional
 import onnx_ir
 
 from aimet_onnx.experimental.llm_topology.layer_roles import LinearRole
-from aimet_onnx.experimental.llm_topology.norm_detection import ActiveNormByName
-from aimet_onnx.experimental.llm_topology.topology_by_name import (
-    LinearGroupByName,
-    LlmTopologyByName,
+from aimet_onnx.experimental.llm_topology.norm_detection import ActiveNorm
+from aimet_onnx.experimental.llm_topology.topology_types import (
+    LinearGroup,
+    LlmTopology,
 )
 
 
 @dataclass
-class ActiveNorm:
+class IrActiveNorm:
     """An affine RMSNorm that has at least one downstream weighted linear.
 
-    The IR-bearing counterpart of :class:`~.norm_detection.ActiveNormByName`. A
+    The IR-bearing counterpart of :class:`~.norm_detection.ActiveNorm`. A
     consumer that absorbs the norm's gamma into its downstream linears (e.g.
     SpinQuant's R1) needs to rewrite the gamma tensor itself, so ``scale`` is the
     gamma ``Value`` rather than just its name.
@@ -70,7 +69,7 @@ class ActiveNorm:
 
 
 @dataclass
-class LinearGroup:
+class IrLinearGroup:
     """A norm's downstream weighted linears, together with their role split.
 
     ``nodes`` is the coarse read group (the single source of truth): every
@@ -98,12 +97,12 @@ class LinearGroup:
 
 
 @dataclass
-class BlockTopology:
+class IrBlockTopology:
     """Topology of a single decoder block: weighted projections + dynamic MatMuls.
 
-    The two weighted read groups are :class:`LinearGroup` values — each exposes
+    The two weighted read groups are :class:`IrLinearGroup` values — each exposes
     both its coarse ``nodes`` list and the fine-grained role split (see
-    :class:`LinearGroup` and the ``q_proj`` / ``k_proj`` / ``v_proj`` /
+    :class:`IrLinearGroup` and the ``q_proj`` / ``k_proj`` / ``v_proj`` /
     ``gate_proj`` / ``up_proj`` convenience properties below). The two write
     projections and the dynamic attention MatMuls are plain node lists.
 
@@ -120,9 +119,9 @@ class BlockTopology:
     :param residual_output: Residual-stream tensor leaving the block.
     """
 
-    qkv: LinearGroup = field(default_factory=LinearGroup)
+    qkv: IrLinearGroup = field(default_factory=IrLinearGroup)
     o_proj: List[onnx_ir.Node] = field(default_factory=list)
-    gate_up: LinearGroup = field(default_factory=LinearGroup)
+    gate_up: IrLinearGroup = field(default_factory=IrLinearGroup)
     down_proj: List[onnx_ir.Node] = field(default_factory=list)
 
     qk_matmul: List[onnx_ir.Node] = field(default_factory=list)
@@ -158,7 +157,7 @@ class BlockTopology:
 
 
 @dataclass
-class LlmTopology:
+class IrLlmTopology:
     """Topology of an ONNX decoder-stack model: blocks + backbone-level roles + dims.
 
     :param embed_tokens: Token-embedding ``Gather`` node(s) that produce the
@@ -173,41 +172,41 @@ class LlmTopology:
     :param active_norms: Active norms in topological order used to build the
         topology.
     :param hidden_size: Residual-stream hidden dimension (``None`` if not
-        inferred; :func:`~.topology.analyze_llm_topology_by_name` fills it).
+        inferred; :func:`~.topology.analyze_llm_topology` fills it).
     :param head_dim: Per-head dimension (``None`` when it could not be derived,
         e.g. an export without KV-cache inputs).
     """
 
     embed_tokens: List[onnx_ir.Node] = field(default_factory=list)
     lm_head: List[onnx_ir.Node] = field(default_factory=list)
-    blocks: List[BlockTopology] = field(default_factory=list)
+    blocks: List[IrBlockTopology] = field(default_factory=list)
     past_key_input_names: List[str] = field(default_factory=list)
-    active_norms: Optional[List[ActiveNorm]] = None
+    active_norms: Optional[List[IrActiveNorm]] = None
     hidden_size: Optional[int] = None
     head_dim: Optional[int] = None
 
 
 def resolve_topology(
-    topology: LlmTopologyByName,
+    topology: LlmTopology,
     ir_model: onnx_ir.Model,
-) -> LlmTopology:
+) -> IrLlmTopology:
     """Re-attach ``ir_model`` to a name-based topology.
 
     Every node name in the topology is replaced with the ``onnx_ir.Node`` of that
     name; every tensor name becomes the ``onnx_ir.Value`` of that name.
 
     :param topology: Name-based topology, as returned by
-        :func:`~.topology.analyze_llm_topology_by_name`.
+        :func:`~.topology.analyze_llm_topology`.
     :param ir_model: The IR model to resolve against — the one the caller intends
         to mutate. See the module docstring on why this is not the analysis IR.
-    :return: The equivalent IR-bearing :class:`LlmTopology`.
+    :return: The equivalent IR-bearing :class:`IrLlmTopology`.
     :raises ValueError: If any name cannot be resolved against ``ir_model`` — the
         two were built from different graphs.
     """
     nodes = _node_by_name(ir_model)
     values = onnx_ir.convenience.create_value_mapping(ir_model.graph)
 
-    resolved = LlmTopology(
+    resolved = IrLlmTopology(
         embed_tokens=_resolve_nodes(topology.embed_tokens, nodes),
         lm_head=_resolve_nodes(topology.lm_head, nodes),
         past_key_input_names=list(topology.past_key_input_names),
@@ -217,7 +216,7 @@ def resolve_topology(
     )
     for block in topology.blocks:
         resolved.blocks.append(
-            BlockTopology(
+            IrBlockTopology(
                 qkv=_resolve_group(block.qkv, nodes),
                 o_proj=_resolve_nodes(block.o_proj, nodes),
                 gate_up=_resolve_group(block.gate_up, nodes),
@@ -232,21 +231,21 @@ def resolve_topology(
 
 
 def resolve_active_norms(
-    active_norms: List[ActiveNormByName],
+    active_norms: List[ActiveNorm],
     ir_model: onnx_ir.Model,
-) -> List[ActiveNorm]:
+) -> List[IrActiveNorm]:
     """Re-attach ``ir_model`` to name-based active norms.
 
     :param active_norms: Name-based norms from
         :func:`~.norm_detection.find_active_norms`.
     :param ir_model: The IR model to resolve against.
-    :return: The equivalent IR-bearing :class:`ActiveNorm`\\ s, in the same order.
+    :return: The equivalent IR-bearing :class:`IrActiveNorm`\\ s, in the same order.
     :raises ValueError: If a gamma tensor or a downstream linear cannot be resolved.
     """
     nodes = _node_by_name(ir_model)
     values = onnx_ir.convenience.create_value_mapping(ir_model.graph)
     return [
-        ActiveNorm(
+        IrActiveNorm(
             scale=_resolve_value(active_norm.scale_name, values),
             downstream_linears=_resolve_nodes(active_norm.downstream_linears, nodes),
             input_tensor=_resolve_value(active_norm.input_tensor or None, values),
@@ -267,11 +266,11 @@ def _node_by_name(ir_model: onnx_ir.Model) -> Dict[str, onnx_ir.Node]:
 
 
 def _resolve_group(
-    group: LinearGroupByName,
+    group: LinearGroup,
     nodes: Dict[str, onnx_ir.Node],
-) -> LinearGroup:
+) -> IrLinearGroup:
     """Resolve a name-based read group, preserving its role split."""
-    return LinearGroup(
+    return IrLinearGroup(
         nodes=_resolve_nodes(group.linears, nodes),
         by_role={
             role: _resolve_nodes(names, nodes) for role, names in group.by_role.items()
@@ -318,10 +317,10 @@ def _resolve_value(
 
 
 __all__ = [
-    "ActiveNorm",
-    "BlockTopology",
-    "LinearGroup",
-    "LlmTopology",
+    "IrActiveNorm",
+    "IrBlockTopology",
+    "IrLinearGroup",
+    "IrLlmTopology",
     "resolve_active_norms",
     "resolve_topology",
 ]

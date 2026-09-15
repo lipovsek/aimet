@@ -9,13 +9,13 @@ import numpy as np
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.ir_utils import set_static_tensor, static_tensor
 
-from aimet_onnx.experimental.llm_topology.ir_adapter import ActiveNorm
+from aimet_onnx.experimental.llm_topology.ir_adapter import IrActiveNorm
 from aimet_onnx.experimental.llm_topology.ir_analysis import get_weight_value
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.SpinQuant)
 
 
-def fuse_norm_layers_into_linears(active_norms: List[ActiveNorm]):
+def fuse_norm_layers_into_linears(active_norms: List[IrActiveNorm]):
     """Absorb RMSNorm gamma into downstream linear weights, then reset gamma to ones.
 
     For every affine RMSNorm in ``active_norms``, this function multiplies the
