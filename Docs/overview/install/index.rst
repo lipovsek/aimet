@@ -78,17 +78,28 @@ each package is obtained per platform.
 CUDA (GPU) acceleration
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-CUDA 12.x is validated for aimet-torch and aimet-onnx on Linux (x86-64), using
-the ``+cu126`` wheels. Windows and macOS builds are CPU-only. GPU acceleration
-additionally requires:
+CUDA 12.x is validated for aimet-torch and aimet-onnx on Linux (x86-64).
+Windows and macOS builds are CPU-only. A single wheel per platform serves both
+CPU and GPU users, so there is nothing CUDA-specific to pick at install time.
+GPU acceleration additionally requires:
 
 * Nvidia GPU card (Compute capability 5.2 or later)
 * Nvidia driver version 455 or later (using the latest driver is recommended; both CUDA and cuDNN are supported)
 
+For aimet-onnx, the wheel depends on ``onnxruntime`` (CPU). To run on GPU,
+install ``onnxruntime-gpu`` yourself:
+
+.. code-block:: bash
+
+    pip install onnxruntime-gpu
+
+For aimet-torch, install the CUDA build of ``torch`` from
+https://pytorch.org/get-started/locally/ if pip did not already resolve one.
+
 Choose and install a package
 ----------------------------
 
-Use one of the following commands to install AIMET based on your choice of framework and compute platform.
+Use one of the following commands to install AIMET based on your choice of framework and platform.
 All wheels below use the CPython stable ABI (``cp310-abi3``) and install on any Python 3.10+ interpreter
 without needing a version-specific URL.
 
@@ -98,44 +109,32 @@ without needing a version-specific URL.
     .. tab-item:: ONNX
         :sync: onnx
 
-        Linux (x86-64), with CUDA 12.x:
+        Linux (x86-64):
 
         .. parsed-literal::
 
-            python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cu126\ |whl_suffix|
-
-        Linux (x86-64), CPU only:
-
-        .. parsed-literal::
-
-            python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cpu\ |whl_suffix|
+            python3 -m pip install |download_url|\ |version|/aimet_onnx-|version|\ |whl_suffix|
+            # Optional: To accelerate quantization with CUDA
+            python3 -m pip install onnxruntime-gpu
 
         Windows (x86-64), CPU only:
 
         .. parsed-literal::
 
-            python -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cpu\ |win_amd64_whl_suffix|
+            python -m pip install |download_url|\ |version|/aimet_onnx-|version|\ |win_amd64_whl_suffix|
 
         Windows (ARM64), CPU only:
 
         .. parsed-literal::
 
-            python -m pip install |download_url|\ |version|/aimet_onnx-|version|\+cpu\ |win_arm64_whl_suffix|
+            python -m pip install |download_url|\ |version|/aimet_onnx-|version|\ |win_arm64_whl_suffix|
 
     .. tab-item:: PyTorch
         :sync: torch
 
-        With CUDA 12.x:
-
         .. parsed-literal::
 
-            python3 -m pip install |download_url|\ |version|/aimet_torch-|version|\+cu126\ |torch_whl_suffix|
-
-        With CPU only:
-
-        .. parsed-literal::
-
-            python3 -m pip install |download_url|\ |version|/aimet_torch-|version|\+cpu\ |torch_whl_suffix|
+            python3 -m pip install |download_url|\ |version|/aimet_torch-|version|\ |torch_whl_suffix|
 
 Verifying the installation
 --------------------------

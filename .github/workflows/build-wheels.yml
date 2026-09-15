@@ -117,7 +117,7 @@ jobs:
           $env:CMAKE_TOOLCHAIN_FILE = $vcpkgToolchain
 
           # Set CMake args for ${{ matrix.arch }} Windows build
-          $cmakeArgs = "-DENABLE_CUDA=OFF -DENABLE_TORCH=OFF -DENABLE_ONNX=ON -DENABLE_TESTS=OFF -DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain"
+          $cmakeArgs = "-DENABLE_CUDA=OFF -DENABLE_TORCH=OFF -DENABLE_ONNX=ON -DENABLE_TESTS=OFF -DPIP_INDEX=pypi -DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain"
 
           # For ARM64 cross-compilation, point to ARM64 Python libs
           if ("${{ matrix.arch }}" -eq "arm64") {

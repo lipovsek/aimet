@@ -115,10 +115,9 @@ jobs:
     needs: build_wheels_and_test
     uses: ./.github/workflows/pypi-release-pipeline.yml
     with:
+      # build_wheels_and_test already produced and tested this exact wheel.
       variant-id: onnx-gpu
       deploy: true
-      run_unit_tests: true
-      run_acceptance_tests: false
     secrets: inherit
 
   release_aimet_torch_to_pypi:
@@ -127,10 +126,9 @@ jobs:
     needs: build_wheels_and_test
     uses: ./.github/workflows/pypi-release-pipeline.yml
     with:
+      # build_wheels_and_test already produced and tested this exact wheel.
       variant-id: torch-gpu
       deploy: true
-      run_unit_tests: true
-      run_acceptance_tests: false
     secrets: inherit
 
   release_to_github:
@@ -159,12 +157,13 @@ jobs:
           git remote add public-origin https://${{ secrets.AIMET_BOT_PUB_GITHUB_TOKEN }}@github.com/qualcomm/aimet.git
           git push public-origin ${{ github.ref_name }}:${{ github.ref_name }}
 
+      # Every wheel artifact (Linux and Windows); excludes the Docs and *-tests
+      # artifacts, which aren't wheels. The release step picks the publishable
+      # ones out of these.
       - name: Download artifacts
         if: inputs.push_to_github
         uses: actions/download-artifact@v4
         with:
-          # Include every wheel artifact (Linux and Windows); excludes the
-          # Docs and *-tests artifacts, which aren't wheels.
           pattern: "*-wheel"
           path: artifacts-downloaded
 
@@ -187,16 +186,23 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.AIMET_BOT_PUB_GITHUB_TOKEN }}
           tag: ${{ inputs.version }}
         run: |
-          mkdir assets_to_upload
-          # Copy all wheels to upload on release
-          find artifacts-downloaded -name "aimet*.whl" -exec cp {} assets_to_upload \;
+          set -euo pipefail
 
-          export whl_file=$(\
-              find assets_to_upload -regextype posix-extended -regex ".*aimet_.*.whl" \
-          )
+          # Publish every wheel without a local version; +cpu ones are test-only.
+          mapfile -t wheels < <(find artifacts-downloaded \
+              -regextype posix-extended \
+              -regex ".*/aimet_(torch|onnx)-[0-9]+\.[0-9]+\.[0-9]+-.+\.whl" | sort)
+          printf 'Publishing %s wheel(s):\n' "${#wheels[@]}"
+          printf '  %s\n' ${wheels[@]+"${wheels[@]}"}
+
+          if [ "${#wheels[@]}" -eq 0 ] ; then
+            echo "::error::No publishable wheels found; refusing to release ${tag}"
+            exit 1
+          fi
+
           # Create release on public repo
           title="Version ${tag}"
-          gh release create "${tag}" --repo ${{ env.PUBLIC_REPO }} --target ${{ github.ref_name }} --title "${title}" --generate-notes $whl_file
+          gh release create "${tag}" --repo ${{ env.PUBLIC_REPO }} --target ${{ github.ref_name }} --title "${title}" --generate-notes "${wheels[@]}"
 
       - name: Download Docs artifact
         if: inputs.push_docs

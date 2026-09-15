@@ -52,6 +52,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.set_vars.outputs.ref_name }}
+      # PIP_INDEX policy: the *-gpu variants build the wheels we actually
+      # publish, so they use PIP_INDEX=pypi and carry no local version
+      # (PyPI rejects "+cuXXX"). The *-cpu variants keep the local version and
+      # are build/test-only -- they are never published anywhere.
       - name: Torch variants
         run: |
           VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
@@ -77,7 +81,7 @@ jobs:
                  "RUN_UNIT_TESTS":    "ON",
                  "RUN_ACCEPTANCE_TESTS":    "ON",
                  "BUILD_TARGETS":   "all",
-                 "PIP_INDEX":       ""
+                 "PIP_INDEX":       "pypi"
               }
             ]')
           echo "VALUE=$VALUE" >> $GITHUB_ENV
@@ -106,7 +110,7 @@ jobs:
                  "RUN_UNIT_TESTS":    "ON",
                  "RUN_ACCEPTANCE_TESTS":    "ON",
                  "BUILD_TARGETS":   "all",
-                 "PIP_INDEX":       ""
+                 "PIP_INDEX":       "pypi"
               }
             ]')
           echo "VALUE=$VALUE" >> $GITHUB_ENV

@@ -1,32 +1,10 @@
 name: PyPI release pipeline
 
 on:
-  workflow_dispatch:
-    inputs:
-      variant-id:
-        description: "Variant id"
-        required: true
-        type: string
-      deploy:
-        description: "Deploy to official pypi if true"
-        required: false
-        type: boolean
-        default: false
-      run_unit_tests:
-        description: "Run unit tests before pushing wheels to pypi"
-        required: false
-        type: boolean
-        default: true
-      run_acceptance_tests:
-        description: "Run acceptance tests before pushing wheels to pypi"
-        required: false
-        type: boolean
-        default: true
-
   workflow_call:
     inputs:
       variant-id:
-        description: "Variant id"
+        description: "Variant id whose prebuilt wheel to publish"
         required: true
         type: string
       deploy:
@@ -34,108 +12,22 @@ on:
         required: false
         type: boolean
         default: false
-      run_unit_tests:
-        description: "Run unit tests before pushing wheels to pypi"
-        required: false
-        type: boolean
-        default: true
-      run_acceptance_tests:
-        description: "Run acceptance tests before pushing wheels to pypi"
-        required: false
-        type: boolean
-        default: true
 
 jobs:
-  variants:
-    name: Populate supported AIMET variants
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.final.outputs.value }}
-    steps:
-      - name: Variants to be published on PyPI
-        run: |
-          if [ "${{ inputs.variant-id }}" == "torch-gpu" ] ; then
-            VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
-              {
-                 "id":              "torch-gpu",
-                 "VER_PYTHON":      "3.12",
-                 "VER_TORCH":       "2.*",
-                 "VER_ONNXRUNTIME": "",
-                 "VER_CUDA":        "12.6.3",
-                 "RUN_UNIT_TESTS":    "OFF",
-                 "RUN_ACCEPTANCE_TESTS":    "OFF",
-                 "BUILD_TARGETS":   "all",
-                 "PIP_INDEX":       "pypi"
-              }
-            ]')
-          elif [ "${{ inputs.variant-id }}" == "onnx-gpu" ] ; then
-            VALUE=$(echo "${VALUE:-"{}"}" | jq -c '.include += [
-              {
-                 "id":              "onnx-gpu",
-                 "VER_PYTHON":      "3.12",
-                 "VER_TORCH":       "",
-                 "VER_ONNXRUNTIME": "1.19.2",
-                 "VER_CUDA":        "12.6.3",
-                 "RUN_UNIT_TESTS":    "OFF",
-                 "RUN_ACCEPTANCE_TESTS":    "OFF",
-                 "BUILD_TARGETS":   "all",
-                 "PIP_INDEX":       "pypi"
-              }
-            ]')
-          fi
-          echo "VALUE=$VALUE" >> $GITHUB_ENV
-      - name: (Last step) Generate few extra properties for each variant
-        id: final
-        run: |
-          echo "value=$VALUE" >> $GITHUB_OUTPUT
-
-  call-build-wheels:
-    name: Call build-wheels
-    needs: [ variants ]
-    uses: ./.github/workflows/build-wheels.yml
-    with:
-      variants: ${{ needs.variants.outputs.matrix }}
-    secrets: inherit
-
-  call-run-unit-acceptance-tests:
-    name: Run unit tests
-    if: ${{ inputs.run_unit_tests || inputs.run_acceptance_tests }}
-    needs: [ variants, call-build-wheels ]
-    uses: ./.github/workflows/run-unit-acceptance-tests.yml
-    strategy:
-      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
-    with:
-      env_name: ${{ matrix.id }}
-      ver_python: ${{ matrix.VER_PYTHON }}
-      ver_cuda: ${{ matrix.VER_CUDA }}
-      ver_torch: ${{ matrix.VER_TORCH }}
-      ver_onnxruntime: ${{ matrix.VER_ONNXRUNTIME }}
-      pip_index: ${{ matrix.PIP_INDEX }}
-      run_unit_tests: ${{ matrix.RUN_UNIT_TESTS == 'OFF' }}
-      run_acceptance_tests: ${{ matrix.RUN_ACCEPTANCE_TESTS == 'OFF' }}
-      include_windows_tests: false
-    secrets: inherit
-
   publish:
-    name: Publish the wheel packages
+    name: Publish the ${{ inputs.variant-id }} wheel package
     runs-on: ubuntu-latest
-    needs: [ variants, call-run-unit-acceptance-tests ]
-    # Unit tests must pass before publishing wheels to PyPI
-    # Acceptance tests are optional when running via release workflow
-    if: ${{ needs.call-run-unit-acceptance-tests.result == 'success' }}
     # Requires approval to publish wheels to PyPI from aimet-deployers
     environment: prod
     env:
       DEPLOY: ${{ inputs.deploy }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     container:
       image: "ubuntu:22.04"
     steps:
+      # The caller's nightly run already built and tested this wheel.
       - uses: actions/download-artifact@v4
         with:
-          name: "${{ matrix.id }}-wheel"
+          name: "${{ inputs.variant-id }}-wheel"
           path: "downloads"
       - run: |
           apt-get update
