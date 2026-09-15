@@ -229,9 +229,15 @@ class AffineEncoding(EncodingBase, _GridMixin):
 
         scale = self.scale.to(dtype=dtype, device=device)
         offset = self.offset.to(dtype=dtype, device=device)
-        properties = self._get_additional_properties()
-        return type(self)(
-            scale, offset, self.qmin, self.qmax, self._symmetry, **properties
+        return AffineEncoding(
+            scale=scale,
+            offset=offset,
+            qmin=self.qmin,
+            qmax=self.qmax,
+            symmetry=self._symmetry,
+            block_size=self.block_size,
+            zero_point_shift=self.zero_point_shift,
+            producer=self.producer,
         )
 
     def quantize(self, input: torch.Tensor) -> torch.Tensor:
@@ -547,6 +553,27 @@ class VectorEncoding(AffineEncoding):
             encodings["enc_type"] = EncodingType.VECTOR.name
         return encodings
 
+    def to(self, *args, **kwargs):
+        affine_encoding = super().to(*args, **kwargs)
+
+        if affine_encoding is self:
+            return self
+
+        return VectorEncoding(
+            scale=affine_encoding.scale,
+            offset=affine_encoding.offset,
+            bitwidth=affine_encoding.bitwidth,
+            signed=affine_encoding.signed,
+            symmetry=affine_encoding.symmetry,
+            block_size=affine_encoding.block_size,
+            rows_per_block=self.rows_per_block,
+            cols_per_block=self.cols_per_block,
+            vector_dim=self.vector_dim,
+            vector_stride=self.vector_stride,
+            index_bw=self.index_bw,
+            producer=affine_encoding.producer,
+        )
+
 
 # pylint: disable=too-many-arguments
 class GroupedBlockEncoding(AffineEncoding):
@@ -706,3 +733,26 @@ class GroupedBlockEncoding(AffineEncoding):
             return lpbq_encoding._hint_input_shape(encoding._input_shape_hint)
 
         raise ValueError("Failed to interpret encoding as GroupedBlockEncoding.")
+
+    def to(self, *args, **kwargs):
+        affine_encoding = super().to(*args, **kwargs)
+
+        if affine_encoding is self:
+            return self
+
+        per_channel_scale = self.per_channel_scale.to(
+            dtype=affine_encoding.scale.dtype, device=affine_encoding.scale.device
+        )
+
+        return GroupedBlockEncoding(
+            scale=affine_encoding.scale,
+            offset=affine_encoding.offset,
+            bitwidth=affine_encoding.bitwidth,
+            signed=affine_encoding.signed,
+            symmetry=affine_encoding.symmetry,
+            block_size=affine_encoding.block_size,
+            block_grouping=self.block_grouping,
+            decompressed_bw=self.decompressed_bw,
+            per_channel_scale=per_channel_scale,
+            producer=affine_encoding.producer,
+        )

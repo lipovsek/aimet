@@ -100,7 +100,7 @@ class FloatEncoding(EncodingBase):
         """
         return self.mantissa_bits + self.exponent_bits + 1
 
-    def to(self, *args, **kwargs):
+    def to(self, *args, **kwargs) -> "FloatEncoding":
         """
         Changes dtype of data in quantizer encoding or device where the data is.
         Behaves similar to torch.Tensor.to
@@ -128,7 +128,7 @@ class FloatEncoding(EncodingBase):
 
         scale = self.scale.to(dtype=dtype, device=device)
 
-        return type(self)(
+        return FloatEncoding(
             self.mantissa_bits,
             self.exponent_bits,
             self.finite,
@@ -347,4 +347,21 @@ class _NVFP4Encoding(FloatEncoding):
             meta_scale=meta_scale,
             block_size=encoding.block_size,
             producer=encoding.producer,
+        )
+
+    def to(self, *args, **kwargs) -> "_NVFP4Encoding":
+        fp_encoding = super().to(*args, **kwargs)
+
+        if fp_encoding is self:
+            return self
+
+        meta_scale = self.meta_scale.to(
+            dtype=fp_encoding.scale.dtype, device=fp_encoding.scale.device
+        )
+
+        return _NVFP4Encoding(
+            scale=fp_encoding.scale,
+            meta_scale=meta_scale,
+            block_size=fp_encoding.block_size,
+            producer=fp_encoding.producer,
         )

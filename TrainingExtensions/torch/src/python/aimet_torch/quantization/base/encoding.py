@@ -46,7 +46,7 @@ class EncodingBase(abc.ABC):
         """
 
     @abc.abstractmethod
-    def to(self, *args, **kwargs):
+    def to(self, *args, **kwargs) -> "EncodingBase":
         """
         Changes dtype of data in quantizer encoding or device where the data is.
         Returns new encoding with changed dtype and device without changing current encoding

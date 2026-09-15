@@ -26,13 +26,15 @@ from aimet_torch.v2.quantization.affine.backends import (
     dequantize,
 )
 import aimet_torch
+from aimet_torch.v2.quantization.base import EncodingBase
 from aimet_torch.v2.quantization.affine import (
     AffineEncoding,
+    GroupedBlockEncoding,
     Quantize,
     QuantizeDequantize,
     GroupedBlockQuantizeDequantize,
 )
-from aimet_torch.quantization.float.encoding import _NVFP4Encoding
+from aimet_torch.quantization.float.encoding import FloatEncoding, _NVFP4Encoding
 from aimet_torch.quantization.float.quantizer import (
     _float_quantize_dequantize,
     _float4_e2m1fn,
@@ -2749,3 +2751,107 @@ def test_nvfp4_int8_error():
         )
         meta_scale = torch.tensor([0.1])
         qlinear.set_weight_quantizer_to_nvfp4_int8(scale_q, meta_scale)
+
+
+@pytest.fixture
+def encoding(request):
+    encoding_type = request.param
+
+    if encoding_type == AffineEncoding:
+        return AffineEncoding(
+            scale=torch.ones(64, 4),
+            offset=torch.zeros(64, 4),
+            qmin=-4,
+            qmax=3,
+            symmetry=True,
+            block_size=(1, 16),
+            zero_point_shift=0.5,
+        )
+    elif encoding_type == GroupedBlockEncoding:
+        return GroupedBlockEncoding(
+            scale=torch.ones(64, 4),
+            offset=torch.tensor(0.0),
+            bitwidth=4,
+            block_size=(1, 16),
+            block_grouping=(1, 4),
+            decompressed_bw=8,
+            per_channel_scale=torch.ones(64, 1),
+        )
+    elif encoding_type == FloatEncoding:
+        return FloatEncoding(
+            mantissa_bits=3,
+            exponent_bits=4,
+            finite=True,
+            unsigned_zero=False,
+            scale=torch.ones(64, 4),
+            block_size=(1, 16),
+        )
+    elif encoding_type == _NVFP4Encoding:
+        return _NVFP4Encoding(
+            scale=torch.ones(64, 4),
+            meta_scale=torch.tensor(0.1),
+            block_size=(1, 16),
+        )
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "encoding",
+    [AffineEncoding, GroupedBlockEncoding, FloatEncoding, _NVFP4Encoding],
+    indirect=True,
+)
+def test_cross_device_copy_with_prequantized_parameter(encoding: EncodingBase):
+    """
+    Given: Qmodule with pre-quantized weight parameter (DequantizedTensor with encoding)
+    When: Copy model from/to cuda device
+    Then: Should be copied normally without error
+    """
+    qlinear = QuantizedLinear(64, 64, bias=False)
+    dequantized_weight = qlinear.weight.as_subclass(DequantizedTensor)
+    dequantized_weight.encoding = encoding
+    qlinear.weight = torch.nn.Parameter(dequantized_weight)
+    old_encoding = copy.deepcopy(qlinear.weight.encoding)
+    model = torch.nn.Sequential(qlinear)
+
+    for target_device in [torch.device("cuda:0"), torch.device("cpu")]:
+        model.to(target_device)
+        new_encoding = qlinear.weight.encoding
+
+        assert type(new_encoding) == type(old_encoding)
+        assert new_encoding.block_size == old_encoding.block_size
+        assert new_encoding.producer == old_encoding.producer
+        assert new_encoding._input_shape_hint == old_encoding._input_shape_hint
+        assert torch.equal(new_encoding.scale.cpu(), old_encoding.scale.cpu())
+        assert qlinear.weight.device == new_encoding.scale.device == target_device
+
+        if isinstance(new_encoding, AffineEncoding):
+            assert new_encoding.offset.device == target_device
+            assert torch.equal(new_encoding.offset.cpu(), old_encoding.offset.cpu())
+            assert new_encoding.qmin == old_encoding.qmin
+            assert new_encoding.qmax == old_encoding.qmax
+            assert new_encoding.symmetry == old_encoding.symmetry
+            assert new_encoding.zero_point_shift == old_encoding.zero_point_shift
+
+        if isinstance(new_encoding, GroupedBlockEncoding):
+            assert new_encoding.per_channel_scale.device == target_device
+            assert torch.equal(
+                new_encoding.per_channel_scale.cpu(),
+                old_encoding.per_channel_scale.cpu(),
+            )
+            assert new_encoding.block_grouping == old_encoding.block_grouping
+            assert new_encoding.decompressed_bw == old_encoding.decompressed_bw
+
+        if isinstance(new_encoding, FloatEncoding):
+            assert new_encoding.mantissa_bits == old_encoding.mantissa_bits
+            assert new_encoding.exponent_bits == old_encoding.exponent_bits
+            assert new_encoding.finite == old_encoding.finite
+            assert new_encoding.unsigned_zero == old_encoding.unsigned_zero
+
+        if isinstance(new_encoding, _NVFP4Encoding):
+            assert new_encoding.meta_scale.device == target_device
+            assert torch.equal(
+                new_encoding.meta_scale.cpu(), old_encoding.meta_scale.cpu()
+            )
+
+        dummy_input = torch.randn(1, 64, device=target_device)
+        _ = qlinear(dummy_input)

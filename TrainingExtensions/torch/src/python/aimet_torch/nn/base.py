@@ -269,6 +269,25 @@ class BaseQuantizationMixin(abc.ABC):
         """
         return super().forward(*args, **kwargs)
 
+    def _apply(self, *args, **kwargs):
+        """
+        Shallow wrapper around torch.nn.Module._apply() that ensures
+        device sync between quantized parameters and their encodings.
+
+        torch.nn.Modules.to() sometimes modifies the parameter in-place like ``param.data = ...``,
+        leaving the param.encoding object not updated properly
+        """
+        self = super()._apply(*args, **kwargs)  # pylint: disable=self-cls-assignment
+
+        for param in self.parameters(recurse=False):
+            if not isinstance(param, QuantizedTensorBase) or not param.encoding:
+                continue
+
+            if param.encoding.scale.device != param.device:
+                param.encoding = param.encoding.to(device=param.device)
+
+        return self
+
     def _patch_quantized_parameters(
         self, param_names: Optional[Iterable[str]] = None
     ) -> contextlib.AbstractContextManager:
