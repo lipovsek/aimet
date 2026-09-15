@@ -322,6 +322,13 @@ def _convert_200_to_210(encoding: dict, input_shape: Sequence[int] | None):
     }
 
 
+@functools.lru_cache(maxsize=1)
+def _is_onnx_118_or_lower():
+    from packaging import version
+
+    return version.parse(onnx.__version__) < version.parse("1.19.0")
+
+
 def _str_to_np_dtype(dtype_str: str) -> np.dtype:
     """
     Convert dtype string to np.dtype
@@ -336,6 +343,25 @@ def _str_to_np_dtype(dtype_str: str) -> np.dtype:
             f"Unsupported dtype: {dtype_str}. "
             f"Supported dtypes: {list(supported_dtypes.keys())}"
         ) from e
+
+    if _is_onnx_118_or_lower() and int(tensor_dtype) in (
+        int(TensorProto.BFLOAT16),
+        int(TensorProto.FLOAT8E4M3FN),
+        int(TensorProto.FLOAT8E4M3FNUZ),
+        int(TensorProto.FLOAT8E5M2),
+        int(TensorProto.FLOAT8E5M2FNUZ),
+        int(TensorProto.UINT4),
+        int(TensorProto.INT4),
+        int(TensorProto.FLOAT4E2M1),
+    ):
+        raise RuntimeError(
+            f"Expected onnx>=1.19.0, but got onnx=={onnx.__version__}. "
+            f"Tried to convert onnx data type {dtype_str.upper()} to np.dtype, but "
+            "older versions of onnx doesn't properly support converting BFLOAT16, FLOAT8, "
+            "FLOAT4, or [U]INT4 tensors to numpy tensors. Please upgrade to onnx>=1.19.0. "
+            "For more information, see https://github.com/onnx/onnx/issues/6605"
+        )
+
     return onnx.helper.tensor_dtype_to_np_dtype(tensor_dtype)
 
 
