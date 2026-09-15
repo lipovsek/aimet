@@ -21,6 +21,7 @@ model you intend to mutate, not the analysis IR — see :mod:`~.ir_adapter`.
 
 from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries,
+    resolve_residual_tensor_name,
 )
 from aimet_onnx.experimental.llm_topology.ir_adapter import (
     IrActiveNorm,
@@ -64,5 +65,6 @@ __all__ = [
     "get_decoder_block_boundaries",
     "get_llm_topology",
     "resolve_active_norms",
+    "resolve_residual_tensor_name",
     "resolve_topology",
 ]

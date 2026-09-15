@@ -158,6 +158,38 @@ def get_decoder_block_boundaries_in_ir(
     return block_boundaries
 
 
+def resolve_residual_tensor_name(graph: onnx_ir.Graph, tensor_name: str) -> str:
+    """Walk back through leading ``Cast`` producers to the true residual tensor.
+
+    A boundary tensor reported by :func:`get_decoder_block_boundaries` is the
+    value entering a norm. In fp16 exports that value is often the output of a
+    ``Cast`` sitting between the residual ``Add`` and the norm, so the boundary
+    name is one hop downstream of the tensor that actually carries the
+    cross-block residual. Consumers that slice the graph at a block boundary
+    (e.g. AdaScale) need the pre-``Cast`` name so the slice starts on the
+    residual itself.
+
+    :param graph: Graph the name belongs to.
+    :param tensor_name: Boundary tensor name to resolve.
+    :return: The deepest upstream value name reachable through ``Cast``
+        producers only, or ``tensor_name`` unchanged when it is absent from
+        ``graph`` or is not produced by a ``Cast`` (already resolved).
+    """
+    name_to_value = onnx_ir.convenience.create_value_mapping(graph)
+    if tensor_name not in name_to_value:
+        return tensor_name
+    value = name_to_value[tensor_name]
+    while True:
+        producer = value.producer()
+        if producer is None or producer.op_type != "Cast":
+            break
+        upstream = producer.inputs[0]
+        if upstream is None or upstream.name is None:
+            break
+        value = upstream
+    return value.name
+
+
 def _resolve_norms_per_block(
     num_active_norms: int,
     expected_num_blocks: Optional[int],
@@ -260,4 +292,5 @@ def _find_value(ir_model: onnx_ir.Model, tensor_name: str) -> Optional[onnx_ir.V
 __all__ = [
     "get_decoder_block_boundaries",
     "get_decoder_block_boundaries_in_ir",
+    "resolve_residual_tensor_name",
 ]

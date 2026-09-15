@@ -18,6 +18,7 @@ from aimet_onnx.experimental.adascale.adascale_optimizer import (
     adascale_model_config_dict,
 )
 from aimet_onnx.experimental.spinquant import apply_spinquant
+from aimet_onnx.experimental.llm_topology import analyze_llm_topology
 
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.qai_hub_lm.schema import (
@@ -317,10 +318,13 @@ class AdaScale(QuantizationTechnique):
         # reason as SeqMSE — avoids make_dummy_input for vision models).
         quantsim._compute_param_encodings(dummy_input=inputs[0], overwrite=False)
 
-        # Step 3: Optimize quantization parameters using AdaScale.
+        # Step 3: Optimize quantization parameters using AdaScale. The decoder-stack
+        # structure comes from llm_topology, which owns model analysis; AdaScale
+        # only consumes the block boundaries it reports.
         apply_adascale(
             quantsim,
             inputs,
             adascale_model_config_dict[generator.config.model_type],
             num_iterations,
+            topology=analyze_llm_topology(quantsim.model.model),
         )

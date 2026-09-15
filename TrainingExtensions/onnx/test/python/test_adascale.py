@@ -4,6 +4,7 @@
 import os
 import copy
 import shutil
+import warnings
 from unittest.mock import patch
 import numpy as np
 import torch
@@ -30,13 +31,18 @@ from aimet_onnx.experimental.adascale.quantizer import (
     replace_with_adascale_quantizers,
     QuantizedConv2d,
 )
+from aimet_onnx.experimental.llm_topology import analyze_llm_topology, LlmTopology
 from aimet_onnx.experimental.adascale.model_converter import (
-    resolve_block_residual_name,
     required_extra_block_inputs,
     _retarget_fp16_casts_to_bf16,
     upcast_fp16_block_to_bf16,
 )
 from .utils import add_genai_tests_path, force_random_weight_init
+from .models.style_decoders import (
+    _VOCAB,
+    _export_decoder_with_ids,
+    LlamaStyleDecoder,
+)
 
 # TODO: Move block definitions to a util file
 from .test_llm_topology_integration import (
@@ -947,66 +953,17 @@ class TestAdascaleQuantizer:
 
 
 @pytest.mark.parallel
-class TestBlockResidualResolution:
-    """Unit tests for the fp16 block-boundary handling that ``apply_adascale``
-    relies on: ``resolve_block_residual_name`` (walks past leading ``Cast``
-    producers) and ``required_extra_block_inputs`` (collects unbounded graph
-    inputs the subgraph still depends on).
+class TestRequiredExtraBlockInputs:
+    """Unit tests for ``required_extra_block_inputs`` — the graph inputs a block
+    subgraph still depends on beyond its residual input.
+
+    The companion residual-name resolution (``resolve_residual_tensor_name``) is
+    owned by ``llm_topology`` and tested in ``test_llm_topology.py``.
     """
 
     @staticmethod
     def _graph(text: str) -> onnx_ir.Graph:
         return onnx_ir.from_onnx_text(text).graph
-
-    def test_resolve_walks_past_leading_cast(self):
-        """fp16 pattern: RMSNorm anchor's input is post-Cast; the true residual is upstream."""
-        graph = self._graph(
-            """
-            <ir_version: 8, opset_import: ["": 18]>
-            g (float16[N, 4] residual) => (float[N, 4] anchor_in) {
-                anchor_in = Cast<to=1>(residual)
-            }
-            """
-        )
-        assert resolve_block_residual_name(graph, "anchor_in") == "residual"
-
-    def test_resolve_walks_past_chained_casts(self):
-        """Multiple Casts in a row (e.g., fp16 -> fp32 -> fp16) all get stripped."""
-        graph = self._graph(
-            """
-            <ir_version: 8, opset_import: ["": 18]>
-            g (float16[N, 4] residual) => (float16[N, 4] anchor_in) {
-                mid = Cast<to=1>(residual)
-                anchor_in = Cast<to=10>(mid)
-            }
-            """
-        )
-        assert resolve_block_residual_name(graph, "anchor_in") == "residual"
-
-    def test_resolve_stops_at_non_cast_producer(self):
-        """Non-Cast producer (Add) is not stepped through — the anchor is the true residual."""
-        graph = self._graph(
-            """
-            <ir_version: 8, opset_import: ["": 18]>
-            g (float[N, 4] a, float[N, 4] b) => (float[N, 4] residual) {
-                residual = Add(a, b)
-            }
-            """
-        )
-        assert resolve_block_residual_name(graph, "residual") == "residual"
-
-    def test_resolve_unknown_name_returns_input_unchanged(self):
-        """Names not in the graph pass through — this is the fallback path for
-        callers that may pass an already-resolved name."""
-        graph = self._graph(
-            """
-            <ir_version: 8, opset_import: ["": 18]>
-            g (float[N, 4] x) => (float[N, 4] y) {
-                y = Identity(x)
-            }
-            """
-        )
-        assert resolve_block_residual_name(graph, "not_in_graph") == "not_in_graph"
 
     def test_required_extras_collects_unbounded_graph_input(self):
         """When the subgraph reachable from ``output_names`` depends on a graph
@@ -1049,6 +1006,143 @@ class TestBlockResidualResolution:
             """
         )
         assert required_extra_block_inputs(graph, ["residual"], ["out"]) == []
+
+
+@pytest.mark.parallel
+class TestTopologyArgument:
+    """``apply_adascale`` takes its block structure from an ``LlmTopology``.
+
+    Discovering that structure belongs to ``llm_topology``; AdaScale only consumes
+    it. These tests pin the handoff: the explicit-topology path, the fallback that
+    still discovers internally (and warns), and the errors raised when a topology
+    cannot describe the model being optimized.
+
+    Every test analyzes the **float** model before the sim is built, which is the
+    recommended workflow: topology describes the model, so it is derived once from
+    the float graph and then used for whatever sim is built from it.
+    """
+
+    @staticmethod
+    def _float_model():
+        torch.manual_seed(0)
+        return _export_decoder_with_ids(LlamaStyleDecoder())
+
+    @staticmethod
+    def _sim(model):
+        return aimet_onnx.QuantizationSimModel(
+            model, param_type="int4", activation_type="int16"
+        )
+
+    @staticmethod
+    def _inputs(sim):
+        """One calibration sample, keyed and ordered exactly like the graph inputs."""
+        feed = {}
+        for graph_input in sim.session.get_inputs():
+            shape = [dim if isinstance(dim, int) else 1 for dim in graph_input.shape]
+            if "int" in graph_input.type:
+                feed[graph_input.name] = np.random.randint(0, _VOCAB, shape).astype(
+                    np.int64
+                )
+            else:
+                feed[graph_input.name] = np.zeros(shape, dtype=np.float32)
+        return [feed]
+
+    def test_float_model_topology_matches_internal_discovery(self):
+        """A float-model topology and the sim's own discovery must agree exactly.
+
+        Two guarantees in one: passing a topology cannot change which blocks get
+        optimized, so the argument is safe to adopt; and a topology analyzed on the
+        float graph — before any quantizer exists — still names tensors the sim graph
+        has, which is what makes the recommended analyze-then-quantize workflow valid.
+        """
+        model = self._float_model()
+        topology = analyze_llm_topology(model)  # float model, before the sim
+        sim = self._sim(model)
+        inputs = self._inputs(sim)
+        config = adascale_model_config_dict["llama"]
+
+        with patch.object(AdaScale, "_apply_adascale") as apply_mock:
+            with pytest.warns(UserWarning, match="may become required"):
+                AdaScale.apply_adascale(sim, inputs, config, num_iterations=1)
+            discovered = apply_mock.call_args[0][2]
+
+            AdaScale.apply_adascale(
+                sim, inputs, config, num_iterations=1, topology=topology
+            )
+            from_topology = apply_mock.call_args[0][2]
+
+        assert len(from_topology) == 2  # the fixture decoder has two blocks
+        assert from_topology == discovered
+
+    def test_explicit_topology_does_not_warn(self):
+        """Passing a topology is the supported call; it must stay warning-free."""
+        model = self._float_model()
+        topology = analyze_llm_topology(model)
+        sim = self._sim(model)
+        inputs = self._inputs(sim)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with patch.object(AdaScale, "_apply_adascale"):
+                AdaScale.apply_adascale(
+                    sim,
+                    inputs,
+                    adascale_model_config_dict["llama"],
+                    num_iterations=1,
+                    topology=topology,
+                )
+
+        assert not [
+            warning
+            for warning in caught
+            if "may become required" in str(warning.message)
+        ]
+
+    def test_topology_without_blocks_raises(self):
+        """An empty topology means AdaScale has nothing to optimize — say so."""
+        sim = self._sim(self._float_model())
+        with pytest.raises(ValueError, match="no decoder blocks"):
+            AdaScale.apply_adascale(
+                sim,
+                self._inputs(sim),
+                adascale_model_config_dict["llama"],
+                num_iterations=1,
+                topology=LlmTopology(),
+            )
+
+    def test_block_without_residual_names_raises(self):
+        """A block with no residual boundary cannot be sliced out of the graph."""
+        model = self._float_model()
+        topology = analyze_llm_topology(model)
+        sim = self._sim(model)
+        topology.blocks[1].residual_output = None
+
+        with pytest.raises(ValueError, match="residual-stream boundary"):
+            AdaScale.apply_adascale(
+                sim,
+                self._inputs(sim),
+                adascale_model_config_dict["llama"],
+                num_iterations=1,
+                topology=topology,
+            )
+
+    def test_boundaries_absent_from_model_raise_before_optimization(self):
+        """A topology built from a different model fails up front.
+
+        Left unchecked, the mismatch surfaces much later as an opaque onnxruntime
+        error while sampling block activations, so assert both that it raises and
+        that no block optimization was attempted.
+        """
+        sim = self._sim(self._float_model())
+        stale_boundaries = [("no_such_residual_in", "no_such_residual_out")]
+
+        with patch.object(AdaScale, "optimize_adascale_block") as optimize_mock:
+            with pytest.raises(ValueError, match="not present in the model"):
+                AdaScale._apply_adascale(
+                    sim, self._inputs(sim), stale_boundaries, num_iterations=1
+                )
+
+        optimize_mock.assert_not_called()
 
 
 # MoE models whose torchscript export bakes a fixed expert-routing Split
@@ -1141,6 +1235,9 @@ def test_adascale_e2e(add_genai_tests_path, dtype, small_model: bool = True):
                 small_model=small_model,
                 dtype=dtype,
             )
+        # Analyze the float model, before it is quantized: the decoder-stack
+        # structure is a property of the model itself, not of the sim.
+        topology = analyze_llm_topology(entry.backbone)
         collection = model_cls.instantiate_quantsim(entry)
         sim = collection.backbone
 
@@ -1179,6 +1276,7 @@ def test_adascale_e2e(add_genai_tests_path, dtype, small_model: bool = True):
             [inputs],
             adascale_model_config_dict["qwen2"],
             num_iterations=2,
+            topology=topology,
         )
 
         linear_list = [
@@ -1266,6 +1364,9 @@ def test_adascale_e2e_fp16_qwen3_bf16_upcast(
                 small_model=small_model,
                 dtype=dtype,
             )
+        # Analyze the float model, before it is quantized: the decoder-stack
+        # structure is a property of the model itself, not of the sim.
+        topology = analyze_llm_topology(entry.backbone)
         collection = model_cls.instantiate_quantsim(entry)
         sim = collection.backbone
         adascale_model_config_dict["qwen3"].model_config = llm_config
@@ -1313,6 +1414,7 @@ def test_adascale_e2e_fp16_qwen3_bf16_upcast(
                 [inputs],
                 adascale_model_config_dict["qwen3"],
                 num_iterations=2,
+                topology=topology,
             )
 
         assert converted_blocks, (
@@ -1386,6 +1488,9 @@ def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
         entry = model_cls.instantiate_float_model(
             model_id, context_length, sequence_length, small_model=small_model
         )
+        # Analyze the float model, before it is quantized: the decoder-stack
+        # structure is a property of the model itself, not of the sim.
+        topology = analyze_llm_topology(entry.backbone)
         collection = model_cls.instantiate_quantsim(entry)
         sim = collection.backbone
 
@@ -1419,6 +1524,7 @@ def test_qwen_adascale_e2e_ppl(add_genai_tests_path, small_model=False):
             inputs,
             adascale_model_config_dict[generator.config.model_type],
             num_iterations=1500,
+            topology=topology,
         )
 
         sim.compute_encodings(inputs)

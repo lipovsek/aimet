@@ -34,6 +34,7 @@ from aimet_onnx.experimental.llm_topology import ir_analysis
 from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries,
     get_decoder_block_boundaries_in_ir,
+    resolve_residual_tensor_name,
 )
 from aimet_onnx.experimental.llm_topology.ir_adapter import resolve_topology
 from aimet_onnx.experimental.llm_topology.layer_roles import (
@@ -307,6 +308,74 @@ class TestBlockIdentifier:
 
 
 # ===========================================================================
+# Residual-name resolution (resolve_residual_tensor_name).
+# ===========================================================================
+class TestResolveResidualTensorName:
+    """Tests for resolve_residual_tensor_name.
+
+    A boundary tensor names the value entering a norm; in fp16 exports a ``Cast``
+    sits between the residual ``Add`` and that norm, so a consumer slicing the
+    graph at a boundary must first step back to the pre-``Cast`` residual.
+    (Relocated here from ``test_adascale.py`` — AdaScale is a caller, not the
+    owner, of this structural detail.)
+    """
+
+    @staticmethod
+    def _graph(text: str) -> onnx_ir.Graph:
+        return onnx_ir.from_onnx_text(text).graph
+
+    def test_resolve_walks_past_leading_cast(self):
+        """fp16 pattern: RMSNorm anchor's input is post-Cast; the true residual is upstream."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float16[N, 4] residual) => (float[N, 4] anchor_in) {
+                anchor_in = Cast<to=1>(residual)
+            }
+            """
+        )
+        assert resolve_residual_tensor_name(graph, "anchor_in") == "residual"
+
+    def test_resolve_walks_past_chained_casts(self):
+        """Multiple Casts in a row (e.g., fp16 -> fp32 -> fp16) all get stripped."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float16[N, 4] residual) => (float16[N, 4] anchor_in) {
+                mid = Cast<to=1>(residual)
+                anchor_in = Cast<to=10>(mid)
+            }
+            """
+        )
+        assert resolve_residual_tensor_name(graph, "anchor_in") == "residual"
+
+    def test_resolve_stops_at_non_cast_producer(self):
+        """Non-Cast producer (Add) is not stepped through — the anchor is the true residual."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float[N, 4] a, float[N, 4] b) => (float[N, 4] residual) {
+                residual = Add(a, b)
+            }
+            """
+        )
+        assert resolve_residual_tensor_name(graph, "residual") == "residual"
+
+    def test_resolve_unknown_name_returns_input_unchanged(self):
+        """Names not in the graph pass through — this is the fallback path for
+        callers that may pass an already-resolved name."""
+        graph = self._graph(
+            """
+            <ir_version: 8, opset_import: ["": 18]>
+            g (float[N, 4] x) => (float[N, 4] y) {
+                y = Identity(x)
+            }
+            """
+        )
+        assert resolve_residual_tensor_name(graph, "not_in_graph") == "not_in_graph"
+
+
+# ===========================================================================
 # Role map (get_llm_topology).
 # ===========================================================================
 class TestDecoderRoleMap:
@@ -528,6 +597,25 @@ class TestAnalyzeLlmTopology:
         # active_norms are retained (2 per block + final norm).
         assert topology.active_norms is not None
         assert len(topology.active_norms) == 5
+
+    @pytest.mark.parametrize("decoder_cls", _DECODERS)
+    def test_block_residuals_match_get_decoder_block_boundaries(self, decoder_cls):
+        """A topology's per-block residual names ARE the block boundaries.
+
+        Consumers that used to call ``get_decoder_block_boundaries`` directly (e.g.
+        AdaScale) now read ``blocks[i].residual_input`` / ``.residual_output``
+        instead. That substitution is only valid while the two agree exactly —
+        same pairs, same order — so pin it here rather than in the consumer.
+        """
+        torch.manual_seed(0)
+        model = _export_decoder_with_ids(decoder_cls())
+
+        topology = analyze_llm_topology(model)
+        from_topology = [
+            (block.residual_input, block.residual_output) for block in topology.blocks
+        ]
+
+        assert from_topology == get_decoder_block_boundaries(model)
 
     def test_head_dim_none_without_past_value_input(self):
         """No ``past_value`` graph input → head_dim tolerated as None (R1-only / prefill)."""

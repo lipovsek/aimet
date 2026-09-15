@@ -13,6 +13,7 @@ import tempfile
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from aimet_onnx.quantsim import QuantizationSimModel
+from aimet_onnx.experimental.llm_topology import analyze_llm_topology
 
 from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import (
     TorchONNXInterface,
@@ -125,18 +126,21 @@ def apply_recipe_lpbq_seqmse(quantsim, prefilled_inputs):
 
 
 def apply_recipe_pcq_spinquant_adascale(
-    quantsim, prefilled_inputs, adascale_num_iterations: int
+    quantsim, prefilled_inputs, adascale_num_iterations: int, topology
 ):
     from aimet_onnx.experimental.adascale.adascale_optimizer import (
         AdaScale,
         adascale_model_config_dict,
     )
 
+    # AdaScale optimizes one decoder block at a time; the block boundaries come
+    # from the topology analysis rather than from AdaScale itself.
     AdaScale.apply_adascale(
         quantsim,
         prefilled_inputs,
         adascale_model_config=adascale_model_config_dict[generator.config.model_type],
         num_iterations=adascale_num_iterations,
+        topology=topology,
     )
     print(f"AdaScale applied successfully.")
 
@@ -187,6 +191,11 @@ if __name__ == "__main__":
         )
         onnx_model = onnx.load(os.path.join(tmpdir, "model.onnx"))
 
+    # Analyze the decoder-stack structure on the float model, before quantizing:
+    # the topology describes the model, not the sim. AdaScale uses it to locate
+    # the decoder blocks it optimizes.
+    topology = analyze_llm_topology(onnx_model)
+
     quantsim = QuantizationSimModel(
         model=onnx_model,
         quant_scheme="min_max",
@@ -225,7 +234,7 @@ if __name__ == "__main__":
         apply_recipe_lpbq_seqmse(quantsim, prefilled_inputs)
     elif args.recipe == "pcq_spinquant_adascale":
         apply_recipe_pcq_spinquant_adascale(
-            quantsim, prefilled_inputs, args.adascale_num_iterations
+            quantsim, prefilled_inputs, args.adascale_num_iterations, topology
         )
     else:
         raise NotImplementedError(f"Unknown recipe: {args.recipe}")

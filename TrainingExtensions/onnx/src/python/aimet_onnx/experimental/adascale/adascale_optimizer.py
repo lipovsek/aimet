@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import tempfile
 import gc
+import warnings
 import onnx_ir
 import os
 
@@ -30,7 +31,9 @@ from aimet_onnx import ir_utils
 from aimet_onnx.quantsim import QuantizationSimModel
 from aimet_onnx.experimental.llm_topology.block_boundaries import (
     get_decoder_block_boundaries,
+    resolve_residual_tensor_name,
 )
+from aimet_onnx.experimental.llm_topology.topology_types import LlmTopology
 
 from aimet_onnx.experimental.adascale.quantizer import (
     add_qlinear_layers,
@@ -44,7 +47,6 @@ from aimet_onnx.experimental.adascale.model_converter import (
     copy_pt_weights_to_onnx,
     copy_pt_encodings_to_sim,
     required_extra_block_inputs,
-    resolve_block_residual_name,
     upcast_fp16_block_to_bf16,
 )
 
@@ -132,6 +134,60 @@ adascale_model_config_dict = {
 }
 
 
+def _block_boundaries_from_topology(topology: LlmTopology) -> List[Tuple[str, str]]:
+    """Read the per-block residual-stream boundaries off ``topology``.
+
+    :param topology: Topology of the model being optimized.
+    :return: One ``(start_tensor, end_tensor)`` pair per decoder block, in topological order.
+    :raises ValueError: If ``topology`` has no decoder blocks, or a block carries no
+        residual-stream tensor names to bound it with.
+    """
+    if not topology.blocks:
+        raise ValueError(
+            "topology contains no decoder blocks, so there is nothing for AdaScale to optimize. "
+            "Verify that analyze_llm_topology() was run on the model being optimized."
+        )
+
+    boundaries = []
+    for block_idx, block in enumerate(topology.blocks):
+        if block.residual_input is None or block.residual_output is None:
+            raise ValueError(
+                f"topology block {block_idx} has no residual-stream boundary "
+                f"(residual_input={block.residual_input}, residual_output={block.residual_output}). "
+                "AdaScale needs both to slice the block out of the graph."
+            )
+        boundaries.append((block.residual_input, block.residual_output))
+    return boundaries
+
+
+def _validate_boundaries_in_graph(
+    graph: onnx_ir.Graph, block_end_points: List[Tuple[str, str]]
+):
+    """Check every boundary tensor exists in ``graph`` before optimization starts.
+
+    A topology built from a different (or since-modified) model names tensors the graph
+    does not have. Caught here, that is one clear error; left uncaught, it surfaces much
+    later as an opaque onnxruntime failure while sampling block activations.
+
+    :param graph: Graph AdaScale is about to optimize.
+    :param block_end_points: Boundaries as returned by :func:`_block_boundaries_from_topology`.
+    :raises ValueError: If any boundary tensor is absent from ``graph``.
+    """
+    names_in_graph = onnx_ir.convenience.create_value_mapping(graph).keys()
+    missing = [
+        name
+        for start, end in block_end_points
+        for name in (start, end)
+        if name not in names_in_graph
+    ]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} block boundary tensor(s) are not present in the model being "
+            f"optimized: {missing[:10]}{' ...' if len(missing) > 10 else ''}. The topology was "
+            "likely built from a different model than the one held by this sim."
+        )
+
+
 class AdaScale:
     """
     AdaScale is PTQ technique which performs Knowledge Distillation on blocks of modules by using the FP32 output as its
@@ -160,6 +216,7 @@ class AdaScale:
         adascale_model_config: AdaScaleModelConfig,
         num_iterations: int = 1500,
         *,
+        topology: Optional[LlmTopology] = None,
         loss_fn: Optional[_LossFn] = None,
     ):
         """
@@ -168,6 +225,14 @@ class AdaScale:
         :param adascale_model_config: Adascale model config. There are pre-defined configs for
                                       Llama, Qwen2, Mistral, Qwen3, Phi3. For other models use AdaScaleModelConfig
         :param num_iterations: Number of iterations to optimize for during AdaScale
+        :param topology: Decoder-stack topology of the model held by ``sim``, from
+            :func:`~aimet_onnx.experimental.llm_topology.analyze_llm_topology`. AdaScale optimizes one
+            decoder block at a time and takes the block boundaries from it — structure discovery belongs
+            to ``llm_topology``, not to AdaScale. Analyze the **float** model before building the sim:
+            a topology describes the model rather than the sim, so it is derived once and reused.
+            Optional today: when omitted the topology is discovered internally from the sim's graph
+            and a warning is raised. Passing it explicitly is recommended, and may become required
+            in a future release.
         :param loss_fn: Loss function with signature ``loss_fn(fp_out, quant_out, data_idx)`` returning a scalar
             loss tensor. ``data_idx`` is the index of the current input in ``inputs`` order. Defaults to MSE loss if None.
 
@@ -175,8 +240,10 @@ class AdaScale:
             >>> model = DummyModel()
             >>> inputs = ...
             >>> adascale_model_config = adascale_model_config['llama']
+            >>> topology = analyze_llm_topology(model)   # analyze the float model
             >>> sim = QuantizationSimModel(model)
-            >>> apply_adascale(sim, inputs, adascale_model_config, num_iterations=num_iterations)
+            >>> apply_adascale(sim, inputs, adascale_model_config, num_iterations=num_iterations,
+            ...                topology=topology)
             >>> sim.compute_encodings(...)
             >>> sim.export(...)
 
@@ -190,7 +257,22 @@ class AdaScale:
         # pylint: disable=protected-access
         sim._compute_param_encodings(overwrite=False)
 
-        blocks_end_points = get_decoder_block_boundaries(sim.model.model)
+        # TODO: if 'topology' is ever made required, delete this branch along with
+        # the get_decoder_block_boundaries import.
+        if topology is None:
+            warnings.warn(
+                "apply_adascale() was called without 'topology', so the decoder-block "
+                "structure is being discovered internally from the sim. Prefer building it "
+                "with aimet_onnx.experimental.llm_topology.analyze_llm_topology(model) on the "
+                "float model and passing topology=...; this argument may become required in a "
+                "future release.",
+                UserWarning,
+                stacklevel=2,
+            )
+            blocks_end_points = get_decoder_block_boundaries(sim.model.model)
+        else:
+            blocks_end_points = _block_boundaries_from_topology(topology)
+
         cls._apply_adascale(
             sim,
             inputs,
@@ -233,6 +315,8 @@ class AdaScale:
                 unquantized_model = sim_model.clone()
                 ir_utils.remove_aimet_quantizers(unquantized_model)
 
+                _validate_boundaries_in_graph(unquantized_model.graph, block_end_points)
+
                 # Save the unquantized model + weights once. Its
                 # dtype matches the sim's float dtype (fp16 by default).
                 onnx_ir.save(
@@ -262,11 +346,10 @@ class AdaScale:
 
                     # Step back through leading Casts to land on the true
                     # cross-block residual (fp16 graphs keep the Cast).
-                    # TODO: Move this to block endpoint logic
-                    start_residual = resolve_block_residual_name(
+                    start_residual = resolve_residual_tensor_name(
                         unquantized_model.graph, block_end_points[idx][0]
                     )
-                    end_residual = resolve_block_residual_name(
+                    end_residual = resolve_residual_tensor_name(
                         unquantized_model.graph, block_end_points[idx][1]
                     )
                     extra_inputs = required_extra_block_inputs(

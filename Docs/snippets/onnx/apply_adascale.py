@@ -24,6 +24,7 @@ import os
 import tempfile
 import onnx
 from aimet_onnx.quantsim import QuantizationSimModel
+from aimet_onnx.experimental.llm_topology import analyze_llm_topology
 from GenAILab.qai_hub_lm.models.base import LLM
 from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAILab.qai_hub_lm.models.generator import Generator
@@ -60,6 +61,11 @@ with tempfile.TemporaryDirectory() as tmpdir:
     )
     onnx_model = onnx.load(os.path.join(tmpdir, "model.onnx"))
 
+# Analyze the decoder-stack structure on the FLOAT model, before quantizing. The
+# topology describes the model, so it is derived once here and then handed to any
+# technique that needs to know where the decoder blocks are (AdaScale, below).
+topology = analyze_llm_topology(onnx_model)
+
 quantsim = QuantizationSimModel(
     model=onnx_model,
     quant_scheme="min_max",
@@ -93,11 +99,14 @@ prefilled_inputs = _prefill_inputs(
     quantsim, generator, train_dataset, num_batches=ADASCALE_NUM_BATCHES
 )
 
+# ``topology`` was analyzed on the float model above; AdaScale optimizes one decoder
+# block at a time and reads the block boundaries off it.
 AdaScale.apply_adascale(
     quantsim,
     prefilled_inputs,
     adascale_model_config=adascale_model_config_dict[generator.config.model_type],
     num_iterations=ADASCALE_NUM_ITERATIONS,
+    topology=topology,
 )
 # End of [adascale-apply]
 

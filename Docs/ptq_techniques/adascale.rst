@@ -84,6 +84,11 @@ Create a :ref:`QuantizationSimModel <quantsim-index>` with the desired quantizat
 For ONNX, this step also exports the model to ONNX first — the ONNX tab includes the
 ``torch.onnx.export`` call that produces the correctly named inputs required by AdaScale.
 
+The ONNX tab additionally analyzes the model's decoder-stack structure with
+:ref:`analyze_llm_topology <apiref-onnx-adascale>`, on the **float** model and before the sim is
+created. A topology describes the model, not the sim, so derive it once here; `Step 3`_ hands it to
+AdaScale, which uses it to locate the decoder blocks.
+
 .. tab-set::
     :sync-group: platform
 
@@ -103,6 +108,8 @@ For ONNX, this step also exports the model to ONNX first — the ONNX tab includ
             :start-after: # [create-sim]
             :end-before: # End of [create-sim]
 
+.. _Step 3:
+
 Step 3: Apply AdaScale
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -110,6 +117,14 @@ Apply AdaScale to find optimal weight quantization encodings for each supported 
 
 ``_prefill_inputs`` collects the full model inputs (including KV cache tensors) from the calibration
 dataset; AdaScale derives per-block activations internally and uses them for BKD.
+
+.. note::
+   **ONNX only**: AdaScale is told where the decoder blocks are, rather than finding them itself.
+   Pass the ``LlmTopology`` analyzed from the float model in `Step 2`_ as ``topology`` — locating
+   model structure belongs to AIMET's topology analysis, and AdaScale only optimizes the blocks it
+   reports. The argument is optional today: omitting it discovers the topology internally from the
+   sim's graph and warns. Passing it is the recommended usage, and may become required in a future
+   release.
 This is the most time-consuming step; expect 2–6 hours depending on model size and iteration count
 (see the timing column in :ref:`Quantization recipes for LLMs <quantization-genai-recipe>`).
 

@@ -71,27 +71,6 @@ def _get_onnx_block_info(onnx_subgraph: onnx_ir.Model):
     return node_name_to_onnx_param
 
 
-def resolve_block_residual_name(graph: onnx_ir.Graph, value_name: str) -> str:
-    """
-    Walk back through leading ``Cast`` producers and return the deepest
-    pre-Cast value name.
-    Used to recover the true cross-block residual when the RMSNorm anchor's input is post-Cast (fp16 graphs).
-    """
-    name_to_value = onnx_ir.convenience.create_value_mapping(graph)
-    if value_name not in name_to_value:
-        return value_name
-    value = name_to_value[value_name]
-    while True:
-        producer = value.producer()
-        if producer is None or producer.op_type != "Cast":
-            break
-        upstream = producer.inputs[0]
-        if upstream is None or upstream.name is None:
-            break
-        value = upstream
-    return value.name
-
-
 def required_extra_block_inputs(
     graph: onnx_ir.Graph,
     input_names: List[str],
