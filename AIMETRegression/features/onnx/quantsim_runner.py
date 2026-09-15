@@ -31,27 +31,13 @@ from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.onnx._common import (
     build_quantsim,
     export_onnx_qdq,
+    format_quantsim_technique,
+    pick_providers,
 )
 
 # Output directory for artifacts
 _ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _extract_bitwidth(value) -> int:
-    """Extract numeric bitwidth from various formats (int8, "int8", 8, "8")."""
-    if value is None:
-        return 8
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        pass
-    s = str(value).lower()
-    if "16" in s:
-        return 16
-    if "4" in s:
-        return 4
-    return 8
 
 
 def run_quantsim(
@@ -122,13 +108,12 @@ def run_quantsim(
     metrics_runs = int(config.get("metrics_runs", 1))
     metrics_warmup = int(config.get("metrics_warmup", 0))
 
-    # Determine if CUDA is available for acceleration
-    use_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
+    providers = pick_providers(["CUDAExecutionProvider", "CPUExecutionProvider"])
 
     print(f"[QuantSim] Configuration:")
     print(f"  Scheme: {quant_scheme}")
     print(f"  Precision: W{param_type}/A{activation_type}")
-    print(f"  CUDA: {'Yes' if use_cuda else 'No'}")
+    print(f"  CUDA: {'Yes' if 'CUDAExecutionProvider' in providers else 'No'}")
 
     # ============ Build QuantSim Model ============
     print(f"[QuantSim] Building QuantizationSimModel...")
@@ -139,7 +124,7 @@ def run_quantsim(
         param_type=param_type,
         activation_type=activation_type,
         config_file=aimet_cfg_file,
-        use_cuda=use_cuda,
+        providers=providers,
     )
 
     # ============ Calibrate Encodings ============
@@ -188,9 +173,7 @@ def run_quantsim(
     qdq_path = export_onnx_qdq(sim, export_dir, model_name)
 
     # ============ Prepare Results ============
-    param_bw = _extract_bitwidth(param_type)
-    act_bw = _extract_bitwidth(activation_type)
-    technique_str = f"quantsim(W{param_bw}A{act_bw}, {quant_scheme})"
+    technique_str = format_quantsim_technique(param_type, activation_type, quant_scheme)
     stats = {
         "techniques": technique_str,
         "runtime": runtime_str,

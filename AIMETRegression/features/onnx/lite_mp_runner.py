@@ -41,26 +41,12 @@ from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
 from AIMETRegression.features.onnx._common import (
     build_quantsim,
     export_onnx_qdq,
+    format_quantsim_technique,
+    pick_providers,
 )
 
 _ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _extract_bitwidth(value) -> int:
-    """Extract numeric bitwidth from various formats (int8, "int8", 8, "8")."""
-    if value is None:
-        return 8
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        pass
-    s = str(value).lower()
-    if "16" in s:
-        return 16
-    if "4" in s:
-        return 4
-    return 8
 
 
 def _collect_inputs(
@@ -221,8 +207,7 @@ def run_lite_mp(
     metrics_runs = int(config.get("metrics_runs", 1))
     metrics_warmup = int(config.get("metrics_warmup", 0))
 
-    # Check CUDA availability for acceleration
-    use_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
+    providers = pick_providers(["CUDAExecutionProvider", "CPUExecutionProvider"])
 
     # Get precision name for display
     precision_display = {
@@ -236,7 +221,10 @@ def run_lite_mp(
     print(f"  Base quantization: W{param_type}/A{activation_type}")
     print(f"  Override precision: {precision_display}")
     print(f"  Layers to flip: {percent_to_flip}%")
-    print(f"  CUDA acceleration: {'Enabled' if use_cuda else 'Disabled'}")
+    print(
+        f"  CUDA acceleration: "
+        f"{'Enabled' if 'CUDAExecutionProvider' in providers else 'Disabled'}"
+    )
 
     # ============ Step 1: Build Base QuantSim Model ============
     print(f"[Lite-MP] Building base QuantSim model...")
@@ -247,7 +235,7 @@ def run_lite_mp(
         param_type=param_type,
         activation_type=activation_type,
         config_file=aimet_cfg_file,
-        use_cuda=use_cuda,
+        providers=providers,
     )
 
     # Also load FP32 model for comparison (optional, for debugging)
@@ -328,14 +316,12 @@ def run_lite_mp(
     qdq_path = export_onnx_qdq(sim, export_dir, model_name)
 
     # ============ Step 9: Prepare Results ============
-    param_bw = _extract_bitwidth(param_type)
-    act_bw = _extract_bitwidth(activation_type)
-
     # Map precision symbol to string name
     precision_map = {int4: "int4", int8: "int8", int16: "int16", float16: "float16"}
     precision_str = precision_map.get(override_sym, "unknown")
 
-    technique_desc = f"quantsim(W{param_bw}A{act_bw}, {quant_scheme}) + lite_mp({precision_str}, {percent_to_flip}%)"
+    quantsim_desc = format_quantsim_technique(param_type, activation_type, quant_scheme)
+    technique_desc = f"{quantsim_desc} + lite_mp({precision_str}, {percent_to_flip}%)"
 
     stats = {
         "techniques": technique_desc,

@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Iterable, List, Optional, Union
+from typing import Iterable, List, Optional, Sequence, Union
 
 import onnx
 import onnxruntime as ort
@@ -45,6 +45,7 @@ from aimet_onnx.quantsim import QuantizationSimModel
 __all__ = [
     "pick_providers",
     "make_session",
+    "format_quantsim_technique",
     "build_quantsim",
     "export_onnx_qdq",
     "clean_dir",
@@ -132,61 +133,23 @@ def make_session(
 # ==================== AIMET QuantSim Construction ====================
 
 
-def _bitwidth_from_token(token: Optional[Union[str, int]], default: int = 8) -> int:
-    """
-    Convert various bitwidth representations to integer.
-
-    This function provides flexibility in configuration files, accepting
-    multiple formats for specifying precision while normalizing to integers
-    for AIMET.
-
-    Args:
-        token: Bitwidth specification, can be:
-               - None: Returns default
-               - Integer: Returned as-is (4, 8, 16)
-               - String: "int8", "8", "int16", "16", "int4", "4", etc.
-        default: Default bitwidth if token is None or unparseable
-
-    Returns:
-        Integer bitwidth (typically 4, 8, or 16)
-
-    Examples:
-        >>> _bitwidth_from_token("int8")  # Returns 8
-        >>> _bitwidth_from_token("16")    # Returns 16
-        >>> _bitwidth_from_token(None)    # Returns 8 (default)
-        >>> _bitwidth_from_token("fp16")  # Returns 16 (extracts number)
-    """
-    if token is None:
-        return default
-
-    # Try direct integer conversion first
-    try:
-        return int(token)
-    except (TypeError, ValueError):
-        pass
-
-    # Parse string representations
-    token_str = str(token).lower()
-
-    # Look for common bitwidth numbers in the string
-    if "16" in token_str:
-        return 16
-    if "4" in token_str:
-        return 4
-    if "8" in token_str:
-        return 8
-
-    return default
+def format_quantsim_technique(
+    param_type: str, activation_type: str, scheme: str
+) -> str:
+    """Describe a QuantSim configuration for the results report."""
+    return (
+        f"quantsim(param={param_type}, activation={activation_type}, scheme={scheme})"
+    )
 
 
 def build_quantsim(
     fp32_or_fpN_onnx_path: Union[str, Path],
     *,
     scheme: str,
-    param_type: Union[str, int],
-    activation_type: Union[str, int],
+    param_type: str,
+    activation_type: str,
     config_file: Optional[str],
-    use_cuda: bool,
+    providers: Sequence[str],
 ) -> QuantizationSimModel:
     """
     Construct an AIMET QuantizationSimModel from an ONNX file.
@@ -207,11 +170,11 @@ def build_quantsim(
                 - "tf": Standard TensorFlow quantization
                 - "percentile": Percentile-based range selection
                 - "entropy": Entropy-based calibration
-        param_type: Parameter/weight precision (e.g., "int8", 8, "int4")
-        activation_type: Activation precision (e.g., "int8", 8, "int16")
+        param_type: Parameter/weight precision (e.g., "int8", "float8e4m3fn")
+        activation_type: Activation precision (e.g., "int16", "float8e5m2")
         config_file: Optional path to AIMET JSON configuration file
                     (for advanced per-layer settings)
-        use_cuda: Whether to use CUDA acceleration if available
+        providers: Ordered ONNX Runtime execution providers for simulation
 
     Returns:
         Configured QuantizationSimModel ready for calibration
@@ -230,19 +193,15 @@ def build_quantsim(
 
     model_proto = onnx.load(str(fp32_or_fpN_onnx_path))
 
-    # Parse bitwidth specifications
-    param_bw = _bitwidth_from_token(param_type, 8)
-    activation_bw = _bitwidth_from_token(activation_type, 8)
-
     # Build QuantSim with in-memory model
     # IMPORTANT: Pass ModelProto object, not file path
     return QuantizationSimModel(
         model=model_proto,  # In-memory ModelProto, not file path
         quant_scheme=scheme,
-        default_param_bw=param_bw,
-        default_activation_bw=activation_bw,
+        param_type=param_type,
+        activation_type=activation_type,
         config_file=str(config_file) if config_file is not None else "default",
-        use_cuda=bool(use_cuda),
+        providers=list(providers),
     )
 
 

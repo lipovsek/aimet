@@ -53,7 +53,11 @@ from aimet_onnx.common.amp.utils import AMPSearchAlgo
 from aimet_onnx.common.defs import CallbackFunc, QuantizationDataType
 
 from AIMETRegression.evaluation.metrics_utils import measure_inference_metrics
-from AIMETRegression.features.onnx._common import build_quantsim, export_onnx_qdq
+from AIMETRegression.features.onnx._common import (
+    build_quantsim,
+    export_onnx_qdq,
+    pick_providers,
+)
 
 _ARTIFACTS_DIR = Path("./AIMETRegression/artifacts")
 _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -227,7 +231,7 @@ def run_mixed_precision(
     metrics_runs = int(config.get("metrics_runs", 1))
     metrics_warmup = int(config.get("metrics_warmup", 0))
 
-    use_cuda = "CUDAExecutionProvider" in ort.get_available_providers()
+    providers = pick_providers(["CUDAExecutionProvider", "CPUExecutionProvider"])
 
     print(f"[AMP] Configuration:")
     print(
@@ -236,7 +240,10 @@ def run_mixed_precision(
     print(f"  Candidates: {len(candidates)} precision options")
     print(f"  Two-phase optimization: {'Enabled' if enable_sqnr else 'Disabled'}")
     print(f"  Allowed accuracy drop: {allowed_accuracy_drop:.2%}")
-    print(f"  CUDA acceleration: {'Enabled' if use_cuda else 'Disabled'}")
+    print(
+        f"  CUDA acceleration: "
+        f"{'Enabled' if 'CUDAExecutionProvider' in providers else 'Disabled'}"
+    )
 
     print(f"[AMP] Step 1: Creating base QuantSim model...")
     sim = build_quantsim(
@@ -245,7 +252,7 @@ def run_mixed_precision(
         param_type=param_type,
         activation_type=activation_type,
         config_file=aimet_cfg_file,
-        use_cuda=use_cuda,
+        providers=providers,
     )
 
     print(f"[AMP] Step 2: Performing initial calibration...")
