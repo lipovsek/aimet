@@ -268,6 +268,20 @@ class TestUtils:
         psnr_eval_fn = utils.make_psnr_eval_fn(fp_session, inputs, output_indices=None)
         assert psnr_eval_fn(fp_session) > 0
 
+    def test_make_psnr_eval_fn_no_float_outputs(self):
+        model = models_for_tests.gather_op_with_int_data_model()
+        fp_session = onnxruntime.InferenceSession(model.SerializeToString())
+        inputs = [{"model_input": np.asarray([[0, 1, 2, 3]], dtype=np.int64)}]
+
+        with (
+            pytest.warns(),
+            pytest.raises(RuntimeError, match="Provide output_indices"),
+        ):
+            utils.make_psnr_eval_fn(fp_session, inputs)
+
+        psnr_eval_fn = utils.make_psnr_eval_fn(fp_session, inputs, output_indices=0)
+        assert psnr_eval_fn(fp_session) > 0
+
     def test_contains_tensor_type(self):
         model = models_for_tests.diverse_ops()
         assert not utils.contains_tensor_type(model, onnx.TensorProto.BFLOAT16)

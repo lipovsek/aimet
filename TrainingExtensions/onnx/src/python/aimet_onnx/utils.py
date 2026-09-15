@@ -8,6 +8,7 @@ import copy
 import itertools
 import platform
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Dict, Iterable, List, Set, Union, Tuple, Callable, Optional, Sequence
 from contextlib import contextmanager
@@ -46,6 +47,11 @@ else:
     )
 
 logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.Utils)
+
+
+class _NOT_SPECIFIED:
+    pass
+
 
 OP_TYPES_WITH_PARAMS = [
     "Conv",
@@ -803,34 +809,48 @@ class ModuleData:
 def make_psnr_eval_fn(
     fp_session: InferenceSession,
     inputs: Iterable[Dict[str, np.ndarray]],
-    output_indices: Union[int, List[int]] = 0,
+    output_indices: Union[int, List[int], None, type[_NOT_SPECIFIED]] = _NOT_SPECIFIED,
 ) -> Callable[[InferenceSession], float]:
     """
     NOTE: To run inference through ORT, we need inputs in following format:
      [{input1: sample1, ...}, {input1: sample2, ...}, ...]
 
-     Based on empirical evidence, PSNR of the primary output (i.e. bounding boxes
-     in object detection models) is the most useful for analyzing per-layer sensitivity,
-     Subsequent outputs (e.g., classification scores, class labels) may be misleading.
+     By default, all float32 and float16 outputs are compared and the minimum PSNR
+     is returned.
 
     :param fp_session: ORT inference session for floating-point model
     :param inputs: The model input samples
-    :param output_indices: Index or list of indices of output tensors to compare (default is 0).
-     if None, uses all float32 outputs
+    :param output_indices: Index or list of indices of output tensors to compare.
+     If omitted or None, uses all float32 and float16 outputs
     :return: PSNR callback
     """
     inputs = list(inputs)
-    fp_outputs = [fp_session.run(None, inp) for inp in inputs]
 
     if isinstance(output_indices, int):
         output_indices = [output_indices]
 
-    if output_indices is None:
-        output_indices = [
+    if output_indices in (None, _NOT_SPECIFIED):
+        float_output_indices = [
             idx
             for idx, out in enumerate(fp_session.get_outputs())
             if out.type in {"tensor(float)", "tensor(float16)"}
         ]
+        if output_indices is _NOT_SPECIFIED and float_output_indices != [0]:
+            warnings.warn(
+                "The default output indices used by make_psnr_eval_fn changed in "
+                "version 2.40 to consider all float outputs. To retain previous "
+                "behavior, pass output_indices=0.",
+                stacklevel=2,
+            )
+        if not float_output_indices:
+            raise RuntimeError(
+                "Cannot infer appropriate output indices for PSNR analysis for model "
+                "with no float outputs. Provide output_indices explicitly."
+            )
+
+        output_indices = float_output_indices
+
+    fp_outputs = [fp_session.run(None, inp) for inp in inputs]
 
     def psnr_eval_fn(session: InferenceSession):
         """

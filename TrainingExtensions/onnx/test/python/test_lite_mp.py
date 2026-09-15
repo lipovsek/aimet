@@ -3,6 +3,7 @@
 
 import pytest
 import tempfile
+import warnings
 import onnxruntime
 
 from aimet_onnx.common.defs import QuantizationDataType
@@ -147,15 +148,20 @@ def test_multi_output_psnr_eval_fn():
 
     psnr_eval_fn_0 = make_psnr_eval_fn(fp_session, inputs, output_indices=0)
     psnr_eval_fn_1 = make_psnr_eval_fn(fp_session, inputs, output_indices=1)
-    psnr_eval_fn_all = make_psnr_eval_fn(fp_session, inputs, output_indices=None)
+    with pytest.warns():
+        default_psnr_eval_fn = make_psnr_eval_fn(fp_session, inputs)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        explicit_all_psnr_eval_fn = make_psnr_eval_fn(fp_session, inputs, None)
 
     sim = QuantizationSimModel(model, param_type=int8, activation_type=int8)
     sim.compute_encodings(inputs)
 
     assert psnr_eval_fn_0(sim.session) != psnr_eval_fn_1(sim.session)
-    assert psnr_eval_fn_all(sim.session) == min(
+    assert default_psnr_eval_fn(sim.session) == min(
         psnr_eval_fn_0(sim.session), psnr_eval_fn_1(sim.session)
     )
+    assert default_psnr_eval_fn(sim.session) == explicit_all_psnr_eval_fn(sim.session)
 
 
 def test_multi_output_psnr_ignore_integer_output():

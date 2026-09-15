@@ -142,6 +142,7 @@ from aimet_onnx import analyze_per_layer_sensitivity
 
 # Only few samples are required.
 fp_inputs = [{input_name: x.numpy()} for x, _ in itertools.islice(calibration_data_loader, 1)]
+# By default, callback returns the minimum PSNR over all float outputs
 psnr_eval_fn = make_psnr_eval_fn(fp_session, fp_inputs)
 layer_sensitivity_dict = analyze_per_layer_sensitivity(
     sim, eval_fn=psnr_eval_fn
