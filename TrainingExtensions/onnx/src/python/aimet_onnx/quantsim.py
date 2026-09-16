@@ -106,7 +106,7 @@ from aimet_onnx.utils import (
     make_dummy_input,
     add_hook_to_get_activation,
     remove_activation_hooks,
-    create_ort_session_options_with_aimet_custom_ops,
+    register_aimet_custom_ops,
     OrtInferenceSession,
 )
 from aimet_onnx.graph_passes.fusions import (
@@ -374,6 +374,9 @@ class QuantizationSimModel:
         providers (List, optional): Onnxruntime execution providers to use when building InferenceSession.
             If `None`, default provider is "CPUExecutionProvider"
         path (str, optional): Directory to save temporary artifacts.
+        session_options_kwargs (Dict[str, Any], optional): Attributes to set on the sim's
+            ``onnxruntime.SessionOptions`` (e.g. ``{{"intra_op_num_threads": 2}}``). An unknown
+            attribute name raises `AttributeError`.
     """
 
     @_allow_deprecated_args
@@ -389,6 +392,7 @@ class QuantizationSimModel:
         user_onnx_libs: Optional[List[str]] = None,
         providers: Optional[Sequence[str | Tuple[str, Dict[Any, Any]]]] = None,
         path: Optional[str] = None,
+        session_options_kwargs: Optional[Dict[str, Any]] = None,
     ):
         if isinstance(quant_scheme, str):
             quant_scheme = QuantScheme.from_str(quant_scheme)
@@ -460,7 +464,10 @@ class QuantizationSimModel:
         self._quant_scheme = quant_scheme
         self._param_type = param_type
         self._activation_type = activation_type
-        self._ort_session_options = create_ort_session_options_with_aimet_custom_ops()
+        base_session_options = ort.SessionOptions()
+        for attr, value in (session_options_kwargs or {}).items():
+            setattr(base_session_options, attr, value)
+        self._ort_session_options = register_aimet_custom_ops(base_session_options)
         self.param_names = []
         # Param quantizers that have been folded into their parameters via
         # fold_param_quantizers(). Their QcQuantizeOp nodes are removed from the

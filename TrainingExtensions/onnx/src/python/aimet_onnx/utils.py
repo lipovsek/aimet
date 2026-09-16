@@ -572,14 +572,13 @@ def create_input_dict(
     return dict(zip(input_names, input_batch_list))
 
 
-def create_ort_session_options_with_aimet_custom_ops() -> SessionOptions:
+def register_aimet_custom_ops(session_options: SessionOptions) -> SessionOptions:
     """
-    Returns onnxruntime session options with aimet custom ops registered
-    :return: onnxruntime session options
+    Registers aimet's custom-ops library onto ``session_options`` in place and returns it.
+
+    :param session_options: Session options to register aimet's custom ops library onto.
+    :return: ``session_options``, with aimet's custom ops registered
     """
-
-    session_options = SessionOptions()
-
     system = platform.system()
     if system == "Windows":
         lib_name = "libaimet_onnxrt_ops.dll"
@@ -649,7 +648,7 @@ class OrtInferenceSession(InferenceSession):
             model_path = model
 
         if session_options is None:
-            session_options = create_ort_session_options_with_aimet_custom_ops()
+            session_options = register_aimet_custom_ops(SessionOptions())
 
         super().__init__(
             path_or_bytes=model_path,
@@ -684,7 +683,7 @@ def build_session(
     :param user_onnx_libs: list of paths to user custom ONNX op libraries
     :param path: path where to store model external data
     """
-    sess_options = create_ort_session_options_with_aimet_custom_ops()
+    sess_options = register_aimet_custom_ops(SessionOptions())
     for lib in user_onnx_libs or []:
         sess_options.register_custom_ops_library(lib)
 

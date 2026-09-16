@@ -74,6 +74,7 @@ from aimet_onnx.utils import (
     make_dummy_input,
     get_node_attribute,
     duplicate_shared_initializers,
+    OrtInferenceSession,
 )
 from aimet_onnx import int8
 from aimet_onnx._encoding import EncodingBase, AffineEncoding
@@ -4574,6 +4575,61 @@ class TestQuantSim:
         sim = QuantizationSimModel(model, quant_scheme=QuantScheme.post_training_tf)
         sim.compute_encodings([make_dummy_input(model)])
         sim.export(str(tmp_path), "model", export_int32_bias=True)
+
+
+class TestSessionOptions:
+    """Tests for the ``session_options_kwargs`` argument of ``QuantizationSimModel``."""
+
+    def test_default_session_options_is_created_when_none_given(self, tmp_dir):
+        model = build_dummy_model()
+
+        sim = QuantizationSimModel(model, path=tmp_dir)
+
+        assert sim._ort_session_options is not None
+        assert isinstance(sim._ort_session_options, ort.SessionOptions)
+
+    def test_session_options_kwargs_are_applied(self, tmp_dir):
+        model = build_dummy_model()
+
+        sim = QuantizationSimModel(
+            model,
+            path=tmp_dir,
+            session_options_kwargs={
+                "intra_op_num_threads": 2,
+                "inter_op_num_threads": 1,
+            },
+        )
+
+        assert sim._ort_session_options.intra_op_num_threads == 2
+        assert sim._ort_session_options.inter_op_num_threads == 1
+
+    def test_session_options_kwargs_are_forwarded_to_the_sim_session(self, tmp_dir):
+        model = build_dummy_model()
+
+        with patch(
+            "aimet_onnx.quantsim.OrtInferenceSession", wraps=OrtInferenceSession
+        ) as mock_session_cls:
+            sim = QuantizationSimModel(
+                model,
+                path=tmp_dir,
+                session_options_kwargs={"intra_op_num_threads": 3},
+            )
+
+        assert (
+            mock_session_cls.call_args.kwargs["session_options"]
+            is sim._ort_session_options
+        )
+        assert sim.session.get_session_options().intra_op_num_threads == 3
+
+    def test_unknown_session_options_kwarg_raises(self, tmp_dir):
+        model = build_dummy_model()
+
+        with pytest.raises(AttributeError):
+            QuantizationSimModel(
+                model,
+                path=tmp_dir,
+                session_options_kwargs={"intraop_num_threads_typo": 2},
+            )
 
 
 class TestEncodingPropagation:
