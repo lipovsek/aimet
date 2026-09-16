@@ -91,14 +91,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def apply_spinquant_if_needed(quantsim: QuantizationSimModel, recipe: str):
-    """Apply SpinQuant when needed"""
+def apply_spinquant_if_needed(onnx_model: onnx.ModelProto, recipe: str, topology):
+    """Apply SpinQuant to the float model when needed"""
     if recipe != "pcq_spinquant_adascale":
         return
 
     from aimet_onnx.experimental.spinquant import apply_spinquant
 
-    apply_spinquant(quantsim)
+    # Rotates the float graph in place; where each rotation goes comes from the
+    # topology analysis rather than from SpinQuant itself.
+    apply_spinquant(onnx_model, topology=topology)
     print("SpinQuant applied successfully.")
 
 
@@ -192,9 +194,13 @@ if __name__ == "__main__":
         onnx_model = onnx.load(os.path.join(tmpdir, "model.onnx"))
 
     # Analyze the decoder-stack structure on the float model, before quantizing:
-    # the topology describes the model, not the sim. AdaScale uses it to locate
-    # the decoder blocks it optimizes.
+    # the topology describes the model, not the sim. SpinQuant uses it to place its
+    # rotations; AdaScale uses it to locate the decoder blocks it optimizes.
     topology = analyze_llm_topology(onnx_model)
+
+    # SpinQuant rewrites the float graph, so it runs before the sim is built: the sim
+    # must wrap the rotated weights (and the ops R3 inserts) in its quantizers.
+    apply_spinquant_if_needed(onnx_model, args.recipe, topology)
 
     quantsim = QuantizationSimModel(
         model=onnx_model,
@@ -210,9 +216,6 @@ if __name__ == "__main__":
     _set_lm_head_precision(quantsim, WeightPrecision(qtype=int8, granularity="PCQ"))
     # Tie kv_cache
     _tie_quantizers_for_kv_cache(quantsim)
-
-    # Apply SpinQuant to quantsim weights in-place before compute_encodings
-    apply_spinquant_if_needed(quantsim, args.recipe)
 
     # Create a generator object to accurately simulate inference with static graph constraints while maintaining the
     # same interface. Use the generator object to do all forward passes through the model, including calibration, eval

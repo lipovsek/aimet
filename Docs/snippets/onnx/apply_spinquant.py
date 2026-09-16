@@ -19,22 +19,14 @@ tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=True, trust_remote_
 traceable_model = ONNXExportableModuleWithCache(hf_model)
 # End of [model-setup]
 
-# [create-sim]
+# [export-onnx]
 import os
 import tempfile
 import onnx
-from aimet_onnx.quantsim import QuantizationSimModel
+from aimet_onnx.experimental.llm_topology import analyze_llm_topology
 from GenAILab.qai_hub_lm.models.base import LLM
 from GenAILab.qai_hub_lm.models.utils.layer_cache import build_layer_cache_descriptors
 from GenAILab.qai_hub_lm.models.generator import Generator
-from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import TorchONNXInterface
-from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
-    _set_tensors_to_output_n_bit_symmmetric,
-    _tie_quantizers_for_kv_cache,
-    _set_lm_head_precision,
-)
-from GenAILab.bench.precision import WeightPrecision
-from aimet_onnx.common.defs import int8
 
 assembled_dummy_inputs = tuple(
     Generator.prepare_inputs(
@@ -60,6 +52,33 @@ with tempfile.TemporaryDirectory() as tmpdir:
     )
     onnx_model = onnx.load(os.path.join(tmpdir, "model.onnx"))
 
+# Analyze the decoder-stack structure. The topology describes the model, so it is
+# derived once here and then handed to any technique that needs to know where the
+# blocks and their projections are (SpinQuant, below).
+topology = analyze_llm_topology(onnx_model)
+# End of [export-onnx]
+
+# [spinquant-apply]
+from aimet_onnx.experimental.spinquant import apply_spinquant
+
+# apply_spinquant rotates onnx_model in-place. Must be called on the float model,
+# BEFORE the sim is created: R3 inserts new ops that only a sim built afterward can
+# wrap in quantizers. ``topology`` tells it where each rotation goes.
+apply_spinquant(onnx_model, topology=topology)
+# End of [spinquant-apply]
+
+# [create-sim]
+from aimet_onnx.quantsim import QuantizationSimModel
+from GenAILab.qai_hub_lm.backends.onnx.torch_onnx_interface import TorchONNXInterface
+from GenAILab.qai_hub_lm.backends.onnx.quantsim_utils import (
+    _set_tensors_to_output_n_bit_symmmetric,
+    _tie_quantizers_for_kv_cache,
+    _set_lm_head_precision,
+)
+from GenAILab.bench.precision import WeightPrecision
+from aimet_onnx.common.defs import int8
+
+# Built on the rotated graph, so compute_encodings calibrates on rotated weights.
 quantsim = QuantizationSimModel(
     model=onnx_model,
     quant_scheme="min_max",
@@ -75,13 +94,6 @@ _tie_quantizers_for_kv_cache(quantsim)
 quantsim_with_torch_interface = TorchONNXInterface(quantsim, hf_model.config)
 generator = Generator(quantsim_with_torch_interface, tokenizer, SEQUENCE_LENGTH, CONTEXT_LENGTH)
 # End of [create-sim]
-
-# [spinquant-apply]
-from aimet_onnx.experimental.spinquant import apply_spinquant
-
-# apply_spinquant modifies quantsim in-place. Must be called BEFORE compute_encodings.
-apply_spinquant(quantsim)
-# End of [spinquant-apply]
 
 # [compute-encodings]
 from tqdm import tqdm

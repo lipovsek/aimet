@@ -55,6 +55,8 @@ class SpinQuant(PreQuantizationTechnique):
     @staticmethod
     def apply(float_model, *, enable_r1=True, enable_r2=False, enable_r3=False):
         embedding = float_model.embedding
+        # Where the rotations go comes from llm_topology, which owns model analysis;
+        # SpinQuant only rotates the structure it reports.
         apply_spinquant(
             float_model.backbone,
             visual_model=float_model.visual,
@@ -62,6 +64,7 @@ class SpinQuant(PreQuantizationTechnique):
             enable_r1=enable_r1,
             enable_r2=enable_r2,
             enable_r3=enable_r3,
+            topology=analyze_llm_topology(float_model.backbone),
         )
 
 

@@ -107,7 +107,12 @@ Step 2: Create QuantizationSimModel
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Create a :ref:`QuantizationSimModel <quantsim-index>` with the desired quantization configuration.
-For ONNX, this step also exports the model to ONNX.
+
+**ONNX only**: this step instead exports the model to ONNX and analyzes its decoder-stack structure
+with :ref:`analyze_llm_topology <apiref-onnx-spinquant>`. The sim is created in `Step 3`_, *after*
+the rotation, because ONNX SpinQuant rewrites the float graph and R3 inserts new ops that only a sim
+built on the rotated graph can wrap in quantizers. A topology describes the model, not the sim, so
+derive it once here; `Step 3`_ hands it to SpinQuant, which uses it to place every rotation.
 
 .. tab-set::
     :sync-group: platform
@@ -125,8 +130,10 @@ For ONNX, this step also exports the model to ONNX.
 
         .. literalinclude:: ../snippets/onnx/apply_spinquant.py
             :language: python
-            :start-after: # [create-sim]
-            :end-before: # End of [create-sim]
+            :start-after: # [export-onnx]
+            :end-before: # End of [export-onnx]
+
+.. _Step 3:
 
 Step 3: Apply SpinQuant
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -137,7 +144,15 @@ applies the R1 Hadamard rotation to all weight matrices in-place.
 .. important::
    ``apply_spinquant`` must be called **before** ``compute_encodings``. The rotation modifies float
    weight initializers; ``compute_encodings`` must run afterward to calibrate quantizer scales on
-   the rotated weights.
+   the rotated weights. For ONNX it must also run **before** the sim is created, so the ONNX tab
+   below rotates the float model and then builds the sim on the rotated graph.
+
+.. note::
+   **ONNX only**: SpinQuant is told where each rotation goes, rather than finding out itself. Pass
+   the ``LlmTopology`` analyzed in `Step 2`_ as ``topology`` — locating model structure belongs to
+   AIMET's topology analysis, and SpinQuant only rotates what it reports. The argument is optional
+   today: omitting it analyzes the topology internally and warns. Passing it is the recommended
+   usage, and may become required in a future release.
 
 .. tab-set::
     :sync-group: platform
@@ -157,6 +172,11 @@ applies the R1 Hadamard rotation to all weight matrices in-place.
             :language: python
             :start-after: # [spinquant-apply]
             :end-before: # End of [spinquant-apply]
+
+        .. literalinclude:: ../snippets/onnx/apply_spinquant.py
+            :language: python
+            :start-after: # [create-sim]
+            :end-before: # End of [create-sim]
 
 Step 4: Compute activation encodings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -4,6 +4,7 @@
 import io
 import logging
 import shutil
+import warnings
 from types import SimpleNamespace
 from typing import Optional
 
@@ -53,6 +54,7 @@ from aimet_onnx.utils import ParamUtils, make_dummy_input
 from aimet_onnx.experimental.llm_topology.topology import (
     analyze_llm_topology,
 )
+from aimet_onnx.experimental.llm_topology.topology_types import LlmTopology
 from aimet_onnx.experimental.llm_topology.ir_adapter import (
     IrLlmTopology,
     resolve_active_norms as _resolve_active_norms,
@@ -2043,6 +2045,132 @@ class TestApplySpinquant:
         for name, arr_before in init_before.items():
             arr_after = numpy_helper.to_array(ParamUtils.get_param_by_name(model, name))
             assert np.array_equal(arr_before, arr_after)
+
+
+class TestTopologyArgument:
+    """``apply_spinquant`` takes the structure it rotates from an ``LlmTopology``.
+
+    Discovering that structure belongs to ``llm_topology``; SpinQuant only rotates
+    what it reports. These tests pin the handoff: the explicit-topology path, the
+    fallback that still analyzes internally (and warns), and the errors raised when
+    a topology cannot place the rotations on the model being rotated.
+    """
+
+    @staticmethod
+    def _model():
+        torch.manual_seed(0)
+        return _export_decoder_with_ids(LlamaStyleDecoder())
+
+    @staticmethod
+    def _initializers(model: onnx.ModelProto) -> dict:
+        """Every initializer of ``model``, by name, copied out of the proto."""
+        return {
+            init.name: numpy_helper.to_array(init).copy()
+            for init in model.graph.initializer
+        }
+
+    def _assert_unrotated(self, model: onnx.ModelProto, before: dict):
+        """Assert no initializer changed — the caller's model was left untouched."""
+        after = self._initializers(model)
+        assert after.keys() == before.keys()
+        for name, arr_before in before.items():
+            assert np.array_equal(arr_before, after[name]), name
+
+    def test_explicit_topology_matches_internal_analysis(self):
+        """An explicit topology must rotate exactly as internal analysis does.
+
+        Passing a topology cannot change which weights get rotated or how, so the
+        argument is safe to adopt: rotate two copies of one model, one each way, and
+        require every initializer to come out identical.
+        """
+        internal, explicit = self._model(), self._model()
+        assert (
+            self._initializers(internal).keys() == self._initializers(explicit).keys()
+        )
+
+        with pytest.warns(UserWarning, match="may become required"):
+            apply_spinquant(internal, enable_r1=True, enable_r2=True)
+        apply_spinquant(
+            explicit,
+            enable_r1=True,
+            enable_r2=True,
+            topology=analyze_llm_topology(explicit),
+        )
+
+        from_internal = self._initializers(internal)
+        from_explicit = self._initializers(explicit)
+        assert from_explicit.keys() == from_internal.keys()
+        for name, arr in from_internal.items():
+            assert np.array_equal(arr, from_explicit[name]), name
+
+    def test_explicit_topology_does_not_warn(self):
+        """Passing a topology is the supported call; it must stay warning-free."""
+        model = self._model()
+        topology = analyze_llm_topology(model)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            apply_spinquant(model, topology=topology)
+
+        assert not [
+            warning
+            for warning in caught
+            if "may become required" in str(warning.message)
+        ]
+
+    def test_topology_without_blocks_raises(self):
+        """An empty topology means SpinQuant has nothing to rotate — say so."""
+        model = self._model()
+        init_before = self._initializers(model)
+
+        with pytest.raises(ValueError, match="no decoder blocks"):
+            apply_spinquant(model, topology=LlmTopology())
+
+        self._assert_unrotated(model, init_before)
+
+    def test_topology_without_hidden_size_raises(self):
+        """R1's Hadamard has no dimension without ``hidden_size``."""
+        model = self._model()
+        topology = analyze_llm_topology(model)
+        topology.hidden_size = None
+
+        with pytest.raises(ValueError, match="hidden_size is None"):
+            apply_spinquant(model, topology=topology)
+
+    def test_topology_without_active_norms_raises(self):
+        """No active norms must raise rather than silently skip norm fusion.
+
+        This is the one missing field that would not fail on its own: R1 would fuse
+        no gammas and then rotate around them, changing the model's outputs. So the
+        error matters more than the others — assert the model is left alone too.
+        """
+        model = self._model()
+        topology = analyze_llm_topology(model)
+        topology.active_norms = []
+        init_before = self._initializers(model)
+
+        with pytest.raises(ValueError, match="active_norms is empty"):
+            apply_spinquant(model, topology=topology)
+
+        self._assert_unrotated(model, init_before)
+
+    def test_topology_naming_absent_nodes_raises_before_rotating(self):
+        """A topology that does not describe the model fails before any mutation.
+
+        Stands in for a topology analyzed from a different (or since-modified) model.
+        ``resolve_topology`` catches it while the context is being built, which is
+        what keeps ``apply_spinquant``'s all-or-nothing promise: the caller's proto
+        must come back unrotated rather than half-rotated.
+        """
+        model = self._model()
+        topology = analyze_llm_topology(model)
+        topology.blocks[0].o_proj = ["no_such_node_in_this_graph"]
+        init_before = self._initializers(model)
+
+        with pytest.raises(ValueError, match="Cannot resolve node"):
+            apply_spinquant(model, topology=topology)
+
+        self._assert_unrotated(model, init_before)
 
 
 class TestNoConnectedGraphDependency:
