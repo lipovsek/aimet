@@ -19,7 +19,7 @@ from aimet_onnx.common.utils import _get_version_string
 __version__ = _get_version_string()
 del _get_version_string
 
-from .quantsim import QuantizationSimModel, compute_encodings
+from .quantsim import QuantizationSimModel, compute_encodings, encodings_to_onnx_qdq
 from .adaround.adaround_weight import apply_adaround
 from .sequential_mse.seq_mse import apply_seq_mse
 from .quant_analyzer import analyze_per_layer_sensitivity

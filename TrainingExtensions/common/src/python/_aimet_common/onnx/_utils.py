@@ -637,6 +637,68 @@ def _finalize_graph_changes(
     model.graph.CopyFrom(to_proto(new_graph))
 
 
+def _restore_graph_output_names(model: ModelProto):
+    """
+    Give the original graph-output names back to the tensors that now carry those values.
+
+    A graph output has no consumers, so :func:`_add_onnx_qdq_nodes` cannot rewire it and its
+    QDQ chain is left dangling, leaving the model returning the *unquantized* value. Swap the
+    names so the DequantizeLinear output carries the original graph-output name::
+
+        ORIGINAL MODEL:
+          ... -> last_node -------------->
+                            (out)
+
+        ONNX QDQ (BEFORE RENAMING):
+          ... -> last_node --------------> Q ---------> DQ -------------->
+                            (out)             (out_q)      (out_updated)
+
+        ONNX QDQ (AFTER RENAMING):
+          ... -> last_node --------------> Q ---------> DQ -------------->
+                            (out_updated)     (out_q)      (out)
+
+    Call this after :func:`_add_onnx_qdq_nodes`. Graph outputs that were not quantized are
+    left untouched.
+
+    TODO: This only undoes a side effect of :func:`_add_onnx_qdq_nodes`, so it would be better
+    folded into that function, which already receives the input/output name mapping this has to
+    infer from the graph. Doing so should also replace ``aimet_torch.onnx``'s equivalent
+    ``_restore_model_output_names``, which is a third copy of the same intent; all three callers
+    need to move together to avoid renaming twice.
+    """
+    consumers = {
+        node.input[i]: node for node in model.graph.node for i in range(len(node.input))
+    }
+    producers = {
+        node.output[i]: node
+        for node in model.graph.node
+        for i in range(len(node.output))
+    }
+
+    for graph_out in model.graph.output:
+        last_node = producers.get(graph_out.name)
+        q = consumers.get(graph_out.name)
+
+        if last_node is None or not (q and q.op_type == "QuantizeLinear"):
+            continue
+
+        dq = consumers.get(q.output[0])
+
+        if not (dq and dq.op_type == "DequantizeLinear"):
+            continue
+
+        i = list(last_node.output).index(graph_out.name)
+        last_node.output[i], dq.output[0] = dq.output[0], last_node.output[i]
+
+        # Redirect "out" and "out_updated" to the right consumer
+        for node in model.graph.node:
+            for j, inp in enumerate(node.input):
+                if inp == last_node.output[i]:
+                    node.input[j] = dq.output[0]
+                elif inp == dq.output[0]:
+                    node.input[j] = last_node.output[i]
+
+
 class _ParamUtils:
     """Param utilities"""
 

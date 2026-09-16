@@ -60,6 +60,8 @@ from aimet_onnx.common.onnx._utils import (
     _derive_data_movement_op_encodings,
     _is_htp_interpolation_op,
     _get_all_constants,
+    _restore_graph_output_names,
+    contains_tensor_type,
 )
 from aimet_onnx.graph_passes.cleanup import remove_duplicate_qdq_pairs
 from aimet_onnx.common.quantsim import (
@@ -2780,51 +2782,7 @@ class QuantizationSimModel:
             prequantize_constants=prequantize_constants,
         )
 
-        # Restore original model's output names
-        #
-        #   ORIGINAL MODEL:
-        #     ... -> last_node -------------->
-        #                       (out)
-        #
-        #   ONNX QDQ (BEFORE RENAMING):
-        #     ... -> last_node --------------> Q ---------> DQ -------------->
-        #                       (out)             (out_q)      (out_updated)
-        #
-        #   ONNX QDQ (AFTER RENAMING):
-        #     ... -> last_node --------------> Q ---------> DQ -------------->
-        #                       (out_updated)     (out_q)      (out)
-        consumers = {
-            node.input[i]: node
-            for node in model_copy.graph.node
-            for i in range(len(node.input))
-        }
-        producers = {
-            node.output[i]: node
-            for node in model_copy.graph.node
-            for i in range(len(node.output))
-        }
-        for graph_out in model_copy.graph.output:
-            last_node = producers[graph_out.name]
-            q = consumers.get(graph_out.name)
-
-            if not (q and q.op_type == "QuantizeLinear"):
-                continue
-
-            dq = consumers.get(q.output[0])
-
-            if not (dq and dq.op_type == "DequantizeLinear"):
-                continue
-
-            i = list(last_node.output).index(graph_out.name)
-            last_node.output[i], dq.output[0] = dq.output[0], last_node.output[i]
-
-            # Redirect "out" and "out_updated" to the right consumer
-            for node in model_copy.graph.node:
-                for j, inp in enumerate(node.input):
-                    if inp == last_node.output[i]:
-                        node.input[j] = dq.output[0]
-                    elif inp == dq.output[0]:
-                        node.input[j] = last_node.output[i]
+        _restore_graph_output_names(model_copy)
 
         ONNXModel(model_copy).topological_sort()
 
@@ -3569,6 +3527,407 @@ def _remove_delegatable_excess_encodings(
 
     for name in delegatable:
         encodings.pop(name)
+
+
+def _flatten_0_6_1(encodings_dict: dict) -> Tuple[Dict[str, Any], Set[str]]:
+    """0.6.1 keys its sections by tensor name. Normalized to 1.0.0, AIMET's own path."""
+    param_encodings = {
+        name: EncodingBase.from_qnn_encoding_dict(e).to_qnn_encoding_dict("1.0.0")
+        for name, e in encodings_dict["param_encodings"].items()
+    }
+    activation_encodings = {
+        name: EncodingBase.from_qnn_encoding_dict(e).to_qnn_encoding_dict("1.0.0")
+        for name, e in encodings_dict["activation_encodings"].items()
+    }
+    return param_encodings | activation_encodings, set(param_encodings)
+
+
+def _flatten_1_0_0(encodings_dict: dict) -> Tuple[Dict[str, Any], Set[str]]:
+    """1.0.0 sections are lists whose entries carry a ``"name"`` field."""
+    param_encodings = {e["name"]: e for e in encodings_dict["param_encodings"]}
+    activation_encodings = {
+        e["name"]: e for e in encodings_dict["activation_encodings"]
+    }
+    return param_encodings | activation_encodings, set(param_encodings)
+
+
+def _flatten_2_x(encodings_dict: dict) -> Tuple[Dict[str, Any], Set[str]]:
+    """
+    2.x is a single flat ``"encodings"`` list, left as-is because it is the only layout that
+    stores a per-channel axis. It carries no param/activation split, so parameters are
+    classified from the graph instead.
+    """
+    return {e["name"]: e for e in encodings_dict["encodings"]}, set()
+
+
+# Maps an encoding version to the loader for its file layout. Versions that share a layout
+# share a loader, so supporting a newly added AIMET encoding version is usually one entry
+# here plus a test. test_encodings_to_onnx_qdq_covers_all_encoding_versions fails when a
+# version in VALID_ENCODING_VERSIONS is missing from this table.
+_ENCODING_LOADERS = {
+    "0.6.1": _flatten_0_6_1,
+    "1.0.0": _flatten_1_0_0,
+    "2.0.0": _flatten_2_x,
+    "2.1.0": _flatten_2_x,
+}
+
+
+def _flatten_encodings(
+    encodings: dict | str,
+) -> Tuple[Dict[str, Any], Set[str]]:
+    """
+    Load an encodings file (or dict) and flatten it to ``{tensor_name: encoding}``.
+
+    :return: (all encodings keyed by tensor name, names that came from ``param_encodings``)
+    """
+    if isinstance(encodings, dict):
+        encodings_dict = encodings
+    else:
+        with open(encodings) as json_file:
+            encodings_dict = json.load(json_file)
+
+    encoding_version = encodings_dict.get("version", None)
+    try:
+        flatten = _ENCODING_LOADERS[encoding_version]
+    except KeyError:
+        # Deliberately not falling back to a layout guess: a version added to AIMET after
+        # this table was written must be registered explicitly, not silently misread.
+        raise NotImplementedError(
+            f"Encoding version should be one of {sorted(_ENCODING_LOADERS)}; "
+            f"got {encoding_version}. To support a new version, register its file layout "
+            "in aimet_onnx.quantsim._ENCODING_LOADERS."
+        ) from None
+
+    return flatten(encodings_dict)
+
+
+def _num_scales(encoding: Any) -> int:
+    """Number of scales in a native (any-version) encoding, without parsing it."""
+    if isinstance(encoding, list):  # 0.6.1
+        return len(encoding)
+
+    scale = encoding.get("scale", encoding.get("y_scale", None))
+    if scale is None:
+        scale = encoding.get("per_channel_float_scale", None)
+    if scale is None:
+        return 1
+    return int(np.asarray(scale).size)
+
+
+def _tensor_float_type(model: onnx.ModelProto, name: str) -> np.dtype:
+    """
+    The float dtype of a tensor, used as the dtype of the scale emitted alongside it.
+
+    Falls back to float32 for a tensor whose type the graph does not declare.
+    """
+    for tensor in model.graph.initializer:
+        if tensor.name == name:
+            return onnx.helper.tensor_dtype_to_np_dtype(tensor.data_type)
+
+    for value_info in (
+        *model.graph.input,
+        *model.graph.value_info,
+        *model.graph.output,
+    ):
+        if value_info.name == name and value_info.type.tensor_type.elem_type:
+            return onnx.helper.tensor_dtype_to_np_dtype(
+                value_info.type.tensor_type.elem_type
+            )
+
+    return np.float32
+
+
+def _unique_axis_by_shape(
+    dims: Optional[Tuple[int, ...]], n_scales: int
+) -> Optional[int]:
+    """
+    The channel axis implied by the tensor's shape.
+
+    If exactly one dimension holds one scale per channel, that is the channel axis. Returns
+    None for per-tensor encodings and for shapes where more than one dimension qualifies.
+    """
+    if n_scales <= 1 or not dims:
+        return None
+
+    matches = [i for i, dim in enumerate(dims) if dim == n_scales]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _channel_axes_from_connected_graph(model: onnx.ModelProto) -> Dict[str, int]:
+    """
+    Channel axis of every parameter, from :meth:`~QuantizationSimModel._get_quantization_axes`.
+
+    Resolves the axis by op type rather than by shape, so it can disambiguate tensors whose
+    shape alone is not conclusive.
+    """
+    axes = {}
+
+    try:
+        connected_graph = ConnectedGraph(model)
+    except Exception as e:
+        raise RuntimeError(
+            "Could not determine the per-channel axis of every parameter from tensor "
+            "shapes alone, and building a ConnectedGraph to resolve the rest failed. "
+            "Export encodings in version 2.0.0, which stores the axis explicitly."
+        ) from e
+
+    for op in connected_graph.get_all_ops().values():
+        channel_axis, _ = QuantizationSimModel._get_quantization_axes(op)  # pylint: disable=protected-access
+
+        if channel_axis is None:
+            continue
+
+        for product, _unused in (op.parameters or {}).values():
+            axes[product.name] = channel_axis
+
+    return axes
+
+
+def _required_opset(encodings: List[dict], current_opset: int) -> int:
+    """Minimum ONNX opset able to represent these 2.0.0 encodings."""
+    desired = max(current_opset, 10)
+
+    for encoding in encodings:
+        if encoding.get("axis") is not None:
+            desired = max(desired, 13)
+        if encoding.get("block_size"):
+            desired = max(desired, 21)
+
+        output_dtype = encoding.get("output_dtype", "")
+        if output_dtype.startswith("float8"):
+            desired = max(desired, 19)
+        elif output_dtype.startswith(("int", "uint")) and output_dtype not in (
+            "int8",
+            "uint8",
+            "int32",
+            "uint32",
+        ):
+            # INT4/INT16
+            desired = max(desired, 21)
+
+    return desired
+
+
+# pylint: disable=too-many-locals, too-many-branches, too-many-statements
+def encodings_to_onnx_qdq(
+    model: onnx.ModelProto | ONNXModel | str,
+    encodings: dict | str,
+    *,
+    prequantize_constants: bool = False,
+    force_activation_as: Optional[Literal["unsigned", "signed"]] = "unsigned",
+) -> onnx.ModelProto:
+    """
+    Convert an ONNX model and its AIMET encodings into an ONNX QDQ model.
+
+    This is a direct translation: the encodings determine exactly which tensors are
+    quantized and how. No :class:`QuantizationSimModel` is created, so no quantsim
+    configuration (supergroups, op tying, encoding constraints) can add or remove
+    quantizers relative to what the encodings specify.
+
+    [b]float16 is not a quantized data type and onnx QDQ has no representation for it, so
+    plain-cast float encodings are omitted with a warning, whether they name a parameter or an
+    activation. Scaled float formats such as FP8 do carry a scale, and are emitted as Q/DQ.
+
+    An encoding naming a tensor that is not in the model is an error.
+
+    Args:
+        model: ONNX model as a :class:`ModelProto` or :class:`ONNXModel`, or a path to one.
+            The model is not modified in place.
+        encodings: AIMET encodings as a dict, or a path to an encodings file. Versions
+            0.6.1, 1.0.0, 2.0.0, and 2.1.0 are accepted.
+        prequantize_constants: If True, store quantized parameters as integer initializers
+            rather than emitting ``QuantizeLinear`` for them. (default: False)
+        force_activation_as: Cast all activation encodings to signed or unsigned, a
+            workaround for QNN converter limitations. Pass None to leave them as-is.
+            (default: "unsigned")
+
+    Returns:
+        The equivalent ONNX QDQ model.
+
+    Examples:
+        >>> qdq_model = encodings_to_onnx_qdq("model.onnx", "model.encodings")
+        >>> onnx.save_model(qdq_model, "model_qdq.onnx")
+    """
+    if isinstance(model, str):
+        model = onnx.load(model)
+    else:
+        if isinstance(model, ONNXModel):
+            model = model.model
+        model_copy = onnx.ModelProto()
+        model_copy.CopyFrom(model)
+        model = model_copy
+
+    # TODO: Support exporting (b)float16 models. The scale tensors are emitted as float32
+    # below, which a (b)float16 graph cannot consume.
+    if contains_tensor_type(
+        model, (onnx.TensorProto.BFLOAT16, onnx.TensorProto.FLOAT16)
+    ):
+        raise RuntimeError(
+            "Exporting to onnx QDQ is only supported for float32 models."
+        )
+
+    all_encodings, param_names = _flatten_encodings(encodings)
+
+    constants = _get_all_constants(model)
+    producers = {out for node in model.graph.node for out in node.output}
+    graph_tensors = set(constants) | producers | {i.name for i in model.graph.input}
+
+    # Recover the per-channel axis, which only version 2.0.0 stores. ConnectedGraph is built
+    # only for tensors whose shape is inconclusive, since it is not free on large models.
+    shape_axes = {}
+    unresolved = []
+    for name, encoding in all_encodings.items():
+        if name not in constants:
+            continue
+        n_scales = _num_scales(encoding)
+        axis = _unique_axis_by_shape(tuple(constants[name].dims), n_scales)
+        if axis is not None:
+            shape_axes[name] = axis
+        elif n_scales > 1:
+            unresolved.append(name)
+
+    channel_axes = shape_axes
+    if unresolved:
+        logger.info(
+            "Deriving the per-channel axis of %d parameter(s) from the model graph: %s",
+            len(unresolved),
+            sorted(unresolved)[:8],
+        )
+        channel_axes = {**_channel_axes_from_connected_graph(model), **shape_axes}
+
+    qdq_node_info: Dict[str, List] = {
+        "input_names": [],
+        "output_names": [],
+        "node_name_prefixes": [],
+        "encodings": [],
+    }
+    plain_cast_floats: List[str] = []
+    unmatched: List[str] = []
+
+    for name, encoding in all_encodings.items():
+        if name not in graph_tensors:
+            unmatched.append(name)
+            continue
+
+        # 2.0.0 has no param/activation split, so a static tensor counts as a parameter
+        # regardless of which section (if any) the encoding came from.
+        is_constant = name in constants
+        is_param = is_constant or name in param_names
+        dims = tuple(constants[name].dims) if is_constant else None
+
+        parsed = EncodingBase.from_qnn_encoding_dict(
+            encoding, input_shape=dims, default_channel_axis=channel_axes.get(name)
+        )
+
+        qdq_encoding = parsed.to_qnn_encoding_dict("2.0.0")
+
+        if not qdq_encoding:
+            # Plain-cast float formats (float16, bfloat16) carry no scale and so have no
+            # 2.0.0 encoding. Scaled floats such as FP8 do, and take the QDQ path below.
+            plain_cast_floats.append(name)
+            continue
+
+        # A wrong axis yields a valid-but-wrong graph, so check it against the shape. Only
+        # per-channel encodings hold one scale per channel along ``axis``; blockwise scales
+        # are 2-D and report the block axis, so they are exempt.
+        emitted_axis = qdq_encoding.get("axis")
+        emitted_scale = np.asarray(qdq_encoding.get("y_scale", ()))
+        if (
+            emitted_axis is not None
+            and dims
+            and not qdq_encoding.get("block_size")
+            and emitted_scale.ndim == 1
+            and dims[emitted_axis % len(dims)] != emitted_scale.size
+        ):
+            raise RuntimeError(
+                f"Per-channel axis {emitted_axis} of '{name}' does not match its shape "
+                f"{dims}: expected dimension {emitted_scale.size} to hold one scale per "
+                "channel."
+            )
+
+        if not is_param and force_activation_as is not None:
+            qdq_encoding = (
+                _to_unsigned_encoding(qdq_encoding)
+                if force_activation_as == "unsigned"
+                else _to_signed_encoding(qdq_encoding)
+            )
+
+        qdq_node_info["input_names"].append(name)
+        qdq_node_info["output_names"].append(name + "_qdq")
+        qdq_node_info["node_name_prefixes"].append(name)
+        qdq_node_info["encodings"].append(qdq_encoding)
+
+    if unmatched:
+        raise RuntimeError(
+            f"The following encoding names were present in the encodings to load but not "
+            f"found in the model: {sorted(unmatched)}"
+        )
+
+    derived_encodings = _derive_data_movement_op_encodings(
+        model, dict(zip(qdq_node_info["input_names"], qdq_node_info["encodings"]))
+    )
+    for name, encoding in derived_encodings.items():
+        qdq_node_info["input_names"].append(name)
+        qdq_node_info["output_names"].append(name + "_qdq")
+        qdq_node_info["node_name_prefixes"].append(name)
+        qdq_node_info["encodings"].append(encoding)
+
+    current_opset = next(
+        opset.version for opset in model.opset_import if opset.domain in ("", "ai.onnx")
+    )
+    desired_opset = _required_opset(qdq_node_info["encodings"], current_opset)
+    if current_opset < desired_opset:
+        logger.info(
+            "Converting model from opset %d to %d to represent these encodings",
+            current_opset,
+            desired_opset,
+        )
+        model = _convert_version(model, desired_opset)
+
+    # _required_opset floors at current_opset, so this is the model's opset whether or not the
+    # conversion above ran.
+    model_opset = max(current_opset, desired_opset)
+
+    # float_types is the dtype the scale tensors are stored as. onnx::QuantizeLinear required
+    # the scale and the input to share a dtype until opset 22; from opset 23 the scale may be
+    # float32 whatever the input's dtype is. Decided here rather than alongside the encodings
+    # because _required_opset may still raise the opset above.
+    qdq_node_info["float_types"] = [
+        np.float32 if model_opset >= 23 else _tensor_float_type(model, name)
+        for name in qdq_node_info["input_names"]
+    ]
+
+    _add_onnx_qdq_nodes(
+        model,
+        **qdq_node_info,
+        onnx_opset=model_opset,
+        prequantize_constants=prequantize_constants,
+    )
+
+    _restore_graph_output_names(model)
+
+    if plain_cast_floats:
+        warnings.warn(
+            _red(
+                "[b]float16 is no more considered a quantized data type, so onnx QDQ has no "
+                f"representation for it. Omitting {len(plain_cast_floats)} encoding(s): "
+                f"{sorted(plain_cast_floats)[:8]}"
+            ),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    ONNXModel(model).topological_sort()
+
+    # onnx requires metadata_props keys to be unique, so overwrite rather than append when
+    # converting a model that already carries a producer.
+    producer = next((p for p in model.metadata_props if p.key == "producer"), None)
+    if producer is None:
+        producer = model.metadata_props.add()
+        producer.key = "producer"
+    producer.value = f"aimet-onnx {aimet_onnx.__version__}"
+
+    return model
 
 
 # pylint: disable=too-many-locals, too-many-branches

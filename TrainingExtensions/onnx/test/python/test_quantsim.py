@@ -43,6 +43,7 @@ from aimet_onnx.common.onnx._utils import (
     _convert_version_with_external_weights,
     _remove_onnx_qdq_nodes,
 )
+from aimet_onnx.common.quantsim import VALID_ENCODING_VERSIONS
 from aimet_onnx.common.quantsim_config.utils import (
     get_path_for_per_channel_config,
     get_path_for_per_tensor_config,
@@ -51,6 +52,7 @@ from aimet_onnx.meta.connectedgraph import ConnectedGraph
 from aimet_onnx.meta.operations import Op
 from aimet_onnx.quantsim import (
     QuantizationSimModel,
+    encodings_to_onnx_qdq,
     load_encodings_to_sim,
     set_blockwise_quantization_for_weights,
     _apply_constraints,
@@ -59,6 +61,7 @@ from aimet_onnx.quantsim import (
     _INT32_MINIMUM_SCALE,
     set_lpbq_for_params,
     set_param_type,
+    _ENCODING_LOADERS,
 )
 from aimet_onnx.common.defs import QTYPE_ALIASES
 import aimet_onnx
@@ -6850,6 +6853,502 @@ def test_to_onnx_qdq(
     )
     (out_onnx_qdq,) = sess.run(None, {"input": input})
     assert np.allclose(out_sim, out_onnx_qdq, atol=atol, rtol=rtol)
+
+
+def _disable_ort_optimization():
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    return sess_options
+
+
+def _run_model(model, inputs):
+    sess = ort.InferenceSession(
+        model.SerializeToString(), sess_options=_disable_ort_optimization()
+    )
+    return sess.run(None, inputs)
+
+
+def _export_encodings(sim, tmp_dir, encoding_version):
+    sim.export(tmp_dir, "model", encoding_version=encoding_version)
+    with open(os.path.join(tmp_dir, "model.encodings")) as f:
+        return json.load(f)
+
+
+def _qdq_signature(model):
+    """
+    The Q/DQ grid applied to each quantized tensor, keyed by its name in the original graph.
+
+    Node and initializer names are excluded deliberately: the two exporters spell the
+    intermediate tensor of a chain differently, which is cosmetic and is covered by
+    test_encodings_to_onnx_qdq_preserves_output_names. Everything that decides numerics --
+    op types, axis, block_size, scale and zero-point values -- is compared.
+
+    A chain is keyed on the QuantizeLinear's input rather than the DequantizeLinear's,
+    because the latter is the intermediate tensor whose name differs between exporters.
+    """
+    initializers = {i.name: i for i in model.graph.initializer}
+    consumers = {i: node for node in model.graph.node for i in node.input}
+
+    # A quantized graph output is renamed so the chain's tail keeps the original name and the
+    # tensor feeding the chain takes a suffixed one, which the exporters spell differently
+    # (_qdq vs _updated). Map those back, so the two graphs agree on the key.
+    graph_outputs = sorted((o.name for o in model.graph.output), key=len, reverse=True)
+
+    def canonical(name):
+        for output in graph_outputs:
+            if name.startswith(output) and name[len(output) :].startswith("_"):
+                return output
+        return name
+
+    def grid(node):
+        return (
+            node.op_type,
+            get_node_attribute(node, "axis"),
+            get_node_attribute(node, "block_size"),
+            *(
+                onnx.numpy_helper.to_array(initializers[name]).tolist()
+                for name in node.input[1:]
+                if name in initializers
+            ),
+        )
+
+    signature = {}
+    for node in model.graph.node:
+        if node.op_type == "QuantizeLinear":
+            dq = consumers.get(node.output[0])
+            signature[canonical(node.input[0])] = (
+                grid(node),
+                grid(dq)
+                if dq is not None and dq.op_type == "DequantizeLinear"
+                else None,
+            )
+        elif node.op_type == "DequantizeLinear" and node.input[0] in initializers:
+            # int32 bias, which is emitted as a bare DequantizeLinear with no Q ahead of it
+            signature.setdefault(canonical(node.input[0]), (None, grid(node)))
+    return signature
+
+
+def _set_float16(sim, names):
+    for name in names:
+        qtzr = sim.qc_quantize_op_dict[name]
+        qtzr.data_type = QuantizationDataType.float
+        qtzr.bitwidth = 16
+        qtzr.enabled = True
+
+
+@pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
+@pytest.mark.parametrize(
+    "param_dtype, activation_dtype, config_file",
+    [
+        ("int8", "uint8", "htp_v81"),
+        ("int4", "uint16", "htp_v81"),
+        # Per-channel, whose axis is stored only in 2.0.0 and must be recovered from the
+        # model for the other versions
+        pytest.param(
+            "int8",
+            "uint8",
+            get_path_for_per_channel_config(),
+            id="int8-uint8-per_channel",
+        ),
+    ],
+)
+def test_encodings_to_onnx_qdq(
+    tmp_dir, encoding_version, param_dtype, activation_dtype, config_file
+):
+    """
+    Given: A model and the encodings exported from a calibrated sim
+    When: The encodings are converted to QDQ without a sim
+    Then: The result is equivalent to sim.to_onnx_qdq()
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21)
+    sim = QuantizationSimModel(
+        model,
+        param_type=param_dtype,
+        activation_type=activation_dtype.removeprefix("u"),
+        config_file=config_file,
+    )
+    input = np.random.randn(1, 3, 32, 32).astype(np.float32)
+    sim.compute_encodings([{"input": input}])
+
+    encodings = _export_encodings(sim, tmp_dir, encoding_version)
+
+    # export() enables int32 bias encodings for 2.0.0, so the golden must match
+    export_int32_bias = encoding_version == "2.0.0"
+    expected = sim.to_onnx_qdq(export_int32_bias=export_int32_bias)
+
+    qdq_model = encodings_to_onnx_qdq(model, encodings)
+
+    onnx.checker.check_model(qdq_model)
+
+    """
+    Then: The same tensors are quantized the same way, and the outputs agree exactly
+    """
+    assert _qdq_signature(qdq_model) == _qdq_signature(expected)
+
+    (out_expected,) = _run_model(expected, {"input": input})
+    (out_actual,) = _run_model(qdq_model, {"input": input})
+    assert np.array_equal(out_expected, out_actual)
+
+
+@pytest.mark.parametrize("encoding_version", ["0.6.1", "1.0.0", "2.0.0"])
+def test_encodings_to_onnx_qdq_round_trip(tmp_dir, encoding_version):
+    """
+    Given: A model and its encodings
+    When: They are converted to QDQ and the encodings read back out of the graph
+    Then: Every input encoding is recovered, i.e. the conversion is lossless
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21)
+    sim = QuantizationSimModel(model, config_file="htp_v81")
+    sim.compute_encodings([{"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}])
+
+    encodings = _export_encodings(sim, tmp_dir, encoding_version)
+    # int32 bias encodings, which only a 2.0.0 export carries, are not emitted as Q/DQ by
+    # either exporter -- sim.to_onnx_qdq(export_int32_bias=True) does not round-trip them
+    # either -- so they cannot be read back out of the graph.
+    int32_names = set()
+    if encoding_version == "2.0.0":
+        expected_names = {e["name"] for e in encodings["encodings"]}
+        int32_names = {
+            e["name"]
+            for e in encodings["encodings"]
+            if e.get("output_dtype") == "int32"
+        }
+    else:
+        expected_names = {
+            e if isinstance(e, str) else e["name"]
+            for section in ("param_encodings", "activation_encodings")
+            for e in encodings[section]
+        }
+
+    qdq_model = encodings_to_onnx_qdq(model, encodings)
+    recovered = {e["name"] for e in _remove_onnx_qdq_nodes(qdq_model)}
+
+    assert expected_names - recovered <= int32_names
+
+
+def _square_matmul_model(opset_version=21):
+    """MatMul with a square weight, so the channel axis is ambiguous from shape alone."""
+    np.random.seed(0)
+    torch.manual_seed(0)
+    weight = (np.random.randn(6, 6) * 0.1).astype(np.float32)
+    graph = onnx.helper.make_graph(
+        [
+            onnx.helper.make_node("MatMul", ["input", "w"], ["mm"]),
+            onnx.helper.make_node("Relu", ["mm"], ["output"]),
+        ],
+        "square_matmul",
+        [onnx.helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, [1, 6])],
+        [onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, [1, 6])],
+        [onnx.numpy_helper.from_array(weight, name="w")],
+    )
+    model = onnx.helper.make_model(
+        graph, opset_imports=[onnx.helper.make_opsetid("", opset_version)]
+    )
+    model.ir_version = 10
+    onnx.checker.check_model(model)
+    return model
+
+
+def test_encodings_to_onnx_qdq_ambiguous_axis(tmp_dir):
+    """
+    Given: A per-channel weight whose shape is square, so the channel axis cannot be
+           recovered from the number of scales alone
+    When: Converted from 1.0.0 encodings, which do not store an axis
+    Then: The axis is taken from AIMET's own rule via ConnectedGraph and matches
+          sim.to_onnx_qdq()
+
+    Kept separate from test_encodings_to_onnx_qdq because the square weight is the point:
+    it is the only case where the number of scales cannot identify the axis, so the
+    ConnectedGraph fallback is what is under test.
+    """
+    model = _square_matmul_model()
+    sim = QuantizationSimModel(model, config_file=get_path_for_per_channel_config())
+    input = np.random.randn(1, 6).astype(np.float32)
+    sim.compute_encodings([{"input": input}])
+
+    encodings = _export_encodings(sim, tmp_dir, "1.0.0")
+    expected = sim.to_onnx_qdq()
+    qdq_model = encodings_to_onnx_qdq(model, encodings)
+
+    assert _qdq_signature(qdq_model) == _qdq_signature(expected)
+
+    (out_expected,) = _run_model(expected, {"input": input})
+    (out_actual,) = _run_model(qdq_model, {"input": input})
+    assert np.array_equal(out_expected, out_actual)
+
+
+def test_encodings_to_onnx_qdq_blockwise(tmp_dir):
+    """
+    Given: Blockwise encodings, whose 2.0.0 form carries a 2-D scale and reports the block
+           axis rather than the channel axis
+    When: Converted to QDQ
+    Then: They are accepted (not mistaken for a malformed per-channel encoding) and produce
+          the same Q/DQ nodes as sim.to_onnx_qdq()
+
+    The graphs are compared structurally rather than by running them: onnxruntime rejects
+    blockwise QuantizeLinear from either exporter, because the scale is not broadcast to the
+    input's shape ("x_scale and x must have the same shape despite the quantize axis for
+    blocked quantization"). That is a pre-existing AIMET export issue, reproducible with
+    sim.to_onnx_qdq() alone, so it is not asserted on here.
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21)
+    sim = QuantizationSimModel(model, param_type="int4", config_file="htp_v81")
+    set_blockwise_quantization_for_weights(
+        sim, op_types=("Conv",), bitwidth=4, symmetric=True, block_size=3
+    )
+    input = np.random.randn(1, 3, 32, 32).astype(np.float32)
+    sim.compute_encodings([{"input": input}])
+
+    encodings = _export_encodings(sim, tmp_dir, "2.0.0")
+    assert any(e.get("block_size") for e in encodings["encodings"]), (
+        "expected at least one blockwise encoding"
+    )
+
+    expected = sim.to_onnx_qdq(export_int32_bias=True)
+    qdq_model = encodings_to_onnx_qdq(model, encodings)
+    onnx.checker.check_model(qdq_model)
+
+    signature = _qdq_signature(qdq_model)
+    assert signature == _qdq_signature(expected)
+    assert any(q is not None and q[2] for q, _ in signature.values()), (
+        "expected at least one blockwise parameter in the emitted graph"
+    )
+
+
+def test_encodings_to_onnx_qdq_float_params(tmp_dir):
+    """
+    Given: Float16 parameter encodings
+    When: Converted to QDQ
+    Then: They are omitted with a warning, since float16 is not a quantized data type, and
+          the parameter keeps its original value
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21).model
+    sim = QuantizationSimModel(model, config_file="htp_v81")
+    param_names = [name for name in sim.qc_quantize_op_dict if name in sim.param_names]
+    _set_float16(sim, param_names[:1])
+    sim.compute_encodings([{"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}])
+
+    original = {
+        init.name: onnx.numpy_helper.to_array(init) for init in model.graph.initializer
+    }
+    encodings = _export_encodings(sim, tmp_dir, "1.0.0")
+    with pytest.warns(
+        DeprecationWarning, match="no more considered a quantized data type"
+    ):
+        qdq_model = encodings_to_onnx_qdq(model, encodings)
+
+    emitted = {
+        init.name: onnx.numpy_helper.to_array(init)
+        for init in qdq_model.graph.initializer
+    }
+    name = param_names[0]
+    assert np.array_equal(emitted[name], original[name])
+    assert not any(
+        node.input[0] == name
+        for node in qdq_model.graph.node
+        if node.op_type in ("QuantizeLinear", "DequantizeLinear")
+    )
+
+    """
+    Then: The input model is not modified in place
+    """
+    first = model.graph.initializer[0]
+    assert np.array_equal(onnx.numpy_helper.to_array(first), original[first.name])
+
+
+def test_encodings_to_onnx_qdq_float_activations(tmp_dir):
+    """
+    Given: Float16 activation encodings, which onnx QDQ has no representation for because
+           onnx::QuantizeLinear only emits integer output types
+    When: Converted to QDQ
+    Then: They are omitted with a warning, and the result matches sim.to_onnx_qdq(), which
+          omits them too -- the output stays a graph to_onnx_qdq() could have produced
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21).model
+    sim = QuantizationSimModel(model, config_file="htp_v81")
+    activations = [
+        name for name in sim.qc_quantize_op_dict if name not in sim.param_names
+    ]
+    _set_float16(sim, activations)
+    input = np.random.randn(1, 3, 32, 32).astype(np.float32)
+    sim.compute_encodings([{"input": input}])
+    encodings = _export_encodings(sim, tmp_dir, "1.0.0")
+
+    with pytest.warns(
+        DeprecationWarning, match="no more considered a quantized data type"
+    ):
+        qdq_model = encodings_to_onnx_qdq(model, encodings)
+    onnx.checker.check_model(qdq_model)
+
+    assert not any(node.op_type == "Cast" for node in qdq_model.graph.node)
+    assert [out.name for out in qdq_model.graph.output] == [
+        out.name for out in model.graph.output
+    ]
+
+    expected = sim.to_onnx_qdq()
+    (out_expected,) = _run_model(expected, {"input": input})
+    (out_actual,) = _run_model(qdq_model, {"input": input})
+    assert np.array_equal(out_expected, out_actual)
+
+
+def test_encodings_to_onnx_qdq_producer_metadata_stays_unique(tmp_dir):
+    """
+    Given: A model that already carries a "producer" metadata property
+    When: Converted to QDQ
+    Then: The property is overwritten rather than duplicated, since onnx requires
+          metadata_props keys to be unique
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21).model
+    prop = model.metadata_props.add()
+    prop.key = "producer"
+    prop.value = "something else"
+
+    sim = QuantizationSimModel(model, config_file="htp_v81")
+    sim.compute_encodings([{"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}])
+    encodings = _export_encodings(sim, tmp_dir, "1.0.0")
+
+    qdq_model = encodings_to_onnx_qdq(model, encodings)
+
+    producers = [p for p in qdq_model.metadata_props if p.key == "producer"]
+    assert len(producers) == 1
+    assert producers[0].value.startswith("aimet-onnx")
+
+
+def test_encodings_to_onnx_qdq_covers_all_encoding_versions():
+    """
+    Given: The encoding versions AIMET considers valid
+    When: Compared against the versions this converter registers a file layout for
+    Then: Every valid version is registered, so a version added to AIMET is a deliberate
+          decision here rather than being silently read as some other version's layout
+    """
+    assert set(VALID_ENCODING_VERSIONS) == set(_ENCODING_LOADERS), (
+        "AIMET added or removed an encoding version. Register its file layout in "
+        "aimet_onnx.quantsim._ENCODING_LOADERS, reusing an existing loader if the layout "
+        "is unchanged, and add a test for it."
+    )
+
+
+def test_encodings_to_onnx_qdq_unregistered_version(tmp_dir):
+    """
+    Given: An encodings file claiming a version with no registered file layout
+    When: Converted to QDQ
+    Then: It raises and names the extension point, rather than guessing at the layout
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21)
+    sim = QuantizationSimModel(model, config_file="htp_v81")
+    sim.compute_encodings([{"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}])
+    encodings = _export_encodings(sim, tmp_dir, "1.0.0")
+    encodings["version"] = "3.0.0"
+
+    with pytest.raises(NotImplementedError, match="_ENCODING_LOADERS"):
+        encodings_to_onnx_qdq(model, encodings)
+
+
+def test_encodings_to_onnx_qdq_2_1_0_shares_2_x_layout(tmp_dir):
+    """
+    Given: A 2.0.0 encodings file relabelled as 2.1.0, which shares the flat "encodings"
+           list layout. aimet-onnx cannot export 2.1.0 directly -- only aimet-torch writes
+           it -- so relabelling is how the shared layout is exercised here.
+    When: Both are converted to QDQ
+    Then: The results are identical, i.e. 2.1.0 routes to the 2.x loader rather than being
+          rejected or read as a different layout
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21)
+    sim = QuantizationSimModel(model, config_file="htp_v81")
+    sim.compute_encodings([{"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}])
+
+    encodings = _export_encodings(sim, tmp_dir, "2.0.0")
+    assert encodings["version"] == "2.0.0"
+    from_2_0_0 = encodings_to_onnx_qdq(model, encodings)
+
+    from_2_1_0 = encodings_to_onnx_qdq(model, dict(encodings, version="2.1.0"))
+
+    assert from_2_1_0 == from_2_0_0
+
+
+def test_encodings_to_onnx_qdq_unmatched_encoding(tmp_dir):
+    """
+    Given: An encoding naming a tensor that is not in the model, i.e. the model and the
+           encodings came from different exports of the graph
+    When: Converted to QDQ
+    Then: It raises, since there is nothing to attach the encoding to
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21)
+    sim = QuantizationSimModel(model, config_file="htp_v81")
+    sim.compute_encodings([{"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}])
+    encodings = _export_encodings(sim, tmp_dir, "1.0.0")
+    encodings["param_encodings"].append(
+        dict(encodings["param_encodings"][0], name="onnx::MatMul_does_not_exist")
+    )
+
+    with pytest.raises(RuntimeError, match="not found in the model"):
+        encodings_to_onnx_qdq(model, encodings)
+
+
+def test_encodings_to_onnx_qdq_preserves_output_names(tmp_dir):
+    """
+    Given: A model whose output is quantized
+    When: Converted to QDQ
+    Then: The output keeps its name AND carries the quantized value, rather than the
+          dangling QDQ chain being left unused
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21).model
+    sim = QuantizationSimModel(model, config_file="htp_v81")
+    sim.compute_encodings([{"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}])
+    encodings = _export_encodings(sim, tmp_dir, "1.0.0")
+
+    original_outputs = [out.name for out in model.graph.output]
+    qdq_model = encodings_to_onnx_qdq(model, encodings)
+
+    assert [out.name for out in qdq_model.graph.output] == original_outputs
+
+    producers = {out: node for node in qdq_model.graph.node for out in node.output}
+    for name in original_outputs:
+        assert producers[name].op_type == "DequantizeLinear"
+
+
+def test_encodings_to_onnx_qdq_accepts_paths(tmp_dir):
+    """
+    Given: A model and encodings saved to disk
+    When: Converted to QDQ by path
+    Then: The result matches passing the in-memory objects
+    """
+    np.random.seed(0)
+    torch.manual_seed(0)
+    model = single_residual_model(opset_version=21).model
+    sim = QuantizationSimModel(model, config_file="htp_v81")
+    sim.compute_encodings([{"input": np.random.randn(1, 3, 32, 32).astype(np.float32)}])
+    sim.export(tmp_dir, "model", encoding_version="1.0.0")
+
+    model_path = os.path.join(tmp_dir, "model.onnx")
+    onnx.save_model(model, model_path)
+    encodings_path = os.path.join(tmp_dir, "model.encodings")
+
+    from_paths = encodings_to_onnx_qdq(model_path, encodings_path)
+    with open(encodings_path) as f:
+        from_objects = encodings_to_onnx_qdq(model, json.load(f))
+
+    assert from_paths == from_objects
 
 
 @pytest.mark.parallel

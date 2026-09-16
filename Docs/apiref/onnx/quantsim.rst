@@ -15,6 +15,8 @@ aimet_onnx.quantsim
 
 .. autofunction:: aimet_onnx.compute_encodings
 
+.. autofunction:: aimet_onnx.encodings_to_onnx_qdq
+
 .. autofunction:: aimet_onnx.quantsim.set_param_type
 
 **Quantization Spec**
