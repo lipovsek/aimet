@@ -275,6 +275,7 @@ def _add_onnx_qdq_nodes(
     _finalize_graph_changes(
         model, nodes_to_add, inputs_to_rename, tensors_to_add, tensors_to_remove
     )
+    _restore_graph_output_names(model)
 
 
 def _convert_200_to_210(encoding: dict, input_shape: Sequence[int] | None):
@@ -657,14 +658,8 @@ def _restore_graph_output_names(model: ModelProto):
           ... -> last_node --------------> Q ---------> DQ -------------->
                             (out_updated)     (out_q)      (out)
 
-    Call this after :func:`_add_onnx_qdq_nodes`. Graph outputs that were not quantized are
-    left untouched.
-
-    TODO: This only undoes a side effect of :func:`_add_onnx_qdq_nodes`, so it would be better
-    folded into that function, which already receives the input/output name mapping this has to
-    infer from the graph. Doing so should also replace ``aimet_torch.onnx``'s equivalent
-    ``_restore_model_output_names``, which is a third copy of the same intent; all three callers
-    need to move together to avoid renaming twice.
+    Called by :func:`_add_onnx_qdq_nodes` itself, so callers never observe the dangling state.
+    Graph outputs that were not quantized are left untouched.
     """
     consumers = {
         node.input[i]: node for node in model.graph.node for i in range(len(node.input))

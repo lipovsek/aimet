@@ -1337,9 +1337,6 @@ def _to_onnx_qdq(
         base_dir=base_dir,
     )
 
-    # Restore model output names from "{output}_qdq" to "{output}"
-    _restore_model_output_names(onnx_model, qdq_tensor_names)
-
     return onnx_model
 
 
@@ -1354,58 +1351,6 @@ def _check_float16_quantizers(module: torch.nn.Module):
                     ]
                 )
                 raise RuntimeError(msg)
-
-
-def _restore_model_output_names(
-    onnx_model: onnx.ModelProto, qdq_tensor_name_map: Mapping[str, str]
-):
-    """
-    Rename model outputs. Assuming "output" is the model output,
-
-    before:
-        Softmax ----> output -------> QDQ -------> output_qdq
-
-    after:
-        Softmax ----> output__ -----> QDQ -------> output
-
-    Args:
-        onnx_model: onnx model to be modified in-place
-        qdq_tensor_name_map: mapping from original tensor names to QDQ tensor names
-    """
-    _new_names = {
-        output.name: f"{output.name}__"
-        for output in onnx_model.graph.output
-        if output.name in qdq_tensor_name_map
-    }
-    _new_names.update(
-        {
-            qdq_tensor_name_map[output.name]: output.name
-            for output in onnx_model.graph.output
-            if output.name in qdq_tensor_name_map
-        }
-    )
-    # At this point, _new_names consists of:
-    # {
-    #   "output": "output__",
-    #   "output_qdq": "output",
-    # }
-    #
-    # Replacing all tensors accordingly will transform the graph as below:
-    #
-    #  before:
-    #      Softmax ----> output -------> QDQ -------> output_qdq
-    #  after:
-    #      Softmax ----> output__ -----> QDQ -------> output
-    for node in onnx_model.graph.node:
-        for i, old_name in enumerate(node.input):
-            new_name = _new_names.get(old_name, None)
-            if new_name is not None:
-                node.input[i] = new_name
-
-        for i, old_name in enumerate(node.output):
-            new_name = _new_names.get(old_name, None)
-            if new_name is not None:
-                node.output[i] = new_name
 
 
 @torch.no_grad()

@@ -60,7 +60,6 @@ from aimet_onnx.common.onnx._utils import (
     _derive_data_movement_op_encodings,
     _is_htp_interpolation_op,
     _get_all_constants,
-    _restore_graph_output_names,
     contains_tensor_type,
 )
 from aimet_onnx.graph_passes.cleanup import remove_duplicate_qdq_pairs
@@ -2782,8 +2781,6 @@ class QuantizationSimModel:
             prequantize_constants=prequantize_constants,
         )
 
-        _restore_graph_output_names(model_copy)
-
         ONNXModel(model_copy).topological_sort()
 
         # Add metadata property to indicate the model is exported by AIMET and its version
@@ -3903,8 +3900,6 @@ def encodings_to_onnx_qdq(
         onnx_opset=model_opset,
         prequantize_constants=prequantize_constants,
     )
-
-    _restore_graph_output_names(model)
 
     if plain_cast_floats:
         warnings.warn(
