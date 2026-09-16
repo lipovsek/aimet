@@ -169,6 +169,9 @@ class IrLlmTopology:
         KV-cache). Pairing these to ``blocks`` and validating that their count
         matches the block count are the consumer's responsibility (e.g. R3) —
         R1-only and prefill-only flows do not require KV-cache inputs.
+    :param past_key_output_names: Key-cache graph outputs in declaration order.
+    :param past_value_input_names: Value-cache graph inputs in declaration order.
+    :param past_value_output_names: Value-cache graph outputs in declaration order.
     :param active_norms: Active norms in topological order used to build the
         topology.
     :param hidden_size: Residual-stream hidden dimension (``None`` if not
@@ -181,6 +184,9 @@ class IrLlmTopology:
     lm_head: List[onnx_ir.Node] = field(default_factory=list)
     blocks: List[IrBlockTopology] = field(default_factory=list)
     past_key_input_names: List[str] = field(default_factory=list)
+    past_key_output_names: List[str] = field(default_factory=list)
+    past_value_input_names: List[str] = field(default_factory=list)
+    past_value_output_names: List[str] = field(default_factory=list)
     active_norms: Optional[List[IrActiveNorm]] = None
     hidden_size: Optional[int] = None
     head_dim: Optional[int] = None
@@ -210,6 +216,9 @@ def resolve_topology(
         embed_tokens=_resolve_nodes(topology.embed_tokens, nodes),
         lm_head=_resolve_nodes(topology.lm_head, nodes),
         past_key_input_names=list(topology.past_key_input_names),
+        past_key_output_names=list(topology.past_key_output_names),
+        past_value_input_names=list(topology.past_value_input_names),
+        past_value_output_names=list(topology.past_value_output_names),
         active_norms=resolve_active_norms(topology.active_norms or [], ir_model),
         hidden_size=topology.hidden_size,
         head_dim=topology.head_dim,

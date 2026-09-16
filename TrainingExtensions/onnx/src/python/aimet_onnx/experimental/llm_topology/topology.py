@@ -30,7 +30,8 @@ A consumer that goes on to *rewrite* the graph re-attaches an
 back the same structure carrying ``onnx_ir.Node`` / ``onnx_ir.Value`` handles.
 """
 
-from typing import Dict, List, Optional, Pattern, Tuple
+import re
+from typing import Dict, Iterable, List, Optional, Pattern, Tuple
 
 import onnx_ir
 
@@ -56,6 +57,25 @@ from aimet_onnx.experimental.llm_topology.topology_types import (
 )
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
+
+
+# KV-cache names vary across exporters. Matches patterns:
+# ``past_{key,value}_<layer>[_in]`` and ``past_{k,v}_<layer>[_in]`` inputs
+# ``past_{key,value}_<layer>[_out]`` and ``past_{k,v}_<layer>[_out]`` outputs
+# ``past_key_values.<layer>.{key,value}`` (HF input style)
+# ``present_{key,value}_<layer>`` or ``present.<layer>.{key,value}`` (HF outputs)
+_PAST_KEY_INPUT_NAME_PATTERN = re.compile(
+    r"^(?:past_(?:key|k)_\d+(?:_in)?|past_key_values\.\d+\.key)$"
+)
+_PAST_VALUE_INPUT_NAME_PATTERN = re.compile(
+    r"^(?:past_(?:value|v)_\d+(?:_in)?|past_key_values\.\d+\.value)$"
+)
+_PAST_KEY_OUTPUT_NAME_PATTERN = re.compile(
+    r"^(?:past_(?:key|k)_\d+(?:_out)?|present_key_\d+|present\.\d+\.key)$"
+)
+_PAST_VALUE_OUTPUT_NAME_PATTERN = re.compile(
+    r"^(?:past_(?:value|v)_\d+(?:_out)?|present_value_\d+|present\.\d+\.value)$"
+)
 
 
 def get_llm_topology(
@@ -252,10 +272,22 @@ def get_llm_topology(
         )
     _logger.debug("embed_tokens: %s", result.embed_tokens)
 
-    # Collected tolerantly: prefill-only / R1-only flows leave this empty and
-    # never require KV-cache inputs. R3 validates the count against blocks.
-    result.past_key_input_names = _collect_past_key_input_names_in_order(ir_model)
+    result.past_key_input_names = _collect_matching_names_in_order(
+        ir_model.graph.inputs, _PAST_KEY_INPUT_NAME_PATTERN
+    )
+    result.past_value_input_names = _collect_matching_names_in_order(
+        ir_model.graph.inputs, _PAST_VALUE_INPUT_NAME_PATTERN
+    )
+    result.past_key_output_names = _collect_matching_names_in_order(
+        ir_model.graph.outputs, _PAST_KEY_OUTPUT_NAME_PATTERN
+    )
+    result.past_value_output_names = _collect_matching_names_in_order(
+        ir_model.graph.outputs, _PAST_VALUE_OUTPUT_NAME_PATTERN
+    )
     _logger.debug("past_key inputs: %s", result.past_key_input_names)
+    _logger.debug("past_value inputs: %s", result.past_value_input_names)
+    _logger.debug("past_key outputs: %s", result.past_key_output_names)
+    _logger.debug("past_value outputs: %s", result.past_value_output_names)
 
     _logger.info(
         "Backbone: %d block(s), embed_tokens=%s, lm_head=%s.",
@@ -328,17 +360,11 @@ def analyze_llm_topology(
     return topology
 
 
-def _collect_past_key_input_names_in_order(ir_model: onnx_ir.Model) -> List[str]:
-    """Return ``past_key_*`` graph input names in declaration order.
-
-    HF/optimum LLM exports with a KV-cache expose one such input per decoder
-    block. Prefill-only exports have none.
-    """
-    return [
-        value.name
-        for value in ir_model.graph.inputs
-        if value.name and ("past_key" in value.name or "past_k_" in value.name)
-    ]
+def _collect_matching_names_in_order(
+    values: Iterable[onnx_ir.Value], pattern: Pattern
+) -> List[str]:
+    """Return names matching ``pattern`` in graph declaration order."""
+    return [value.name for value in values if value.name and pattern.search(value.name)]
 
 
 def _is_embedding_table_gather(node: onnx_ir.Node) -> bool:
@@ -550,7 +576,7 @@ def _infer_head_dim(model: ModelProto) -> int:
         is not a static positive integer.
     """
     for inp in model.graph.input:
-        if "past_value" not in inp.name:
+        if not _PAST_VALUE_INPUT_NAME_PATTERN.search(inp.name):
             continue
         dims = inp.type.tensor_type.shape.dim
         if len(dims) == 0:

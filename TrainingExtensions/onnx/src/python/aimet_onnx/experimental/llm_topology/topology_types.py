@@ -144,6 +144,9 @@ class LlmTopology:
         KV-cache). Pairing these to ``blocks`` and validating that their count
         matches the block count are the consumer's responsibility (e.g. R3) —
         R1-only and prefill-only flows do not require KV-cache inputs.
+    :param past_key_output_names: Key-cache graph outputs in declaration order.
+    :param past_value_input_names: Value-cache graph inputs in declaration order.
+    :param past_value_output_names: Value-cache graph outputs in declaration order.
     :param active_norms: Active norms in topological order used to build the
         topology.
     :param hidden_size: Residual-stream hidden dimension (``None`` if not
@@ -156,6 +159,9 @@ class LlmTopology:
     lm_head: List[str] = field(default_factory=list)
     blocks: List[BlockTopology] = field(default_factory=list)
     past_key_input_names: List[str] = field(default_factory=list)
+    past_key_output_names: List[str] = field(default_factory=list)
+    past_value_input_names: List[str] = field(default_factory=list)
+    past_value_output_names: List[str] = field(default_factory=list)
     active_norms: Optional[List[ActiveNorm]] = None
     hidden_size: Optional[int] = None
     head_dim: Optional[int] = None

@@ -48,6 +48,11 @@ from aimet_onnx.experimental.llm_topology.norm_detection import (
     get_last_norm_input_tensor,
 )
 from aimet_onnx.experimental.llm_topology.topology import (
+    _PAST_KEY_INPUT_NAME_PATTERN,
+    _PAST_KEY_OUTPUT_NAME_PATTERN,
+    _PAST_VALUE_INPUT_NAME_PATTERN,
+    _PAST_VALUE_OUTPUT_NAME_PATTERN,
+    _collect_matching_names_in_order,
     _infer_hidden_size,
     analyze_llm_topology,
     get_llm_topology,
@@ -69,6 +74,7 @@ from .models.style_decoders import (
     Phi3StyleDecoder,
     Gemma3StyleDecoder,
 )
+from .models.transformer_blocks import sha_gqa_decoder
 
 # Decoder flavors that must all yield the same backbone shape: 2 blocks,
 # 2 active norms per block + 1 final norm, hidden_size _H, head_dim _HEAD_DIM.
@@ -408,6 +414,148 @@ class TestDecoderRoleMap:
             assert len(block.gate_up.linears) == 2
             assert len(block.down_proj) == 1
 
+    @pytest.mark.parametrize(
+        "pattern,names,expected",
+        [
+            (
+                _PAST_KEY_INPUT_NAME_PATTERN,
+                [
+                    "input_ids",
+                    "past_key_0_in",
+                    "past_value_0_in",
+                    "past_k_1_in",
+                    "past_key_values.2.key",
+                    "past_key_values.2.value",
+                    "past_key",
+                    "past_k",
+                    "past_key_0",
+                    "_past_k_tensor",
+                    "past_key_values.x.key",
+                    "past_key_values.2.key_extra",
+                ],
+                [
+                    "past_key_0_in",
+                    "past_k_1_in",
+                    "past_key_values.2.key",
+                    "past_key_0",
+                ],
+            ),
+            (
+                _PAST_VALUE_INPUT_NAME_PATTERN,
+                [
+                    "input_ids",
+                    "past_key_0_in",
+                    "past_value_0_in",
+                    "past_v_1_in",
+                    "past_key_values.2.key",
+                    "past_key_values.2.value",
+                    "past_value",
+                    "past_v",
+                    "past_value_0",
+                    "_past_v_tensor",
+                    "past_key_values.x.value",
+                    "past_key_values.2.value_extra",
+                ],
+                [
+                    "past_value_0_in",
+                    "past_v_1_in",
+                    "past_key_values.2.value",
+                    "past_value_0",
+                ],
+            ),
+            (
+                _PAST_KEY_OUTPUT_NAME_PATTERN,
+                [
+                    "logits",
+                    "past_key_0_out",
+                    "past_value_0_out",
+                    "past_k_1_out",
+                    "past_key_2",
+                    "present_key_1",
+                    "present_value_1",
+                    "present.2.key",
+                    "present.2.value",
+                    "present_key_values.3.key",
+                    "present_key_values.3.value",
+                    "yyy_present_k_xyz",
+                    "present.xx.yy.key",
+                    "present_xx_yy_key",
+                    "present123.key",
+                    "present_keyvalues.4.key",
+                ],
+                [
+                    "past_key_0_out",
+                    "past_k_1_out",
+                    "past_key_2",
+                    "present_key_1",
+                    "present.2.key",
+                ],
+            ),
+            (
+                _PAST_VALUE_OUTPUT_NAME_PATTERN,
+                [
+                    "logits",
+                    "past_key_0_out",
+                    "past_value_0_out",
+                    "past_v_1_out",
+                    "past_value_2",
+                    "present_key_1",
+                    "present_value_1",
+                    "present.2.key",
+                    "present.2.value",
+                    "present_key_values.3.key",
+                    "present_key_values.3.value",
+                    "yyy_present_v_x",
+                    "present.xx.yy.value",
+                    "present_xx_yy_value",
+                    "present123.value",
+                    "present_keyvalues.4.value",
+                ],
+                [
+                    "past_value_0_out",
+                    "past_v_1_out",
+                    "past_value_2",
+                    "present_value_1",
+                    "present.2.value",
+                ],
+            ),
+        ],
+    )
+    def test_kv_cache_name_patterns(self, pattern, names, expected):
+        """KV-cache I/O variants are classified without losing declaration order."""
+
+        values = [onnx_ir.Value(name=name) for name in names]
+
+        assert _collect_matching_names_in_order(values, pattern) == expected
+
+    def test_collects_all_kv_cache_inputs_and_outputs(self):
+        """The topology populates every KV-cache field in declaration order."""
+        model = sha_gqa_decoder(num_layers=2)
+
+        topology = _name_topology(model)
+        resolved = resolve_topology(topology, onnx_ir.from_proto(model))
+
+        assert topology.past_key_input_names == [
+            "past_key_0_in",
+            "past_key_1_in",
+        ]
+        assert topology.past_value_input_names == [
+            "past_value_0_in",
+            "past_value_1_in",
+        ]
+        assert topology.past_key_output_names == [
+            "past_key_0_out",
+            "past_key_1_out",
+        ]
+        assert topology.past_value_output_names == [
+            "past_value_0_out",
+            "past_value_1_out",
+        ]
+        assert resolved.past_key_input_names == topology.past_key_input_names
+        assert resolved.past_value_input_names == topology.past_value_input_names
+        assert resolved.past_key_output_names == topology.past_key_output_names
+        assert resolved.past_value_output_names == topology.past_value_output_names
+
     @pytest.mark.parametrize("fuse_rmsnorm", [False, True])
     def test_qwen3_qkv_count(self, fuse_rmsnorm):
         """Qwen3 q_norm/k_norm are internal; qkv group still has 3 (q_proj, k_proj, v)."""
@@ -663,6 +811,9 @@ class TestAnalyzeLlmTopology:
         assert by_name.hidden_size == resolved.hidden_size
         assert by_name.head_dim == resolved.head_dim
         assert by_name.past_key_input_names == resolved.past_key_input_names
+        assert by_name.past_key_output_names == resolved.past_key_output_names
+        assert by_name.past_value_input_names == resolved.past_value_input_names
+        assert by_name.past_value_output_names == resolved.past_value_output_names
         assert [an.scale_name for an in by_name.active_norms] == [
             an.scale_name for an in resolved.active_norms
         ]
