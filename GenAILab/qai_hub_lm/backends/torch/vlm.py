@@ -19,6 +19,7 @@ from GenAILab.qai_hub_lm.backends import QUANTSIM_CONFIG
 from GenAILab.bench.precision import PrecisionConfig, float16, float32
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.qai_hub_lm.models.base import SimCollection
+from GenAILab.qai_hub_lm.models.components import model_components
 from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
 from GenAILab.qai_hub_lm.models.utils.layer_cache import (
     build_layer_cache_descriptors,
@@ -53,12 +54,23 @@ class VLM_Torch:
         sequence_length: int | list[int],
         precision: PrecisionConfig | None = None,
         image_size: tuple[int, int] | None = None,
+        audio_frames: int | None = None,
         *args,
         **kwargs,
     ) -> SimCollection:
         if precision is None:
             precision = PrecisionConfig()
-        precision.ensure_visual_defaults()
+        # Only the components this model actually declares AND this checkpoint
+        # actually has get defaults, so a text+audio model never acquires a
+        # stray visual precision block and an audio-less Gemma4 variant never
+        # acquires an audio one.
+        declared = tuple(
+            component
+            for component in model_components(cls)
+            if cls.supports_component(component.name, model.config)
+        )
+        for component in declared:
+            precision.ensure_component_defaults(component.name)
 
         max_sequence_length = (
             max(sequence_length)
@@ -121,28 +133,34 @@ class VLM_Torch:
             language_sim, precision, lm_head=sim_lm_head
         )
 
-        # Vision
-        visual_param_bw = precision.visual_weight.qtype.bits
-        visual_output_bw = (
-            16
-            if precision.visual_activations in (float16, float32)
-            else precision.visual_activations.bits
-        )
-        traceable_visual = cls.build_vision_wrapper(model)
-        visual_sim = QuantizationSimModel(
-            model=traceable_visual,
-            quant_scheme=QuantScheme.post_training_tf,
-            dummy_input=cls.get_sample_vision_inputs(
-                model.config, image_size=image_size
-            ),
-            default_output_bw=visual_output_bw,
-            default_param_bw=visual_param_bw,
-            in_place=True,
-            config_file=QUANTSIM_CONFIG,
-        )
-
-        if precision.visual_activations in (float16, float32):
-            remove_activation_quantizers(visual_sim.model)
+        # Modality encoders (vision, audio, ...). One sim per declared
+        # component; the shape knob each one needs is passed by name.
+        component_sims: dict[str, QuantizationSimModel] = {}
+        shape_kwargs = {"visual": {"image_size": image_size}}
+        if audio_frames is not None:
+            shape_kwargs["audio"] = {"audio_frames": audio_frames}
+        for component in declared:
+            name = component.name
+            comp_weight = precision.component_weight(name)
+            comp_activations = precision.component_activations(name)
+            comp_output_bw = (
+                16 if comp_activations in (float16, float32) else comp_activations.bits
+            )
+            traceable = cls.build_component_wrapper(name, model)
+            comp_sim = QuantizationSimModel(
+                model=traceable,
+                quant_scheme=QuantScheme.post_training_tf,
+                dummy_input=cls.get_sample_component_inputs(
+                    name, model.config, **shape_kwargs.get(name, {})
+                ),
+                default_output_bw=comp_output_bw,
+                default_param_bw=comp_weight.qtype.bits,
+                in_place=True,
+                config_file=QUANTSIM_CONFIG,
+            )
+            if comp_activations in (float16, float32):
+                remove_activation_quantizers(comp_sim.model)
+            component_sims[name] = comp_sim
 
         # Embedding quantization
         embedding = cls.get_embedding(model)
@@ -162,7 +180,7 @@ class VLM_Torch:
 
         return SimCollection(
             backbone=language_sim,
-            visual=visual_sim,
+            **component_sims,
             embedding=embedding,
             config=model.config,
             position_id_processor=cls.instantiate_position_processor(),
@@ -213,3 +231,6 @@ try:
 
 except ImportError:
     pass
+
+# Qwen3-ASR is registered in backends/torch/qwen3_asr.py -- it needs aimet-side
+# setup for the audio encoder that does not belong in this shared module.

@@ -41,7 +41,7 @@ class TestSimCollection:
         visual = MagicMock()
         embedding = MagicMock()
         config = MagicMock()
-        sc = SimCollection(backbone, visual, embedding, config)
+        sc = SimCollection(backbone, visual=visual, embedding=embedding, config=config)
         assert sc.backbone is backbone
         assert sc.visual is visual
         assert sc.embedding is embedding

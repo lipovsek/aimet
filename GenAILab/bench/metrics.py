@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import warnings
 import yaml
 from abc import ABC, abstractmethod
@@ -56,6 +57,7 @@ from .datasets import (
     MMMLU as MMMLUDataset,
     MMLUPro as MMLUProDataset,
     MMMU as MMMUDataset,
+    LibriSpeech as LibriSpeechDataset,
 )
 
 
@@ -1892,3 +1894,263 @@ class Grace(TextEvaluationMetric):
         }
         details["items"] = graded_with_text
         return ScoredResult(result=grader_summary["score_pct"], details=details)
+
+
+# ---------------------------------------------------------------------------
+# ASR error rates (WER / CER)
+# ---------------------------------------------------------------------------
+
+#: Apostrophe-like codepoints folded to ASCII ``'`` before scoring. Apostrophes
+#: are *kept* (LibriSpeech references contain "don't", "o'clock").
+_APOSTROPHE_VARIANTS = "’‘ʼ´`"
+
+#: Codepoints that become a space (so "well-known" scores as two words, the way
+#: an ASR system that emits a space would).
+_SEPARATOR_CHARS = "-‐‑‒–—―_/\\"
+
+
+def normalize_transcript(text: str) -> str:
+    """Normalize an ASR reference/hypothesis for error-rate scoring.
+
+    NFKC, apostrophes folded to ASCII, lowercased, hyphens/dashes/underscores/
+    slashes to space, remaining punctuation and symbols dropped (letters, digits,
+    marks and whitespace survive, so non-English text is not mangled), whitespace
+    collapsed.
+
+    Part of the scoring contract: changing it requires a ``SCORING_VERSION`` bump.
+    """
+    text = unicodedata.normalize("NFKC", str(text))
+    for variant in _APOSTROPHE_VARIANTS:
+        text = text.replace(variant, "'")
+    text = text.lower()
+    text = "".join(" " if ch in _SEPARATOR_CHARS else ch for ch in text)
+    text = "".join(
+        ch
+        for ch in text
+        if ch == "'"
+        or ch.isspace()
+        or not unicodedata.category(ch).startswith(("P", "S"))
+    )
+    return " ".join(text.split())
+
+
+def levenshtein_distance(reference: list, hypothesis: list) -> int:
+    """Minimum edit distance (substitutions + insertions + deletions).
+
+    Plain two-row dynamic programming over arbitrary sequences (word lists for
+    WER, character lists for CER), unit cost per edit. O(len(ref) * len(hyp))
+    time, O(min(len)) memory. Implemented here so scoring has no third-party
+    dependency (no ``jiwer``) and is auditable in place.
+    """
+    if len(reference) < len(hypothesis):
+        reference, hypothesis = hypothesis, reference
+    # hypothesis is now the shorter sequence -> the DP row is the short one.
+    if not hypothesis:
+        return len(reference)
+
+    previous = list(range(len(hypothesis) + 1))
+    for i, ref_token in enumerate(reference, start=1):
+        current = [i] + [0] * len(hypothesis)
+        for j, hyp_token in enumerate(hypothesis, start=1):
+            current[j] = min(
+                previous[j] + 1,  # deletion
+                current[j - 1] + 1,  # insertion
+                previous[j - 1] + (ref_token != hyp_token),  # substitution/match
+            )
+        previous = current
+    return previous[-1]
+
+
+def word_tokens(text: str) -> list[str]:
+    """Whitespace-separated tokens of the normalized text (WER units)."""
+    normalized = normalize_transcript(text)
+    return normalized.split() if normalized else []
+
+
+def char_tokens(text: str) -> list[str]:
+    """Characters of the normalized text, spaces included (CER units)."""
+    return list(normalize_transcript(text))
+
+
+def corpus_error_rate(
+    references: list[str], hypotheses: list[str], unit: str = "word"
+) -> float:
+    """Corpus-level error rate in percent.
+
+    Corpus-level (the ASR standard): edits and reference lengths are summed over
+    the set and divided once, not averaged per utterance. ``unit`` selects
+    ``"word"`` or ``"char"``.
+
+    If the whole reference set normalizes to zero tokens the rate is 0.0 when the
+    hypotheses are empty too, else 100.0.
+    """
+    if len(references) != len(hypotheses):
+        raise ValueError(
+            f"Got {len(references)} references but {len(hypotheses)} hypotheses; "
+            f"they must correspond 1:1."
+        )
+    tokenize = {"word": word_tokens, "char": char_tokens}[unit]
+
+    total_edits = 0
+    total_reference = 0
+    total_hypothesis = 0
+    for reference, hypothesis in zip(references, hypotheses):
+        ref_tokens = tokenize(reference)
+        hyp_tokens = tokenize(hypothesis)
+        total_edits += levenshtein_distance(ref_tokens, hyp_tokens)
+        total_reference += len(ref_tokens)
+        total_hypothesis += len(hyp_tokens)
+
+    if total_reference == 0:
+        return 0.0 if total_hypothesis == 0 else 100.0
+    return 100.0 * total_edits / total_reference
+
+
+class _ASRErrorRateBase(EvaluationMetric):
+    """Shared transcription + error-rate scoring for ASR metrics.
+
+    Generative: each utterance is greedily decoded and compared against its
+    reference with :func:`corpus_error_rate`. Transcriptions are cached under one
+    shared collection name, so WER and CER together decode once. Lower is better.
+    """
+
+    SCORING_VERSION = 1
+
+    #: Error-rate unit: "word" (WER) or "char" (CER).
+    UNIT = "word"
+
+    #: One shared cache key for all ASR error-rate metrics -- deliberately not
+    #: derived from cls.__name__, so WER and CER reuse the same decode pass.
+    COLLECTION_NAME = "ASRTranscriptions_generated_text"
+
+    DEFAULT_SPLIT = "test.clean"
+    #: Bound the eval set: full test.clean is 2620 utterances of greedy decode.
+    DEFAULT_NUM_SAMPLES = 256
+    DEFAULT_LANGUAGE = "English"
+    MAX_NEW_TOKENS = 256
+
+    @classmethod
+    def get_collection_name(cls) -> str:
+        """Cache key for the shared transcription pass."""
+        return cls.COLLECTION_NAME
+
+    @classmethod
+    def get_dataset(
+        cls,
+        processor,
+        context_length,
+        split: str | None = None,
+        num_samples: int | None = None,
+        language: str | None = None,
+        audio_frames: int | None = None,
+        model=None,
+        **kwargs,
+    ):
+        return LibriSpeechDataset.load_encoded_dataset(
+            processor,
+            context_length,
+            split=split or cls.DEFAULT_SPLIT,
+            num_samples=(
+                cls.DEFAULT_NUM_SAMPLES if num_samples is None else num_samples
+            ),
+            language=cls.DEFAULT_LANGUAGE if language is None else language,
+            audio_frames=audio_frames,
+            model=model,
+            include_reference=True,
+        )
+
+    @staticmethod
+    def decode_transcript(tokenizer, token_ids) -> str:
+        """Detokenize generated ids into a bare transcript.
+
+        Special tokens are kept so ``<asr_text>`` can anchor the split: with
+        automatic language detection the model emits its own header first.
+        Part of the scoring contract.
+        """
+        text = tokenizer.decode(token_ids, skip_special_tokens=False)
+        if "<asr_text>" in text:
+            text = text.split("<asr_text>")[-1]
+        text = re.sub(r"<\|[^|>]*\|>", " ", text)
+        text = re.sub(r"</?asr_[a-z_]*>", " ", text)
+        return text.strip()
+
+    @classmethod
+    @torch.no_grad()
+    def transcribe_all(cls, model, processor, context_length, **kwargs) -> dict:
+        """Greedily transcribe the eval set.
+
+        Returns ``{"references": [...], "hypotheses": [...]}``.
+        """
+        dataset = cls.get_dataset(processor, context_length, model=model, **kwargs)
+        tokenizer = getattr(processor, "tokenizer", processor)
+
+        generation_config = build_generation_config(
+            model,
+            tokenizer,
+            do_sample=False,
+            max_new_tokens=cls.MAX_NEW_TOKENS,
+        )
+        model.generation_config = generation_config
+
+        references = []
+        hypotheses = []
+        for sample in tqdm(dataset, desc=f"Transcribing ({cls.__name__})"):
+            reference = sample.pop("reference")
+            inputs = {
+                key: value.to(model.device)
+                for key, value in sample.items()
+                if isinstance(value, torch.Tensor)
+            }
+            num_prompt_tokens = inputs["input_ids"].shape[-1]
+            outputs = model.generate(**inputs, generation_config=generation_config)
+            tokens = outputs[0] if isinstance(outputs, (list, tuple)) else outputs
+            generated = tokens[0][num_prompt_tokens:]
+
+            references.append(reference)
+            hypotheses.append(cls.decode_transcript(tokenizer, generated))
+
+            del outputs, inputs
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        return {"references": references, "hypotheses": hypotheses}
+
+    @classmethod
+    def evaluate(
+        cls,
+        model: Generator,
+        processor: ProcessorMixin,
+        context_length: int,
+        *,
+        eval_ctx: EvaluationContext = None,
+        **kwargs,
+    ) -> float:
+        if eval_ctx is None:
+            warnings.warn(
+                "No EvaluationContext provided; ASR transcriptions will not be "
+                "cached and WER/CER will each decode the eval set."
+            )
+
+        def collect():
+            return cls.transcribe_all(model, processor, context_length, **kwargs)
+
+        data = (
+            eval_ctx.get_or_compute_quant(cls.get_collection_name(), collect)
+            if eval_ctx
+            else collect()
+        )
+        return corpus_error_rate(data["references"], data["hypotheses"], unit=cls.UNIT)
+
+
+@YAMLConfigParser.register_metric
+class WER(_ASRErrorRateBase):
+    """Word error rate (%) on LibriSpeech. Lower is better."""
+
+    UNIT = "word"
+
+
+@YAMLConfigParser.register_metric
+class CER(_ASRErrorRateBase):
+    """Character error rate (%) on LibriSpeech, spaces included. Lower is better."""
+
+    UNIT = "char"

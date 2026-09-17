@@ -10,11 +10,13 @@ import re
 import warnings
 
 from datasets import (
+    Audio,
     Dataset as HFDataset,
     concatenate_datasets,
     get_dataset_config_names,
     load_dataset,
 )
+import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, PreTrainedTokenizer, pipeline
@@ -38,6 +40,11 @@ from GenAILab.qai_hub_lm.schema import (
     AOKVQASpec,
     GeneratedDatasetSpec,
 )
+
+# LibriSpeechSpec is imported from the schema submodule rather than the schema
+# package root: the package ``__init__`` re-export list is owned elsewhere and
+# this keeps the audio work self-contained. Both paths are the same class.
+from GenAILab.qai_hub_lm.schema.dataset import LibriSpeechSpec
 
 
 class Dataset(ABC):
@@ -1007,6 +1014,346 @@ class AOKVQA(MultimodalDataset):
             context_length,
             image_size=image_size,
             include_answer=(split == "train"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Audio / ASR
+# ---------------------------------------------------------------------------
+
+#: Target sampling rate for every audio dataset here. Qwen3-ASR's feature
+#: extractor is fixed at 16 kHz; LibriSpeech is natively 16 kHz.
+AUDIO_SAMPLING_RATE = 16000
+
+
+def decode_audio_column(audio, target_sampling_rate: int = AUDIO_SAMPLING_RATE):
+    """Return a mono float32 waveform for one HuggingFace ``Audio`` column value.
+
+    Handles every shape ``datasets`` returns: ``{"array", "sampling_rate"}``,
+    undecoded ``{"bytes", "path"}`` (via soundfile, falling back to torchcodec),
+    a torchcodec ``AudioDecoder``, or a bare array.
+
+    Multi-channel is averaged to mono. The sampling rate is checked, not
+    resampled -- a mismatch is a pipeline bug; cast the column instead.
+    """
+    sampling_rate = None
+    array = None
+
+    if isinstance(audio, dict):
+        if audio.get("array") is not None:
+            array = audio["array"]
+            sampling_rate = audio.get("sampling_rate", target_sampling_rate)
+        else:
+            array, sampling_rate = _decode_audio_bytes(
+                audio.get("bytes"), audio.get("path")
+            )
+    elif hasattr(audio, "get_all_samples"):
+        samples = audio.get_all_samples()
+        array = samples.data
+        sampling_rate = int(samples.sample_rate)
+    elif audio is not None:
+        array = audio
+        sampling_rate = target_sampling_rate
+
+    if array is None:
+        raise ValueError(f"Could not extract a waveform from audio value {audio!r}")
+
+    if isinstance(array, torch.Tensor):
+        array = array.detach().cpu().numpy()
+    array = np.asarray(array, dtype=np.float32)
+    if array.ndim > 1:
+        # (channels, samples) -> mono
+        array = array.mean(axis=0 if array.shape[0] < array.shape[-1] else -1)
+    array = array.reshape(-1)
+
+    if int(sampling_rate) != int(target_sampling_rate):
+        raise ValueError(
+            f"Audio sampling rate {sampling_rate} != required "
+            f"{target_sampling_rate}; cast the column with "
+            f"Audio(sampling_rate={target_sampling_rate}) before use."
+        )
+    return array, int(target_sampling_rate)
+
+
+def _decode_audio_bytes(raw_bytes, path):
+    """Decode encoded audio (e.g. FLAC) to ``(array, sampling_rate)``."""
+    if raw_bytes is None and path is None:
+        raise ValueError("Undecoded audio has neither 'bytes' nor 'path'.")
+
+    try:
+        import soundfile
+    except ImportError:
+        soundfile = None
+
+    if soundfile is not None:
+        import io
+
+        source = io.BytesIO(raw_bytes) if raw_bytes is not None else path
+        array, sampling_rate = soundfile.read(source, dtype="float32", always_2d=False)
+        return array, int(sampling_rate)
+
+    try:
+        from torchcodec.decoders import AudioDecoder
+    except ImportError as exc:
+        raise ImportError(
+            "Decoding audio requires an audio backend; install 'soundfile' "
+            "(preferred) or 'torchcodec'."
+        ) from exc
+
+    decoder = AudioDecoder(raw_bytes if raw_bytes is not None else path)
+    samples = decoder.get_all_samples()
+    return samples.data, int(samples.sample_rate)
+
+
+class LazyLibriSpeechDataset(torch.utils.data.Dataset):
+    """Lazy LibriSpeech dataset for ASR calibration and WER/CER evaluation.
+
+    Each item is one utterance through the processor, giving the fused
+    ``input_ids`` / ``attention_mask`` / ``input_features`` / ``input_features_mask``.
+
+    Qwen3-ASR offers ``apply_transcription_request`` (forced-language prefill,
+    ``n_window`` chunking); general processors like Gemma4's have only
+    ``apply_chat_template``. ``_build_transcription_inputs`` picks whichever
+    exists.
+
+    Where ``n_window`` applies, the mel axis must be a multiple of ``2 *
+    n_window``. The feature extractor pads it; this class asserts the invariant
+    so a mismatch fails here rather than inside the encoder.
+
+    ``include_reference`` attaches the reference transcript. Evaluation needs it;
+    calibration wants pure tensors, so it defaults off.
+    """
+
+    #: Mel-frame padding multiple = ``2 * n_window``.
+    DEFAULT_N_WINDOW = 50
+
+    def __init__(
+        self,
+        raw_dataset,
+        processor,
+        context_length,
+        *,
+        language: str | None = "English",
+        n_window: int | None = None,
+        audio_frames: int | None = None,
+        model=None,
+        include_reference: bool = False,
+        sampling_rate: int = AUDIO_SAMPLING_RATE,
+    ):
+        self.raw_dataset = raw_dataset
+        self.processor = processor
+        self.tokenizer = getattr(processor, "tokenizer", processor)
+        self.context_length = context_length
+        self.language = language
+        self.include_reference = include_reference
+        self.sampling_rate = sampling_rate
+        if n_window is None:
+            feature_extractor = getattr(processor, "feature_extractor", None)
+            n_window = getattr(feature_extractor, "n_window", self.DEFAULT_N_WINDOW)
+        self.n_window = int(n_window)
+        # Set only for a statically-shaped (ONNX) export: pads every sample's
+        # audio input to this fixed mel-frame count, via model.pad_audio_item
+        # -- see Generator.pad_audio_item for why this is a model hook rather
+        # than logic in this (model-family-generic) dataset class.
+        self.audio_frames = audio_frames
+        self.model = model
+        self._warned_over_context = False
+
+    def __len__(self):
+        return len(self.raw_dataset)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    @property
+    def mel_frame_multiple(self) -> int:
+        """Mel frames must be an integer multiple of this."""
+        return 2 * self.n_window
+
+    def _fit_waveform(self, waveform):
+        """Pad or truncate the raw waveform to fit ``audio_frames``, for a
+        statically-shaped (ONNX) export. A no-op when ``audio_frames`` is
+        unset (e.g. the torch backend).
+
+        Delegated to ``Generator.fit_audio_waveform``: the fit depends on the
+        processor's own framing, so it belongs with the model, not here.
+        """
+        if self.audio_frames is None:
+            return waveform
+        return self.model.fit_audio_waveform(waveform, self.audio_frames)
+
+    def _build_transcription_inputs(self, waveform):
+        """Run the processor generically across audio-chat model families.
+
+        Only ``apply_chat_template`` with an audio content block is universal.
+        ``apply_transcription_request`` (Qwen3-ASR) adds a forced-language prefill
+        and ``n_window``, so it is used only where it exists; other processors get
+        a plain text instruction instead, having no forced-language convention.
+        """
+        if hasattr(self.processor, "apply_transcription_request"):
+            # apply_transcription_request builds the ASR chat template (optional
+            # system prompt + audio user turn + assistant turn prefilled with
+            # "language <NAME><asr_text>" so the model emits only the transcript)
+            # and runs the processor, returning the fused inputs.
+            return self.processor.apply_transcription_request(
+                audio=[waveform],
+                language=self.language,
+                # Nested: a flat n_window is not in the typed kwargs schema, so
+                # transformers drops it and silently uses its own default.
+                processor_kwargs={
+                    "audio_kwargs": {
+                        "sampling_rate": self.sampling_rate,
+                        "n_window": self.n_window,
+                    }
+                },
+            )
+
+        content = [
+            {"type": "audio", "audio": waveform},
+            {"type": "text", "text": "Transcribe the audio."},
+        ]
+        return self.processor.apply_chat_template(
+            [{"role": "user", "content": content}],
+            tokenize=True,
+            return_dict=True,
+            # Without this the model sees a completed user turn and emits <eos>
+            # at once, so every hypothesis is empty and WER reads a flat 100.
+            add_generation_prompt=True,
+            processor_kwargs={"audio_kwargs": {"sampling_rate": self.sampling_rate}},
+            return_tensors="pt",
+        )
+
+    def _pad_audio_inputs(self, item):
+        """Pad to a fixed ``audio_frames`` count for a static (ONNX) export; a
+        no-op when unset, as on the torch backend.
+
+        Delegated to ``Generator.pad_audio_item``: each family's exported encoder
+        has its own fixed-shape contract, and this class stays generic.
+        """
+        if self.audio_frames is None:
+            return item
+        return self.model.pad_audio_item(item, self.audio_frames)
+
+    def __getitem__(self, index):
+        sample = self.raw_dataset[index]
+
+        waveform, _ = decode_audio_column(sample["audio"], self.sampling_rate)
+        waveform = self._fit_waveform(waveform)
+
+        inputs = self._build_transcription_inputs(waveform)
+
+        item = {
+            key: inputs[key]
+            for key in (
+                "input_ids",
+                "attention_mask",
+                "input_features",
+                "input_features_mask",
+            )
+        }
+
+        # Chunked-attention encoders (Qwen3-ASR) require the mel axis to tile
+        # evenly into 2*n_window blocks; processors without n_window have no
+        # such encoder and skip the check.
+        if hasattr(self.processor, "apply_transcription_request"):
+            num_frames = item["input_features"].shape[-1]
+            if num_frames % self.mel_frame_multiple:
+                raise ValueError(
+                    f"Mel frames ({num_frames}) is not a multiple of "
+                    f"2 * n_window ({self.mel_frame_multiple}); the audio encoder "
+                    f"cannot chunk it. Check that n_window matches the model config."
+                )
+
+        item = self._pad_audio_inputs(item)
+
+        # Audio prompts must not be truncated: input_ids carry exactly as many
+        # audio placeholder tokens as the encoder will emit, so trimming them
+        # would desynchronise text and audio. Warn instead of silently cutting.
+        num_tokens = item["input_ids"].shape[-1]
+        if (
+            self.context_length is not None
+            and num_tokens > self.context_length
+            and not self._warned_over_context
+        ):
+            self._warned_over_context = True
+            warnings.warn(
+                f"LibriSpeech sample produced {num_tokens} tokens, exceeding the "
+                f"context length {self.context_length}. Audio prompts are not "
+                f"truncated (that would break audio-token alignment); use a "
+                f"larger context length or shorter utterances."
+            )
+
+        if self.include_reference:
+            item["reference"] = sample["text"]
+
+        return item
+
+
+@YAMLConfigParser.register_dataset(LibriSpeechSpec)
+class LibriSpeech(MultimodalDataset):
+    """LibriSpeech ASR corpus (CC BY 4.0), read-speech English audio.
+
+    Pinned to an exact revision and the ``all`` config, so split names are the
+    familiar ``validation.clean`` / ``test.clean`` and results stay reproducible.
+
+    YAML usage::
+
+        dataset:
+          name: LibriSpeech
+          split: validation.clean
+          num_samples: 128
+    """
+
+    REPO_ID = "openslr/librispeech_asr"
+    #: Pinned so a repo-side reconversion cannot silently change scores.
+    REVISION = "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1"
+    #: The 'all' config exposes '<split>.<clean|other>' split names.
+    CONFIG = "all"
+    CALIBRATION_SPLIT = "validation.clean"
+    EVAL_SPLIT = "test.clean"
+
+    @staticmethod
+    def load_dataset(split: str = "test.clean", num_samples: int | None = None):
+        raw_dataset = load_dataset(
+            LibriSpeech.REPO_ID,
+            LibriSpeech.CONFIG,
+            split=split,
+            revision=LibriSpeech.REVISION,
+        )
+        # decode=False keeps the encoded FLAC bytes: decoding happens in
+        # decode_audio_column, which does not require datasets' torchcodec
+        # backend to be installed.
+        raw_dataset = raw_dataset.cast_column("audio", Audio(decode=False))
+        if num_samples is not None:
+            raw_dataset = raw_dataset.select(range(min(num_samples, len(raw_dataset))))
+        return raw_dataset
+
+    @classmethod
+    def load_encoded_dataset(
+        cls,
+        processor,
+        context_length,
+        split: str = "test.clean",
+        num_samples: int | None = None,
+        language: str | None = "English",
+        n_window: int | None = None,
+        audio_frames: int | None = None,
+        model=None,
+        include_reference: bool = False,
+    ):
+        # include_reference defaults to False so calibration items are pure
+        # tensors; the WER/CER metric asks for the reference explicitly.
+        raw_dataset = cls.load_dataset(split, num_samples)
+        return LazyLibriSpeechDataset(
+            raw_dataset,
+            processor,
+            context_length,
+            language=language,
+            n_window=n_window,
+            audio_frames=audio_frames,
+            model=model,
+            include_reference=include_reference,
         )
 
 

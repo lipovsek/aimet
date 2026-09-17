@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import warnings
 
+import onnx
 import torch
 from transformers import AutoConfig
 
@@ -20,6 +22,7 @@ from GenAILab.bench.model_cache import DiskBackedModelCache, ModelCacheEntry
 from GenAILab.bench.precision import PrecisionConfig, float16, float32
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.qai_hub_lm.models.base import SimCollection
+from GenAILab.qai_hub_lm.models.components import model_components, spec
 from GenAILab.qai_hub_lm.models.utils.exportable import ONNXExportableModuleWithCache
 from GenAILab.qai_hub_lm.models.utils.layer_cache import (
     build_layer_cache_descriptors,
@@ -27,6 +30,10 @@ from GenAILab.qai_hub_lm.models.utils.layer_cache import (
 )
 
 from GenAILab.qai_hub_lm.backends.onnx.export_utils import (
+    ONNX_OPSET_VERSION,
+    _dynamo_export,
+    check_opset_equal_to,
+    consolidate_external_data,
     get_onnx_model,
     load_model_components_from_disk,
     get_model_checkpoint_path,
@@ -65,10 +72,11 @@ class VLM_ONNX:
         dtype: torch.dtype = torch.float32,
         model_cache: DiskBackedModelCache | None = None,
         image_size: tuple[int, int] | None = None,
+        audio_frames: int | None = None,
         *args,
         **kwargs,
     ) -> ModelCacheEntry:
-        """Export (or load) the raw float backbone/visual ONNX models + embedding.
+        """Export (or load) the raw float backbone/encoder ONNX models + embedding.
 
         Separated from :meth:`instantiate_quantsim` so the caller can transform
         the float graph(s) (e.g. apply SpinQuant) before the sims are built.
@@ -100,6 +108,11 @@ class VLM_ONNX:
                         "image_size": image_size,
                         "dtype": str(dtype),
                     }
+                    # Added only when set, so an audio-free model's key -- and
+                    # therefore every existing on-disk cache entry -- is
+                    # unchanged by audio support.
+                    if audio_frames is not None:
+                        params["audio_frames"] = audio_frames
                     key = DiskBackedModelCache.build_key(params)
                     entry = model_cache.get_or_export(
                         key,
@@ -110,6 +123,7 @@ class VLM_ONNX:
                             small_model,
                             tmpdir,
                             image_size=image_size,
+                            audio_frames=audio_frames,
                             dtype=dtype,
                         ),
                         metadata=params,
@@ -122,27 +136,27 @@ class VLM_ONNX:
                     small_model,
                     get_model_checkpoint_path(model_id),
                     image_size=image_size,
+                    audio_frames=audio_frames,
                     dtype=dtype,
                 )
         else:
             config = AutoConfig.from_pretrained(model_id)
-            backbone_onnx_model, visual_onnx_model, embedding, extras = (
-                load_model_components_from_disk(
-                    model_id,
-                    context_length=context_length,
-                    sequence_length=cache_sl,
-                )
+            backbone_onnx_model, _, embedding, extras = load_model_components_from_disk(
+                model_id,
+                context_length=context_length,
+                sequence_length=cache_sl,
             )
-            if visual_onnx_model is None or embedding is None:
+            component_models = cls._load_components_from_disk(model_id)
+            if not component_models or embedding is None:
                 raise ValueError(
                     "Required model components could not be loaded from disk."
                 )
             entry = ModelCacheEntry(
                 backbone=backbone_onnx_model,
-                visual=visual_onnx_model,
                 embedding=embedding,
                 config=config,
                 extras=extras or None,
+                **component_models,
             )
 
         # Tied embeddings share one lm_head.weight initializer between the
@@ -150,9 +164,21 @@ class VLM_ONNX:
         # path (fresh export, cache hit, disk load) hands downstream pre-sim
         # techniques and ConnectedGraph a graph they accept.
         duplicate_shared_initializers(entry.backbone.graph)
-        if entry.visual is not None:
-            duplicate_shared_initializers(entry.visual.graph)
+        for _component in entry.present_components():
+            duplicate_shared_initializers(entry.component(_component).graph)
         return entry
+
+    @classmethod
+    def _load_components_from_disk(cls, checkpoint: str) -> dict[str, onnx.ModelProto]:
+        """Collect every declared component's graph from a local checkpoint dir,
+        using the same ``{checkpoint}/{component}/model.onnx`` layout the export writes.
+        """
+        component_models: dict[str, onnx.ModelProto] = {}
+        for component in model_components(cls):
+            path = os.path.join(checkpoint, component.name, "model.onnx")
+            if os.path.exists(path):
+                component_models[component.name] = onnx.load(path)
+        return component_models
 
     @classmethod
     def instantiate_quantsim(
@@ -164,18 +190,22 @@ class VLM_ONNX:
     ) -> SimCollection:
         if precision is None:
             precision = PrecisionConfig()
-        precision.ensure_visual_defaults()
+        # Only the components this model actually declares get defaults, so a
+        # text+audio model never acquires a stray visual precision block.
+        declared = model_components(cls)
+        for component in declared:
+            precision.ensure_component_defaults(component.name)
 
         backbone_onnx_model = entry.backbone
-        visual_onnx_model = entry.visual
         embedding = entry.embedding
         config = entry.config
         extras = entry.extras or {}
 
         default_param_qtype = precision.blocks["default"].qtype
         default_activation_qtype = precision.activations
-        visual_param_qtype = precision.visual_weight.qtype
-        visual_activation_qtype = precision.visual_activations
+        providers = get_ort_providers(
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
 
         with (
             AttributePatch(quantsim, "op_types_to_tie_qtzrs", ["Concat"]),
@@ -192,24 +222,24 @@ class VLM_ONNX:
                 param_type=default_param_qtype,
                 activation_type=default_activation_qtype,
                 config_file=QUANTSIM_CONFIG,
-                providers=get_ort_providers(
-                    torch.device("cuda")
-                    if torch.cuda.is_available()
-                    else torch.device("cpu")
-                ),
+                providers=providers,
             )
-            visual_quantsim = QuantizationSimModel(
-                model=visual_onnx_model,
-                quant_scheme="min_max",
-                param_type=visual_param_qtype,
-                activation_type=visual_activation_qtype,
-                config_file=QUANTSIM_CONFIG,
-                providers=get_ort_providers(
-                    torch.device("cuda")
-                    if torch.cuda.is_available()
-                    else torch.device("cpu")
-                ),
-            )
+            # One sim per declared modality encoder. A declared component with
+            # no graph in the entry (a checkpoint exported before it existed)
+            # simply gets no sim rather than failing here.
+            component_sims: dict[str, QuantizationSimModel] = {}
+            for component in declared:
+                component_onnx_model = entry.component(component.name)
+                if component_onnx_model is None:
+                    continue
+                component_sims[component.name] = QuantizationSimModel(
+                    model=component_onnx_model,
+                    quant_scheme="min_max",
+                    param_type=precision.component_weight(component.name).qtype,
+                    activation_type=precision.component_activations(component.name),
+                    config_file=QUANTSIM_CONFIG,
+                    providers=providers,
+                )
 
         # Setting the LM head weights
         _set_lm_head_precision(backbone_quantsim, precision.lm_head)
@@ -222,15 +252,16 @@ class VLM_ONNX:
 
         if default_activation_qtype in (float16, float32):
             _remove_activation_quantizers(backbone_quantsim)
-        if visual_activation_qtype in (float16, float32):
-            _remove_activation_quantizers(visual_quantsim)
+        for name, component_sim in component_sims.items():
+            if precision.component_activations(name) in (float16, float32):
+                _remove_activation_quantizers(component_sim)
 
         # Note: embedding quantization is deferred to after recipe application
         # (in the test runner) to allow recipes like SpinQuant to rotate weights first.
 
         return SimCollection(
             backbone=backbone_quantsim,
-            visual=visual_quantsim,
+            **component_sims,
             embedding=embedding,
             config=config,
             position_id_processor=cls.instantiate_position_processor(),
@@ -246,6 +277,7 @@ class VLM_ONNX:
         small_model: bool,
         directory: str,
         image_size: tuple[int, int] | None = None,
+        audio_frames: int | None = None,
         dtype: torch.dtype = torch.float32,
     ) -> ModelCacheEntry:
         """Export the torch model to ONNX and return a :class:`ModelCacheEntry`."""
@@ -274,9 +306,8 @@ class VLM_ONNX:
         traceable_backbone = ONNXExportableModuleWithCache(
             language_model, **backbone_kwargs
         )
-        traceable_visual = cls.build_vision_wrapper(model)
 
-        backbone_onnx_model, visual_onnx_model = get_onnx_model(
+        backbone_onnx_model, backbone_reexported = get_onnx_model(
             checkpoint=directory,
             fp_backbone_model=traceable_backbone,
             context_length=context_length,
@@ -293,29 +324,114 @@ class VLM_ONNX:
                 layer_cache_descs, config=model.config
             ),
             output_names=cls.get_backbone_output_names(layer_cache_descs),
-            fp_visual_model=traceable_visual,
-            sample_visual_input=cls.get_sample_vision_inputs(
-                model.config, image_size=image_size, dtype=model.dtype
-            ),
-            visual_input_names=cls.get_visual_input_names(),
-            visual_output_names=cls.get_visual_output_names(config=model.config),
             dynamo=cls.use_dynamo_export(),
             dynamic_axes=cls.get_backbone_dynamic_axes(
                 layer_cache_descs, config=model.config
             ),
-            visual_dynamic_axes=cls.get_visual_dynamic_axes(),
         )
+
+        # Every encoder, vision included, exports through the same generic path.
+        shape_values = {"image_size": image_size, "audio_frames": audio_frames}
+        component_models = {
+            component.name: cls._export_component_to_onnx(
+                model,
+                component.name,
+                directory,
+                force=backbone_reexported,
+                dtype=model.dtype,
+                **(
+                    {component.shape_kwarg: shape_values[component.shape_kwarg]}
+                    if component.shape_kwarg in shape_values
+                    else {}
+                ),
+            )
+            for component in model_components(cls)
+        }
 
         embedding = cls.get_embedding(model)
         extras = cls.get_extras(model) or None
 
         return ModelCacheEntry(
             backbone=backbone_onnx_model,
-            visual=visual_onnx_model,
             embedding=embedding,
             config=model.config,
             extras=extras,
+            **component_models,
         )
+
+    @classmethod
+    def _export_component_to_onnx(
+        cls,
+        model,
+        component: str,
+        directory: str,
+        *,
+        force: bool = False,
+        dtype: torch.dtype = torch.float32,
+        **shape_kwargs,
+    ) -> onnx.ModelProto:
+        """Export one modality encoder to ``{directory}/{component}/model.onnx``.
+
+        A graph already on disk at the expected opset is reused unless ``force``
+        (the backbone was re-exported, so the config changed under it), which is
+        what makes a warm ``onnx_checkpoints/`` dir cheap.
+        """
+        component_dir = os.path.join(directory, component)
+        path = os.path.join(component_dir, "model.onnx")
+        if (
+            not force
+            and os.path.exists(path)
+            and check_opset_equal_to(path, ONNX_OPSET_VERSION)
+        ):
+            print(f"Loading cached ONNX {component} model...")
+            return onnx.load(path)
+
+        os.makedirs(component_dir, exist_ok=True)
+        traceable = cls.build_component_wrapper(component, model)
+        traceable.eval()
+        sample_input = cls.get_sample_component_inputs(
+            component, model.config, dtype=dtype, **shape_kwargs
+        )
+        input_names = cls.get_component_input_names(component)
+        output_names = cls.get_component_output_names(component, config=model.config)
+        dynamo = cls.use_dynamo_export_for(component)
+        component_dynamic_axes = cls.get_component_dynamic_axes(component)
+        if dynamo and component_dynamic_axes:
+            # _dynamo_export takes no dynamic_axes; fail rather than silently
+            # export fixed-shape.
+            raise ValueError(
+                f"{cls.__name__}'s {component} component exports via dynamo but "
+                f"declares dynamic axes {sorted(component_dynamic_axes)}. The "
+                "dynamo path cannot express them; either return {} from "
+                f"{spec(component).dynamic_axes} or export this component with "
+                "torchscript."
+            )
+        print(
+            f"{component.capitalize()} exporting..."
+            + (" (dynamo)" if dynamo else " (torchscript)")
+        )
+        with torch.no_grad():
+            if dynamo:
+                _dynamo_export(
+                    traceable,
+                    sample_input,
+                    path,
+                    input_names=input_names,
+                    output_names=output_names,
+                    opset_version=ONNX_OPSET_VERSION,
+                )
+            else:
+                torch.onnx.export(
+                    traceable,
+                    sample_input,
+                    path,
+                    input_names=input_names,
+                    output_names=output_names,
+                    opset_version=ONNX_OPSET_VERSION,
+                    dynamo=False,
+                    dynamic_axes=component_dynamic_axes or None,
+                )
+        return consolidate_external_data(path)
 
 
 # ---------------------------------------------------------------------------
@@ -371,3 +487,16 @@ try:
 
 except ImportError:
     pass
+
+try:
+    from GenAILab.qai_hub_lm.models.qwen3_asr import Qwen3ASR_LM
+
+    @YAMLConfigParser.register_model("qwen3_asr")
+    class Qwen3ASR_ONNX(VLM_ONNX, Qwen3ASR_LM):
+        pass
+
+except ImportError:
+    warnings.warn(
+        "Qwen3-ASR is not available. Please upgrade to transformers >= 5.16 "
+        "(which provides transformers.models.qwen3_asr) to use this model."
+    )

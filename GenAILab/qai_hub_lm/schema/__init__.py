@@ -11,6 +11,7 @@ from .dataset import (
     DatasetSpec,
     GeneratedDatasetSpec,
     InterleavedSpec,
+    LibriSpeechSpec,
     MMLUProSpec,
     MMLUSpec,
     MMMLUSpec,
@@ -22,6 +23,8 @@ from .dataset import (
     spec_for_dataset,
 )
 from .precision import (
+    AudioPrecisionSchema,
+    ComponentPrecisionSchema,
     Granularity,
     PrecisionSchema,
     QType,
@@ -60,6 +63,8 @@ __all__ = [
     "PrecisionSchema",
     "WeightPrecisionSchema",
     "VisualPrecisionSchema",
+    "AudioPrecisionSchema",
+    "ComponentPrecisionSchema",
     "Granularity",
     "QType",
     "QTypeRef",
@@ -73,6 +78,7 @@ __all__ = [
     "MMMUSpec",
     "C4Spec",
     "AOKVQASpec",
+    "LibriSpeechSpec",
     "GeneratedDatasetSpec",
     "InterleavedSpec",
     "dataset_names",

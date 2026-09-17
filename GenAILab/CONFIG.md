@@ -179,6 +179,58 @@ metrics:
   - name: MultimodalPrompts
 ```
 
+### Audio (ASR) model
+
+Audio is an input-side sibling of the vision encoder: the audio encoder's
+embeddings are scattered into the token sequence at the audio placeholder token,
+and the model still emits text logits — so the ordinary text metrics apply, plus
+`WER`/`CER`.
+
+Use the `-hf` checkpoints. The non-`-hf` Qwen3-ASR repos publish an Omni-style
+`thinker_config` layout that `AutoConfig` silently reads as all-defaults.
+
+`audio_frames` is the padded mel-frame count that fixes the encoder's exported
+shape. Mel frames run at 100/s, but what a valid value is — and how many audio
+tokens it becomes — depends on the encoder:
+
+| Model | `audio_frames` constraint | Audio tokens | Default |
+| ----- | ------------------------- | ------------ | ------- |
+| Qwen3-ASR | multiple of `n_window * 2` (= 100); the encoder raises otherwise | 13 per 100 frames (13/s) | 800 (8 s, 104 tokens) |
+| Gemma4 | none | frames / 4, from two stride-2 subsampling convs (25/s) | 800 (8 s, 200 tokens) |
+
+Gemma4 additionally publishes checkpoints with `audio_config: null` and no audio
+tower; those get no audio component and no `audio:` precision or recipe block,
+whatever this file says.
+
+```yaml
+model:
+  model_id: Qwen/Qwen3-ASR-1.7B-hf
+  sequence_length: 128
+  context_length: 1024
+  audio_frames: 800  # 8 s of audio -> 104 audio tokens (see table above)
+precision:
+  audio:
+    weight:
+      qtype: int8
+    activations: int16
+recipe:
+  backbone:
+    - name: Calibration
+      dataset:
+        name: LibriSpeech
+        split: validation.clean
+        num_samples: 32
+  audio:
+    - name: Calibration
+      dataset:
+        name: LibriSpeech
+        split: validation.clean
+        num_samples: 32
+metrics:
+  - name: WER
+  - name: CER
+```
+
 ### FP baseline (no quantization)
 
 ```yaml
@@ -223,6 +275,7 @@ Any other top-level key produces `ValueError: Unrecognized sections in config`.
 | `adaptations`     | no       | list           | `[]`    | See [adaptations](#adaptations). |
 | `encodings`       | no       | str            | —       | Path to pre-computed encodings. When present, the default recipe becomes `Skip` instead of `RemoveQuantization`. |
 | `image_size`      | no       | list[int]      | —       | VLM-only. `[height, width]` for vision encoder inputs. |
+| `audio_frames`    | no       | int            | —       | Audio-model-only. Padded mel-frame count fixing the audio encoder's traced/exported shape — the audio analogue of `image_size`. Mel frames run at 100/s (10 ms hop at 16 kHz), so 800 frames = 8 s. The valid values and the resulting audio-token count are **per model** — see [Audio models](#audio-asr-model). Omitted, each model class uses its own default (800 for both Qwen3-ASR and Gemma4). |
 | `dtype`           | no       | str            | —       | Model dtype override (e.g. `float16`, `bfloat16`); resolved via `getattr(torch, dtype)`. |
 
 `model` must be a dict (single model per document). A list raises an error.
@@ -258,6 +311,7 @@ precision:
 | `lm_head`      | int / str / dict           | `{qtype: int8, granularity: PCQ}` | See [WeightPrecision](#weightprecision). FP qtypes are accepted (drop the lm_head weight quantizer). |
 | `blocks`       | int / str / flat dict / `{default: dict}` | `{default: {qtype: int4, granularity: PCQ}}` | Per-component block precision. Only `default` is currently accepted as a key. FP qtypes accepted. |
 | `visual`       | dict                       | —                  | VLM-only. Sub-keys `weight` (a `WeightPrecision` dict, INT only) and `activations` (qtype, default `int16`). |
+| `audio`        | dict                       | —                  | Audio-models-only. Same shape as `visual`: `weight` (`WeightPrecision`, INT only) and `activations` (qtype, default `int16`). Only applied to models that declare an audio component. |
 
 Accepted qtype aliases (strings or shorthand ints): `int2`, `int4`, `int8`, `int16`, `float16`, `float32`. An int value `N` is interpreted as `int{N}`.
 
@@ -283,10 +337,12 @@ When `blocks.qtype` is a floating-point type, the parser rejects any recipe step
 
 | Form                                                | Normalized to |
 | --------------------------------------------------- | ------------- |
-| Omitted                                             | `{backbone: [{class: RemoveQuantization}], visual: [{class: RemoveQuantization}]}` (or `Skip` if `model.encodings` is set). |
+| Omitted                                             | `{backbone: [{class: RemoveQuantization}]}` plus the same step for each modality component the model declares (`visual` for VLMs, `audio` for audio models) — or `Skip` if `model.encodings` is set. |
 | Single dict: `{name: Calibration, ...}`             | `{backbone: [{name: Calibration, ...}]}` |
 | List of step dicts: `[{...}, {...}]`                | `{backbone: [{...}, {...}]}` |
-| Component dict: `{backbone: [...], visual: [...]}`  | (passthrough; component values can be a single dict or a list) |
+| Component dict: `{backbone: [...], visual: [...], audio: [...]}` | (passthrough; component values can be a single dict or a list) |
+
+Component keys are `backbone` plus one per modality encoder the model has: `visual` for VLMs, `audio` for audio models (Qwen3-ASR). A model only ever gets the components it declares — an audio model never acquires a `visual` chain, and vice versa.
 
 Each *step* is a dict with:
 
@@ -299,7 +355,7 @@ Each *step* is a dict with:
 Auto-insertion: if a chain has no terminal recipe (`Calibration`, `RemoveQuantization`, `Skip`), the parser appends a `Calibration` step on `Wikitext/train` and emits a warning. To suppress, end the chain explicitly.
 
 Validation rules:
-- For VLMs: if `SpinQuant` is in `backbone`, it must also be in `visual`, and it must be the first `visual` step.
+- For multi-modal models: if `SpinQuant` is in `backbone`, it must also be in every other component chain (`visual` / `audio`), and it must be that chain's first step. Pre-sim techniques act on the whole float model, so the pre-sim prefix must be byte-identical across components.
 - For FP `blocks.qtype`: only `Calibration`, `SpinQuant`, `RemoveQuantization`, `Skip` are allowed.
 - For `SpinQuant` (onnx): at least one of `enable_r1` / `enable_r2` must be `true`. Setting both to `false` is rejected at parse time.
 
@@ -368,6 +424,7 @@ Defined in [bench/datasets.py](bench/datasets.py).
 | `C4`           | text        | `split` (default `en`); `num_samples` (int, default `2048`). |
 | `MMMU`         | multimodal  | `split` (default `validation`); `image_size` (tuple, optional). |
 | `AOKVQA`       | multimodal  | `split` (default `train`); `image_size` (tuple, optional). |
+| `LibriSpeech`  | audio       | `split` (default `test.clean`, or `validation.clean` for calibration); `num_samples` (int, optional); `language` (str, default `English`); `include_reference` (bool, default `false`). |
 | `Interleaved`  | multimodal  | `source_datasets` (list of dataset configs, required). |
 
 ### Metrics
@@ -393,6 +450,8 @@ Defined in [bench/metrics.py](bench/metrics.py).
 | `Interactive`                 | none.                                |
 | `Prompts`                     | none.                                |
 | `MultimodalPrompts`           | none.                                |
+| `WER`                         | none. Word error rate (%) on LibriSpeech; lower is better. |
+| `CER`                         | none. Character error rate (%) on LibriSpeech, spaces included; lower is better. |
 | `TrickyPrompts`               | none.                                |
 | `AutogradedPrompts`           | `harness_version` (str, default `v1`). |
 | `AutogradedMultimodalPrompts` | `harness_version` (str, default `v1`). |

@@ -15,16 +15,37 @@ import onnx
 import torch
 from transformers import AutoConfig, PretrainedConfig
 
+from GenAILab.qai_hub_lm.schema.components import (
+    MODALITY_COMPONENTS,
+    require_component,
+)
+
 
 @dataclass
 class ModelCacheEntry:
-    """Container for the ONNX model components returned by an export."""
+    """Container for the ONNX model components returned by an export.
+
+    One field per modality component (see
+    :data:`GenAILab.qai_hub_lm.schema.components.MODALITY_COMPONENTS`). All of
+    them are optional: a plain LLM has only a backbone, a VLM adds ``visual``,
+    an ASR model adds ``audio``.
+    """
 
     backbone: onnx.ModelProto
     visual: Optional[onnx.ModelProto] = None
+    audio: Optional[onnx.ModelProto] = None
     embedding: Optional[torch.nn.Embedding] = None
     config: Optional[PretrainedConfig] = None
     extras: Optional[dict[str, torch.nn.Module]] = None
+
+    def component(self, name: str) -> Optional[onnx.ModelProto]:
+        """The graph for a modality component, or ``None`` if this model lacks it."""
+        require_component(name)
+        return getattr(self, name)
+
+    def present_components(self) -> tuple[str, ...]:
+        """Names of the components with a live graph, in canonical order."""
+        return tuple(n for n in MODALITY_COMPONENTS if getattr(self, n) is not None)
 
 
 class DiskBackedModelCache:
@@ -45,10 +66,16 @@ class DiskBackedModelCache:
             +-- backbone/
             |   +-- model.onnx
             |   +-- model.data
-            +-- visual/          (VLM only)
+            +-- visual/          (vision models only)
             |   +-- model.onnx
             |   +-- model.data
-            +-- embedding.pth    (VLM only)
+            +-- audio/           (audio models only)
+            |   +-- model.onnx
+            |   +-- model.data
+            +-- embedding.pth    (multi-modal only)
+
+    Each component gets a ``{name}/`` subdir; a missing one reads back as
+    ``None``, so entries written before a component existed still load.
     """
 
     _INDEX_FILE = "index.json"
@@ -106,8 +133,14 @@ class DiskBackedModelCache:
         config_path = entry_dir / "config.json"
         backbone = onnx.load(str(backbone_path))
 
-        visual_path = entry_dir / "visual" / "model.onnx"
-        visual = onnx.load(str(visual_path)) if visual_path.exists() else None
+        # An absent subdir yields None, which covers both "no such component"
+        # and "entry predates the component".
+        component_models = {}
+        for name in MODALITY_COMPONENTS:
+            component_path = entry_dir / name / "model.onnx"
+            component_models[name] = (
+                onnx.load(str(component_path)) if component_path.exists() else None
+            )
 
         embedding_path = entry_dir / "embedding.pth"
         if embedding_path.exists():
@@ -143,10 +176,10 @@ class DiskBackedModelCache:
 
         return ModelCacheEntry(
             backbone=backbone,
-            visual=visual,
             embedding=embedding,
             config=config,
             extras=extras or None,
+            **component_models,
         )
 
     def put(self, key: str, entry: ModelCacheEntry, metadata: Optional[dict] = None):
@@ -166,14 +199,16 @@ class DiskBackedModelCache:
             location="model.data",
         )
 
-        # Save visual ONNX model if present
-        if entry.visual is not None:
-            visual_dir = entry_dir / "visual"
-            visual_dir.mkdir(parents=True, exist_ok=True)
-            visual_path = visual_dir / "model.onnx"
+        # Save each modality component's ONNX model under its own subdir
+        for name in MODALITY_COMPONENTS:
+            component_model = getattr(entry, name)
+            if component_model is None:
+                continue
+            component_dir = entry_dir / name
+            component_dir.mkdir(parents=True, exist_ok=True)
             onnx.save_model(
-                entry.visual,
-                str(visual_path),
+                component_model,
+                str(component_dir / "model.onnx"),
                 save_as_external_data=True,
                 all_tensors_to_one_file=True,
                 location="model.data",

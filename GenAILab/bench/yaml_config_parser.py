@@ -19,6 +19,11 @@ from pydantic import ValidationError
 from .export import get_test_artifacts_path
 from GenAILab.bench.precision import PrecisionConfig
 from GenAILab.qai_hub_lm.models.base import VLM
+from GenAILab.qai_hub_lm.models.components import model_components
+from GenAILab.qai_hub_lm.schema.components import (
+    MODALITY_COMPONENTS,
+    require_component,
+)
 from GenAILab.qai_hub_lm.schema import (
     FP_WEIGHT_ALLOWED_TECHNIQUES,
     PrecisionSchema,
@@ -61,6 +66,12 @@ class ResolvedRecipe:
     pre_sim: tuple[ResolvedStep, ...]
     backbone: tuple[ResolvedStep, ...]
     visual: tuple[ResolvedStep, ...] | None = None
+    audio: tuple[ResolvedStep, ...] | None = None
+
+    def component(self, name: str) -> tuple[ResolvedStep, ...] | None:
+        """The on-sim chain for a modality component, or ``None`` if absent."""
+        require_component(name)
+        return getattr(self, name)
 
 
 @dataclass(frozen=True)
@@ -83,6 +94,11 @@ class ModelConfig:
     sequence_length: int | list[int]
     adaptations: list[str | dict]
     image_size: list[int] | None = None
+    #: Padded mel-frame count for audio models -- the audio analogue of
+    #: ``image_size``. Any per-encoder constraint on the value is the model
+    #: class's to enforce (Qwen3-ASR requires a multiple of ``n_window * 2``;
+    #: Gemma4's tower has no such constraint).
+    audio_frames: int | None = None
     encodings: str | None = None
     dtype: str | None = None
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -111,6 +127,8 @@ class ModelConfig:
             modifiers["dtype"] = dtype_name
         if self.image_size is not None:
             modifiers["image_size"] = list(self.image_size)
+        if self.audio_frames is not None:
+            modifiers["audio_frames"] = self.audio_frames
         if self.encodings is not None:
             modifiers["encodings"] = self.encodings
         return modifiers
@@ -672,6 +690,7 @@ class YAMLConfigParser:
         context_length = model_dict.pop("context_length")
         sequence_length = model_dict.pop("sequence_length")
         image_size = model_dict.pop("image_size", None)
+        audio_frames = model_dict.pop("audio_frames", None)
         encodings = model_dict.pop("encodings", None)
         dtype = model_dict.pop("dtype", None)
         # model_id already extracted above; remove it from the dict
@@ -687,6 +706,7 @@ class YAMLConfigParser:
             sequence_length=sequence_length,
             adaptations=adaptations_raw,
             image_size=image_size,
+            audio_frames=audio_frames,
             encodings=encodings,
             dtype=dtype,
             extra_kwargs=extra_kwargs,
@@ -753,11 +773,11 @@ class YAMLConfigParser:
             backbone_resolved = tuple(
                 resolve_step(s) for s in on_sim_components["backbone"]
             )
-            visual_resolved = (
-                tuple(resolve_step(s) for s in on_sim_components["visual"])
-                if "visual" in on_sim_components
-                else None
-            )
+            component_resolved = {
+                comp: tuple(resolve_step(s) for s in on_sim_components[comp])
+                for comp in MODALITY_COMPONENTS
+                if comp in on_sim_components
+            }
             del doc["recipe"]
         else:
             has_encodings = encodings is not None
@@ -772,13 +792,19 @@ class YAMLConfigParser:
             )
             pre_sim_resolved = ()
             backbone_resolved = (default_step,)
-            # Only VLMs get a visual recipe; LLMs have visual=None
-            visual_resolved = (default_step,) if issubclass(model_cls, VLM) else None
+            # Each modality component the model actually declares gets the
+            # default step; plain LLMs get none. Keyed off the model class's
+            # COMPONENTS rather than `issubclass(model_cls, VLM)`, because audio
+            # models also subclass VLM and must NOT acquire a visual recipe.
+            component_resolved = {
+                component.name: (default_step,)
+                for component in model_components(model_cls)
+            }
 
         resolved_recipe = ResolvedRecipe(
             pre_sim=pre_sim_resolved,
             backbone=backbone_resolved,
-            visual=visual_resolved,
+            **component_resolved,
         )
 
         # Metrics parsing

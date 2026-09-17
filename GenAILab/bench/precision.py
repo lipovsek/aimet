@@ -30,6 +30,11 @@ except ImportError:
         float32,
     )
 
+from GenAILab.qai_hub_lm.schema.components import (
+    MODALITY_COMPONENTS,
+    require_component,
+)
+
 
 class Granularity(Enum):
     PCQ = "PCQ"
@@ -127,6 +132,21 @@ class PrecisionConfig:
     )
     visual_weight: WeightPrecision | None = None
     visual_activations: qtype | None = None
+    audio_weight: WeightPrecision | None = None
+    audio_activations: qtype | None = None
+
+    # ---- generic per-component access ---------------------------------------
+    # Modality-encoder precision is stored as ``<component>_weight`` /
+    # ``<component>_activations`` pairs; these accessors let callers stay generic
+    # over MODALITY_COMPONENTS.
+
+    def component_weight(self, component: str) -> WeightPrecision | None:
+        require_component(component)
+        return getattr(self, f"{component}_weight")
+
+    def component_activations(self, component: str) -> qtype | None:
+        require_component(component)
+        return getattr(self, f"{component}_activations")
 
     @classmethod
     def from_schema(cls, schema) -> "PrecisionConfig":
@@ -159,37 +179,46 @@ class PrecisionConfig:
             "lm_head": _wp(schema.lm_head),
             "blocks": {k: _wp(v) for k, v in schema.blocks.items()},
         }
-        if schema.visual is not None:
-            kwargs["visual_weight"] = _wp(schema.visual.weight)
-            kwargs["visual_activations"] = _qt(schema.visual.activations)
+        for comp in MODALITY_COMPONENTS:
+            block = getattr(schema, comp, None)
+            if block is not None:
+                kwargs[f"{comp}_weight"] = _wp(block.weight)
+                kwargs[f"{comp}_activations"] = _qt(block.activations)
         return cls(**kwargs)
 
-    def ensure_visual_defaults(self) -> None:
-        """Populate visual precision fields with defaults if not already set.
+    def ensure_component_defaults(self, component: str) -> None:
+        """Populate one component's precision fields with defaults if unset.
 
-        Called when the model is known to be a VLM so that visual precision
-        is always explicitly recorded rather than silently falling back to
-        backbone settings.
+        Called when the model is known to have the component, so that its
+        precision is always explicitly recorded rather than silently falling
+        back to backbone settings.
         """
-        if self.visual_weight is None:
-            self.visual_weight = WeightPrecision(qtype=int8)
-        if self.visual_activations is None:
-            self.visual_activations = int16
+        require_component(component)
+        if getattr(self, f"{component}_weight") is None:
+            setattr(self, f"{component}_weight", WeightPrecision(qtype=int8))
+        if getattr(self, f"{component}_activations") is None:
+            setattr(self, f"{component}_activations", int16)
 
     def weight_identity(self) -> dict:
         """Return the precision fields that affect weight-modifying recipes.
 
-        Excludes activations, kv_cache, and visual_activations since cacheable
-        recipes (SpinQuant, AdaScale, SeqMSE) only modify weights and weight
-        encodings, not activation quantizers.
+        Excludes activations, kv_cache, and per-component activations since
+        cacheable recipes (SpinQuant, AdaScale, SeqMSE) only modify weights and
+        weight encodings, not activation quantizers.
+
+        Keys are emitted in MODALITY_COMPONENTS order and only when set, so a
+        config with no audio block hashes byte-identically to before audio
+        existed.
         """
         d = {
             "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
             "lm_head": self.lm_head.to_dict(),
             "embedding": repr(self.embedding),
         }
-        if self.visual_weight is not None:
-            d["visual_weight"] = self.visual_weight.to_dict()
+        for comp in MODALITY_COMPONENTS:
+            weight = getattr(self, f"{comp}_weight")
+            if weight is not None:
+                d[f"{comp}_weight"] = weight.to_dict()
         return d
 
     def to_dict(self) -> dict:
@@ -200,13 +229,14 @@ class PrecisionConfig:
             "lm_head": self.lm_head.to_dict(),
             "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
         }
-        if self.visual_weight is not None:
-            d["visual"] = {
-                "weight": self.visual_weight.to_dict(),
-                "activations": repr(self.visual_activations)
-                if self.visual_activations
-                else None,
-            }
+        for comp in MODALITY_COMPONENTS:
+            weight = getattr(self, f"{comp}_weight")
+            activations = getattr(self, f"{comp}_activations")
+            if weight is not None:
+                d[comp] = {
+                    "weight": weight.to_dict(),
+                    "activations": repr(activations) if activations else None,
+                }
         return d
 
     @classmethod
@@ -254,19 +284,22 @@ class PrecisionConfig:
                         )
             kwargs["blocks"] = blocks
 
-        if "visual" in d:
-            visual = d["visual"]
-            if "weight" in visual:
-                kwargs["visual_weight"] = WeightPrecision.from_dict(
-                    visual["weight"], qtype=int8
+        for comp in MODALITY_COMPONENTS:
+            if comp not in d:
+                continue
+            block = d[comp]
+            if "weight" in block:
+                kwargs[f"{comp}_weight"] = WeightPrecision.from_dict(
+                    block["weight"], qtype=int8
                 )
-                if kwargs["visual_weight"].is_float:
+                if kwargs[f"{comp}_weight"].is_float:
                     raise ValueError(
-                        "Floating-point weight precision is not supported for visual.weight."
+                        "Floating-point weight precision is not supported for "
+                        f"{comp}.weight."
                     )
             else:
-                kwargs["visual_weight"] = WeightPrecision(qtype=int8)
-            kwargs["visual_activations"] = resolve_qtype(visual.get("activations", 16))
+                kwargs[f"{comp}_weight"] = WeightPrecision(qtype=int8)
+            kwargs[f"{comp}_activations"] = resolve_qtype(block.get("activations", 16))
 
         return cls(**kwargs)
 

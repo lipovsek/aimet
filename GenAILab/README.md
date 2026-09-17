@@ -66,10 +66,13 @@ GenAILab/artifacts/
 │       │   ├── model.onnx     # Exported ONNX model
 │       │   ├── model.data     # External tensor data
 │       │   └── model.encodings # Quantization encodings
-│       ├── visual/            # (VLMs only)
+│       ├── visual/            # (vision models only)
 │       │   ├── model.onnx
 │       │   └── model.data
-│       └── embedding.pth      # (VLMs only)
+│       ├── audio/             # (audio models only)
+│       │   ├── model.onnx
+│       │   └── model.data
+│       └── embedding.pth      # (multi-modal only)
 └── cache/
     ├── fp/                    # FP model output cache
     ├── recipe/                # Recipe chain checkpoint cache
@@ -130,33 +133,45 @@ Caches exported ONNX models so that repeated ONNX evaluation runs don't require 
 
 ```
 GenAILab/
-├── __main__.py                # CLI entry point
-├── conftest.py                # Pytest fixtures (caches, directories)
-├── shared/                    # Framework-agnostic code
-│   ├── helpers/
-│   │   ├── yaml_config_parser.py  # Config parsing and plugin registry
-│   │   ├── precision_config.py    # Precision configuration
-│   │   ├── recipe_chain.py        # Multi-step recipe execution
-│   │   ├── datasets.py            # Dataset implementations
-│   │   ├── metrics.py             # Evaluation metrics
-│   │   ├── eval_context.py        # FP/quant result caching
-│   │   ├── profiler.py            # GPU profiling and result output
-│   │   └── export.py              # Export utilities
-│   └── models/
-│       ├── generator.py           # Generator class for inference
-│       ├── base.py                # LLM/VLM base classes, SimCollection
-│       └── adaptations/           # Model adaptations (SHA, FastExportable, etc.)
-├── torch/                     # PyTorch-specific
-│   ├── models/                # Torch model classes (LLM_Torch, VLMs)
-│   ├── helpers/
-│   │   └── quant_recipes.py   # Torch quantization recipes
-│   └── test_genai.py          # Torch test entry point
-├── onnx/                      # ONNX-specific
-│   ├── models/                # ONNX model classes
-│   ├── helpers/
-│   │   └── quant_recipes.py   # ONNX quantization recipes
-│   └── test_genai.py          # ONNX test entry point
-└── configs/                   # Regression test configs
+├── __main__.py                 # CLI entry point
+├── conftest.py                 # Pytest fixtures (caches, directories)
+├── CONFIG.md                   # Full config schema reference
+├── bench/                      # The harness: config -> quantize -> evaluate -> report
+│   ├── yaml_config_parser.py   # Config parsing and the plugin registry
+│   ├── precision.py            # Precision configuration
+│   ├── recipe_chain.py         # Multi-step recipe execution
+│   ├── datasets.py             # Dataset implementations
+│   ├── metrics.py              # Evaluation metrics
+│   ├── eval_context.py         # FP/quant result caching
+│   ├── profiler.py             # GPU profiling and result output
+│   ├── summary.py              # Result tables
+│   ├── model_cache.py          # Exported-ONNX cache
+│   ├── fp_cache.py             # FP-output cache
+│   ├── recipe_cache.py         # Recipe-chain checkpoint cache
+│   ├── export.py               # Export utilities
+│   ├── torch/                  # Torch entry point + quant_recipes.py
+│   └── onnx/                   # ONNX entry point + quant_recipes.py
+├── qai_hub_lm/                 # The model layer
+│   ├── schema/                 # Pydantic config schema (stdlib-only import island,
+│   │                           #   rsync'd verbatim into AI Hub Models)
+│   │   ├── components.py       # Component names, kinds, canonical order
+│   │   ├── precision.py        # precision: section
+│   │   ├── recipe.py           # recipe: section
+│   │   └── dataset.py          # dataset: specs
+│   ├── models/                 # Framework-agnostic model classes
+│   │   ├── base.py             # LLM / VLM base classes, SimCollection
+│   │   ├── components.py       # ComponentSpec registry (visual, audio)
+│   │   ├── generator.py        # Generator / VLM_Generator inference
+│   │   ├── gemma3.py, gemma4.py, qwen2_vl.py, qwen3_vl.py, qwen3_asr.py, ...
+│   │   └── utils/              # Attention masks, KV-cache descriptors, RoPE, export
+│   ├── backends/               # Per-framework quantsim construction
+│   │   ├── torch/              # llm.py, vlm.py, generator_utils.py
+│   │   └── onnx/               # llm.py, vlm.py, export_utils.py, generator_utils.py
+│   ├── transforms/             # Model adaptations (SHA, exportable attention, MoE)
+│   └── scoring/                # Autograded-prompt and Grace scoring
+├── configs/                    # Regression test configs
+├── tests/unit/                 # Unit tests
+└── dashboard/                  # Result dashboards
 ```
 
 ## How It Works

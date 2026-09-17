@@ -27,6 +27,7 @@ from typing import Annotated, Any, ClassVar, Literal, Union
 
 from pydantic import BaseModel, Field, model_serializer, model_validator
 
+from .components import ALL_COMPONENTS
 from .dataset import DatasetSpec, WikitextSpec
 
 
@@ -203,16 +204,23 @@ def _default_calibration() -> CalibrationSpec:
 
 
 class Recipe(BaseModel, extra="forbid"):
-    """Per-component ordered chains of technique specs (backbone required, visual for VLMs).
+    """Per-component ordered chains of technique specs.
 
-    Order is load-bearing; within a chain all pre_sim steps must precede on_sim
-    steps, and the pre_sim prefix must be identical across components.
-    ``_normalize`` accepts three YAML shapes: a single step dict, a top-level
-    list, or ``{backbone: [...], visual: [...]}``.
+    ``backbone`` is required; each modality component (``visual``, ``audio``) is
+    optional and present only for models that have it. Order is load-bearing;
+    within a chain all pre_sim steps must precede on_sim steps, and the pre_sim
+    prefix must be identical across components. ``_normalize`` accepts three
+    YAML shapes: a single step dict, a top-level list, or
+    ``{backbone: [...], visual: [...], audio: [...]}``.
+
+    Adding a component means adding one field here plus one entry in
+    ``schema/components.py`` -- the validators and lowering helpers below all
+    enumerate ``ALL_COMPONENTS`` rather than hardcoding names.
     """
 
     backbone: list[TechniqueSpec]
     visual: list[TechniqueSpec] | None = None
+    audio: list[TechniqueSpec] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -221,9 +229,9 @@ class Recipe(BaseModel, extra="forbid"):
             return {"backbone": data}
         if isinstance(data, dict):
             # already component form?
-            if "backbone" in data or "visual" in data:
+            if any(comp in data for comp in ALL_COMPONENTS):
                 out = dict(data)
-                for comp in ("backbone", "visual"):
+                for comp in ALL_COMPONENTS:
                     if comp in out and isinstance(out[comp], dict):
                         out[comp] = [out[comp]]
                 return out
@@ -323,14 +331,14 @@ class Recipe(BaseModel, extra="forbid"):
         return out
 
     def _component_chains(self):
-        yield self.backbone
-        if self.visual is not None:
-            yield self.visual
+        for _, steps in self._named_chains():
+            yield steps
 
     def _named_chains(self):
-        yield "backbone", self.backbone
-        if self.visual is not None:
-            yield "visual", self.visual
+        for comp in ALL_COMPONENTS:
+            steps = getattr(self, comp, None)
+            if steps is not None:
+                yield comp, steps
 
 
 # Pre-sim / on-sim split + cache identity (operate on lowered step dicts).

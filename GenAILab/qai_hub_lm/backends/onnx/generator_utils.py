@@ -9,6 +9,7 @@ import gc
 import torch
 
 from GenAILab.qai_hub_lm.models.base import SimCollection
+from GenAILab.qai_hub_lm.models.components import VISUAL, spec
 from GenAILab.qai_hub_lm.models.generator import Generator, VLM_Generator
 from GenAILab.qai_hub_lm.models.utils.layer_cache import _resolve_text_config
 
@@ -59,8 +60,8 @@ class ONNXFPModeMixin:
         with contextlib.ExitStack() as stack:
             sim = self.sim_collection.backbone
             stack.enter_context(disable_quantizers(sim, sim.qc_quantize_op_dict.keys()))
-            if self.sim_collection.visual is not None:
-                sim = self.sim_collection.visual
+            for name in self.sim_collection.present_components():
+                sim = self.sim_collection.component(name)
                 stack.enter_context(
                     disable_quantizers(sim, sim.qc_quantize_op_dict.keys())
                 )
@@ -78,8 +79,10 @@ class ONNXDevicePlacementMixin:
     def on_device(self, device):
         device = torch.device(device)
         sims = [self.sim_collection.backbone]
-        if self.sim_collection.visual is not None:
-            sims.append(self.sim_collection.visual)
+        sims.extend(
+            self.sim_collection.component(name)
+            for name in self.sim_collection.present_components()
+        )
 
         original_providers = [sim.providers for sim in sims]
         target_providers = _providers_for_device(device)
@@ -157,25 +160,30 @@ def generator_factory(
         {},
     )
 
-    if sim_collection.is_vlm():
+    # Any modality component means the multi-modal generator: its backbone
+    # consumes inputs_embeds because an encoder's embeddings are fused in.
+    if sim_collection.present_components():
         assert issubclass(generator_cls, VLM_Generator)
-        vision_interface = TorchONNXInterface(
-            sim_collection.visual, sim_collection.config
-        )
-        # Wrap vision interface to reassemble list outputs (e.g. deepstack)
-        vis_cfg = getattr(sim_collection.config, "vision_config", None)
-        ds_indexes = getattr(vis_cfg, "deepstack_visual_indexes", None)
-        if ds_indexes:
-            vision_interface = _VisualONNXAdapter(
-                vision_interface, num_list_outputs=len(ds_indexes)
+        encoder_models = {}
+        for name in sim_collection.present_components():
+            interface = TorchONNXInterface(
+                sim_collection.component(name), sim_collection.config
             )
+            if name == VISUAL.name:
+                # Wrap vision interface to reassemble list outputs (e.g. deepstack)
+                vis_cfg = getattr(sim_collection.config, "vision_config", None)
+                ds_indexes = getattr(vis_cfg, "deepstack_visual_indexes", None)
+                if ds_indexes:
+                    interface = _VisualONNXAdapter(
+                        interface, num_list_outputs=len(ds_indexes)
+                    )
+            encoder_models[spec(name).model_attr] = interface
         if sim_collection.extras:
             model_kwargs.update(sim_collection.extras)
         return mixed_cls(
             backbone_model=TorchONNXInterface(
                 sim_collection.backbone, _resolve_text_config(sim_collection.config)
             ),
-            vision_model=vision_interface,
             embedding=sim_collection.embedding,
             tokenizer=tokenizer,
             position_id_processor=sim_collection.position_id_processor,
@@ -184,6 +192,7 @@ def generator_factory(
             config=sim_collection.config,
             visual_output_names=visual_output_names,
             sim_collection=sim_collection,
+            **encoder_models,
             **model_kwargs,
         )
     else:

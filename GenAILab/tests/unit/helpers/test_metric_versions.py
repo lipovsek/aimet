@@ -10,7 +10,14 @@ update it (and the fingerprint below) to match.
 import torch
 
 from GenAILab.bench.datasets import LazyMMMUDataset
-from GenAILab.bench.metrics import EvaluationMetric, MMMU
+from GenAILab.bench.metrics import (
+    CER,
+    WER,
+    EvaluationMetric,
+    MMMU,
+    corpus_error_rate,
+    normalize_transcript,
+)
 
 
 class _FakeTokenizer:
@@ -57,6 +64,38 @@ class TestMMMUScoringContractV2:
         tokenizer = _FakeTokenizer(single_token_letters=("A", "B", "C", "D"))
         ids = [MMMU._token_id(tokenizer, letter) for letter in "ABCD"]
         assert len(set(ids)) == 4
+
+
+class TestASRErrorRateScoringContractV1:
+    """Golden fingerprint for the WER/CER scoring contract.
+
+    If one of these fails you changed ASR scoring semantics (normalization,
+    tokenization units, or aggregation): bump SCORING_VERSION on
+    ``_ASRErrorRateBase`` and update the expectations here.
+    """
+
+    def test_scoring_version_is_one(self):
+        assert WER.SCORING_VERSION == 1
+        assert CER.SCORING_VERSION == 1
+
+    def test_normalization_fingerprint(self):
+        # lowercase, punctuation dropped, apostrophe kept, hyphen split,
+        # whitespace collapsed.
+        assert (
+            normalize_transcript("  It’s WELL-known, isn't it?  ")
+            == "it's well known isn't it"
+        )
+
+    def test_units_fingerprint(self):
+        assert (WER.UNIT, CER.UNIT) == ("word", "char")
+
+    def test_aggregation_is_corpus_level(self):
+        references = ["a", "b c d e f g h i j"]
+        hypotheses = ["z", "b c d e f g h i j"]
+        assert corpus_error_rate(references, hypotheses, unit="word") == 10.0
+
+    def test_transcriptions_are_shared_between_wer_and_cer(self):
+        assert WER.get_collection_name() == CER.get_collection_name()
 
 
 class _FakeProcessor:

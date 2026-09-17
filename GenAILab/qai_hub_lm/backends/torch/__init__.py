@@ -3,6 +3,8 @@
 
 """GenAI Torch models"""
 
+import warnings
+
 # Register the default Torch LLM class
 from GenAILab.qai_hub_lm.backends.torch.llm import LLM_Torch
 
@@ -25,3 +27,14 @@ try:
     from GenAILab.qai_hub_lm.backends.torch.gemma4 import Gemma4_Torch
 except ImportError:
     pass
+
+# Qwen3-ASR Torch backend (audio input encoder). Needs transformers >= ~5.16 for
+# transformers.models.qwen3_asr.
+try:
+    from GenAILab.qai_hub_lm.backends.torch.qwen3_asr import Qwen3ASR_Torch
+except ImportError:
+    warnings.warn(
+        "Qwen3-ASR is not available. Please upgrade to a later version of "
+        "transformers (>= 5.16, which provides transformers.models.qwen3_asr) "
+        "to use this model."
+    )

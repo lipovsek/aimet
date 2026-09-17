@@ -146,8 +146,9 @@ class Gemma3_VLM_Generator(VLM_Generator):
         token_type_ids: torch.Tensor | None = None,
         **kwargs,
     ):
-        if self._visual_quantization_mode:
-            yield from self._prefill_visual(
+        if self._quantization_mode:
+            yield from self._prefill_component(
+                self._quantization_mode,
                 input_ids=input_ids,
                 pixel_values=pixel_values,
                 **kwargs,

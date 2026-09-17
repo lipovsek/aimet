@@ -3,6 +3,7 @@
 
 """Utilities for exporting models from ONNX to Torch"""
 
+import contextlib
 import os
 from pathlib import Path
 import torch
@@ -146,6 +147,38 @@ def load_model_components_from_disk(
     return backbone, visual, embedding, extras
 
 
+@contextlib.contextmanager
+def _unique_initializer_names():
+    """Stop a same-name initializer registration from evicting one still in use.
+
+    onnxscript's rewriter commits new initializers with a bare
+    ``initializers[name] = value`` (the guard above it in ``_rewrite_rule.py`` is
+    dead code), which unparents the ``Value`` an earlier node still references.
+    Min/Max->Clip names its bounds ``f"{input_name}_min"``, so a tensor clamped
+    twice collides -- Gemma4's audio tower clamps each block three times.
+    Uniquifying keeps every bound reachable and lets CSE fold the duplicate Clips.
+    """
+    from onnx_ir._graph_containers import GraphInitializers
+
+    original = GraphInitializers.__setitem__
+
+    def patched(self, key, value):
+        existing = self.data.get(key)
+        if existing is not None and existing is not value:
+            suffix = 1
+            while f"{key}_{suffix}" in self.data:
+                suffix += 1
+            key = f"{key}_{suffix}"
+            value.name = key
+        original(self, key, value)
+
+    GraphInitializers.__setitem__ = patched
+    try:
+        yield
+    finally:
+        GraphInitializers.__setitem__ = original
+
+
 def _dynamo_export(
     model,
     sample_input,
@@ -154,7 +187,6 @@ def _dynamo_export(
     input_names,
     output_names,
     opset_version,
-    custom_translation_table=None,
 ):
     """Run a dynamo-based ONNX export via draft_export.
 
@@ -162,22 +194,45 @@ def _dynamo_export(
     tolerates data-dependent branching, then hands it to ``torch.onnx.export``
     which skips the capture step and goes straight to ONNX translation.
     """
-    export_kwargs = {}
-    if custom_translation_table:
-        export_kwargs["custom_translation_table"] = custom_translation_table
-
     program = torch.export.draft_export(model, sample_input, strict=False)
 
-    torch.onnx.export(
-        program,
-        (),  # args ignored for ExportedProgram
+    with _unique_initializer_names():
+        torch.onnx.export(
+            program,
+            (),  # args ignored for ExportedProgram
+            path,
+            input_names=input_names,
+            output_names=output_names,
+            opset_version=opset_version,
+            dynamo=True,
+        )
+
+
+def consolidate_external_data(path: str) -> onnx.ModelProto:
+    """Collapse a fresh export's loose tensor files into one ``model.data`` blob.
+
+    The tracer drops one file per large initializer beside the graph. Those are
+    removed, the graph is rewritten with a single external-data file, and the
+    weights are read back so the returned proto is self-contained.
+    """
+    directory = os.path.dirname(path)
+
+    # Load first: torchscript writes one external reference per initializer, so
+    # deleting the strays before this leaves them dangling and onnx.load raises.
+    model = onnx.load(path)
+    for extension in ("*.weight", "*.bias", "onnx__*", "*__value"):
+        for stray in glob.glob(os.path.join(directory, extension)):
+            os.remove(stray)
+
+    onnx.save_model(
+        model,
         path,
-        input_names=input_names,
-        output_names=output_names,
-        opset_version=opset_version,
-        dynamo=True,
-        **export_kwargs,
+        save_as_external_data=True,
+        all_tensors_to_one_file=True,
+        location="model.data",
     )
+    onnx.external_data_helper.load_external_data_for_model(model, directory)
+    return model
 
 
 def get_onnx_model(
@@ -188,21 +243,20 @@ def get_onnx_model(
     sample_input: tuple[torch.Tensor, ...],
     input_names: tuple[str, ...],
     output_names: tuple[str, ...],
-    fp_visual_model: torch.nn.Module | None = None,
-    sample_visual_input: tuple[torch.Tensor, ...] | None = None,
-    visual_input_names: tuple[str, ...] | None = None,
-    visual_output_names: tuple[str, ...] | None = None,
     dynamo: bool = False,
-    visual_dynamo: bool | None = None,
-    custom_translation_table: dict | None = None,
     dynamic_axes: dict[str, dict[int, str]] | None = None,
-    visual_dynamic_axes: dict[str, dict[int, str]] | None = None,
-) -> tuple[onnx.ModelProto, onnx.ModelProto | None]:
+) -> tuple[onnx.ModelProto, bool]:
+    """Export (or reuse) the backbone graph.
+
+    Returns the graph and whether it was re-exported. Callers export the
+    modality components themselves and pass that flag through as ``force``, so a
+    config change re-exports every component rather than leaving stale encoders
+    beside a fresh backbone.
+    """
     # TODO: Always enable dynamic shape export unconditionally.
     use_dynamic = isinstance(sequence_length, list) and len(sequence_length) > 1
     if not use_dynamic:
         dynamic_axes = None
-        visual_dynamic_axes = None
 
     if isinstance(sequence_length, list):
         sequence_length = max(sequence_length)
@@ -214,10 +268,7 @@ def get_onnx_model(
     onnx_backbone_path = os.path.join(
         checkpoint, "backbone", f"model_sl{sl_tag}_cl{context_length}.onnx"
     )
-    onnx_visual_path = os.path.join(checkpoint, "visual", "model.onnx")
     config_path = os.path.join(checkpoint, "config.json")
-
-    visual_model_exists = fp_visual_model is not None
 
     fp_backbone_model.eval()
     fp_backbone_model.train(False)
@@ -229,12 +280,7 @@ def get_onnx_model(
         or not equivalent_configs(
             AutoConfig.from_pretrained(config_path), fp_backbone_model.config
         )
-        or (visual_model_exists and not os.path.exists(onnx_visual_path))
         or not check_opset_equal_to(onnx_backbone_path, ONNX_OPSET_VERSION)
-        or (
-            visual_model_exists
-            and not check_opset_equal_to(onnx_visual_path, ONNX_OPSET_VERSION)
-        )
     ):
         print("Exporting model(s) to ONNX...")
         fp_backbone_model.to(torch.device("cpu"))
@@ -253,7 +299,6 @@ def get_onnx_model(
                     input_names=input_names,
                     output_names=output_names,
                     opset_version=ONNX_OPSET_VERSION,
-                    custom_translation_table=custom_translation_table,
                 )
             else:
                 torch.onnx.export(
@@ -266,75 +311,11 @@ def get_onnx_model(
                     dynamo=False,
                     dynamic_axes=dynamic_axes,
                 )
-            if visual_model_exists:
-                os.makedirs(os.path.join(checkpoint, "visual"), exist_ok=True)
-                vis_dynamo = visual_dynamo if visual_dynamo is not None else dynamo
-                print(
-                    "Visual exporting..."
-                    + (" (dynamo)" if vis_dynamo else " (torchscript)")
-                )
-                if vis_dynamo:
-                    _dynamo_export(
-                        fp_visual_model,
-                        sample_visual_input,
-                        onnx_visual_path,
-                        input_names=visual_input_names,
-                        output_names=visual_output_names,
-                        opset_version=ONNX_OPSET_VERSION,
-                        custom_translation_table=custom_translation_table,
-                    )
-                else:
-                    torch.onnx.export(
-                        fp_visual_model,
-                        sample_visual_input,
-                        onnx_visual_path,
-                        input_names=visual_input_names,
-                        output_names=visual_output_names,
-                        opset_version=ONNX_OPSET_VERSION,
-                        dynamo=False,
-                        dynamic_axes=visual_dynamic_axes,
-                    )
-
         print("Loading ONNX model(s)...")
-        model = onnx.load(onnx_backbone_path)
-        if visual_model_exists:
-            visual_model = onnx.load(onnx_visual_path)
+        return consolidate_external_data(onnx_backbone_path), True
 
-        # Clean up multiple weights files
-        for model_path in [onnx_backbone_path, onnx_visual_path]:
-            for extension in ["*.weight", "*.bias", "onnx__*", "*__value"]:
-                for file in glob.glob(
-                    os.path.join(os.path.dirname(model_path), extension)
-                ):
-                    os.remove(file)
-
-        onnx.save_model(
-            model,
-            onnx_backbone_path,
-            save_as_external_data=True,
-            all_tensors_to_one_file=True,
-            location="model.data",
-        )
-        if visual_model_exists:
-            onnx.save_model(
-                visual_model,
-                onnx_visual_path,
-                save_as_external_data=True,
-                all_tensors_to_one_file=True,
-                location="model.data",
-            )
-
-        onnx.external_data_helper.load_external_data_for_model(
-            model, os.path.dirname(onnx_backbone_path)
-        )
-        if visual_model_exists:
-            onnx.external_data_helper.load_external_data_for_model(
-                visual_model, os.path.dirname(onnx_visual_path)
-            )
-        return model, visual_model if visual_model_exists else None
-    else:
-        print("Loading cached ONNX model...")
-        backbone, visual, *_ = load_model_components_from_disk(
-            checkpoint, context_length=context_length, sequence_length=sequence_length
-        )
-        return backbone, visual
+    print("Loading cached ONNX model...")
+    backbone, *_ = load_model_components_from_disk(
+        checkpoint, context_length=context_length, sequence_length=sequence_length
+    )
+    return backbone, False

@@ -79,6 +79,7 @@ def test_llm_quantization(
     model_type = config.model.model_type
     model_dtype = config.model.dtype
     image_size = config.model.image_size
+    audio_frames = config.model.audio_frames
     precomputed_encodings = config.model.encodings
 
     sl_tag = (
@@ -119,6 +120,7 @@ def test_llm_quantization(
         sequence_length,
         model_cache=model_cache,
         image_size=image_size,
+        audio_frames=audio_frames,
         **model_kwargs,
     )
 
@@ -138,6 +140,7 @@ def test_llm_quantization(
         entry,
         precision=precision,
         image_size=image_size,
+        audio_frames=audio_frames,
         **model_kwargs,
     )
     tokenizer = model_cls.instantiate_tokenizer(model_id)
@@ -147,10 +150,13 @@ def test_llm_quantization(
         tokenizer,
         sequence_length,
         context_length,
+        # Keyed off the live sim rather than `issubclass(model_cls, VLM)`: an
+        # audio-only model is also a VLM subclass but has no visual hooks.
         visual_output_names=model_cls.get_visual_output_names()
-        if issubclass(model_cls, VLM)
+        if sim_collection.has("visual")
         else None,
         image_size=image_size,
+        audio_frames=audio_frames,
         **model_kwargs,
     )
 
@@ -174,32 +180,36 @@ def test_llm_quantization(
                 f"Precomputed backbone encodings not found  at {backbone_encodings}. Proceeding without loading."
             )
 
-        if sim_collection.visual is not None:
-            visual_encodings = os.path.join(
-                precomputed_encodings, "visual", "model.encodings"
+        # Each modality encoder's encodings live under its own component dir,
+        # written by the matching per-component export block below.
+        for _component in sim_collection.present_components():
+            component_encodings = os.path.join(
+                precomputed_encodings, _component, "model.encodings"
             )
-            if os.path.exists(visual_encodings):
-                print(f"Loading precomputed visual encodings from {visual_encodings}.")
+            if os.path.exists(component_encodings):
+                print(
+                    f"Loading precomputed {_component} encodings from {component_encodings}."
+                )
                 load_encodings_to_sim(
-                    sim_collection.visual,
-                    visual_encodings,
+                    sim_collection.component(_component),
+                    component_encodings,
                     strict=False,
                     allow_overwrite=False,
                     disable_missing_quantizers=False,
                 )
             else:
                 warnings.warn(
-                    f"Precomputed visual encodings not found  at {visual_encodings}. Proceeding without loading."
+                    f"Precomputed {_component} encodings not found  at {component_encodings}. Proceeding without loading."
                 )
 
-    # Disable visual quantizers during backbone recipes so the vision
-    # encoder runs in FP mode (its quantizers aren't calibrated yet).
-    visual_ctx = (
-        _disable_onnx_quantizers(sim_collection.visual)
-        if sim_collection.visual is not None
-        else contextlib.nullcontext()
-    )
-    with visual_ctx:
+    # Disable every modality encoder's quantizers during backbone recipes so the
+    # encoders run in FP mode (their quantizers aren't calibrated yet).
+    encoder_ctx = contextlib.ExitStack()
+    for _component in sim_collection.present_components():
+        encoder_ctx.enter_context(
+            _disable_onnx_quantizers(sim_collection.component(_component))
+        )
+    with encoder_ctx:
         backbone_steps = apply_quantization_chain(
             config.recipe.backbone,
             sim_collection.backbone,
@@ -218,15 +228,19 @@ def test_llm_quantization(
             pre_sim=config.recipe.pre_sim,
         )
 
-    visual_steps = []
-    if config.recipe.visual is not None and sim_collection.visual is not None:
-        # Disable backbone quantizers during visual recipes and switch
-        # the generator to yield vision model inputs from prefill().
+    # One chain per modality encoder. Each runs with the backbone's quantizers
+    # disabled and the generator rewired to yield that component's encoder
+    # inputs from prefill().
+    component_steps: dict[str, list] = {}
+    for _component in sim_collection.present_components():
+        _chain = config.recipe.component(_component)
+        if _chain is None:
+            continue
         backbone_ctx = _disable_onnx_quantizers(sim_collection.backbone)
-        with backbone_ctx, generator.visual_quantization_mode():
-            visual_steps = apply_quantization_chain(
-                config.recipe.visual,
-                sim_collection.visual,
+        with backbone_ctx, generator.component_quantization_mode(_component):
+            component_steps[_component] = apply_quantization_chain(
+                _chain,
+                sim_collection.component(_component),
                 generator,
                 tokenizer,
                 context_length,
@@ -237,7 +251,7 @@ def test_llm_quantization(
                 model_id=model_id,
                 precision=precision,
                 model_kwargs=model_kwargs,
-                component="visual",
+                component=_component,
                 recipe_cache=recipe_cache,
                 pre_sim=config.recipe.pre_sim,
             )
@@ -271,10 +285,12 @@ def test_llm_quantization(
             export_model=True,
         )
 
-        if sim_collection.visual is not None:
-            os.mkdir(os.path.join(export_dir, "visual"))
-            sim_collection.visual.export(
-                os.path.join(export_dir, "visual"),
+        # One export dir per modality encoder, named after the component.
+        for _component in sim_collection.present_components():
+            assert issubclass(model_cls, VLM)
+            os.mkdir(os.path.join(export_dir, _component))
+            sim_collection.component(_component).export(
+                os.path.join(export_dir, _component),
                 "model",
                 export_model=True,
             )
@@ -290,9 +306,13 @@ def test_llm_quantization(
             create_truncation_aware_session,
         )
 
-        for sim in (sim_collection.backbone, sim_collection.visual):
-            if sim is None:
-                continue
+        for sim in (
+            sim_collection.backbone,
+            *(
+                sim_collection.component(name)
+                for name in sim_collection.present_components()
+            ),
+        ):
             del sim.session
             sim.session = create_truncation_aware_session(sim, truncation_bits=8)
 
@@ -306,6 +326,7 @@ def test_llm_quantization(
                 extra_metric_kwargs = {}
                 if not issubclass(metric_cls, TextEvaluationMetric):
                     extra_metric_kwargs["image_size"] = image_size
+                    extra_metric_kwargs["audio_frames"] = audio_frames
                 tokenizer_arg = (
                     tokenizer.tokenizer
                     if isinstance(tokenizer, ProcessorMixin)
@@ -346,8 +367,8 @@ def test_llm_quantization(
 
     # Re-attach pre-sim steps (e.g. SpinQuant) as synthetic leading steps so the
     # recorded recipe reflects the pre-sim rotations. A single pre-sim pass
-    # rotates the whole model, so the same markers are prepended to both
-    # backbone and visual component recipes.
+    # rotates the whole model, so the same markers are prepended to the backbone
+    # and to every modality component's recipe.
     pre_markers = [
         RecipeStepStats(
             recipe_name=step.name,
@@ -359,14 +380,15 @@ def test_llm_quantization(
         for step in config.recipe.pre_sim
     ]
     backbone_steps = [*pre_markers, *backbone_steps]
-    if visual_steps:
-        visual_steps = [*pre_markers, *visual_steps]
+    component_steps = {
+        name: [*pre_markers, *steps] for name, steps in component_steps.items() if steps
+    }
 
     components = {
         "backbone": ComponentRecipeStats(steps=backbone_steps),
     }
-    if visual_steps:
-        components["visual"] = ComponentRecipeStats(steps=visual_steps)
+    for _component, _steps in component_steps.items():
+        components[_component] = ComponentRecipeStats(steps=_steps)
 
     results_folder = Path(results_dir)
     results_folder.mkdir(parents=True, exist_ok=True)

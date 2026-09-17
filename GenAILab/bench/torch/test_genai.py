@@ -66,6 +66,7 @@ def test_llm_quantization(
     model_id = config.model.model_id
     model_type = config.model.model_type
     image_size = config.model.image_size
+    audio_frames = config.model.audio_frames
     precomputed_encodings = config.model.encodings
 
     # Build model_kwargs for instantiate_float_model
@@ -102,6 +103,7 @@ def test_llm_quantization(
         sequence_length,
         precision=precision,
         image_size=image_size,
+        audio_frames=audio_frames,
         model_id=model_id,
         **model_kwargs,
     )
@@ -113,9 +115,10 @@ def test_llm_quantization(
         sequence_length,
         context_length,
         visual_output_names=model_cls.get_visual_output_names()
-        if issubclass(model_cls, VLM)
+        if sim_collection.has("visual")
         else None,
         image_size=image_size,
+        audio_frames=audio_frames,
         **model_kwargs,
     )
 
@@ -127,8 +130,8 @@ def test_llm_quantization(
             strict=False,
             allow_overwrite=False,
         )
-        if sim_collection.visual is not None:
-            sim_collection.visual.load_encodings(
+        for _component in sim_collection.present_components():
+            sim_collection.component(_component).load_encodings(
                 precomputed_encodings,
                 partial=True,
                 strict=False,
@@ -140,14 +143,14 @@ def test_llm_quantization(
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     with generator.on_device(device):
-        # Disable visual quantizers during backbone recipes so the vision
-        # encoder runs in FP mode (its quantizers aren't calibrated yet).
-        visual_ctx = (
-            remove_all_quantizers(sim_collection.visual.model)
-            if sim_collection.visual is not None
-            else contextlib.nullcontext()
-        )
-        with visual_ctx:
+        # Disable every modality encoder's quantizers during backbone recipes so
+        # the encoders run in FP mode (their quantizers aren't calibrated yet).
+        encoder_ctx = contextlib.ExitStack()
+        for _component in sim_collection.present_components():
+            encoder_ctx.enter_context(
+                remove_all_quantizers(sim_collection.component(_component).model)
+            )
+        with encoder_ctx:
             backbone_steps = apply_quantization_chain(
                 config.recipe.backbone,
                 sim_collection.backbone,
@@ -166,15 +169,19 @@ def test_llm_quantization(
                 pre_sim=config.recipe.pre_sim,
             )
 
-        visual_steps = []
-        if config.recipe.visual is not None and sim_collection.visual is not None:
-            # Disable backbone quantizers during visual recipes and switch
-            # the generator to yield vision model inputs from prefill().
+        # One chain per modality encoder. Each runs with the backbone's
+        # quantizers disabled and the generator rewired to yield that
+        # component's encoder inputs from prefill().
+        component_steps: dict[str, list] = {}
+        for _component in sim_collection.present_components():
+            _chain = config.recipe.component(_component)
+            if _chain is None:
+                continue
             backbone_ctx = remove_all_quantizers(sim_collection.backbone.model)
-            with backbone_ctx, generator.visual_quantization_mode():
-                visual_steps = apply_quantization_chain(
-                    config.recipe.visual,
-                    sim_collection.visual,
+            with backbone_ctx, generator.component_quantization_mode(_component):
+                component_steps[_component] = apply_quantization_chain(
+                    _chain,
+                    sim_collection.component(_component),
                     generator,
                     tokenizer,
                     context_length,
@@ -185,7 +192,7 @@ def test_llm_quantization(
                     model_id=model_id,
                     precision=precision,
                     model_kwargs=model_kwargs,
-                    component="visual",
+                    component=_component,
                     recipe_cache=recipe_cache,
                     pre_sim=config.recipe.pre_sim,
                 )
@@ -251,18 +258,26 @@ def test_llm_quantization(
             export_int32_bias=False,
         )
 
-        if sim_collection.visual is not None:
+        # One export dir per modality encoder, named after the component.
+        for _component in sim_collection.present_components():
             assert issubclass(model_cls, VLM)
-            os.mkdir(os.path.join(export_dir, "visual"))
-            sim_collection.visual.onnx.export(
-                f=os.path.join(export_dir, "visual", "model.onnx"),
-                args=model_cls.get_sample_vision_inputs(
-                    sim_collection.config, image_size=image_size
+            _shape_kwargs = (
+                {"image_size": image_size}
+                if _component == "visual"
+                else {"audio_frames": audio_frames}
+                if audio_frames is not None
+                else {}
+            )
+            os.mkdir(os.path.join(export_dir, _component))
+            sim_collection.component(_component).onnx.export(
+                f=os.path.join(export_dir, _component, "model.onnx"),
+                args=model_cls.get_sample_component_inputs(
+                    _component, sim_collection.config, **_shape_kwargs
                 ),
-                input_names=model_cls.get_visual_input_names(),
-                output_names=model_cls.get_visual_output_names(),
+                input_names=model_cls.get_component_input_names(_component),
+                output_names=model_cls.get_component_output_names(_component),
                 opset_version=17,
-                dynamo=model_cls.use_dynamo_export(),
+                dynamo=model_cls.use_dynamo_export_for(_component),
                 export_int32_bias=False,
             )
 
@@ -312,8 +327,9 @@ def test_llm_quantization(
             onnx_recipe = {
                 "backbone": _last_calibration_for_onnx(backbone_steps),
             }
-            if visual_steps:
-                onnx_recipe["visual"] = _last_calibration_for_onnx(visual_steps)
+            for _component, _steps in component_steps.items():
+                if _steps:
+                    onnx_recipe[_component] = _last_calibration_for_onnx(_steps)
 
             data = {
                 "model": {
@@ -322,6 +338,7 @@ def test_llm_quantization(
                     "sequence_length": sequence_length,
                     "context_length": context_length,
                     **({"image_size": list(image_size)} if image_size else {}),
+                    **({"audio_frames": audio_frames} if audio_frames else {}),
                     **model_kwargs,
                 },
                 "precision": precision.to_dict(),
@@ -403,14 +420,15 @@ def test_llm_quantization(
         for step in config.recipe.pre_sim
     ]
     backbone_steps = [*pre_markers, *backbone_steps]
-    if visual_steps:
-        visual_steps = [*pre_markers, *visual_steps]
+    component_steps = {
+        name: [*pre_markers, *steps] for name, steps in component_steps.items() if steps
+    }
 
     components = {
         "backbone": ComponentRecipeStats(steps=backbone_steps),
     }
-    if visual_steps:
-        components["visual"] = ComponentRecipeStats(steps=visual_steps)
+    for _component, _steps in component_steps.items():
+        components[_component] = ComponentRecipeStats(steps=_steps)
 
     results_folder = Path(results_dir)
     results_folder.mkdir(parents=True, exist_ok=True)

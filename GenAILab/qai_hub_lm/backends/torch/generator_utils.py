@@ -4,7 +4,6 @@
 """Torch generator utils"""
 
 import contextlib
-import dataclasses
 import torch
 
 from aimet_torch.quantsim import QuantizationSimModel
@@ -12,6 +11,7 @@ from aimet_torch.utils import place_model
 from aimet_torch.v2.utils import remove_all_quantizers
 
 from GenAILab.qai_hub_lm.models.base import SimCollection
+from GenAILab.qai_hub_lm.models.components import spec
 from GenAILab.qai_hub_lm.models.generator import Generator, VLM_Generator
 
 
@@ -24,9 +24,9 @@ class TorchFPModeMixin:
             stack.enter_context(
                 remove_all_quantizers(self.sim_collection.backbone.model)
             )
-            if self.sim_collection.visual is not None:
+            for name in self.sim_collection.present_components():
                 stack.enter_context(
-                    remove_all_quantizers(self.sim_collection.visual.model)
+                    remove_all_quantizers(self.sim_collection.component(name).model)
                 )
             if self.sim_collection.embedding is not None:
                 stack.enter_context(
@@ -41,8 +41,7 @@ class TorchDevicePlacementMixin:
     @contextlib.contextmanager
     def on_device(self, device: torch.device):
         with contextlib.ExitStack() as stack:
-            for field in dataclasses.fields(self.sim_collection):
-                sim = getattr(self.sim_collection, field.name)
+            for sim in self.sim_collection.iter_members():
                 if (
                     sim is not None
                     and isinstance(sim, QuantizationSimModel)
@@ -58,8 +57,7 @@ class TorchDevicePlacementMixin:
 def place_collection(models: SimCollection, device: torch.device):
     """Temporarily place all non-None models in the collection on the specified device."""
     with contextlib.ExitStack() as stack:
-        for field in dataclasses.fields(models):
-            sim = getattr(models, field.name)
+        for sim in models.iter_members():
             if (
                 sim is not None
                 and isinstance(sim, QuantizationSimModel)
@@ -87,13 +85,18 @@ def generator_factory(
         {},
     )
 
-    if sim_collection.is_vlm():
+    # Any modality component means the multi-modal generator: its backbone
+    # consumes inputs_embeds because an encoder's embeddings are fused in.
+    if sim_collection.present_components():
         assert issubclass(generator_cls, VLM_Generator)
         if sim_collection.extras:
             model_kwargs.update(sim_collection.extras)
+        encoder_models = {
+            spec(name).model_attr: sim_collection.component(name).model
+            for name in sim_collection.present_components()
+        }
         return mixed_cls(
             backbone_model=sim_collection.backbone.model,
-            vision_model=sim_collection.visual.model,
             embedding=sim_collection.embedding,
             tokenizer=tokenizer,
             position_id_processor=sim_collection.position_id_processor,
@@ -102,6 +105,7 @@ def generator_factory(
             config=sim_collection.config,
             visual_output_names=visual_output_names,
             sim_collection=sim_collection,
+            **encoder_models,
             **model_kwargs,
         )
     return mixed_cls(

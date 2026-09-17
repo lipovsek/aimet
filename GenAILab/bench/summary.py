@@ -91,8 +91,12 @@ def _print_group(model_type, model_id, group_entries):
         for name in metric_names
     ]
 
-    # Determine if any entry has multiple components (VLM)
-    is_vlm = any(len(entry.get("components", {})) > 1 for _, entry in group_entries)
+    # Whether any entry has an encoder alongside the backbone, in which case the
+    # recipe column is broken out per component. True for audio models too, not
+    # just vision -- hence not "is_vlm".
+    is_multi_component = any(
+        len(entry.get("components", {})) > 1 for _, entry in group_entries
+    )
 
     # Build table rows
     rows = []
@@ -119,7 +123,7 @@ def _print_group(model_type, model_id, group_entries):
             peak_cuda_mb = max(peak_cuda_mb, util.get("cuda_peak_mb", 0))
 
         # Recipe label for the table
-        if is_vlm:
+        if is_multi_component:
             recipe_parts = []
             for comp_name, comp_stats in components.items():
                 recipe_parts.append(f"{comp_name}: {comp_stats.get('recipe', '—')}")

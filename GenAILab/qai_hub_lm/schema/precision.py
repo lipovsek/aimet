@@ -14,9 +14,11 @@ unchanged (confirmed by the cluster parity test).
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, model_serializer, model_validator
+
+from .components import require_component
 
 
 class Granularity(str, Enum):
@@ -58,6 +60,10 @@ def _weight_contract() -> dict[str, Any]:
 
 
 def _visual_contract() -> dict[str, Any]:
+    return {"activations": QType.int16, "weight": {"qtype": QType.int8}}
+
+
+def _audio_contract() -> dict[str, Any]:
     return {"activations": QType.int16, "weight": {"qtype": QType.int8}}
 
 
@@ -106,27 +112,59 @@ class WeightPrecisionSchema(BaseModel, extra="forbid"):
         return _is_float_qtype(self.qtype)
 
 
-class VisualPrecisionSchema(BaseModel, extra="forbid"):
-    """Visual-encoder precision (VLMs only): weight + activations."""
+class ComponentPrecisionSchema(BaseModel, extra="forbid"):
+    """Precision for one modality encoder: weight + activations.
+
+    Subclasses name the component for error messages and supply its own contract,
+    which stays per-section for the reason given above the factories.
+    """
+
+    #: Component name, for error messages. Overridden per subclass.
+    _component: ClassVar[str] = "component"
 
     weight: WeightPrecisionSchema
     activations: QTypeRef
+
+    @classmethod
+    def _contract(cls) -> dict[str, Any]:
+        raise NotImplementedError(f"{cls.__name__} supplies no precision contract.")
 
     @model_validator(mode="before")
     @classmethod
     def _fill_contract(cls, data):
         if isinstance(data, dict):
-            return {**_visual_contract(), **data}
+            return {**cls._contract(), **data}
         return data
 
     @model_validator(mode="after")
-    def _weight_not_float(self) -> "VisualPrecisionSchema":
-        # Mirrors from_dict: floating-point visual.weight is unsupported.
+    def _weight_not_float(self) -> "ComponentPrecisionSchema":
+        # Mirrors from_dict: floating-point encoder weights are unsupported.
         if self.weight.is_float:
             raise ValueError(
-                "Floating-point weight precision is not supported for visual.weight."
+                "Floating-point weight precision is not supported for "
+                f"{self._component}.weight."
             )
         return self
+
+
+class VisualPrecisionSchema(ComponentPrecisionSchema):
+    """Visual-encoder precision (VLMs only)."""
+
+    _component: ClassVar[str] = "visual"
+
+    @classmethod
+    def _contract(cls) -> dict[str, Any]:
+        return _visual_contract()
+
+
+class AudioPrecisionSchema(ComponentPrecisionSchema):
+    """Audio-encoder precision (audio models only)."""
+
+    _component: ClassVar[str] = "audio"
+
+    @classmethod
+    def _contract(cls) -> dict[str, Any]:
+        return _audio_contract()
 
 
 class PrecisionSchema(BaseModel, extra="forbid"):
@@ -138,6 +176,12 @@ class PrecisionSchema(BaseModel, extra="forbid"):
     lm_head: WeightPrecisionSchema
     blocks: dict[str, WeightPrecisionSchema]
     visual: VisualPrecisionSchema | None = None
+    audio: AudioPrecisionSchema | None = None
+
+    def component(self, name: str) -> ComponentPrecisionSchema | None:
+        """The precision block for a modality component, or ``None`` if unset."""
+        require_component(name)
+        return getattr(self, name, None)
 
     @model_validator(mode="before")
     @classmethod
