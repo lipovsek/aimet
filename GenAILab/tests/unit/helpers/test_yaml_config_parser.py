@@ -63,6 +63,22 @@ class TestRegistration:
         # register_dataset keys the lookup by the spec's wire name ("Wikitext").
         assert YAMLConfigParser.dataset_lookup["Wikitext"] is MyDataset
 
+    def test_erqa_and_where2place_are_registered(self):
+        from GenAILab.bench.datasets import ERQA, Where2Place as Where2PlaceDataset
+        from GenAILab.bench.metrics import ERQA as ERQAMetric, Where2Place
+
+        assert YAMLConfigParser.dataset_lookup["ERQA"] is ERQA
+        assert YAMLConfigParser.dataset_lookup["Where2Place"] is Where2PlaceDataset
+        assert YAMLConfigParser.metrics_lookup["ERQA"] is ERQAMetric
+        assert YAMLConfigParser.metrics_lookup["Where2Place"] is Where2Place
+        assert YAMLConfigParser.metrics_lookup["ERQAKLDivergence"]
+        assert YAMLConfigParser.metrics_lookup["ERQAFlips"]
+
+    def test_hypersim_is_registered(self):
+        from GenAILab.bench.datasets import Hypersim
+
+        assert YAMLConfigParser.dataset_lookup["Hypersim"] is Hypersim
+
     def test_register_recipe(self):
         from GenAILab.qai_hub_lm.schema.recipe import RemoveQuantizationSpec
 

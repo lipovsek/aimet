@@ -179,6 +179,54 @@ metrics:
   - name: MultimodalPrompts
 ```
 
+### Embodied/robotics VLM backbone (e.g. Cosmos-Reason2, `qwen3_vl` model_type)
+
+`ERQA` (multi-image, 4-way MCQ) and `Where2Place` (single-image pointing,
+scored by point-in-mask containment) evaluate the embodied-reasoning/spatial-
+grounding categories where these checkpoints diverge most from a generic VLM
+of the same architecture. Both are eval-only (no `include_answer`/train-split
+calibration variant like `AOKVQA`) -- calibration for this model family still
+uses the ordinary `visual`/`backbone` recipe blocks above.
+
+```yaml
+model:
+  model_id: Qwen/Qwen3-VL-2B-Instruct  # or nvidia/Cosmos-Reason2-2B once available
+  sequence_length: 2048
+  context_length: 4096
+  image_size: [504, 336]
+precision:
+  blocks:
+    qtype: int4
+  activations: int16
+  kv_cache: int8
+  lm_head:
+    qtype: int8
+  visual:
+    weight:
+      qtype: int8
+    activations: int16
+recipe:
+  backbone:
+    - name: Calibration
+      num_iterations: 128
+      dataset:
+        name: Interleaved
+        source_datasets:
+          - name: Wikitext
+            split: train
+          - name: AOKVQA
+            split: train
+  visual:
+    - name: Calibration
+      num_iterations: 128
+      dataset:
+        name: AOKVQA
+        split: train
+metrics:
+  - name: ERQA
+  - name: Where2Place
+```
+
 ### Audio (ASR) model
 
 Audio is an input-side sibling of the vision encoder: the audio encoder's
@@ -424,6 +472,8 @@ Defined in [bench/datasets.py](bench/datasets.py).
 | `C4`           | text        | `split` (default `en`); `num_samples` (int, default `2048`). |
 | `MMMU`         | multimodal  | `split` (default `validation`); `image_size` (tuple, optional). |
 | `AOKVQA`       | multimodal  | `split` (default `train`); `image_size` (tuple, optional). |
+| `ERQA`         | multimodal  | `split` (default `test`; the only split, 400 rows). |
+| `Where2Place`  | multimodal  | `split` (default `train`; the only split, 100 rows); `image_size` (tuple, optional). |
 | `LibriSpeech`  | audio       | `split` (default `test.clean`, or `validation.clean` for calibration); `num_samples` (int, optional); `language` (str, default `English`); `include_reference` (bool, default `false`). |
 | `Interleaved`  | multimodal  | `source_datasets` (list of dataset configs, required). |
 
@@ -447,6 +497,12 @@ Defined in [bench/metrics.py](bench/metrics.py).
 | `MMMUReverseKLDivergence`     |                                      |
 | `MMMUFlips`                   |                                      |
 | `MMMUJSDivergence`            |                                      |
+| `ERQA`                        |                                      |
+| `ERQAKLDivergence`            |                                      |
+| `ERQAReverseKLDivergence`     |                                      |
+| `ERQAFlips`                   |                                      |
+| `ERQAJSDivergence`            |                                      |
+| `Where2Place`                 | Free-space pointing accuracy (%) -- any predicted point in the ground-truth mask; higher is better. |
 | `Interactive`                 | none.                                |
 | `Prompts`                     | none.                                |
 | `MultimodalPrompts`           | none.                                |

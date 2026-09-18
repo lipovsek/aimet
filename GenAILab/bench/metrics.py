@@ -18,6 +18,7 @@ import yaml
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
@@ -32,7 +33,7 @@ from transformers.generation.stopping_criteria import StoppingCriteriaList
 
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.bench.eval_context import EvaluationContext
-from GenAILab.bench.utils.prompt_utils import load_text_prompts
+from GenAILab.bench.utils.prompt_utils import load_text_prompts, thinking_kwargs
 from GenAILab.bench.utils.generation_utils import (
     build_generation_config,
     ContextLengthStoppingCriteria,
@@ -57,6 +58,8 @@ from .datasets import (
     MMMLU as MMMLUDataset,
     MMLUPro as MMLUProDataset,
     MMMU as MMMUDataset,
+    ERQA as ERQADataset,
+    Where2Place as Where2PlaceDataset,
     LibriSpeech as LibriSpeechDataset,
 )
 
@@ -877,6 +880,188 @@ class MMMUJSDivergence(_JSDivergenceCompute, _MMMUDistanceBase):
     """Jensen-Shannon divergence between FP and quantized MMMU distributions."""
 
 
+# ---------------------------------------------------------------------------
+# ERQA metrics (multimodal, multi-image MCQ -- same choice-logit shape as MMMU)
+# ---------------------------------------------------------------------------
+
+
+@YAMLConfigParser.register_metric
+class ERQA(EvaluationMetric):
+    """Embodied Reasoning QA: multi-image, 4-way A-D MCQ, test-only (400 rows).
+
+    Choice-logit scoring, identical mechanism to MMMU -- reuses MMMU's
+    letter-token resolution rather than duplicating it.
+    """
+
+    SCORING_VERSION = 1
+
+    @classmethod
+    def get_collection_name(cls):
+        return f"{cls.__name__}_choice_logits"
+
+    @staticmethod
+    def get_dataset(processor, context_length, image_size=None, **kwargs):
+        return ERQADataset.load_encoded_dataset(
+            processor, context_length, split="test", image_size=image_size
+        )
+
+    @classmethod
+    def collect_choice_logits(cls, model, processor, context_length, **kwargs) -> dict:
+        """Run the model over ERQA and collect per-sample choice logits.
+
+        Same shape as ``MMMU.collect_choice_logits`` -- see there for the
+        field-by-field explanation. ERQA is always a 4-way A-D MCQ (unlike
+        MMMU's variable option count).
+        """
+        dataset = cls.get_dataset(processor, context_length, **kwargs)
+
+        tokenizer = getattr(processor, "tokenizer", processor)
+
+        all_logits = []
+        all_preds = []
+        all_labels = []
+
+        for sample in tqdm(dataset, desc=f"Collecting {cls.__name__} logits"):
+            num_options = sample.pop("num_options", 4)
+            label = sample.pop("label")
+
+            inputs = {
+                k: v.to(model.device)
+                for k, v in sample.items()
+                if isinstance(v, torch.Tensor)
+            }
+            outputs = model(**inputs)
+
+            last_logit = (
+                outputs[0][..., -1, :]
+                .contiguous()
+                .to(dtype=torch.float32, device="cpu")
+                .flatten()
+            )
+
+            choice_letters = [chr(65 + i) for i in range(num_options)]
+            choice_ids = [MMMU._token_id(tokenizer, c) for c in choice_letters]
+            choice_logits = torch.tensor([last_logit[c].item() for c in choice_ids])
+
+            all_logits.append(choice_logits)
+            all_preds.append(choice_logits.argmax().item())
+            all_labels.append(ord(label.strip().upper()) - ord("A"))
+
+            del outputs, inputs
+            torch.cuda.empty_cache()
+
+        return {
+            "logits": torch.stack(all_logits),
+            "preds": torch.tensor(all_preds, dtype=torch.long),
+            "labels": torch.tensor(all_labels, dtype=torch.long),
+        }
+
+    @classmethod
+    def evaluate(
+        cls,
+        model: Generator,
+        processor: ProcessorMixin,
+        context_length: int,
+        *,
+        eval_ctx: EvaluationContext = None,
+        **kwargs,
+    ) -> float:
+        if eval_ctx is None:
+            warnings.warn(
+                "No EvaluationContext provided; ERQA logits will not be cached."
+            )
+
+        def collect_qt():
+            return cls.collect_choice_logits(model, processor, context_length, **kwargs)
+
+        data = (
+            eval_ctx.get_or_compute_quant(cls.get_collection_name(), collect_qt)
+            if eval_ctx
+            else collect_qt()
+        )
+        correct = (data["preds"] == data["labels"]).sum().item()
+        return float(correct / len(data["labels"])) * 100
+
+
+class _ERQADistanceBase(DistanceMetric):
+    """Shared ERQA data collection for all ERQA-based distance metrics"""
+
+    @classmethod
+    def _get_erqa_data(
+        cls, model, processor, context_length, eval_ctx, image_size=None
+    ):
+        if eval_ctx is None:
+            warnings.warn(
+                "No EvaluationContext provided; ERQA logits will not be cached."
+            )
+
+        collection = ERQA.get_collection_name()
+
+        def collect_fp():
+            with model.fp_mode():
+                return ERQA.collect_choice_logits(
+                    model, processor, context_length, image_size=image_size
+                )
+
+        def collect_qt():
+            return ERQA.collect_choice_logits(
+                model, processor, context_length, image_size=image_size
+            )
+
+        fp = (
+            eval_ctx.get_or_compute_fp(collection, collect_fp)
+            if eval_ctx
+            else collect_fp()
+        )
+        q = (
+            eval_ctx.get_or_compute_quant(collection, collect_qt)
+            if eval_ctx
+            else collect_qt()
+        )
+        return fp, q
+
+    @classmethod
+    @abstractmethod
+    def _compute(cls, fp_data: dict, q_data: dict) -> float:
+        """Compute the metric from collected FP and quantized ERQA data."""
+
+    @classmethod
+    def evaluate(
+        cls,
+        model: Generator,
+        processor: ProcessorMixin,
+        context_length: int,
+        *,
+        eval_ctx: EvaluationContext = None,
+        image_size: tuple[int, int] | None = None,
+        **kwargs,
+    ):
+        fp, q = cls._get_erqa_data(
+            model, processor, context_length, eval_ctx, image_size=image_size
+        )
+        return cls._compute(fp, q)
+
+
+@YAMLConfigParser.register_metric
+class ERQAKLDivergence(_KLDivergenceCompute, _ERQADistanceBase):
+    """KL divergence KL(P_fp || P_quant) over ERQA answer choice distributions."""
+
+
+@YAMLConfigParser.register_metric
+class ERQAReverseKLDivergence(_ReverseKLDivergenceCompute, _ERQADistanceBase):
+    """Reverse KL divergence KL(P_quant || P_fp) over ERQA answer choice distributions."""
+
+
+@YAMLConfigParser.register_metric
+class ERQAFlips(_FlipsCompute, _ERQADistanceBase):
+    """Percentage of ERQA samples where quantized and FP predictions disagree."""
+
+
+@YAMLConfigParser.register_metric
+class ERQAJSDivergence(_JSDivergenceCompute, _ERQADistanceBase):
+    """Jensen-Shannon divergence between FP and quantized ERQA distributions."""
+
+
 class TimedStreamer(TextStreamer):
     """TextStreamer that records prefill and decode timing stats."""
 
@@ -1218,6 +1403,138 @@ class MultimodalPrompts(EvaluationMetric):
         return data["generated_text"]
 
 
+# ---------------------------------------------------------------------------
+# Where2Place metric (multimodal, free-form pointing -- not choice-logit shaped)
+# ---------------------------------------------------------------------------
+
+
+@YAMLConfigParser.register_metric
+class Where2Place(EvaluationMetric):
+    """RoboPoint-style free-space pointing accuracy.
+
+    Each question asks the model to name several candidate points in a
+    described free-space region, formatted as ``[(x1, y1), (x2, y2), ...]``
+    with coordinates normalized to [0, 1]. Scored by the standard RoboPoint
+    convention: a sample counts as correct if *any* predicted point falls
+    inside the annotated ground-truth mask.
+
+    v1: generation-based (``model.generate`` + free-text point parsing), not
+    choice-logit-based -- there is no MCQ letter here. Consequently there is no
+    KL/Flips/JS distance-metric family: those mixins diff a choice-logit
+    distribution, and a continuous point output has none.
+    """
+
+    SCORING_VERSION = 1
+
+    _POINT_RE = re.compile(r"\(\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*\)")
+
+    @classmethod
+    def get_collection_name(cls):
+        return f"{cls.__name__}_generated_points"
+
+    @staticmethod
+    def get_dataset(processor, context_length, image_size=None, **kwargs):
+        return Where2PlaceDataset.load_encoded_dataset(
+            processor, context_length, split="train", image_size=image_size
+        )
+
+    @classmethod
+    def _parse_points(cls, text: str) -> list[tuple[float, float]]:
+        """Extract normalized (x, y) points from free-form generated text.
+
+        The prompt's own "(x1, y1)" instruction template has no digits, so
+        scanning the whole decoded string for "(number, number)" pairs (rather
+        than anchoring to the text after a final "[") does not pick up false
+        positives from the instruction itself. Out-of-range coordinates are
+        clamped to [0, 1] rather than discarded, mirroring
+        ``grace.grader.parse_rating``'s clamp-not-discard convention.
+        """
+        points = []
+        for x_str, y_str in cls._POINT_RE.findall(text):
+            x = min(1.0, max(0.0, float(x_str)))
+            y = min(1.0, max(0.0, float(y_str)))
+            points.append((x, y))
+        return points
+
+    @staticmethod
+    def _any_point_in_mask(points: list[tuple[float, float]], mask: np.ndarray) -> bool:
+        mask_height, mask_width = mask.shape
+        for x, y in points:
+            px = min(mask_width - 1, int(x * mask_width))
+            py = min(mask_height - 1, int(y * mask_height))
+            if mask[py, px]:
+                return True
+        return False
+
+    @classmethod
+    def _generate_all(cls, model, processor, context_length, **kwargs) -> dict:
+        if model.generation_config is None:
+            model.generation_config = GenerationConfig()
+
+        tokenizer = getattr(processor, "tokenizer", processor)
+        dataset = cls.get_dataset(processor, context_length, **kwargs)
+
+        hits = []
+        for sample in tqdm(dataset, desc=f"Collecting {cls.__name__} generations"):
+            mask = sample.pop("mask")
+            sample.pop("mask_size", None)
+
+            inputs = {
+                k: v.to(model.device)
+                for k, v in sample.items()
+                if isinstance(v, torch.Tensor)
+            }
+            generation_config = Interactive._get_generation_config(
+                model, tokenizer, do_sample=False
+            )
+            stopping_criteria = Interactive._build_stopping_criteria(model)
+            outputs = model.generate(
+                **inputs,
+                generation_config=generation_config,
+                stopping_criteria=stopping_criteria,
+            )
+
+            generated_tokens = (
+                outputs[0] if isinstance(outputs, (list, tuple)) else outputs
+            )
+            new_tokens = generated_tokens[0][inputs["input_ids"].shape[-1] :]
+            text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+            points = cls._parse_points(text)
+            hits.append(bool(points) and cls._any_point_in_mask(points, mask))
+
+            del outputs, inputs
+            torch.cuda.empty_cache()
+
+        return {"hits": torch.tensor(hits, dtype=torch.bool)}
+
+    @classmethod
+    def evaluate(
+        cls,
+        model: Generator,
+        processor: ProcessorMixin,
+        context_length: int,
+        *,
+        eval_ctx: EvaluationContext = None,
+        **kwargs,
+    ) -> float:
+        if not isinstance(model, VLM_Generator):
+            raise ValueError("Where2Place metric requires a VL model.")
+        if eval_ctx is None:
+            warnings.warn(
+                "No EvaluationContext provided; Where2Place generations will not be cached."
+            )
+
+        def collect_qt():
+            return cls._generate_all(model, processor, context_length, **kwargs)
+
+        data = (
+            eval_ctx.get_or_compute_quant(cls.get_collection_name(), collect_qt)
+            if eval_ctx
+            else collect_qt()
+        )
+        return data["hits"].float().mean().item() * 100
+
+
 @YAMLConfigParser.register_metric
 class AutogradedPrompts(TextEvaluationMetric):
     """Grade generated responses with a small LLM as a 4-way classifier (A/B/C/D).
@@ -1275,7 +1592,10 @@ class AutogradedPrompts(TextEvaluationMetric):
             {"role": "assistant", "content": ""},
         ]
         formatted = grader_tokenizer.apply_chat_template(
-            messages, tokenize=False, continue_final_message=True, enable_thinking=False
+            messages,
+            tokenize=False,
+            continue_final_message=True,
+            **thinking_kwargs(grader_tokenizer.chat_template),
         )
         input_ids = grader_tokenizer(
             formatted, return_tensors="pt", add_special_tokens=False
@@ -1416,7 +1736,10 @@ class AutogradedMultimodalPrompts(EvaluationMetric):
             {"role": "assistant", "content": ""},
         ]
         formatted = grader_processor.apply_chat_template(
-            messages, tokenize=False, continue_final_message=True, enable_thinking=False
+            messages,
+            tokenize=False,
+            continue_final_message=True,
+            **thinking_kwargs(grader_processor.chat_template),
         )
         inputs = grader_processor(text=[formatted], images=[image], return_tensors="pt")
         inputs = {k: v.to(grader_model.device) for k, v in inputs.items()}

@@ -26,6 +26,7 @@ from GenAILab.bench.utils.generation_utils import build_generation_config
 from GenAILab.bench.utils.prompt_utils import (
     CALIBRATION_PROMPTS_FILE,
     load_text_prompts,
+    thinking_kwargs,
 )
 from GenAILab.bench.yaml_config_parser import YAMLConfigParser
 from GenAILab.qai_hub_lm.schema import (
@@ -38,6 +39,9 @@ from GenAILab.qai_hub_lm.schema import (
     MMMUSpec,
     C4Spec,
     AOKVQASpec,
+    ERQASpec,
+    Where2PlaceSpec,
+    HypersimSpec,
     GeneratedDatasetSpec,
 )
 
@@ -831,7 +835,7 @@ class LazyMMMUDataset(torch.utils.data.Dataset):
             messages,
             tokenize=False,
             continue_final_message=True,
-            enable_thinking=False,
+            **thinking_kwargs(self.processor.chat_template),
         )
         if self.image_size is not None:
             ordered_images = [image.resize(self.image_size) for image in ordered_images]
@@ -1014,6 +1018,332 @@ class AOKVQA(MultimodalDataset):
             context_length,
             image_size=image_size,
             include_answer=(split == "train"),
+        )
+
+
+class LazyHypersimDataset(torch.utils.data.Dataset):
+    """Lazy Hypersim dataset for multimodal visual-encoder calibration.
+
+    Hypersim has no question/answer fields (unlike AOKVQA) -- it's a plain
+    image corpus, domain-matched to embodied/indoor-scene VLMs rather than
+    AOKVQA's general web-photo distribution. Calibration only needs
+    representative forward passes, so every example uses one fixed generic
+    instruction paired with the image; there's nothing to continue, so this
+    is always a single user turn (no assistant-turn variant like AOKVQA's
+    ``include_answer``).
+    """
+
+    _PROMPT = "Describe this image in detail."
+
+    def __init__(self, raw_dataset, processor, context_length, image_size=None):
+        self.raw_dataset = raw_dataset
+        self.processor = processor
+        self.tokenizer = getattr(processor, "tokenizer", processor)
+        self.context_length = context_length
+        self.image_size = tuple(image_size) if image_size is not None else None
+
+    def __len__(self):
+        return len(self.raw_dataset)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    def __getitem__(self, index):
+        sample = self.raw_dataset[index]
+        image = sample["image"]
+
+        content = [
+            {"type": "image"},
+            {"type": "text", "text": self._PROMPT},
+        ]
+        messages = [{"role": "user", "content": content}]
+        text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        if self.image_size is not None:
+            image = image.resize(self.image_size)
+
+        inputs = self.processor(
+            text=[text],
+            images=[image],
+            return_tensors="pt",
+        )
+
+        inputs["input_ids"] = inputs["input_ids"][:, -self.context_length :]
+        inputs["attention_mask"] = inputs["attention_mask"][:, -self.context_length :]
+        inputs.pop("mm_token_type_ids", None)
+
+        return inputs
+
+
+@YAMLConfigParser.register_dataset(HypersimSpec)
+class Hypersim(MultimodalDataset):
+    """Hypersim dataset for multimodal visual-encoder calibration.
+
+    The original Hypersim RGB image release (apple/ml-hypersim) is licensed
+    CC BY-SA 3.0 -- permissive, no non-commercial restriction; the Evermotion
+    3D mesh assets referenced in that repo carry separate commercial terms
+    but are not part of the public image release used here. This loads the
+    ``Vigen1/hypersim-mini`` HF Hub mirror (plain RGB ``image`` column,
+    ``mask``/``scene``/``camera``/``frame`` ignored for calibration); that
+    mirror is tagged ``license: other`` on the Hub and disclaims responsibility
+    for compliance with the original terms -- the CC BY-SA 3.0 source terms
+    above are what actually governs the images.
+    """
+
+    @staticmethod
+    def load_dataset(split: str = "train"):
+        return load_dataset("Vigen1/hypersim-mini", split=split)
+
+    @classmethod
+    def load_encoded_dataset(
+        cls,
+        processor,
+        context_length,
+        split="train",
+        image_size=None,
+    ):
+        raw_dataset = cls.load_dataset(split)
+        return LazyHypersimDataset(
+            raw_dataset,
+            processor,
+            context_length,
+            image_size=image_size,
+        )
+
+
+class LazyERQADataset(torch.utils.data.Dataset):
+    """Lazy ERQA (Embodied Reasoning QA) dataset.
+
+    Each example carries a variable-length ``images`` list. Unlike MMMU/AOKVQA,
+    ERQA's ``question`` text has no ``<image N>`` placeholder tokens at all --
+    images are referenced in prose ("the first image", "the second image") in
+    list order, and its ``visual_indices`` field is degenerate (``[0] * len
+    (images)``, confirmed against live data -- not a real index into a larger
+    pool). So images are simply presented in list order ahead of the question
+    text, which already has the A-D choices and an answer-format instruction
+    embedded inline.
+
+    Each image gets a short "Image N:" text label ahead of it. This isn't just
+    cosmetic: with zero separating tokens between consecutive images, the
+    fused sequence's visual-token positions merge into one contiguous run,
+    and the ONNX generator's slicing (``Qwen3VL_Generator._find_image_boundaries``
+    /``slice_inputs_for_inference``) can only split *between* runs, not within
+    one -- so an undivided multi-image run breaks its per-image chunking/
+    padding to the traced deepstack shape (confirmed: this is what caused a
+    real "Got: 98 Expected: 256" deepstack shape mismatch on ONNX). MMMU avoids
+    this incidentally, since its questions already interleave real prose
+    between ``<image N>`` references.
+    """
+
+    def __init__(self, raw_dataset, processor, context_length, image_size=None):
+        self.raw_dataset = raw_dataset
+        self.processor = processor
+        self.tokenizer = getattr(processor, "tokenizer", processor)
+        self.context_length = context_length
+        self.image_size = tuple(image_size) if image_size is not None else None
+
+    def __len__(self):
+        return len(self.raw_dataset)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    def __getitem__(self, index):
+        sample = self.raw_dataset[index]
+
+        question = sample["question"]
+        ordered_images = list(sample["images"])
+
+        content = []
+        for i in range(len(ordered_images)):
+            content.append({"type": "text", "text": f"Image {i + 1}:"})
+            content.append({"type": "image"})
+        content.append({"type": "text", "text": question})
+
+        # "Answer:" in an assistant turn so continue_final_message continues
+        # the model's response (bump ERQA.SCORING_VERSION if changed).
+        messages = [
+            {"role": "user", "content": content},
+            {"role": "assistant", "content": "Answer:"},
+        ]
+        text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            continue_final_message=True,
+            **thinking_kwargs(self.processor.chat_template),
+        )
+        if self.image_size is not None:
+            ordered_images = [image.resize(self.image_size) for image in ordered_images]
+
+        inputs = self.processor(
+            text=[text],
+            images=ordered_images if ordered_images else None,
+            return_tensors="pt",
+        )
+
+        inputs["input_ids"] = inputs["input_ids"][:, -self.context_length :]
+        inputs["attention_mask"] = inputs["attention_mask"][:, -self.context_length :]
+
+        # ERQA is always a 4-way A-D multiple choice; store the answer letter
+        # and choice count for the metric.
+        inputs["label"] = sample["answer"]
+        inputs["num_options"] = 4
+
+        inputs.pop("mm_token_type_ids", None)
+
+        return inputs
+
+
+@YAMLConfigParser.register_dataset(ERQASpec)
+class ERQA(MultimodalDataset):
+    """ERQA (Embodied Reasoning QA) -- multi-image, 4-way MCQ, test-only."""
+
+    @staticmethod
+    def load_dataset(split: str = "test"):
+        return load_dataset("FlagEval/ERQA", split=split)
+
+    @classmethod
+    def load_encoded_dataset(
+        cls, processor, context_length, split="test", image_size=None
+    ):
+        raw_dataset = cls.load_dataset(split)
+        return LazyERQADataset(
+            raw_dataset, processor, context_length, image_size=image_size
+        )
+
+
+class LazyWhere2PlaceDataset(torch.utils.data.Dataset):
+    """Lazy Where2Place dataset: single-image pointing task.
+
+    Unlike every other dataset here, Where2Place is not a ``datasets``-loadable
+    parquet/imagefolder dataset -- its real content (point_questions.jsonl +
+    images/ + masks/) has to be read off a local snapshot of the raw HF repo
+    (see ``Where2Place.load_dataset``). Each example is a free-form-generation
+    prompt (no MCQ letter, no continuation trick), so ``add_generation_prompt``
+    is used instead of MMMU/AOKVQA's ``continue_final_message``/"Answer:" turn.
+
+    Each question's own ``text`` already instructs the model to answer with a
+    *list* of points (``[(x1, y1), (x2, y2), ...]``, normalized 0-1) -- this is
+    RoboPoint's own convention (confirmed against live data) and is used
+    verbatim, not overridden with a single-point instruction.
+    """
+
+    def __init__(self, examples, processor, context_length, image_size=None):
+        self.examples = examples
+        self.processor = processor
+        self.tokenizer = getattr(processor, "tokenizer", processor)
+        self.context_length = context_length
+        self.image_size = tuple(image_size) if image_size is not None else None
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    def __getitem__(self, index):
+        example = self.examples[index]
+
+        from PIL import Image
+
+        image = Image.open(example["image_path"]).convert("RGB")
+        mask = np.array(Image.open(example["mask_path"]).convert("L")) > 0
+        # Predicted points are normalized [0,1] regardless of any model-input
+        # resize below, so de-normalization must use the mask's own pixel
+        # dimensions, not the (possibly resized) model-input image.
+        mask_height, mask_width = mask.shape
+
+        if self.image_size is not None:
+            image = image.resize(self.image_size)
+
+        content = [
+            {"type": "image"},
+            {"type": "text", "text": example["question"]},
+        ]
+        messages = [{"role": "user", "content": content}]
+        text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        inputs = self.processor(
+            text=[text],
+            images=[image],
+            return_tensors="pt",
+        )
+
+        inputs["input_ids"] = inputs["input_ids"][:, -self.context_length :]
+        inputs["attention_mask"] = inputs["attention_mask"][:, -self.context_length :]
+        inputs.pop("mm_token_type_ids", None)
+
+        # Non-tensor metadata for the metric -- mask stays a plain numpy array
+        # (not a tensor) so it's skipped by the tensor-only device-move filter
+        # metrics use when moving a sample onto the model's device.
+        inputs["mask"] = mask
+        inputs["mask_size"] = (mask_width, mask_height)
+
+        return inputs
+
+
+@YAMLConfigParser.register_dataset(Where2PlaceSpec)
+class Where2Place(MultimodalDataset):
+    """Where2Place -- single-image free-space pointing task (train-only, no
+    official test split; 100 rows -- confirmed against a live load, not the
+    HF viewer's auto-converted parquet stat, which misreports the row count).
+    Sourced from the raw HF repo (not a ``datasets``-loadable dataset -- its
+    auto-converted parquet preview drops the mask/question files entirely;
+    the real content is only available via the raw files).
+    """
+
+    @staticmethod
+    def load_dataset(split: str = "train"):
+        from huggingface_hub import snapshot_download
+        import json
+        import os
+
+        snapshot_dir = snapshot_download(
+            repo_id="wentao-yuan/where2place", repo_type="dataset"
+        )
+        questions_path = os.path.join(snapshot_dir, "point_questions.jsonl")
+        examples = []
+        with open(questions_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                # point_questions.jsonl has no "mask" key -- masks live under
+                # masks/<same-stem>.png regardless of the source image's own
+                # extension (confirmed against the live repo layout).
+                image_stem = os.path.splitext(record["image"])[0]
+                examples.append(
+                    {
+                        "image_path": os.path.join(
+                            snapshot_dir, "images", record["image"]
+                        ),
+                        "mask_path": os.path.join(
+                            snapshot_dir, "masks", f"{image_stem}.png"
+                        ),
+                        "question": record["text"],
+                    }
+                )
+        return examples
+
+    @classmethod
+    def load_encoded_dataset(
+        cls, processor, context_length, split="train", image_size=None
+    ):
+        examples = cls.load_dataset(split)
+        return LazyWhere2PlaceDataset(
+            examples, processor, context_length, image_size=image_size
         )
 
 

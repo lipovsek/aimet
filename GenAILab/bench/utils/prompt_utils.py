@@ -39,3 +39,34 @@ def load_text_prompts(
     if num_prompts is not None:
         prompts = prompts[:num_prompts]
     return prompts
+
+
+def thinking_kwargs(chat_template) -> dict:
+    """``{"enable_thinking": False}`` iff the template actually branches on it.
+
+    ``apply_chat_template`` accepts arbitrary ``**kwargs`` and forwards
+    whichever ones the template's Jinja source references as free variables;
+    anything else is dead weight. For a template that never mentions
+    ``enable_thinking`` (most non-reasoning chat templates), passing it
+    unconditionally doesn't change the render, but it does trip
+    ``transformers``' own "kwargs passed to `processor.__call__` have to be in
+    `processor_kwargs`" warning on every single call -- the kwarg's introspection
+    (``jinja2.meta.find_undeclared_variables``) doesn't find it declared,
+    reclassifies it as a processor kwarg, and logs. Harmless (nothing downstream
+    consumes it when ``tokenize=False``, which is how this codebase always calls
+    it), but it fires once per sample.
+
+    ``chat_template`` may be a plain template string or transformers' newer
+    ``{name: template}`` dict form (multiple named templates); ``None`` means no
+    template is available at all. A plain substring check is used rather than
+    parsing the Jinja AST (as transformers does internally) -- cheaper, and
+    sufficient: a template that references ``enable_thinking`` as a real
+    variable necessarily spells the name somewhere in its source.
+    """
+    if isinstance(chat_template, dict):
+        chat_template = chat_template.get(
+            "default", next(iter(chat_template.values()), None)
+        )
+    if chat_template and "enable_thinking" in chat_template:
+        return {"enable_thinking": False}
+    return {}

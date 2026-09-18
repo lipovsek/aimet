@@ -69,6 +69,23 @@ class AOKVQASpec(_DatasetSpecBase):
     image_size: tuple[int, int] | None = None
 
 
+class ERQASpec(_DatasetSpecBase):
+    name: Literal["ERQA"]
+    split: str | None = None
+
+
+class Where2PlaceSpec(_DatasetSpecBase):
+    name: Literal["Where2Place"]
+    split: str | None = None
+    image_size: tuple[int, int] | None = None
+
+
+class HypersimSpec(_DatasetSpecBase):
+    name: Literal["Hypersim"]
+    split: str | None = None
+    image_size: tuple[int, int] | None = None
+
+
 class LibriSpeechSpec(_DatasetSpecBase):
     """LibriSpeech ASR audio dataset (calibration + WER/CER evaluation).
 
@@ -116,6 +133,9 @@ DatasetSpec = Annotated[
         MMMUSpec,
         C4Spec,
         AOKVQASpec,
+        ERQASpec,
+        Where2PlaceSpec,
+        HypersimSpec,
         LibriSpeechSpec,
         GeneratedDatasetSpec,
         InterleavedSpec,
