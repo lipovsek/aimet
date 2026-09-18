@@ -15,6 +15,15 @@ semantics) and returns a ``{name: score}`` dict ranked most-sensitive-first.
 Feed that dict into :func:`aimet_onnx.lite_mp.flip_layers_to_higher_precision`
 (keyed by op name) to raise the most sensitive units to a higher precision.
 
+Quantizer names are tensor names, which for exported models are often opaque
+(e.g. a torch ``Linear`` weight lands in ONNX as an initializer named
+``onnx::MatMul_9772``). :func:`get_quantizer_op_names` maps each quantizer to the
+name of the ONNX node that owns it -- typically well structured, e.g.
+``/model/layers.0/self_attn/q_proj/MatMul`` -- and :func:`group_by_op_name`
+wraps that mapping as a ``group_fn`` so the sweep reports scores keyed by node
+name, ready to hand straight to
+:func:`aimet_onnx.lite_mp.flip_layers_to_higher_precision`.
+
 The metric ``eval_fn`` takes an ``onnxruntime.InferenceSession`` and returns a
 float, matching the existing :func:`aimet_onnx.analyze_per_layer_sensitivity`
 and :func:`aimet_onnx.utils.make_psnr_eval_fn` convention -- there is no
@@ -131,6 +140,79 @@ def make_topk_logit_psnr_metric(
     )
 
 
+def get_quantizer_op_names(sim: QuantizationSimModel) -> Dict[str, str]:
+    """Map each quantizer name to the name of the ONNX node that owns it.
+
+    Quantizers are keyed by tensor name, which for exported models is frequently
+    unreadable (``onnx::MatMul_9772``), while the node the tensor belongs to
+    usually carries the module path it came from
+    (``/model/layers.0/self_attn/q_proj/MatMul``). This resolves the latter for
+    every quantizer in ``sim``, mirroring the ownership rules of
+    :meth:`QuantizationSimModel.get_op_quantizers`:
+
+        * a parameter tensor belongs to the node it parameterizes;
+        * an activation tensor belongs to the node that produces it;
+        * a tensor with no producer (e.g. a graph input) belongs to the node
+          that consumes it.
+
+    The returned names are connected-graph op names -- the same keys accepted by
+    :func:`aimet_onnx.lite_mp.flip_layers_to_higher_precision`.
+
+    :param sim: QuantizationSimModel to inspect.
+    :return: ``{quantizer_name: op_name}``. Quantizers that belong to no op
+        (rare) are absent from the mapping.
+    """
+    ops = sim.connected_graph.get_all_ops()
+    op_names: Dict[str, str] = {}
+
+    # Ownership passes run in precedence order, and each uses setdefault, so an
+    # earlier pass wins. Params first (a weight is owned by the node it feeds,
+    # never by a consumer of that node), then producers, then consumers.
+    for op_name, op in ops.items():
+        for param_name in op.parameters:
+            if param_name in sim.qc_quantize_op_dict:
+                op_names.setdefault(param_name, op_name)
+
+    for op_name, op in ops.items():
+        for product in op.outputs:
+            if product.name in sim.qc_quantize_op_dict:
+                op_names.setdefault(product.name, op_name)
+
+    for op_name, op in ops.items():
+        for product in op.inputs:
+            if product.name in sim.qc_quantize_op_dict:
+                op_names.setdefault(product.name, op_name)
+
+    return op_names
+
+
+def group_by_op_name(
+    sim: QuantizationSimModel,
+) -> Callable[[str], Optional[str]]:
+    """Build a ``group_fn`` that keys sensitivity scores by owning ONNX node name.
+
+    Pass the result as the ``group_fn`` of
+    :func:`analyze_per_quantizer_sensitivity` to get readable, node-named results
+    instead of raw tensor names::
+
+        scores = analyze_per_quantizer_sensitivity(
+            sim, metric, group_fn=group_by_op_name(sim)
+        )
+        flip_layers_to_higher_precision(sim, scores, percent_to_flip=10)
+
+    Quantizers that share an owning node are swept together as one group, so the
+    result is per-node rather than per-quantizer wherever a node has more than
+    one enabled quantizer (e.g. both a weight and an output quantizer).
+    Quantizers with no owning node are skipped.
+
+    :param sim: QuantizationSimModel to be analyzed.
+    :return: Callable mapping a quantizer name to its owning op name, or
+        ``None`` if it has none.
+    """
+    op_names = get_quantizer_op_names(sim)
+    return op_names.get
+
+
 def analyze_per_quantizer_sensitivity(
     sim: QuantizationSimModel,
     metric: SensitivityMetric,
@@ -157,6 +239,9 @@ def analyze_per_quantizer_sensitivity(
                 sim, metric,
                 group_fn=lambda name: name if name in kv_names else None,
             )
+
+        Pass :func:`group_by_op_name` to key the results by owning ONNX node
+        name instead of by tensor name.
     :return: Dict mapping group key to its metric score, ordered
         most-sensitive-first per ``metric``.
     """

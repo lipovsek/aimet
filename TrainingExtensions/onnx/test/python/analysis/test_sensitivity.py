@@ -7,12 +7,15 @@ import onnxruntime
 import pytest
 
 from aimet_onnx.quantsim import QuantizationSimModel, compute_encodings
-from aimet_onnx import int8
+from aimet_onnx import int8, int16
+from aimet_onnx.lite_mp import flip_layers_to_higher_precision
 from aimet_onnx.utils import make_dummy_input, make_psnr_eval_fn
 from aimet_onnx.analysis import (
     SensitivityMetric,
     make_topk_logit_psnr_metric,
     analyze_per_quantizer_sensitivity,
+    get_quantizer_op_names,
+    group_by_op_name,
 )
 
 from ..models import models_for_tests
@@ -106,6 +109,91 @@ class TestPerQuantizerSensitivity:
             sim, metric, group_fn=lambda name: name if name in selected else None
         )
         assert set(scores) == set(selected)
+
+
+class TestQuantizerOpNames:
+    def test_every_quantizer_maps_to_an_op(self):
+        sim, _, _ = _calibrated_sim()
+        op_names = get_quantizer_op_names(sim)
+        assert set(op_names) == set(sim.qc_quantize_op_dict)
+        assert set(op_names.values()) <= set(sim.connected_graph.get_all_ops())
+
+    def test_param_maps_to_owning_op(self):
+        # A weight belongs to the op it parameterizes, not to a consumer of that
+        # op's output.
+        sim, _, _ = _calibrated_sim()
+        op_names = get_quantizer_op_names(sim)
+        assert op_names["conv3.weight"] == "/conv3/Conv"
+        assert op_names["fc.weight"] == "/fc/Gemm"
+
+    def test_activation_maps_to_producer_op(self):
+        sim, _, _ = _calibrated_sim()
+        op_names = get_quantizer_op_names(sim)
+        assert op_names["/relu1/Relu_output_0"] == "/relu1/Relu"
+
+    def test_graph_input_maps_to_consumer_op(self):
+        # 'input' has no producer, so it is attributed to the op consuming it.
+        sim, _, _ = _calibrated_sim()
+        op_names = get_quantizer_op_names(sim)
+        assert op_names["input"] == "/conv1/Conv"
+
+    def test_agrees_with_onnx_graph(self):
+        # Check the mapping against the ONNX graph itself rather than the
+        # connected graph it is derived from: an initializer resolves to the node
+        # consuming it, a node output to the node producing it.
+        sim, _, _ = _calibrated_sim()
+        op_names = get_quantizer_op_names(sim)
+        # The sim's own graph has QcQuantizeOp nodes spliced in, so compare
+        # against a fresh copy of the float graph the sim was built from.
+        graph = models_for_tests.single_residual_model().model.graph
+
+        initializers = {init.name for init in graph.initializer}
+        producer = {out: node.name for node in graph.node for out in node.output}
+        consumers = {}
+        for node in graph.node:
+            for tensor in node.input:
+                consumers.setdefault(tensor, []).append(node.name)
+
+        for name, op_name in op_names.items():
+            if name in initializers:
+                assert consumers[name] == [op_name]
+            elif name in producer:
+                assert producer[name] == op_name
+
+
+class TestGroupByOpName:
+    def test_scores_are_keyed_by_op_name(self):
+        sim, fp_session, inputs = _calibrated_sim()
+        metric = SensitivityMetric(
+            "psnr", make_psnr_eval_fn(fp_session, inputs), higher_is_worse=False
+        )
+        scores = analyze_per_quantizer_sensitivity(
+            sim, metric, group_fn=group_by_op_name(sim)
+        )
+        cg_ops = sim.connected_graph.get_all_ops()
+        assert scores
+        assert set(scores) <= set(cg_ops)
+
+        # Every enabled quantizer's op is represented, and nothing else is.
+        expected = {
+            get_quantizer_op_names(sim)[name]
+            for name, q in sim.qc_quantize_op_dict.items()
+            if q.enabled
+        }
+        assert set(scores) == expected
+
+    def test_keys_are_accepted_by_lite_mp(self):
+        # The point of op-name keying: results feed lite_mp with no remapping.
+        sim, fp_session, inputs = _calibrated_sim()
+        metric = SensitivityMetric(
+            "psnr", make_psnr_eval_fn(fp_session, inputs), higher_is_worse=False
+        )
+        scores = analyze_per_quantizer_sensitivity(
+            sim, metric, group_fn=group_by_op_name(sim)
+        )
+        flip_layers_to_higher_precision(
+            sim, scores, percent_to_flip=100, override_precision=int16
+        )
 
 
 class TestTopkLogitPsnrMetric:

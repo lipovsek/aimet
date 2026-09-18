@@ -62,6 +62,7 @@ def _ranked_entries(scores: Dict[str, float], metric: SensitivityMetric):
 def save_sensitivity_results(
     scores: Dict[str, float],
     save_path: str = "./sensitivity_results.json",
+    details: Optional[Dict[str, str]] = None,
 ) -> None:
     """Save sensitivity ``scores`` to JSON, preserving their order.
 
@@ -71,10 +72,19 @@ def save_sensitivity_results(
 
     :param scores: ``{name: score}`` dict from an analysis function.
     :param save_path: Output JSON path.
+    :param details: Optional ``{name: detail}`` dict; a matching entry is written
+        alongside each ranking entry as ``"detail"``. Use it to record what a
+        name stands for, e.g. the quantizer tensor names behind a node name (see
+        :func:`aimet_onnx.analysis.get_quantizer_op_names`).
     """
     payload = {
         "ranking": [
-            {"rank": rank, "name": name, "score": score}
+            {
+                "rank": rank,
+                "name": name,
+                "score": score,
+                **({"detail": details[name]} if details and name in details else {}),
+            }
             for rank, (name, score) in enumerate(scores.items(), start=1)
         ],
     }
@@ -99,6 +109,8 @@ def save_sensitivity_plot(
     metric: SensitivityMetric,
     save_path: str = "./sensitivity_plot.html",
     highlight_patterns: Optional[List[str]] = None,
+    details: Optional[Dict[str, str]] = None,
+    details_label: str = "Details",
 ) -> None:
     """Render an interactive sensitivity chart and save it as standalone HTML.
 
@@ -118,6 +130,13 @@ def save_sensitivity_plot(
     :param save_path: Output HTML path (must end with ``.html``).
     :param highlight_patterns: Name substrings for the highlight toggles. If
         omitted, defaults to common transformer projection weight names.
+    :param details: Optional ``{name: detail}`` dict. When given, the detail
+        string is shown as an extra hover row and table column, letting the plot
+        carry a secondary identifier -- e.g. plot by ONNX node name (see
+        :func:`aimet_onnx.analysis.get_quantizer_op_names`) while still showing
+        the underlying quantizer tensor name. Names absent from the dict get an
+        empty cell.
+    :param details_label: Column and tooltip label used for ``details``.
     """
     # Imported lazily so the analysis package is usable without bokeh installed.
     from bokeh.layouts import column, row
@@ -153,18 +172,19 @@ def save_sensitivity_plot(
 
     n = len(names)
     base_color = "#4a8cc7"
-    source = ColumnDataSource(
-        data=dict(
-            index=indices,
-            rank=ranks,
-            name=names,
-            score=score_vals,
-            color=[base_color] * n,
-            size=[5] * n,
-            line_color=["#ffffff"] * n,
-            line_width=[0] * n,
-        )
+    source_data = dict(
+        index=indices,
+        rank=ranks,
+        name=names,
+        score=score_vals,
+        color=[base_color] * n,
+        size=[5] * n,
+        line_color=["#ffffff"] * n,
+        line_width=[0] * n,
     )
+    if details is not None:
+        source_data["detail"] = [details.get(name, "") for name in names]
+    source = ColumnDataSource(data=source_data)
 
     plot = figure(
         height=450,
@@ -209,16 +229,11 @@ def save_sensitivity_plot(
     )
     plot.add_layout(threshold_span)
 
-    plot.add_tools(
-        HoverTool(
-            tooltips=[
-                ("Rank", "@rank"),
-                ("Name", "@name"),
-                (metric.name, "@score{0.0000}"),
-            ],
-            mode="mouse",
-        )
-    )
+    tooltips = [("Rank", "@rank"), ("Name", "@name")]
+    if details is not None:
+        tooltips.append((details_label, "@detail"))
+    tooltips.append((metric.name, "@score{0.0000}"))
+    plot.add_tools(HoverTool(tooltips=tooltips, mode="mouse"))
 
     threshold_input = NumericInput(
         title=f"Show entries with {metric.name} below:",
@@ -229,16 +244,23 @@ def save_sensitivity_plot(
     )
     filtered_source = ColumnDataSource(data={key: [] for key in source.data})
 
+    # The name column gives up room to the detail column when one is present.
     table_columns = [
         TableColumn(field="rank", title="Rank", width=60),
-        TableColumn(field="name", title="Name", width=520),
+        TableColumn(field="name", title="Name", width=520 if details is None else 400),
+    ]
+    if details is not None:
+        table_columns.append(
+            TableColumn(field="detail", title=details_label, width=200)
+        )
+    table_columns.append(
         TableColumn(
             field="score",
             title=metric.name,
             formatter=NumberFormatter(format="0.0000"),
             width=140,
-        ),
-    ]
+        )
+    )
     data_table = DataTable(
         source=filtered_source,
         columns=table_columns,

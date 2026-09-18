@@ -43,6 +43,27 @@ class TestSaveSensitivityPlot:
             )
             assert os.path.isfile(path)
 
+    def test_details_add_column_and_tooltip(self):
+        details = {"model.layers.0.q_proj.weight": "onnx::MatMul_9772"}
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "sens.html")
+            save_sensitivity_plot(
+                _SCORES,
+                _metric(),
+                save_path=path,
+                details=details,
+                details_label="Quantizer",
+            )
+            html = open(path, encoding="utf-8").read()
+            assert "Quantizer" in html
+            assert "onnx::MatMul_9772" in html
+
+    def test_details_omitted_leaves_plot_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            without = os.path.join(tmp_dir, "without.html")
+            save_sensitivity_plot(_SCORES, _metric(), save_path=without)
+            assert "@detail" not in open(without, encoding="utf-8").read()
+
     def test_empty_scores_raises(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             with pytest.raises(ValueError):
@@ -73,6 +94,23 @@ class TestSensitivityResultsRoundTrip:
             save_sensitivity_results(_SCORES, save_path=path)
             loaded = load_sensitivity_results(path)
             assert loaded == _SCORES
+
+    def test_json_carries_details(self):
+        import json
+
+        details = {"model.layers.1.down_proj.weight": "onnx::MatMul_9773"}
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "sens.json")
+            save_sensitivity_results(_SCORES, save_path=path, details=details)
+            entries = json.load(open(path, encoding="utf-8"))["ranking"]
+            by_name = {entry["name"]: entry for entry in entries}
+            assert by_name["model.layers.1.down_proj.weight"]["detail"] == (
+                "onnx::MatMul_9773"
+            )
+            # Names with no detail are written without the key.
+            assert "detail" not in by_name["model.layers.0.q_proj.weight"]
+            # Scores still round-trip unchanged.
+            assert load_sensitivity_results(path) == _SCORES
 
     def test_json_preserves_input_order(self):
         # save_sensitivity_results preserves the (already-ranked) input order;

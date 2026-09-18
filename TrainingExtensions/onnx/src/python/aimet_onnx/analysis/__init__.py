@@ -10,6 +10,8 @@ from .sensitivity import (
     SensitivityMetric,
     make_topk_logit_psnr_metric,
     analyze_per_quantizer_sensitivity,
+    get_quantizer_op_names,
+    group_by_op_name,
 )
 from .sensitivity_plot import (
     save_sensitivity_plot,
@@ -23,6 +25,8 @@ __all__ = [
     "SensitivityMetric",
     "make_topk_logit_psnr_metric",
     "analyze_per_quantizer_sensitivity",
+    "get_quantizer_op_names",
+    "group_by_op_name",
     "save_sensitivity_plot",
     "save_sensitivity_results",
     "load_sensitivity_results",

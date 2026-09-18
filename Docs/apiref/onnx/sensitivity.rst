@@ -38,6 +38,20 @@ Analysis
 For op-level sensitivity, see
 :func:`aimet_onnx.analyze_per_layer_sensitivity`.
 
+Naming
+======
+
+Quantizers are keyed by tensor name, which for exported models is often opaque
+(a torch ``Linear`` weight becomes an initializer named ``onnx::MatMul_9772``).
+These helpers resolve the owning ONNX node name -- e.g.
+``/model/layers.0/self_attn/q_proj/MatMul`` -- so results read in terms of the
+model's structure and are keyed the way
+:func:`aimet_onnx.lite_mp.flip_layers_to_higher_precision` expects.
+
+.. autofunction:: aimet_onnx.analysis.get_quantizer_op_names
+
+.. autofunction:: aimet_onnx.analysis.group_by_op_name
+
 Visualization and persistence
 =============================
 
