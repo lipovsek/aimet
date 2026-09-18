@@ -14,6 +14,7 @@ This section gives brief overview of quantization techniques and how to apply th
   Quantization Aware Training <qat>
   Blockwise Quantization <blockwise>
   Low-Power Blockwise Quantization <lpbq>
+  Convert existing AIMET encodings to ONNX QDQ <onnx_qdq>
   Mixed precision <mixed_precision/index>
   Analysis tools <analysis_tools/index>
   Compression <compression/index>
@@ -38,6 +39,11 @@ Quantize individual tensor with block size to balance accuracy and speed.
 ==============================================
 
 Quantize individual tensors to get best of both blockwise and per-channel quantization in terms of storage, accuracy.
+
+:ref:`Convert existing AIMET encodings to ONNX QDQ <techniques-onnx-qdq>`
+=========================================================================
+
+Convert an exported ONNX model and its encodings file into an ONNX QDQ model, without creating a quantization simulation.
 
 :ref:`Mixed Precision <featureguide-mp-index>`
 ==============================================
