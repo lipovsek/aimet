@@ -6,6 +6,56 @@
 Release notes
 #############
 
+2.40.0
+======
+
+* New Features
+    * ONNX
+        * Add ``encodings_to_onnx_qdq`` to convert an ONNX model plus encodings into a QDQ model (`fcfc439`_)
+        * Add ``session_options_kwargs`` argument to ``QuantizationSimModel`` to set onnxruntime session options (`c173926`_)
+        * Accept an explicit ``LlmTopology`` in ``apply_spinquant`` and ``apply_adascale`` (`00c6089`_, `c548be0`_)
+        * Enable FP8 (``float8e4m3fn``, ``float8e5m2``) quantization simulation on both CPU and CUDA, completing FP8 support alongside ONNX QDQ export (`644c7bd`_)
+    * Torch
+        * Implement ``set_weight_quantizer_to_nvfp4_int8`` API (`05cc606`_)
+
+* Bug fixes and Improvements
+    * ONNX
+        * Fix calibration state restoration in ``QuantizationSimModel`` (`df58875`_)
+        * Analyze LLM topology and run SpinQuant on ``onnx_ir`` instead of ``ConnectedGraph`` (`23633b1`_, `7b9aef6`_, `092a9dc`_)
+        * Add all kv-cache inputs/outputs to ``LlmTopology`` (`68e24d2`_)
+        * Drop ignored ``connected_graph`` parameter from ``get_decoder_block_boundaries`` (`2d71c85`_)
+        * Auto-upcast fp16 AdaScale blocks to bf16 (`1f03b7c`_)
+        * Default to using all float outputs in ``make_psnr_eval_fn`` (`5c41452`_)
+
+    * Torch
+        * Fix device mismatch upon ``.to()`` for qmodules with pre-quantized parameters (`4111e41`_)
+        * Fix fp4-int8 dynamo export bug (`68588d4`_)
+
+    * Common
+        * Exclude depthwise Conv/ConvTranspose from supergroups and fix false negatives in depthwise conv detection (`7729c97`_, `2a6b723`_)
+        * Publish a single wheel per platform instead of ``+cpu``/``+cuXXX`` variants to the GitHub release (`4fc12d8`_)
+
+.. _fcfc439: https://github.com/qualcomm/aimet/commit/fcfc439cc89adccff3784bccfcd35e1ec2ef46ac
+.. _c173926: https://github.com/qualcomm/aimet/commit/c1739263e68b48e29526e62537319b46e9cd749b
+.. _00c6089: https://github.com/qualcomm/aimet/commit/00c6089d1b579cf6d22a12f1e1b3c4cf14d23505
+.. _c548be0: https://github.com/qualcomm/aimet/commit/c548be0488cc6e038dd5f903ccee4c9e4e0b92dd
+.. _644c7bd: https://github.com/qualcomm/aimet/commit/644c7bdfaa7987939a915ec7fa5afd8e76f130b8
+.. _05cc606: https://github.com/qualcomm/aimet/commit/05cc606b7ea1c1286039208d6a95c1c9694dbaca
+.. _df58875: https://github.com/qualcomm/aimet/commit/df588756ab5713e74ebed5716dd080dc97bf6cdb
+.. _23633b1: https://github.com/qualcomm/aimet/commit/23633b15fd63dc1d872ef25f0b685a501f6a2088
+.. _7b9aef6: https://github.com/qualcomm/aimet/commit/7b9aef6459ee51e6686c75b43761d61d11ef6e42
+.. _092a9dc: https://github.com/qualcomm/aimet/commit/092a9dc8d7a11605ef973584565fa0a5056cdeaf
+.. _68e24d2: https://github.com/qualcomm/aimet/commit/68e24d20ce3759d7dceaccc72480a77b8679b840
+.. _2d71c85: https://github.com/qualcomm/aimet/commit/2d71c85b59e8a80392d5080d0da1b37071476e91
+.. _1f03b7c: https://github.com/qualcomm/aimet/commit/1f03b7c9f00ff82efff10e585c2b6c05695d2a46
+.. _5c41452: https://github.com/qualcomm/aimet/commit/5c414527d607e17747fa3c19e0709e84fc2a3183
+.. _4111e41: https://github.com/qualcomm/aimet/commit/4111e41202fb3a7a9fc8a7d01c3e1f6102d714d4
+.. _68588d4: https://github.com/qualcomm/aimet/commit/68588d47e03ccb4c9aacfa7442d3911c46987a8c
+.. _2a6b723: https://github.com/qualcomm/aimet/commit/2a6b723a1d1245588d9928bcf2b5eef5fda98631
+.. _7729c97: https://github.com/qualcomm/aimet/commit/7729c9760c45a9d8dfb48472da04c4473b6def65
+.. _4fc12d8: https://github.com/qualcomm/aimet/commit/4fc12d8cb7f4436c4165f8527d9785e69c3f16b2
+
+
 2.39.0
 ======
 
