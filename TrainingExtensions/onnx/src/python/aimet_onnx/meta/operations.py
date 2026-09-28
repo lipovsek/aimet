@@ -3,7 +3,7 @@
 
 """ONNX Operation class and utilities"""
 
-from typing import Dict, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 from aimet_onnx.common.connected_graph.operation import Op as _Op
 from aimet_onnx.meta.product import Product
 
@@ -12,6 +12,7 @@ class Op(_Op):
     """Subclass Op inherited from aimet_onnx.common.connected_graph.operation.Op"""
 
     _parameters: Dict[str, Tuple[Product, Optional[str]]]
+    _subgraph_ops: List["Op"]
 
     def __init__(
         self,
@@ -35,6 +36,7 @@ class Op(_Op):
         self._parameters = {}
         self.transposed_params = False
         self.domain = domain
+        self._subgraph_ops = []
 
     def add_param(self, param: str, product: Product, product_type: Optional[str]):
         """Add a parameter product to parameters dictionary"""
@@ -44,3 +46,15 @@ class Op(_Op):
     def parameters(self) -> Dict[str, Tuple[Product, Optional[str]]]:
         """returns parameters of the op"""
         return self._parameters
+
+    @property
+    def subgraph_ops(self) -> List["Op"]:
+        """
+        Returns the ops this op runs inside its own body, in the order they run.
+        A control-flow op carries its body as a graph-valued attribute.
+        """
+        return self._subgraph_ops
+
+    def add_subgraph_op(self, op: "Op"):
+        """Record that ``op`` belongs to one of this op's subraphs"""
+        self._subgraph_ops.append(op)

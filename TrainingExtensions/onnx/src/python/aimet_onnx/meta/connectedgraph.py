@@ -10,7 +10,7 @@ result of an operation. Furthermore the graph representation is bi-directional."
 
 import itertools
 from collections import deque
-from typing import Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 from onnxruntime.quantization.onnx_quantizer import ONNXModel
 import onnx
 from packaging import version
@@ -19,6 +19,7 @@ from aimet_onnx.common.connected_graph.connectedgraph import (
     ConnectedGraph as AimetCommonConnectedGraph,
     get_ordered_ops,
 )
+from aimet_onnx.common.onnx._utils import _iterate_graphs_recursive
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.common.model_module import ONNXModelModule
 from aimet_onnx.meta.operations import Op
@@ -51,6 +52,22 @@ OPS_WITH_PARAMS = [
 CONSTANT_TYPE = ["Constant", "ConstantOfShape"]
 
 
+def _subgraphs_of(node: NodeProto) -> List[onnx.GraphProto]:
+    """
+    Return every graph ``node`` carries as an attribute.
+
+    :param node: Node to inspect
+    :return: Its subgraphs, outermost attribute order preserved
+    """
+    subgraphs = []
+    for attr in node.attribute:
+        if attr.type == onnx.AttributeProto.GRAPH:
+            subgraphs.append(attr.g)
+        elif attr.type == onnx.AttributeProto.GRAPHS:
+            subgraphs.extend(attr.graphs)
+    return subgraphs
+
+
 class ConnectedGraph(AimetCommonConnectedGraph):
     """
     For construction of a graph that connects operations together as producers and consumers of tensors.
@@ -70,7 +87,7 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         self.fill_op_product_graph()
         self.starting_ops = list(self._get_starting_ops())
         # List of ops in the order they are traversed using the forward function
-        self.ordered_ops = get_ordered_ops(self.starting_ops)
+        self.ordered_ops = self._get_ordered_ops()
         self._assert_no_conflicting_shared_parameters()
         self._warn_on_conflicting_shared_bias_initializers()
 
@@ -192,7 +209,10 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         return op
 
     def _get_starting_ops(self):
-        for op in self._ops.values():
+        """
+        Yield the ops the model starts at.
+        """
+        for op in self._top_level_ops():
             if not op.input_ops:
                 yield op
 
@@ -235,53 +255,119 @@ class ConnectedGraph(AimetCommonConnectedGraph):
         - Links products with their producer and consumer ops
         - Identifies which products should be considered parameters
         """
+        graphs = list(_iterate_graphs_recursive(self.model.graph))
 
-        # Add products for all tensors in initializer
-        for tensor in self.model.graph.initializer:
-            self._products[tensor.name] = self._create_constant_product(
-                tensor.name, tensor.dims
-            )
-
-        # Add products for all model inputs
-        for input_info in self.model.graph.input:
-            self._products[input_info.name] = self._create_product_for_inputs(
-                input_info
-            )
-
-        # Create products for all intermediate tensors
-        for node in self.model.graph.node:
-            for output in node.output:
-                self._products[output] = self._create_product_for_activations(
-                    node, output
+        for graph in graphs:
+            # Add products for all tensors in initializer
+            for tensor in graph.initializer:
+                self._products[tensor.name] = self._create_constant_product(
+                    tensor.name, tensor.dims
                 )
 
-        # Create ops and link with products
-        for node in self.model.graph.node:
-            if node.op_type == "Constant":
-                continue
+            # Add products for all model inputs
+            for input_info in graph.input:
+                product = self._create_product_for_inputs(input_info)
+                # A body's declared inputs are fed by the control-flow op, not by the caller
+                # of the model.
+                product.is_model_input = graph is self.model.graph
+                self._products[input_info.name] = product
 
-            op = self._create_ir_op(node)
-            self._ops[node.name] = op
-            for inp in node.input:
-                if not inp:
-                    continue  # Empty string indicates omitted optional input
-                if inp not in self._products:
-                    raise RuntimeError(
-                        f"Input tensor {inp} to node {node.name} was not found as a graph input, "
-                        "initializer, or as the output of another node. Please verify that the input "
-                        "model is properly defined."
+            # Create products for all intermediate tensors
+            for node in graph.node:
+                for output in node.output:
+                    self._products[output] = self._create_product_for_activations(
+                        node, output
                     )
-                product = self._products[inp]
-                op.add_input(product)
-                product.add_consumer(op)
 
-            for output in node.output:
-                product = self._products[output]
-                op.outputs.append(product)
-                product.producer = op
+        # A graph's position - it is used to map ops within it.
+        graph_index_of = {id(graph): index for index, graph in enumerate(graphs)}
+        # The ops of each graph, in the order the graph declares them
+        ops_by_graph_index: Dict[int, List[Op]] = {}
+        # Map control-flow op -> corresponding subgraph index
+        subgraphs_to_order: List[Tuple[Op, int]] = []
+
+        # Create ops and link with products
+        for graph_index, graph in enumerate(graphs):
+            for node in graph.node:
+                if node.op_type == "Constant":
+                    continue
+
+                op = self._create_ir_op(node)
+                self._ops[node.name] = op
+                ops_by_graph_index.setdefault(graph_index, []).append(op)
+                for inp in node.input:
+                    if not inp:
+                        continue  # Empty string indicates omitted optional input
+                    if inp not in self._products:
+                        raise RuntimeError(
+                            f"Input tensor {inp} to node {node.name} was not found as a graph input, "
+                            "initializer, or as the output of another node. Please verify that the input "
+                            "model is properly defined."
+                        )
+                    product = self._products[inp]
+                    op.add_input(product)
+                    product.add_consumer(op)
+
+                for output in node.output:
+                    product = self._products[output]
+                    op.outputs.append(product)
+                    product.producer = op
+
+                subgraphs_to_order.extend(
+                    (op, graph_index_of[id(subgraph)])
+                    for subgraph in _subgraphs_of(node)
+                    if id(subgraph) in graph_index_of
+                )
+
+        # Add subgraph ops for the op containing the body.
+        for op, graph_index in subgraphs_to_order:
+            for body_op in ops_by_graph_index.get(graph_index, []):
+                op.add_subgraph_op(body_op)
 
         # TODO: Move this process outside of ConnectedGraph altogether
         self._identify_param_products()
+
+    def _top_level_ops(self) -> List[Op]:
+        """
+        Yield the ops of the model's own graph, in the order it declares them.
+
+        An op belongs to a body if some op holds it there, so the rest are top level.
+
+        :return: The ops the model's own graph declares
+        """
+        nested = {body_op for op in self._ops.values() for body_op in op.subgraph_ops}
+        return [op for op in self._ops.values() if op not in nested]
+
+    def _ordered_top_level_ops(self) -> List[Op]:
+        """
+        Traverse the model's own graph, ignoring the ops that make up any body.
+
+        :return: Its ops, each after the ops in it that produce what it reads
+        """
+        top_level = set(self._top_level_ops())
+        return get_ordered_ops(self.starting_ops, restrict_to=top_level)
+
+    def _get_ordered_ops(self) -> List[Op]:
+        """
+        Order every op in the model, bodies inlined ahead of the ops that run them.
+
+        NOTE: subgraph_ops are already ordered.
+
+        :return: Every op, each after the ops it depends on
+        """
+        ordered = []
+        emitted = set()
+
+        def emit(ops: List[Op]):
+            for op in ops:
+                if op in emitted:
+                    continue
+                emitted.add(op)
+                emit(op.subgraph_ops)
+                ordered.append(op)
+
+        emit(self._ordered_top_level_ops())
+        return ordered
 
     def _identify_param_products(self):
         """Identify products which are parameters of select modules"""

@@ -1499,6 +1499,27 @@ def _iterate_graph_nodes_recursive(graph: onnx.GraphProto) -> Iterable[onnx.Node
             yield from _iterate_graph_nodes_recursive(body.g)
 
 
+def _iterate_graphs_recursive(graph: onnx.GraphProto) -> Iterable[onnx.GraphProto]:
+    """
+    Yield ``graph`` followed by every Control-flow body nested inside it, depth first.
+
+    Control-flow ops carry their bodies as graph-valued attributes rather than as nodes, so a
+    plain walk over ``graph.node`` never sees them.
+
+    NOTE: ``If`` and ``Loop`` bodies are deliberately not yielded.
+
+    :param graph: Graph to walk
+    :return: Iterator over ``graph`` and the ``Scan`` bodies within it
+    """
+    yield graph
+    for node in graph.node:
+        if node.op_type != "Scan":
+            continue
+        for attr in node.attribute:
+            if attr.name == "body":
+                yield from _iterate_graphs_recursive(attr.g)
+
+
 def _get_all_constants(
     model: onnx.ModelProto, consumers: dict[str, list[onnx.NodeProto]] | None = None
 ) -> dict[str, onnx.TensorProto]:
