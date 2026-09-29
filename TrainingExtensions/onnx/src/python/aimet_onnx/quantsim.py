@@ -115,6 +115,7 @@ from aimet_onnx.graph_passes.fusions import (
 )
 from aimet_onnx.batch_norm_fold import _has_unfolded_batchnorms
 import aimet_onnx
+from aimet_onnx import ir_utils
 from ._encoding import EncodingBase, FloatEncoding, _QDQ_FLOAT_TYPES
 from .defs import QSpec
 
@@ -2149,20 +2150,18 @@ class QuantizationSimModel:
             )
 
         if export_model:
-            with self._remove_quantization_nodes():
-                ir_model = onnx_ir.from_proto(self.model.model)
-                if any(
-                    is_fused_supergroup(node) for node in ir_model.graph.all_nodes()
-                ):
-                    inline_all_supergroups(ir_model)
+            ir_model = onnx_ir.from_proto(self.model.model)
+            ir_utils.remove_aimet_quantizers(ir_model)
+            if any(is_fused_supergroup(node) for node in ir_model.graph.all_nodes()):
+                inline_all_supergroups(ir_model)
 
-                onnx_ir.save(
-                    ir_model,
-                    os.path.join(path, filename_prefix) + ".onnx",
-                    external_data=filename_prefix + ".data"
-                    if self._use_external_data
-                    else None,
-                )
+            onnx_ir.save(
+                ir_model,
+                os.path.join(path, filename_prefix) + ".onnx",
+                external_data=filename_prefix + ".data"
+                if self._use_external_data
+                else None,
+            )
 
     def set_and_freeze_param_encodings(self, encoding_path: str):
         """
