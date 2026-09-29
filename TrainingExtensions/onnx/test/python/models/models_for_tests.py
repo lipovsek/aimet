@@ -5587,3 +5587,49 @@ def model_with_transposed_and_non_transposed_gemm():
     model = load_model(buffer)
     onnx.checker.check_model(model)
     return model
+
+
+def model_with_zero_pad():
+    graph = helper.make_graph(
+        nodes=[
+            helper.make_node(
+                "Pad",
+                ["input", "pads", "pad_value"],
+                ["pad_output"],
+                name="pad",
+            ),
+            helper.make_node(
+                "Conv",
+                ["pad_output", "conv_weight"],
+                ["conv_output"],
+                name="conv",
+            ),
+        ],
+        name="pad_conv",
+        inputs=[
+            helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 3, 31, 31])
+        ],
+        outputs=[
+            helper.make_tensor_value_info(
+                "conv_output", TensorProto.FLOAT, [1, 16, 31, 31]
+            )
+        ],
+        initializer=[
+            numpy_helper.from_array(
+                np.array([0, 0, 1, 1, 0, 0, 1, 1], dtype=np.int64),
+                name="pads",
+            ),
+            numpy_helper.from_array(
+                np.array(0, dtype=np.float32),
+                name="pad_value",
+            ),
+            numpy_helper.from_array(
+                np.random.randn(16, 3, 3, 3).astype(np.float32),
+                name="conv_weight",
+            ),
+        ],
+    )
+
+    model = make_model(graph)
+    onnx.checker.check_model(model)
+    return model

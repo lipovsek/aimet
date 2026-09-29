@@ -6971,6 +6971,49 @@ def test_to_onnx_qdq(
     assert np.allclose(out_sim, out_onnx_qdq, atol=atol, rtol=rtol)
 
 
+def test_encoding_propagation_with_pad_op():
+    """
+    Given: Model with zero-pad Op
+    When: Call sim.to_onnx_qdq()
+    Then: Pad op's first input encoding is propagated to output
+    """
+    ort.set_seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
+
+    model = models_for_tests.model_with_zero_pad()
+    sim = QuantizationSimModel(model)
+    sim.compute_encodings([make_dummy_input(model)])
+    qdq_model = sim.to_onnx_qdq()
+
+    name_to_init = {init.name: init for init in qdq_model.graph.initializer}
+    input_q = next(
+        iter(node for node in qdq_model.graph.node if node.input[0] == "input")
+    )
+    assert input_q.op_type == "QuantizeLinear"
+    output_q = next(
+        iter(node for node in qdq_model.graph.node if node.input[0] == "pad_output")
+    )
+    assert output_q.op_type == "QuantizeLinear"
+    input_scale_name = input_q.input[1]
+    output_scale_name = output_q.input[1]
+
+    input_scale = onnx.numpy_helper.to_array(name_to_init[input_scale_name])
+    output_scale = onnx.numpy_helper.to_array(name_to_init[output_scale_name])
+    assert np.array_equal(input_scale, output_scale)
+    """
+    When: Run the QDQ model
+    Then: Output matches quantsim output
+    """
+    dummy_input = make_dummy_input(model)
+    sim_out = sim.session.run(None, dummy_input)
+    qdq_sess = ort.InferenceSession(
+        qdq_model.SerializeToString(), sess_options=_disable_ort_optimization()
+    )
+    qdq_out = qdq_sess.run(None, dummy_input)
+    assert np.allclose(sim_out[0], qdq_out[0])
+
+
 def _disable_ort_optimization():
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL

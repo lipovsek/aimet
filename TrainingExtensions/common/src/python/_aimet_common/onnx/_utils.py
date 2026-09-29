@@ -1895,6 +1895,12 @@ def _derive_data_movement_op_encodings(
                     derived_encodings.update({input_name: out_encoding.copy()})
                     continue
 
+        for output_name in output_names:
+            # Always propagate first input forward. This only matters for
+            # Pad ops due to special handling above. All other ops will have
+            # identical encodings for all inputs if `can_propagate_forward`.
+            # TODO: Revisit this once Pad is properly treated as grid-equivariant
+            inp_encoding = encodings.get(input_names[0])
             # Only per-tensor encodings can be safely propagated through data movement ops
             # because some data movement ops such as Reshape and Transpose can't reuse
             # the same channel/block axes across inputs and outputs
@@ -1902,6 +1908,7 @@ def _derive_data_movement_op_encodings(
                 inp_encoding
                 and inp_encoding.get("axis") is None
                 and can_propagate_forward
+                and encodings.get(output_name) is None
             ):
                 # Reuse input encoding for output quantization
                 derived_encodings.update({output_name: inp_encoding.copy()})
