@@ -28,13 +28,13 @@ its producer and its consumers, so the analyzers here need no producer/consumer
 side tables — only topological indices, which node objects do not carry.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import onnx_ir
 
 from aimet_onnx.common.utils import AimetLogger
 from aimet_onnx.graph_passes.fusions import fuse_supergroups, is_fused_supergroup
-from aimet_onnx.ir_utils import is_static, remove_quantizers
+from aimet_onnx.ir_utils import is_static, remove_quantizers, get_weight_value
 from aimet_onnx.utils import ModelProto
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.LlmTopology)
@@ -139,47 +139,6 @@ def node_by_output_tensor(ir_model: onnx_ir.Model) -> Dict[str, onnx_ir.Node]:
     }
 
 
-def get_weight_value(node: onnx_ir.Node) -> Tuple[Optional[onnx_ir.Value], bool]:
-    """Return ``(weight_value, is_transposed)`` for a MatMul/Gemm/Conv node.
-
-    Handles two patterns:
-
-    * Direct:   W (static) -> MatMul/Gemm/Conv
-    * Indirect: W (static) -> Transpose -> MatMul
-
-    Only :data:`WEIGHT_INDEX` is considered, matching the ONNX convention for all
-    three op types (and ConnectedGraph's own ``WEIGHT_INDEX``). Scanning every
-    input instead would report a ``Gemm``'s static bias, or a constant left-hand
-    operand, as the weight.
-
-    :param node: A MatMul, Gemm, or Conv node.
-    :return: ``(weight_value, is_transposed)``. ``weight_value`` is None when the
-        node has no static weight (e.g. a dynamic attention MatMul).
-        ``is_transposed`` is True when the stored tensor is ``[out, in]`` —
-        either a ``Gemm`` with ``transB=1``, or a weight reaching a MatMul
-        through a ``Transpose``.
-    """
-    if len(node.inputs) <= WEIGHT_INDEX:
-        return None, False
-    weight = node.inputs[WEIGHT_INDEX]
-
-    if is_static(weight):
-        return weight, _has_transposed_b(node)
-
-    # W -> Transpose -> MatMul. The Transpose lands on WEIGHT_INDEX as well, so
-    # the pre-transpose tensor is what carries the values. Restricted to
-    # MatMul/Gemm: a Conv weight is [out, in, *kernel], for which "transposed"
-    # is not the [out, in] layout the flag denotes.
-    if node.op_type not in ("MatMul", "Gemm"):
-        return None, False
-    producer = weight.producer() if weight is not None else None
-    if producer is not None and producer.op_type == "Transpose":
-        for transpose_inp in producer.inputs:
-            if is_static(transpose_inp):
-                return transpose_inp, True
-    return None, False
-
-
 def get_bias_value(node: onnx_ir.Node) -> Optional[onnx_ir.Value]:
     """Return the static bias Value of a MatMul/Gemm/Conv node, or None.
 
@@ -209,14 +168,6 @@ def get_bias_value(node: onnx_ir.Node) -> Optional[onnx_ir.Value]:
                 if is_static(operand):
                     return operand
     return None
-
-
-def _has_transposed_b(node: onnx_ir.Node) -> bool:
-    """Return True for a ``Gemm`` with ``transB=1`` (stored weight is ``[out, in]``)."""
-    if node.op_type != "Gemm":
-        return False
-    attr = node.attributes.get("transB")
-    return bool(attr.as_int()) if attr is not None else False
 
 
 def is_weighted_linear(node: onnx_ir.Node) -> bool:

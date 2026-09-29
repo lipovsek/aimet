@@ -3,12 +3,10 @@
 
 """ONNX-ir related utility functions"""
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import onnx_ir
-import onnx
-from aimet_onnx.graph_passes.fusions.fusion_registry import AIMET_SUPERGROUP_DOMAIN
 
 #: ONNX QDQ node types. Unlike ``QcQuantizeOp`` these come in pairs, so removing
 #: them takes a use-redirect per node rather than a single output->input map.
@@ -201,53 +199,6 @@ def get_constant_or_attribute_value(
     raise RuntimeError(f"Received unexpected type for value: {type(value)}")
 
 
-def _sort_functions_hierarchically(model: onnx_ir.Model) -> None:
-    """Sort model functions from outermost to innermost to prevent mangling of names during inlining."""
-    # pylint: disable=protected-access
-    sorted_funcs = {}
-
-    def node_has_impl(node: onnx_ir.Node) -> bool:
-        return not is_fused_supergroup(node) or node.op_identifier() in sorted_funcs
-
-    while True:
-        runnable_functions = {
-            fid: func
-            for fid, func in model.functions.items()
-            if fid not in sorted_funcs
-            and all(node_has_impl(n) for n in func.graph.all_nodes())
-        }
-        if not runnable_functions:
-            break
-        sorted_funcs.update(runnable_functions)
-
-    if not sorted_funcs.keys() == model.functions.keys():
-        raise RuntimeError(
-            f"Cycle detected among supergroup functions: {set(model.functions.keys()) - set(sorted_funcs.keys())}"
-        )
-
-    # Reverse ordering to prevent name mangling while unrolling
-    model._functions = dict(reversed(list(sorted_funcs.items())))
-
-
-def inline_all_supergroups(model: onnx_ir.Model) -> None:
-    """Inline all aimet supergroup functions, restoring original node and value names."""
-    supergroup_functions = {
-        func for func in model.functions.values() if is_fused_supergroup(func)
-    }
-    if not supergroup_functions:
-        return
-
-    _sort_functions_hierarchically(model)
-    onnx_ir.passes.common.InlinePass(lambda f: f in supergroup_functions).call(model)
-    supergroup_opsets = [
-        opset
-        for opset in model.graph.opset_imports
-        if opset.startswith(AIMET_SUPERGROUP_DOMAIN)
-    ]
-    for name in supergroup_opsets:
-        model.graph.opset_imports.pop(name)
-
-
 def unique_name(base: str, existing: set[str]) -> str:
     """Generate a unique name based on the provided base that does not exist in the existing set."""
     if base not in existing:
@@ -267,32 +218,50 @@ def get_upstream_cast_type(value: onnx_ir.Value) -> int | None:
     return to_attr.as_int() if to_attr is not None else None
 
 
-def fold_overload_into_op_domain(model: onnx_ir.Model):
+def _has_transposed_b(node: onnx_ir.Node) -> bool:
+    """Return True for a ``Gemm`` with ``transB=1`` (stored weight is ``[out, in]``)."""
+    if node.op_type != "Gemm":
+        return False
+    attr = node.attributes.get("transB")
+    return bool(attr.as_int()) if attr is not None else False
+
+
+def get_weight_value(node: onnx_ir.Node) -> Tuple[Optional[onnx_ir.Value], bool]:
+    """Return ``(weight_value, is_transposed)`` for a MatMul/Gemm/Conv node.
+
+    Handles two patterns:
+
+    * Direct:   W (static) -> MatMul/Gemm/Conv
+    * Indirect: W (static) -> Transpose -> MatMul
+
+    Only :data:`WEIGHT_INDEX` is considered, matching the ONNX convention for all
+    three op types (and ConnectedGraph's own ``WEIGHT_INDEX``). Scanning every
+    input instead would report a ``Gemm``'s static bias, or a constant left-hand
+    operand, as the weight.
+
+    :param node: A MatMul, Gemm, or Conv node.
+    :return: ``(weight_value, is_transposed)``. ``weight_value`` is None when the
+        node has no static weight (e.g. a dynamic attention MatMul).
+        ``is_transposed`` is True when the stored tensor is ``[out, in]`` —
+        either a ``Gemm`` with ``transB=1``, or a weight reaching a MatMul
+        through a ``Transpose``.
     """
-    Works around bug in onnxruntime dispatch to overloaded functions by replacing
-    function.domain with "{function.domain}.{function.overload}" for all supergroup ops
-    """
-    new_functions = {}
-    for function in model.functions.values():
-        if function.domain == AIMET_SUPERGROUP_DOMAIN and function.overload:
-            function.domain = f"{function.domain}.{function.overload}"
-        new_functions[function.identifier()] = function
+    if len(node.inputs) <= 1:
+        return None, False
+    weight = node.inputs[1]
 
-    for node in model.graph.all_nodes():
-        if node.domain != AIMET_SUPERGROUP_DOMAIN:
-            continue
-        if not node.overload:
-            continue
-        node.domain = f"{node.domain}.{node.overload}"
+    if is_static(weight):
+        return weight, _has_transposed_b(node)
 
-    model._functions = new_functions  # pylint:disable = protected-access
-    opsets = set(f.domain for f in model.functions.values() if is_fused_supergroup(f))
-    for opset in opsets:
-        model.opset_imports[opset] = 1
-
-
-def is_fused_supergroup(
-    node: onnx_ir.Node | onnx_ir.Function | onnx.NodeProto | onnx.FunctionProto,
-) -> bool:
-    """Return True if ``node`` represents an AIMET supergroup op."""
-    return node.domain.startswith(AIMET_SUPERGROUP_DOMAIN)
+    # W -> Transpose -> MatMul. The Transpose lands on WEIGHT_INDEX as well, so
+    # the pre-transpose tensor is what carries the values. Restricted to
+    # MatMul/Gemm: a Conv weight is [out, in, *kernel], for which "transposed"
+    # is not the [out, in] layout the flag denotes.
+    if node.op_type not in ("MatMul", "Gemm"):
+        return None, False
+    producer = weight.producer() if weight is not None else None
+    if producer is not None and producer.op_type == "Transpose":
+        for transpose_inp in producer.inputs:
+            if is_static(transpose_inp):
+                return transpose_inp, True
+    return None, False

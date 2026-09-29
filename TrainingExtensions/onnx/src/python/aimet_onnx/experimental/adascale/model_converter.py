@@ -17,6 +17,7 @@ from aimet_onnx.experimental.adascale.quantizer import QuantizedLinear, Quantize
 from aimet_onnx.experimental.adascale.onnx2torch_ext import *  # pylint: disable=wildcard-import, unused-wildcard-import
 from aimet_onnx.qc_quantize_op import QcQuantizeOp
 from aimet_onnx import ir_utils
+from aimet_onnx.graph_passes.fusions import inline_all_supergroups
 
 _logger = AimetLogger.get_area_logger(AimetLogger.LogAreas.AdaScale)
 
@@ -164,7 +165,7 @@ def get_pt_block(
         subgraph, ir_version=model.ir_version, functions=list(model.functions.values())
     )
     ir_utils.remove_aimet_quantizers(subgraph_model)
-    ir_utils.inline_all_supergroups(subgraph_model)
+    inline_all_supergroups(subgraph_model)
     onnx_ir.passes.common.TopologicalSortPass().call(subgraph_model)
     onnx_ir.external_data.load_to_model(subgraph_model)
     param_map = _get_onnx_block_info(subgraph_model)
