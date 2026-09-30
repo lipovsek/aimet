@@ -115,13 +115,25 @@ def _propagate_output_encodings(
             # There exists a qmodule associated with the graph node ``producer``
             # In this case, set the output quantizer of the producer to ``qtzr``
             outputs = getattr(producer, "output_products", [producer.outputs[0]])
-            i = outputs.index(x)
             if isinstance(qmodule, custom.Split):
                 # torch.split is an output-variadic operation whose number of outputs
                 # can't be predicted statically.
                 # As a workaround, AIMET qsplit module has only one output quantizer
                 # that gets applied to all output tensors
                 i = 0
+            elif x in outputs:
+                i = outputs.index(x)
+            else:
+                # ``x`` isn't among the recorded outputs of its own producer, which means
+                # the graph is internally inconsistent. Skip this edge instead of crashing
+                # so that quantsim construction can still succeed.
+                logger.warning(
+                    "Product %s is not a recorded output of its producer %s. "
+                    "Skipping encoding propagation through this edge.",
+                    x.name,
+                    producer.name,
+                )
+                return
             if i < len(qmodule.output_quantizers) and qmodule.output_quantizers[i]:
                 qmodule.output_quantizers[i] = qtzr
 

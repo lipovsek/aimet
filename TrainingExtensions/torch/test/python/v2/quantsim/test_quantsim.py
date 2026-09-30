@@ -1608,6 +1608,63 @@ class TestQuantsim:
             sim.model.modules(remove_duplicate=False)
         )
 
+    def test_quantsim_with_duplicated_concat_inputs(self):
+        """
+        Given: Concat consumes the output of a multi-output op (StridedSlice) in more
+               than one input slot
+        When: Create quantsim, which runs encoding propagation in __init__
+        Then: Quantsim is constructed successfully and can run a forward pass
+        """
+
+        class Model(torch.nn.Module):
+            def __init__(self, channels=4):
+                super().__init__()
+                self.slice_a = custom.StridedSlice()
+                self.slice_b = custom.StridedSlice()
+                self.concat = custom.Concat(axis=2)
+                self.conv = nn.Conv3d(channels, channels, kernel_size=(3, 1, 1))
+
+            def forward(self, x):
+                a = self.slice_a(
+                    x,
+                    [
+                        (0, 1, 1),
+                        (0, x.shape[1], 1),
+                        (0, 1, 1),
+                        (0, x.shape[3], 1),
+                        (0, x.shape[4], 1),
+                    ],
+                )
+                b = self.slice_b(
+                    x,
+                    [
+                        (0, 1, 1),
+                        (0, x.shape[1], 1),
+                        (-1, x.shape[2], 1),
+                        (0, x.shape[3], 1),
+                        (0, x.shape[4], 1),
+                    ],
+                )
+                return self.conv(self.concat(a, a, x, b, b))
+
+        model = Model().eval()
+        dummy_input = randn(1, 4, 5, 8, 8)
+
+        sim = QuantizationSimModel(
+            model=model,
+            dummy_input=dummy_input,
+            default_output_bw=8,
+            default_param_bw=8,
+        )
+        sim.compute_encodings(lambda m, _: m(dummy_input), None)
+
+        with torch.no_grad():
+            out = sim.model(dummy_input)
+
+        with torch.no_grad():
+            expected = model(dummy_input)
+        assert out.shape == expected.shape
+
     def test_conv_relu_supergroup(self, tmp_path: pathlib.Path):
         """
         When: Create quantsim with HTP V69 config or lower

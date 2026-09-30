@@ -1273,16 +1273,16 @@ class ConnectedGraph(AimetCommonConnectedGraph):
                 )
                 logger.debug(error_message)
                 products_to_remove = []
-                consumers_of_first_output_product = set(op.output_products[0].consumers)
+                first_output_product = op.output_products[0]
                 for output in op.output_products[1:]:
                     for consumer in output.consumers:
-                        # Replace the output product entry in consumer's inputs with the op's first output product
+                        # Replace the output product entry in consumer's inputs with the op's first output product.
+                        # A consumer may take ``output`` in more than one input slot (e.g. Concat(x, x)), so every
+                        # occurrence must be replaced and each one recorded as a separate consumer entry to keep
+                        # ``product.consumers`` and ``consumer.inputs`` multiplicities consistent.
                         consumer_input_index = consumer.inputs.index(output)
-                        consumer.inputs[consumer_input_index] = op.output_products[0]
-                        # Update op's first output product consumer list if it doesn't already contain the consumer
-                        if consumer not in consumers_of_first_output_product:
-                            op.output_products[0].add_consumer(consumer)
-                            consumers_of_first_output_product.add(consumer)
+                        consumer.inputs[consumer_input_index] = first_output_product
+                        first_output_product.add_consumer(consumer)
                     products_to_remove.append(output)
                 for product in products_to_remove:
                     del self._products[product.name]

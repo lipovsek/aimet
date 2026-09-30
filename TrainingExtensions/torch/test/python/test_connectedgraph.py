@@ -1406,6 +1406,58 @@ class TestConnectedGraphUtils(unittest.TestCase):
         # propagate_output_encodings should work normally
         propagate_output_encodings(sim, custom.Concat)
 
+    def test_concat_same_multi_output_op_tensor(self):
+        """
+        Given: Concat consumes the output of a multi-output op more than once
+        When: Create quantsim
+        Then: All op inputs/outputs are live products, and the number of times a product
+              appears in op.inputs matches the number of times the op appears in
+              product.consumers
+        """
+
+        class Model(torch.nn.Module):
+            def __init__(self, channels=4):
+                super().__init__()
+                self.slice_a = custom.StridedSlice()
+                self.slice_b = custom.StridedSlice()
+                self.concat = custom.Concat(axis=2)
+                self.conv = nn.Conv3d(channels, channels, kernel_size=(3, 1, 1))
+
+            def forward(self, x):
+                a = self.slice_a(
+                    x,
+                    [
+                        (0, 1, 1),
+                        (0, x.shape[1], 1),
+                        (0, 1, 1),
+                        (0, x.shape[3], 1),
+                        (0, x.shape[4], 1),
+                    ],
+                )
+                b = self.slice_b(
+                    x,
+                    [
+                        (0, 1, 1),
+                        (0, x.shape[1], 1),
+                        (-1, x.shape[2], 1),
+                        (0, x.shape[3], 1),
+                        (0, x.shape[4], 1),
+                    ],
+                )
+                return self.conv(self.concat(a, a, x, b, b))
+
+        model = Model().eval()
+        dummy_input = torch.randn(1, 4, 5, 8, 8)
+        sim = aimet_torch.QuantizationSimModel(model, dummy_input)
+
+        all_products = set(sim.connected_graph.get_all_products().values())
+        for op in sim.connected_graph.get_all_ops().values():
+            assert set(op.inputs) <= all_products
+            assert set(op.outputs) <= all_products
+
+            for product in op.inputs:
+                assert op.inputs.count(product) == product.consumers.count(op)
+
 
 @pytest.mark.parametrize(
     "layer, inputs, buffer",
